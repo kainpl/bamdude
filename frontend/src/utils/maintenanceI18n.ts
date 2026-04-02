@@ -1,5 +1,6 @@
+// Compatible with both i18next TFunction and react-i18next's version
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-type TFn = (key: string, defaultValue?: string) => any;
+type TFn = (...args: any[]) => string;
 
 /**
  * Maps DB maintenance type names to i18n keys.
