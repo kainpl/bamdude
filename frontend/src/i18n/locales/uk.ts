@@ -462,6 +462,12 @@ export default {
       labelPlaceholder: 'Мітка...',
       clickToEdit: '{{label}} — натисніть для редагування',
       clickToAddLabel: 'Натисніть, щоб додати мітку',
+      title: 'Перевірка робочого столу',
+      refsCount: '{{count}}/{{max}} зразків',
+      calibrating: 'Калібрування...',
+      calibrateEmptyPlate: 'Калібрувати',
+      adding: 'Додавання...',
+      addReference: 'Додати зразок ({{count}}/{{max}})',
     },
     // Speed
     speed: {

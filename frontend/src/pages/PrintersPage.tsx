@@ -4313,11 +4313,11 @@ function PrinterCard({
                   <XCircle className="w-5 h-5 text-yellow-500" />
                 )}
                 <h2 className="text-lg font-semibold text-white">
-                  Build Plate Check
+                  {t('printers.plateDetection.title')}
                 </h2>
                 {plateCheckResult.reference_count !== undefined && plateCheckResult.max_references && (
                   <span className="text-xs text-bambu-gray bg-bambu-dark-tertiary px-2 py-1 rounded">
-                    {plateCheckResult.reference_count}/{plateCheckResult.max_references} refs
+                    {t('printers.plateDetection.refsCount', { count: plateCheckResult.reference_count, max: plateCheckResult.max_references })}
                   </span>
                 )}
               </div>
@@ -4543,20 +4543,20 @@ function PrinterCard({
                     {isCalibrating ? (
                       <>
                         <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                        Calibrating...
+                        {t('printers.plateDetection.calibrating')}
                       </>
                     ) : (
-                      'Calibrate Empty Plate'
+                      t('printers.plateDetection.calibrateEmptyPlate')
                     )}
                   </Button>
                 </>
               ) : (
                 <>
                   <Button variant="ghost" onClick={() => handleCalibratePlate()} disabled={isCalibrating}>
-                    {isCalibrating ? 'Adding...' : `Add Reference (${plateReferences?.references.length || 0}/${plateReferences?.max_references || 5})`}
+                    {isCalibrating ? t('printers.plateDetection.adding') : t('printers.plateDetection.addReference', { count: plateReferences?.references.length || 0, max: plateReferences?.max_references || 5 })}
                   </Button>
                   <Button onClick={() => closePlateCheckModal()}>
-                    Close
+                    {t('common.close')}
                   </Button>
                 </>
               )}

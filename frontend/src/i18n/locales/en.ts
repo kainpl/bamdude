@@ -462,6 +462,12 @@ export default {
       labelPlaceholder: 'Label...',
       clickToEdit: '{{label}} - Click to edit',
       clickToAddLabel: 'Click to add label',
+      title: 'Build Plate Check',
+      refsCount: '{{count}}/{{max}} refs',
+      calibrating: 'Calibrating...',
+      calibrateEmptyPlate: 'Calibrate',
+      adding: 'Adding...',
+      addReference: 'Add Reference ({{count}}/{{max}})',
     },
     // Speed
     speed: {

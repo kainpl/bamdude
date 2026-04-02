@@ -9,12 +9,13 @@ import { render } from '../utils';
 import { HMSErrorModal } from '../../components/HMSErrorModal';
 import { http, HttpResponse } from 'msw';
 import { server } from '../mocks/server';
-import type { HMSError } from '../../api/client';
+import type { HMSError, Permission } from '../../api/client';
 
 // Error code 0300_400C = "The task was canceled." (known code in the database)
 const knownError: HMSError = {
   attr: 0x0300,
   code: '0x400C',
+  module: 0,
   severity: 2,
 };
 
@@ -22,6 +23,7 @@ const knownError: HMSError = {
 const unknownError: HMSError = {
   attr: 0xFFFF,
   code: '0xFFFF',
+  module: 0,
   severity: 1,
 };
 
@@ -31,7 +33,7 @@ describe('HMSErrorModal', () => {
     errors: [knownError],
     onClose: vi.fn(),
     printerId: 1,
-    hasPermission: vi.fn().mockReturnValue(true) as unknown as (permission: 'printers:control') => boolean,
+    hasPermission: vi.fn().mockReturnValue(true) as unknown as (permission: Permission) => boolean,
   };
 
   afterEach(() => {
@@ -78,7 +80,7 @@ describe('HMSErrorModal', () => {
     });
 
     it('disables clear button when user lacks permission', () => {
-      const noPermission = vi.fn().mockReturnValue(false) as unknown as (permission: 'printers:control') => boolean;
+      const noPermission = vi.fn().mockReturnValue(false) as unknown as (permission: Permission) => boolean;
       render(<HMSErrorModal {...defaultProps} hasPermission={noPermission} />);
       expect(screen.getByText('Clear Errors').closest('button')).toBeDisabled();
     });

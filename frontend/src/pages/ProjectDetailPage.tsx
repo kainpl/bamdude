@@ -416,7 +416,7 @@ export function ProjectDetailPage() {
   });
 
   const formatTimelineDate = (timestamp: string) => {
-    return formatDateTime(timestamp, timeFormat, {
+    return formatDateTime(timestamp, timeFormat, 'system', {
       month: 'short',
       day: 'numeric',
       hour: '2-digit',

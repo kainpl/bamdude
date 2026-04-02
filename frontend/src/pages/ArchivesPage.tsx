@@ -2897,6 +2897,12 @@ export function ArchivesPage() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
         <div>
           <h1 className="text-2xl font-bold text-white">{t('archives.page.title')}</h1>
+          {viewMode === 'calendar' && (
+            <p className="text-bambu-gray">{t('archives.calendarView')}</p>
+          )}
+          {viewMode === 'log' && (
+            <p className="text-bambu-gray">{t('archives.logView')}</p>
+          )}
           {(viewMode === 'grid' || viewMode === 'list') && paginationMeta && (
             <p className="text-bambu-gray">
               {t('common.showingRange', {

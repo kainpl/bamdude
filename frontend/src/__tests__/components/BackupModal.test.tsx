@@ -12,6 +12,7 @@ import { server } from '../mocks/server';
 
 describe('BackupModal', () => {
   const mockOnClose = vi.fn();
+  const mockOnExport = vi.fn().mockResolvedValue(undefined);
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -31,25 +32,25 @@ describe('BackupModal', () => {
 
   describe('rendering', () => {
     it('renders the modal title', () => {
-      render(<BackupModal onClose={mockOnClose} />);
+      render(<BackupModal onClose={mockOnClose} onExport={mockOnExport} />);
 
       expect(screen.getByText(/backup/i)).toBeInTheDocument();
     });
 
     it('shows backup options', () => {
-      render(<BackupModal onClose={mockOnClose} />);
+      render(<BackupModal onClose={mockOnClose} onExport={mockOnExport} />);
 
       expect(screen.getByText(/settings/i)).toBeInTheDocument();
     });
 
     it('shows export button', () => {
-      render(<BackupModal onClose={mockOnClose} />);
+      render(<BackupModal onClose={mockOnClose} onExport={mockOnExport} />);
 
       expect(screen.getByRole('button', { name: /export/i })).toBeInTheDocument();
     });
 
     it('shows cancel button', () => {
-      render(<BackupModal onClose={mockOnClose} />);
+      render(<BackupModal onClose={mockOnClose} onExport={mockOnExport} />);
 
       expect(screen.getByRole('button', { name: /cancel/i })).toBeInTheDocument();
     });
@@ -57,19 +58,19 @@ describe('BackupModal', () => {
 
   describe('backup options', () => {
     it('has checkbox for printers', () => {
-      render(<BackupModal onClose={mockOnClose} />);
+      render(<BackupModal onClose={mockOnClose} onExport={mockOnExport} />);
 
       expect(screen.getByText('Printers')).toBeInTheDocument();
     });
 
     it('has checkbox for archives', () => {
-      render(<BackupModal onClose={mockOnClose} />);
+      render(<BackupModal onClose={mockOnClose} onExport={mockOnExport} />);
 
       expect(screen.getByText(/archives/i)).toBeInTheDocument();
     });
 
     it('has checkbox for projects', () => {
-      render(<BackupModal onClose={mockOnClose} />);
+      render(<BackupModal onClose={mockOnClose} onExport={mockOnExport} />);
 
       expect(screen.getByText('Projects')).toBeInTheDocument();
     });
@@ -78,7 +79,7 @@ describe('BackupModal', () => {
   describe('actions', () => {
     it('calls onClose when cancel is clicked', async () => {
       const user = userEvent.setup();
-      render(<BackupModal onClose={mockOnClose} />);
+      render(<BackupModal onClose={mockOnClose} onExport={mockOnExport} />);
 
       await user.click(screen.getByRole('button', { name: /cancel/i }));
 

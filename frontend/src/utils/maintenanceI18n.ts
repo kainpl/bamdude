@@ -1,4 +1,5 @@
-import type { TFunction } from 'i18next';
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type TFn = (key: string, defaultValue?: string) => any;
 
 /**
  * Maps DB maintenance type names to i18n keys.
@@ -24,13 +25,13 @@ const NAME_TO_KEY: Record<string, string> = {
 };
 
 /** Get localized maintenance type name. Falls back to DB value if no mapping. */
-export function getMaintenanceTypeName(dbName: string, t: TFunction): string {
+export function getMaintenanceTypeName(dbName: string, t: TFn): string {
   const key = NAME_TO_KEY[dbName];
   return key ? t(`maintenance.types.${key}`, dbName) : dbName;
 }
 
 /** Get localized maintenance type description. Falls back to DB value if no mapping. */
-export function getMaintenanceTypeDescription(dbName: string, dbDescription: string | null, t: TFunction): string {
+export function getMaintenanceTypeDescription(dbName: string, dbDescription: string | null, t: TFn): string {
   const key = NAME_TO_KEY[dbName];
   return key ? t(`maintenanceDescriptions.${key}`, dbDescription || '') : dbDescription || '';
 }
