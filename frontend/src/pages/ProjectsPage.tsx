@@ -873,12 +873,12 @@ export function ProjectsPage() {
             <FolderKanban className="w-12 h-12 text-bambu-gray/50" />
           </div>
           <h3 className="text-lg font-medium text-white mb-2">
-            {statusFilter === 'all' ? t('projects.noProjects') : t('projects.noProjectsFiltered', { status: statusFilter })}
+            {statusFilter === 'all' ? t('projects.noProjects') : t('projects.noProjectsFiltered', { status: t(`projects.status${statusFilter.charAt(0).toUpperCase() + statusFilter.slice(1)}`) })}
           </h3>
           <p className="text-bambu-gray text-center max-w-md mb-6">
             {statusFilter === 'all'
               ? t('projects.createFirst')
-              : t('projects.noProjectsFilteredHelp', { status: statusFilter })
+              : t('projects.noProjectsFilteredHelp', { status: t(`projects.status${statusFilter.charAt(0).toUpperCase() + statusFilter.slice(1)}`) })
             }
           </p>
           {statusFilter === 'all' && (

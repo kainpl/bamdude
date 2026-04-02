@@ -274,11 +274,22 @@ export function formatDateOnly(
 export function formatDateTime(
   dateStr: string | null | undefined,
   timeFormat: TimeFormat = 'system',
+  dateFormat: DateFormat = 'system',
   options?: Intl.DateTimeFormatOptions
 ): string {
   const date = parseUTCDate(dateStr);
   if (!date) return '';
 
+  // If explicit date format selected, use manual formatting
+  if (dateFormat !== 'system' || options) {
+    if (options) {
+      const finalOptions = applyTimeFormat(options, timeFormat);
+      return date.toLocaleString(undefined, finalOptions);
+    }
+    return `${formatDateInput(date, dateFormat)} ${formatTimeInput(date, timeFormat)}`;
+  }
+
+  // System default — use locale
   const defaultOptions: Intl.DateTimeFormatOptions = {
     year: 'numeric',
     month: 'short',
@@ -287,7 +298,7 @@ export function formatDateTime(
     minute: '2-digit',
   };
 
-  const finalOptions = applyTimeFormat(options ?? defaultOptions, timeFormat);
+  const finalOptions = applyTimeFormat(defaultOptions, timeFormat);
   return date.toLocaleString(undefined, finalOptions);
 }
 

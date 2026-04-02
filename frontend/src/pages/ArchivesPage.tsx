@@ -55,7 +55,7 @@ import {
 } from 'lucide-react';
 import { api } from '../api/client';
 import { openInSlicer, type SlicerType } from '../utils/slicer';
-import { formatDateTime, formatDateOnly, type TimeFormat, formatDuration } from '../utils/date';
+import { formatDateTime, formatDateOnly, type TimeFormat, type DateFormat, formatDuration } from '../utils/date';
 import { getCurrencySymbol } from '../utils/currency';
 import { useIsMobile } from '../hooks/useIsMobile';
 import type { Archive, ProjectListItem, ArchiveListParams } from '../api/client';
@@ -150,6 +150,7 @@ function ArchiveCard({
   projects,
   isHighlighted,
   timeFormat = 'system',
+  dateFormat = 'system',
   preferredSlicer = 'bambu_studio',
   currency,
   t,
@@ -163,6 +164,7 @@ function ArchiveCard({
   projects: ProjectListItem[] | undefined;
   isHighlighted?: boolean;
   timeFormat?: TimeFormat;
+  dateFormat?: DateFormat;
   preferredSlicer?: SlicerType;
   currency: string;
   t: TFunction;
@@ -1045,7 +1047,7 @@ function ArchiveCard({
 
         {/* Date, Size & Creator */}
         <div className="flex items-center justify-between text-xs text-bambu-gray border-t border-bambu-dark-tertiary pt-3">
-          <span>{formatDateTime(archive.created_at, timeFormat)}</span>
+          <span>{formatDateTime(archive.created_at, timeFormat, dateFormat)}</span>
           <div className="flex items-center gap-2">
             {archive.created_by_username && (
               <span className="flex items-center gap-1" title={t('archives.card.uploadedBy', { name: archive.created_by_username })}>
@@ -1305,7 +1307,7 @@ function ArchiveCard({
                     <p className="text-white font-medium truncate">{file.name}</p>
                     <p className="text-sm text-gray-400">
                       {formatFileSize(file.size)}
-                      {file.mtime && ` • ${formatDateTime(file.mtime, timeFormat)}`}
+                      {file.mtime && ` • ${formatDateTime(file.mtime, timeFormat, dateFormat)}`}
                     </p>
                   </div>
                 </button>
@@ -1445,6 +1447,9 @@ function ArchiveListRow({
   const queryClient = useQueryClient();
   const { showToast } = useToast();
   const { hasPermission, canModify } = useAuth();
+  const { data: rowSettings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
+  const timeFormat: TimeFormat = (rowSettings as Record<string, string> | undefined)?.time_format as TimeFormat || 'system';
+  const dateFormat: DateFormat = (rowSettings as Record<string, string> | undefined)?.date_format as DateFormat || 'system';
   const [showEdit, setShowEdit] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showReprint, setShowReprint] = useState(false);
@@ -1977,7 +1982,7 @@ function ArchiveListRow({
           {printerName}
         </div>
         <div className="col-span-2 text-sm text-bambu-gray truncate">
-          <div className="truncate">{formatDateTime(archive.created_at)}</div>
+          <div className="truncate">{formatDateTime(archive.created_at, timeFormat, dateFormat)}</div>
           {archive.created_by_username && (
             <div className="flex items-center gap-1 text-xs opacity-75" title={t('archives.card.uploadedBy', { name: archive.created_by_username })}>
               <User className="w-3 h-3" />
@@ -2531,6 +2536,7 @@ export function ArchivesPage() {
   });
 
   const timeFormat: TimeFormat = settings?.time_format || 'system';
+  const dateFormat: DateFormat = settings?.date_format || 'system';
   const preferredSlicer: SlicerType = settings?.preferred_slicer || 'bambu_studio';
   const currency = getCurrencySymbol(settings?.currency || 'USD');
 
@@ -3322,6 +3328,7 @@ export function ArchivesPage() {
               projects={projects}
               isHighlighted={archive.id === highlightedArchiveId}
               timeFormat={timeFormat}
+              dateFormat={dateFormat}
               preferredSlicer={preferredSlicer}
               currency={currency}
               t={t}
@@ -3475,7 +3482,7 @@ export function ArchivesPage() {
                       {printLogData.items.map((entry) => (
                         <tr key={entry.id} className="hover:bg-bambu-dark-secondary/50">
                           <td className="px-4 py-3 text-white whitespace-nowrap">
-                            {formatDateTime(entry.started_at || entry.created_at, timeFormat)}
+                            {formatDateTime(entry.started_at || entry.created_at, timeFormat, dateFormat)}
                           </td>
                           <td className="px-4 py-3">
                             <div className="flex items-center gap-2">

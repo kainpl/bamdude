@@ -96,7 +96,7 @@ export function ColumnConfigModal({ isOpen, onClose, columns, defaultColumns, on
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <Card className="w-full max-w-md max-h-[80vh] flex flex-col" onClick={(e: React.MouseEvent) => e.stopPropagation()}>
+      <Card className="w-full max-w-lg max-h-[80vh] flex flex-col" onClick={(e: React.MouseEvent) => e.stopPropagation()}>
         <CardContent className="p-6 flex flex-col min-h-0">
           {/* Header */}
           <h3 className="text-lg font-semibold text-white mb-2">{t('inventory.configureColumns')}</h3>
@@ -129,7 +129,7 @@ export function ColumnConfigModal({ isOpen, onClose, columns, defaultColumns, on
                 </div>
 
                 {/* Column Name */}
-                <span className="flex-1 font-medium text-sm text-white">{column.label}</span>
+                <span className="flex-1 font-medium text-sm text-white">{t(`inventory.columns.${column.id}`, column.label)}</span>
 
                 {/* Move Buttons */}
                 <div className="flex items-center gap-0.5">

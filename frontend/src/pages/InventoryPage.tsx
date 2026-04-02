@@ -134,34 +134,34 @@ type CellCtx = {
 
 // Column header labels (25 columns — matching SpoolBuddy exactly)
 const columnHeaders: Record<string, (t: TFn) => string> = {
-  id: () => '#',
-  added_time: () => 'Added',
-  encode_time: () => 'Encoded',
-  last_used_time: () => 'Last Used',
-  rgba: (t) => t('inventory.color'),
-  material: (t) => t('inventory.material'),
-  subtype: (t) => t('inventory.subtype'),
-  color_name: (t) => t('inventory.colorName'),
-  brand: (t) => t('inventory.brand'),
-  slicer_filament: (t) => t('inventory.slicerFilament'),
-  location: () => 'Location',
-  label_weight: (t) => t('inventory.labelWeight'),
-  net: (t) => t('inventory.net'),
-  gross: () => 'Gross',
-  added_full: () => 'Full',
-  used: (t) => t('inventory.weightUsed'),
-  printed_total: () => 'Printed Total',
-  printed_since_weight: () => 'Printed Since Weight',
-  note: (t) => t('inventory.note'),
-  pa_k: () => 'PA(K)',
-  tag_id: () => 'Tag ID',
-  data_origin: () => 'Data Origin',
-  tag_type: () => 'Linked Tag Type',
-  stock: (t) => t('inventory.stock'),
-  remaining: (t) => t('inventory.remaining'),
-  spool_name: (t) => t('inventory.spoolName'),
-  cost_per_kg: (t) => t('inventory.costPerKg'),
-  weight_check: (t) => t('inventory.weightCheck'),
+  id: (t) => t('inventory.columns.id'),
+  added_time: (t) => t('inventory.columns.added_time'),
+  encode_time: (t) => t('inventory.columns.encode_time'),
+  last_used_time: (t) => t('inventory.columns.last_used_time'),
+  rgba: (t) => t('inventory.columns.rgba'),
+  material: (t) => t('inventory.columns.material'),
+  subtype: (t) => t('inventory.columns.subtype'),
+  color_name: (t) => t('inventory.columns.color_name'),
+  brand: (t) => t('inventory.columns.brand'),
+  slicer_filament: (t) => t('inventory.columns.slicer_filament'),
+  location: (t) => t('inventory.columns.location'),
+  label_weight: (t) => t('inventory.columns.label_weight'),
+  net: (t) => t('inventory.columns.net'),
+  gross: (t) => t('inventory.columns.gross'),
+  added_full: (t) => t('inventory.columns.added_full'),
+  used: (t) => t('inventory.columns.used'),
+  printed_total: (t) => t('inventory.columns.printed_total'),
+  printed_since_weight: (t) => t('inventory.columns.printed_since_weight'),
+  note: (t) => t('inventory.columns.note'),
+  pa_k: (t) => t('inventory.columns.pa_k'),
+  tag_id: (t) => t('inventory.columns.tag_id'),
+  data_origin: (t) => t('inventory.columns.data_origin'),
+  tag_type: (t) => t('inventory.columns.tag_type'),
+  stock: (t) => t('inventory.columns.stock'),
+  remaining: (t) => t('inventory.columns.remaining'),
+  spool_name: (t) => t('inventory.columns.spool_name'),
+  cost_per_kg: (t) => t('inventory.columns.cost_per_kg'),
+  weight_check: (t) => t('inventory.columns.weight_check'),
 };
 
 // Column cell renderers (25 columns — matching SpoolBuddy exactly)
@@ -971,7 +971,7 @@ function InventoryPage() {
               title={t('inventory.configureColumns')}
             >
               <Columns className="w-4 h-4" />
-              <span className="hidden sm:inline">{t('inventory.columns')}</span>
+              <span className="hidden sm:inline">{t('inventory.columnsLabel')}</span>
             </button>
           )}
           {/* Group similar toggle */}

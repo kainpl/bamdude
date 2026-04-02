@@ -2,7 +2,9 @@ import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X, Copy, Check, Signal, Cable } from 'lucide-react';
 import { Card, CardContent } from './Card';
-import { formatDateOnly } from '../utils/date';
+import { useQuery } from '@tanstack/react-query';
+import { formatDateTime, type TimeFormat, type DateFormat } from '../utils/date';
+import { api } from '../api/client';
 import { getPrinterImage, getWifiStrength } from '../utils/printer';
 import type { Printer, PrinterStatus } from '../api/client';
 
@@ -40,6 +42,9 @@ function CopyButton({ value }: { value: string }) {
 
 export function PrinterInfoModal({ printer, status, totalPrintHours, onClose }: PrinterInfoModalProps) {
   const { t } = useTranslation();
+  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
+  const timeFormat: TimeFormat = (settings as Record<string, string> | undefined)?.time_format as TimeFormat || 'system';
+  const dateFormat: DateFormat = (settings as Record<string, string> | undefined)?.date_format as DateFormat || 'system';
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
@@ -233,7 +238,7 @@ export function PrinterInfoModal({ printer, status, totalPrintHours, onClose }: 
   // Added date
   rows.push({
     label: t('printers.addedOn'),
-    value: formatDateOnly(printer.created_at),
+    value: formatDateTime(printer.created_at, timeFormat, dateFormat),
   });
 
   return (

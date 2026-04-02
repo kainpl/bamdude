@@ -60,7 +60,7 @@ import { FileUploadModal } from '../components/FileUploadModal';
 import { useToast } from '../contexts/ToastContext';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { useAuth } from '../contexts/AuthContext';
-import { formatDuration, parseUTCDate } from '../utils/date';
+import { formatDateTime, formatDuration, parseUTCDate, type TimeFormat, type DateFormat } from '../utils/date';
 import { formatFileSize } from '../utils/file';
 
 type SortField = 'name' | 'date' | 'size' | 'type';
@@ -697,6 +697,8 @@ interface FileCardProps {
   hasPermission: (permission: Permission) => boolean;
   canModify: (resource: 'queue' | 'archives' | 'library', action: 'update' | 'delete' | 'reprint', createdById: number | null | undefined) => boolean;
   authEnabled: boolean;
+  timeFormat?: TimeFormat;
+  dateFormat?: DateFormat;
   t: TFunction;
 }
 
@@ -794,7 +796,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   );
 }
 
-function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, onAddToQueue, onPrint, onPreview3d, onRename, onGenerateThumbnail, thumbnailVersion, hasPermission, canModify, authEnabled, t }: FileCardProps) {
+function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, onAddToQueue, onPrint, onPreview3d, onRename, onGenerateThumbnail, thumbnailVersion, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
   const [showActions, setShowActions] = useState(false);
 
   return (
@@ -848,8 +850,11 @@ function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, 
             {file.sliced_for_model}
           </div>
         )}
+        <div className="mt-1 text-xs text-bambu-gray truncate">
+          {formatDateTime(file.created_at, timeFormat, dateFormat)}
+        </div>
         {authEnabled && file.created_by_username && (
-          <div className="mt-1 text-xs text-bambu-gray flex items-center gap-1">
+          <div className="mt-0.5 text-xs text-bambu-gray flex items-center gap-1">
             <User className="w-3 h-3" />
             {file.created_by_username}
           </div>
@@ -1081,6 +1086,8 @@ export function FileManagerPage() {
     queryKey: ['settings'],
     queryFn: () => api.getSettings() as Promise<AppSettings>,
   });
+  const timeFormat: TimeFormat = settings?.time_format || 'system';
+  const dateFormat: DateFormat = settings?.date_format || 'system';
   const { data: folders, isLoading: foldersLoading } = useQuery({
     queryKey: ['library-folders'],
     queryFn: () => api.getLibraryFolders(),
@@ -1970,6 +1977,8 @@ export function FileManagerPage() {
                     hasPermission={hasPermission}
                     canModify={canModify}
                     authEnabled={authEnabled}
+                    timeFormat={timeFormat}
+                    dateFormat={dateFormat}
                   />
                 ))}
               </div>
@@ -1978,19 +1987,20 @@ export function FileManagerPage() {
             <div className="flex-1 lg:overflow-y-auto">
               <div className="bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary overflow-hidden">
                 {/* List header - hidden on mobile, show simplified on small screens */}
-                <div className={`hidden sm:grid ${authEnabled ? 'grid-cols-[auto_1fr_120px_100px_100px_140px]' : 'grid-cols-[auto_1fr_100px_100px_140px]'} gap-4 px-4 py-2 bg-bambu-dark-secondary border-b border-bambu-dark-tertiary text-xs text-bambu-gray font-medium`}>
+                <div className={`hidden sm:grid ${authEnabled ? 'grid-cols-[auto_1fr_120px_100px_100px_140px_140px]' : 'grid-cols-[auto_1fr_100px_100px_140px_140px]'} gap-4 px-4 py-2 bg-bambu-dark-secondary border-b border-bambu-dark-tertiary text-xs text-bambu-gray font-medium`}>
                   <div className="w-6" />
                   <div>{t('common.name')}</div>
                   {authEnabled && <div>{t('fileManager.uploadedBy', { defaultValue: 'Uploaded By' })}</div>}
                   <div>{t('common.type')}</div>
                   <div>{t('fileManager.size')}</div>
+                  <div>{t('common.date')}</div>
                   <div>{t('archives.list.actions')}</div>
                 </div>
                 {/* List rows */}
                 {filteredAndSortedFiles.map((file) => (
                   <div
                     key={file.id}
-                    className={`grid ${authEnabled ? 'grid-cols-[auto_1fr_120px_100px_100px_140px]' : 'grid-cols-[auto_1fr_100px_100px_140px]'} gap-4 px-4 py-3 items-center border-b border-bambu-dark-tertiary last:border-b-0 cursor-pointer hover:bg-bambu-dark/50 transition-colors ${
+                    className={`grid ${authEnabled ? 'grid-cols-[auto_1fr_120px_100px_100px_140px_140px]' : 'grid-cols-[auto_1fr_100px_100px_140px_140px]'} gap-4 px-4 py-3 items-center border-b border-bambu-dark-tertiary last:border-b-0 cursor-pointer hover:bg-bambu-dark/50 transition-colors ${
                       selectedFiles.includes(file.id) ? 'bg-bambu-green/10' : ''
                     }`}
                     onClick={() => handleFileSelect(file.id)}
@@ -2062,6 +2072,8 @@ export function FileManagerPage() {
                     </div>
                     {/* Size */}
                     <div className="text-sm text-bambu-gray">{formatFileSize(file.file_size)}</div>
+                    {/* Date */}
+                    <div className="text-sm text-bambu-gray truncate">{formatDateTime(file.created_at, timeFormat, dateFormat)}</div>
                     {/* Actions */}
                     <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
                       {isSlicedFilename(file.filename) && (

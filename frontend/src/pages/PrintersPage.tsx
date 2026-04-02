@@ -2383,12 +2383,20 @@ function PrinterCard({
           {/* Top row: Image, Name, Menu */}
           <div className="flex items-start justify-between gap-2">
             <div className="flex items-center gap-3 min-w-0 flex-1">
-              {/* Printer Model Image */}
-              <img
-                src={getPrinterImage(printer.model)}
-                alt={printer.model || t('common.printer')}
-                className={`object-contain rounded-lg bg-bambu-dark flex-shrink-0 ${getImageSize()}`}
-              />
+              {/* Printer Model Image (or print preview in compact mode) */}
+              {cardSize === 1 && status?.cover_url && (status.state === 'RUNNING' || status.state === 'PAUSE') ? (
+                <img
+                  src={status.cover_url}
+                  alt={status.subtask_name || t('printers.printPreview')}
+                  className={`object-cover rounded-lg bg-bambu-dark flex-shrink-0 ${getImageSize()}`}
+                />
+              ) : (
+                <img
+                  src={getPrinterImage(printer.model)}
+                  alt={printer.model || t('common.printer')}
+                  className={`object-contain rounded-lg bg-bambu-dark flex-shrink-0 ${getImageSize()}`}
+                />
+              )}
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <h3 className={`font-semibold text-white ${getTitleSize()}`}>{printer.name}</h3>
