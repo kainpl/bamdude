@@ -316,7 +316,8 @@ async def list_archives_slim(
     Returns only the fields needed for client-side aggregation,
     skipping duplicate detection, file paths, and extra_data.
     """
-    filters = []
+    # Exclude "archived" status — uploaded but never printed
+    filters = [PrintArchive.status != "archived"]
     if date_from:
         dt_from = datetime.combine(date_from, time.min, tzinfo=timezone.utc)
         filters.append(PrintArchive.created_at >= dt_from)
@@ -682,7 +683,9 @@ async def get_archive_stats(
 ):
     """Get statistics across all archives."""
     # Build date filter conditions
-    base_conditions = []
+    # Exclude "archived" status — these are files uploaded via virtual printer
+    # or manual upload that were never actually printed
+    base_conditions = [PrintArchive.status != "archived"]
     if date_from:
         dt_from = datetime.combine(date_from, time.min, tzinfo=timezone.utc)
         base_conditions.append(PrintArchive.created_at >= dt_from)
@@ -700,7 +703,9 @@ async def get_archive_stats(
     successful_prints = successful_result.scalar() or 0
 
     failed_result = await db.execute(
-        select(func.count(PrintArchive.id)).where(PrintArchive.status == "failed", *base_conditions)
+        select(func.count(PrintArchive.id)).where(
+            PrintArchive.status.in_(["failed", "aborted", "cancelled"]), *base_conditions
+        )
     )
     failed_prints = failed_result.scalar() or 0
 

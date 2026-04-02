@@ -81,7 +81,6 @@ async def init_db():
         ams_label,
         api_key,
         archive,
-        bug_report,
         color_catalog,
         external_link,
         filament,

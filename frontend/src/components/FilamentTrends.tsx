@@ -185,7 +185,8 @@ export function FilamentTrends({ archives, currency = '$', dateFrom, dateTo }: F
   const filamentSuccessData = useMemo(() => {
     const map = new Map<string, { completed: number; failed: number }>();
     archives.forEach(a => {
-      if (a.status !== 'completed' && a.status !== 'failed') return;
+      const isFailed = a.status === 'failed' || a.status === 'aborted' || a.status === 'cancelled';
+      if (a.status !== 'completed' && !isFailed) return;
       const types = (a.filament_type || 'Unknown').split(', ');
       types.forEach(type => {
         const entry = map.get(type) || { completed: 0, failed: 0 };

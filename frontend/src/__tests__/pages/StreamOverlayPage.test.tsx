@@ -119,9 +119,9 @@ describe('StreamOverlayPage', () => {
       renderOverlayPage(1);
 
       await waitFor(() => {
-        const logo = screen.getByAltText('Bambuddy');
+        const logo = screen.getByAltText('Bambuddy-HE');
         const link = logo.closest('a');
-        expect(link).toHaveAttribute('href', 'https://github.com/maziggy/bambuddy');
+        expect(link).toHaveAttribute('href', 'https://github.com/kainpl/bambuddy-he');
       });
     });
   });

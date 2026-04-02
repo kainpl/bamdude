@@ -539,6 +539,45 @@ async def restore_backup(
             )
 
 
+@router.post("/optimize-db")
+async def optimize_database(
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_BACKUP),
+):
+    """Optimize the SQLite database: ANALYZE + WAL checkpoint + VACUUM."""
+    from sqlalchemy import text
+
+    from backend.app.core.database import engine
+
+    try:
+        async with engine.connect() as conn:
+            # Update query planner statistics
+            await conn.execute(text("ANALYZE"))
+            # Flush WAL journal to main database file
+            await conn.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
+            # Rebuild and compact database (defragmentation)
+            await conn.execute(text("VACUUM"))
+            await conn.commit()
+
+        # Get database file size after optimization
+        db_path = Path(app_settings.database_url.replace("sqlite+aiosqlite:///", ""))
+        db_size = db_path.stat().st_size if db_path.exists() else 0
+        wal_path = Path(str(db_path) + "-wal")
+        wal_size = wal_path.stat().st_size if wal_path.exists() else 0
+
+        return {
+            "success": True,
+            "message": "Database optimized successfully",
+            "db_size": db_size,
+            "wal_size": wal_size,
+        }
+    except Exception as e:
+        logger.error("Database optimization failed: %s", e, exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": f"Optimization failed: {e}"},
+        )
+
+
 @router.get("/network-interfaces")
 async def get_network_interfaces(
     _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_READ),

@@ -14,7 +14,6 @@ import { useToast } from '../contexts/ToastContext';
 import { Card, CardHeader, CardContent } from './Card';
 import { parseUTCDate } from '../utils/date';
 import { Button } from './Button';
-import { BugReportBubble } from './BugReportBubble';
 
 
 interface NavItem {
@@ -722,7 +721,7 @@ export function Layout() {
                   </span>
                 )}
                 <a
-                  href="https://github.com/maziggy/bambuddy"
+                  href="https://github.com/kainpl/bambuddy-he"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white"
@@ -826,7 +825,7 @@ export function Layout() {
                 </span>
               )}
               <a
-                href="https://github.com/maziggy/bambuddy"
+                href="https://github.com/kainpl/bambuddy-hedy"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white"
@@ -1125,7 +1124,6 @@ export function Layout() {
           </Card>
         </div>
       )}
-      <BugReportBubble />
     </div>
   );
 }

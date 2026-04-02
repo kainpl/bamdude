@@ -541,7 +541,7 @@ function PrinterStatsWidget({
       if (!date) return;
       const h = date.getHours();
       hours[h].total++;
-      if (a.status === 'failed') {
+      if (a.status === 'failed' || a.status === 'aborted' || a.status === 'cancelled') {
         hours[h].failures++;
       }
     });
@@ -874,7 +874,7 @@ function RecordsWidget({ archives, currency }: { archives: ArchiveSlim[]; curren
 
     // Success streak
     const sorted = [...archives]
-      .filter(a => a.status === 'completed' || a.status === 'failed')
+      .filter(a => a.status === 'completed' || a.status === 'failed' || a.status === 'aborted' || a.status === 'cancelled')
       .sort((a, b) => new Date(b.completed_at || b.created_at).getTime() - new Date(a.completed_at || a.created_at).getTime());
     let streak = 0;
     for (const a of sorted) {

@@ -467,7 +467,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     <ToastContext.Provider value={{ showToast, showPersistentToast, dismissToast }}>
       {children}
 
-      {/* Toast Container — to the left of the bug-report bubble (bottom-4 right-4 w-12) */}
+      {/* Toast Container */}
       <div className="fixed bottom-4 right-20 z-[60] flex flex-col items-end gap-2">
         {toasts.map((toast) => (
           <div

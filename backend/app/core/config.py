@@ -7,7 +7,6 @@ from pydantic_settings import BaseSettings
 # Application version - single source of truth
 APP_VERSION = "0.3.0.0"
 GITHUB_REPO = "kainpl/bambuddy-he"
-BUG_REPORT_RELAY_URL = os.environ.get("BUG_REPORT_RELAY_URL", "https://bambuddy.cool/api/bug-report")
 
 # App directory - where the application is installed (for static files)
 _app_dir = Path(__file__).resolve().parent.parent.parent.parent

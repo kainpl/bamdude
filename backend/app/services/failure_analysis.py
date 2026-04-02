@@ -8,6 +8,9 @@ from backend.app.models.archive import PrintArchive
 from backend.app.models.printer import Printer
 
 
+FAILED_STATUSES = ["failed", "aborted", "cancelled"]
+
+
 class FailureAnalysisService:
     """Service for analyzing print failure patterns."""
 
@@ -35,8 +38,9 @@ class FailureAnalysisService:
             Dictionary with failure analysis results
         """
         # Build base query — separate date vs non-date filters for trend reuse
-        base_filter = []
-        non_date_filter = []
+        # Exclude "archived" — uploaded but never printed
+        base_filter = [PrintArchive.status != "archived"]
+        non_date_filter = [PrintArchive.status != "archived"]
         if date_from or date_to:
             if date_from:
                 dt_from = datetime.combine(date_from, time.min, tzinfo=timezone.utc)
@@ -64,7 +68,7 @@ class FailureAnalysisService:
 
         failed_result = await self.db.execute(
             select(func.count(PrintArchive.id)).where(
-                and_(*base_filter, PrintArchive.status.in_(["failed", "aborted"]))
+                and_(*base_filter, PrintArchive.status.in_(FAILED_STATUSES))
             )
         )
         failed_prints = failed_result.scalar() or 0
@@ -77,7 +81,7 @@ class FailureAnalysisService:
                 PrintArchive.failure_reason,
                 func.count(PrintArchive.id).label("count"),
             )
-            .where(and_(*base_filter, PrintArchive.status.in_(["failed", "aborted"])))
+            .where(and_(*base_filter, PrintArchive.status.in_(FAILED_STATUSES)))
             .group_by(PrintArchive.failure_reason)
             .order_by(func.count(PrintArchive.id).desc())
         )
@@ -89,7 +93,7 @@ class FailureAnalysisService:
                 PrintArchive.filament_type,
                 func.count(PrintArchive.id).label("count"),
             )
-            .where(and_(*base_filter, PrintArchive.status.in_(["failed", "aborted"])))
+            .where(and_(*base_filter, PrintArchive.status.in_(FAILED_STATUSES)))
             .group_by(PrintArchive.filament_type)
             .order_by(func.count(PrintArchive.id).desc())
         )
@@ -102,7 +106,7 @@ class FailureAnalysisService:
                 func.count(PrintArchive.id).label("count"),
             )
             .where(
-                and_(*base_filter, PrintArchive.status.in_(["failed", "aborted"]), PrintArchive.printer_id.isnot(None))
+                and_(*base_filter, PrintArchive.status.in_(FAILED_STATUSES), PrintArchive.printer_id.isnot(None))
             )
             .group_by(PrintArchive.printer_id)
             .order_by(func.count(PrintArchive.id).desc())
@@ -126,7 +130,7 @@ class FailureAnalysisService:
             select(PrintArchive.started_at).where(
                 and_(
                     *base_filter,
-                    PrintArchive.status.in_(["failed", "aborted"]),
+                    PrintArchive.status.in_(FAILED_STATUSES),
                     PrintArchive.started_at.isnot(None),
                 )
             )
@@ -142,7 +146,7 @@ class FailureAnalysisService:
         # Recent failures
         recent_result = await self.db.execute(
             select(PrintArchive)
-            .where(and_(*base_filter, PrintArchive.status.in_(["failed", "aborted"])))
+            .where(and_(*base_filter, PrintArchive.status.in_(FAILED_STATUSES)))
             .order_by(PrintArchive.created_at.desc())
             .limit(10)
         )
@@ -174,7 +178,7 @@ class FailureAnalysisService:
             week_total = await self.db.execute(select(func.count(PrintArchive.id)).where(and_(*week_filter)))
             week_failed = await self.db.execute(
                 select(func.count(PrintArchive.id)).where(
-                    and_(*week_filter, PrintArchive.status.in_(["failed", "aborted"]))
+                    and_(*week_filter, PrintArchive.status.in_(FAILED_STATUSES))
                 )
             )
 
