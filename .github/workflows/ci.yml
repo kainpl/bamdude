@@ -1,0 +1,333 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    # Run on PRs targeting main, but skip for repo owner (runs local tests)
+
+# Skip CI for PRs authored by repo owner (they run tests locally)
+# Uses PR author instead of triggering actor so rebasing by owner doesn't skip CI
+
+env:
+  PYTHON_VERSION: '3.11'
+  NODE_VERSION: '22'
+
+# Cancel in-progress runs for the same branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Minimum permissions for all jobs
+permissions:
+  contents: read
+
+jobs:
+  # ============================================================================
+  # Backend Checks
+  # ============================================================================
+
+  backend-lint:
+    name: Backend Lint
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Run ruff check
+        run: ruff check backend/
+
+      - name: Run ruff format check
+        run: ruff format --check backend/
+
+  backend-security:
+    name: Backend Security
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pip-audit
+
+      - name: Run pip-audit
+        run: |
+          # CVE-2026-4539: low-severity ReDoS in Pygments AdlLexer (indirect dep via mkdocs-material/pytest/rich).
+          # No fix available yet. Remove --ignore-vuln once Pygments releases a patched version.
+          pip-audit --desc on --ignore-vuln CVE-2026-4539
+
+  backend-tests:
+    name: Backend Tests
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner
+    needs: backend-lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run tests
+        timeout-minutes: 10
+        run: |
+          cd backend
+          python -m pytest tests/ -v --tb=short --timeout=60 --timeout-method=thread -n auto
+
+  # ============================================================================
+  # Frontend Checks
+  # ============================================================================
+
+  frontend-lint:
+    name: Frontend Lint
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run ESLint
+        working-directory: frontend
+        run: npm run lint
+
+  frontend-security:
+    name: Frontend Security
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run npm audit
+        working-directory: frontend
+        run: |
+          # Only audit production dependencies and filter out npm-internal packages.
+          # npm 10.x audit/ls reports vulns in its own bundled deps (npm, tar, minimatch)
+          # so we parse package-lock.json directly to get the real prod dep list.
+          npm audit --omit=dev --json > /tmp/audit.json 2>/dev/null || true
+          python3 -c "
+          import json, sys
+          data = json.load(open('/tmp/audit.json'))
+          lock = json.load(open('package-lock.json'))
+          prod = set()
+          for path, info in lock.get('packages', {}).items():
+              if path and not info.get('dev') and not info.get('devOptional'):
+                  prod.add(path.split('node_modules/')[-1])
+          vulns = data.get('vulnerabilities', {})
+          fixable = {n: v for n, v in vulns.items()
+                     if n in prod and v.get('severity') in ('high', 'critical') and v.get('fixAvailable')}
+          skipped = len(vulns) - len({n: v for n, v in vulns.items() if n in prod})
+          if fixable:
+              for name, v in fixable.items():
+                  print(f'FIXABLE {v[\"severity\"].upper()}: {name}')
+              sys.exit(1)
+          total = sum(1 for n, v in vulns.items() if n in prod and v.get('severity') in ('high', 'critical'))
+          print(f'npm audit: {total} high/critical (0 fixable), {len(vulns)} total ({skipped} npm-internal filtered)')
+          "
+
+  frontend-typecheck:
+    name: Frontend Type Check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run TypeScript check
+        working-directory: frontend
+        run: npx tsc --noEmit
+
+  frontend-tests:
+    name: Frontend Tests
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner
+    needs: [frontend-lint, frontend-typecheck]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run tests
+        timeout-minutes: 10
+        working-directory: frontend
+        run: npm run test:run
+
+  frontend-build:
+    name: Frontend Build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner
+    needs: [frontend-tests]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+
+  # ============================================================================
+  # Docker Tests (matches test_docker.sh)
+  # ============================================================================
+
+  docker-test:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner
+    timeout-minutes: 20
+    needs: [backend-tests, frontend-build]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Test 1: Docker Build
+      - name: Build production image
+        run: docker build -t bambuddy:test .
+
+      - name: Verify backend imports
+        run: docker run --rm bambuddy:test python -c "import backend.app.main; print('Backend imports OK')"
+
+      - name: Verify static files exist
+        run: docker run --rm bambuddy:test test -d /app/static
+
+      # Test 2: Backend Unit Tests in Docker
+      - name: Build backend test image
+        run: docker compose -f docker-compose.test.yml build backend-test
+
+      - name: Run backend tests in Docker
+        run: docker compose -f docker-compose.test.yml run --rm backend-test
+
+      # Test 3: Frontend Unit Tests in Docker
+      - name: Build frontend test image
+        run: docker compose -f docker-compose.test.yml build frontend-test
+
+      - name: Run frontend tests in Docker
+        run: docker compose -f docker-compose.test.yml run --rm frontend-test
+
+      # Test 4: Integration Tests
+      - name: Build integration container
+        run: docker compose -f docker-compose.test.yml build integration
+
+      - name: Start integration container
+        run: |
+          docker compose -f docker-compose.test.yml up -d integration
+          echo "Waiting for container to be healthy..."
+          for i in {1..30}; do
+            if docker compose -f docker-compose.test.yml ps integration | grep -q "healthy"; then
+              echo "Container is healthy"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Test health endpoint
+        run: |
+          HEALTH=$(docker compose -f docker-compose.test.yml exec -T integration curl -s http://localhost:8000/health)
+          echo "$HEALTH"
+          echo "$HEALTH" | grep -q "healthy"
+
+      - name: Test API endpoint
+        run: |
+          docker compose -f docker-compose.test.yml exec -T integration curl -s http://localhost:8000/api/v1/settings
+
+      - name: Test static files served
+        run: |
+          STATUS=$(docker compose -f docker-compose.test.yml exec -T integration curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/)
+          echo "Static files HTTP status: $STATUS"
+          [ "$STATUS" = "200" ]
+
+      # Test 5: Integration Test Suite (pytest)
+      - name: Build integration test runner
+        run: docker compose -f docker-compose.test.yml build integration-test-runner
+
+      - name: Run integration test suite
+        run: docker compose -f docker-compose.test.yml run --rm integration-test-runner
+
+      - name: Show logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.test.yml logs
+
+      - name: Cleanup
+        if: always()
+        run: docker compose -f docker-compose.test.yml down -v --remove-orphans

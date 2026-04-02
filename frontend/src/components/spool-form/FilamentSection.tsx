@@ -1,0 +1,434 @@
+import { useState, useRef, useEffect, useMemo } from 'react';
+import { Search, Loader2, ChevronDown, Cloud, CloudOff } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import type { FilamentSectionProps, FilamentOption } from './types';
+import { KNOWN_VARIANTS } from './constants';
+import { parsePresetName } from './utils';
+
+export function FilamentSection({
+  formData,
+  updateField,
+  cloudAuthenticated,
+  loadingCloudPresets,
+  presetInputValue,
+  setPresetInputValue,
+  selectedPresetOption,
+  filamentOptions,
+  availableBrands,
+  availableMaterials,
+  quickAdd,
+  quantity,
+  onQuantityChange,
+  errors,
+}: FilamentSectionProps) {
+  const { t } = useTranslation();
+  const [presetDropdownOpen, setPresetDropdownOpen] = useState(false);
+  const [brandDropdownOpen, setBrandDropdownOpen] = useState(false);
+  const [subtypeDropdownOpen, setSubtypeDropdownOpen] = useState(false);
+  const [materialDropdownOpen, setMaterialDropdownOpen] = useState(false);
+  const [brandSearch, setBrandSearch] = useState('');
+  const [subtypeSearch, setSubtypeSearch] = useState('');
+  const [materialSearch, setMaterialSearch] = useState('');
+  const [labelInput, setLabelInput] = useState(String(formData.label_weight));
+  const [isLabelFocused, setIsLabelFocused] = useState(false);
+  const presetRef = useRef<HTMLDivElement>(null);
+  const brandRef = useRef<HTMLDivElement>(null);
+  const subtypeRef = useRef<HTMLDivElement>(null);
+  const materialRef = useRef<HTMLDivElement>(null);
+
+  // Close dropdowns on outside click
+  useEffect(() => {
+    const handleClick = (e: MouseEvent) => {
+      if (presetRef.current && !presetRef.current.contains(e.target as Node)) {
+        setPresetDropdownOpen(false);
+      }
+      if (materialRef.current && !materialRef.current.contains(e.target as Node)) {
+        setMaterialDropdownOpen(false);
+      }
+      if (brandRef.current && !brandRef.current.contains(e.target as Node)) {
+        setBrandDropdownOpen(false);
+      }
+      if (subtypeRef.current && !subtypeRef.current.contains(e.target as Node)) {
+        setSubtypeDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, []);
+
+  // Filtered presets based on search
+  const filteredPresets = useMemo(() => {
+    if (!presetInputValue) return filamentOptions;
+    const search = presetInputValue.toLowerCase();
+    return filamentOptions.filter(o =>
+      o.displayName.toLowerCase().includes(search) ||
+      o.code.toLowerCase().includes(search),
+    );
+  }, [filamentOptions, presetInputValue]);
+
+  // Filtered brands
+  const filteredBrands = useMemo(() => {
+    if (!brandSearch) return availableBrands;
+    const search = brandSearch.toLowerCase();
+    const filtered = availableBrands.filter(b => b.toLowerCase().includes(search));
+    // Sort: exact match first, then others
+    return filtered.sort((a, b) => {
+      const aExact = a.toLowerCase() === search;
+      const bExact = b.toLowerCase() === search;
+      if (aExact && !bExact) return -1;
+      if (!aExact && bExact) return 1;
+      return a.localeCompare(b);
+    });
+  }, [availableBrands, brandSearch]);
+
+  const filteredVariants = useMemo(() => {
+    if (!subtypeSearch) return KNOWN_VARIANTS;
+    const search = subtypeSearch.toLowerCase();
+    return KNOWN_VARIANTS.filter(v => v.toLowerCase().includes(search));
+  }, [subtypeSearch]);
+
+  const filteredMaterials = useMemo(() => {
+    if (!materialSearch) return availableMaterials;
+    const search = materialSearch.toLowerCase();
+    const filtered = availableMaterials.filter(m => m.toLowerCase().includes(search));
+    // Sort: exact match first, then others
+    return filtered.sort((a, b) => {
+      const aExact = a.toLowerCase() === search;
+      const bExact = b.toLowerCase() === search;
+      if (aExact && !bExact) return -1;
+      if (!aExact && bExact) return 1;
+      return a.localeCompare(b);
+    });
+  }, [materialSearch, availableMaterials]);
+
+  useEffect(() => {
+    if (!isLabelFocused) {
+      setLabelInput(String(formData.label_weight));
+    }
+  }, [formData.label_weight, isLabelFocused]);
+
+  // Handle preset selection
+  const handlePresetSelect = (option: FilamentOption) => {
+    updateField('slicer_filament', option.code);
+    setPresetInputValue(option.displayName);
+    setPresetDropdownOpen(false);
+
+    // Auto-fill material, brand, subtype from preset name
+    const parsed = parsePresetName(option.name);
+    if (parsed.material) updateField('material', parsed.material);
+    if (parsed.brand) updateField('brand', parsed.brand);
+    if (parsed.variant) updateField('subtype', parsed.variant);
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* Cloud status indicator */}
+      {!quickAdd && (
+        <div className="flex items-center gap-2 text-xs text-bambu-gray">
+          {loadingCloudPresets ? (
+            <><Loader2 className="w-3 h-3 animate-spin" /> {t('inventory.loadingPresets')}</>
+          ) : cloudAuthenticated ? (
+            <><Cloud className="w-3 h-3 text-bambu-green" /> {t('inventory.cloudConnected')}</>
+          ) : (
+            <><CloudOff className="w-3 h-3" /> {t('inventory.cloudNotConnected')}</>
+          )}
+        </div>
+      )}
+
+      {/* Slicer Preset (autocomplete) — hidden in quick-add mode */}
+      {!quickAdd && (
+        <div>
+          <label className="block text-sm font-medium text-bambu-gray mb-1">
+            {t('inventory.slicerPreset')} *
+          </label>
+          <div className="relative" ref={presetRef}>
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray/50 pointer-events-none" />
+            <input
+              type="text"
+              className="w-full pl-9 pr-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm placeholder:text-bambu-gray/50 focus:outline-none focus:border-bambu-green"
+              placeholder={t('inventory.searchPresets')}
+              value={presetInputValue}
+              onChange={(e) => {
+                setPresetInputValue(e.target.value);
+                setPresetDropdownOpen(true);
+              }}
+              onFocus={() => {
+                setPresetDropdownOpen(true);
+                setPresetInputValue('');
+              }}
+            />
+            {presetDropdownOpen && (
+              <div className="absolute z-50 w-full mt-1 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-lg max-h-64 overflow-y-auto">
+                {filteredPresets.length === 0 ? (
+                  <div className="px-3 py-2 text-sm text-bambu-gray">{t('inventory.noPresetsFound')}</div>
+                ) : (
+                  filteredPresets.map(option => (
+                    <button
+                      key={option.code}
+                      type="button"
+                      className={`w-full px-3 py-2 text-left text-sm hover:bg-bambu-dark-tertiary truncate ${
+                        selectedPresetOption?.code === option.code
+                          ? 'bg-bambu-green/10 text-bambu-green'
+                          : 'text-white'
+                      }`}
+                      onClick={() => handlePresetSelect(option)}
+                    >
+                      {option.displayName}
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+          {selectedPresetOption && (
+            <div className="mt-1 text-xs text-bambu-gray">
+              {t('inventory.selectedPreset')}: <span className="font-mono text-bambu-green">{selectedPresetOption.code}</span>
+            </div>
+          )}
+          {errors?.slicer_filament && (
+            <p className="mt-1 text-xs text-red-400">{errors.slicer_filament}</p>
+          )}
+        </div>
+      )}
+
+      {/* Material */}
+      <div>
+        <label className="block text-sm font-medium text-bambu-gray mb-1">{t('inventory.material')} *</label>
+        <div className="relative" ref={materialRef}>
+          <input
+            type="text"
+            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm placeholder:text-bambu-gray/50 focus:outline-none focus:border-bambu-green"
+            placeholder={t('inventory.selectMaterial')}
+            value={materialDropdownOpen ? materialSearch : formData.material}
+            onChange={(e) => {
+              setMaterialSearch(e.target.value);
+              setMaterialDropdownOpen(true);
+            }}
+            onFocus={() => {
+              setMaterialDropdownOpen(true);
+              setMaterialSearch('');
+            }}
+          />
+          <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray/50 pointer-events-none" />
+          {materialDropdownOpen && (
+            <div className="absolute z-50 w-full mt-1 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-lg max-h-48 overflow-y-auto">
+              {filteredMaterials.length === 0 ? (
+                <div className="px-3 py-2 text-sm text-bambu-gray">{t('inventory.noResults')}</div>
+              ) : (
+                filteredMaterials.map((material) => (
+                  <button
+                    key={material}
+                    type="button"
+                    className={`w-full px-3 py-2 text-left text-sm hover:bg-bambu-dark-tertiary ${
+                      formData.material === material ? 'bg-bambu-green/10 text-bambu-green' : 'text-white'
+                    }`}
+                    onClick={() => {
+                      updateField('material', material);
+                      setMaterialDropdownOpen(false);
+                      setMaterialSearch('');
+                    }}
+                  >
+                    {material}
+                  </button>
+                ))
+              )}
+              {/* Allow custom material */}
+              {materialSearch && !filteredMaterials.includes(materialSearch) && (
+                <button
+                  type="button"
+                  className="w-full px-3 py-2 text-left text-sm hover:bg-bambu-dark-tertiary text-bambu-green border-t border-bambu-dark-tertiary"
+                  onClick={() => {
+                    updateField('material', materialSearch);
+                    setMaterialDropdownOpen(false);
+                    setMaterialSearch('');
+                  }}
+                >
+                  {t('inventory.useCustomMaterial', { material: materialSearch })}
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+        {errors?.material && (
+          <p className="mt-1 text-xs text-red-400">{errors.material}</p>
+        )}
+      </div>
+
+      {/* Brand (dropdown with search) */}
+      <div>
+        <label className="block text-sm font-medium text-bambu-gray mb-1">
+          {t('inventory.brand')}{!quickAdd && ' *'}
+        </label>
+          <div className="relative" ref={brandRef}>
+            <input
+              type="text"
+              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm placeholder:text-bambu-gray/50 focus:outline-none focus:border-bambu-green"
+              placeholder={t('inventory.searchBrand')}
+              value={brandDropdownOpen ? brandSearch : formData.brand}
+              onChange={(e) => {
+                setBrandSearch(e.target.value);
+                setBrandDropdownOpen(true);
+              }}
+              onFocus={() => {
+                setBrandDropdownOpen(true);
+                setBrandSearch('');
+              }}
+            />
+            <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray/50 pointer-events-none" />
+            {brandDropdownOpen && (
+              <div className="absolute z-50 w-full mt-1 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                {filteredBrands.length === 0 ? (
+                  <div className="px-3 py-2 text-sm text-bambu-gray">{t('inventory.noResults')}</div>
+                ) : (
+                  filteredBrands.map(brand => (
+                    <button
+                      key={brand}
+                      type="button"
+                      className={`w-full px-3 py-2 text-left text-sm hover:bg-bambu-dark-tertiary ${
+                        formData.brand === brand ? 'bg-bambu-green/10 text-bambu-green' : 'text-white'
+                      }`}
+                      onClick={() => {
+                        updateField('brand', brand);
+                        setBrandDropdownOpen(false);
+                        setBrandSearch('');
+                      }}
+                    >
+                      {brand}
+                    </button>
+                  ))
+                )}
+                {/* Allow custom brand */}
+                {brandSearch && !filteredBrands.includes(brandSearch) && (
+                  <button
+                    type="button"
+                    className="w-full px-3 py-2 text-left text-sm hover:bg-bambu-dark-tertiary text-bambu-green border-t border-bambu-dark-tertiary"
+                    onClick={() => {
+                      updateField('brand', brandSearch);
+                      setBrandDropdownOpen(false);
+                      setBrandSearch('');
+                    }}
+                  >
+                    {t('inventory.useCustomBrand', { brand: brandSearch })}
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+          {errors?.brand && (
+            <p className="mt-1 text-xs text-red-400">{errors.brand}</p>
+          )}
+      </div>
+
+      {/* Variant / Subtype */}
+      <div>
+        <label className="block text-sm font-medium text-bambu-gray mb-1">
+          {t('inventory.subtype')}{!quickAdd && ' *'}
+        </label>
+          <div className="relative" ref={subtypeRef}>
+            <input
+              type="text"
+              value={subtypeDropdownOpen ? subtypeSearch : formData.subtype}
+              onChange={(e) => {
+                setSubtypeSearch(e.target.value);
+                setSubtypeDropdownOpen(true);
+              }}
+              onFocus={() => {
+                setSubtypeDropdownOpen(true);
+                setSubtypeSearch('');
+              }}
+              placeholder="Basic, Matte, Silk..."
+              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm placeholder:text-bambu-gray/50 focus:outline-none focus:border-bambu-green"
+            />
+            <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray/50 pointer-events-none" />
+            {subtypeDropdownOpen && (
+              <div className="absolute z-50 w-full mt-1 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                {filteredVariants.length === 0 ? (
+                  <div className="px-3 py-2 text-sm text-bambu-gray">{t('inventory.noResults')}</div>
+                ) : (
+                  filteredVariants.map(variant => (
+                    <button
+                      key={variant}
+                      type="button"
+                      className={`w-full px-3 py-2 text-left text-sm hover:bg-bambu-dark-tertiary ${
+                        formData.subtype === variant ? 'bg-bambu-green/10 text-bambu-green' : 'text-white'
+                      }`}
+                      onClick={() => {
+                        updateField('subtype', variant);
+                        setSubtypeDropdownOpen(false);
+                        setSubtypeSearch('');
+                      }}
+                    >
+                      {variant}
+                    </button>
+                  ))
+                )}
+                {subtypeSearch && !KNOWN_VARIANTS.some(v => v.toLowerCase() === subtypeSearch.toLowerCase().trim()) && (
+                  <button
+                    type="button"
+                    className="w-full px-3 py-2 text-left text-sm hover:bg-bambu-dark-tertiary text-bambu-green border-t border-bambu-dark-tertiary"
+                    onClick={() => {
+                      updateField('subtype', subtypeSearch);
+                      setSubtypeDropdownOpen(false);
+                      setSubtypeSearch('');
+                    }}
+                  >
+                    {t('inventory.useCustomBrand', { brand: subtypeSearch })}
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+          {errors?.subtype && (
+            <p className="mt-1 text-xs text-red-400">{errors.subtype}</p>
+          )}
+      </div>
+
+      {/* Label Weight */}
+      <div>
+        <label className="block text-sm font-medium text-bambu-gray mb-1">{t('inventory.labelWeight')}</label>
+        <div className="relative">
+          <input
+            type="number"
+            className="w-full px-3 py-2 pr-7 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
+            value={labelInput}
+            min={0}
+            onFocus={() => setIsLabelFocused(true)}
+            onChange={(e) => setLabelInput(e.target.value)}
+            onBlur={() => {
+              setIsLabelFocused(false);
+              const raw = labelInput.trim();
+              const next = Number(raw);
+              if (!raw || !Number.isFinite(next) || next < 0) {
+                setLabelInput(String(formData.label_weight));
+                return;
+              }
+              const rounded = Math.round(next);
+              updateField('label_weight', rounded);
+              setLabelInput(String(rounded));
+            }}
+          />
+          <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-bambu-gray">g</span>
+        </div>
+      </div>
+
+      {/* Quantity — only in quick-add mode */}
+      {quickAdd && (
+        <div>
+          <label className="block text-sm font-medium text-bambu-gray mb-1">{t('inventory.quantity')}</label>
+          <input
+            type="number"
+            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
+            value={quantity}
+            min={1}
+            max={100}
+            onChange={(e) => {
+              const val = Math.max(1, Math.min(100, parseInt(e.target.value) || 1));
+              onQuantityChange(val);
+            }}
+          />
+        </div>
+      )}
+
+    </div>
+  );
+}

@@ -1,0 +1,82 @@
+# Claude
+.claude/
+CLAUDE.md
+
+# IDEA
+.idea/
+
+# Temp (patches, experiments)
+temp/
+
+# macOS
+.DS_Store
+**/.DS_Store
+**/._.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+venv/
+.venv/
+env/
+.env
+*.egg-info/
+dist/
+build/
+
+# Node
+frontend/node_modules/
+frontend/coverage/
+npm-debug.log*
+
+# Database
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Archive files (user data)
+archive/
+
+# Firmware cache (downloaded firmware files)
+firmware/
+
+# Virtual printer (auto-generated certs and uploads at repo root)
+/virtual_printer/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Screenshots (development - root folder only)
+/screenshots/
+
+# Logs
+*.log
+logs/
+*.log*
+bambutrack.log.*
+firmware/
+
+# Node modules
+node_modules/
+
+data/
+
+# JWT secret file (should be in data dir, but protect project root too)
+.jwt_secret
+
+# SpoolBuddy SSH keys (generated at runtime for remote updates)
+spoolbuddy/ssh/
+
+# Security scan output
+*.sarif
+
+debug_logs/
+
+# SSH keys Spoolbuddy
+spoolbuddy/ssh/

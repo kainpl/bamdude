@@ -1,0 +1,1299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AMS Section Redesign Mockup</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      /* Match actual Bambuddy dark theme */
+      --bg-page: #121218;
+      --bg-card: #1a1a22;
+      --bg-section: #22222a;
+      --bg-input: #2a2a32;
+      --border-color: #333340;
+      --text-primary: #ffffff;
+      --text-secondary: #9ca3af;
+      --text-muted: #6b7280;
+      --bambu-green: #00ae42;
+      --bambu-green-bg: rgba(0, 174, 66, 0.2);
+      --humidity-good: #00ae42;
+      --humidity-fair: #f59e0b;
+      --humidity-bad: #ef4444;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg-page);
+      color: var(--text-primary);
+      min-height: 100vh;
+      padding: 24px;
+    }
+
+    .page-header {
+      margin-bottom: 24px;
+    }
+
+    .page-title {
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 4px;
+    }
+
+    .page-subtitle {
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+
+    /* Printer Card - matches actual app */
+    .printer-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 16px;
+      width: 340px;
+    }
+
+    /* Card Header */
+    .card-header {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+
+    .printer-image {
+      width: 56px;
+      height: 56px;
+      border-radius: 8px;
+      background: var(--bg-section);
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    .printer-image svg {
+      width: 40px;
+      height: 40px;
+      color: var(--text-muted);
+    }
+
+    .printer-details {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .printer-name-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .printer-name {
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .menu-btn {
+      width: 24px;
+      height: 24px;
+      border: none;
+      background: transparent;
+      color: var(--text-secondary);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 4px;
+    }
+
+    .menu-btn:hover {
+      background: var(--bg-section);
+    }
+
+    .printer-model {
+      font-size: 14px;
+      color: var(--text-secondary);
+      margin-top: 2px;
+    }
+
+    /* Badges row */
+    .badges-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 16px;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px 8px;
+      border-radius: 9999px;
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    .badge-green {
+      background: var(--bambu-green-bg);
+      color: var(--bambu-green);
+    }
+
+    .badge svg {
+      width: 12px;
+      height: 12px;
+    }
+
+    /* Status Section */
+    .status-section {
+      background: var(--bg-section);
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 12px;
+    }
+
+    .status-row {
+      display: flex;
+      gap: 12px;
+    }
+
+    .cover-placeholder {
+      width: 72px;
+      height: 72px;
+      border-radius: 8px;
+      background: var(--bg-input);
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .cover-placeholder svg {
+      width: 32px;
+      height: 32px;
+      color: var(--text-muted);
+    }
+
+    .status-info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .status-label {
+      font-size: 14px;
+      color: var(--text-secondary);
+      margin-bottom: 2px;
+    }
+
+    .status-value {
+      font-size: 14px;
+      color: var(--text-primary);
+      margin-bottom: 8px;
+    }
+
+    .progress-bar {
+      height: 8px;
+      background: var(--bg-input);
+      border-radius: 4px;
+      margin-bottom: 8px;
+    }
+
+    .progress-fill {
+      height: 100%;
+      background: var(--bambu-green);
+      border-radius: 4px;
+    }
+
+    .ready-text {
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    /* Temperature Grid */
+    .temp-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .temp-card {
+      background: var(--bg-section);
+      border-radius: 8px;
+      padding: 8px;
+      text-align: center;
+    }
+
+    .temp-icon {
+      width: 16px;
+      height: 16px;
+      margin: 0 auto 4px;
+    }
+
+    .temp-label {
+      font-size: 11px;
+      color: var(--text-secondary);
+      margin-bottom: 2px;
+    }
+
+    .temp-value {
+      font-size: 14px;
+      color: var(--text-primary);
+      font-weight: 500;
+    }
+
+    /* AMS Section */
+    .ams-section {
+      margin-top: 12px;
+    }
+
+    /* Current stacked layout */
+    .ams-stacked {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .ams-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: var(--bg-section);
+      border-radius: 8px;
+      padding: 8px 10px;
+    }
+
+    .ams-icon-wrapper {
+      flex-shrink: 0;
+    }
+
+    .filament-info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .ams-label {
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text-muted);
+    }
+
+    .filament-types {
+      font-size: 10px;
+      color: var(--text-secondary);
+      margin-top: 1px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .filament-fills {
+      font-size: 9px;
+      color: var(--text-muted);
+      margin-top: 1px;
+    }
+
+    .ams-stats {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    .stat {
+      display: flex;
+      align-items: center;
+      gap: 3px;
+      font-size: 11px;
+      font-weight: 500;
+    }
+
+    .stat svg {
+      width: 12px;
+      height: 12px;
+    }
+
+    .stat-good { color: var(--humidity-good); }
+    .stat-fair { color: var(--humidity-fair); }
+    .stat-bad { color: var(--humidity-bad); }
+    .stat-neutral { color: var(--text-secondary); }
+
+    /* Smart plug section */
+    .smart-plug-section {
+      margin-top: 16px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border-color);
+    }
+
+    .plug-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .plug-icon {
+      width: 16px;
+      height: 16px;
+      color: var(--text-secondary);
+    }
+
+    .plug-name {
+      font-size: 14px;
+      color: var(--text-primary);
+    }
+
+    .plug-badge {
+      font-size: 11px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-weight: 500;
+    }
+
+    .plug-badge.on {
+      background: var(--bambu-green-bg);
+      color: var(--bambu-green);
+    }
+
+    .plug-power {
+      font-size: 12px;
+      color: #facc15;
+      font-weight: 500;
+    }
+
+    .plug-controls {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .plug-btn {
+      font-size: 11px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      border: none;
+      cursor: pointer;
+      font-weight: 500;
+    }
+
+    .plug-btn.on {
+      background: var(--bambu-green-bg);
+      color: var(--bambu-green);
+    }
+
+    .plug-btn.off {
+      background: var(--bg-input);
+      color: var(--text-secondary);
+    }
+
+    .auto-off-toggle {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 11px;
+      color: var(--text-secondary);
+    }
+
+    .toggle-switch {
+      width: 32px;
+      height: 18px;
+      background: var(--bg-input);
+      border-radius: 9px;
+      position: relative;
+    }
+
+    .toggle-switch.active {
+      background: var(--bambu-green);
+    }
+
+    .toggle-switch::after {
+      content: '';
+      position: absolute;
+      width: 14px;
+      height: 14px;
+      background: white;
+      border-radius: 50%;
+      top: 2px;
+      left: 2px;
+      transition: transform 0.2s;
+    }
+
+    .toggle-switch.active::after {
+      transform: translateX(14px);
+    }
+
+    .plug-footer {
+      margin-top: 8px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .plug-ip {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .plug-actions {
+      margin-left: auto;
+      display: flex;
+      gap: 4px;
+    }
+
+    .action-btn {
+      width: 28px;
+      height: 28px;
+      border-radius: 4px;
+      border: none;
+      background: var(--bg-input);
+      color: var(--text-secondary);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .action-btn svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    /* Comparison layout */
+    .comparison {
+      display: flex;
+      gap: 32px;
+      flex-wrap: wrap;
+      align-items: flex-start;
+    }
+
+    .comparison-section {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .section-label {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 4px 10px;
+      border-radius: 4px;
+      margin-bottom: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      width: fit-content;
+    }
+
+    .section-label.current {
+      background: var(--text-muted);
+      color: var(--bg-page);
+    }
+
+    .section-label.new {
+      background: var(--bambu-green);
+      color: white;
+    }
+
+    /* NEW 2-Column Grid Layout */
+    .ams-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .ams-card {
+      background: var(--bg-section);
+      border-radius: 8px;
+      padding: 8px;
+    }
+
+    .ams-card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 6px;
+    }
+
+    .ams-card-left {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .ams-card-stats {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .ams-card-stats .stat {
+      font-size: 10px;
+    }
+
+    .ams-card-stats .stat svg {
+      width: 10px;
+      height: 10px;
+    }
+
+    .slots-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 4px;
+    }
+
+    .slot {
+      background: var(--bg-input);
+      border-radius: 4px;
+      padding: 4px 2px;
+      text-align: center;
+    }
+
+    .slot-color {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      margin: 0 auto 2px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .slot-color.empty {
+      background: transparent;
+      border: 1px dashed var(--text-muted);
+    }
+
+    .slot-type {
+      font-size: 8px;
+      color: var(--text-muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .slot-fill {
+      font-size: 8px;
+      color: var(--text-muted);
+      opacity: 0.7;
+    }
+
+    /* Row 3: HT + External (half-size) */
+    .ams-row-small {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .ams-card-small {
+      background: var(--bg-section);
+      border-radius: 8px;
+      padding: 6px 8px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .ams-card-small .small-info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .ams-card-small .ams-label {
+      font-size: 10px;
+    }
+
+    .ams-card-small .slot-type {
+      font-size: 9px;
+    }
+
+    .external-spool {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      border: 2px solid rgba(255, 255, 255, 0.15);
+      flex-shrink: 0;
+    }
+
+    .note {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 12px;
+      padding: 8px;
+      background: var(--bg-section);
+      border-radius: 6px;
+    }
+  </style>
+</head>
+<body>
+  <div class="page-header">
+    <h1 class="page-title">AMS Section Redesign</h1>
+    <p class="page-subtitle">Current stacked layout vs. new 2-column grid</p>
+  </div>
+
+  <div class="comparison">
+    <!-- CURRENT LAYOUT -->
+    <div class="comparison-section">
+      <span class="section-label current">Current</span>
+
+      <div class="printer-card">
+        <!-- Header -->
+        <div class="card-header">
+          <div class="printer-image">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <rect x="4" y="4" width="16" height="16" rx="2"/>
+              <path d="M4 10h16"/>
+              <path d="M10 10v10"/>
+            </svg>
+          </div>
+          <div class="printer-details">
+            <div class="printer-name-row">
+              <span class="printer-name">H2D-1</span>
+              <button class="menu-btn">
+                <svg viewBox="0 0 24 24" fill="currentColor">
+                  <circle cx="12" cy="5" r="1.5"/>
+                  <circle cx="12" cy="12" r="1.5"/>
+                  <circle cx="12" cy="19" r="1.5"/>
+                </svg>
+              </button>
+            </div>
+            <div class="printer-model">H2D • 0.4mm • 632h</div>
+          </div>
+        </div>
+
+        <!-- Badges -->
+        <div class="badges-row">
+          <span class="badge badge-green">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+              <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+            </svg>
+            Connected
+          </span>
+          <span class="badge badge-green">-53dBm</span>
+          <span class="badge badge-green">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 9v2m0 4h.01"/>
+              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+            </svg>
+            OK
+          </span>
+          <span class="badge badge-green">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+            </svg>
+            OK
+          </span>
+        </div>
+
+        <!-- Status -->
+        <div class="status-section">
+          <div class="status-row">
+            <div class="cover-placeholder">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <rect x="3" y="3" width="18" height="18" rx="2"/>
+                <circle cx="8.5" cy="8.5" r="1.5"/>
+                <path d="M21 15l-5-5L5 21"/>
+              </svg>
+            </div>
+            <div class="status-info">
+              <div class="status-label">Status</div>
+              <div class="status-value">Idle</div>
+              <div class="progress-bar"></div>
+              <div class="ready-text">Ready to print</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Temperatures -->
+        <div class="temp-grid">
+          <div class="temp-card">
+            <svg class="temp-icon" viewBox="0 0 24 24" fill="none" stroke="#f97316" stroke-width="2">
+              <path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"/>
+            </svg>
+            <div class="temp-label">Left / Right</div>
+            <div class="temp-value">20°C / 19°C</div>
+          </div>
+          <div class="temp-card">
+            <svg class="temp-icon" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="2">
+              <path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"/>
+            </svg>
+            <div class="temp-label">Bed</div>
+            <div class="temp-value">20°C</div>
+          </div>
+          <div class="temp-card">
+            <svg class="temp-icon" viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2">
+              <path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"/>
+            </svg>
+            <div class="temp-label">Chamber</div>
+            <div class="temp-value">21°C</div>
+          </div>
+        </div>
+
+        <!-- AMS Section - CURRENT STACKED -->
+        <div class="ams-section">
+          <div class="ams-stacked">
+            <!-- AMS-A -->
+            <div class="ams-row">
+              <div class="ams-icon-wrapper">
+                <svg width="56" height="34" viewBox="0 0 52 32" fill="none">
+                  <path fill-rule="evenodd" clip-rule="evenodd" d="M4 0C1.79086 0 0 1.79086 0 4V28C0 30.2091 1.79086 32 4 32H48C50.2091 32 52 30.2091 52 28V4C52 1.79086 50.2091 0 48 0H4ZM44 8H8V24H44V8Z" fill="#2F2E33"/>
+                  <rect x="9.5" y="8" width="6" height="16" fill="#e53935"/>
+                  <rect x="18.5" y="8" width="6" height="16" fill="#1e88e5"/>
+                  <rect x="27.5" y="8" width="6" height="16" fill="#43a047"/>
+                  <rect x="36.5" y="8" width="6" height="16" fill="#f5f5f5"/>
+                  <path fill-rule="evenodd" clip-rule="evenodd" d="M36.5 16H33.5V18.26C33.5 19.92 32.16 21.26 30.5 21.26C28.84 21.26 27.5 19.92 27.5 18.26V16H24.5V18.26C24.5 19.92 23.16 21.26 21.5 21.26C19.84 21.26 18.5 19.92 18.5 18.26V16H15.5V18.26C15.5 19.92 14.16 21.26 12.5 21.26C10.84 21.26 9.5 19.92 9.5 18.26V16H4V28H48V16H42.5V18.26C42.5 19.92 41.16 21.26 39.5 21.26C37.84 21.26 36.5 19.92 36.5 18.26V16Z" fill="#767676"/>
+                  <path fill-rule="evenodd" clip-rule="evenodd" d="M6 9.18C6 6.32 8.32 4 11.18 4H40.82C43.68 4 46 6.32 46 9.18V16H42.5V12.26C42.5 10.6 41.16 9.26 39.5 9.26C37.84 9.26 36.5 10.6 36.5 12.26V16H33.5V12.26C33.5 10.6 32.16 9.26 30.5 9.26C28.84 9.26 27.5 10.6 27.5 12.26V16H24.5V12.26C24.5 10.6 23.16 9.26 21.5 9.26C19.84 9.26 18.5 10.6 18.5 12.26V16H15.5V12.26C15.5 10.6 14.16 9.26 12.5 9.26C10.84 9.26 9.5 10.6 9.5 12.26V16H6V9.18Z" fill="#BFBFBF"/>
+                </svg>
+              </div>
+              <div class="filament-info">
+                <div class="ams-label">AMS-A</div>
+                <div class="filament-types">PLA Basic · PETG HF · PLA Basic · PLA Basic</div>
+                <div class="filament-fills">71% · 50% · 87% · 23%</div>
+              </div>
+              <div class="ams-stats">
+                <div class="stat stat-good">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/>
+                  </svg>
+                  21%
+                </div>
+                <div class="stat stat-neutral">20.7°C</div>
+              </div>
+            </div>
+
+            <!-- AMS-B -->
+            <div class="ams-row">
+              <div class="ams-icon-wrapper">
+                <svg width="56" height="34" viewBox="0 0 52 32" fill="none">
+                  <path fill-rule="evenodd" clip-rule="evenodd" d="M4 0C1.79086 0 0 1.79086 0 4V28C0 30.2091 1.79086 32 4 32H48C50.2091 32 52 30.2091 52 28V4C52 1.79086 50.2091 0 48 0H4ZM44 8H8V24H44V8Z" fill="#2F2E33"/>
+                  <rect x="9.5" y="8" width="6" height="16" fill="#9c27b0"/>
+                  <rect x="18.5" y="8" width="6" height="16" fill="#ff9800"/>
+                  <rect x="27.5" y="8" width="6" height="16" fill="#fdd835"/>
+                  <rect x="36.5" y="8" width="6" height="16" fill="#212121"/>
+                  <path fill-rule="evenodd" clip-rule="evenodd" d="M36.5 16H33.5V18.26C33.5 19.92 32.16 21.26 30.5 21.26C28.84 21.26 27.5 19.92 27.5 18.26V16H24.5V18.26C24.5 19.92 23.16 21.26 21.5 21.26C19.84 21.26 18.5 19.92 18.5 18.26V16H15.5V18.26C15.5 19.92 14.16 21.26 12.5 21.26C10.84 21.26 9.5 19.92 9.5 18.26V16H4V28H48V16H42.5V18.26C42.5 19.92 41.16 21.26 39.5 21.26C37.84 21.26 36.5 19.92 36.5 18.26V16Z" fill="#767676"/>
+                  <path fill-rule="evenodd" clip-rule="evenodd" d="M6 9.18C6 6.32 8.32 4 11.18 4H40.82C43.68 4 46 6.32 46 9.18V16H42.5V12.26C42.5 10.6 41.16 9.26 39.5 9.26C37.84 9.26 36.5 10.6 36.5 12.26V16H33.5V12.26C33.5 10.6 32.16 9.26 30.5 9.26C28.84 9.26 27.5 10.6 27.5 12.26V16H24.5V12.26C24.5 10.6 23.16 9.26 21.5 9.26C19.84 9.26 18.5 10.6 18.5 12.26V16H15.5V12.26C15.5 10.6 14.16 9.26 12.5 9.26C10.84 9.26 9.5 10.6 9.5 12.26V16H6V9.18Z" fill="#BFBFBF"/>
+                </svg>
+              </div>
+              <div class="filament-info">
+                <div class="ams-label">AMS-B</div>
+                <div class="filament-types">PETG HF · PLA · PLA-S · PLA-S</div>
+                <div class="filament-fills">45% · 92% · 15% · 68%</div>
+              </div>
+              <div class="ams-stats">
+                <div class="stat stat-good">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/>
+                  </svg>
+                  16%
+                </div>
+                <div class="stat stat-neutral">22.7°C</div>
+              </div>
+            </div>
+
+            <!-- AMS-C -->
+            <div class="ams-row">
+              <div class="ams-icon-wrapper">
+                <svg width="56" height="34" viewBox="0 0 52 32" fill="none">
+                  <path fill-rule="evenodd" clip-rule="evenodd" d="M4 0C1.79086 0 0 1.79086 0 4V28C0 30.2091 1.79086 32 4 32H48C50.2091 32 52 30.2091 52 28V4C52 1.79086 50.2091 0 48 0H4ZM44 8H8V24H44V8Z" fill="#2F2E33"/>
+                  <rect x="9.5" y="8" width="6" height="16" fill="#00bcd4"/>
+                  <rect x="18.5" y="8" width="6" height="16" fill="#e91e63"/>
+                  <rect x="27.5" y="8" width="6" height="16" fill="#9e9e9e"/>
+                  <rect x="36.5" y="8" width="6" height="16" fill="#f48fb1"/>
+                  <path fill-rule="evenodd" clip-rule="evenodd" d="M36.5 16H33.5V18.26C33.5 19.92 32.16 21.26 30.5 21.26C28.84 21.26 27.5 19.92 27.5 18.26V16H24.5V18.26C24.5 19.92 23.16 21.26 21.5 21.26C19.84 21.26 18.5 19.92 18.5 18.26V16H15.5V18.26C15.5 19.92 14.16 21.26 12.5 21.26C10.84 21.26 9.5 19.92 9.5 18.26V16H4V28H48V16H42.5V18.26C42.5 19.92 41.16 21.26 39.5 21.26C37.84 21.26 36.5 19.92 36.5 18.26V16Z" fill="#767676"/>
+                  <path fill-rule="evenodd" clip-rule="evenodd" d="M6 9.18C6 6.32 8.32 4 11.18 4H40.82C43.68 4 46 6.32 46 9.18V16H42.5V12.26C42.5 10.6 41.16 9.26 39.5 9.26C37.84 9.26 36.5 10.6 36.5 12.26V16H33.5V12.26C33.5 10.6 32.16 9.26 30.5 9.26C28.84 9.26 27.5 10.6 27.5 12.26V16H24.5V12.26C24.5 10.6 23.16 9.26 21.5 9.26C19.84 9.26 18.5 10.6 18.5 12.26V16H15.5V12.26C15.5 10.6 14.16 9.26 12.5 9.26C10.84 9.26 9.5 10.6 9.5 12.26V16H6V9.18Z" fill="#BFBFBF"/>
+                </svg>
+              </div>
+              <div class="filament-info">
+                <div class="ams-label">AMS-C</div>
+                <div class="filament-types">PLA-S · PLA-S · PETG · PLA</div>
+                <div class="filament-fills">33% · 78% · 55% · 41%</div>
+              </div>
+              <div class="ams-stats">
+                <div class="stat stat-good">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/>
+                  </svg>
+                  16%
+                </div>
+                <div class="stat stat-neutral">22.9°C</div>
+              </div>
+            </div>
+
+            <!-- HT-A -->
+            <div class="ams-row">
+              <div class="ams-icon-wrapper">
+                <svg width="56" height="56" viewBox="0 0 21 21" fill="none">
+                  <rect x="8.3" y="5.2" width="3.8" height="5.1" fill="none" stroke="#666" stroke-dasharray="2 1.5" rx="0.3"/>
+                  <path d="M5.88312 4.68555C5.88312 4.13326 6.33083 3.68555 6.88312 3.68555H13.5059C14.0582 3.68555 14.5059 4.13326 14.5059 4.68555V10.3887H5.88312V4.68555Z" stroke="#6B6B6B"/>
+                  <rect x="3.8725" y="10.3887" width="12.7037" height="7.55371" rx="1.2" stroke="#6B6B6B"/>
+                  <path d="M8.21991 5.65234C8.21991 5.3762 8.44377 5.15234 8.71991 5.15234H11.7288C12.005 5.15234 12.2288 5.3762 12.2288 5.65234V10.3887H8.21991V5.65234Z" stroke="#6B6B6B"/>
+                </svg>
+              </div>
+              <div class="filament-info">
+                <div class="ams-label">HT-A</div>
+                <div class="filament-types">—</div>
+              </div>
+              <div class="ams-stats">
+                <div class="stat stat-fair">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/>
+                  </svg>
+                  47%
+                </div>
+                <div class="stat stat-neutral">19.7°C</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Smart Plug -->
+        <div class="smart-plug-section">
+          <div class="plug-row">
+            <svg class="plug-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+            </svg>
+            <span class="plug-name">bamnbuswitch3</span>
+            <span class="plug-badge on">ON</span>
+            <span class="plug-power">18W</span>
+            <div class="plug-controls">
+              <button class="plug-btn on">On</button>
+              <button class="plug-btn off">Off</button>
+              <div class="auto-off-toggle">
+                Auto-off
+                <div class="toggle-switch"></div>
+              </div>
+            </div>
+          </div>
+          <div class="plug-footer">
+            <span class="plug-ip">192.168.255.133<br/>00488B540200427</span>
+            <div class="plug-actions">
+              <button class="action-btn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/>
+                </svg>
+              </button>
+              <button class="action-btn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="note">4 AMS rows + 1 HT row = 5 rows in AMS section</div>
+      </div>
+    </div>
+
+    <!-- NEW LAYOUT -->
+    <div class="comparison-section">
+      <span class="section-label new">New 2-Column</span>
+
+      <div class="printer-card">
+        <!-- Header (same as current) -->
+        <div class="card-header">
+          <div class="printer-image">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <rect x="4" y="4" width="16" height="16" rx="2"/>
+              <path d="M4 10h16"/>
+              <path d="M10 10v10"/>
+            </svg>
+          </div>
+          <div class="printer-details">
+            <div class="printer-name-row">
+              <span class="printer-name">H2D-1</span>
+              <button class="menu-btn">
+                <svg viewBox="0 0 24 24" fill="currentColor">
+                  <circle cx="12" cy="5" r="1.5"/>
+                  <circle cx="12" cy="12" r="1.5"/>
+                  <circle cx="12" cy="19" r="1.5"/>
+                </svg>
+              </button>
+            </div>
+            <div class="printer-model">H2D • 0.4mm • 632h</div>
+          </div>
+        </div>
+
+        <!-- Badges (same) -->
+        <div class="badges-row">
+          <span class="badge badge-green">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+              <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+            </svg>
+            Connected
+          </span>
+          <span class="badge badge-green">-53dBm</span>
+          <span class="badge badge-green">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 9v2m0 4h.01"/>
+              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+            </svg>
+            OK
+          </span>
+          <span class="badge badge-green">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+            </svg>
+            OK
+          </span>
+        </div>
+
+        <!-- Status (same) -->
+        <div class="status-section">
+          <div class="status-row">
+            <div class="cover-placeholder">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <rect x="3" y="3" width="18" height="18" rx="2"/>
+                <circle cx="8.5" cy="8.5" r="1.5"/>
+                <path d="M21 15l-5-5L5 21"/>
+              </svg>
+            </div>
+            <div class="status-info">
+              <div class="status-label">Status</div>
+              <div class="status-value">Idle</div>
+              <div class="progress-bar"></div>
+              <div class="ready-text">Ready to print</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Temperatures (same) -->
+        <div class="temp-grid">
+          <div class="temp-card">
+            <svg class="temp-icon" viewBox="0 0 24 24" fill="none" stroke="#f97316" stroke-width="2">
+              <path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"/>
+            </svg>
+            <div class="temp-label">Left / Right</div>
+            <div class="temp-value">20°C / 19°C</div>
+          </div>
+          <div class="temp-card">
+            <svg class="temp-icon" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="2">
+              <path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"/>
+            </svg>
+            <div class="temp-label">Bed</div>
+            <div class="temp-value">20°C</div>
+          </div>
+          <div class="temp-card">
+            <svg class="temp-icon" viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2">
+              <path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"/>
+            </svg>
+            <div class="temp-label">Chamber</div>
+            <div class="temp-value">21°C</div>
+          </div>
+        </div>
+
+        <!-- AMS Section - NEW 2-COLUMN GRID -->
+        <div class="ams-section">
+          <!-- Row 1-2: Up to 4x AMS -->
+          <div class="ams-grid">
+            <!-- AMS-A -->
+            <div class="ams-card">
+              <div class="ams-card-header">
+                <div class="ams-card-left">
+                  <svg width="36" height="22" viewBox="0 0 36 22" fill="none">
+                    <rect x="1" y="1" width="34" height="20" rx="2" fill="#2F2E33"/>
+                    <rect x="5" y="5" width="4" height="12" fill="#e53935"/>
+                    <rect x="11" y="5" width="4" height="12" fill="#1e88e5"/>
+                    <rect x="17" y="5" width="4" height="12" fill="#43a047"/>
+                    <rect x="23" y="5" width="4" height="12" fill="#f5f5f5"/>
+                    <rect x="29" y="5" width="2" height="12" fill="#767676"/>
+                  </svg>
+                  <span class="ams-label">AMS-A</span>
+                </div>
+                <div class="ams-card-stats">
+                  <div class="stat stat-good">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/>
+                    </svg>
+                    21%
+                  </div>
+                  <div class="stat stat-neutral">20.6°</div>
+                </div>
+              </div>
+              <div class="slots-grid">
+                <div class="slot">
+                  <div class="slot-color" style="background: #e53935;"></div>
+                  <div class="slot-type">PLA Basic</div>
+                  <div class="slot-fill">71%</div>
+                </div>
+                <div class="slot">
+                  <div class="slot-color" style="background: #1e88e5;"></div>
+                  <div class="slot-type">PETG HF</div>
+                  <div class="slot-fill">50%</div>
+                </div>
+                <div class="slot">
+                  <div class="slot-color" style="background: #43a047;"></div>
+                  <div class="slot-type">PLA</div>
+                  <div class="slot-fill">87%</div>
+                </div>
+                <div class="slot">
+                  <div class="slot-color" style="background: #f5f5f5;"></div>
+                  <div class="slot-type">PLA Basic</div>
+                  <div class="slot-fill">23%</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- AMS-B -->
+            <div class="ams-card">
+              <div class="ams-card-header">
+                <div class="ams-card-left">
+                  <svg width="36" height="22" viewBox="0 0 36 22" fill="none">
+                    <rect x="1" y="1" width="34" height="20" rx="2" fill="#2F2E33"/>
+                    <rect x="5" y="5" width="4" height="12" fill="#9c27b0"/>
+                    <rect x="11" y="5" width="4" height="12" fill="#ff9800"/>
+                    <rect x="17" y="5" width="4" height="12" fill="#fdd835"/>
+                    <rect x="23" y="5" width="4" height="12" fill="#212121"/>
+                    <rect x="29" y="5" width="2" height="12" fill="#767676"/>
+                  </svg>
+                  <span class="ams-label">AMS-B</span>
+                </div>
+                <div class="ams-card-stats">
+                  <div class="stat stat-good">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/>
+                    </svg>
+                    16%
+                  </div>
+                  <div class="stat stat-neutral">20.7°</div>
+                </div>
+              </div>
+              <div class="slots-grid">
+                <div class="slot">
+                  <div class="slot-color" style="background: #9c27b0;"></div>
+                  <div class="slot-type">PETG HF</div>
+                  <div class="slot-fill">45%</div>
+                </div>
+                <div class="slot">
+                  <div class="slot-color" style="background: #ff9800;"></div>
+                  <div class="slot-type">PLA</div>
+                  <div class="slot-fill">92%</div>
+                </div>
+                <div class="slot">
+                  <div class="slot-color" style="background: #fdd835;"></div>
+                  <div class="slot-type">PLA-S</div>
+                  <div class="slot-fill">15%</div>
+                </div>
+                <div class="slot">
+                  <div class="slot-color" style="background: #212121;"></div>
+                  <div class="slot-type">PLA-S</div>
+                  <div class="slot-fill">68%</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- AMS-C -->
+            <div class="ams-card">
+              <div class="ams-card-header">
+                <div class="ams-card-left">
+                  <svg width="36" height="22" viewBox="0 0 36 22" fill="none">
+                    <rect x="1" y="1" width="34" height="20" rx="2" fill="#2F2E33"/>
+                    <rect x="5" y="5" width="4" height="12" fill="#00bcd4"/>
+                    <rect x="11" y="5" width="4" height="12" fill="#e91e63"/>
+                    <rect x="17" y="5" width="4" height="12" fill="#9e9e9e"/>
+                    <rect x="23" y="5" width="4" height="12" fill="#f48fb1"/>
+                    <rect x="29" y="5" width="2" height="12" fill="#767676"/>
+                  </svg>
+                  <span class="ams-label">AMS-C</span>
+                </div>
+                <div class="ams-card-stats">
+                  <div class="stat stat-good">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/>
+                    </svg>
+                    17%
+                  </div>
+                  <div class="stat stat-neutral">22.0°</div>
+                </div>
+              </div>
+              <div class="slots-grid">
+                <div class="slot">
+                  <div class="slot-color" style="background: #00bcd4;"></div>
+                  <div class="slot-type">PLA-S</div>
+                  <div class="slot-fill">33%</div>
+                </div>
+                <div class="slot">
+                  <div class="slot-color" style="background: #e91e63;"></div>
+                  <div class="slot-type">PLA-S</div>
+                  <div class="slot-fill">78%</div>
+                </div>
+                <div class="slot">
+                  <div class="slot-color" style="background: #9e9e9e;"></div>
+                  <div class="slot-type">PETG</div>
+                  <div class="slot-fill">55%</div>
+                </div>
+                <div class="slot">
+                  <div class="slot-color" style="background: #f48fb1;"></div>
+                  <div class="slot-type">PLA</div>
+                  <div class="slot-fill">41%</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- AMS-D -->
+            <div class="ams-card">
+              <div class="ams-card-header">
+                <div class="ams-card-left">
+                  <svg width="36" height="22" viewBox="0 0 36 22" fill="none">
+                    <rect x="1" y="1" width="34" height="20" rx="2" fill="#2F2E33"/>
+                    <rect x="5" y="5" width="4" height="12" fill="#8bc34a"/>
+                    <rect x="11" y="5" width="4" height="12" fill="#ff5722"/>
+                    <rect x="17" y="5" width="4" height="12" fill="#607d8b"/>
+                    <rect x="23" y="5" width="4" height="12" fill="#795548"/>
+                    <rect x="29" y="5" width="2" height="12" fill="#767676"/>
+                  </svg>
+                  <span class="ams-label">AMS-D</span>
+                </div>
+                <div class="ams-card-stats">
+                  <div class="stat stat-good">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/>
+                    </svg>
+                    9%
+                  </div>
+                  <div class="stat stat-neutral">21.2°</div>
+                </div>
+              </div>
+              <div class="slots-grid">
+                <div class="slot">
+                  <div class="slot-color" style="background: #8bc34a;"></div>
+                  <div class="slot-type">PLA</div>
+                  <div class="slot-fill">88%</div>
+                </div>
+                <div class="slot">
+                  <div class="slot-color" style="background: #ff5722;"></div>
+                  <div class="slot-type">ABS</div>
+                  <div class="slot-fill">62%</div>
+                </div>
+                <div class="slot">
+                  <div class="slot-color" style="background: #607d8b;"></div>
+                  <div class="slot-type">PETG</div>
+                  <div class="slot-fill">29%</div>
+                </div>
+                <div class="slot">
+                  <div class="slot-color" style="background: #795548;"></div>
+                  <div class="slot-type">PLA</div>
+                  <div class="slot-fill">95%</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Row 3: HT + External (half-size, 4 across) -->
+          <div class="ams-row-small">
+            <!-- HT-A -->
+            <div class="ams-card-small">
+              <svg width="20" height="20" viewBox="0 0 21 21" fill="none">
+                <rect x="6" y="4" width="9" height="7" rx="1" fill="#2F2E33" stroke="#6B6B6B"/>
+                <rect x="4" y="11" width="13" height="6" rx="1" stroke="#6B6B6B"/>
+                <circle cx="10.5" cy="7.5" r="2" fill="none" stroke="#666" stroke-dasharray="2 1"/>
+              </svg>
+              <div class="small-info">
+                <div class="ams-label">HT-A</div>
+                <div class="slot-type">Empty</div>
+              </div>
+              <div class="ams-card-stats">
+                <div class="stat stat-fair">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/>
+                  </svg>
+                  44%
+                </div>
+              </div>
+            </div>
+
+            <!-- HT-B -->
+            <div class="ams-card-small">
+              <svg width="20" height="20" viewBox="0 0 21 21" fill="none">
+                <rect x="6" y="4" width="9" height="7" rx="1" fill="#2F2E33" stroke="#6B6B6B"/>
+                <rect x="4" y="11" width="13" height="6" rx="1" stroke="#6B6B6B"/>
+                <circle cx="10.5" cy="7.5" r="2" fill="#00acc1"/>
+              </svg>
+              <div class="small-info">
+                <div class="ams-label">HT-B</div>
+                <div class="slot-type">PA-CF</div>
+              </div>
+              <div class="ams-card-stats">
+                <div class="stat stat-good">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/>
+                  </svg>
+                  12%
+                </div>
+              </div>
+            </div>
+
+            <!-- External 1 -->
+            <div class="ams-card-small">
+              <div class="external-spool" style="background: #b0bec5;"></div>
+              <div class="small-info">
+                <div class="ams-label">Ext-1</div>
+                <div class="slot-type">PLA</div>
+              </div>
+            </div>
+
+            <!-- External 2 -->
+            <div class="ams-card-small">
+              <div class="external-spool" style="background: #ffeb3b;"></div>
+              <div class="small-info">
+                <div class="ams-label">Ext-2</div>
+                <div class="slot-type">TPU</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Smart Plug (same as current) -->
+        <div class="smart-plug-section">
+          <div class="plug-row">
+            <svg class="plug-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+            </svg>
+            <span class="plug-name">bamnbuswitch3</span>
+            <span class="plug-badge on">ON</span>
+            <span class="plug-power">18W</span>
+            <div class="plug-controls">
+              <button class="plug-btn on">On</button>
+              <button class="plug-btn off">Off</button>
+              <div class="auto-off-toggle">
+                Auto-off
+                <div class="toggle-switch"></div>
+              </div>
+            </div>
+          </div>
+          <div class="plug-footer">
+            <span class="plug-ip">192.168.255.133<br/>00488B540200427</span>
+            <div class="plug-actions">
+              <button class="action-btn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/>
+                </svg>
+              </button>
+              <button class="action-btn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="note">3 rows total: Row 1-2 for 4x AMS, Row 3 for 2x HT + 2x Ext (half-size)</div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

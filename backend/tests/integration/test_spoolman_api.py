@@ -1,0 +1,793 @@
+"""Integration tests for Spoolman API endpoints."""
+
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from httpx import AsyncClient
+
+
+class TestSpoolmanAPI:
+    """Integration tests for /api/v1/spoolman/ endpoints."""
+
+    @pytest.fixture
+    async def spoolman_settings(self, db_session):
+        """Create Spoolman settings in the database (enabled with URL)."""
+        from backend.app.models.settings import Settings
+
+        # Both settings are required for Spoolman to work
+        enabled_setting = Settings(key="spoolman_enabled", value="true")
+        url_setting = Settings(key="spoolman_url", value="http://localhost:7912")
+        db_session.add(enabled_setting)
+        db_session.add(url_setting)
+        await db_session.commit()
+        return {"enabled": enabled_setting, "url": url_setting}
+
+    @pytest.fixture
+    async def spoolman_url_only(self, db_session):
+        """Create only the URL setting (not enabled)."""
+        from backend.app.models.settings import Settings
+
+        setting = Settings(key="spoolman_url", value="http://localhost:7912")
+        db_session.add(setting)
+        await db_session.commit()
+        return setting
+
+    @pytest.fixture
+    def mock_spoolman_client(self):
+        """Mock the Spoolman client functions."""
+        mock_client = MagicMock()
+        mock_client.is_connected = True
+        mock_client.base_url = "http://localhost:7912"
+        mock_client.health_check = AsyncMock(return_value=True)
+        mock_client.ensure_tag_extra_field = AsyncMock(return_value=True)
+        mock_client.get_spools = AsyncMock(return_value=[])
+        mock_client.get_filaments = AsyncMock(return_value=[])
+        mock_client.create_spool = AsyncMock(return_value={"id": 1})
+        mock_client.update_spool = AsyncMock(return_value={"id": 1})
+        mock_client.close = AsyncMock()
+
+        with (
+            patch(
+                "backend.app.api.routes.spoolman.get_spoolman_client",
+                AsyncMock(return_value=mock_client),
+            ),
+            patch(
+                "backend.app.api.routes.spoolman.init_spoolman_client",
+                AsyncMock(return_value=mock_client),
+            ),
+            patch(
+                "backend.app.api.routes.spoolman.close_spoolman_client",
+                AsyncMock(),
+            ),
+        ):
+            yield mock_client
+
+    @pytest.fixture
+    def mock_spoolman_disconnected(self):
+        """Mock the Spoolman client as disconnected (returns None)."""
+        with (
+            patch(
+                "backend.app.api.routes.spoolman.get_spoolman_client",
+                AsyncMock(return_value=None),
+            ),
+            patch(
+                "backend.app.api.routes.spoolman.init_spoolman_client",
+                AsyncMock(return_value=None),
+            ),
+        ):
+            yield
+
+    # =========================================================================
+    # Status Endpoint Tests
+    # =========================================================================
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_get_status_not_configured(self, async_client: AsyncClient):
+        """Verify status shows not enabled when no settings exist."""
+        response = await async_client.get("/api/v1/spoolman/status")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["enabled"] is False
+        assert data["connected"] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_get_status_url_only_not_enabled(self, async_client: AsyncClient, spoolman_url_only):
+        """Verify status shows not enabled when only URL is set."""
+        response = await async_client.get("/api/v1/spoolman/status")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["enabled"] is False
+        assert data["url"] == "http://localhost:7912"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_get_status_enabled_and_connected(
+        self, async_client: AsyncClient, spoolman_settings, mock_spoolman_client
+    ):
+        """Verify status shows enabled and connected when properly configured."""
+        response = await async_client.get("/api/v1/spoolman/status")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["enabled"] is True
+        assert data["connected"] is True
+        assert data["url"] == "http://localhost:7912"
+
+    # =========================================================================
+    # Connect/Disconnect Tests
+    # =========================================================================
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_connect_not_enabled(self, async_client: AsyncClient):
+        """Verify connect fails when not enabled."""
+        response = await async_client.post("/api/v1/spoolman/connect")
+        assert response.status_code == 400
+        assert "not enabled" in response.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_connect_success(self, async_client: AsyncClient, spoolman_settings, mock_spoolman_client):
+        """Verify successful connection to Spoolman."""
+        response = await async_client.post("/api/v1/spoolman/connect")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+        assert "connected" in data["message"].lower()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_disconnect(self, async_client: AsyncClient, spoolman_settings, mock_spoolman_client):
+        """Verify disconnect works."""
+        response = await async_client.post("/api/v1/spoolman/disconnect")
+        assert response.status_code == 200
+        assert "disconnected" in response.json()["message"].lower()
+
+    # =========================================================================
+    # Spools Endpoint Tests
+    # =========================================================================
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_get_spools_not_enabled(self, async_client: AsyncClient):
+        """Verify get spools fails when not enabled."""
+        response = await async_client.get("/api/v1/spoolman/spools")
+        assert response.status_code == 400
+        assert "not enabled" in response.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_get_spools_success(self, async_client: AsyncClient, spoolman_settings, mock_spoolman_client):
+        """Verify get spools returns data in expected format."""
+        mock_spool = {
+            "id": 1,
+            "remaining_weight": 500,
+            "used_weight": 500,
+            "filament": {
+                "id": 1,
+                "name": "PLA Basic",
+                "material": "PLA",
+                "color_hex": "FF0000",
+            },
+            "first_used": "2024-01-01",
+            "last_used": "2024-01-15",
+            "location": "AMS1",
+            "lot_nr": "LOT123",
+            "comment": "Test spool",
+            "extra": {"tag": '"ABC123"'},
+        }
+        mock_spoolman_client.get_spools = AsyncMock(return_value=[mock_spool])
+
+        response = await async_client.get("/api/v1/spoolman/spools")
+        assert response.status_code == 200
+        data = response.json()
+        assert "spools" in data
+        assert isinstance(data["spools"], list)
+        assert len(data["spools"]) == 1
+        assert data["spools"][0]["id"] == 1
+
+    # =========================================================================
+    # Unlinked Spools Tests
+    # =========================================================================
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_get_unlinked_spools_not_enabled(self, async_client: AsyncClient):
+        """Verify get unlinked spools fails when not enabled."""
+        response = await async_client.get("/api/v1/spoolman/spools/unlinked")
+        assert response.status_code == 400
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_get_unlinked_spools_success(
+        self, async_client: AsyncClient, spoolman_settings, mock_spoolman_client
+    ):
+        """Verify get unlinked spools returns spools without tags."""
+        # Mock spool without extra.tag (unlinked)
+        mock_spool = {
+            "id": 1,
+            "remaining_weight": 800,
+            "used_weight": 200,
+            "extra": {},  # No tag = unlinked
+            "filament": {
+                "id": 1,
+                "name": "PLA Basic",
+                "material": "PLA",
+                "color_hex": "FF0000",
+            },
+            "location": "Shelf A",
+        }
+        mock_spoolman_client.get_spools = AsyncMock(return_value=[mock_spool])
+
+        response = await async_client.get("/api/v1/spoolman/spools/unlinked")
+        assert response.status_code == 200
+        data = response.json()
+        assert isinstance(data, list)
+        assert len(data) == 1
+        assert data[0]["id"] == 1
+        assert data[0]["filament_name"] == "PLA Basic"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_get_unlinked_spools_excludes_linked(
+        self, async_client: AsyncClient, spoolman_settings, mock_spoolman_client
+    ):
+        """Verify linked spools (with tag) are excluded."""
+        # Mock spool with extra.tag (linked)
+        mock_spool_linked = {
+            "id": 1,
+            "remaining_weight": 800,
+            "used_weight": 200,
+            "extra": {"tag": '"ABC123"'},  # Has tag = linked
+            "filament": {"id": 1, "name": "PLA Red", "material": "PLA", "color_hex": "FF0000"},
+        }
+
+        # Mock spool without tag (unlinked)
+        mock_spool_unlinked = {
+            "id": 2,
+            "remaining_weight": 900,
+            "used_weight": 100,
+            "extra": {},  # No tag = unlinked
+            "filament": {"id": 2, "name": "PLA Blue", "material": "PLA", "color_hex": "0000FF"},
+        }
+
+        mock_spoolman_client.get_spools = AsyncMock(return_value=[mock_spool_linked, mock_spool_unlinked])
+
+        response = await async_client.get("/api/v1/spoolman/spools/unlinked")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 1
+        assert data[0]["id"] == 2  # Only unlinked spool
+
+    # =========================================================================
+    # Linked Spools Tests
+    # =========================================================================
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_get_linked_spools_not_enabled(self, async_client: AsyncClient):
+        """Verify get linked spools fails when not enabled."""
+        response = await async_client.get("/api/v1/spoolman/spools/linked")
+        assert response.status_code == 400
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_get_linked_spools_success(self, async_client: AsyncClient, spoolman_settings, mock_spoolman_client):
+        """Verify get linked spools returns map of tag -> spool_id."""
+        # Mock spool with extra.tag (linked)
+        mock_spool = {
+            "id": 42,
+            "remaining_weight": 800,
+            "extra": {"tag": '"A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4"'},
+            "filament": {"id": 1, "name": "PLA Red", "material": "PLA", "weight": 1000},
+        }
+        mock_spoolman_client.get_spools = AsyncMock(return_value=[mock_spool])
+
+        response = await async_client.get("/api/v1/spoolman/spools/linked")
+        assert response.status_code == 200
+        data = response.json()
+        assert "linked" in data
+        assert isinstance(data["linked"], dict)
+        # Tag should be uppercase and stripped of quotes
+        assert "A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4" in data["linked"]
+        linked_info = data["linked"]["A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4"]
+        assert linked_info["id"] == 42
+        assert linked_info["remaining_weight"] == 800
+        assert linked_info["filament_weight"] == 1000
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_get_linked_spools_excludes_unlinked(
+        self, async_client: AsyncClient, spoolman_settings, mock_spoolman_client
+    ):
+        """Verify unlinked spools (without tag) are excluded."""
+        # Mock spool with tag (linked)
+        mock_spool_linked = {
+            "id": 1,
+            "extra": {"tag": '"ABC12345678901234567890123456789A"'},
+            "filament": {"id": 1, "name": "PLA Red", "material": "PLA"},
+        }
+        # Mock spool without tag (unlinked)
+        mock_spool_unlinked = {
+            "id": 2,
+            "extra": {},
+            "filament": {"id": 2, "name": "PLA Blue", "material": "PLA"},
+        }
+        mock_spoolman_client.get_spools = AsyncMock(return_value=[mock_spool_linked, mock_spool_unlinked])
+
+        response = await async_client.get("/api/v1/spoolman/spools/linked")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["linked"]) == 1  # Only linked spool
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_get_linked_spools_empty_tag_excluded(
+        self, async_client: AsyncClient, spoolman_settings, mock_spoolman_client
+    ):
+        """Verify spools with empty tag (JSON-encoded empty string) are excluded."""
+        # Mock spool with empty JSON-encoded tag
+        mock_spool = {
+            "id": 1,
+            "extra": {"tag": '""'},  # JSON-encoded empty string
+            "filament": {"id": 1, "name": "PLA Red", "material": "PLA"},
+        }
+        mock_spoolman_client.get_spools = AsyncMock(return_value=[mock_spool])
+
+        response = await async_client.get("/api/v1/spoolman/spools/linked")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["linked"]) == 0  # Empty tag should be excluded
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_get_linked_spools_includes_weight_data(
+        self, async_client: AsyncClient, spoolman_settings, mock_spoolman_client
+    ):
+        """Verify linked spools response includes remaining_weight and filament_weight."""
+        mock_spool = {
+            "id": 10,
+            "remaining_weight": 500.5,
+            "extra": {"tag": '"AABB11223344556677889900AABBCCDD"'},
+            "filament": {"id": 1, "name": "PETG Blue", "material": "PETG", "weight": 750},
+        }
+        mock_spoolman_client.get_spools = AsyncMock(return_value=[mock_spool])
+
+        response = await async_client.get("/api/v1/spoolman/spools/linked")
+        assert response.status_code == 200
+        data = response.json()
+        info = data["linked"]["AABB11223344556677889900AABBCCDD"]
+        assert info["id"] == 10
+        assert info["remaining_weight"] == 500.5
+        assert info["filament_weight"] == 750
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_get_linked_spools_missing_weight_fields(
+        self, async_client: AsyncClient, spoolman_settings, mock_spoolman_client
+    ):
+        """Verify linked spools handles missing weight data gracefully."""
+        mock_spool = {
+            "id": 5,
+            "extra": {"tag": '"CCDD11223344556677889900AABBCCDD"'},
+            "filament": {"id": 1, "name": "PLA Red", "material": "PLA"},
+        }
+        mock_spoolman_client.get_spools = AsyncMock(return_value=[mock_spool])
+
+        response = await async_client.get("/api/v1/spoolman/spools/linked")
+        assert response.status_code == 200
+        data = response.json()
+        info = data["linked"]["CCDD11223344556677889900AABBCCDD"]
+        assert info["id"] == 5
+        assert info["remaining_weight"] is None
+        assert info["filament_weight"] is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_get_linked_spools_null_filament(
+        self, async_client: AsyncClient, spoolman_settings, mock_spoolman_client
+    ):
+        """Verify linked spools handles null filament object."""
+        mock_spool = {
+            "id": 7,
+            "remaining_weight": 300,
+            "extra": {"tag": '"EEFF11223344556677889900AABBCCDD"'},
+            "filament": None,
+        }
+        mock_spoolman_client.get_spools = AsyncMock(return_value=[mock_spool])
+
+        response = await async_client.get("/api/v1/spoolman/spools/linked")
+        assert response.status_code == 200
+        data = response.json()
+        info = data["linked"]["EEFF11223344556677889900AABBCCDD"]
+        assert info["id"] == 7
+        assert info["remaining_weight"] == 300
+        assert info["filament_weight"] is None
+
+    # =========================================================================
+    # Link Spool Tests
+    # =========================================================================
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_link_spool_not_enabled(self, async_client: AsyncClient):
+        """Verify link spool fails when not enabled."""
+        response = await async_client.post(
+            "/api/v1/spoolman/spools/1/link",
+            json={"tray_uuid": "A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4"},
+        )
+        assert response.status_code == 400
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_link_spool_invalid_uuid_length(
+        self, async_client: AsyncClient, spoolman_settings, mock_spoolman_client
+    ):
+        """Verify link spool fails with invalid UUID length."""
+        response = await async_client.post(
+            "/api/v1/spoolman/spools/1/link",
+            json={"tray_uuid": "ABC123"},  # Too short
+        )
+        assert response.status_code == 400
+        assert "16 or 32 hex characters" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_link_spool_invalid_uuid_format(
+        self, async_client: AsyncClient, spoolman_settings, mock_spoolman_client
+    ):
+        """Verify link spool fails with non-hex UUID."""
+        response = await async_client.post(
+            "/api/v1/spoolman/spools/1/link",
+            json={"tray_uuid": "ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ"},  # Not hex
+        )
+        assert response.status_code == 400
+        assert "hex" in response.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_link_spool_success(self, async_client: AsyncClient, spoolman_settings, mock_spoolman_client):
+        """Verify successfully linking a spool to AMS tray."""
+        mock_spoolman_client.update_spool = AsyncMock(
+            return_value={"id": 1, "extra": {"tag": '"A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4"'}}
+        )
+
+        response = await async_client.post(
+            "/api/v1/spoolman/spools/1/link",
+            json={"tray_uuid": "A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+        assert "linked" in data["message"].lower()
+
+        # Verify update_spool was called
+        mock_spoolman_client.update_spool.assert_called_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_unlink_spool_success(self, async_client: AsyncClient, spoolman_settings, mock_spoolman_client):
+        """Verify successfully unlinking a spool clears extra.tag."""
+        mock_spoolman_client.update_spool = AsyncMock(return_value={"id": 1, "extra": {"tag": '""'}})
+
+        response = await async_client.post("/api/v1/spoolman/spools/1/unlink")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+        assert "unlinked" in data["message"].lower()
+
+        mock_spoolman_client.update_spool.assert_called_once_with(
+            spool_id=1,
+            clear_location=True,
+            extra={"tag": '""'},
+        )
+
+    # =========================================================================
+    # Sync Tests
+    # =========================================================================
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_sync_printer_not_enabled(self, async_client: AsyncClient, printer_factory):
+        """Verify sync fails when Spoolman not enabled."""
+        printer = await printer_factory()
+        response = await async_client.post(f"/api/v1/spoolman/sync/{printer.id}")
+        assert response.status_code == 400
+        assert "not enabled" in response.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_sync_printer_not_found(self, async_client: AsyncClient, spoolman_settings, mock_spoolman_client):
+        """Verify sync fails for non-existent printer."""
+        response = await async_client.post("/api/v1/spoolman/sync/9999")
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_sync_returns_result_structure(
+        self,
+        async_client: AsyncClient,
+        spoolman_settings,
+        mock_spoolman_client,
+        printer_factory,
+    ):
+        """Verify sync returns proper result structure."""
+        printer = await printer_factory()
+
+        # Mock printer manager to return AMS data
+        with patch("backend.app.api.routes.spoolman.printer_manager") as pm_mock:
+            mock_state = MagicMock()
+            mock_state.raw_data = {"ams": [{"id": 0, "tray": []}]}
+            pm_mock.get_status = MagicMock(return_value=mock_state)
+
+            response = await async_client.post(f"/api/v1/spoolman/sync/{printer.id}")
+            assert response.status_code == 200
+            data = response.json()
+            # Verify SyncResult structure
+            assert "success" in data
+            assert "synced_count" in data
+            assert "skipped_count" in data
+            assert "skipped" in data
+            assert "errors" in data
+            assert isinstance(data["skipped"], list)
+            assert isinstance(data["errors"], list)
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_sync_printer_not_connected(
+        self,
+        async_client: AsyncClient,
+        spoolman_settings,
+        mock_spoolman_client,
+        printer_factory,
+    ):
+        """Verify sync fails when printer is not connected (no status)."""
+        printer = await printer_factory()
+
+        with patch("backend.app.api.routes.spoolman.printer_manager") as pm_mock:
+            pm_mock.get_status = MagicMock(return_value=None)
+
+            response = await async_client.post(f"/api/v1/spoolman/sync/{printer.id}")
+            assert response.status_code == 404
+            assert "not connected" in response.json()["detail"].lower()
+
+    # =========================================================================
+    # Filaments Endpoint Tests
+    # =========================================================================
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_get_filaments_not_enabled(self, async_client: AsyncClient):
+        """Verify get filaments fails when not enabled."""
+        response = await async_client.get("/api/v1/spoolman/filaments")
+        assert response.status_code == 400
+        assert "not enabled" in response.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_get_filaments_success(self, async_client: AsyncClient, spoolman_settings, mock_spoolman_client):
+        """Verify get filaments returns data in expected format."""
+        mock_filament = {
+            "id": 1,
+            "name": "PLA Basic",
+            "material": "PLA",
+            "color_hex": "FF0000",
+            "vendor_id": 1,
+            "weight": 1000,
+        }
+        mock_spoolman_client.get_filaments = AsyncMock(return_value=[mock_filament])
+
+        response = await async_client.get("/api/v1/spoolman/filaments")
+        assert response.status_code == 200
+        data = response.json()
+        assert "filaments" in data
+        assert isinstance(data["filaments"], list)
+        assert len(data["filaments"]) == 1
+        assert data["filaments"][0]["name"] == "PLA Basic"
+
+    # =========================================================================
+    # Disable Weight Sync Tests
+    # =========================================================================
+
+    @pytest.fixture
+    async def spoolman_settings_weight_sync_disabled(self, db_session):
+        """Create Spoolman settings with weight sync disabled."""
+        from backend.app.models.settings import Settings
+
+        enabled_setting = Settings(key="spoolman_enabled", value="true")
+        url_setting = Settings(key="spoolman_url", value="http://localhost:7912")
+        disable_weight_setting = Settings(key="spoolman_disable_weight_sync", value="true")
+        partial_usage_setting = Settings(key="spoolman_report_partial_usage", value="true")
+        db_session.add(enabled_setting)
+        db_session.add(url_setting)
+        db_session.add(disable_weight_setting)
+        db_session.add(partial_usage_setting)
+        await db_session.commit()
+        return {
+            "enabled": enabled_setting,
+            "url": url_setting,
+            "disable_weight": disable_weight_setting,
+            "partial_usage": partial_usage_setting,
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_settings_returns_disable_weight_sync(
+        self, async_client: AsyncClient, spoolman_settings_weight_sync_disabled
+    ):
+        """Verify settings endpoint returns the disable_weight_sync setting."""
+        response = await async_client.get("/api/v1/settings/spoolman")
+        assert response.status_code == 200
+        data = response.json()
+        assert "spoolman_disable_weight_sync" in data
+        assert data["spoolman_disable_weight_sync"] == "true"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_settings_update_disable_weight_sync(self, async_client: AsyncClient, spoolman_settings):
+        """Verify settings endpoint can update the disable_weight_sync setting."""
+        # First verify it's false by default
+        response = await async_client.get("/api/v1/settings/spoolman")
+        assert response.status_code == 200
+        data = response.json()
+        assert data.get("spoolman_disable_weight_sync", "false") == "false"
+
+        # Update the setting
+        response = await async_client.put(
+            "/api/v1/settings/spoolman",
+            json={"spoolman_disable_weight_sync": "true"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["spoolman_disable_weight_sync"] == "true"
+
+        # Verify it persisted
+        response = await async_client.get("/api/v1/settings/spoolman")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["spoolman_disable_weight_sync"] == "true"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_sync_with_weight_sync_disabled_updates_location_only(
+        self,
+        async_client: AsyncClient,
+        spoolman_settings_weight_sync_disabled,
+        mock_spoolman_client,
+        printer_factory,
+    ):
+        """Verify sync only updates location when disable_weight_sync is enabled."""
+        printer = await printer_factory()
+
+        # Mock existing spool
+        mock_existing_spool = {
+            "id": 42,
+            "remaining_weight": 800,
+            "extra": {"tag": '"A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4"'},
+            "filament": {"id": 1, "name": "PLA Red", "material": "PLA"},
+        }
+        mock_spoolman_client.find_spool_by_tag = AsyncMock(return_value=mock_existing_spool)
+        mock_spoolman_client.parse_ams_tray = MagicMock()
+
+        # Create mock AMSTray
+        from backend.app.services.spoolman import AMSTray
+
+        mock_tray = AMSTray(
+            ams_id=0,
+            tray_id=0,
+            tray_type="PLA",
+            tray_sub_brands="PLA Basic",
+            tray_color="FF0000FF",
+            remain=50,
+            tag_uid="",
+            tray_uuid="A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4",
+            tray_info_idx="GFA00",
+            tray_weight=1000,
+        )
+        mock_spoolman_client.parse_ams_tray.return_value = mock_tray
+        mock_spoolman_client.is_bambu_lab_spool = MagicMock(return_value=True)
+        mock_spoolman_client.convert_ams_slot_to_location = MagicMock(return_value="AMS A1")
+        mock_spoolman_client.sync_ams_tray = AsyncMock(return_value={"id": 42})
+        mock_spoolman_client.clear_location_for_removed_spools = AsyncMock(return_value=0)
+
+        with patch("backend.app.api.routes.spoolman.printer_manager") as pm_mock:
+            mock_state = MagicMock()
+            mock_state.raw_data = {
+                "ams": [
+                    {
+                        "id": 0,
+                        "tray": [
+                            {
+                                "id": 0,
+                                "tray_type": "PLA",
+                                "tray_sub_brands": "PLA Basic",
+                                "tray_color": "FF0000FF",
+                                "remain": 50,
+                                "tag_uid": "",
+                                "tray_uuid": "A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4",
+                                "tray_info_idx": "GFA00",
+                                "tray_weight": 1000,
+                            }
+                        ],
+                    }
+                ]
+            }
+            pm_mock.get_status = MagicMock(return_value=mock_state)
+
+            response = await async_client.post(f"/api/v1/spoolman/sync/{printer.id}")
+            assert response.status_code == 200
+
+            # Verify sync_ams_tray was called with disable_weight_sync=True
+            mock_spoolman_client.sync_ams_tray.assert_called()
+            call_kwargs = mock_spoolman_client.sync_ams_tray.call_args.kwargs
+            assert call_kwargs.get("disable_weight_sync") is True
+
+    # =========================================================================
+    # Report Partial Usage Tests
+    # =========================================================================
+
+    @pytest.fixture
+    async def spoolman_settings_partial_usage_disabled(self, db_session):
+        """Create Spoolman settings with partial usage reporting disabled."""
+        from backend.app.models.settings import Settings
+
+        enabled_setting = Settings(key="spoolman_enabled", value="true")
+        url_setting = Settings(key="spoolman_url", value="http://localhost:7912")
+        partial_usage_setting = Settings(key="spoolman_report_partial_usage", value="false")
+        db_session.add(enabled_setting)
+        db_session.add(url_setting)
+        db_session.add(partial_usage_setting)
+        await db_session.commit()
+        return {
+            "enabled": enabled_setting,
+            "url": url_setting,
+            "partial_usage": partial_usage_setting,
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_settings_returns_report_partial_usage(
+        self, async_client: AsyncClient, spoolman_settings_partial_usage_disabled
+    ):
+        """Verify settings endpoint returns the report_partial_usage setting."""
+        response = await async_client.get("/api/v1/settings/spoolman")
+        assert response.status_code == 200
+        data = response.json()
+        assert "spoolman_report_partial_usage" in data
+        assert data["spoolman_report_partial_usage"] == "false"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_settings_update_report_partial_usage(self, async_client: AsyncClient, spoolman_settings):
+        """Verify settings endpoint can update the report_partial_usage setting."""
+        # First verify it's true by default
+        response = await async_client.get("/api/v1/settings/spoolman")
+        assert response.status_code == 200
+        data = response.json()
+        assert data.get("spoolman_report_partial_usage", "true") == "true"
+
+        # Update the setting to false
+        response = await async_client.put(
+            "/api/v1/settings/spoolman",
+            json={"spoolman_report_partial_usage": "false"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["spoolman_report_partial_usage"] == "false"
+
+        # Verify it persisted
+        response = await async_client.get("/api/v1/settings/spoolman")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["spoolman_report_partial_usage"] == "false"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_settings_report_partial_usage_defaults_to_true(self, async_client: AsyncClient, spoolman_settings):
+        """Verify report_partial_usage defaults to true (unlike disable_weight_sync which defaults to false)."""
+        response = await async_client.get("/api/v1/settings/spoolman")
+        assert response.status_code == 200
+        data = response.json()
+        # Should default to "true"
+        assert data["spoolman_report_partial_usage"] == "true"

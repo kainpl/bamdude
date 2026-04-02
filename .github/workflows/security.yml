@@ -1,0 +1,433 @@
+name: Security Audit
+
+on:
+  schedule:
+    # Run weekly on Monday at 6:00 UTC
+    - cron: '0 6 * * 1'
+  push:
+    paths:
+      - 'backend/**'
+      - 'frontend/**'
+      - 'spoolbuddy/**'
+      - 'Dockerfile'
+      - 'docker-compose*.yml'
+      - 'requirements.txt'
+      - 'frontend/package*.json'
+      - '.github/workflows/security.yml'
+  pull_request:
+    paths:
+      - 'backend/**'
+      - 'frontend/**'
+      - 'spoolbuddy/**'
+      - 'Dockerfile'
+      - 'docker-compose*.yml'
+      - 'requirements.txt'
+      - 'frontend/package*.json'
+      - '.github/workflows/security.yml'
+  workflow_dispatch:
+    # Allow manual trigger
+
+env:
+  PYTHON_VERSION: '3.11'
+  NODE_VERSION: '22'
+
+# Default permissions for all jobs
+permissions:
+  contents: read
+
+jobs:
+  bandit:
+    name: Python Security Analysis (Bandit)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Bandit
+        run: pip install bandit[sarif]
+
+      - name: Run Bandit
+        run: |
+          bandit -r backend/ -f sarif -o bandit-results.sarif --severity-level medium || true
+
+      - name: Upload Bandit results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: bandit-results.sarif
+          category: bandit
+
+  trivy:
+    name: Container Security Scan (Trivy)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t bambuddy:security-scan .
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          image-ref: 'bambuddy:security-scan'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+          version: 'v0.69.1'
+
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v4
+        if: always() && hashFiles('trivy-results.sarif') != ''
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy
+
+      - name: Run Trivy for Dockerfile/IaC
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          scan-type: 'config'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-config-results.sarif'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+          version: 'v0.69.1'
+
+      - name: Upload Trivy config results
+        uses: github/codeql-action/upload-sarif@v4
+        if: always() && hashFiles('trivy-config-results.sarif') != ''
+        with:
+          sarif_file: trivy-config-results.sarif
+          category: trivy-config
+
+  backend-audit:
+    name: Backend Security Audit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pip-audit
+
+      - name: Run pip-audit
+        id: pip-audit
+        run: |
+          # CVE-2026-4539: low-severity ReDoS in Pygments AdlLexer (indirect dep via mkdocs-material/pytest/rich).
+          # No fix available yet. Remove --ignore-vuln once Pygments releases a patched version.
+          pip-audit --desc on --format json --output pip-audit-results.json --ignore-vuln CVE-2026-4539 || echo "vulnerabilities_found=true" >> $GITHUB_OUTPUT
+          pip-audit --desc on --ignore-vuln CVE-2026-4539 || true
+
+      - name: Upload audit results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pip-audit-results
+          path: pip-audit-results.json
+          retention-days: 30
+
+      - name: Create or close pip security issue
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+
+            // Check for existing open issue
+            const existingIssues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'security,automated'
+            });
+            const existingIssue = existingIssues.data.find(i => i.title.startsWith('Security Alert:') && i.title.includes('Python'));
+
+            // If no vulnerabilities found, auto-close any stale issue
+            if ('${{ steps.pip-audit.outputs.vulnerabilities_found }}' !== 'true') {
+              if (existingIssue) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: existingIssue.number,
+                  body: 'All Python vulnerabilities have been resolved. Closing automatically.'
+                });
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: existingIssue.number,
+                  state: 'closed'
+                });
+                console.log(`Auto-closed resolved issue #${existingIssue.number}`);
+              }
+              return;
+            }
+
+            let results;
+            try {
+              results = JSON.parse(fs.readFileSync('pip-audit-results.json', 'utf8'));
+            } catch {
+              console.log('Could not read audit results');
+              return;
+            }
+
+            // Build vulnerability table
+            let table = '| Package | Version | Vulnerability | Fix Version |\n';
+            table += '|---------|---------|---------------|-------------|\n';
+
+            for (const vuln of results.dependencies || []) {
+              for (const v of vuln.vulns || []) {
+                table += `| ${vuln.name} | ${vuln.version} | ${v.id} | ${v.fix_versions?.join(', ') || 'N/A'} |\n`;
+              }
+            }
+
+            const vulnCount = results.dependencies?.reduce((acc, d) => acc + (d.vulns?.length || 0), 0) || 0;
+
+            if (vulnCount === 0) {
+              console.log('No vulnerabilities to report');
+              if (existingIssue) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: existingIssue.number,
+                  body: 'All Python vulnerabilities have been resolved. Closing automatically.'
+                });
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: existingIssue.number,
+                  state: 'closed'
+                });
+                console.log(`Auto-closed resolved issue #${existingIssue.number}`);
+              }
+              return;
+            }
+
+            const title = `Security Alert: ${vulnCount} Python vulnerabilities found`;
+
+            const body = `## Automated Security Audit Results
+
+            The weekly security audit found vulnerabilities in Python dependencies.
+
+            ${table}
+
+            ### Recommended Actions
+
+            1. Review each vulnerability
+            2. Update affected packages: \`pip install --upgrade <package>\`
+            3. Run \`pip-audit\` locally to verify fixes
+
+            ---
+            *This issue was automatically created by the security audit workflow.*`;
+
+            if (existingIssue) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existingIssue.number,
+                body: body
+              });
+              console.log(`Updated existing issue #${existingIssue.number}`);
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: title,
+                body: body,
+                labels: ['security', 'automated', 'dependencies']
+              });
+              console.log('Created new security issue');
+            }
+
+  frontend-audit:
+    name: Frontend Security Audit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run npm audit
+        id: npm-audit
+        working-directory: frontend
+        run: |
+          npm audit --omit=dev --json > npm-audit-raw.json 2>/dev/null || true
+          # Filter audit results to only include actual project dependencies.
+          # npm 10.x audit/ls reports vulns in its own bundled deps (npm, tar, minimatch)
+          # so we parse package-lock.json directly to get the real prod dep list.
+          node -e "
+            const fs = require('fs');
+            const raw = fs.readFileSync('npm-audit-raw.json', 'utf8');
+            let results;
+            try { results = JSON.parse(raw); } catch { results = { vulnerabilities: {} }; }
+            const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
+            const prodDeps = new Set();
+            for (const [path, info] of Object.entries(lock.packages || {})) {
+              if (path && !info.dev && !info.devOptional) {
+                prodDeps.add(path.split('node_modules/').pop());
+              }
+            }
+            const vulns = results.vulnerabilities || {};
+            const filtered = {};
+            for (const [name, info] of Object.entries(vulns)) {
+              if (prodDeps.has(name)) filtered[name] = info;
+            }
+            results.vulnerabilities = filtered;
+            fs.writeFileSync('npm-audit-results.json', JSON.stringify(results, null, 2));
+            const count = Object.keys(filtered).length;
+            console.log(count > 0
+              ? count + ' production vulnerabilities found'
+              : 'No production vulnerabilities (filtered ' + Object.keys(vulns).length + ' npm-internal entries)');
+            if (count > 0) process.exit(1);
+          " || echo "vulnerabilities_found=true" >> $GITHUB_OUTPUT
+          npm audit --omit=dev --audit-level=high || true
+
+      - name: Upload audit results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-audit-results
+          path: frontend/npm-audit-results.json
+          retention-days: 30
+
+      - name: Create or close npm security issue
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+
+            // Check for existing open issue
+            const existingIssues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'security,automated'
+            });
+            const existingIssue = existingIssues.data.find(i => i.title.startsWith('Security Alert:') && i.title.includes('npm'));
+
+            // If filter didn't flag vulnerabilities, auto-close any stale issue
+            if ('${{ steps.npm-audit.outputs.vulnerabilities_found }}' !== 'true') {
+              if (existingIssue) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: existingIssue.number,
+                  body: 'All npm production vulnerabilities have been resolved. Closing automatically.'
+                });
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: existingIssue.number,
+                  state: 'closed'
+                });
+                console.log(`Auto-closed resolved issue #${existingIssue.number}`);
+              }
+              return;
+            }
+
+            let results;
+            try {
+              results = JSON.parse(fs.readFileSync('frontend/npm-audit-results.json', 'utf8'));
+            } catch {
+              console.log('Could not read filtered audit results');
+              return;
+            }
+
+            const vulns = results.vulnerabilities || {};
+            const vulnCount = Object.keys(vulns).length;
+
+            if (vulnCount === 0) {
+              console.log('No vulnerabilities to report');
+              if (existingIssue) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: existingIssue.number,
+                  body: 'All npm production vulnerabilities have been resolved. Closing automatically.'
+                });
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: existingIssue.number,
+                  state: 'closed'
+                });
+                console.log(`Auto-closed resolved issue #${existingIssue.number}`);
+              }
+              return;
+            }
+
+            // Build vulnerability table
+            let table = '| Package | Severity | Via | Fix |\n';
+            table += '|---------|----------|-----|-----|\n';
+
+            for (const [name, info] of Object.entries(vulns)) {
+              const via = Array.isArray(info.via) ? info.via.map(v => typeof v === 'string' ? v : v.name).join(', ') : info.via;
+              table += `| ${name} | ${info.severity} | ${via} | ${info.fixAvailable ? 'Yes' : 'No'} |\n`;
+            }
+
+            const title = `Security Alert: ${vulnCount} npm vulnerabilities found`;
+
+            const body = `## Automated Security Audit Results
+
+            The weekly security audit found vulnerabilities in npm dependencies.
+
+            ${table}
+
+            ### Recommended Actions
+
+            1. Review each vulnerability: \`npm audit\`
+            2. Auto-fix if possible: \`npm audit fix\`
+            3. Manual fix for breaking changes: \`npm audit fix --force\` (review changes!)
+
+            ---
+            *This issue was automatically created by the security audit workflow.*`;
+
+            if (existingIssue) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existingIssue.number,
+                body: body
+              });
+              console.log(`Updated existing issue #${existingIssue.number}`);
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: title,
+                body: body,
+                labels: ['security', 'automated', 'dependencies']
+              });
+              console.log('Created new security issue');
+            }

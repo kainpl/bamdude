@@ -1,0 +1,51 @@
+# Pre-commit hooks for BamBuddy
+# Install with: pip install pre-commit && pre-commit install
+
+repos:
+  # Ruff - Fast Python linter and formatter
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.11
+    hooks:
+      # Linter
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+        types_or: [python, pyi]
+      # Formatter
+      - id: ruff-format
+        types_or: [python, pyi]
+
+  # Standard pre-commit hooks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: ^static/
+      - id: end-of-file-fixer
+        exclude: ^static/
+      - id: check-yaml
+      - id: check-json
+        exclude: ^(static/|frontend/tsconfig\.)
+      - id: check-added-large-files
+        args: ['--maxkb=1000']
+        exclude: ^static/assets/
+      - id: check-merge-conflict
+      - id: debug-statements
+      - id: detect-private-key
+
+  # Check for import shadowing (custom)
+  - repo: local
+    hooks:
+      - id: check-import-shadowing
+        name: Check for dangerous import shadowing
+        entry: python -m pytest backend/tests/unit/test_code_quality.py::TestImportShadowing -v --tb=short
+        language: system
+        pass_filenames: false
+        types: [python]
+        files: ^backend/app/
+      - id: frontend-typecheck
+        name: TypeScript type check
+        entry: bash -c 'cd frontend && npx tsc --noEmit'
+        language: system
+        pass_filenames: false
+        files: ^frontend/src/
+        types_or: [ts, tsx]

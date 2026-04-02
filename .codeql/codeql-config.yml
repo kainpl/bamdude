@@ -1,0 +1,85 @@
+name: "Bambuddy CodeQL Configuration"
+
+# Uses the default query suite with accepted-risk exclusions.
+# Each exclusion is reviewed and documented below.
+
+query-filters:
+  # ── Python Accepted Risk ─────────────────────────────────────
+
+  # Log injection: All logging uses %s parameterized style.
+  # Remaining findings are CodeQL taint-tracking printer/device data
+  # to parameterized log args. Accepted risk for local network tool.
+  - exclude:
+      id: py/log-injection
+
+  # Cyclic imports: SQLAlchemy ORM pattern — models import
+  # database base class, database imports models for migrations.
+  - exclude:
+      id: py/cyclic-import
+  - exclude:
+      id: py/unsafe-cyclic-import
+
+  # Unused local variables: Python _ prefix convention for
+  # intentional discards (tuple unpacking, test fixture side effects).
+  - exclude:
+      id: py/unused-local-variable
+
+  # Path injection: All paths validated — extension whitelists,
+  # traversal checks (rejects .. / \), UUID-based naming, or
+  # constructed from integer IDs in controlled base directories.
+  - exclude:
+      id: py/path-injection
+
+  # Stack trace exposure: str(e) replaced with generic messages
+  # in HTTP responses. Remaining findings are CodeQL tracing through
+  # _update_status dict returns, not actual exposures.
+  - exclude:
+      id: py/stack-trace-exposure
+
+  # Socket bind to 0.0.0.0: Virtual printer SSDP/discovery
+  # services must bind all interfaces for LAN discoverability.
+  - exclude:
+      id: py/bind-socket-all-network-interfaces
+
+  # SSRF: URLs come from admin-configured settings (external
+  # cameras, Home Assistant, Tasmota). Validation added for scheme,
+  # hostname, and metadata-service blocking.
+  - exclude:
+      id: py/partial-ssrf
+  - exclude:
+      id: py/full-ssrf
+
+  # Unused global variables: False positives — module-level
+  # cache variables written via `global` in one function, read in another.
+  - exclude:
+      id: py/unused-global-variable
+
+  # Clear-text logging sensitive data: False positive —
+  # `api_key` in firmware_check.py is a printer model identifier
+  # string ("x1", "p1", "a1-mini"), not a secret.
+  - exclude:
+      id: py/clear-text-logging-sensitive-data
+
+  # Clear-text storage sensitive data: JWT secret stored in
+  # file with 0600 permissions. Standard for single-host deployment.
+  - exclude:
+      id: py/clear-text-storage-sensitive-data
+
+  # Weak hashing on sensitive data: MD5 used with
+  # usedforsecurity=False for AMS tray fingerprinting, not security.
+  - exclude:
+      id: py/weak-sensitive-data-hashing
+
+  # Catch base exception: In frontend/node_modules third-party
+  # code (flatted/python/flatted.py), outside our control.
+  - exclude:
+      id: py/catch-base-exception
+
+  # ── JavaScript Accepted Risk ─────────────────────────────────
+
+  # XSS through DOM: False positives —
+  # 1. coverage/sorter.js: generated Istanbul coverage report
+  # 2. TimelapseEditorModal.tsx: URL.createObjectURL(file) creates
+  #    a safe blob: URL used as <audio src>, not HTML injection.
+  - exclude:
+      id: js/xss-through-dom

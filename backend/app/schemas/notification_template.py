@@ -1,0 +1,362 @@
+"""Pydantic schemas for notification templates."""
+
+from datetime import datetime
+
+from pydantic import BaseModel, Field
+
+from backend.app.core.compat import StrEnum
+
+
+class EventType(StrEnum):
+    """Supported notification event types."""
+
+    PRINT_START = "print_start"
+    PRINT_COMPLETE = "print_complete"
+    PRINT_FAILED = "print_failed"
+    PRINT_STOPPED = "print_stopped"
+    PRINT_PROGRESS = "print_progress"
+    PRINT_MISSING_SPOOL_ASSIGNMENT = "print_missing_spool_assignment"
+    PRINTER_OFFLINE = "printer_offline"
+    PRINTER_ERROR = "printer_error"
+    FILAMENT_LOW = "filament_low"
+    MAINTENANCE_DUE = "maintenance_due"
+    AMS_HUMIDITY_HIGH = "ams_humidity_high"
+    AMS_TEMPERATURE_HIGH = "ams_temperature_high"
+    BED_COOLED = "bed_cooled"
+    TEST = "test"
+
+
+# Available variables for each event type
+EVENT_VARIABLES: dict[str, list[str]] = {
+    "print_start": ["printer", "filename", "estimated_time", "eta", "timestamp", "app_name"],
+    "print_complete": [
+        "printer",
+        "filename",
+        "duration",
+        "filament_grams",
+        "filament_details",
+        "finish_photo_url",
+        "timestamp",
+        "app_name",
+    ],
+    "print_failed": [
+        "printer",
+        "filename",
+        "duration",
+        "filament_grams",
+        "filament_details",
+        "progress",
+        "reason",
+        "finish_photo_url",
+        "timestamp",
+        "app_name",
+    ],
+    "print_stopped": [
+        "printer",
+        "filename",
+        "duration",
+        "filament_grams",
+        "filament_details",
+        "progress",
+        "finish_photo_url",
+        "timestamp",
+        "app_name",
+    ],
+    "print_progress": ["printer", "filename", "progress", "remaining_time", "eta", "timestamp", "app_name"],
+    "print_missing_spool_assignment": [
+        "printer",
+        "missing_slots",
+        "missing_slot_details",
+        "timestamp",
+        "app_name",
+    ],
+    "printer_offline": ["printer", "timestamp", "app_name"],
+    "printer_error": ["printer", "error_type", "error_detail", "timestamp", "app_name"],
+    "filament_low": ["printer", "slot", "remaining_percent", "color", "timestamp", "app_name"],
+    "maintenance_due": ["printer", "items", "timestamp", "app_name"],
+    "ams_humidity_high": ["printer", "ams_label", "humidity", "threshold", "timestamp", "app_name"],
+    "ams_temperature_high": ["printer", "ams_label", "temperature", "threshold", "timestamp", "app_name"],
+    "bed_cooled": ["printer", "bed_temp", "threshold", "filename", "timestamp", "app_name"],
+    "test": ["app_name", "timestamp"],
+    # Queue notifications
+    "queue_job_added": ["job_name", "target", "timestamp", "app_name"],
+    "queue_job_assigned": ["job_name", "printer", "target_model", "timestamp", "app_name"],
+    "queue_job_started": ["printer", "job_name", "estimated_time", "eta", "timestamp", "app_name"],
+    "queue_job_waiting": ["job_name", "target_model", "waiting_reason", "timestamp", "app_name"],
+    "queue_job_skipped": ["printer", "job_name", "reason", "timestamp", "app_name"],
+    "queue_job_failed": ["printer", "job_name", "reason", "timestamp", "app_name"],
+    "queue_completed": ["completed_count", "timestamp", "app_name"],
+    # User management notifications
+    "user_created": ["username", "password", "login_url", "app_name", "timestamp"],
+    "password_reset": ["username", "password", "login_url", "app_name", "timestamp"],
+    # User email print notifications
+    "user_print_start": ["username", "printer", "filename", "timestamp", "app_name"],
+    "user_print_complete": ["username", "printer", "filename", "timestamp", "app_name"],
+    "user_print_failed": ["username", "printer", "filename", "timestamp", "app_name"],
+    "user_print_stopped": ["username", "printer", "filename", "timestamp", "app_name"],
+}
+
+# Sample data for previewing templates
+SAMPLE_DATA: dict[str, dict[str, str]] = {
+    "print_start": {
+        "printer": "Bambu X1C",
+        "filename": "Benchy.3mf",
+        "estimated_time": "1h 23m",
+        "eta": "15:53",
+        "timestamp": "2024-01-15 14:30",
+        "app_name": "Bambuddy",
+    },
+    "print_complete": {
+        "printer": "Bambu X1C",
+        "filename": "Benchy.3mf",
+        "duration": "1h 18m",
+        "filament_grams": "15.2",
+        "filament_details": "AMS-A T1 PLA: 12.4g | AMS-A T3 PETG: 2.8g",
+        "finish_photo_url": "/api/v1/archives/123/photos/finish_20240115_154800_abc12345.jpg",
+        "timestamp": "2024-01-15 15:48",
+        "app_name": "Bambuddy",
+    },
+    "print_failed": {
+        "printer": "Bambu X1C",
+        "filename": "Benchy.3mf",
+        "duration": "0h 45m",
+        "filament_grams": "7.6",
+        "filament_details": "AMS-A T1 PLA: 7.6g",
+        "progress": "50",
+        "reason": "Filament runout",
+        "finish_photo_url": "/api/v1/archives/123/photos/finish_20240115_151500_def67890.jpg",
+        "timestamp": "2024-01-15 15:15",
+        "app_name": "Bambuddy",
+    },
+    "print_stopped": {
+        "printer": "Bambu X1C",
+        "filename": "Benchy.3mf",
+        "duration": "0h 30m",
+        "filament_grams": "4.6",
+        "filament_details": "AMS-A T2 PLA: 4.6g",
+        "progress": "30",
+        "finish_photo_url": "/api/v1/archives/123/photos/finish_20240115_150000_ghi11223.jpg",
+        "timestamp": "2024-01-15 15:00",
+        "app_name": "Bambuddy",
+    },
+    "print_progress": {
+        "printer": "Bambu X1C",
+        "filename": "Benchy.3mf",
+        "progress": "50",
+        "remaining_time": "0h 41m",
+        "eta": "15:41",
+        "timestamp": "2024-01-15 15:00",
+        "app_name": "Bambuddy",
+    },
+    "print_missing_spool_assignment": {
+        "printer": "Bambu X1C",
+        "missing_slots": "A1, A3",
+        "missing_slot_details": "- A1: PLA Basic\n- A3: PETG HF",
+        "timestamp": "2024-01-15 14:30",
+        "app_name": "Bambuddy",
+    },
+    "printer_offline": {
+        "printer": "Bambu X1C",
+        "timestamp": "2024-01-15 14:30",
+        "app_name": "Bambuddy",
+    },
+    "printer_error": {
+        "printer": "Bambu X1C",
+        "error_type": "AMS Error",
+        "error_detail": "Filament slot 1 jammed",
+        "timestamp": "2024-01-15 14:30",
+        "app_name": "Bambuddy",
+    },
+    "filament_low": {
+        "printer": "Bambu X1C",
+        "slot": "1",
+        "remaining_percent": "15",
+        "color": "Black PLA",
+        "timestamp": "2024-01-15 14:30",
+        "app_name": "Bambuddy",
+    },
+    "maintenance_due": {
+        "printer": "Bambu X1C",
+        "items": "• Nozzle cleaning (OVERDUE)\n• Carbon rod lubrication (Soon)",
+        "timestamp": "2024-01-15 14:30",
+        "app_name": "Bambuddy",
+    },
+    "ams_humidity_high": {
+        "printer": "Bambu X1C",
+        "ams_label": "AMS-A",
+        "humidity": "75",
+        "threshold": "60",
+        "timestamp": "2024-01-15 14:30",
+        "app_name": "Bambuddy",
+    },
+    "ams_temperature_high": {
+        "printer": "Bambu X1C",
+        "ams_label": "AMS-A",
+        "temperature": "42",
+        "threshold": "35",
+        "timestamp": "2024-01-15 14:30",
+        "app_name": "Bambuddy",
+    },
+    "bed_cooled": {
+        "printer": "Bambu X1C",
+        "bed_temp": "34",
+        "threshold": "35",
+        "filename": "Benchy",
+        "timestamp": "2024-01-15 14:30",
+        "app_name": "Bambuddy",
+    },
+    "test": {
+        "app_name": "Bambuddy",
+        "timestamp": "2024-01-15 14:30",
+    },
+    # Queue notifications
+    "queue_job_added": {
+        "job_name": "Benchy.3mf",
+        "target": "Bambu X1C",
+        "timestamp": "2024-01-15 14:30",
+        "app_name": "Bambuddy",
+    },
+    "queue_job_assigned": {
+        "job_name": "Benchy.3mf",
+        "printer": "Bambu X1C #1",
+        "target_model": "X1C",
+        "timestamp": "2024-01-15 14:30",
+        "app_name": "Bambuddy",
+    },
+    "queue_job_started": {
+        "printer": "Bambu X1C",
+        "job_name": "Benchy.3mf",
+        "estimated_time": "1h 23m",
+        "eta": "15:53",
+        "timestamp": "2024-01-15 14:30",
+        "app_name": "Bambuddy",
+    },
+    "queue_job_waiting": {
+        "job_name": "Benchy.3mf",
+        "target_model": "X1C",
+        "waiting_reason": "Printer1 (needs PLA)",
+        "timestamp": "2024-01-15 14:30",
+        "app_name": "Bambuddy",
+    },
+    "queue_job_skipped": {
+        "printer": "Bambu X1C",
+        "job_name": "Benchy.3mf",
+        "reason": "Previous print failed",
+        "timestamp": "2024-01-15 14:30",
+        "app_name": "Bambuddy",
+    },
+    "queue_job_failed": {
+        "printer": "Bambu X1C",
+        "job_name": "Benchy.3mf",
+        "reason": "Upload failed: connection timeout",
+        "timestamp": "2024-01-15 14:30",
+        "app_name": "Bambuddy",
+    },
+    "queue_completed": {
+        "completed_count": "5",
+        "timestamp": "2024-01-15 18:30",
+        "app_name": "Bambuddy",
+    },
+    # User management notifications
+    "user_created": {
+        "username": "john_doe",
+        "password": "TempPass123!",
+        "login_url": "https://bambuddy.example.com/login",
+        "app_name": "Bambuddy",
+        "timestamp": "2024-01-15 14:30",
+    },
+    "password_reset": {
+        "username": "john_doe",
+        "password": "NewPass456!",
+        "login_url": "https://bambuddy.example.com/login",
+        "app_name": "Bambuddy",
+        "timestamp": "2024-01-15 14:30",
+    },
+    # User email print notifications
+    "user_print_start": {
+        "username": "john_doe",
+        "printer": "Bambu X1C",
+        "filename": "Benchy.3mf",
+        "timestamp": "2024-01-15 14:30",
+        "app_name": "Bambuddy",
+    },
+    "user_print_complete": {
+        "username": "john_doe",
+        "printer": "Bambu X1C",
+        "filename": "Benchy.3mf",
+        "timestamp": "2024-01-15 15:48",
+        "app_name": "Bambuddy",
+    },
+    "user_print_failed": {
+        "username": "john_doe",
+        "printer": "Bambu X1C",
+        "filename": "Benchy.3mf",
+        "timestamp": "2024-01-15 15:15",
+        "app_name": "Bambuddy",
+    },
+    "user_print_stopped": {
+        "username": "john_doe",
+        "printer": "Bambu X1C",
+        "filename": "Benchy.3mf",
+        "timestamp": "2024-01-15 15:15",
+        "app_name": "Bambuddy",
+    },
+}
+
+
+class NotificationTemplateBase(BaseModel):
+    """Base schema for notification templates."""
+
+    title_template: str = Field(..., min_length=1, max_length=200)
+    body_template: str = Field(..., min_length=1, max_length=2000)
+
+
+class NotificationTemplateUpdate(BaseModel):
+    """Schema for updating a notification template."""
+
+    title_template: str | None = Field(default=None, min_length=1, max_length=200)
+    body_template: str | None = Field(default=None, min_length=1, max_length=2000)
+
+
+class NotificationTemplateResponse(NotificationTemplateBase):
+    """Schema for notification template API responses."""
+
+    id: int
+    event_type: str
+    name: str
+    is_default: bool
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class TemplateVariableInfo(BaseModel):
+    """Information about a template variable."""
+
+    name: str
+    description: str
+
+
+class EventVariablesResponse(BaseModel):
+    """Response for available variables per event type."""
+
+    event_type: str
+    event_name: str
+    variables: list[str]
+
+
+class TemplatePreviewRequest(BaseModel):
+    """Request to preview a template with sample data."""
+
+    event_type: str
+    title_template: str
+    body_template: str
+
+
+class TemplatePreviewResponse(BaseModel):
+    """Response with rendered template preview."""
+
+    title: str
+    body: str

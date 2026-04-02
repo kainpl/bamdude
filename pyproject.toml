@@ -1,0 +1,81 @@
+[project]
+name = "bambuddy"
+version = "0.1.5"
+description = "Archive and manage Bambu Lab 3MF files"
+requires-python = ">=3.10"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+exclude = [
+    ".git",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "static",
+    "frontend",
+    "*.pyc",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "ARG",    # flake8-unused-arguments
+    "SIM",    # flake8-simplify
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "B008",   # do not perform function calls in argument defaults (FastAPI Depends)
+    "B904",   # raise from (too noisy)
+    "ARG001", # unused function argument (common in FastAPI)
+    "ARG002", # unused method argument
+    "SIM108", # ternary operator (readability preference)
+    "SIM102", # nested if (readability preference)
+    "SIM105", # contextlib.suppress (readability preference)
+    "UP017",  # datetime.UTC alias (Python 3.11+ only, we support 3.10)
+]
+
+# Allow autofix for all enabled rules
+fixable = ["ALL"]
+unfixable = []
+
+[tool.ruff.lint.per-file-ignores]
+# Tests can have unused imports and assertions
+"**/tests/**" = ["F401", "F811", "ARG"]
+# Init files often have unused imports for re-export
+"**/__init__.py" = ["F401"]
+# main.py needs early logging setup before other imports
+"backend/app/main.py" = ["E402"]
+# MQTT client has some unused variables for debugging
+"backend/app/services/bambu_mqtt.py" = ["F841"]
+# compat module intentionally uses version checks for Python 3.10 support
+"backend/app/core/compat.py" = ["UP036"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["backend"]
+force-single-line = false
+combine-as-imports = true
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+markers = [
+    "docker: marks tests that run in Docker integration environment",
+]

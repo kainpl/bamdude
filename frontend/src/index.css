@@ -1,0 +1,479 @@
+@import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+/* Enable class-based dark mode for Tailwind v4 */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  /* Accent colors - use CSS variables for theming */
+  --color-bambu-green: var(--accent);
+  --color-bambu-green-light: var(--accent-light);
+  --color-bambu-green-dark: var(--accent-dark);
+
+  /* Semantic status colors - fixed, don't change with accent */
+  --color-status-ok: var(--status-ok);
+  --color-status-error: var(--status-error);
+  --color-status-warning: var(--status-warning);
+
+  /* Theme-aware colors via CSS variables */
+  --color-bambu-dark: var(--bg-primary);
+  --color-bambu-dark-secondary: var(--bg-secondary);
+  --color-bambu-dark-tertiary: var(--bg-tertiary);
+  --color-bambu-gray: var(--text-muted);
+  --color-bambu-gray-light: var(--text-secondary);
+  --color-bambu-gray-dark: var(--text-tertiary);
+}
+
+/* ============================================
+   BASE DEFAULTS
+   ============================================ */
+
+:root {
+  /* Default accent color (green) */
+  --accent: #00ae42;
+  --accent-light: #00c64d;
+  --accent-dark: #009438;
+
+  /* Semantic status colors - these never change with accent theme */
+  --status-ok: #22c55e;      /* green-500 - always green for success/online/ok */
+  --status-error: #ef4444;   /* red-500 - always red for error/offline/failed */
+  --status-warning: #f59e0b; /* amber-500 - always amber for warnings */
+
+  /* Default light mode background (neutral) */
+  --bg-primary: #f5f5f5;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #e5e5e5;
+  --text-primary: #1a1a1a;
+  --text-secondary: #4a4a4a;
+  --text-muted: #6b6b6b;
+  --text-tertiary: #808080;
+  --border-color: #d4d4d4;
+
+  /* Default style (classic) */
+  --card-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  --glow-color: transparent;
+
+  font-family: 'Inter', system-ui, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Dark mode base */
+.dark {
+  --bg-primary: #1a1a1a;
+  --bg-secondary: #2d2d2d;
+  --bg-tertiary: #3d3d3d;
+  --text-primary: #ffffff;
+  --text-secondary: #a0a0a0;
+  --text-muted: #808080;
+  --text-tertiary: #4a4a4a;
+  --border-color: #3d3d3d;
+  --card-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+/* ============================================
+   LAYER 1: BACKGROUND PALETTES
+   ============================================ */
+
+/* Light mode backgrounds */
+.bg-neutral {
+  /* Default - already set in :root */
+}
+
+.bg-warm {
+  --bg-primary: #faf8f5;
+  --bg-secondary: #fffefa;
+  --bg-tertiary: #e8e4dd;
+  --text-primary: #2d2a26;
+  --text-secondary: #5c5750;
+  --text-muted: #7a756c;
+  --text-tertiary: #9a9590;
+  --border-color: #d8d4cc;
+}
+
+.bg-cool {
+  --bg-primary: #f0f4f8;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #dce4ec;
+  --text-primary: #1a2530;
+  --text-secondary: #4a5568;
+  --text-muted: #6b7a8a;
+  --text-tertiary: #8a9aaa;
+  --border-color: #c8d4e0;
+}
+
+/* Dark mode backgrounds */
+.dark.bg-neutral {
+  --bg-primary: #1a1a1a;
+  --bg-secondary: #2d2d2d;
+  --bg-tertiary: #3d3d3d;
+  --text-primary: #ffffff;
+  --text-secondary: #a0a0a0;
+  --text-muted: #808080;
+  --text-tertiary: #4a4a4a;
+  --border-color: #3d3d3d;
+}
+
+.dark.bg-warm {
+  --bg-primary: #1c1a18;
+  --bg-secondary: #2e2a26;
+  --bg-tertiary: #3e3a36;
+  --text-primary: #f5f0ea;
+  --text-secondary: #b0a898;
+  --text-muted: #8a8278;
+  --text-tertiary: #5a5248;
+  --border-color: #3e3a36;
+}
+
+.dark.bg-cool {
+  --bg-primary: #181c20;
+  --bg-secondary: #262c32;
+  --bg-tertiary: #363e46;
+  --text-primary: #f0f4f8;
+  --text-secondary: #98a8b8;
+  --text-muted: #788898;
+  --text-tertiary: #4a5a6a;
+  --border-color: #363e46;
+}
+
+.dark.bg-oled {
+  --bg-primary: #000000;
+  --bg-secondary: #141414;
+  --bg-tertiary: #1f1f1f;
+  --text-primary: #ffffff;
+  --text-secondary: #a0a0a0;
+  --text-muted: #707070;
+  --text-tertiary: #404040;
+  --border-color: #2a2a2a;
+}
+
+.dark.bg-slate {
+  --bg-primary: #0f172a;
+  --bg-secondary: #1e293b;
+  --bg-tertiary: #334155;
+  --text-primary: #f1f5f9;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+  --text-tertiary: #475569;
+  --border-color: #334155;
+}
+
+.dark.bg-forest {
+  --bg-primary: #121a16;
+  --bg-secondary: #1c2a22;
+  --bg-tertiary: #2a3d30;
+  --text-primary: #e8f5ec;
+  --text-secondary: #8aa894;
+  --text-muted: #6a8874;
+  --text-tertiary: #4a6854;
+  --border-color: #2a3d30;
+}
+
+/* Printer card control buttons: stack only when they clip */
+.printer-control-buttons-container {
+  container-type: inline-size;
+}
+
+@container (max-width: 220px) {
+  .printer-control-buttons {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .printer-control-buttons > button {
+    width: 100%;
+  }
+}
+
+/* ============================================
+   LAYER 2: STYLE EFFECTS
+   ============================================ */
+
+/* Classic - default, clean minimal shadows */
+.style-classic {
+  /* Uses default shadows from :root and .dark */
+}
+
+/* Glow - accent-colored glow effects on cards */
+.style-glow {
+  --card-shadow: 0 2px 8px rgba(0, 0, 0, 0.08), 0 0 25px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.dark.style-glow {
+  --card-shadow: 0 4px 20px rgba(0, 0, 0, 0.5), 0 0 40px color-mix(in srgb, var(--accent) 15%, transparent);
+}
+
+/* Vibrant - dramatic deep shadows, more contrast */
+.style-vibrant {
+  --card-shadow: 0 8px 30px rgba(0, 0, 0, 0.15), 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.dark.style-vibrant {
+  --card-shadow: 0 10px 40px rgba(0, 0, 0, 0.6), 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+/* ============================================
+   LAYER 3: ACCENT COLORS
+   ============================================ */
+
+.accent-green {
+  --accent: #00ae42;
+  --accent-light: #00c64d;
+  --accent-dark: #009438;
+}
+
+.accent-teal {
+  --accent: #14b8a6;
+  --accent-light: #2dd4bf;
+  --accent-dark: #0d9488;
+}
+
+.accent-blue {
+  --accent: #3b82f6;
+  --accent-light: #60a5fa;
+  --accent-dark: #2563eb;
+}
+
+.accent-orange {
+  --accent: #f97316;
+  --accent-light: #fb923c;
+  --accent-dark: #ea580c;
+}
+
+.accent-purple {
+  --accent: #8b5cf6;
+  --accent-light: #a78bfa;
+  --accent-dark: #7c3aed;
+}
+
+.accent-red {
+  --accent: #ef4444;
+  --accent-light: #f87171;
+  --accent-dark: #dc2626;
+}
+
+body {
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  margin: 0;
+  min-height: 100vh;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+/* Override text-white to be theme-aware */
+.text-white {
+  color: var(--text-primary);
+}
+
+/* Smooth transitions for theme changes */
+.bg-bambu-dark,
+.bg-bambu-dark-secondary,
+.bg-bambu-dark-tertiary,
+.border-bambu-dark-tertiary {
+  transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+
+/* Toast slide-in animation */
+@keyframes slide-in {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.animate-slide-in {
+  animation: slide-in 0.2s ease-out;
+}
+
+/* Theme-aware icon inversion - only invert in dark mode */
+.icon-theme {
+  opacity: 0.5;
+}
+
+.dark .icon-theme {
+  filter: invert(1);
+  opacity: 0.4;
+}
+
+/* Green-colored icon for active status indicators */
+.icon-green {
+  filter: invert(48%) sepia(89%) saturate(459%) hue-rotate(93deg) brightness(95%) contrast(92%);
+  opacity: 1;
+}
+
+/* Orange/red-colored icon for heating indicators */
+.icon-heating {
+  filter: invert(50%) sepia(100%) saturate(1000%) hue-rotate(360deg) brightness(100%) contrast(100%);
+  opacity: 1;
+}
+
+/* Jogpad theme styling - darken background in dark mode */
+.jogpad-theme {
+  /* Light mode - normal */
+}
+
+.dark .jogpad-theme {
+  filter: brightness(0.35) contrast(1.2);
+}
+
+/* Empty AMS slot with diagonal stripes */
+.ams-empty-slot {
+  background: repeating-linear-gradient(
+    45deg,
+    #444,
+    #444 2px,
+    #222 2px,
+    #222 4px
+  );
+}
+
+.dark .ams-empty-slot {
+  background: repeating-linear-gradient(
+    45deg,
+    #555,
+    #555 2px,
+    #333 2px,
+    #333 4px
+  );
+}
+
+/* Touch manipulation to prevent zoom on double-tap */
+.touch-manipulation {
+  touch-action: manipulation;
+}
+
+/* Safe area insets for notched devices */
+.safe-area-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0);
+}
+
+.safe-area-top {
+  padding-top: env(safe-area-inset-top, 0);
+}
+
+/* Global scrollbar theming */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--text-muted) 40%, transparent) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--text-muted) 40%, transparent);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--text-muted) 60%, transparent);
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Hide scrollbar but keep functionality */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+/* Mobile drawer animation */
+@keyframes slide-in-left {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+.animate-slide-in-left {
+  animation: slide-in-left 0.3s ease-out;
+}
+
+/* Card shadows - uses theme-specific shadow */
+.card-shadow {
+  box-shadow: var(--card-shadow);
+}
+
+/* ============================================
+   SPOOLBUDDY KIOSK MODAL CONSTRAINTS
+   Cap large modals (max-w-2xl) to viewport on the
+   small SpoolBuddy touchscreen. Excludes smaller
+   modals like the slot action picker (max-w-sm).
+   ============================================ */
+[data-spoolbuddy-kiosk] .fixed .relative.max-w-2xl {
+  height: 90vh;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+}
+
+[data-spoolbuddy-kiosk] .fixed .relative.max-w-2xl > div:first-child {
+  flex-shrink: 0;
+}
+
+[data-spoolbuddy-kiosk] .fixed .relative.max-w-2xl > div:last-child {
+  flex-shrink: 0;
+}
+
+[data-spoolbuddy-kiosk] .fixed .relative.max-w-2xl > div:nth-child(2) {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* Remove inner spool grid max-height to avoid nested scrollbars */
+[data-spoolbuddy-kiosk] .fixed .relative.max-w-2xl .max-h-96 {
+  max-height: none;
+}
+
+/* Calendar selected-day list scrollbar theming */
+.calendar-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--text-muted) 60%, transparent) transparent;
+}
+
+.calendar-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+
+.calendar-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.calendar-scroll::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--text-muted) 60%, transparent);
+  border-radius: 999px;
+  border: 2px solid color-mix(in srgb, var(--bg-secondary) 70%, transparent);
+}
+
+.calendar-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--text-muted) 80%, transparent);
+}

@@ -1,0 +1,384 @@
+import { useQueryClient } from '@tanstack/react-query';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useToast } from '../contexts/ToastContext';
+import { useTranslation } from 'react-i18next';
+
+interface WebSocketMessage {
+  type: string;
+  printer_id?: number;
+  data?: Record<string, unknown>;
+  printer_name?: string;
+  missing_slots?: Array<{ slot?: string }>;
+}
+
+export function useWebSocket() {
+  const wsRef = useRef<WebSocket | null>(null);
+  const reconnectTimeoutRef = useRef<number | null>(null);
+  const queryClient = useQueryClient();
+  const [isConnected, setIsConnected] = useState(false);
+  const lastMissingSpoolWarningRef = useRef<Map<number, string>>(new Map());
+  const { showToast } = useToast();
+  const { t } = useTranslation();
+
+  // Debounce invalidations to prevent rapid re-render cascades
+  const pendingInvalidations = useRef<Set<string>>(new Set());
+  const invalidationTimeoutRef = useRef<number | null>(null);
+
+  // Throttle printer status updates to prevent freeze during rapid messages
+  const pendingPrinterStatus = useRef<Map<number, Record<string, unknown>>>(new Map());
+  const printerStatusTimeoutRef = useRef<number | null>(null);
+
+  // Throttle message processing to prevent browser freeze
+  const messageQueueRef = useRef<WebSocketMessage[]>([]);
+  const processingRef = useRef(false);
+
+  // Use ref for handleMessage to avoid stale closure in connect
+  const handleMessageRef = useRef<(message: WebSocketMessage) => void>(() => {});
+
+  // Process message queue with throttling to prevent UI freeze
+  const processMessageQueue = useCallback(() => {
+    if (processingRef.current || messageQueueRef.current.length === 0) {
+      return;
+    }
+
+    processingRef.current = true;
+
+    const processNext = () => {
+      const message = messageQueueRef.current.shift();
+      if (message) {
+        // Use requestAnimationFrame to yield to the browser
+        requestAnimationFrame(() => {
+          handleMessageRef.current(message);
+          // Small delay between messages to prevent overwhelming the browser
+          if (messageQueueRef.current.length > 0) {
+            setTimeout(processNext, 16); // ~60fps
+          } else {
+            processingRef.current = false;
+          }
+        });
+      } else {
+        processingRef.current = false;
+      }
+    };
+
+    processNext();
+  }, []);
+
+  const connect = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      return;
+    }
+
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/api/v1/ws`;
+
+    const ws = new WebSocket(wsUrl);
+
+    let pingInterval: number | null = null;
+
+    ws.onopen = () => {
+      if (import.meta.env.MODE !== 'test') console.log('[WebSocket] Connected');
+      setIsConnected(true);
+      // Start ping interval
+      pingInterval = window.setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'ping' }));
+        }
+      }, 30000);
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const message: WebSocketMessage = JSON.parse(event.data);
+        // Handle printer_status directly (already throttled) to avoid queue delays
+        // This prevents the "timelapse" effect where status updates are applied slowly
+        if (message.type === 'printer_status' && message.printer_id !== undefined && message.data) {
+          handleMessageRef.current(message);
+        } else {
+          // Queue other messages for throttled processing
+          messageQueueRef.current.push(message);
+          processMessageQueue();
+        }
+      } catch {
+        // Ignore parse errors
+      }
+    };
+
+    ws.onclose = (event) => {
+      if (import.meta.env.MODE !== 'test') console.log('[WebSocket] Closed', event.code, event.reason);
+      if (pingInterval) {
+        clearInterval(pingInterval);
+        pingInterval = null;
+      }
+      setIsConnected(false);
+      wsRef.current = null;
+
+      // Reconnect after 3 seconds
+      reconnectTimeoutRef.current = window.setTimeout(() => {
+        connect();
+      }, 3000);
+    };
+
+    ws.onerror = (error) => {
+      if (import.meta.env.MODE !== 'test') console.error('[WebSocket] Error', error);
+      ws.close();
+    };
+
+    wsRef.current = ws;
+  }, [processMessageQueue]);
+
+  // Throttled printer status update - coalesces rapid updates per printer
+  const throttledPrinterStatusUpdate = useCallback((printerId: number, data: Record<string, unknown>) => {
+    // Merge with any pending data for this printer
+    const existing = pendingPrinterStatus.current.get(printerId) || {};
+    pendingPrinterStatus.current.set(printerId, { ...existing, ...data });
+
+    // Schedule update if not already scheduled
+    if (!printerStatusTimeoutRef.current) {
+      printerStatusTimeoutRef.current = window.setTimeout(() => {
+        const updates = new Map(pendingPrinterStatus.current);
+        pendingPrinterStatus.current.clear();
+        printerStatusTimeoutRef.current = null;
+
+        // Apply all pending updates
+        requestAnimationFrame(() => {
+          updates.forEach((statusData, id) => {
+            queryClient.setQueryData(
+              ['printerStatus', id],
+              (old: Record<string, unknown> | undefined) => {
+                const merged = { ...old, ...statusData };
+                if (merged.wifi_signal == null && old?.wifi_signal != null) {
+                  merged.wifi_signal = old.wifi_signal;
+                }
+                return merged;
+              }
+            );
+          });
+        });
+      }, 100); // Update at most every 100ms
+    }
+  }, [queryClient]);
+
+  // Debounced invalidation helper - coalesces multiple rapid invalidations
+  const debouncedInvalidate = useCallback((queryKey: string) => {
+    pendingInvalidations.current.add(queryKey);
+
+    // Clear existing timeout
+    if (invalidationTimeoutRef.current) {
+      clearTimeout(invalidationTimeoutRef.current);
+    }
+
+    // Schedule invalidation after a delay (3s to prevent browser freeze on print completion)
+    invalidationTimeoutRef.current = window.setTimeout(() => {
+      const keys = Array.from(pendingInvalidations.current);
+      pendingInvalidations.current.clear();
+      invalidationTimeoutRef.current = null;
+
+      // Invalidate queries one at a time with delays to prevent freeze
+      let delay = 0;
+      keys.forEach((key) => {
+        setTimeout(() => {
+          requestAnimationFrame(() => {
+            queryClient.invalidateQueries({ queryKey: [key] });
+          });
+        }, delay);
+        delay += 500; // 500ms between each invalidation
+      });
+    }, 3000);
+  }, [queryClient]);
+
+  const handleMessage = useCallback((message: WebSocketMessage) => {
+    switch (message.type) {
+      case 'printer_status':
+        if (message.printer_id !== undefined && message.data) {
+          throttledPrinterStatusUpdate(message.printer_id, message.data);
+        }
+        break;
+
+      case 'print_start':
+        // Refetch printer status immediately when print starts to get printable_objects_count
+        if (message.printer_id !== undefined) {
+          queryClient.invalidateQueries({ queryKey: ['printerStatus', message.printer_id] });
+        }
+        break;
+
+      case 'missing_spool_assignment': {
+        if (message.printer_id === undefined || !Array.isArray(message.missing_slots)) {
+          break;
+        }
+
+        const missingSlotLabels = message.missing_slots
+          .map((slot) => (slot && typeof slot.slot === 'string' ? slot.slot : 'Unknown'))
+          .filter((slot) => slot.length > 0);
+
+        if (missingSlotLabels.length === 0) {
+          lastMissingSpoolWarningRef.current.delete(message.printer_id);
+          break;
+        }
+
+        const signature = missingSlotLabels.join('|');
+        if (lastMissingSpoolWarningRef.current.get(message.printer_id) === signature) {
+          break;
+        }
+        lastMissingSpoolWarningRef.current.set(message.printer_id, signature);
+
+        const printerName = message.printer_name || `Printer ${message.printer_id}`;
+        const toastMsg = t('printers.toast.missingSpoolAssignment', {
+          printer: printerName,
+          slots: missingSlotLabels.join(', '),
+        });
+        showToast(toastMsg, 'warning');
+        break;
+      }
+
+      case 'print_complete':
+        // Don't invalidate printerStatus here - it causes re-render cascade and browser freeze
+        // The printer_status websocket messages will naturally update the status
+        debouncedInvalidate('archives');
+        debouncedInvalidate('archiveStats');
+        break;
+
+      case 'archive_created':
+        debouncedInvalidate('archives');
+        debouncedInvalidate('archiveStats');
+        break;
+
+      case 'archive_updated':
+        debouncedInvalidate('archives');
+        break;
+
+      case 'library_file_added':
+        debouncedInvalidate('library-files');
+        debouncedInvalidate('library-stats');
+        break;
+
+      case 'pong':
+        // Keepalive response, ignore
+        break;
+
+      case 'plate_not_empty':
+        // Plate detection found objects - print was paused
+        // Dispatch event for toast notification
+        window.dispatchEvent(new CustomEvent('plate-not-empty', {
+          detail: {
+            printer_id: message.printer_id,
+            printer_name: (message as unknown as { printer_name?: string }).printer_name,
+            message: (message as unknown as { message?: string }).message,
+          }
+        }));
+        break;
+
+      case 'spool_assignment_changed':
+        // Spool assigned/unassigned - refresh assignment data across all tabs
+        debouncedInvalidate('spool-assignments');
+        debouncedInvalidate('slotPresets');
+        break;
+
+      case 'spool_auto_assigned':
+        // RFID tag matched - refresh inventory and assignment data
+        debouncedInvalidate('inventory-spools');
+        debouncedInvalidate('spool-assignments');
+        break;
+
+      case 'spool_usage_logged':
+        // Filament consumption recorded - refresh spool data
+        debouncedInvalidate('inventory-spools');
+        break;
+
+      case 'unknown_tag':
+        // Unknown RFID tag detected - dispatch event for UI
+        window.dispatchEvent(new CustomEvent('unknown-tag', {
+          detail: {
+            printer_id: (message as unknown as { printer_id?: number }).printer_id,
+            ams_id: (message as unknown as { ams_id?: number }).ams_id,
+            tray_id: (message as unknown as { tray_id?: number }).tray_id,
+            tag_uid: (message as unknown as { tag_uid?: string }).tag_uid,
+            tray_uuid: (message as unknown as { tray_uuid?: string }).tray_uuid,
+          }
+        }));
+        break;
+
+      case 'background_dispatch':
+        window.dispatchEvent(
+          new CustomEvent('background-dispatch', {
+            detail: (message as unknown as { data?: Record<string, unknown> }).data || {},
+          })
+        );
+        break;
+
+      case 'spoolbuddy_weight':
+        window.dispatchEvent(new CustomEvent('spoolbuddy-weight', { detail: message }));
+        break;
+
+      case 'spoolbuddy_tag_matched':
+        window.dispatchEvent(new CustomEvent('spoolbuddy-tag-matched', { detail: message }));
+        debouncedInvalidate('inventory-spools');
+        break;
+
+      case 'spoolbuddy_unknown_tag':
+        window.dispatchEvent(new CustomEvent('spoolbuddy-unknown-tag', { detail: message }));
+        break;
+
+      case 'spoolbuddy_tag_removed':
+        window.dispatchEvent(new CustomEvent('spoolbuddy-tag-removed', { detail: message }));
+        break;
+
+      case 'spoolbuddy_tag_written':
+        window.dispatchEvent(new CustomEvent('spoolbuddy-tag-written', { detail: message }));
+        debouncedInvalidate('inventory-spools');
+        break;
+
+      case 'spoolbuddy_tag_write_failed':
+        window.dispatchEvent(new CustomEvent('spoolbuddy-tag-write-failed', { detail: message }));
+        break;
+
+      case 'spoolbuddy_online':
+        window.dispatchEvent(new CustomEvent('spoolbuddy-online', { detail: message }));
+        debouncedInvalidate('spoolbuddy-devices');
+        debouncedInvalidate('spoolbuddy-update-check');
+        break;
+
+      case 'spoolbuddy_offline':
+        window.dispatchEvent(new CustomEvent('spoolbuddy-offline', { detail: message }));
+        debouncedInvalidate('spoolbuddy-devices');
+        break;
+
+      case 'spoolbuddy_update':
+        debouncedInvalidate('spoolbuddy-devices');
+        debouncedInvalidate('spoolbuddy-update-check');
+        break;
+    }
+  }, [queryClient, debouncedInvalidate, throttledPrinterStatusUpdate, showToast, t]);
+
+  // Keep the ref updated with latest handleMessage
+  useEffect(() => {
+    handleMessageRef.current = handleMessage;
+  }, [handleMessage]);
+
+  useEffect(() => {
+    connect();
+
+    return () => {
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+      }
+      if (invalidationTimeoutRef.current) {
+        clearTimeout(invalidationTimeoutRef.current);
+      }
+      if (printerStatusTimeoutRef.current) {
+        clearTimeout(printerStatusTimeoutRef.current);
+      }
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+    };
+  }, [connect]);
+
+  const sendMessage = useCallback((message: Record<string, unknown>) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify(message));
+    }
+  }, []);
+
+  return { isConnected, sendMessage };
+}
