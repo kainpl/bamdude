@@ -92,6 +92,7 @@ export function SettingsPage() {
   const [editingProvider, setEditingProvider] = useState<NotificationProvider | null>(null);
   const [editingTemplate, setEditingTemplate] = useState<NotificationTemplate | null>(null);
   const [showLogViewer, setShowLogViewer] = useState(false);
+  const [notifSubTab, setNotifSubTab] = useState<'providers' | 'templates'>('providers');
   const [defaultView, setDefaultViewState] = useState<string>(getDefaultView());
 
   // Initialize tab from URL params (handle legacy ?tab=email → users tab + email sub-tab)
@@ -733,7 +734,6 @@ export function SettingsPage() {
       settings.check_updates !== localSettings.check_updates ||
       (settings.check_printer_firmware ?? true) !== (localSettings.check_printer_firmware ?? true) ||
       (settings.include_beta_updates ?? false) !== (localSettings.include_beta_updates ?? false) ||
-      settings.notification_language !== localSettings.notification_language ||
       (settings.bed_cooled_threshold ?? 35) !== (localSettings.bed_cooled_threshold ?? 35) ||
       settings.ams_humidity_good !== localSettings.ams_humidity_good ||
       settings.ams_humidity_fair !== localSettings.ams_humidity_fair ||
@@ -803,7 +803,6 @@ export function SettingsPage() {
         check_updates: localSettings.check_updates,
         check_printer_firmware: localSettings.check_printer_firmware,
         include_beta_updates: localSettings.include_beta_updates,
-        notification_language: localSettings.notification_language,
         bed_cooled_threshold: localSettings.bed_cooled_threshold,
         ams_humidity_good: localSettings.ams_humidity_good,
         ams_humidity_fair: localSettings.ams_humidity_fair,
@@ -2733,86 +2732,34 @@ export function SettingsPage() {
       )}
 
       {/* Notifications Tab */}
-      {activeTab === 'notifications' && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          {/* Left Column: Providers */}
+      {activeTab === 'notifications' && (<>
+        {/* Sub-tabs */}
+        <div className="flex gap-1 mb-6 border-b border-bambu-dark-tertiary">
+          <button
+            onClick={() => setNotifSubTab('providers')}
+            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${notifSubTab === 'providers' ? 'text-bambu-green border-bambu-green' : 'text-bambu-gray border-transparent hover:text-white'}`}
+          >
+            <Bell className="w-4 h-4 inline mr-1.5 -mt-0.5" />
+            {t('settings.providers')}
+          </button>
+          <button
+            onClick={() => setNotifSubTab('templates')}
+            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${notifSubTab === 'templates' ? 'text-bambu-green border-bambu-green' : 'text-bambu-gray border-transparent hover:text-white'}`}
+          >
+            <FileText className="w-4 h-4 inline mr-1.5 -mt-0.5" />
+            {t('settings.messageTemplates')}
+          </button>
+        </div>
+
+        {/* Providers Sub-tab */}
+        {notifSubTab === 'providers' && (
           <div>
+            {/* Settings + Actions bar */}
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-                <Bell className="w-5 h-5 text-bambu-green" />
-                {t('settings.providers')}
-              </h2>
-              <div className="flex items-center gap-2">
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  onClick={() => setShowLogViewer(true)}
-                >
-                  <History className="w-4 h-4" />
-                  {t('settings.log')}
-                </Button>
-                {notificationProviders && notificationProviders.length > 0 && (
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => {
-                      setTestAllResult(null);
-                      testAllMutation.mutate();
-                    }}
-                    disabled={testAllMutation.isPending}
-                  >
-                    {testAllMutation.isPending ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <Send className="w-4 h-4" />
-                    )}
-                    {t('settings.testAll')}
-                  </Button>
-                )}
-                <Button
-                  size="sm"
-                  onClick={() => {
-                    setEditingProvider(null);
-                    setShowNotificationModal(true);
-                  }}
-                >
-                  <Plus className="w-4 h-4" />
-                  {t('settings.addNotificationProvider')}
-                </Button>
-              </div>
-            </div>
-
-            {/* Notification Language Setting */}
-            <Card className="mb-4">
-              <CardContent className="py-3">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-white text-sm font-medium">{t('settings.notificationLanguage')}</p>
-                    <p className="text-xs text-bambu-gray">{t('settings.notificationLanguageDescription')}</p>
-                  </div>
-                  <select
-                    value={localSettings.notification_language || 'en'}
-                    onChange={(e) => updateSetting('notification_language', e.target.value)}
-                    className="px-2 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-bambu-green"
-                  >
-                    {availableLanguages.map((lang) => (
-                      <option key={lang.code} value={lang.code}>
-                        {lang.nativeName}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </CardContent>
-            </Card>
-
-            {/* Bed Cooled Threshold Setting */}
-            <Card className="mb-4">
-              <CardContent className="py-3">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-white text-sm font-medium">{t('settings.bedCooledThreshold')}</p>
-                    <p className="text-xs text-bambu-gray">{t('settings.bedCooledThresholdDescription')}</p>
-                  </div>
+              <div className="flex items-center gap-3">
+                {/* Bed Cooled Threshold - compact inline */}
+                <div className="flex items-center gap-2 text-sm">
+                  <span className="text-bambu-gray">{t('settings.bedCooledThreshold')}:</span>
                   <div className="flex items-center gap-1">
                     <input
                       type="number"
@@ -2821,39 +2768,52 @@ export function SettingsPage() {
                       step={1}
                       value={localSettings.bed_cooled_threshold ?? 35}
                       onChange={(e) => updateSetting('bed_cooled_threshold', Number(e.target.value))}
-                      className="w-16 px-2 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-sm text-center focus:outline-none focus:ring-1 focus:ring-bambu-green"
+                      className="w-14 px-2 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-sm text-center focus:outline-none focus:ring-1 focus:ring-bambu-green"
                     />
-                    <span className="text-sm text-bambu-gray">°C</span>
+                    <span className="text-bambu-gray">°C</span>
                   </div>
                 </div>
-              </CardContent>
-            </Card>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button size="sm" variant="secondary" onClick={() => setShowLogViewer(true)}>
+                  <History className="w-4 h-4" />
+                  {t('settings.log')}
+                </Button>
+                {notificationProviders && notificationProviders.length > 0 && (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => { setTestAllResult(null); testAllMutation.mutate(); }}
+                    disabled={testAllMutation.isPending}
+                  >
+                    {testAllMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                    {t('settings.testAll')}
+                  </Button>
+                )}
+                <Button size="sm" onClick={() => { setEditingProvider(null); setShowNotificationModal(true); }}>
+                  <Plus className="w-4 h-4" />
+                  {t('settings.addNotificationProvider')}
+                </Button>
+              </div>
+            </div>
 
             {/* User Notifications Toggle */}
-            <Card className="mb-4">
-              <CardContent className="py-3">
-                <div className={`flex items-center justify-between ${!advancedAuthStatus?.advanced_auth_enabled ? 'opacity-50' : ''}`}>
-                  <div>
-                    <p className="text-white text-sm font-medium">{t('settings.userNotificationsEnabled')}</p>
-                    <p className="text-xs text-bambu-gray">
-                      {!advancedAuthStatus?.advanced_auth_enabled
-                        ? t('settings.userNotificationsDisabledHint')
-                        : t('settings.userNotificationsEnabledDescription')}
-                    </p>
-                  </div>
-                  <label className="relative inline-flex items-center cursor-pointer">
-                    <input
-                      type="checkbox"
-                      className="sr-only peer"
+            {advancedAuthStatus?.advanced_auth_enabled && (
+              <Card className="mb-4">
+                <CardContent className="py-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-white text-sm font-medium">{t('settings.userNotificationsEnabled')}</p>
+                      <p className="text-xs text-bambu-gray">{t('settings.userNotificationsEnabledDescription')}</p>
+                    </div>
+                    <Toggle
                       checked={localSettings.user_notifications_enabled ?? true}
-                      disabled={!advancedAuthStatus?.advanced_auth_enabled}
-                      onChange={(e) => updateSetting('user_notifications_enabled', e.target.checked)}
+                      onChange={(checked) => updateSetting('user_notifications_enabled', checked)}
                     />
-                    <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green peer-disabled:cursor-not-allowed"></div>
-                  </label>
-                </div>
-              </CardContent>
-            </Card>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
 
             {/* Test All Results */}
             {testAllResult && (
@@ -2861,10 +2821,7 @@ export function SettingsPage() {
                 <CardContent className="py-3">
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-sm font-medium text-white">{t('settings.testResults')}</span>
-                    <button
-                      onClick={() => setTestAllResult(null)}
-                      className="text-bambu-gray hover:text-white text-xs"
-                    >
+                    <button onClick={() => setTestAllResult(null)} className="text-bambu-gray hover:text-white text-xs">
                       {t('common.dismiss')}
                     </button>
                   </div>
@@ -2893,6 +2850,7 @@ export function SettingsPage() {
               </Card>
             )}
 
+            {/* Provider list — full width, vertical stack */}
             {providersLoading ? (
               <div className="flex justify-center py-12">
                 <Loader2 className="w-6 h-6 text-bambu-green animate-spin" />
@@ -2903,10 +2861,7 @@ export function SettingsPage() {
                   <NotificationProviderCard
                     key={provider.id}
                     provider={provider}
-                    onEdit={(p) => {
-                      setEditingProvider(p);
-                      setShowNotificationModal(true);
-                    }}
+                    onEdit={(p) => { setEditingProvider(p); setShowNotificationModal(true); }}
                   />
                 ))}
               </div>
@@ -2917,13 +2872,7 @@ export function SettingsPage() {
                     <Bell className="w-12 h-12 mx-auto mb-3 opacity-30" />
                     <p className="text-sm font-medium text-white mb-2">{t('settings.noProvidersTitle')}</p>
                     <p className="text-xs mb-3">{t('settings.noProvidersDescription')}</p>
-                    <Button
-                      size="sm"
-                      onClick={() => {
-                        setEditingProvider(null);
-                        setShowNotificationModal(true);
-                      }}
-                    >
+                    <Button size="sm" onClick={() => { setEditingProvider(null); setShowNotificationModal(true); }}>
                       <Plus className="w-4 h-4" />
                       {t('settings.addProvider')}
                     </Button>
@@ -2932,13 +2881,11 @@ export function SettingsPage() {
               </Card>
             )}
           </div>
+        )}
 
-          {/* Right Column: Templates */}
+        {/* Templates Sub-tab */}
+        {notifSubTab === 'templates' && (
           <div>
-            <h2 className="text-lg font-semibold text-white flex items-center gap-2 mb-4">
-              <FileText className="w-5 h-5 text-bambu-green" />
-              {t('settings.messageTemplates')}
-            </h2>
             <p className="text-sm text-bambu-gray mb-4">
               {t('settings.messageTemplatesDescription')}
             </p>
@@ -2948,7 +2895,7 @@ export function SettingsPage() {
                 <Loader2 className="w-6 h-6 text-bambu-green animate-spin" />
               </div>
             ) : notificationTemplates && notificationTemplates.length > 0 ? (
-              <div className="space-y-2">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
                 {[...notificationTemplates].sort((a, b) => a.name.localeCompare(b.name)).map((template) => (
                   <Card
                     key={template.id}
@@ -2959,16 +2906,11 @@ export function SettingsPage() {
                       <div className="flex items-center justify-between">
                         <div className="min-w-0 flex-1">
                           <p className="text-white font-medium text-sm truncate">{template.name}</p>
-                          <p className="text-bambu-gray text-xs truncate mt-0.5">
-                            {template.title_template}
-                          </p>
+                          <p className="text-bambu-gray text-xs truncate mt-0.5">{template.title_template}</p>
                         </div>
                         <button
                           className="p-1.5 hover:bg-bambu-dark-tertiary rounded transition-colors shrink-0 ml-2"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setEditingTemplate(template);
-                          }}
+                          onClick={(e) => { e.stopPropagation(); setEditingTemplate(template); }}
                         >
                           <Edit2 className="w-4 h-4 text-bambu-gray" />
                         </button>
@@ -2988,8 +2930,8 @@ export function SettingsPage() {
               </Card>
             )}
           </div>
-        </div>
-      )}
+        )}
+      </>)}
 
       {/* API Keys Tab */}
       {activeTab === 'apikeys' && (

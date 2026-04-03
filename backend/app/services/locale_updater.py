@@ -29,9 +29,15 @@ async def update_locale_data(db: AsyncSession, language: str) -> dict:
 
     # Invalidate cached locale-to-english name mapping
     try:
-        from backend.app.api.routes.maintenance import _locale_name_to_english
         import backend.app.api.routes.maintenance as maint_module
         maint_module._locale_name_to_english = None
+    except Exception:
+        pass
+
+    # Invalidate i18n translation cache
+    try:
+        from backend.app.i18n import invalidate_cache
+        invalidate_cache()
     except Exception:
         pass
 

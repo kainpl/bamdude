@@ -43,6 +43,7 @@ from backend.app.api.routes import (
     spoolman,
     support,
     system,
+    telegram,
     updates,
     user_notifications,
     users,
@@ -3239,7 +3240,7 @@ async def on_print_complete(printer_id: int, data: dict):
                 overview = await _get_printer_maintenance_internal(printer_id, db, commit=True)
 
                 items_needing_attention = [
-                    {"name": item.maintenance_type_name, "is_due": item.is_due, "is_warning": item.is_warning}
+                    {"id": item.id, "name": item.maintenance_type_name, "is_due": item.is_due, "is_warning": item.is_warning}
                     for item in overview.maintenance_items
                     if item.enabled and (item.is_due or item.is_warning)
                 ]
@@ -3951,9 +3952,28 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logging.warning("Failed to sync virtual printers: %s", e)
 
+    # Start Telegram bot polling
+    try:
+        print("[MAIN] Starting Telegram bot...")
+        from backend.app.services.telegram_bot import start_telegram_bot
+
+        await start_telegram_bot()
+        print("[MAIN] Telegram bot startup complete")
+    except Exception as e:
+        print(f"[MAIN] Failed to start Telegram bot: {e}")
+        import traceback
+        traceback.print_exc()
+
     yield
 
     # Shutdown
+    # Stop Telegram bot
+    try:
+        from backend.app.services.telegram_bot import stop_telegram_bot
+
+        await stop_telegram_bot()
+    except Exception:
+        pass
     print_scheduler.stop()
     await background_dispatch.stop()
     smart_plug_manager.stop_scheduler()
@@ -4179,6 +4199,7 @@ app.include_router(github_backup.router, prefix=app_settings.api_prefix)
 app.include_router(metrics.router, prefix=app_settings.api_prefix)
 app.include_router(virtual_printers.router, prefix=app_settings.api_prefix)
 app.include_router(spoolbuddy.router, prefix=app_settings.api_prefix)
+app.include_router(telegram.router, prefix=app_settings.api_prefix)
 
 
 # Serve static files (React build)

@@ -108,6 +108,7 @@ async def init_db():
         spool_k_profile,
         spool_usage_history,
         spoolbuddy_device,
+        telegram_chat,
         user,
         user_email_pref,
         virtual_printer,
@@ -1585,6 +1586,19 @@ async def run_migrations(conn):
                 text("INSERT OR IGNORE INTO settings (key, value) VALUES (:key, :value)"),
                 {"key": key, "value": value},
             )
+        except OperationalError:
+            pass
+
+
+    # Migration: Add telegram_chats columns
+    for col in [
+        "daily_digest BOOLEAN DEFAULT 0",
+        "quiet_hours_enabled BOOLEAN DEFAULT 0",
+        "quiet_hours_start VARCHAR(5)",
+        "quiet_hours_end VARCHAR(5)",
+    ]:
+        try:
+            await conn.execute(text(f"ALTER TABLE telegram_chats ADD COLUMN {col}"))
         except OperationalError:
             pass
 

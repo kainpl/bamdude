@@ -295,18 +295,48 @@ class NotificationService:
             except Exception:
                 return False, f"HTTP {response.status_code}: {response.text[:200]}"
 
-    async def _send_telegram(self, config: dict, message: str, image_data: bytes | None = None) -> tuple[bool, str]:
-        """Send notification via Telegram bot."""
+    async def _send_telegram(
+        self, config: dict, message: str, image_data: bytes | None = None,
+        event_type: str = "unknown", printer_id: int | None = None,
+        extra_data: dict | None = None,
+    ) -> tuple[bool, str]:
+        """Send notification via Telegram bot (aiogram or httpx fallback)."""
         bot_token = config.get("bot_token", "").strip()
         chat_id = config.get("chat_id", "").strip()
 
         if not bot_token or not chat_id:
             return False, "Bot token and chat ID are required"
 
-        # Escape underscores in the message body so Telegram Markdown
-        # parsing doesn't break on job names like "A1_plate_8" or error
-        # codes like "0300_0001".  The title is already wrapped in *bold*
-        # markers, so only escape after the first newline.
+        # Try aiogram bot first (if running and same token)
+        from backend.app.services.telegram_bot import get_bot, send_message, send_photo
+
+        aiogram_bot = get_bot()
+        if aiogram_bot and aiogram_bot.token == bot_token:
+            try:
+                # Bot uses MarkdownV2 — escape dynamic content, keep bold markers
+                from backend.app.i18n import escape_md
+
+                # Templates use Markdown v1 bold (*text*) — convert to MarkdownV2:
+                # split on *, escape the parts, reassemble with *
+                parts = message.split("*")
+                md2_message = ""
+                for i, part in enumerate(parts):
+                    md2_message += escape_md(part) if i % 2 == 0 else f"*{escape_md(part)}*"
+
+                # Build inline keyboard for actionable notifications
+                reply_markup = await self._build_telegram_actions(
+                    event_type, printer_id, int(chat_id), extra_data,
+                )
+
+                if image_data:
+                    ok = await send_photo(chat_id, image_data, caption=md2_message, reply_markup=reply_markup)
+                else:
+                    ok = await send_message(chat_id, md2_message, reply_markup=reply_markup)
+                return (True, "Message sent successfully") if ok else (False, "Failed to send via aiogram")
+            except Exception as e:
+                logger.warning("aiogram send failed, falling back to httpx: %s", e)
+
+        # Fallback to direct httpx (different token or bot not running)
         if "\n" in message:
             title_part, body_part = message.split("\n", 1)
             body_part = body_part.replace("_", "\\_")
@@ -315,7 +345,6 @@ class NotificationService:
         client = await self._get_client()
 
         if image_data:
-            # Use sendPhoto to attach the thumbnail with the caption
             url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
             response = await client.post(
                 url,
@@ -573,10 +602,13 @@ class NotificationService:
         message: str,
         db: AsyncSession | None = None,
         image_data: bytes | None = None,
+        event_type: str = "unknown",
+        printer_id: int | None = None,
+        extra_data: dict | None = None,
     ) -> tuple[bool, str]:
         """Send notification to a specific provider."""
-        # Check quiet hours
-        if self._is_in_quiet_hours(provider):
+        # Check quiet hours (skip for Telegram — handled per-chat)
+        if provider.provider_type != "telegram" and self._is_in_quiet_hours(provider):
             logger.info("Skipping notification to %s - quiet hours active", provider.name)
             return True, "Skipped - quiet hours"
 
@@ -590,7 +622,11 @@ class NotificationService:
             elif provider.provider_type == "pushover":
                 return await self._send_pushover(config, title, message, image_data=image_data)
             elif provider.provider_type == "telegram":
-                return await self._send_telegram(config, f"*{title}*\n{message}", image_data=image_data)
+                return await self._send_telegram(
+                    config, f"*{title}*\n{message}",
+                    image_data=image_data, event_type=event_type,
+                    printer_id=printer_id, extra_data=extra_data,
+                )
             elif provider.provider_type == "email":
                 return await self._send_email(config, title, message)
             elif provider.provider_type == "discord":
@@ -604,6 +640,73 @@ class NotificationService:
         except Exception as e:
             logger.exception("Error sending notification via %s", provider.provider_type)
             return False, str(e)
+
+    async def _build_telegram_actions(
+        self, event_type: str, printer_id: int | None, chat_id: int,
+        extra_data: dict | None = None,
+    ):
+        """Build inline keyboard for Telegram notifications based on event and permissions."""
+        if not printer_id:
+            return None
+
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+        from backend.app.i18n import t, get_language
+
+        buttons = []
+        lang = await get_language()
+        NS = "telegram_ui"
+
+        try:
+            from backend.app.core.database import async_session
+            from backend.app.models.telegram_chat import TelegramChat
+            from sqlalchemy import select
+
+            async with async_session() as db:
+                result = await db.execute(
+                    select(TelegramChat).where(
+                        TelegramChat.chat_id == chat_id,
+                        TelegramChat.is_active == True,  # noqa: E712
+                    )
+                )
+                tg_chat = result.scalar_one_or_none()
+                if not tg_chat:
+                    return None
+
+                # Print complete/failed → clear plate button
+                if event_type in ("print_complete", "print_failed"):
+                    if tg_chat.has_permission("printers:clear_plate"):
+                        from backend.app.services.printer_manager import printer_manager
+                        from backend.app.models.print_queue import PrintQueueItem
+                        from sqlalchemy import func
+
+                        if not printer_manager.is_plate_cleared(printer_id):
+                            pending = (await db.execute(
+                                select(func.count(PrintQueueItem.id)).where(
+                                    PrintQueueItem.status == "pending",
+                                    PrintQueueItem.printer_id == printer_id,
+                                )
+                            )).scalar() or 0
+                            if pending > 0:
+                                buttons.append([InlineKeyboardButton(
+                                    text=f"\u2705 {t(lang, NS, 'printers.btn_clear_plate')}",
+                                    callback_data=f"action:clear_plate:{printer_id}",
+                                )])
+
+                # Maintenance due → mark done buttons
+                if event_type == "maintenance_due" and extra_data:
+                    if tg_chat.has_permission("maintenance:update"):
+                        items = extra_data.get("maintenance_items", [])
+                        for item in items:
+                            item_id = item.get("id")
+                            if item_id:
+                                buttons.append([InlineKeyboardButton(
+                                    text=f"\u2705 {item['name']}",
+                                    callback_data=f"maint:done:{item_id}:{printer_id}",
+                                )])
+        except Exception:
+            return None
+
+        return InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
 
     async def _update_provider_status(
         self, db: AsyncSession, provider_id: int, success: bool, error: str | None = None
@@ -681,6 +784,7 @@ class NotificationService:
         printer_name: str | None = None,
         force_immediate: bool = False,
         image_data: bytes | None = None,
+        extra_data: dict | None = None,
     ):
         """Send notification to multiple providers and log the results.
 
@@ -690,7 +794,11 @@ class NotificationService:
         for provider in providers:
             try:
                 # Always send notification immediately
-                success, error = await self._send_to_provider(provider, title, message, db, image_data=image_data)
+                success, error = await self._send_to_provider(
+                    provider, title, message, db,
+                    image_data=image_data, event_type=event_type,
+                    printer_id=printer_id, extra_data=extra_data,
+                )
 
                 # Also queue for digest if enabled (digest is a summary, not a queue)
                 if provider.daily_digest_enabled and provider.daily_digest_time:
@@ -1087,7 +1195,10 @@ class NotificationService:
 
         logger.info("Found %s providers for maintenance_due: %s", len(providers), [p.name for p in providers])
         title, message = await self._build_message_from_template(db, "maintenance_due", variables)
-        await self._send_to_providers(providers, title, message, db, "maintenance_due", printer_id, printer_name)
+        await self._send_to_providers(
+            providers, title, message, db, "maintenance_due", printer_id, printer_name,
+            extra_data={"maintenance_items": maintenance_items},
+        )
 
     async def on_ams_humidity_high(
         self,

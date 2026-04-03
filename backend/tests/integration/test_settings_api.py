@@ -170,15 +170,6 @@ class TestSettingsAPI:
         assert response.status_code == 200
         assert response.json()["low_stock_threshold"] == 15.5
 
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_update_notification_language(self, async_client: AsyncClient):
-        """Verify notification language can be updated."""
-        response = await async_client.put("/api/v1/settings/", json={"notification_language": "de"})
-
-        assert response.status_code == 200
-        assert response.json()["notification_language"] == "de"
-
     # ========================================================================
     # Settings persistence tests
     # ========================================================================

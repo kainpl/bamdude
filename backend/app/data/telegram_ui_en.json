@@ -1,0 +1,112 @@
+{
+  "commands": {
+    "start": "Main menu",
+    "status": "Printer status",
+    "help": "Help & commands"
+  },
+  "start": {
+    "welcome": "Bambu Lab 3D printer management.\n\nChoose an action:",
+    "btn_printers": "Printers",
+    "btn_queue": "Queue",
+    "btn_stats": "Stats",
+    "btn_help": "Help"
+  },
+  "reply_kb": {
+    "printers": "\ud83d\udda8 Printers",
+    "queue": "\ud83d\udccb Queue",
+    "stats": "\ud83d\udcca Stats",
+    "help": "\u2139\ufe0f Help"
+  },
+  "help": {
+    "title": "Commands",
+    "cmd_start": "/start \u2014 main menu",
+    "cmd_status": "/status \u2014 printer status",
+    "cmd_help": "/help \u2014 this help",
+    "printers_title": "Printers",
+    "printers_desc": "Tap a printer for details and controls.",
+    "queue_title": "Queue",
+    "queue_desc": "View print queue jobs."
+  },
+  "printers": {
+    "title": "Printers",
+    "empty": "No printers configured.",
+    "offline": "Offline",
+    "not_found": "Printer not found",
+    "not_connected": "Printer not connected",
+    "model": "Model",
+    "status": "Status",
+    "nozzle": "Nozzle",
+    "bed": "Bed",
+    "progress": "Progress",
+    "remaining": "Remaining",
+    "time_hm": "{h}h {m}m",
+    "time_m": "{m}m",
+    "btn_refresh": "Refresh",
+    "btn_back": "Back",
+    "btn_main_menu": "Main menu",
+    "hours": "Hours",
+    "total_hours": "Total hours",
+    "enter_hours": "Send new total hours value (number):",
+    "hours_updated": "Hours updated: {hours}h",
+    "hours_invalid": "Invalid number. Send a number like 123 or 45.5",
+    "hours_cancelled": "Cancelled",
+    "btn_cancel": "Cancel",
+    "btn_maintenance": "Maintenance",
+    "btn_clear_plate": "Plate cleared",
+    "clear_plate_ok": "Plate cleared! Next print starts shortly.",
+    "clear_plate_fail": "Failed to clear plate",
+    "next_in_queue": "Next: {name}"
+  },
+  "maintenance": {
+    "title": "Maintenance",
+    "no_items": "No maintenance items configured.",
+    "overdue": "OVERDUE",
+    "due_soon": "Due soon",
+    "ok": "OK",
+    "hours_since": "{hours}h since last",
+    "hours_until": "{hours}h until due",
+    "days_since": "{days}d since last",
+    "days_until": "{days}d until due",
+    "disabled": "disabled",
+    "btn_done": "Done",
+    "done_ok": "Marked as done!",
+    "confirm_done": "Mark \"{name}\" as done?"
+  },
+  "states": {
+    "IDLE": "Idle",
+    "RUNNING": "Printing",
+    "PAUSE": "Paused",
+    "FINISH": "Finished",
+    "FAILED": "Failed"
+  },
+  "actions": {
+    "btn_pause": "Pause",
+    "btn_stop": "Stop",
+    "btn_resume": "Resume",
+    "btn_light": "Light",
+    "pause_ok": "Print paused",
+    "resume_ok": "Print resumed",
+    "stop_ok": "Print stopped",
+    "stop_fail": "Failed to stop",
+    "light_on": "Light on",
+    "light_off": "Light off"
+  },
+  "stats": {
+    "title": "Statistics",
+    "total": "Total prints",
+    "success": "Successful",
+    "failed": "Failed",
+    "success_rate": "Success rate"
+  },
+  "queue": {
+    "title": "Print Queue",
+    "pending": "Pending",
+    "printing": "Printing"
+  },
+  "auth": {
+    "registered": "Chat registered. Ask admin to activate and assign a role in Settings.",
+    "disabled": "This chat is disabled. Contact admin.",
+    "pending_setup": "This chat is pending setup. Contact admin.",
+    "no_permission": "No permission"
+  }
+}

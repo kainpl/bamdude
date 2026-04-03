@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { X, Save, Loader2, RotateCcw, Plus, Eye } from 'lucide-react';
+import { X, Save, Loader2, RotateCcw, Plus, Eye, Bold, Italic, Underline, Strikethrough, Code, Link, EyeOff } from 'lucide-react';
 import { api } from '../api/client';
 import type { NotificationTemplate, NotificationTemplateUpdate } from '../api/client';
 import { Button } from './Button';
@@ -9,6 +9,13 @@ import { Button } from './Button';
 interface NotificationTemplateEditorProps {
   template: NotificationTemplate;
   onClose: () => void;
+}
+
+interface FormatAction {
+  icon: React.ReactNode;
+  label: string;
+  prefix: string;
+  suffix: string;
 }
 
 export function NotificationTemplateEditor({ template, onClose }: NotificationTemplateEditorProps) {
@@ -94,6 +101,33 @@ export function NotificationTemplateEditor({ template, onClose }: NotificationTe
     });
   };
 
+  const wrapSelection = useCallback((prefix: string, suffix: string) => {
+    const textarea = bodyRef.current;
+    if (!textarea) return;
+
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const text = bodyTemplate;
+    const selected = text.substring(start, end);
+    const before = text.substring(0, start);
+    const after = text.substring(end);
+
+    const newValue = before + prefix + selected + suffix + after;
+    setBodyTemplate(newValue);
+
+    setTimeout(() => {
+      textarea.focus();
+      if (selected.length > 0) {
+        // Keep selection around wrapped text
+        textarea.setSelectionRange(start + prefix.length, end + prefix.length);
+      } else {
+        // Place cursor between markers
+        const cursor = start + prefix.length;
+        textarea.setSelectionRange(cursor, cursor);
+      }
+    }, 0);
+  }, [bodyTemplate]);
+
   const insertVariable = (variable: string) => {
     const textarea = bodyRef.current;
     if (!textarea) return;
@@ -107,13 +141,45 @@ export function NotificationTemplateEditor({ template, onClose }: NotificationTe
 
     setBodyTemplate(newValue);
 
-    // Restore focus and cursor position
     setTimeout(() => {
       textarea.focus();
       const newCursor = start + variable.length + 2;
       textarea.setSelectionRange(newCursor, newCursor);
     }, 0);
   };
+
+  const formatActions: FormatAction[] = [
+    { icon: <Bold className="w-4 h-4" />, label: t('notifications.formatBold'), prefix: '*', suffix: '*' },
+    { icon: <Italic className="w-4 h-4" />, label: t('notifications.formatItalic'), prefix: '_', suffix: '_' },
+    { icon: <Underline className="w-4 h-4" />, label: t('notifications.formatUnderline'), prefix: '__', suffix: '__' },
+    { icon: <Strikethrough className="w-4 h-4" />, label: t('notifications.formatStrikethrough'), prefix: '~', suffix: '~' },
+    { icon: <Code className="w-4 h-4" />, label: t('notifications.formatCode'), prefix: '`', suffix: '`' },
+    { icon: <EyeOff className="w-3.5 h-3.5" />, label: t('notifications.formatSpoiler'), prefix: '||', suffix: '||' },
+    { icon: <Link className="w-4 h-4" />, label: t('notifications.formatLink'), prefix: '[', suffix: '](url)' },
+  ];
+
+  // Keyboard shortcuts for formatting
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      if (document.activeElement !== bodyRef.current) return;
+
+      const shortcuts: Record<string, [string, string]> = {
+        'b': ['*', '*'],
+        'i': ['_', '_'],
+        'u': ['__', '__'],
+      };
+
+      const action = shortcuts[e.key.toLowerCase()];
+      if (action) {
+        e.preventDefault();
+        wrapSelection(action[0], action[1]);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [wrapSelection]);
 
   const hasChanges = titleTemplate !== template.title_template || bodyTemplate !== template.body_template;
 
@@ -160,12 +226,30 @@ export function NotificationTemplateEditor({ template, onClose }: NotificationTe
             <label className="block text-sm font-medium text-bambu-gray mb-1">
               {t('notifications.bodyLabel')}
             </label>
+
+            {/* Formatting toolbar */}
+            <div className="flex items-center gap-0.5 p-1 bg-bambu-dark border border-bambu-dark-tertiary border-b-0 rounded-t">
+              {formatActions.map((action, i) => (
+                <button
+                  key={i}
+                  type="button"
+                  onClick={() => wrapSelection(action.prefix, action.suffix)}
+                  title={action.label}
+                  className="p-1.5 text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary rounded transition-colors"
+                >
+                  {action.icon}
+                </button>
+              ))}
+              <div className="flex-1" />
+              <span className="text-[10px] text-bambu-gray/40 pr-1">MarkdownV2</span>
+            </div>
+
             <textarea
               ref={bodyRef}
               value={bodyTemplate}
               onChange={(e) => setBodyTemplate(e.target.value)}
-              rows={4}
-              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white focus:outline-none focus:ring-1 focus:ring-bambu-green font-mono text-sm resize-none"
+              rows={6}
+              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-b text-white focus:outline-none focus:ring-1 focus:ring-bambu-green font-mono text-sm resize-none"
               placeholder={t('notifications.bodyPlaceholder')}
             />
           </div>

@@ -32,7 +32,7 @@ const mockSettings = {
   check_printer_firmware: true,
   include_beta_updates: false,
   language: 'en',
-  notification_language: 'en',
+  telegram_registration_open: false,
   bed_cooled_threshold: 35,
   ams_humidity_good: 40,
   ams_humidity_fair: 60,
