@@ -80,7 +80,7 @@ export function SetupPage() {
           <div className="flex items-center justify-center mb-6">
             <img
               src={mode === 'dark' ? '/img/bambuddy_logo_dark_transparent.png' : '/img/bambuddy_logo_light.png'}
-              alt="Bambuddy"
+              alt="Bambuddy HE"
               className="h-16"
             />
           </div>

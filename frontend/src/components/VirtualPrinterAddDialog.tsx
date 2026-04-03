@@ -71,7 +71,7 @@ export function VirtualPrinterAddDialog({ onClose }: VirtualPrinterAddDialogProp
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="Bambuddy"
+              placeholder="Bambuddy HE"
               className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-md px-3 py-2 text-white text-sm placeholder-bambu-gray"
               autoFocus
             />

@@ -26,6 +26,7 @@ import { GitHubBackupSettings } from '../components/GitHubBackupSettings';
 import { EmailSettings } from '../components/EmailSettings';
 import { APIBrowser } from '../components/APIBrowser';
 import { Toggle } from '../components/Toggle';
+import { getGroupName, getGroupDescription } from '../utils/groupI18n';
 import { virtualPrinterApi } from '../api/client';
 import { defaultNavItems, getDefaultView, setDefaultView } from '../components/Layout';
 import { availableLanguages } from '../i18n';
@@ -3971,7 +3972,7 @@ export function SettingsPage() {
                                     : 'bg-gray-500/20 text-gray-300'
                                 }`}
                               >
-                                {group.name}
+                                {getGroupName(group.name, t)}
                               </span>
                             ))}
                           </div>
@@ -4035,7 +4036,7 @@ export function SettingsPage() {
                                         : 'bg-gray-500/20 text-gray-300'
                                     }`}
                                   >
-                                    {group.name}
+                                    {getGroupName(group.name, t)}
                                   </span>
                                 ))}
                               </div>
@@ -4104,10 +4105,10 @@ export function SettingsPage() {
                                       : 'text-bambu-gray'
                                   }`}
                                 />
-                                <span className="text-white font-medium">{group.name}</span>
+                                <span className="text-white font-medium">{getGroupName(group.name, t)}</span>
                                 {group.is_system && (
                                   <span className="px-2 py-0.5 rounded text-xs bg-yellow-500/20 text-yellow-400">
-                                    {t('settings.system')}
+                                    {t('settings.systemLabel')}
                                   </span>
                                 )}
                               </div>
@@ -4125,7 +4126,7 @@ export function SettingsPage() {
                               </div>
                             </div>
                             <p className="text-sm text-bambu-gray mt-1 ml-6">
-                              {group.description || t('settings.noDescription')}
+                              {getGroupDescription(group.name, group.description, t) || t('settings.noDescription')}
                             </p>
                             <div className="flex items-center gap-4 mt-2 ml-6 text-xs text-bambu-gray">
                               <span>{t('settings.userCount', { count: group.user_count })}</span>
@@ -4274,7 +4275,7 @@ export function SettingsPage() {
                           onChange={() => toggleUserGroup(group.id)}
                           className="w-4 h-4 rounded border-bambu-gray text-bambu-green focus:ring-bambu-green focus:ring-offset-0 bg-bambu-dark"
                         />
-                        <span className="text-sm text-white">{group.name}</span>
+                        <span className="text-sm text-white">{getGroupName(group.name, t)}</span>
                         {group.is_system && (
                           <span className="text-xs text-yellow-400">{t('settings.systemBadge')}</span>
                         )}
@@ -4483,7 +4484,7 @@ export function SettingsPage() {
                           onChange={() => toggleUserGroup(group.id)}
                           className="w-4 h-4 rounded border-bambu-gray text-bambu-green focus:ring-bambu-green focus:ring-offset-0 bg-bambu-dark"
                         />
-                        <span className="text-sm text-white">{group.name}</span>
+                        <span className="text-sm text-white">{getGroupName(group.name, t)}</span>
                         {group.is_system && (
                           <span className="text-xs text-yellow-400">({t('users.system') || 'System'})</span>
                         )}

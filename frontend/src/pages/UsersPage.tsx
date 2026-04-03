@@ -7,6 +7,7 @@ import { api } from '../api/client';
 import type { UserCreate, UserUpdate, UserResponse } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
+import { getGroupName } from '../utils/groupI18n';
 import { Button } from '../components/Button';
 import { Card, CardContent, CardHeader } from '../components/Card';
 import { ConfirmModal } from '../components/ConfirmModal';
@@ -349,7 +350,7 @@ export function UsersPage() {
                                 : 'bg-gray-500/20 text-gray-300'
                             }`}
                           >
-                            {group.name}
+                            {getGroupName(group.name, t)}
                           </span>
                         ))}
                         {(!user.groups || user.groups.length === 0) && !user.is_admin && (
@@ -504,7 +505,7 @@ export function UsersPage() {
                           onChange={() => toggleGroup(group.id)}
                           className="w-4 h-4 rounded border-bambu-gray text-bambu-green focus:ring-bambu-green focus:ring-offset-0 bg-bambu-dark"
                         />
-                        <span className="text-sm text-white">{group.name}</span>
+                        <span className="text-sm text-white">{getGroupName(group.name, t)}</span>
                         {group.is_system && (
                           <span className="text-xs text-yellow-400">({t('users.system')})</span>
                         )}
@@ -669,7 +670,7 @@ export function UsersPage() {
                           onChange={() => toggleGroup(group.id)}
                           className="w-4 h-4 rounded border-bambu-gray text-bambu-green focus:ring-bambu-green focus:ring-offset-0 bg-bambu-dark"
                         />
-                        <span className="text-sm text-white">{group.name}</span>
+                        <span className="text-sm text-white">{getGroupName(group.name, t)}</span>
                         {group.is_system && (
                           <span className="text-xs text-yellow-400">({t('users.system')})</span>
                         )}

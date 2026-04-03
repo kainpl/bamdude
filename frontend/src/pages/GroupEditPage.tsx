@@ -8,6 +8,7 @@ import type { Permission, PermissionCategory } from '../api/client';
 import { Button } from '../components/Button';
 import { Card } from '../components/Card';
 import { useToast } from '../contexts/ToastContext';
+import { getPermissionCategoryName, getPermissionLabel } from '../utils/permissionI18n';
 
 export function GroupEditPage() {
   const { id } = useParams<{ id: string }>();
@@ -254,7 +255,7 @@ export function GroupEditPage() {
                       {partiallySelected && !fullySelected && <Minus className="w-3 h-3 text-white" />}
                     </button>
                     <Shield className="w-4 h-4 text-bambu-gray shrink-0" />
-                    <span className="text-white font-medium text-sm">{category.name}</span>
+                    <span className="text-white font-medium text-sm">{getPermissionCategoryName(category.name, t)}</span>
                   </div>
                   <span className="text-xs text-bambu-gray tabular-nums">
                     {selectedCount}/{totalCount}
@@ -272,7 +273,7 @@ export function GroupEditPage() {
                         onChange={() => togglePermission(perm.value)}
                         className="w-4 h-4 rounded border-bambu-gray text-bambu-green focus:ring-bambu-green focus:ring-offset-0 bg-bambu-dark-secondary"
                       />
-                      <span className="text-sm text-bambu-gray">{perm.label}</span>
+                      <span className="text-sm text-bambu-gray">{getPermissionLabel(perm.label, t)}</span>
                     </label>
                   ))}
                 </div>
