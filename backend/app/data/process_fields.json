@@ -1,0 +1,923 @@
+{
+  "version": "1.0.0",
+  "description": "Print process preset field definitions for Bambu Lab printers",
+  "fields": [
+    {
+      "key": "layer_height",
+      "label": "Layer Height",
+      "type": "number",
+      "category": "quality",
+      "description": "Height of each printed layer",
+      "unit": "mm",
+      "step": 0.01,
+      "min": 0.04,
+      "max": 0.6
+    },
+    {
+      "key": "initial_layer_height",
+      "label": "Initial Layer Height",
+      "type": "number",
+      "category": "quality",
+      "description": "Height of the first layer",
+      "unit": "mm",
+      "step": 0.01,
+      "min": 0.1,
+      "max": 0.5
+    },
+    {
+      "key": "line_width",
+      "label": "Line Width",
+      "type": "number",
+      "category": "quality",
+      "description": "Default extrusion width",
+      "unit": "mm",
+      "step": 0.01
+    },
+    {
+      "key": "initial_layer_line_width",
+      "label": "Initial Layer Line Width",
+      "type": "number",
+      "category": "quality",
+      "description": "First layer extrusion width",
+      "unit": "mm",
+      "step": 0.01
+    },
+    {
+      "key": "outer_wall_line_width",
+      "label": "Outer Wall Line Width",
+      "type": "number",
+      "category": "quality",
+      "description": "Outer perimeter extrusion width",
+      "unit": "mm",
+      "step": 0.01
+    },
+    {
+      "key": "inner_wall_line_width",
+      "label": "Inner Wall Line Width",
+      "type": "number",
+      "category": "quality",
+      "description": "Inner perimeter extrusion width",
+      "unit": "mm",
+      "step": 0.01
+    },
+    {
+      "key": "sparse_infill_line_width",
+      "label": "Infill Line Width",
+      "type": "number",
+      "category": "quality",
+      "description": "Sparse infill extrusion width",
+      "unit": "mm",
+      "step": 0.01
+    },
+    {
+      "key": "top_surface_line_width",
+      "label": "Top Surface Line Width",
+      "type": "number",
+      "category": "quality",
+      "description": "Top surface extrusion width",
+      "unit": "mm",
+      "step": 0.01
+    },
+    {
+      "key": "support_line_width",
+      "label": "Support Line Width",
+      "type": "number",
+      "category": "quality",
+      "description": "Support structure extrusion width",
+      "unit": "mm",
+      "step": 0.01
+    },
+    {
+      "key": "wall_loops",
+      "label": "Wall Loops",
+      "type": "number",
+      "category": "strength",
+      "description": "Number of perimeter walls",
+      "min": 1,
+      "max": 10
+    },
+    {
+      "key": "top_shell_layers",
+      "label": "Top Layers",
+      "type": "number",
+      "category": "strength",
+      "description": "Number of solid top layers",
+      "min": 1,
+      "max": 20
+    },
+    {
+      "key": "bottom_shell_layers",
+      "label": "Bottom Layers",
+      "type": "number",
+      "category": "strength",
+      "description": "Number of solid bottom layers",
+      "min": 1,
+      "max": 20
+    },
+    {
+      "key": "top_shell_thickness",
+      "label": "Top Shell Thickness",
+      "type": "number",
+      "category": "strength",
+      "description": "Minimum top shell thickness",
+      "unit": "mm",
+      "step": 0.1
+    },
+    {
+      "key": "bottom_shell_thickness",
+      "label": "Bottom Shell Thickness",
+      "type": "number",
+      "category": "strength",
+      "description": "Minimum bottom shell thickness",
+      "unit": "mm",
+      "step": 0.1
+    },
+    {
+      "key": "sparse_infill_density",
+      "label": "Infill Density",
+      "type": "number",
+      "category": "infill",
+      "description": "Percentage of infill",
+      "unit": "%",
+      "min": 0,
+      "max": 100
+    },
+    {
+      "key": "sparse_infill_pattern",
+      "label": "Infill Pattern",
+      "type": "select",
+      "category": "infill",
+      "description": "Pattern for sparse infill",
+      "options": [
+        {"value": "grid", "label": "Grid"},
+        {"value": "triangles", "label": "Triangles"},
+        {"value": "tri-hexagon", "label": "Tri-Hexagon"},
+        {"value": "cubic", "label": "Cubic"},
+        {"value": "gyroid", "label": "Gyroid"},
+        {"value": "honeycomb", "label": "Honeycomb"},
+        {"value": "3dhoneycomb", "label": "3D Honeycomb"},
+        {"value": "line", "label": "Line"},
+        {"value": "rectilinear", "label": "Rectilinear"},
+        {"value": "concentric", "label": "Concentric"},
+        {"value": "zig-zag", "label": "Zig-Zag"},
+        {"value": "crosshatch", "label": "Cross Hatch"},
+        {"value": "lightning", "label": "Lightning"},
+        {"value": "supportcubic", "label": "Support Cubic"},
+        {"value": "adaptivecubic", "label": "Adaptive Cubic"}
+      ]
+    },
+    {
+      "key": "top_surface_pattern",
+      "label": "Top Surface Pattern",
+      "type": "select",
+      "category": "infill",
+      "description": "Pattern for top solid layers",
+      "options": [
+        {"value": "monotonic", "label": "Monotonic"},
+        {"value": "monotoniclines", "label": "Monotonic Lines"},
+        {"value": "alignedrectilinear", "label": "Aligned Rectilinear"},
+        {"value": "rectilinear", "label": "Rectilinear"},
+        {"value": "concentric", "label": "Concentric"},
+        {"value": "hilbertcurve", "label": "Hilbert Curve"},
+        {"value": "archimedeanchords", "label": "Archimedean Chords"},
+        {"value": "octagramspiral", "label": "Octagram Spiral"}
+      ]
+    },
+    {
+      "key": "bottom_surface_pattern",
+      "label": "Bottom Surface Pattern",
+      "type": "select",
+      "category": "infill",
+      "description": "Pattern for bottom solid layers",
+      "options": [
+        {"value": "monotonic", "label": "Monotonic"},
+        {"value": "monotoniclines", "label": "Monotonic Lines"},
+        {"value": "rectilinear", "label": "Rectilinear"},
+        {"value": "concentric", "label": "Concentric"}
+      ]
+    },
+    {
+      "key": "infill_direction",
+      "label": "Infill Direction",
+      "type": "number",
+      "category": "infill",
+      "description": "Angle of infill pattern",
+      "unit": "°",
+      "min": 0,
+      "max": 360
+    },
+    {
+      "key": "infill_anchor",
+      "label": "Infill Anchor Length",
+      "type": "number",
+      "category": "infill",
+      "description": "Connect infill to walls",
+      "unit": "mm"
+    },
+    {
+      "key": "infill_anchor_max",
+      "label": "Max Infill Anchor Length",
+      "type": "number",
+      "category": "infill",
+      "description": "Maximum anchor length",
+      "unit": "mm"
+    },
+    {
+      "key": "infill_combination",
+      "label": "Combine Infill Layers",
+      "type": "boolean",
+      "category": "infill",
+      "description": "Print infill at higher layer heights"
+    },
+    {
+      "key": "outer_wall_speed",
+      "label": "Outer Wall Speed",
+      "type": "number",
+      "category": "speed",
+      "description": "Speed for outer perimeters",
+      "unit": "mm/s",
+      "min": 10,
+      "max": 500
+    },
+    {
+      "key": "inner_wall_speed",
+      "label": "Inner Wall Speed",
+      "type": "number",
+      "category": "speed",
+      "description": "Speed for inner perimeters",
+      "unit": "mm/s",
+      "min": 10,
+      "max": 500
+    },
+    {
+      "key": "sparse_infill_speed",
+      "label": "Infill Speed",
+      "type": "number",
+      "category": "speed",
+      "description": "Speed for sparse infill",
+      "unit": "mm/s",
+      "min": 10,
+      "max": 500
+    },
+    {
+      "key": "internal_solid_infill_speed",
+      "label": "Internal Solid Infill Speed",
+      "type": "number",
+      "category": "speed",
+      "description": "Speed for internal solid layers",
+      "unit": "mm/s"
+    },
+    {
+      "key": "top_surface_speed",
+      "label": "Top Surface Speed",
+      "type": "number",
+      "category": "speed",
+      "description": "Speed for top surface",
+      "unit": "mm/s"
+    },
+    {
+      "key": "bridge_speed",
+      "label": "Bridge Speed",
+      "type": "number",
+      "category": "speed",
+      "description": "Speed for bridging",
+      "unit": "mm/s"
+    },
+    {
+      "key": "gap_infill_speed",
+      "label": "Gap Fill Speed",
+      "type": "number",
+      "category": "speed",
+      "description": "Speed for gap filling",
+      "unit": "mm/s"
+    },
+    {
+      "key": "travel_speed",
+      "label": "Travel Speed",
+      "type": "number",
+      "category": "speed",
+      "description": "Speed for non-printing moves",
+      "unit": "mm/s",
+      "min": 50,
+      "max": 1000
+    },
+    {
+      "key": "initial_layer_speed",
+      "label": "Initial Layer Speed",
+      "type": "number",
+      "category": "speed",
+      "description": "Speed for first layer",
+      "unit": "mm/s"
+    },
+    {
+      "key": "initial_layer_infill_speed",
+      "label": "Initial Layer Infill Speed",
+      "type": "number",
+      "category": "speed",
+      "description": "Speed for first layer infill",
+      "unit": "mm/s"
+    },
+    {
+      "key": "support_speed",
+      "label": "Support Speed",
+      "type": "number",
+      "category": "speed",
+      "description": "Speed for support structures",
+      "unit": "mm/s"
+    },
+    {
+      "key": "support_interface_speed",
+      "label": "Support Interface Speed",
+      "type": "number",
+      "category": "speed",
+      "description": "Speed for support interface",
+      "unit": "mm/s"
+    },
+    {
+      "key": "outer_wall_acceleration",
+      "label": "Outer Wall Acceleration",
+      "type": "number",
+      "category": "acceleration",
+      "description": "Acceleration for outer perimeters",
+      "unit": "mm/s²"
+    },
+    {
+      "key": "inner_wall_acceleration",
+      "label": "Inner Wall Acceleration",
+      "type": "number",
+      "category": "acceleration",
+      "description": "Acceleration for inner perimeters",
+      "unit": "mm/s²"
+    },
+    {
+      "key": "default_acceleration",
+      "label": "Default Acceleration",
+      "type": "number",
+      "category": "acceleration",
+      "description": "Default print acceleration",
+      "unit": "mm/s²"
+    },
+    {
+      "key": "travel_acceleration",
+      "label": "Travel Acceleration",
+      "type": "number",
+      "category": "acceleration",
+      "description": "Acceleration for travel moves",
+      "unit": "mm/s²"
+    },
+    {
+      "key": "initial_layer_acceleration",
+      "label": "Initial Layer Acceleration",
+      "type": "number",
+      "category": "acceleration",
+      "description": "Acceleration for first layer",
+      "unit": "mm/s²"
+    },
+    {
+      "key": "top_surface_acceleration",
+      "label": "Top Surface Acceleration",
+      "type": "number",
+      "category": "acceleration",
+      "description": "Acceleration for top surface",
+      "unit": "mm/s²"
+    },
+    {
+      "key": "bridge_acceleration",
+      "label": "Bridge Acceleration",
+      "type": "number",
+      "category": "acceleration",
+      "description": "Acceleration for bridging",
+      "unit": "mm/s²"
+    },
+    {
+      "key": "sparse_infill_acceleration",
+      "label": "Infill Acceleration",
+      "type": "number",
+      "category": "acceleration",
+      "description": "Acceleration for infill",
+      "unit": "mm/s²"
+    },
+    {
+      "key": "outer_wall_jerk",
+      "label": "Outer Wall Jerk",
+      "type": "number",
+      "category": "acceleration",
+      "description": "Jerk for outer perimeters",
+      "unit": "mm/s"
+    },
+    {
+      "key": "inner_wall_jerk",
+      "label": "Inner Wall Jerk",
+      "type": "number",
+      "category": "acceleration",
+      "description": "Jerk for inner perimeters",
+      "unit": "mm/s"
+    },
+    {
+      "key": "default_jerk",
+      "label": "Default Jerk",
+      "type": "number",
+      "category": "acceleration",
+      "description": "Default jerk value",
+      "unit": "mm/s"
+    },
+    {
+      "key": "travel_jerk",
+      "label": "Travel Jerk",
+      "type": "number",
+      "category": "acceleration",
+      "description": "Jerk for travel moves",
+      "unit": "mm/s"
+    },
+    {
+      "key": "initial_layer_jerk",
+      "label": "Initial Layer Jerk",
+      "type": "number",
+      "category": "acceleration",
+      "description": "Jerk for first layer",
+      "unit": "mm/s"
+    },
+    {
+      "key": "top_surface_jerk",
+      "label": "Top Surface Jerk",
+      "type": "number",
+      "category": "acceleration",
+      "description": "Jerk for top surface",
+      "unit": "mm/s"
+    },
+    {
+      "key": "enable_support",
+      "label": "Enable Support",
+      "type": "boolean",
+      "category": "support",
+      "description": "Generate support structures"
+    },
+    {
+      "key": "support_type",
+      "label": "Support Type",
+      "type": "select",
+      "category": "support",
+      "description": "Type of support generation",
+      "options": [
+        {"value": "normal(auto)", "label": "Normal (Auto)"},
+        {"value": "tree(auto)", "label": "Tree (Auto)"},
+        {"value": "hybrid(auto)", "label": "Hybrid (Auto)"}
+      ]
+    },
+    {
+      "key": "support_style",
+      "label": "Support Style",
+      "type": "select",
+      "category": "support",
+      "description": "Style of support structure",
+      "options": [
+        {"value": "default", "label": "Default"},
+        {"value": "grid", "label": "Grid"},
+        {"value": "snug", "label": "Snug"},
+        {"value": "organic", "label": "Organic"}
+      ]
+    },
+    {
+      "key": "support_threshold_angle",
+      "label": "Support Overhang Angle",
+      "type": "number",
+      "category": "support",
+      "description": "Minimum angle for support generation",
+      "unit": "°",
+      "min": 0,
+      "max": 90
+    },
+    {
+      "key": "support_base_pattern",
+      "label": "Support Pattern",
+      "type": "select",
+      "category": "support",
+      "description": "Pattern for support base",
+      "options": [
+        {"value": "rectilinear", "label": "Rectilinear"},
+        {"value": "rectilinear-grid", "label": "Rectilinear Grid"},
+        {"value": "honeycomb", "label": "Honeycomb"},
+        {"value": "lightning", "label": "Lightning"},
+        {"value": "default", "label": "Default"},
+        {"value": "hollow", "label": "Hollow"}
+      ]
+    },
+    {
+      "key": "support_base_pattern_spacing",
+      "label": "Support Pattern Spacing",
+      "type": "number",
+      "category": "support",
+      "description": "Spacing between support lines",
+      "unit": "mm",
+      "step": 0.1
+    },
+    {
+      "key": "support_interface_top_layers",
+      "label": "Support Interface Top Layers",
+      "type": "number",
+      "category": "support",
+      "description": "Number of interface layers on top"
+    },
+    {
+      "key": "support_interface_bottom_layers",
+      "label": "Support Interface Bottom Layers",
+      "type": "number",
+      "category": "support",
+      "description": "Number of interface layers on bottom"
+    },
+    {
+      "key": "support_interface_spacing",
+      "label": "Support Interface Spacing",
+      "type": "number",
+      "category": "support",
+      "description": "Spacing of interface pattern",
+      "unit": "mm",
+      "step": 0.1
+    },
+    {
+      "key": "support_object_xy_distance",
+      "label": "Support XY Distance",
+      "type": "number",
+      "category": "support",
+      "description": "Gap between support and object",
+      "unit": "mm",
+      "step": 0.1
+    },
+    {
+      "key": "support_top_z_distance",
+      "label": "Support Top Z Distance",
+      "type": "number",
+      "category": "support",
+      "description": "Gap between support top and object",
+      "unit": "mm",
+      "step": 0.01
+    },
+    {
+      "key": "support_bottom_z_distance",
+      "label": "Support Bottom Z Distance",
+      "type": "number",
+      "category": "support",
+      "description": "Gap between object and support top",
+      "unit": "mm",
+      "step": 0.01
+    },
+    {
+      "key": "support_on_build_plate_only",
+      "label": "Support On Build Plate Only",
+      "type": "boolean",
+      "category": "support",
+      "description": "Only generate support from build plate"
+    },
+    {
+      "key": "support_critical_regions_only",
+      "label": "Support Critical Regions Only",
+      "type": "boolean",
+      "category": "support",
+      "description": "Only support critical overhangs"
+    },
+    {
+      "key": "brim_type",
+      "label": "Brim Type",
+      "type": "select",
+      "category": "adhesion",
+      "description": "Type of brim to generate",
+      "options": [
+        {"value": "no_brim", "label": "No Brim"},
+        {"value": "auto_brim", "label": "Auto"},
+        {"value": "outer_only", "label": "Outer Only"},
+        {"value": "inner_only", "label": "Inner Only"},
+        {"value": "outer_and_inner", "label": "Outer and Inner"},
+        {"value": "brim_ears", "label": "Brim Ears"}
+      ]
+    },
+    {
+      "key": "brim_width",
+      "label": "Brim Width",
+      "type": "number",
+      "category": "adhesion",
+      "description": "Width of the brim",
+      "unit": "mm",
+      "min": 0,
+      "max": 20
+    },
+    {
+      "key": "brim_object_gap",
+      "label": "Brim-Object Gap",
+      "type": "number",
+      "category": "adhesion",
+      "description": "Gap between brim and object",
+      "unit": "mm",
+      "step": 0.01
+    },
+    {
+      "key": "skirt_loops",
+      "label": "Skirt Loops",
+      "type": "number",
+      "category": "adhesion",
+      "description": "Number of skirt loops",
+      "min": 0,
+      "max": 10
+    },
+    {
+      "key": "skirt_distance",
+      "label": "Skirt Distance",
+      "type": "number",
+      "category": "adhesion",
+      "description": "Distance from object to skirt",
+      "unit": "mm"
+    },
+    {
+      "key": "skirt_height",
+      "label": "Skirt Height",
+      "type": "number",
+      "category": "adhesion",
+      "description": "Height of skirt in layers"
+    },
+    {
+      "key": "raft_layers",
+      "label": "Raft Layers",
+      "type": "number",
+      "category": "adhesion",
+      "description": "Number of raft layers"
+    },
+    {
+      "key": "prime_tower_enable",
+      "label": "Enable Prime Tower",
+      "type": "boolean",
+      "category": "multimaterial",
+      "description": "Generate prime/wipe tower"
+    },
+    {
+      "key": "prime_tower_width",
+      "label": "Prime Tower Width",
+      "type": "number",
+      "category": "multimaterial",
+      "description": "Width of prime tower",
+      "unit": "mm"
+    },
+    {
+      "key": "prime_tower_brim_width",
+      "label": "Prime Tower Brim Width",
+      "type": "number",
+      "category": "multimaterial",
+      "description": "Brim width for prime tower",
+      "unit": "mm"
+    },
+    {
+      "key": "wipe_tower_no_sparse_layers",
+      "label": "No Sparse Layers in Tower",
+      "type": "boolean",
+      "category": "multimaterial",
+      "description": "Disable sparse layers in wipe tower"
+    },
+    {
+      "key": "flush_into_infill",
+      "label": "Flush Into Infill",
+      "type": "boolean",
+      "category": "multimaterial",
+      "description": "Purge into infill instead of tower"
+    },
+    {
+      "key": "flush_into_support",
+      "label": "Flush Into Support",
+      "type": "boolean",
+      "category": "multimaterial",
+      "description": "Purge into support instead of tower"
+    },
+    {
+      "key": "flush_into_objects",
+      "label": "Flush Into Objects",
+      "type": "boolean",
+      "category": "multimaterial",
+      "description": "Purge into object infill"
+    },
+    {
+      "key": "prime_volume",
+      "label": "Prime Volume",
+      "type": "number",
+      "category": "multimaterial",
+      "description": "Volume to prime after tool change",
+      "unit": "mm³"
+    },
+    {
+      "key": "seam_position",
+      "label": "Seam Position",
+      "type": "select",
+      "category": "quality",
+      "description": "Position of layer start/seam",
+      "options": [
+        {"value": "nearest", "label": "Nearest"},
+        {"value": "aligned", "label": "Aligned"},
+        {"value": "back", "label": "Back"},
+        {"value": "random", "label": "Random"}
+      ]
+    },
+    {
+      "key": "staggered_inner_seams",
+      "label": "Staggered Inner Seams",
+      "type": "boolean",
+      "category": "quality",
+      "description": "Stagger seams on inner walls"
+    },
+    {
+      "key": "wall_sequence",
+      "label": "Wall Sequence",
+      "type": "select",
+      "category": "quality",
+      "description": "Order of printing walls",
+      "options": [
+        {"value": "inner wall/outer wall", "label": "Inner/Outer"},
+        {"value": "outer wall/inner wall", "label": "Outer/Inner"},
+        {"value": "inner-outer-inner wall", "label": "Inner-Outer-Inner"}
+      ]
+    },
+    {
+      "key": "only_one_wall_top",
+      "label": "Only One Wall on Top",
+      "type": "boolean",
+      "category": "quality",
+      "description": "Use single wall on top surface"
+    },
+    {
+      "key": "detect_thin_wall",
+      "label": "Detect Thin Walls",
+      "type": "boolean",
+      "category": "quality",
+      "description": "Enable thin wall detection"
+    },
+    {
+      "key": "enable_overhang_speed",
+      "label": "Enable Overhang Speed",
+      "type": "boolean",
+      "category": "quality",
+      "description": "Slow down for overhangs"
+    },
+    {
+      "key": "overhang_speed_classic",
+      "label": "Classic Overhang Speed",
+      "type": "boolean",
+      "category": "quality",
+      "description": "Use classic overhang speed calculation"
+    },
+    {
+      "key": "bridge_flow",
+      "label": "Bridge Flow Ratio",
+      "type": "number",
+      "category": "quality",
+      "description": "Flow ratio for bridges",
+      "step": 0.01
+    },
+    {
+      "key": "thick_bridges",
+      "label": "Thick Bridges",
+      "type": "boolean",
+      "category": "quality",
+      "description": "Use thicker bridges"
+    },
+    {
+      "key": "ironing_type",
+      "label": "Ironing Type",
+      "type": "select",
+      "category": "quality",
+      "description": "Type of ironing",
+      "options": [
+        {"value": "no ironing", "label": "No Ironing"},
+        {"value": "top", "label": "Top Surface Only"},
+        {"value": "topmost", "label": "Topmost Surface Only"},
+        {"value": "allsolid", "label": "All Solid Layers"}
+      ]
+    },
+    {
+      "key": "ironing_speed",
+      "label": "Ironing Speed",
+      "type": "number",
+      "category": "quality",
+      "description": "Speed for ironing",
+      "unit": "mm/s"
+    },
+    {
+      "key": "ironing_flow",
+      "label": "Ironing Flow",
+      "type": "number",
+      "category": "quality",
+      "description": "Flow rate for ironing",
+      "unit": "%"
+    },
+    {
+      "key": "ironing_spacing",
+      "label": "Ironing Spacing",
+      "type": "number",
+      "category": "quality",
+      "description": "Spacing between ironing lines",
+      "unit": "mm",
+      "step": 0.01
+    },
+    {
+      "key": "fuzzy_skin",
+      "label": "Fuzzy Skin",
+      "type": "select",
+      "category": "quality",
+      "description": "Add texture to outer walls",
+      "options": [
+        {"value": "none", "label": "None"},
+        {"value": "external", "label": "External"},
+        {"value": "all", "label": "All Walls"},
+        {"value": "allwalls", "label": "All Walls"}
+      ]
+    },
+    {
+      "key": "fuzzy_skin_thickness",
+      "label": "Fuzzy Skin Thickness",
+      "type": "number",
+      "category": "quality",
+      "description": "Thickness of fuzzy skin texture",
+      "unit": "mm",
+      "step": 0.01
+    },
+    {
+      "key": "fuzzy_skin_point_dist",
+      "label": "Fuzzy Skin Point Distance",
+      "type": "number",
+      "category": "quality",
+      "description": "Distance between fuzzy skin points",
+      "unit": "mm",
+      "step": 0.1
+    },
+    {
+      "key": "xy_hole_compensation",
+      "label": "XY Hole Compensation",
+      "type": "number",
+      "category": "quality",
+      "description": "Compensation for holes",
+      "unit": "mm",
+      "step": 0.01
+    },
+    {
+      "key": "xy_contour_compensation",
+      "label": "XY Contour Compensation",
+      "type": "number",
+      "category": "quality",
+      "description": "Compensation for contours",
+      "unit": "mm",
+      "step": 0.01
+    },
+    {
+      "key": "elefant_foot_compensation",
+      "label": "Elephant Foot Compensation",
+      "type": "number",
+      "category": "quality",
+      "description": "Compensation for first layer expansion",
+      "unit": "mm",
+      "step": 0.01
+    },
+    {
+      "key": "resolution",
+      "label": "Resolution",
+      "type": "number",
+      "category": "advanced",
+      "description": "G-code resolution",
+      "unit": "mm",
+      "step": 0.001
+    },
+    {
+      "key": "gcode_comments",
+      "label": "Verbose G-code",
+      "type": "boolean",
+      "category": "advanced",
+      "description": "Add comments to G-code"
+    },
+    {
+      "key": "reduce_crossing_wall",
+      "label": "Avoid Crossing Walls",
+      "type": "boolean",
+      "category": "advanced",
+      "description": "Avoid crossing walls during travel"
+    },
+    {
+      "key": "max_travel_detour_distance",
+      "label": "Max Travel Detour",
+      "type": "number",
+      "category": "advanced",
+      "description": "Maximum detour to avoid crossing walls",
+      "unit": "mm"
+    },
+    {
+      "key": "timelapse_type",
+      "label": "Timelapse Type",
+      "type": "select",
+      "category": "special",
+      "description": "Type of timelapse recording",
+      "options": [
+        {"value": "0", "label": "Traditional"},
+        {"value": "1", "label": "Smooth"}
+      ]
+    },
+    {
+      "key": "enable_arc_fitting",
+      "label": "Enable Arc Fitting",
+      "type": "boolean",
+      "category": "advanced",
+      "description": "Convert linear moves to arcs"
+    }
+  ]
+}

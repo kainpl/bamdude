@@ -1,0 +1,147 @@
+{
+  "print_start": {
+    "name": "Друк розпочато",
+    "title_template": "Друк розпочато",
+    "body_template": "{printer}: {filename}\nОрієнтовний час: {estimated_time}"
+  },
+  "print_complete": {
+    "name": "Друк завершено",
+    "title_template": "Друк завершено",
+    "body_template": "{printer}: {filename}\nЧас: {duration}\nФіламент: {filament_grams}г"
+  },
+  "print_failed": {
+    "name": "Друк не вдався",
+    "title_template": "Друк не вдався",
+    "body_template": "{printer}: {filename}\nЧас: {duration}\nПричина: {reason}"
+  },
+  "print_stopped": {
+    "name": "Друк зупинено",
+    "title_template": "Друк зупинено",
+    "body_template": "{printer}: {filename}\nЧас: {duration}"
+  },
+  "print_progress": {
+    "name": "Прогрес друку",
+    "title_template": "Друк {progress}% завершено",
+    "body_template": "{printer}: {filename}\nЗалишилось: {remaining_time}"
+  },
+  "print_missing_spool_assignment": {
+    "name": "Відсутнє призначення котушки",
+    "title_template": "Відсутнє призначення котушки",
+    "body_template": "{printer}: друк розпочато без призначених котушок\nСлоти: {missing_slots}\nОчікуваний профіль:\n{missing_slot_details}"
+  },
+  "printer_offline": {
+    "name": "Принтер офлайн",
+    "title_template": "Принтер офлайн",
+    "body_template": "{printer} відключився"
+  },
+  "printer_error": {
+    "name": "Помилка принтера",
+    "title_template": "Помилка принтера: {error_type}",
+    "body_template": "{printer}\n{error_detail}"
+  },
+  "plate_not_empty": {
+    "name": "Платформа не порожня",
+    "title_template": "Платформа не порожня — друк призупинено",
+    "body_template": "{printer}: На робочому столі виявлено об'єкти. Друк призупинено. Очистіть стіл і відновіть друк."
+  },
+  "filament_low": {
+    "name": "Мало філаменту",
+    "title_template": "Мало філаменту",
+    "body_template": "{printer}: Слот {slot} — {remaining_percent}%"
+  },
+  "maintenance_due": {
+    "name": "Потрібне обслуговування",
+    "title_template": "Потрібне обслуговування",
+    "body_template": "{printer}:\n{items}"
+  },
+  "ams_humidity_high": {
+    "name": "Висока вологість AMS",
+    "title_template": "Попередження вологості AMS",
+    "body_template": "{printer} {ams_label}: Вологість {humidity}% перевищує поріг {threshold}%"
+  },
+  "ams_temperature_high": {
+    "name": "Висока температура AMS",
+    "title_template": "Попередження температури AMS",
+    "body_template": "{printer} {ams_label}: Температура {temperature}°C перевищує поріг {threshold}°C"
+  },
+  "bed_cooled": {
+    "name": "Стіл охолоджено",
+    "title_template": "Стіл охолоджено",
+    "body_template": "{printer}: Стіл охолоджено до {bed_temp}°C (поріг: {threshold}°C)"
+  },
+  "first_layer_complete": {
+    "name": "Перший шар завершено",
+    "title_template": "Перший шар завершено",
+    "body_template": "{printer}: {filename}\nШар 1/{total_layers} готовий"
+  },
+  "test": {
+    "name": "Тестове сповіщення",
+    "title_template": "Тест Bambuddy HE",
+    "body_template": "Це тестове сповіщення. Якщо ви його бачите — сповіщення працюють!"
+  },
+  "queue_job_added": {
+    "name": "Завдання додано в чергу",
+    "title_template": "Завдання в черзі",
+    "body_template": "{job_name} додано в чергу для {target}"
+  },
+  "queue_job_assigned": {
+    "name": "Завдання призначено",
+    "title_template": "Завдання призначено",
+    "body_template": "{job_name} призначено на {printer} (з черги «Будь-який {target_model}»)"
+  },
+  "queue_job_started": {
+    "name": "Завдання з черги розпочато",
+    "title_template": "Завдання з черги розпочато",
+    "body_template": "{printer}: {job_name}\nОрієнтовний час: {estimated_time}"
+  },
+  "queue_job_waiting": {
+    "name": "Завдання очікує",
+    "title_template": "Завдання очікує",
+    "body_template": "{job_name} очікує {target_model}\n{waiting_reason}"
+  },
+  "queue_job_skipped": {
+    "name": "Завдання пропущено",
+    "title_template": "Завдання пропущено",
+    "body_template": "{printer}: {job_name}\nПричина: {reason}"
+  },
+  "queue_job_failed": {
+    "name": "Завдання не вдалося",
+    "title_template": "Не вдалося запустити завдання",
+    "body_template": "{printer}: {job_name}\nПричина: {reason}"
+  },
+  "queue_completed": {
+    "name": "Чергу завершено",
+    "title_template": "Чергу завершено",
+    "body_template": "Усі {completed_count} завдань з черги виконано"
+  },
+  "user_created": {
+    "name": "Лист привітання",
+    "title_template": "Ласкаво просимо до {app_name}",
+    "body_template": "Вітаємо, {username}!\n\nВаш обліковий запис створено.\nІм'я користувача: {username}\nПароль: {password}\n\nУвійти: {login_url}"
+  },
+  "password_reset": {
+    "name": "Скидання пароля",
+    "title_template": "{app_name} — Скидання пароля",
+    "body_template": "Привіт, {username}!\n\nВаш пароль було скинуто.\nНовий пароль: {password}\n\nУвійти: {login_url}"
+  },
+  "user_print_start": {
+    "name": "Друк користувача розпочато",
+    "title_template": "Ваш друк розпочато",
+    "body_template": "Привіт, {username}!\n\nВаше завдання друку розпочато на {printer}.\n\nФайл: {filename}\n\nВи отримаєте сповіщення після завершення."
+  },
+  "user_print_complete": {
+    "name": "Друк користувача завершено",
+    "title_template": "Ваш друк завершено",
+    "body_template": "Привіт, {username}!\n\nВаше завдання друку завершено на {printer}.\n\nФайл: {filename}"
+  },
+  "user_print_failed": {
+    "name": "Друк користувача не вдався",
+    "title_template": "Ваш друк не вдався",
+    "body_template": "Привіт, {username}!\n\nВаше завдання друку не вдалося на {printer}.\n\nФайл: {filename}"
+  },
+  "user_print_stopped": {
+    "name": "Друк користувача зупинено",
+    "title_template": "Ваш друк зупинено",
+    "body_template": "Привіт, {username}!\n\nВаше завдання друку зупинено на {printer}.\n\nФайл: {filename}"
+  }
+}

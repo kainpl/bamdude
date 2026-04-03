@@ -65,7 +65,10 @@ firmware/
 # Node modules
 node_modules/
 
-data/
+/data/
+
+# But include backend app data (locale JSONs, field definitions)
+!backend/app/data/
 
 # JWT secret file (should be in data dir, but protect project root too)
 .jwt_secret

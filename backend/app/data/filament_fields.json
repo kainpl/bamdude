@@ -1,0 +1,625 @@
+{
+  "version": "1.0.0",
+  "description": "Filament preset field definitions for Bambu Lab printers",
+  "fields": [
+    {
+      "key": "filament_vendor",
+      "label": "Vendor",
+      "type": "text",
+      "category": "basic",
+      "description": "Filament manufacturer name"
+    },
+    {
+      "key": "filament_type",
+      "label": "Filament Type",
+      "type": "select",
+      "category": "basic",
+      "description": "Material type",
+      "options": [
+        {"value": "PLA", "label": "PLA"},
+        {"value": "ABS", "label": "ABS"},
+        {"value": "PETG", "label": "PETG"},
+        {"value": "TPU", "label": "TPU"},
+        {"value": "PA", "label": "PA (Nylon)"},
+        {"value": "PA-CF", "label": "PA-CF"},
+        {"value": "PET-CF", "label": "PET-CF"},
+        {"value": "PC", "label": "PC"},
+        {"value": "ASA", "label": "ASA"},
+        {"value": "PVA", "label": "PVA"},
+        {"value": "HIPS", "label": "HIPS"}
+      ]
+    },
+    {
+      "key": "filament_cost",
+      "label": "Filament Cost",
+      "type": "number",
+      "category": "basic",
+      "description": "Cost per kg",
+      "unit": "$/kg"
+    },
+    {
+      "key": "filament_density",
+      "label": "Density",
+      "type": "number",
+      "category": "basic",
+      "description": "Material density",
+      "unit": "g/cm³",
+      "step": 0.01
+    },
+    {
+      "key": "filament_diameter",
+      "label": "Filament Diameter",
+      "type": "number",
+      "category": "basic",
+      "description": "Filament diameter",
+      "unit": "mm",
+      "step": 0.01,
+      "min": 1.5,
+      "max": 3.0
+    },
+    {
+      "key": "nozzle_temperature",
+      "label": "Nozzle Temperature",
+      "type": "text",
+      "category": "temperature",
+      "description": "Printing temperature (comma-separated: normal,first layer)",
+      "unit": "°C"
+    },
+    {
+      "key": "nozzle_temperature_initial_layer",
+      "label": "Initial Layer Nozzle Temp",
+      "type": "text",
+      "category": "temperature",
+      "description": "First layer nozzle temperature",
+      "unit": "°C"
+    },
+    {
+      "key": "nozzle_temperature_range_low",
+      "label": "Min Nozzle Temp",
+      "type": "number",
+      "category": "temperature",
+      "description": "Minimum recommended nozzle temperature",
+      "unit": "°C",
+      "min": 150,
+      "max": 350
+    },
+    {
+      "key": "nozzle_temperature_range_high",
+      "label": "Max Nozzle Temp",
+      "type": "number",
+      "category": "temperature",
+      "description": "Maximum recommended nozzle temperature",
+      "unit": "°C",
+      "min": 150,
+      "max": 350
+    },
+    {
+      "key": "hot_plate_temp",
+      "label": "Bed Temperature (Hot Plate)",
+      "type": "number",
+      "category": "temperature",
+      "description": "Bed temperature for standard plate",
+      "unit": "°C",
+      "min": 0,
+      "max": 120
+    },
+    {
+      "key": "hot_plate_temp_initial_layer",
+      "label": "Initial Layer Bed Temp (Hot Plate)",
+      "type": "number",
+      "category": "temperature",
+      "description": "First layer bed temperature for standard plate",
+      "unit": "°C",
+      "min": 0,
+      "max": 120
+    },
+    {
+      "key": "cool_plate_temp",
+      "label": "Bed Temperature (Cool Plate)",
+      "type": "number",
+      "category": "temperature",
+      "description": "Bed temperature for cool plate",
+      "unit": "°C",
+      "min": 0,
+      "max": 120
+    },
+    {
+      "key": "cool_plate_temp_initial_layer",
+      "label": "Initial Layer Bed Temp (Cool Plate)",
+      "type": "number",
+      "category": "temperature",
+      "description": "First layer bed temperature for cool plate",
+      "unit": "°C",
+      "min": 0,
+      "max": 120
+    },
+    {
+      "key": "eng_plate_temp",
+      "label": "Bed Temperature (Engineering Plate)",
+      "type": "number",
+      "category": "temperature",
+      "description": "Bed temperature for engineering plate",
+      "unit": "°C",
+      "min": 0,
+      "max": 120
+    },
+    {
+      "key": "eng_plate_temp_initial_layer",
+      "label": "Initial Layer Bed Temp (Eng Plate)",
+      "type": "number",
+      "category": "temperature",
+      "description": "First layer bed temperature for engineering plate",
+      "unit": "°C",
+      "min": 0,
+      "max": 120
+    },
+    {
+      "key": "textured_plate_temp",
+      "label": "Bed Temperature (Textured Plate)",
+      "type": "number",
+      "category": "temperature",
+      "description": "Bed temperature for textured plate",
+      "unit": "°C",
+      "min": 0,
+      "max": 120
+    },
+    {
+      "key": "textured_plate_temp_initial_layer",
+      "label": "Initial Layer Bed Temp (Textured)",
+      "type": "number",
+      "category": "temperature",
+      "description": "First layer bed temperature for textured plate",
+      "unit": "°C",
+      "min": 0,
+      "max": 120
+    },
+    {
+      "key": "temperature_vitrification",
+      "label": "Glass Transition Temperature",
+      "type": "number",
+      "category": "temperature",
+      "description": "Glass transition temperature of material",
+      "unit": "°C"
+    },
+    {
+      "key": "pressure_advance",
+      "label": "Pressure Advance",
+      "type": "number",
+      "category": "flow",
+      "description": "Pressure advance value for linear advance",
+      "step": 0.001,
+      "min": 0,
+      "max": 0.2
+    },
+    {
+      "key": "enable_pressure_advance",
+      "label": "Enable Pressure Advance",
+      "type": "boolean",
+      "category": "flow",
+      "description": "Enable pressure advance compensation"
+    },
+    {
+      "key": "filament_flow_ratio",
+      "label": "Flow Ratio",
+      "type": "number",
+      "category": "flow",
+      "description": "Flow rate multiplier",
+      "step": 0.01,
+      "min": 0.8,
+      "max": 1.2
+    },
+    {
+      "key": "filament_max_volumetric_speed",
+      "label": "Max Volumetric Speed",
+      "type": "text",
+      "category": "flow",
+      "description": "Maximum volumetric flow rate (comma-separated values)",
+      "unit": "mm³/s"
+    },
+    {
+      "key": "fan_min_speed",
+      "label": "Min Fan Speed",
+      "type": "number",
+      "category": "cooling",
+      "description": "Minimum part cooling fan speed",
+      "unit": "%",
+      "min": 0,
+      "max": 100
+    },
+    {
+      "key": "fan_max_speed",
+      "label": "Max Fan Speed",
+      "type": "number",
+      "category": "cooling",
+      "description": "Maximum part cooling fan speed",
+      "unit": "%",
+      "min": 0,
+      "max": 100
+    },
+    {
+      "key": "fan_cooling_layer_time",
+      "label": "Fan Cooling Layer Time",
+      "type": "number",
+      "category": "cooling",
+      "description": "Layer time threshold for max fan",
+      "unit": "s",
+      "min": 0,
+      "max": 120
+    },
+    {
+      "key": "slow_down_layer_time",
+      "label": "Slow Down Layer Time",
+      "type": "number",
+      "category": "cooling",
+      "description": "Minimum layer time before slowing down",
+      "unit": "s",
+      "min": 0,
+      "max": 60
+    },
+    {
+      "key": "slow_down_min_speed",
+      "label": "Slow Down Min Speed",
+      "type": "number",
+      "category": "cooling",
+      "description": "Minimum speed when slowing down for cooling",
+      "unit": "mm/s",
+      "min": 5,
+      "max": 100
+    },
+    {
+      "key": "close_fan_the_first_x_layers",
+      "label": "Disable Fan First Layers",
+      "type": "number",
+      "category": "cooling",
+      "description": "Number of initial layers without fan",
+      "min": 0,
+      "max": 10
+    },
+    {
+      "key": "overhang_fan_threshold",
+      "label": "Overhang Fan Threshold",
+      "type": "text",
+      "category": "cooling",
+      "description": "Overhang angle to trigger fan boost"
+    },
+    {
+      "key": "overhang_fan_speed",
+      "label": "Overhang Fan Speed",
+      "type": "number",
+      "category": "cooling",
+      "description": "Fan speed for overhangs",
+      "unit": "%",
+      "min": 0,
+      "max": 100
+    },
+    {
+      "key": "reduce_fan_stop_start_freq",
+      "label": "Reduce Fan Stop/Start Frequency",
+      "type": "boolean",
+      "category": "cooling",
+      "description": "Prevent frequent fan speed changes"
+    },
+    {
+      "key": "activate_air_filtration",
+      "label": "Activate Air Filtration",
+      "type": "boolean",
+      "category": "chamber",
+      "description": "Enable chamber air filtration during print"
+    },
+    {
+      "key": "during_print_exhaust_fan_speed",
+      "label": "Exhaust Fan Speed (During Print)",
+      "type": "number",
+      "category": "chamber",
+      "description": "Exhaust fan speed during printing",
+      "unit": "%",
+      "min": 0,
+      "max": 100
+    },
+    {
+      "key": "complete_print_exhaust_fan_speed",
+      "label": "Exhaust Fan Speed (After Print)",
+      "type": "number",
+      "category": "chamber",
+      "description": "Exhaust fan speed after print completes",
+      "unit": "%",
+      "min": 0,
+      "max": 100
+    },
+    {
+      "key": "activate_chamber_temp_control",
+      "label": "Chamber Temp Control",
+      "type": "boolean",
+      "category": "chamber",
+      "description": "Enable active chamber temperature control"
+    },
+    {
+      "key": "chamber_temperature",
+      "label": "Chamber Temperature",
+      "type": "number",
+      "category": "chamber",
+      "description": "Target chamber temperature",
+      "unit": "°C",
+      "min": 0,
+      "max": 60
+    },
+    {
+      "key": "filament_retraction_length",
+      "label": "Retraction Length",
+      "type": "number",
+      "category": "retraction",
+      "description": "Length of filament to retract",
+      "unit": "mm",
+      "step": 0.1,
+      "min": 0,
+      "max": 10
+    },
+    {
+      "key": "filament_retract_before_wipe",
+      "label": "Retract Before Wipe",
+      "type": "number",
+      "category": "retraction",
+      "description": "Percentage of retraction before wipe",
+      "unit": "%",
+      "min": 0,
+      "max": 100
+    },
+    {
+      "key": "filament_retraction_speed",
+      "label": "Retraction Speed",
+      "type": "number",
+      "category": "retraction",
+      "description": "Speed for retraction moves",
+      "unit": "mm/s",
+      "min": 10,
+      "max": 120
+    },
+    {
+      "key": "filament_deretraction_speed",
+      "label": "Deretraction Speed",
+      "type": "number",
+      "category": "retraction",
+      "description": "Speed for priming after retraction",
+      "unit": "mm/s",
+      "min": 10,
+      "max": 120
+    },
+    {
+      "key": "filament_retract_restart_extra",
+      "label": "Extra Length on Restart",
+      "type": "number",
+      "category": "retraction",
+      "description": "Extra filament to prime after retraction",
+      "unit": "mm",
+      "step": 0.01
+    },
+    {
+      "key": "filament_retract_when_changing_layer",
+      "label": "Retract on Layer Change",
+      "type": "boolean",
+      "category": "retraction",
+      "description": "Force retraction when changing layers"
+    },
+    {
+      "key": "filament_wipe",
+      "label": "Enable Wipe",
+      "type": "boolean",
+      "category": "retraction",
+      "description": "Enable nozzle wipe during retraction"
+    },
+    {
+      "key": "filament_wipe_distance",
+      "label": "Wipe Distance",
+      "type": "number",
+      "category": "retraction",
+      "description": "Distance to wipe while retracting",
+      "unit": "mm",
+      "step": 0.1
+    },
+    {
+      "key": "filament_z_hop",
+      "label": "Z Hop Height",
+      "type": "number",
+      "category": "retraction",
+      "description": "Lift height during travel moves",
+      "unit": "mm",
+      "step": 0.1,
+      "min": 0,
+      "max": 2
+    },
+    {
+      "key": "filament_z_hop_types",
+      "label": "Z Hop Type",
+      "type": "select",
+      "category": "retraction",
+      "description": "Type of Z hop motion",
+      "options": [
+        {"value": "Normal Lift", "label": "Normal Lift"},
+        {"value": "Slope Lift", "label": "Slope Lift"},
+        {"value": "Spiral Lift", "label": "Spiral Lift"}
+      ]
+    },
+    {
+      "key": "filament_retraction_minimum_travel",
+      "label": "Min Travel After Retraction",
+      "type": "number",
+      "category": "retraction",
+      "description": "Minimum travel distance to trigger retraction",
+      "unit": "mm",
+      "step": 0.1
+    },
+    {
+      "key": "filament_retract_layer_change",
+      "label": "Retract on Layer Change",
+      "type": "boolean",
+      "category": "retraction",
+      "description": "Retract when layer changes"
+    },
+    {
+      "key": "filament_colour",
+      "label": "Filament Color",
+      "type": "text",
+      "category": "appearance",
+      "description": "Filament color (hex format #RRGGBB)"
+    },
+    {
+      "key": "default_filament_colour",
+      "label": "Default Filament Color",
+      "type": "text",
+      "category": "appearance",
+      "description": "Default color for this filament type"
+    },
+    {
+      "key": "filament_is_support",
+      "label": "Is Support Material",
+      "type": "boolean",
+      "category": "advanced",
+      "description": "Mark as support material filament"
+    },
+    {
+      "key": "filament_soluble",
+      "label": "Soluble Material",
+      "type": "boolean",
+      "category": "advanced",
+      "description": "Material dissolves in liquid"
+    },
+    {
+      "key": "required_nozzle_HRC",
+      "label": "Required Nozzle HRC",
+      "type": "number",
+      "category": "advanced",
+      "description": "Minimum nozzle hardness required",
+      "min": 0,
+      "max": 100
+    },
+    {
+      "key": "filament_start_gcode",
+      "label": "Filament Start G-code",
+      "type": "text",
+      "category": "gcode",
+      "description": "G-code executed when switching to this filament"
+    },
+    {
+      "key": "filament_end_gcode",
+      "label": "Filament End G-code",
+      "type": "text",
+      "category": "gcode",
+      "description": "G-code executed when switching from this filament"
+    },
+    {
+      "key": "filament_loading_speed",
+      "label": "Loading Speed",
+      "type": "number",
+      "category": "ams",
+      "description": "Speed for loading filament",
+      "unit": "mm/s"
+    },
+    {
+      "key": "filament_loading_speed_start",
+      "label": "Loading Start Speed",
+      "type": "number",
+      "category": "ams",
+      "description": "Initial speed when loading filament",
+      "unit": "mm/s"
+    },
+    {
+      "key": "filament_unloading_speed",
+      "label": "Unloading Speed",
+      "type": "number",
+      "category": "ams",
+      "description": "Speed for unloading filament",
+      "unit": "mm/s"
+    },
+    {
+      "key": "filament_unloading_speed_start",
+      "label": "Unloading Start Speed",
+      "type": "number",
+      "category": "ams",
+      "description": "Initial speed when unloading filament",
+      "unit": "mm/s"
+    },
+    {
+      "key": "filament_toolchange_delay",
+      "label": "Toolchange Delay",
+      "type": "number",
+      "category": "ams",
+      "description": "Delay after tool change",
+      "unit": "s"
+    },
+    {
+      "key": "filament_cooling_moves",
+      "label": "Cooling Moves",
+      "type": "number",
+      "category": "ams",
+      "description": "Number of cooling moves during unload"
+    },
+    {
+      "key": "filament_cooling_initial_speed",
+      "label": "Cooling Initial Speed",
+      "type": "number",
+      "category": "ams",
+      "description": "Initial speed for tip shaping cooling moves",
+      "unit": "mm/s"
+    },
+    {
+      "key": "filament_cooling_final_speed",
+      "label": "Cooling Final Speed",
+      "type": "number",
+      "category": "ams",
+      "description": "Final speed for tip shaping cooling moves",
+      "unit": "mm/s"
+    },
+    {
+      "key": "filament_ramming_parameters",
+      "label": "Ramming Parameters",
+      "type": "text",
+      "category": "ams",
+      "description": "Ramming sequence parameters"
+    },
+    {
+      "key": "filament_minimal_purge_on_wipe_tower",
+      "label": "Min Purge on Wipe Tower",
+      "type": "number",
+      "category": "ams",
+      "description": "Minimum purge volume on wipe tower",
+      "unit": "mm³"
+    },
+    {
+      "key": "filament_multitool_ramming",
+      "label": "Multitool Ramming",
+      "type": "boolean",
+      "category": "ams",
+      "description": "Enable ramming for multi-tool"
+    },
+    {
+      "key": "filament_multitool_ramming_volume",
+      "label": "Multitool Ramming Volume",
+      "type": "number",
+      "category": "ams",
+      "description": "Volume to ram during multi-tool change",
+      "unit": "mm³"
+    },
+    {
+      "key": "filament_multitool_ramming_flow",
+      "label": "Multitool Ramming Flow",
+      "type": "number",
+      "category": "ams",
+      "description": "Flow rate during multi-tool ramming",
+      "unit": "mm³/s"
+    },
+    {
+      "key": "filament_long_retractions_when_cut",
+      "label": "Long Retractions When Cut",
+      "type": "boolean",
+      "category": "ams",
+      "description": "Use long retraction when cutting filament"
+    },
+    {
+      "key": "filament_retraction_distances_when_cut",
+      "label": "Retraction Distance When Cut",
+      "type": "text",
+      "category": "ams",
+      "description": "Retraction distance during filament cut"
+    }
+  ]
+}

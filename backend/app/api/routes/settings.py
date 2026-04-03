@@ -170,6 +170,20 @@ async def update_settings(
     # Expire all objects to ensure fresh reads after commit
     db.expire_all()
 
+    # Update DB templates when system language or notification language changes
+    locale_lang = update_data.get("language") or update_data.get("notification_language")
+    if locale_lang:
+        try:
+            from backend.app.core.database import async_session
+            from backend.app.services.locale_updater import update_locale_data
+
+            logger.info("Updating locale data to '%s'...", locale_lang)
+            async with async_session() as locale_db:
+                result = await update_locale_data(locale_db, locale_lang)
+                logger.info("Locale update result: %s", result)
+        except Exception as e:
+            logger.error("Failed to update locale data: %s", e, exc_info=True)
+
     # Reconfigure MQTT relay if any MQTT settings changed
     if mqtt_updated:
         try:

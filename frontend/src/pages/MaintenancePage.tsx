@@ -44,7 +44,6 @@ import { Toggle } from '../components/Toggle';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
-import { getMaintenanceTypeName } from '../utils/maintenanceI18n';
 
 // Icon mapping for maintenance types
 const iconMap: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -309,7 +308,7 @@ function MaintenanceCard({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <h3 className={`font-medium truncate ${item.enabled ? 'text-white' : 'text-bambu-gray'}`}>
-              {getMaintenanceTypeName(item.maintenance_type_name, t)}
+              {item.maintenance_type_name}
             </h3>
             {intervalType === 'days' && (
               <span title={t('maintenance.timeBasedInterval')}>
@@ -517,7 +516,7 @@ function PrinterSection({
               </div>
               <div>
                 <div className={`text-sm font-medium ${nextTask.is_due ? 'text-red-400' : 'text-amber-400'}`}>
-                  {getMaintenanceTypeName(nextTask.maintenance_type_name, t)}
+                  {nextTask.maintenance_type_name}
                 </div>
                 <div className={`text-xs ${nextTask.is_due ? 'text-red-400/70' : 'text-amber-400/70'}`}>
                   {nextTask.is_due ? t('common.overdue') : t('maintenance.dueSoon')}
@@ -860,7 +859,7 @@ function SettingsSection({
                     <Icon className="w-5 h-5 text-bambu-gray" />
                   </div>
                   <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium text-white truncate">{getMaintenanceTypeName(type.name, t)}</div>
+                    <div className="text-sm font-medium text-white truncate">{type.name}</div>
                     <div className="text-xs text-bambu-gray mt-0.5 flex items-center gap-1">
                       {intervalType === 'days' ? <Calendar className="w-3 h-3" /> : <Timer className="w-3 h-3" />}
                       {formatIntervalLabel(type.default_interval_hours, intervalType, t)}
@@ -967,7 +966,7 @@ function SettingsSection({
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium text-white truncate">{getMaintenanceTypeName(type.name, t)}</span>
+                      <span className="text-sm font-medium text-white truncate">{type.name}</span>
                       <span className="px-1.5 py-0.5 bg-bambu-green/20 text-bambu-green text-[10px] font-medium rounded">
                         {t('maintenance.custom')}
                       </span>
@@ -1000,7 +999,7 @@ function SettingsSection({
                   </button>
                   <button
                     onClick={() => {
-                      if (confirm(t('maintenance.deleteTypeConfirm', { name: getMaintenanceTypeName(type.name, t) }))) {
+                      if (confirm(t('maintenance.deleteTypeConfirm', { name: type.name }))) {
                         onDeleteType(type.id);
                       }
                     }}
@@ -1086,7 +1085,7 @@ function SettingsSection({
                       return (
                         <div key={item.id} className="flex items-center gap-2 p-2.5 bg-bambu-dark rounded-lg">
                           <Icon className="w-4 h-4 text-bambu-gray shrink-0" />
-                          <span className="text-xs text-bambu-gray flex-1 truncate">{getMaintenanceTypeName(item.maintenance_type_name, t)}</span>
+                          <span className="text-xs text-bambu-gray flex-1 truncate">{item.maintenance_type_name}</span>
 
                           {isEditing ? (
                             <div className="flex items-center gap-1">
@@ -1159,7 +1158,7 @@ function SettingsSection({
       {pendingSystemDelete && (
         <ConfirmModal
           title={t('maintenance.deleteSystemTypeTitle')}
-          message={t('maintenance.deleteSystemTypeMessage', { name: getMaintenanceTypeName(pendingSystemDelete.name, t) })}
+          message={t('maintenance.deleteSystemTypeMessage', { name: pendingSystemDelete.name })}
           confirmText={t('common.delete')}
           cancelText={t('common.cancel')}
           variant="danger"

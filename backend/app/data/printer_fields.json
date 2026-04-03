@@ -1,0 +1,574 @@
+{
+  "version": "1.0.0",
+  "description": "Printer/machine preset field definitions for Bambu Lab printers",
+  "fields": [
+    {
+      "key": "printer_model",
+      "label": "Printer Model",
+      "type": "text",
+      "category": "basic",
+      "description": "Printer model identifier"
+    },
+    {
+      "key": "printer_variant",
+      "label": "Printer Variant",
+      "type": "text",
+      "category": "basic",
+      "description": "Nozzle variant (e.g., 0.4 nozzle)"
+    },
+    {
+      "key": "printer_notes",
+      "label": "Printer Notes",
+      "type": "text",
+      "category": "basic",
+      "description": "Notes about this printer profile"
+    },
+    {
+      "key": "printable_area",
+      "label": "Printable Area",
+      "type": "text",
+      "category": "dimensions",
+      "description": "Bed shape coordinates"
+    },
+    {
+      "key": "printable_height",
+      "label": "Printable Height",
+      "type": "number",
+      "category": "dimensions",
+      "description": "Maximum print height",
+      "unit": "mm"
+    },
+    {
+      "key": "bed_exclude_area",
+      "label": "Bed Exclude Area",
+      "type": "text",
+      "category": "dimensions",
+      "description": "Coordinates of excluded bed areas"
+    },
+    {
+      "key": "nozzle_diameter",
+      "label": "Nozzle Diameter",
+      "type": "number",
+      "category": "extruder",
+      "description": "Diameter of the nozzle",
+      "unit": "mm",
+      "step": 0.1,
+      "min": 0.1,
+      "max": 1.2
+    },
+    {
+      "key": "nozzle_type",
+      "label": "Nozzle Type",
+      "type": "select",
+      "category": "extruder",
+      "description": "Type of nozzle installed",
+      "options": [
+        {"value": "brass", "label": "Brass"},
+        {"value": "stainless_steel", "label": "Stainless Steel"},
+        {"value": "hardened_steel", "label": "Hardened Steel"}
+      ]
+    },
+    {
+      "key": "nozzle_hrc",
+      "label": "Nozzle HRC",
+      "type": "number",
+      "category": "extruder",
+      "description": "Hardness rating of nozzle"
+    },
+    {
+      "key": "nozzle_volume",
+      "label": "Nozzle Volume",
+      "type": "number",
+      "category": "extruder",
+      "description": "Melt zone volume",
+      "unit": "mm³"
+    },
+    {
+      "key": "extruder_type",
+      "label": "Extruder Type",
+      "type": "select",
+      "category": "extruder",
+      "description": "Type of extruder",
+      "options": [
+        {"value": "DirectDrive", "label": "Direct Drive"},
+        {"value": "Bowden", "label": "Bowden"}
+      ]
+    },
+    {
+      "key": "retraction_length",
+      "label": "Retraction Length",
+      "type": "number",
+      "category": "retraction",
+      "description": "Default retraction length",
+      "unit": "mm",
+      "step": 0.1,
+      "min": 0,
+      "max": 10
+    },
+    {
+      "key": "retraction_speed",
+      "label": "Retraction Speed",
+      "type": "number",
+      "category": "retraction",
+      "description": "Speed for retraction",
+      "unit": "mm/s"
+    },
+    {
+      "key": "deretraction_speed",
+      "label": "Deretraction Speed",
+      "type": "number",
+      "category": "retraction",
+      "description": "Speed for deretraction",
+      "unit": "mm/s"
+    },
+    {
+      "key": "retract_before_wipe",
+      "label": "Retract Before Wipe",
+      "type": "number",
+      "category": "retraction",
+      "description": "Percentage to retract before wipe",
+      "unit": "%"
+    },
+    {
+      "key": "retract_when_changing_layer",
+      "label": "Retract on Layer Change",
+      "type": "boolean",
+      "category": "retraction",
+      "description": "Retract when changing layers"
+    },
+    {
+      "key": "wipe",
+      "label": "Enable Wipe",
+      "type": "boolean",
+      "category": "retraction",
+      "description": "Enable wipe during retraction"
+    },
+    {
+      "key": "wipe_distance",
+      "label": "Wipe Distance",
+      "type": "number",
+      "category": "retraction",
+      "description": "Distance to wipe",
+      "unit": "mm"
+    },
+    {
+      "key": "z_hop",
+      "label": "Z Hop Height",
+      "type": "number",
+      "category": "retraction",
+      "description": "Height to lift during travel",
+      "unit": "mm",
+      "step": 0.1,
+      "min": 0,
+      "max": 2
+    },
+    {
+      "key": "z_hop_types",
+      "label": "Z Hop Type",
+      "type": "select",
+      "category": "retraction",
+      "description": "Type of Z hop motion",
+      "options": [
+        {"value": "Normal Lift", "label": "Normal Lift"},
+        {"value": "Slope Lift", "label": "Slope Lift"},
+        {"value": "Spiral Lift", "label": "Spiral Lift"}
+      ]
+    },
+    {
+      "key": "retraction_minimum_travel",
+      "label": "Min Travel for Retraction",
+      "type": "number",
+      "category": "retraction",
+      "description": "Minimum travel to trigger retraction",
+      "unit": "mm"
+    },
+    {
+      "key": "retract_lift_above",
+      "label": "Retract Lift Above",
+      "type": "number",
+      "category": "retraction",
+      "description": "Only lift Z above this height",
+      "unit": "mm"
+    },
+    {
+      "key": "retract_lift_below",
+      "label": "Retract Lift Below",
+      "type": "number",
+      "category": "retraction",
+      "description": "Only lift Z below this height",
+      "unit": "mm"
+    },
+    {
+      "key": "machine_max_speed_x",
+      "label": "Max Speed X",
+      "type": "number",
+      "category": "limits",
+      "description": "Maximum X axis speed",
+      "unit": "mm/s"
+    },
+    {
+      "key": "machine_max_speed_y",
+      "label": "Max Speed Y",
+      "type": "number",
+      "category": "limits",
+      "description": "Maximum Y axis speed",
+      "unit": "mm/s"
+    },
+    {
+      "key": "machine_max_speed_z",
+      "label": "Max Speed Z",
+      "type": "number",
+      "category": "limits",
+      "description": "Maximum Z axis speed",
+      "unit": "mm/s"
+    },
+    {
+      "key": "machine_max_speed_e",
+      "label": "Max Speed E",
+      "type": "number",
+      "category": "limits",
+      "description": "Maximum extruder speed",
+      "unit": "mm/s"
+    },
+    {
+      "key": "machine_max_acceleration_x",
+      "label": "Max Acceleration X",
+      "type": "number",
+      "category": "limits",
+      "description": "Maximum X axis acceleration",
+      "unit": "mm/s²"
+    },
+    {
+      "key": "machine_max_acceleration_y",
+      "label": "Max Acceleration Y",
+      "type": "number",
+      "category": "limits",
+      "description": "Maximum Y axis acceleration",
+      "unit": "mm/s²"
+    },
+    {
+      "key": "machine_max_acceleration_z",
+      "label": "Max Acceleration Z",
+      "type": "number",
+      "category": "limits",
+      "description": "Maximum Z axis acceleration",
+      "unit": "mm/s²"
+    },
+    {
+      "key": "machine_max_acceleration_e",
+      "label": "Max Acceleration E",
+      "type": "number",
+      "category": "limits",
+      "description": "Maximum extruder acceleration",
+      "unit": "mm/s²"
+    },
+    {
+      "key": "machine_max_acceleration_extruding",
+      "label": "Max Print Acceleration",
+      "type": "number",
+      "category": "limits",
+      "description": "Maximum acceleration while printing",
+      "unit": "mm/s²"
+    },
+    {
+      "key": "machine_max_acceleration_retracting",
+      "label": "Max Retract Acceleration",
+      "type": "number",
+      "category": "limits",
+      "description": "Maximum acceleration during retraction",
+      "unit": "mm/s²"
+    },
+    {
+      "key": "machine_max_acceleration_travel",
+      "label": "Max Travel Acceleration",
+      "type": "number",
+      "category": "limits",
+      "description": "Maximum acceleration during travel",
+      "unit": "mm/s²"
+    },
+    {
+      "key": "machine_max_jerk_x",
+      "label": "Max Jerk X",
+      "type": "number",
+      "category": "limits",
+      "description": "Maximum X axis jerk",
+      "unit": "mm/s"
+    },
+    {
+      "key": "machine_max_jerk_y",
+      "label": "Max Jerk Y",
+      "type": "number",
+      "category": "limits",
+      "description": "Maximum Y axis jerk",
+      "unit": "mm/s"
+    },
+    {
+      "key": "machine_max_jerk_z",
+      "label": "Max Jerk Z",
+      "type": "number",
+      "category": "limits",
+      "description": "Maximum Z axis jerk",
+      "unit": "mm/s"
+    },
+    {
+      "key": "machine_max_jerk_e",
+      "label": "Max Jerk E",
+      "type": "number",
+      "category": "limits",
+      "description": "Maximum extruder jerk",
+      "unit": "mm/s"
+    },
+    {
+      "key": "machine_min_extruding_rate",
+      "label": "Min Extruding Rate",
+      "type": "number",
+      "category": "limits",
+      "description": "Minimum extrusion flow rate",
+      "unit": "mm/s"
+    },
+    {
+      "key": "machine_min_travel_rate",
+      "label": "Min Travel Rate",
+      "type": "number",
+      "category": "limits",
+      "description": "Minimum travel speed",
+      "unit": "mm/s"
+    },
+    {
+      "key": "machine_start_gcode",
+      "label": "Start G-code",
+      "type": "text",
+      "category": "gcode",
+      "description": "G-code executed at print start"
+    },
+    {
+      "key": "machine_end_gcode",
+      "label": "End G-code",
+      "type": "text",
+      "category": "gcode",
+      "description": "G-code executed at print end"
+    },
+    {
+      "key": "before_layer_change_gcode",
+      "label": "Before Layer Change G-code",
+      "type": "text",
+      "category": "gcode",
+      "description": "G-code before each layer change"
+    },
+    {
+      "key": "layer_change_gcode",
+      "label": "Layer Change G-code",
+      "type": "text",
+      "category": "gcode",
+      "description": "G-code after each layer change"
+    },
+    {
+      "key": "change_filament_gcode",
+      "label": "Filament Change G-code",
+      "type": "text",
+      "category": "gcode",
+      "description": "G-code for filament changes"
+    },
+    {
+      "key": "machine_pause_gcode",
+      "label": "Pause G-code",
+      "type": "text",
+      "category": "gcode",
+      "description": "G-code for pause command"
+    },
+    {
+      "key": "template_custom_gcode",
+      "label": "Template Custom G-code",
+      "type": "text",
+      "category": "gcode",
+      "description": "Custom G-code template"
+    },
+    {
+      "key": "gcode_flavor",
+      "label": "G-code Flavor",
+      "type": "select",
+      "category": "gcode",
+      "description": "G-code dialect",
+      "options": [
+        {"value": "marlin", "label": "Marlin"},
+        {"value": "marlin2", "label": "Marlin 2"},
+        {"value": "reprap", "label": "RepRap"},
+        {"value": "klipper", "label": "Klipper"},
+        {"value": "smoothie", "label": "Smoothieware"}
+      ]
+    },
+    {
+      "key": "thumbnails",
+      "label": "Thumbnail Sizes",
+      "type": "text",
+      "category": "output",
+      "description": "Sizes for embedded thumbnails"
+    },
+    {
+      "key": "thumbnails_format",
+      "label": "Thumbnail Format",
+      "type": "select",
+      "category": "output",
+      "description": "Format for thumbnails",
+      "options": [
+        {"value": "PNG", "label": "PNG"},
+        {"value": "JPG", "label": "JPG"},
+        {"value": "QOI", "label": "QOI"}
+      ]
+    },
+    {
+      "key": "use_relative_e_distances",
+      "label": "Use Relative E Distances",
+      "type": "boolean",
+      "category": "output",
+      "description": "Use relative extrusion"
+    },
+    {
+      "key": "use_firmware_retraction",
+      "label": "Use Firmware Retraction",
+      "type": "boolean",
+      "category": "output",
+      "description": "Use G10/G11 for retraction"
+    },
+    {
+      "key": "silent_mode",
+      "label": "Silent Mode",
+      "type": "boolean",
+      "category": "output",
+      "description": "Enable silent mode profile"
+    },
+    {
+      "key": "fan_kickstart",
+      "label": "Fan Kickstart",
+      "type": "number",
+      "category": "cooling",
+      "description": "Time to kickstart fan",
+      "unit": "s"
+    },
+    {
+      "key": "auxiliary_fan",
+      "label": "Auxiliary Fan",
+      "type": "boolean",
+      "category": "cooling",
+      "description": "Printer has auxiliary fan"
+    },
+    {
+      "key": "support_air_filtration",
+      "label": "Support Air Filtration",
+      "type": "boolean",
+      "category": "features",
+      "description": "Printer has air filtration"
+    },
+    {
+      "key": "support_chamber_temp_control",
+      "label": "Support Chamber Temp Control",
+      "type": "boolean",
+      "category": "features",
+      "description": "Printer has chamber heating"
+    },
+    {
+      "key": "support_multi_bed_types",
+      "label": "Support Multiple Bed Types",
+      "type": "boolean",
+      "category": "features",
+      "description": "Printer supports multiple bed plates"
+    },
+    {
+      "key": "upward_compatible_machine",
+      "label": "Upward Compatible Machines",
+      "type": "text",
+      "category": "compatibility",
+      "description": "List of compatible machine models"
+    },
+    {
+      "key": "single_extruder_multi_material",
+      "label": "Single Extruder Multi-Material",
+      "type": "boolean",
+      "category": "multimaterial",
+      "description": "Single extruder with MMU/AMS"
+    },
+    {
+      "key": "cooling_tube_length",
+      "label": "Cooling Tube Length",
+      "type": "number",
+      "category": "multimaterial",
+      "description": "Length of cooling tube",
+      "unit": "mm"
+    },
+    {
+      "key": "cooling_tube_retraction",
+      "label": "Cooling Tube Retraction",
+      "type": "number",
+      "category": "multimaterial",
+      "description": "Retraction into cooling tube",
+      "unit": "mm"
+    },
+    {
+      "key": "extra_loading_move",
+      "label": "Extra Loading Move",
+      "type": "number",
+      "category": "multimaterial",
+      "description": "Extra move after loading",
+      "unit": "mm"
+    },
+    {
+      "key": "high_current_on_filament_swap",
+      "label": "High Current on Swap",
+      "type": "boolean",
+      "category": "multimaterial",
+      "description": "Use high current during swap"
+    },
+    {
+      "key": "parking_pos_retraction",
+      "label": "Parking Position Retraction",
+      "type": "number",
+      "category": "multimaterial",
+      "description": "Retraction for parking",
+      "unit": "mm"
+    },
+    {
+      "key": "bed_custom_model",
+      "label": "Custom Bed Model",
+      "type": "text",
+      "category": "dimensions",
+      "description": "Path to custom bed STL model"
+    },
+    {
+      "key": "bed_custom_texture",
+      "label": "Custom Bed Texture",
+      "type": "text",
+      "category": "dimensions",
+      "description": "Path to custom bed texture"
+    },
+    {
+      "key": "scan_first_layer",
+      "label": "Scan First Layer",
+      "type": "boolean",
+      "category": "features",
+      "description": "Enable first layer scanning"
+    },
+    {
+      "key": "time_cost",
+      "label": "Time Cost Factor",
+      "type": "number",
+      "category": "advanced",
+      "description": "Cost per hour of operation"
+    },
+    {
+      "key": "machine_load_filament_time",
+      "label": "Filament Load Time",
+      "type": "number",
+      "category": "multimaterial",
+      "description": "Time to load filament",
+      "unit": "s"
+    },
+    {
+      "key": "machine_unload_filament_time",
+      "label": "Filament Unload Time",
+      "type": "number",
+      "category": "multimaterial",
+      "description": "Time to unload filament",
+      "unit": "s"
+    }
+  ]
+}

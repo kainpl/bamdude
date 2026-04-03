@@ -108,9 +108,46 @@ _ROD_TYPE_REQUIREMENTS: dict[str, str] = {
 }
 
 
+_locale_name_to_english: dict[str, str] | None = None
+
+
+def _get_locale_name_map() -> dict[str, str]:
+    """Build and cache mapping from any locale name to English key."""
+    global _locale_name_to_english
+    if _locale_name_to_english is not None:
+        return _locale_name_to_english
+
+    import json
+    from pathlib import Path
+
+    result: dict[str, str] = {}
+    # Add English names as identity mapping
+    for t in DEFAULT_MAINTENANCE_TYPES:
+        result[t["name"]] = t["name"]
+
+    data_dir = Path(__file__).parent.parent.parent / "data"
+    for locale_file in data_dir.glob("maintenance_types_*.json"):
+        try:
+            with open(locale_file, encoding="utf-8") as f:
+                locale_data = json.load(f)
+                for eng_key, val in locale_data.items():
+                    result[val["name"]] = eng_key
+        except Exception:
+            pass
+
+    _locale_name_to_english = result
+    return result
+
+
+def _resolve_english_name(type_name: str) -> str:
+    """Resolve any locale name back to the original English key."""
+    return _get_locale_name_map().get(type_name, type_name)
+
+
 def _should_apply_to_printer(type_name: str, printer_model: str | None) -> bool:
     """Check if a system maintenance type should apply to a given printer model."""
-    rod_requirement = _ROD_TYPE_REQUIREMENTS.get(type_name)
+    eng_name = _resolve_english_name(type_name)
+    rod_requirement = _ROD_TYPE_REQUIREMENTS.get(eng_name)
     if rod_requirement is None:
         return True  # Not model-specific, applies to all
 
@@ -144,35 +181,47 @@ async def get_printer_total_hours(db: AsyncSession, printer_id: int) -> float:
 
 
 async def ensure_default_types(db: AsyncSession) -> None:
-    """Ensure default maintenance types exist, remove stale/duplicate ones."""
+    """Ensure default maintenance types exist. Never deletes — only adds missing ones."""
+    import json
+    from pathlib import Path
+
     result = await db.execute(
-        select(MaintenanceType).where(MaintenanceType.is_system.is_(True)).order_by(MaintenanceType.id)
+        select(MaintenanceType).where(MaintenanceType.is_system.is_(True))
     )
     existing = result.scalars().all()
 
-    default_names = {t["name"] for t in DEFAULT_MAINTENANCE_TYPES}
+    if len(existing) >= len(DEFAULT_MAINTENANCE_TYPES):
+        return  # All types present, nothing to do
 
-    # Remove stale system types no longer in defaults (e.g. renamed types)
-    # and deduplicate: if concurrent requests created the same type twice,
-    # keep only the first (lowest id) and delete the rest.
-    seen_names: set[str] = set()
-    for t in existing:
-        if t.name not in default_names or t.name in seen_names:
-            await db.delete(t)
-        else:
-            seen_names.add(t.name)
-
-    # Create any missing default types
+    # Build set of all known names (all locales) to check if type already exists under translation
+    data_dir = Path(__file__).parent.parent.parent / "data"
+    all_locale_names: dict[str, set[str]] = {}  # english_key -> {en_name, uk_name, ...}
     for type_def in DEFAULT_MAINTENANCE_TYPES:
-        if type_def["name"] not in seen_names:
-            new_type = MaintenanceType(
-                name=type_def["name"],
-                description=type_def["description"],
-                default_interval_hours=type_def["default_interval_hours"],
-                icon=type_def["icon"],
-                is_system=True,
-            )
-            db.add(new_type)
+        names = {type_def["name"]}
+        for locale_file in data_dir.glob("maintenance_types_*.json"):
+            try:
+                with open(locale_file, encoding="utf-8") as f:
+                    locale_data = json.load(f)
+                    if type_def["name"] in locale_data:
+                        names.add(locale_data[type_def["name"]]["name"])
+            except Exception:
+                pass
+        all_locale_names[type_def["name"]] = names
+
+    existing_names = {t.name for t in existing}
+
+    for type_def in DEFAULT_MAINTENANCE_TYPES:
+        # Check if already exists under any locale name
+        if all_locale_names[type_def["name"]] & existing_names:
+            continue
+        new_type = MaintenanceType(
+            name=type_def["name"],
+            description=type_def["description"],
+            default_interval_hours=type_def["default_interval_hours"],
+            icon=type_def["icon"],
+            is_system=True,
+        )
+        db.add(new_type)
 
     await db.commit()
 
