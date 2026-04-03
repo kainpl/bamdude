@@ -4148,7 +4148,7 @@ function PrinterCard({
                 title={!hasPermission('printers:control') ? t('printers.permission.noControl') : (status?.chamber_light ? t('printers.chamberLightOff') : t('printers.chamberLightOn'))}
                 className={status?.chamber_light ? '!border-yellow-500 !text-yellow-400 hover:!bg-yellow-500/20' : ''}
               >
-                <ChamberLight on={status?.chamber_light ?? false} className={`w-4 h-4 ${status?.chamber_light ? 'text-yellow-400' : ''}`} />
+                <ChamberLight on={status?.chamber_light ?? false} className={`w-5 h-5 ${status?.chamber_light ? 'text-yellow-400' : ''}`} />
               </Button>
               {/* Camera Button */}
               <Button
@@ -4174,7 +4174,7 @@ function PrinterCard({
                 disabled={!status?.connected || !hasPermission('camera:view')}
                 title={!hasPermission('camera:view') ? t('printers.permission.noCamera') : (cameraViewMode === 'embedded' ? t('printers.openCameraOverlay') : t('printers.openCameraWindow'))}
               >
-                <Video className="w-4 h-4" />
+                <Video className="w-5 h-5" />
               </Button>
               {/* Split button: main part toggles detection, chevron opens modal */}
               <div className={`inline-flex rounded-md ${printer.plate_detection_enabled ? 'ring-1 ring-green-500' : ''}`}>
@@ -4187,9 +4187,9 @@ function PrinterCard({
                   className={`!rounded-r-none !border-r-0 ${printer.plate_detection_enabled ? "!border-green-500 !text-green-400 hover:!bg-green-500/20" : ""}`}
                 >
                   {plateDetectionMutation.isPending ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <Loader2 className="w-5 h-5 animate-spin" />
                   ) : (
-                    <ScanSearch className="w-4 h-4" />
+                    <ScanSearch className="w-5 h-5" />
                   )}
                 </Button>
                 <Button

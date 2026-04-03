@@ -876,7 +876,7 @@ def _load_fields(preset_type: str) -> dict:
     if not file_path.exists():
         raise HTTPException(status_code=404, detail=f"Field definitions not found for: {preset_type}")
 
-    with open(file_path) as f:
+    with open(file_path, encoding="utf-8") as f:
         data = json.load(f)
 
     _fields_cache[preset_type] = data

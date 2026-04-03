@@ -1991,11 +1991,11 @@ function CreatePresetModal({
                 {/* Common Fields */}
                 <div>
                   <h3 className="text-sm font-medium text-white mb-3">{t('profiles.presets.commonSettings')}</h3>
-                  <div className="grid grid-cols-2 gap-x-6 gap-y-3">
+                  <div className="grid grid-cols-2 gap-x-6 gap-y-3 max-[640px]:grid-cols-1">
                     {dynamicFields.slice(0, 10).map(field => (
-                      <div key={field.key} className="flex items-center justify-between gap-4 max-[640px]:flex-col max-[640px]:items-start">
-                        <label className="text-sm text-bambu-gray flex-shrink-0">{field.label}</label>
-                        <div className="w-48 max-[640px]:w-full">{renderFieldInput(field)}</div>
+                      <div key={field.key} className="grid grid-cols-[1fr_200px] items-center gap-2 max-[640px]:grid-cols-1">
+                        <label className="text-sm text-bambu-gray truncate">{field.label}</label>
+                        <div>{renderFieldInput(field)}</div>
                       </div>
                     ))}
                   </div>
@@ -2582,7 +2582,7 @@ function CloudProfilesView({
               <span className="text-white font-medium">{t('profiles.cloudView.compareMode')}</span>
               <span className="text-bambu-gray">
                 {compareSelection[0]
-                  ? t('profiles.cloudView.selectAnotherPreset', { type: compareSelection[0].type })
+                  ? t('profiles.cloudView.selectAnotherPreset', { type: t(`profiles.cloudView.columns.${compareSelection[0].type}`) })
                   : t('profiles.cloudView.clickTwoPresets')}
               </span>
             </div>
