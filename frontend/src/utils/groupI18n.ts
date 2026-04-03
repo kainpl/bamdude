@@ -1,5 +1,5 @@
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-type TFn = (...args: any[]) => string;
+type TFn = (...args: any[]) => any;
 
 const GROUP_KEYS: Record<string, string> = {
   'Administrators': 'administrators',
