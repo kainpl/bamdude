@@ -170,8 +170,8 @@ async def update_settings(
     # Expire all objects to ensure fresh reads after commit
     db.expire_all()
 
-    # Update DB templates when system language or notification language changes
-    locale_lang = update_data.get("language") or update_data.get("notification_language")
+    # Update DB templates when system language changes
+    locale_lang = update_data.get("language")
     if locale_lang:
         try:
             from backend.app.core.database import async_session

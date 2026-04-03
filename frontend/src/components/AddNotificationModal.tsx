@@ -177,7 +177,6 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
       case 'telegram':
         return [
           { key: 'bot_token', label: 'Bot Token', placeholder: 'Bot token from @BotFather', type: 'password', required: true },
-          { key: 'chat_id', label: 'Chat ID', placeholder: 'Your chat or group ID', type: 'text', required: true },
         ];
       case 'email':
         return [

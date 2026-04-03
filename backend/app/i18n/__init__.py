@@ -1,125 +1,122 @@
-"""Internationalization module for backend notifications."""
+"""Backend internationalization — JSON-file-based translation system.
 
+Translations are stored as JSON files in ``backend/app/data/`` following the
+naming convention ``{namespace}_{lang}.json`` (e.g. ``telegram_ui_en.json``).
+
+Usage::
+
+    from backend.app.i18n import t, get_language
+
+    lang = await get_language()
+    text = t(lang, "telegram_ui", "start.welcome", name="User")
+"""
+
+import json
+import logging
+import re
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
-# English translations
-EN = {
-    "notification": {
-        # Print events
-        "print_started": "Print Started",
-        "print_completed": "Print Completed",
-        "print_failed": "Print Failed",
-        "print_stopped": "Print Stopped",
-        "print_ended": "Print Ended",
-        "print_progress": "Print {progress}% Complete",
-        "estimated": "Estimated",
-        "time": "Time",
-        "filament": "Filament",
-        "reason": "Reason",
-        "unknown": "Unknown",
-        # Printer events
-        "printer_offline": "Printer Offline",
-        "printer_disconnected": "{printer} has disconnected",
-        "printer_error": "Printer Error: {error_type}",
-        # Filament
-        "filament_low": "Filament Low",
-        "slot_at_percent": "{printer}: Slot {slot} at {percent}%",
-        # Maintenance
-        "maintenance_due": "Maintenance Due",
-        "overdue": "OVERDUE",
-        "soon": "Soon",
-        # Test notification
-        "test_title": "Bambuddy Test",
-        "test_message": "This is a test notification from Bambuddy. If you see this, notifications are working correctly!",
-    }
-}
+logger = logging.getLogger(__name__)
 
-# German translations
-DE = {
-    "notification": {
-        # Print events
-        "print_started": "Druck gestartet",
-        "print_completed": "Druck abgeschlossen",
-        "print_failed": "Druck fehlgeschlagen",
-        "print_stopped": "Druck gestoppt",
-        "print_ended": "Druck beendet",
-        "print_progress": "Druck {progress}% fertig",
-        "estimated": "Geschätzt",
-        "time": "Zeit",
-        "filament": "Filament",
-        "reason": "Grund",
-        "unknown": "Unbekannt",
-        # Printer events
-        "printer_offline": "Drucker offline",
-        "printer_disconnected": "{printer} wurde getrennt",
-        "printer_error": "Druckerfehler: {error_type}",
-        # Filament
-        "filament_low": "Wenig Filament",
-        "slot_at_percent": "{printer}: Slot {slot} bei {percent}%",
-        # Maintenance
-        "maintenance_due": "Wartung fällig",
-        "overdue": "ÜBERFÄLLIG",
-        "soon": "Bald",
-        # Test notification
-        "test_title": "Bambuddy Test",
-        "test_message": "Dies ist eine Testbenachrichtigung von Bambuddy. Wenn Sie dies sehen, funktionieren die Benachrichtigungen!",
-    }
-}
+DATA_DIR = Path(__file__).parent.parent / "data"
 
-# All available translations
-TRANSLATIONS = {
-    "en": EN,
-    "de": DE,
-}
+# Fallback language when requested language file doesn't exist
+FALLBACK_LANG = "en"
 
 
-def get_translation(lang: str, key: str, **kwargs: Any) -> str:
+@lru_cache(maxsize=32)
+def _load_translations(namespace: str, lang: str) -> dict:
+    """Load and cache a translation file.
+
+    Returns an empty dict if the file doesn't exist.
     """
-    Get a translation string by key with optional interpolation.
+    path = DATA_DIR / f"{namespace}_{lang}.json"
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.error("Failed to load translations %s: %s", path, e)
+        return {}
+
+
+def t(lang: str, namespace: str, key: str, **kwargs: Any) -> str:
+    """Get a translated string.
 
     Args:
-        lang: Language code (e.g., 'en', 'de')
-        key: Dot-separated key path (e.g., 'notification.print_started')
-        **kwargs: Values to interpolate into the string
+        lang: Language code (``"en"``, ``"uk"``, etc.).
+        namespace: File prefix in ``data/`` (e.g. ``"telegram_ui"``).
+        key: Dot-separated key path (e.g. ``"start.welcome"``).
+        **kwargs: Values to interpolate via ``str.format()``.
 
     Returns:
-        Translated string, or the key if not found
+        Translated string, or the raw key if not found.
     """
-    # Fall back to English if language not found
-    translations = TRANSLATIONS.get(lang, TRANSLATIONS["en"])
+    translations = _load_translations(namespace, lang)
 
-    # Navigate to the nested key
-    keys = key.split(".")
-    value = translations
-    for k in keys:
-        if isinstance(value, dict) and k in value:
-            value = value[k]
+    # Navigate nested keys
+    value: Any = translations
+    for part in key.split("."):
+        if isinstance(value, dict):
+            value = value.get(part)
         else:
-            # Key not found, fall back to English
-            value = TRANSLATIONS["en"]
-            for k2 in keys:
-                if isinstance(value, dict) and k2 in value:
-                    value = value[k2]
-                else:
-                    return key  # Return key if not found in fallback either
+            value = None
             break
 
-    if isinstance(value, str):
-        # Interpolate values
+    # Fallback to FALLBACK_LANG
+    if value is None and lang != FALLBACK_LANG:
+        translations = _load_translations(namespace, FALLBACK_LANG)
+        value = translations
+        for part in key.split("."):
+            if isinstance(value, dict):
+                value = value.get(part)
+            else:
+                value = None
+                break
+
+    if value is None:
+        return key
+
+    if not isinstance(value, str):
+        return key
+
+    if kwargs:
         try:
             return value.format(**kwargs)
         except KeyError:
             return value
 
-    return key
+    return value
 
 
-class Translator:
-    """Helper class for translations with a specific language."""
+def invalidate_cache() -> None:
+    """Clear the translation cache (call after language change)."""
+    _load_translations.cache_clear()
 
-    def __init__(self, lang: str = "en"):
-        self.lang = lang if lang in TRANSLATIONS else "en"
 
-    def t(self, key: str, **kwargs: Any) -> str:
-        """Translate a key."""
-        return get_translation(self.lang, key, **kwargs)
+# MarkdownV2 special characters that must be escaped
+_MD_ESCAPE_RE = re.compile(r"([_*\[\]()~`>#+\-=|{}.!\\])")
+
+
+def escape_md(text: str) -> str:
+    """Escape special characters for Telegram MarkdownV2."""
+    return _MD_ESCAPE_RE.sub(r"\\\1", str(text))
+
+
+async def get_language() -> str:
+    """Read the current system language from DB settings."""
+    try:
+        from backend.app.core.database import async_session
+        from backend.app.models.settings import Settings
+        from sqlalchemy import select
+
+        async with async_session() as db:
+            result = await db.execute(
+                select(Settings.value).where(Settings.key == "language")
+            )
+            lang = result.scalar_one_or_none()
+            return lang or FALLBACK_LANG
+    except Exception:
+        return FALLBACK_LANG

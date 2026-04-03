@@ -786,6 +786,7 @@ async def set_printer_hours(
 
         items_needing_attention = [
             {
+                "id": item.id,
                 "name": item.maintenance_type_name,
                 "is_due": item.is_due,
                 "is_warning": item.is_warning,

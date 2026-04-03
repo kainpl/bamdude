@@ -58,3 +58,4 @@ httpx>=0.26.0
 ruff>=0.2.0
 
 pillow>=12.1.1
+aiogram>=3.20

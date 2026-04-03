@@ -844,7 +844,8 @@ export interface AppSettings {
   check_printer_firmware: boolean;
   include_beta_updates: boolean;
   language: string;
-  notification_language: string;
+  // Telegram
+  telegram_registration_open: boolean;
   // AMS threshold settings
   ams_humidity_good: number;  // <= this is green
   ams_humidity_fair: number;  // <= this is orange, > is red
@@ -4374,7 +4375,70 @@ export const api = {
     request<{ success: boolean }>(`/local-presets/${id}`, { method: 'DELETE' }),
   refreshBaseProfileCache: () =>
     request<{ refreshed: number; failed: number; total: number }>('/local-presets/base-cache/refresh', { method: 'POST' }),
+
+  // Telegram Chats
+  getTelegramChats: () => request<TelegramChat[]>('/telegram/chats'),
+  createTelegramChat: (data: TelegramChatCreate) =>
+    request<TelegramChat>('/telegram/chats', { method: 'POST', body: JSON.stringify(data) }),
+  updateTelegramChat: (id: number, data: TelegramChatUpdate) =>
+    request<TelegramChat>(`/telegram/chats/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteTelegramChat: (id: number) =>
+    request<void>(`/telegram/chats/${id}`, { method: 'DELETE' }),
+  testTelegramChat: (id: number) =>
+    request<{ status: string }>(`/telegram/chats/${id}/test`, { method: 'POST' }),
+  getTelegramEvents: () => request<NotifyEventInfo[]>('/telegram/events'),
 };
+
+// Telegram Chat types
+export interface TelegramChat {
+  id: number;
+  chat_id: number;
+  label: string | null;
+  group_id: number | null;
+  group_name: string | null;
+  user_id: number | null;
+  username: string | null;
+  is_active: boolean;
+  notify_events: string[] | null;
+  daily_digest: boolean;
+  quiet_hours_enabled: boolean;
+  quiet_hours_start: string | null;
+  quiet_hours_end: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TelegramChatCreate {
+  chat_id: number;
+  label?: string | null;
+  group_id?: number | null;
+  user_id?: number | null;
+  is_active?: boolean;
+  notify_events?: string[] | null;
+  daily_digest?: boolean;
+  quiet_hours_enabled?: boolean;
+  quiet_hours_start?: string | null;
+  quiet_hours_end?: string | null;
+}
+
+export interface TelegramChatUpdate {
+  label?: string | null;
+  group_id?: number | null;
+  user_id?: number | null;
+  is_active?: boolean;
+  notify_events?: string[] | null;
+  daily_digest?: boolean;
+  quiet_hours_enabled?: boolean;
+  quiet_hours_start?: string | null;
+  quiet_hours_end?: string | null;
+}
+
+export interface NotifyEventInfo {
+  event_type: string;
+  category: string;
+  label: string;
+  default: boolean;
+}
 
 // AMS History types
 export interface AMSHistoryPoint {

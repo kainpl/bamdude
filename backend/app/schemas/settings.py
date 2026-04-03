@@ -44,7 +44,11 @@ class AppSettings(BaseModel):
 
     # Language
     language: str = Field(default="en", description="UI language (en, de, fr, ja, it, pt-BR)")
-    notification_language: str = Field(default="en", description="Language for push notifications (en, de)")
+
+    # Telegram
+    telegram_registration_open: bool = Field(
+        default=False, description="Allow unknown Telegram chats to auto-register (pending admin activation)"
+    )
 
     # Bed cooled notification threshold
     bed_cooled_threshold: float = Field(
@@ -207,7 +211,6 @@ class AppSettingsUpdate(BaseModel):
     check_printer_firmware: bool | None = None
     include_beta_updates: bool | None = None
     language: str | None = None
-    notification_language: str | None = None
     bed_cooled_threshold: float | None = None
     ams_humidity_good: int | None = None
     ams_humidity_fair: int | None = None
@@ -235,6 +238,7 @@ class AppSettingsUpdate(BaseModel):
     ftp_retry_count: int | None = None
     ftp_retry_delay: int | None = None
     ftp_timeout: int | None = None
+    telegram_registration_open: bool | None = None
     mqtt_enabled: bool | None = None
     mqtt_broker: str | None = None
     mqtt_port: int | None = None
