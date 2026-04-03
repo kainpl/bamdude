@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { MessageCircle, Trash2, Edit2, Send, Loader2, CheckCircle, XCircle } from 'lucide-react';
+import { Trash2, Edit2, Send, Loader2, CheckCircle, XCircle } from 'lucide-react';
 import { api } from '../api/client';
 import type { TelegramChat, TelegramChatUpdate } from '../api/client';
 import { Card, CardContent } from './Card';
@@ -138,7 +138,7 @@ export function TelegramChatCard({ chat, onEdit }: TelegramChatCardProps) {
         <ConfirmModal
           title={t('telegram.deleteTitle')}
           message={t('telegram.deleteMessage', { label: chat.label || chat.chat_id })}
-          confirmLabel={t('telegram.delete')}
+          confirmText={t('telegram.delete')}
           onConfirm={() => {
             deleteMutation.mutate();
             setShowDeleteConfirm(false);
