@@ -65,6 +65,10 @@ class TestExternalFolderCreation:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    @pytest.mark.skipif(
+        __import__("os").name == "nt",
+        reason="System directory test uses /proc which doesn't exist on Windows",
+    )
     async def test_create_external_folder_system_dir_blocked(self, async_client: AsyncClient, db_session):
         """Verify system directories are blocked."""
         data = {

@@ -5,7 +5,26 @@ custom presets) takes priority, with slot reuse and generic fallback as
 lower-priority fallbacks.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch as _orig_patch
+
+
+class _PrinterManagerPatch:
+    def __init__(self, target, **kwargs):
+        self._patcher = _orig_patch(target, **kwargs)
+        self._is_pm = "printer_manager" in target
+
+    def __enter__(self):
+        mock = self._patcher.__enter__()
+        if self._is_pm:
+            mock.ensure_fresh_connection = AsyncMock(return_value=True)
+            mock.ensure_fresh_connection_for_printer = AsyncMock(return_value=True)
+        return mock
+
+    def __exit__(self, *args):
+        return self._patcher.__exit__(*args)
+
+
+patch = _PrinterManagerPatch
 
 import pytest
 from httpx import AsyncClient

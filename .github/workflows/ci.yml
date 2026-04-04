@@ -74,27 +74,34 @@ jobs:
           # No fix available yet. Remove --ignore-vuln once Pygments releases a patched version.
           pip-audit --desc on --ignore-vuln CVE-2026-4539
 
-  # backend-tests:
-  #   name: Backend Tests
-  #   runs-on: ubuntu-latest
-  #   if: github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner
-  #   needs: backend-lint
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - name: Set up Python
-  #       uses: actions/setup-python@v5
-  #       with:
-  #         python-version: ${{ env.PYTHON_VERSION }}
-  #     - name: Install dependencies
-  #       run: |
-  #         python -m pip install --upgrade pip
-  #         pip install -r requirements.txt
-  #         pip install -r requirements-dev.txt
-  #     - name: Run tests
-  #       timeout-minutes: 10
-  #       run: |
-  #         cd backend
-  #         python -m pytest tests/ -v --tb=short --timeout=60 --timeout-method=thread -n auto
+  backend-tests:
+    name: Backend Tests
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner
+    continue-on-error: true  # Some pre-existing tests may fail
+    needs: backend-lint
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: ${{ runner.os }}-pip-
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+      - name: Run tests
+        timeout-minutes: 10
+        run: |
+          cd backend
+          python -m pytest tests/ -v --tb=short --timeout=60 --timeout-method=thread -n auto
 
   # ============================================================================
   # Frontend Checks
@@ -243,7 +250,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner
     timeout-minutes: 20
-    needs: [backend-lint, frontend-build]
+    needs: [backend-tests, frontend-build]
     steps:
       - uses: actions/checkout@v4
 
@@ -257,11 +264,12 @@ jobs:
       - name: Verify static files exist
         run: docker run --rm bambuddy:test test -d /app/static
 
-      # Test 2: Backend Unit Tests in Docker (disabled — TODO: fix pre-existing test failures)
-      # - name: Build backend test image
-      #   run: docker compose -f docker-compose.test.yml build backend-test
-      # - name: Run backend tests in Docker
-      #   run: docker compose -f docker-compose.test.yml run --rm backend-test
+      # Test 2: Backend Unit Tests in Docker
+      - name: Build backend test image
+        run: docker compose -f docker-compose.test.yml build backend-test
+      - name: Run backend tests in Docker
+        continue-on-error: true
+        run: docker compose -f docker-compose.test.yml run --rm backend-test
 
       # Test 3: Frontend Unit Tests in Docker
       - name: Build frontend test image
@@ -301,11 +309,12 @@ jobs:
           echo "Static files HTTP status: $STATUS"
           [ "$STATUS" = "200" ]
 
-      # Test 5: Integration Test Suite (disabled — TODO: fix pre-existing test failures)
-      # - name: Build integration test runner
-      #   run: docker compose -f docker-compose.test.yml build integration-test-runner
-      # - name: Run integration test suite
-      #   run: docker compose -f docker-compose.test.yml run --rm integration-test-runner
+      # Test 5: Integration Test Suite
+      - name: Build integration test runner
+        run: docker compose -f docker-compose.test.yml build integration-test-runner
+      - name: Run integration test suite
+        continue-on-error: true
+        run: docker compose -f docker-compose.test.yml run --rm integration-test-runner
 
       - name: Show logs on failure
         if: failure()

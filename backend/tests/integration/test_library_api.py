@@ -793,7 +793,7 @@ class TestLibraryPathHelpers:
         rel_path = to_relative_path(abs_path)
 
         assert not rel_path.startswith("/")
-        assert rel_path == "archive/library/files/test.3mf"
+        assert rel_path.replace("\\", "/") == "archive/library/files/test.3mf"
 
     def test_to_relative_path_handles_path_object(self):
         """Verify Path objects are handled correctly."""
@@ -806,7 +806,7 @@ class TestLibraryPathHelpers:
         rel_path = to_relative_path(abs_path)
 
         assert not rel_path.startswith("/")
-        assert rel_path == "archive/test.3mf"
+        assert rel_path.replace("\\", "/") == "archive/test.3mf"
 
     def test_to_relative_path_returns_empty_for_empty_input(self):
         """Verify empty input returns empty string."""
@@ -825,13 +825,19 @@ class TestLibraryPathHelpers:
 
         assert abs_path is not None
         assert abs_path.is_absolute()
-        assert str(abs_path) == f"{settings.base_dir}/archive/library/files/test.3mf"
+        expected = str(settings.base_dir / "archive" / "library" / "files" / "test.3mf")
+        assert str(abs_path) == expected
 
     def test_to_absolute_path_handles_already_absolute(self):
         """Verify already absolute paths are returned as-is (for backwards compatibility)."""
+        import os
+
         from backend.app.api.routes.library import to_absolute_path
 
-        abs_path_str = "/data/archive/test.3mf"
+        if os.name == "nt":
+            abs_path_str = "C:\\data\\archive\\test.3mf"
+        else:
+            abs_path_str = "/data/archive/test.3mf"
         result = to_absolute_path(abs_path_str)
 
         assert result is not None
