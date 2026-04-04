@@ -1,54 +1,52 @@
-# Bambuddy
+# Bambuddy HE
 
-**Self-hosted print archive and management system for Bambu Lab 3D printers.**
+**Self-hosted print archive, management and automation system for Bambu Lab 3D printers.**
 
-No cloud dependency. Complete privacy. Full control.
-
-[![GitHub](https://img.shields.io/github/stars/maziggy/bambuddy?style=flat-square&label=GitHub)](https://github.com/maziggy/bambuddy)
-[![License](https://img.shields.io/github/license/maziggy/bambuddy?style=flat-square)](https://github.com/maziggy/bambuddy/blob/main/LICENSE)
-[![Discord](https://img.shields.io/discord/1461241694715645994?style=flat-square&logo=discord&logoColor=white&label=Discord&color=5865F2)](https://discord.gg/aFS3ZfScHM)
+Hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) with Telegram bot, multi-chat auth, and print farm automation.
 
 ## Quick Start
 
 ```bash
-mkdir bambuddy && cd bambuddy
-curl -O https://raw.githubusercontent.com/maziggy/bambuddy/main/docker-compose.yml
-docker compose up -d
+git clone https://github.com/YOUR_REPO/bambuddy-he.git
+cd bambuddy-he
+docker compose up -d --build
 ```
 
 Open **http://localhost:8000** and add your printer.
 
 > **Requirements:** Bambu Lab printer with Developer Mode enabled, on the same local network.
 
-## Supported Architectures
-
-| Architecture | Tag |
-|---|---|
-| x86-64 (Intel/AMD) | `amd64` |
-| arm64 (Raspberry Pi 4/5) | `arm64` |
-
 ## Features
 
-- **Real-Time Monitoring** — Live printer status, camera streaming, HMS error tracking (853 codes translated), resizable multi-printer dashboard
-- **Print Archive** — Automatic 3MF archiving with metadata, interactive 3D model viewer (Three.js), photo attachments, failure analysis, side-by-side comparison
-- **Print Scheduling** — Drag-and-drop queue, multi-printer assignment by model or location, time-based scheduling, re-print with AMS mapping
-- **Smart Automation** — Smart plug control (Tasmota, Home Assistant, MQTT), auto power-on/off, energy monitoring, maintenance reminders
-- **Proxy Mode** — Print remotely from Bambu Studio/OrcaSlicer without VPN or port forwarding, end-to-end TLS encrypted
-- **Notifications** — WhatsApp, Telegram, Discord, Email, Pushover, ntfy with customizable templates and quiet hours
-- **Projects** — Group related prints, track parts and plates, bill of materials, cost tracking, export as ZIP/JSON
-- **File Manager** — Upload and organize sliced files, folder structure, print directly to any printer
-- **Integrations** — Spoolman filament sync, MQTT publishing, Prometheus metrics, Bambu Cloud profiles, REST API, Home Assistant
-- **Virtual Printer** — Appears in your slicer via SSDP discovery, multiple operating modes (archive, review, queue, proxy)
-- **Security** — Optional authentication with group-based permissions (50+ granular), JWT tokens, API key support
+- **Real-Time Monitoring** — Live printer status, camera streaming, HMS error tracking, multi-printer dashboard
+- **Telegram Bot** — Full printer control, status, maintenance, queue from Telegram with multi-chat auth and actionable notifications
+- **Print Archive** — Automatic 3MF archiving, 3D model viewer, timelapse editor, re-print with AMS mapping
+- **Print Scheduling** — Drag-and-drop queue, model-based assignment, clear plate confirmation between prints
+- **Smart Automation** — Smart plug control, auto power-on/off, energy monitoring, maintenance reminders
+- **Notifications** — Telegram, Discord, Email, Pushover, ntfy with per-chat settings, quiet hours, actionable buttons
+- **File Manager** — Upload sliced files, folder structure, external mounts, print directly
+- **Integrations** — Spoolman, MQTT, Prometheus, Bambu Cloud, REST API, Home Assistant
+- **Virtual Printer** — Archive, Review, Queue, or Proxy mode
+- **Security** — Optional auth with 80+ granular permissions, JWT, API keys
+
+## What's different from Bambuddy?
+
+- Full Telegram bot (aiogram 3.x) with inline menus and reply keyboard
+- Multi-chat authorization with per-chat roles and permissions
+- Actionable notification buttons (clear plate, mark maintenance done)
+- Per-chat notification events, quiet hours, daily digest
+- Maintenance management from bot (view, mark done, edit hours)
+- Ukrainian locale (full UI + bot + templates)
+- Backend i18n system for bot translations
+- MarkdownV2 Telegram formatting
+- Various fixes: ghost prints, MQTT freshness, SD cleanup, server-side pagination
 
 ## Configuration
 
 | Variable | Default | Description |
 |---|---|---|
-| `TZ` | `UTC` | Timezone (e.g. `America/New_York`, `Europe/Berlin`) |
+| `TZ` | `UTC` | Timezone (e.g. `Europe/Kyiv`) |
 | `PORT` | `8000` | Web UI port |
-| `PUID` | `1000` | User ID for file permissions |
-| `PGID` | `1000` | Group ID for file permissions |
 | `DEBUG` | `false` | Enable debug logging |
 
 ## Volumes
@@ -62,14 +60,12 @@ Open **http://localhost:8000** and add your printer.
 
 ```yaml
 services:
-  bambuddy:
-    image: maziggy/bambuddy:latest
-    container_name: bambuddy
+  bambuddy-he:
+    build: .
+    container_name: bambuddy-he
     network_mode: host
     environment:
-      - TZ=America/New_York
-      - PUID=1000
-      - PGID=1000
+      - TZ=Europe/Kyiv
     volumes:
       - bambuddy_data:/app/data
       - bambuddy_logs:/app/logs
@@ -80,47 +76,28 @@ volumes:
   bambuddy_logs:
 ```
 
-> **macOS/Windows:** Docker Desktop doesn't support `network_mode: host`. Replace it with `ports: ["8000:8000"]` and add printers manually by IP.
+> **macOS/Windows:** Docker Desktop doesn't support `network_mode: host`. Replace with `ports: ["8000:8000"]` and add printers manually by IP.
 
-## Updating
+## Telegram Bot Setup
 
-```bash
-docker compose pull && docker compose up -d
-```
-
-## Daily Beta Builds
-
-Beta builds with the latest fixes are pushed regularly to the same beta version tag:
-
-```bash
-# Pull the current beta
-docker pull maziggy/bambuddy:0.2.2b1
-```
-
-Use [Watchtower](https://containrrr.dev/watchtower/) to automatically update when new daily builds are pushed.
-
-> **Note:** Beta builds use version tags like `0.2.2b1` — they are never tagged as `latest`. Your stable installation won't auto-update to a beta unless you explicitly pull a beta tag.
+1. Create a bot via [@BotFather](https://t.me/BotFather)
+2. In Settings > Notifications, add Telegram provider with bot token
+3. Enable Registration Mode, send `/start` to the bot
+4. Assign a role to your chat in Settings > Telegram Chats
+5. Control printers, view maintenance, confirm plate clears from Telegram
 
 ## Supported Printers
 
-| Series | Models | Status |
-|---|---|---|
-| H2 | H2C, H2D, H2D Pro, H2S | Tested |
-| X1 | X1 Carbon, X1E | Tested |
-| P1 | P1P, P1S | Compatible |
-| P2 | P2S | Compatible |
-| A1 | A1, A1 Mini | Compatible |
+| Series | Models |
+|---|---|
+| H2 | H2C, H2D, H2D Pro, H2S |
+| X1 | X1, X1 Carbon, X1E |
+| P1 | P1P, P1S |
+| P2 | P2S |
+| A1 | A1, A1 Mini |
 
-All printers require **Developer Mode** enabled for LAN access.
-
-## Links
-
-- **Website:** [bambuddy.cool](https://bambuddy.cool)
-- **Documentation:** [wiki.bambuddy.cool](http://wiki.bambuddy.cool)
-- **GitHub:** [github.com/maziggy/bambuddy](https://github.com/maziggy/bambuddy)
-- **Discord:** [discord.gg/aFS3ZfScHM](https://discord.gg/aFS3ZfScHM)
-- **Issues:** [GitHub Issues](https://github.com/maziggy/bambuddy/issues)
+All printers require **Developer Mode** for LAN access.
 
 ## License
 
-MIT License - see [LICENSE](https://github.com/maziggy/bambuddy/blob/main/LICENSE) for details.
+AGPL-3.0 License

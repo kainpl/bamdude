@@ -1,6 +1,85 @@
 # Changelog
 
-All notable changes to Bambuddy will be documented in this file.
+All notable changes to Bambuddy HE will be documented in this file.
+
+> Bambuddy HE is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy). Forked from v0.2.2.2 (2026-03-27).
+
+---
+
+## [0.3.0.1] - 2026-04-04
+
+Hard fork release. All changes below are relative to upstream Bambuddy v0.2.2.2.
+
+### Telegram Bot (aiogram 3.x)
+
+- **Full Telegram bot** with inline menus, reply keyboard, and registered bot commands
+- **Printer control** from Telegram: pause, resume, stop, chamber light
+- **Printer status** with real-time info: state, temps, progress, ETA, total hours
+- **Maintenance indicators** in printer list (overdue/warning counts per printer)
+- **Maintenance management** from bot: view items with status, mark as done
+- **Printer hours editing** via FSM: enter new total hours, auto-calculates offset
+- **Clear plate confirmation** from printer detail when queue has pending jobs
+- **Actionable notification buttons**: print_complete/failed adds "Plate cleared" button, maintenance_due adds "Mark done" per item
+- **Multi-chat authorization**: each Telegram chat gets a group (role) with granular permissions (80+ permissions from Bambuddy auth system)
+- **Per-chat notification settings**: event type toggles, quiet hours, daily digest
+- **Auto-registration mode**: admin opens registration, users message bot, chats appear pending in Settings
+- **Auth middleware** on every message/callback: unknown chats ignored or auto-registered, disabled chats notified
+- **Permission-based UI**: buttons hidden when chat lacks permission (viewers see status but no controls)
+- **MarkdownV2 parse mode** with `escape_md()` for all dynamic content
+
+### Backend i18n System
+
+- **Complete rewrite** of `backend/app/i18n/`: JSON-file-based translations replacing dead EN/DE hardcoded dicts
+- `t(lang, namespace, "dot.key", **kwargs)` with interpolation and fallback to English
+- `escape_md(text)` for Telegram MarkdownV2 special character escaping
+- `get_language()` reads system language from DB, `invalidate_cache()` on language change
+- **88 bot UI translation keys** in `telegram_ui_en.json` / `telegram_ui_uk.json`
+- Adding a new language = drop a JSON file, no code changes
+
+### Notification System
+
+- **Removed `notification_language` setting** — notifications follow system language
+- **Per-chat quiet hours** instead of per-provider (each Telegram chat has own schedule)
+- **Per-chat notification event toggles** (JSON list instead of 21 boolean columns)
+- **Notification template editor** with MarkdownV2 formatting toolbar (bold, italic, underline, strikethrough, code, spoiler, link + Ctrl+B/I/U shortcuts)
+- **Telegram provider card** embeds chat management directly (no separate section)
+
+### Frontend
+
+- **Notifications sub-tabs**: Providers and Templates on separate tabs (full width)
+- **Telegram Chats UI** nested inside Telegram provider card: add/edit/delete chats, per-chat event toggles, quiet hours, daily digest, role assignment, test message
+- **Edit button** added to notification provider card header (was hidden in expanded settings)
+- **Removed `chat_id` field** from Telegram provider form (chats managed separately)
+
+### Ukrainian Locale
+
+- **Full Ukrainian translation** of frontend UI (~4800 keys)
+- **Ukrainian bot UI** (`telegram_ui_uk.json`) — all 88 bot strings
+- **Ukrainian notification templates** and maintenance types (JSON data files)
+- **Locale-based DB updater** — notification templates and maintenance types auto-update when system language changes
+
+### Printer & Queue Improvements
+
+- **Cleanup after print** — per-printer SD card file cleanup settings
+- **MQTT connection freshness** — configurable staleness timeout, auto-reconnect
+- **Ghost print prevention** — patch `.bbl_auto_recovery` flag on print start
+- **Pre-upload cache cleanup** — remove stale files before FTP upload
+- **Printer connection timestamp** — track when each printer connected
+- **Server-side archive pagination** — offset-based with 30-day heatmap
+
+### Code Quality
+
+- **Dead code cleanup** — removed unused settings, fields, imports
+- **UI polish** — scrollbar theming, button alignment, encoding fixes
+- **Date format support** — configurable date/time format in settings
+- **Permission group i18n** — localized group names and descriptions
+- **Rebrand to Bambuddy HE** — updated titles, about page, PWA manifest
+
+---
+
+## Upstream Bambuddy Changelog
+
+> Below is the original Bambuddy changelog from before the fork.
 
 ## [0.2.2.2] - 2026-03-27
 
