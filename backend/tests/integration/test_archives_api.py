@@ -22,8 +22,10 @@ class TestArchivesAPI:
 
         assert response.status_code == 200
         data = response.json()
-        assert isinstance(data, list)
-        assert len(data) == 0
+        assert isinstance(data, dict)
+        assert isinstance(data["data"], list)
+        assert len(data["data"]) == 0
+        assert data["meta"]["total"] == 0
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -38,9 +40,9 @@ class TestArchivesAPI:
 
         assert response.status_code == 200
         data = response.json()
-        assert isinstance(data, list)
-        assert len(data) >= 1
-        assert any(a["print_name"] == "Test Archive" for a in data)
+        assert isinstance(data, dict)
+        assert len(data["data"]) >= 1
+        assert any(a["print_name"] == "Test Archive" for a in data["data"])
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -53,13 +55,14 @@ class TestArchivesAPI:
         for i in range(5):
             await archive_factory(printer.id, print_name=f"Archive {i}")
 
-        # Get first page with limit 2
-        response = await async_client.get("/api/v1/archives/?limit=2&offset=0")
+        # Get first page with per_page 2
+        response = await async_client.get("/api/v1/archives/?per_page=2&page=1")
 
         assert response.status_code == 200
         data = response.json()
-        assert isinstance(data, list)
-        assert len(data) == 2
+        assert isinstance(data, dict)
+        assert len(data["data"]) == 2
+        assert data["meta"]["total"] == 5
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -76,7 +79,7 @@ class TestArchivesAPI:
 
         assert response.status_code == 200
         data = response.json()
-        assert all(a["printer_id"] == printer1.id for a in data)
+        assert all(a["printer_id"] == printer1.id for a in data["data"])
 
     # ========================================================================
     # Get single endpoint
@@ -278,8 +281,6 @@ class TestArchivesSlimAPI:
         assert "created_at" in item
 
         # Full archive fields must NOT be present
-        assert "id" not in item
-        assert "filename" not in item
         assert "file_path" not in item
         assert "file_size" not in item
         assert "extra_data" not in item

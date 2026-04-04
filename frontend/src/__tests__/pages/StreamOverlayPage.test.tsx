@@ -111,7 +111,7 @@ describe('StreamOverlayPage', () => {
       renderOverlayPage(1);
 
       await waitFor(() => {
-        expect(screen.getByAltText('Bambuddy')).toBeInTheDocument();
+        expect(screen.getByAltText('Bambuddy-HE')).toBeInTheDocument();
       });
     });
 
@@ -185,7 +185,7 @@ describe('StreamOverlayPage', () => {
 
       await waitFor(() => {
         // Just verify it renders without error
-        expect(screen.getByAltText('Bambuddy')).toBeInTheDocument();
+        expect(screen.getByAltText('Bambuddy-HE')).toBeInTheDocument();
       });
     });
 

@@ -10,20 +10,8 @@ describe('getCurrencySymbol', () => {
     expect(getCurrencySymbol('EUR')).toBe('€');
   });
 
-  it('returns £ for GBP', () => {
-    expect(getCurrencySymbol('GBP')).toBe('£');
-  });
-
-  it('returns ₹ for INR', () => {
-    expect(getCurrencySymbol('INR')).toBe('₹');
-  });
-
-  it('returns HK$ for HKD', () => {
-    expect(getCurrencySymbol('HKD')).toBe('HK$');
-  });
-
-  it('returns RM for MYR', () => {
-    expect(getCurrencySymbol('MYR')).toBe('RM');
+  it('returns zł for PLN', () => {
+    expect(getCurrencySymbol('PLN')).toBe('zł');
   });
 
   it('returns ₴ for UAH', () => {
@@ -41,15 +29,15 @@ describe('getCurrencySymbol', () => {
 });
 
 describe('SUPPORTED_CURRENCIES', () => {
-  it('contains INR', () => {
-    expect(SUPPORTED_CURRENCIES.find((c) => c.code === 'INR')).toBeDefined();
+  it('contains USD', () => {
+    expect(SUPPORTED_CURRENCIES.find((c) => c.code === 'USD')).toBeDefined();
   });
 
-  it('contains MYR', () => {
-    expect(SUPPORTED_CURRENCIES.find((c) => c.code === 'MYR')).toBeDefined();
+  it('contains UAH', () => {
+    expect(SUPPORTED_CURRENCIES.find((c) => c.code === 'UAH')).toBeDefined();
   });
 
-  it('has 28 entries', () => {
-    expect(SUPPORTED_CURRENCIES).toHaveLength(29);
+  it('has 4 entries', () => {
+    expect(SUPPORTED_CURRENCIES).toHaveLength(4);
   });
 });

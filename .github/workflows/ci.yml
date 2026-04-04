@@ -190,32 +190,32 @@ jobs:
         working-directory: frontend
         run: npx tsc --noEmit
 
-  # frontend-tests:
-  #   name: Frontend Tests
-  #   runs-on: ubuntu-latest
-  #   if: github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner
-  #   needs: [frontend-lint, frontend-typecheck]
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - name: Set up Node.js
-  #       uses: actions/setup-node@v4
-  #       with:
-  #         node-version: ${{ env.NODE_VERSION }}
-  #         cache: 'npm'
-  #         cache-dependency-path: frontend/package-lock.json
-  #     - name: Install dependencies
-  #       working-directory: frontend
-  #       run: npm ci
-  #     - name: Run tests
-  #       timeout-minutes: 10
-  #       working-directory: frontend
-  #       run: npm run test:run
+  frontend-tests:
+    name: Frontend Tests
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner
+    needs: [frontend-lint, frontend-typecheck]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Run tests
+        timeout-minutes: 10
+        working-directory: frontend
+        run: npm run test:run
 
   frontend-build:
     name: Frontend Build
     runs-on: ubuntu-latest
     if: github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner
-    needs: [frontend-typecheck]
+    needs: [frontend-tests]
     steps:
       - uses: actions/checkout@v4
 
@@ -263,11 +263,11 @@ jobs:
       # - name: Run backend tests in Docker
       #   run: docker compose -f docker-compose.test.yml run --rm backend-test
 
-      # Test 3: Frontend Unit Tests in Docker (disabled — TODO: fix pre-existing test failures)
-      # - name: Build frontend test image
-      #   run: docker compose -f docker-compose.test.yml build frontend-test
-      # - name: Run frontend tests in Docker
-      #   run: docker compose -f docker-compose.test.yml run --rm frontend-test
+      # Test 3: Frontend Unit Tests in Docker
+      - name: Build frontend test image
+        run: docker compose -f docker-compose.test.yml build frontend-test
+      - name: Run frontend tests in Docker
+        run: docker compose -f docker-compose.test.yml run --rm frontend-test
 
       # Test 4: Integration Tests
       - name: Build integration container

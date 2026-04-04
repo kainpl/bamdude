@@ -321,7 +321,9 @@ export function formatTimeOnly(
   };
 
   const finalOptions = applyTimeFormat({ ...defaultOptions, ...options }, timeFormat);
-  return date.toLocaleTimeString([], finalOptions);
+  // Use en-US for 12h to keep AM/PM universal (not localized ПП/ДП)
+  const locale = finalOptions.hour12 === true ? 'en-US' : [];
+  return date.toLocaleTimeString(locale, finalOptions);
 }
 
 /**

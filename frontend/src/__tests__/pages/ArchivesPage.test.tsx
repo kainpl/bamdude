@@ -70,7 +70,10 @@ describe('ArchivesPage', () => {
   beforeEach(() => {
     server.use(
       http.get('/api/v1/archives/', () => {
-        return HttpResponse.json(mockArchives);
+        return HttpResponse.json({
+          data: mockArchives,
+          meta: { current_page: 1, per_page: 50, total: mockArchives.length, last_page: 1 },
+        });
       }),
       http.get('/api/v1/archives/stats', () => {
         return HttpResponse.json(mockArchiveStats);
@@ -233,7 +236,10 @@ describe('ArchivesPage', () => {
     it('shows empty state when no archives', async () => {
       server.use(
         http.get('/api/v1/archives/', () => {
-          return HttpResponse.json([]);
+          return HttpResponse.json({
+            data: [],
+            meta: { current_page: 1, per_page: 50, total: 0, last_page: 1 },
+          });
         })
       );
 
@@ -313,7 +319,10 @@ describe('ArchivesPage', () => {
       const archivesWithoutTimelapse = mockArchives.map(a => ({ ...a, timelapse_path: null }));
       server.use(
         http.get('/api/v1/archives/', () => {
-          return HttpResponse.json(archivesWithoutTimelapse);
+          return HttpResponse.json({
+            data: archivesWithoutTimelapse,
+            meta: { current_page: 1, per_page: 50, total: archivesWithoutTimelapse.length, last_page: 1 },
+          });
         })
       );
 
@@ -336,7 +345,10 @@ describe('ArchivesPage', () => {
       }));
       server.use(
         http.get('/api/v1/archives/', () => {
-          return HttpResponse.json(archivesWithTimelapse);
+          return HttpResponse.json({
+            data: archivesWithTimelapse,
+            meta: { current_page: 1, per_page: 50, total: archivesWithTimelapse.length, last_page: 1 },
+          });
         })
       );
 
@@ -358,7 +370,10 @@ describe('ArchivesPage', () => {
       }));
       server.use(
         http.get('/api/v1/archives/', () => {
-          return HttpResponse.json(archivesWithTimelapse);
+          return HttpResponse.json({
+            data: archivesWithTimelapse,
+            meta: { current_page: 1, per_page: 50, total: archivesWithTimelapse.length, last_page: 1 },
+          });
         })
       );
 
