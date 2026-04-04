@@ -45,7 +45,7 @@ Hard fork release. All changes below are relative to upstream Bambuddy v0.2.2.2.
 - `t(lang, namespace, "dot.key", **kwargs)` with interpolation and fallback to English
 - `escape_md(text)` for Telegram MarkdownV2 special character escaping
 - `get_language()` reads system language from DB, `invalidate_cache()` on language change
-- **88 bot UI translation keys** in `telegram_ui_en.json` / `telegram_ui_uk.json`
+- **171 bot UI translation keys** in `telegram_ui_en.json` / `telegram_ui_uk.json`
 - Adding a new language = drop a JSON file, no code changes
 
 ### Notification System
@@ -66,12 +66,13 @@ Hard fork release. All changes below are relative to upstream Bambuddy v0.2.2.2.
 ### Ukrainian Locale
 
 - **Full Ukrainian translation** of frontend UI (~4800 keys)
-- **Ukrainian bot UI** (`telegram_ui_uk.json`) — all 88 bot strings
+- **Ukrainian bot UI** (`telegram_ui_uk.json`) — all 171 bot strings
 - **Ukrainian notification templates** and maintenance types (JSON data files)
 - **Locale-based DB updater** — notification templates and maintenance types auto-update when system language changes
 
 ### Printer & Queue Improvements
 
+- **Virtual Printer File Manager mode** — new VP mode that saves received 3MF files to the library instead of archiving or printing
 - **Cleanup after print** — per-printer SD card file cleanup settings
 - **MQTT connection freshness** — configurable staleness timeout, auto-reconnect
 - **Ghost print prevention** — patch `.bbl_auto_recovery` flag on print start
@@ -82,11 +83,17 @@ Hard fork release. All changes below are relative to upstream Bambuddy v0.2.2.2.
 
 ### Code Quality
 
+- **Removed bug report feature** — deleted bubble UI, backend service, API route, model, tests
+- **Removed unused locales** — deleted de, fr, it, ja, pt-BR, zh-CN; only en + uk remain
+- **Reduced currency list** — only USD, EUR, PLN, UAH
+- **Fixed statistics accuracy** — excluded `archived` status from stats calculations
 - **Dead code cleanup** — removed unused settings, fields, imports
 - **UI polish** — scrollbar theming, button alignment, encoding fixes
 - **Date format support** — configurable date/time format in settings
 - **Permission group i18n** — localized group names and descriptions
 - **Rebrand to Bambuddy HE** — updated titles, about page, PWA manifest
+- **Data directory** — default changed from project root to `data/` subfolder, configurable via `DATA_DIR` env
+- **Docker/CI** — all image refs updated to `kainpl/bambuddy-he`, install scripts, publish scripts
 
 ---
 

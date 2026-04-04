@@ -27,10 +27,12 @@ Bambuddy HE is a hard fork focused on print farm operators who need deeper autom
 - **Add Printer via bot** — enter IP, auto-detect serial/name/model via SSDP, enter access code
 - **Camera snapshots** — `/camera` command and inline button per printer
 - **Speed control** — change print speed mode from bot
+- **Printer calibration** — model-aware UI and bot (bed leveling, vibration, motor noise, nozzle offset, high-temp)
 - **Ukrainian locale** — full UI + bot + notification templates
 - **Backend i18n system** — JSON-file-based translations for bot UI (easy to add languages)
 - **MarkdownV2** — Telegram messages with proper formatting
 - **Notification template editor** — MarkdownV2 toolbar with formatting buttons
+- **Virtual Printer File Manager mode** — saves 3MF directly to library without archiving
 - Various fixes: ghost print prevention, MQTT connection freshness, SD card cleanup, server-side pagination
 
 ---
@@ -98,23 +100,28 @@ Bambuddy HE is a hard fork focused on print farm operators who need deeper autom
 <td width="50%" valign="top">
 
 ### Telegram Bot (NEW in HE)
-- Full printer control: pause, resume, stop, light, calibration, speed, camera
-- Printer status with maintenance indicators
-- Edit printer hours, view/mark maintenance
-- Clear plate confirmation for queue dispatch
-- Reply keyboard + inline menus + bot commands
-- Multi-chat auth with per-chat roles (groups)
+- Full printer control: pause, resume, stop, light, speed, camera snapshot
+- Printer calibration from bot: model-aware selection (bed leveling, vibration, motor noise, nozzle offset, high-temp heatbed)
+- Printer status with model tag, maintenance indicators
+- Edit printer hours, view/mark maintenance from bot
+- Clear plate confirmation for queue auto-dispatch
+- Print from Library: file → printer (model-filtered) → Print Now or Add to Queue
+- Add to Queue: file → target (specific printer or model) → confirm
+- Queue management: paginated list, detail, move up/down, cancel
+- Add Printer: enter IP → SSDP auto-detect serial/name/model → access code → done
+- Reply keyboard + inline menus + /start /status /camera /help commands
+- Multi-chat auth with per-chat roles (Bambuddy permission groups)
 - Per-chat notification events, quiet hours, daily digest
-- Actionable buttons on notifications
+- Actionable notification buttons: clear plate, mark maintenance done, pause/stop on progress
 - Auto-registration mode for new chats
-- MarkdownV2 formatting, i18n (EN/UK)
+- 13 handler modules, 171 i18n keys (EN/UK), MarkdownV2 formatting
 
 ### Notifications
 - Telegram, WhatsApp, Discord, Email, Pushover, ntfy
 - Home Assistant, custom webhooks
 - Customizable message templates (MarkdownV2 editor)
 - Per-chat quiet hours & daily digest (Telegram)
-- Actionable buttons: clear plate, mark maintenance done
+- Actionable buttons: clear plate, mark maintenance done, pause/stop on progress
 - Print finish photo, filament usage details
 - HMS error alerts, bed cooled alerts
 - Queue events (waiting, skipped, failed)
@@ -138,7 +145,8 @@ Bambuddy HE is a hard fork focused on print farm operators who need deeper autom
 
 ### Virtual Printer & Remote Printing
 - Proxy Mode for remote printing via TLS relay
-- Archive, Review, Queue, or Proxy modes
+- Archive, Review, Queue, **File Manager (NEW)**, or Proxy modes
+- **File Manager mode** — saves received 3MF files to the library instead of archiving or printing
 - SSDP discovery or manual IP
 
 ### Authentication
