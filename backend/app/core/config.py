@@ -12,9 +12,9 @@ GITHUB_REPO = "kainpl/bambuddy-he"
 _app_dir = Path(__file__).resolve().parent.parent.parent.parent
 
 # Data directory - for persistent data (database, archives)
-# Use DATA_DIR env var if set (Docker), otherwise use project root (local dev)
+# Use DATA_DIR env var if set (Docker/custom), otherwise use <project_root>/data
 _data_dir_env = os.environ.get("DATA_DIR")
-_data_dir = Path(_data_dir_env) if _data_dir_env else _app_dir
+_data_dir = Path(_data_dir_env) if _data_dir_env else _app_dir / "data"
 
 # Plate calibration directory - special handling to maintain backwards compatibility
 # Docker: DATA_DIR/plate_calibration (e.g., /data/plate_calibration)
@@ -54,12 +54,13 @@ class Settings(BaseSettings):
     app_name: str = "Bambuddy"
     debug: bool = False  # Default to production mode
 
-    # Paths
-    base_dir: Path = _data_dir  # For backwards compatibility
+    # Paths — these accept env vars DATA_DIR, LOG_DIR etc.
+    data_dir: Path = _data_dir
+    log_dir: Path = _log_dir
+    base_dir: Path = _data_dir  # For backwards compatibility (alias for data_dir)
     archive_dir: Path = _data_dir / "archive"
     plate_calibration_dir: Path = _plate_cal_dir  # Plate detection references
     static_dir: Path = _app_dir / "static"  # Static files are part of app, not data
-    log_dir: Path = _log_dir
     database_url: str = f"sqlite+aiosqlite:///{_db_path}"
 
     # Logging
@@ -72,6 +73,21 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
+
+    def model_post_init(self, __context):
+        """Recalculate dependent paths after env vars are loaded."""
+        # Resolve data_dir to absolute
+        if not self.data_dir.is_absolute():
+            object.__setattr__(self, "data_dir", Path.cwd() / self.data_dir)
+        # Resolve log_dir to absolute
+        if not self.log_dir.is_absolute():
+            object.__setattr__(self, "log_dir", Path.cwd() / self.log_dir)
+        # Recalculate paths derived from data_dir
+        object.__setattr__(self, "base_dir", self.data_dir)
+        object.__setattr__(self, "archive_dir", self.data_dir / "archive")
+        # Recalculate database_url if data_dir was overridden from env
+        db_path = self.data_dir / "bambuddy.db"
+        object.__setattr__(self, "database_url", f"sqlite+aiosqlite:///{db_path}")
 
 
 settings = Settings()

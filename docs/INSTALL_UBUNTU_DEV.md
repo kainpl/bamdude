@@ -80,11 +80,20 @@ The backend serves the built frontend from `static/` automatically. No separate 
 
 ---
 
-## 5. Create data directories
+## 5. Create data directories and .env
 
 ```bash
 mkdir -p /opt/bambuddy-he/data /opt/bambuddy-he/logs
+
+# Create .env so the app stores DB and logs in subdirectories (not project root)
+cat > /opt/bambuddy-he/.env << 'EOF'
+DATA_DIR=./data
+LOG_DIR=./logs
+DEBUG=false
+EOF
 ```
+
+Without `DATA_DIR`, the database (`bambuddy.db`) is created in the project root. With it, everything goes into `./data/`.
 
 ---
 
@@ -109,9 +118,7 @@ User=YOUR_USERNAME
 Group=YOUR_USERNAME
 WorkingDirectory=/opt/bambuddy-he
 Environment="PATH=/opt/bambuddy-he/venv/bin:/usr/local/bin:/usr/bin:/bin"
-Environment="DATA_DIR=/opt/bambuddy-he/data"
-Environment="LOG_DIR=/opt/bambuddy-he/logs"
-Environment="PORT=8000"
+EnvironmentFile=/opt/bambuddy-he/.env
 ExecStart=/opt/bambuddy-he/venv/bin/uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
 Restart=always
 RestartSec=5
