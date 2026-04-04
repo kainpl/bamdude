@@ -324,9 +324,8 @@ async def cb_library_add_queue(callback: CallbackQuery, state: FSMContext, tg_ch
         async with async_session() as db:
             max_pos = (await db.execute(select(func.max(PrintQueueItem.position)))).scalar() or 0
             item = PrintQueueItem(
-                printer_id=printer_id,
+                queue_id=printer_id,  # queue_id == printer_id
                 library_file_id=file_id,
-                file_name=file_name,
                 status="pending",
                 position=max_pos + 1,
             )

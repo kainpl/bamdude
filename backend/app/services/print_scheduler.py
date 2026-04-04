@@ -1059,10 +1059,10 @@ class PrintScheduler:
         printers_with_scheduled: set[int] = set()
         printers_with_items: set[int] = set()
         for item in queue_items:
-            if item.printer_id:
-                printers_with_items.add(item.printer_id)
+            if item.queue_id:
+                printers_with_items.add(item.queue_id)
                 if item.scheduled_time and not item.manual_start:
-                    printers_with_scheduled.add(item.printer_id)
+                    printers_with_scheduled.add(item.queue_id)
 
         # If only queue mode is on and no printers have scheduled items, stop drying
         if not ambient_drying_enabled and not printers_with_scheduled:
@@ -1332,7 +1332,7 @@ class PrintScheduler:
         # Find the most recent completed queue item for this printer
         result = await db.execute(
             select(PrintQueueItem)
-            .where(PrintQueueItem.printer_id == item.printer_id)
+            .where(PrintQueueItem.printer_id == item.queue_id)
             .where(PrintQueueItem.id != item.id)
             .where(PrintQueueItem.status.in_(["completed", "failed", "skipped", "aborted"]))
             .order_by(PrintQueueItem.completed_at.desc())
@@ -1351,12 +1351,12 @@ class PrintScheduler:
         if not item.auto_off_after:
             return
 
-        plug = await self._get_smart_plug(db, item.printer_id)
+        plug = await self._get_smart_plug(db, item.queue_id)
         if plug and plug.enabled:
-            logger.info("Auto-off: Waiting for printer %s to cool down before power off...", item.printer_id)
+            logger.info("Auto-off: Waiting for printer %s to cool down before power off...", item.queue_id)
             # Wait for cooldown (up to 10 minutes)
-            await printer_manager.wait_for_cooldown(item.printer_id, target_temp=50.0, timeout=600)
-            logger.info("Auto-off: Powering off printer %s", item.printer_id)
+            await printer_manager.wait_for_cooldown(item.queue_id, target_temp=50.0, timeout=600)
+            logger.info("Auto-off: Powering off printer %s", item.queue_id)
             service = await smart_plug_manager.get_service_for_plug(plug, db)
             await service.turn_off(plug)
 
@@ -1389,24 +1389,24 @@ class PrintScheduler:
         logger.info("Starting queue item %s", item.id)
 
         # Get printer first (needed for both paths)
-        result = await db.execute(select(Printer).where(Printer.id == item.printer_id))
+        result = await db.execute(select(Printer).where(Printer.id == item.queue_id))
         printer = result.scalar_one_or_none()
         if not printer:
             item.status = "failed"
             item.error_message = "Printer not found"
             item.completed_at = datetime.now(timezone.utc)
             await db.commit()
-            logger.error("Queue item %s: Printer %s not found", item.id, item.printer_id)
+            logger.error("Queue item %s: Printer %s not found", item.id, item.queue_id)
             await self._power_off_if_needed(db, item)
             return
 
         # Check printer is connected
-        if not printer_manager.is_connected(item.printer_id):
+        if not printer_manager.is_connected(item.queue_id):
             item.status = "failed"
             item.error_message = "Printer not connected"
             item.completed_at = datetime.now(timezone.utc)
             await db.commit()
-            logger.error("Queue item %s: Printer %s not connected", item.id, item.printer_id)
+            logger.error("Queue item %s: Printer %s not connected", item.id, item.queue_id)
             await self._power_off_if_needed(db, item)
             return
 
@@ -1416,7 +1416,7 @@ class PrintScheduler:
             item.error_message = "Printer not connected"
             item.completed_at = datetime.now(timezone.utc)
             await db.commit()
-            logger.error("Queue item %s: Printer %s not connected", item.id, item.printer_id)
+            logger.error("Queue item %s: Printer %s not connected", item.id, item.queue_id)
             await self._power_off_if_needed(db, item)
             return
 
@@ -1465,7 +1465,7 @@ class PrintScheduler:
 
                 archive_service = ArchiveService(db)
                 archive = await archive_service.archive_print(
-                    printer_id=item.printer_id,
+                    printer_id=item.queue_id,
                     source_file=file_path,
                     original_filename=filename,
                     created_by_id=item.created_by_id,
@@ -1638,7 +1638,7 @@ class PrintScheduler:
             from backend.app.main import register_expected_print
 
             register_expected_print(
-                item.printer_id,
+                item.queue_id,
                 remote_filename,
                 archive.id,
                 ams_mapping=ams_mapping,
@@ -1656,12 +1656,12 @@ class PrintScheduler:
         await db.commit()
 
         # Consume the plate-cleared flag now that we're starting a print
-        printer_manager.consume_plate_cleared(item.printer_id)
+        printer_manager.consume_plate_cleared(item.queue_id)
         logger.info("Queue item %s: Status set to 'printing', sending print command...", item.id)
 
         # Start the print with AMS mapping, plate_id and print options
         started = printer_manager.start_print(
-            item.printer_id,
+            item.queue_id,
             remote_filename,
             plate_id=item.plate_id or 1,
             ams_mapping=ams_mapping,

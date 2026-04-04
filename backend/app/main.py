@@ -2554,7 +2554,7 @@ async def on_print_complete(printer_id: int, data: dict):
 
             result = await db.execute(
                 select(PrintQueueItem)
-                .where(PrintQueueItem.printer_id == printer_id)
+                .where(PrintQueueItem.queue_id == printer_id)
                 .where(PrintQueueItem.status == "printing")
             )
             printing_items = list(result.scalars().all())
@@ -2767,7 +2767,7 @@ async def on_print_complete(printer_id: int, data: dict):
                         cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
                         q_result = await db.execute(
                             select(PrintQueueItem)
-                            .where(PrintQueueItem.printer_id == printer_id)
+                            .where(PrintQueueItem.queue_id == printer_id)
                             .where(PrintQueueItem.status.in_(["completed", "failed", "cancelled"]))
                             .where(PrintQueueItem.completed_at >= cutoff)
                             .order_by(PrintQueueItem.completed_at.desc())

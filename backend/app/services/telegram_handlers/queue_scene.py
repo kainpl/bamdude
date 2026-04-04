@@ -271,11 +271,13 @@ async def cb_qadd_confirm(callback: CallbackQuery, state: FSMContext, tg_chat: T
         async with async_session() as db:
             max_pos = (await db.execute(select(func.max(PrintQueueItem.position)))).scalar() or 0
 
+            if not printer_id:
+                await callback.answer(t(lang, NS, "queue_add.failed"), show_alert=True)
+                return
+
             item = PrintQueueItem(
-                printer_id=printer_id,
-                target_model=target_model,
+                queue_id=printer_id,  # queue_id == printer_id
                 library_file_id=file_id,
-                file_name=file_name,
                 status="pending",
                 position=max_pos + 1,
             )
