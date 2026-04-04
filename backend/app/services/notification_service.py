@@ -700,7 +700,7 @@ class NotificationService:
                                 await db.execute(
                                     select(func.count(PrintQueueItem.id)).where(
                                         PrintQueueItem.status == "pending",
-                                        PrintQueueItem.printer_id == printer_id,
+                                        PrintQueueItem.queue_id == printer_id,
                                     )
                                 )
                             ).scalar() or 0

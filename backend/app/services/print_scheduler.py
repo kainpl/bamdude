@@ -1332,7 +1332,7 @@ class PrintScheduler:
         # Find the most recent completed queue item for this printer
         result = await db.execute(
             select(PrintQueueItem)
-            .where(PrintQueueItem.printer_id == item.queue_id)
+            .where(PrintQueueItem.queue_id == item.queue_id)
             .where(PrintQueueItem.id != item.id)
             .where(PrintQueueItem.status.in_(["completed", "failed", "skipped", "aborted"]))
             .order_by(PrintQueueItem.completed_at.desc())

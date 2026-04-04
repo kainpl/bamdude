@@ -19,7 +19,6 @@ from backend.app.core.permissions import Permission
 from backend.app.models.archive import PrintArchive
 from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
-from backend.app.models.printer import Printer
 from backend.app.models.user import User
 from backend.app.schemas.print_queue import (
     PrintQueueBulkUpdate,
@@ -638,8 +637,8 @@ async def stop_queue_item(
     if item.status != "printing":
         raise HTTPException(400, f"Can only stop items that are printing, current status: '{item.status}'")
 
-    # Capture values we need for background task
-    printer_id = item.printer_id
+    # Capture values we need for background task (queue_id == printer_id)
+    printer_id = item.queue_id
     auto_off_after = item.auto_off_after
 
     # re-Connect MQTT if stalled

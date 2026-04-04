@@ -87,7 +87,7 @@ async def webhook_add_to_queue(
     result = await db.execute(
         select(PrintQueueItem.position)
         .where(
-            PrintQueueItem.printer_id == data.printer_id,
+            PrintQueueItem.queue_id == data.printer_id,
             PrintQueueItem.status == "pending",
         )
         .order_by(PrintQueueItem.position.desc())
@@ -108,7 +108,7 @@ async def webhook_add_to_queue(
 
     # Create queue item
     queue_item = PrintQueueItem(
-        printer_id=data.printer_id,
+        queue_id=data.printer_id,  # queue_id == printer_id
         archive_id=data.archive_id,
         project_id=data.project_id,
         position=next_position,
@@ -123,7 +123,7 @@ async def webhook_add_to_queue(
     return QueueAddResponse(
         id=queue_item.id,
         archive_id=queue_item.archive_id,
-        printer_id=queue_item.printer_id,
+        printer_id=queue_item.queue_id,
         position=queue_item.position,
         status=queue_item.status,
         message=f"Added to queue at position {queue_item.position}",
@@ -153,7 +153,7 @@ async def webhook_start_print(
     result = await db.execute(
         select(PrintQueueItem)
         .where(
-            PrintQueueItem.printer_id == printer_id,
+            PrintQueueItem.queue_id == printer_id,
             PrintQueueItem.status == "pending",
         )
         .order_by(PrintQueueItem.position)
@@ -323,7 +323,7 @@ async def webhook_get_queue_status(
         result = await db.execute(
             select(PrintQueueItem)
             .where(
-                PrintQueueItem.printer_id == printer.id,
+                PrintQueueItem.queue_id == printer.id,
                 PrintQueueItem.status.in_(["pending", "printing"]),
             )
             .order_by(PrintQueueItem.position)
