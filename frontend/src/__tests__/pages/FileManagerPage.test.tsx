@@ -273,16 +273,6 @@ describe('FileManagerPage', () => {
       });
     });
 
-    // Skipped: print count display was removed from FileManagerPage but test was not updated
-    // eslint-disable-next-line vitest/no-disabled-tests
-    it.skip('shows print count', async () => {
-      render(<FileManagerPage />);
-
-      await waitFor(() => {
-        expect(screen.getByText('Printed 5x')).toBeInTheDocument();
-      });
-    });
-
     it('shows duplicate badge', async () => {
       render(<FileManagerPage />);
 
