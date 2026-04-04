@@ -1304,22 +1304,18 @@ export interface DiscoveredTasmotaDevice {
 // Print Queue types
 export interface PrintQueueItem {
   id: number;
-  printer_id: number | null;  // null = unassigned
-  target_model: string | null;  // Target printer model for model-based assignment
-  target_location: string | null;  // Target location filter for model-based assignment
-  required_filament_types: string[] | null;  // Required filament types for model-based assignment
-  waiting_reason: string | null;  // Why a model-based job hasn't started yet
-  // Either archive_id OR library_file_id must be set (archive created at print start)
+  queue_id: number;
+  printer_id?: number | null;  // Convenience — resolved from queue
+  waiting_reason: string | null;
   archive_id: number | null;
   library_file_id: number | null;
   position: number;
   scheduled_time: string | null;
   require_previous_success: boolean;
   auto_off_after: boolean;
-  manual_start: boolean;  // Requires manual trigger to start (staged)
-  ams_mapping: number[] | null;  // AMS slot mapping for multi-color prints
-  filament_overrides: Array<{ slot_id: number; type: string; color: string; color_name?: string; force_color_match?: boolean }> | null;  // Filament overrides for model-based assignment
-  plate_id: number | null;  // Plate ID for multi-plate 3MF files
+  manual_start: boolean;
+  ams_mapping: number[] | null;
+  plate_id: number | null;
   // Print options
   bed_levelling: boolean;
   flow_cali: boolean;
@@ -1337,27 +1333,25 @@ export interface PrintQueueItem {
   library_file_name?: string | null;
   library_file_thumbnail?: string | null;
   printer_name?: string | null;
-  print_time_seconds?: number | null;  // Estimated print time from archive or library file
-  filament_used_grams?: number | null;  // Estimated print weight from archive or library file
-  // User tracking (Issue #206)
+  print_time_seconds?: number | null;
+  filament_used_grams?: number | null;
+  filament_type?: string | null;
+  filament_color?: string | null;
+  sliced_for_model?: string | null;
   created_by_id?: number | null;
   created_by_username?: string | null;
 }
 
 export interface PrintQueueItemCreate {
-  printer_id?: number | null;  // null = unassigned
-  target_model?: string | null;  // Target printer model (mutually exclusive with printer_id)
-  target_location?: string | null;  // Target location filter (only used with target_model)
-  filament_overrides?: Array<{ slot_id: number; type: string; color: string; color_name?: string; force_color_match?: boolean }> | null;
+  queue_id: number;  // Required — which printer's queue
   archive_id?: number | null;
   library_file_id?: number | null;
   scheduled_time?: string | null;
   require_previous_success?: boolean;
   auto_off_after?: boolean;
-  manual_start?: boolean;  // Requires manual trigger to start (staged)
-  ams_mapping?: number[] | null;  // AMS slot mapping for multi-color prints
-  plate_id?: number | null;  // Plate ID for multi-plate 3MF files
-  // Print options
+  manual_start?: boolean;
+  ams_mapping?: number[] | null;
+  plate_id?: number | null;
   bed_levelling?: boolean;
   flow_cali?: boolean;
   vibration_cali?: boolean;
@@ -1367,18 +1361,14 @@ export interface PrintQueueItemCreate {
 }
 
 export interface PrintQueueItemUpdate {
-  printer_id?: number | null;  // null = unassign
-  target_model?: string | null;  // Target printer model (mutually exclusive with printer_id)
-  target_location?: string | null;  // Target location filter (only used with target_model)
-  filament_overrides?: Array<{ slot_id: number; type: string; color: string; color_name?: string; force_color_match?: boolean }> | null;
+  queue_id?: number | null;  // Move to different queue
   position?: number;
   scheduled_time?: string | null;
   require_previous_success?: boolean;
   auto_off_after?: boolean;
   manual_start?: boolean;
   ams_mapping?: number[];
-  plate_id?: number | null;  // Plate ID for multi-plate 3MF files
-  // Print options
+  plate_id?: number | null;
   bed_levelling?: boolean;
   flow_cali?: boolean;
   vibration_cali?: boolean;
@@ -1387,9 +1377,24 @@ export interface PrintQueueItemUpdate {
   use_ams?: boolean;
 }
 
+export interface PrinterQueue {
+  id: number;
+  printer_id: number;
+  printer_name?: string | null;
+  status: 'idle' | 'printing' | 'paused' | 'error';
+  last_activity_at: string | null;
+  current_item_id: number | null;
+  pending_count: number;
+  completed_count: number;
+  failed_count: number;
+  total_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface PrintQueueBulkUpdate {
   item_ids: number[];
-  printer_id?: number | null;
+  queue_id?: number | null;
   scheduled_time?: string | null;
   require_previous_success?: boolean;
   auto_off_after?: boolean;
@@ -3402,11 +3407,10 @@ export const api = {
     request<HASensorEntity[]>('/smart-plugs/ha/sensors'),
 
   // Print Queue
-  getQueue: (printerId?: number, status?: string, targetModel?: string) => {
+  getQueue: (queueId?: number, status?: string) => {
     const params = new URLSearchParams();
-    if (printerId) params.set('printer_id', String(printerId));
+    if (queueId) params.set('queue_id', String(queueId));
     if (status) params.set('status', status);
-    if (targetModel) params.set('target_model', targetModel);
     return request<PrintQueueItem[]>(`/queue/?${params}`);
   },
   getQueueItem: (id: number) => request<PrintQueueItem>(`/queue/${id}`),
