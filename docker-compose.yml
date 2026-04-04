@@ -1,5 +1,5 @@
 services:
-  bambuddy:
+  bambuddy-he:
     image: ghcr.io/kainpl/bambuddy-he:latest
     build: .
     # Usage:
@@ -32,15 +32,15 @@ services:
     #  - "2024-2026:2024-2026"        # Virtual printer proprietary ports (A1/P1S)
     #  - "50000-50100:50000-50100"    # Virtual printer FTP passive data
     volumes:
-      - bambuddy_data:/app/data
-      - bambuddy_logs:/app/logs
+      - bambuddy_he_data:/app/data
+      - bambuddy_he_logs:/app/logs
       #
       # Share virtual printer certs with native installation
       # This ensures the slicer only needs to trust one CA certificate.
       - ./virtual_printer:/app/data/virtual_printer
     environment:
-      - TZ=${TZ:-Europe/Berlin}
-      # Port BamBuddy runs on (default: 8000)
+      - TZ=${TZ:-Europe/Kyiv}
+      # Port Bambuddy HE runs on (default: 8000)
       # Usage: PORT=8080 docker compose up -d
       - PORT=${PORT:-8000}
       # Virtual printer: Set to the Docker host's IP when using bridge mode (ports:).
@@ -50,5 +50,5 @@ services:
     restart: unless-stopped
 
 volumes:
-  bambuddy_data:
-  bambuddy_logs:
+  bambuddy_he_data:
+  bambuddy_he_logs:

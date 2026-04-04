@@ -18,7 +18,7 @@ Thank you for your interest in contributing! This document provides guidelines f
 
 1. **Clone the repository**:
    ```bash
-   git clone https://github.com/YOUR_REPO/bambuddy-he.git
+   git clone https://github.com/kainpl/bambuddy-he.git
    cd bambuddy-he
    ```
 

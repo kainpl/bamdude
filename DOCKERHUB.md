@@ -7,7 +7,7 @@ Hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) with Telegram bot, 
 ## Quick Start
 
 ```bash
-git clone https://github.com/YOUR_REPO/bambuddy-he.git
+git clone https://github.com/kainpl/bambuddy-he.git
 cd bambuddy-he
 docker compose up -d --build
 ```

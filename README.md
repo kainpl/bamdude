@@ -160,7 +160,7 @@ Bambuddy HE is a hard fork focused on print farm operators who need deeper autom
 ### Docker (Recommended)
 
 ```bash
-git clone https://github.com/YOUR_REPO/bambuddy-he.git
+git clone https://github.com/kainpl/bambuddy-he.git
 cd bambuddy-he
 docker compose up -d --build
 ```
@@ -170,7 +170,7 @@ Open **http://localhost:8000** in your browser.
 ### Manual Installation
 
 ```bash
-git clone https://github.com/YOUR_REPO/bambuddy-he.git
+git clone https://github.com/kainpl/bambuddy-he.git
 cd bambuddy-he
 python3 -m venv venv
 source venv/bin/activate

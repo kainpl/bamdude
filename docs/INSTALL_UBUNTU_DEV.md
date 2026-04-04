@@ -34,7 +34,7 @@ sudo apt install -y nodejs
 
 ```bash
 cd /opt
-sudo git clone -b dev https://github.com/YOUR_REPO/bambuddy-he.git
+sudo git clone -b dev https://github.com/kainpl/bambuddy-he.git
 sudo chown -R $USER:$USER /opt/bambuddy-he
 cd /opt/bambuddy-he
 ```
