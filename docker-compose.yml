@@ -1,11 +1,11 @@
 services:
   bambuddy:
-    image: ghcr.io/maziggy/bambuddy:latest
+    image: ghcr.io/kainpl/bambuddy-he:latest
     build: .
     # Usage:
     #   docker compose up -d          → pulls pre-built image from ghcr.io
     #   docker compose up -d --build  → builds locally from source
-    container_name: bambuddy
+    container_name: bambuddy-he
     # Run as current user to avoid permission issues with mounted volumes
     # Override with: PUID=$(id -u) PGID=$(id -g) docker compose up -d
     user: "${PUID:-1000}:${PGID:-1000}"

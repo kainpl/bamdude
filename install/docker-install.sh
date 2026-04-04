@@ -4,7 +4,7 @@
 # Supports: Linux (all distros), macOS
 #
 # Usage:
-#   Interactive:  curl -fsSL https://raw.githubusercontent.com/maziggy/bambuddy/main/install/docker-install.sh -o docker-install.sh && chmod +x docker-install.sh && ./docker-install.sh
+#   Interactive:  curl -fsSL https://raw.githubusercontent.com/kainpl/bambuddy-he/main/install/docker-install.sh -o docker-install.sh && chmod +x docker-install.sh && ./docker-install.sh
 #   Unattended:   ./docker-install.sh --path /opt/bambuddy --port 8000 --yes
 #
 # Options:
@@ -269,12 +269,12 @@ download_compose_file() {
             git fetch origin
             git reset --hard origin/main
         else
-            git clone https://github.com/maziggy/bambuddy.git .
+            git clone https://github.com/kainpl/bambuddy-he.git .
         fi
     else
         # Just download the compose file
         curl -fsSL -o docker-compose.yml \
-            https://raw.githubusercontent.com/maziggy/bambuddy/main/docker-compose.yml
+            https://raw.githubusercontent.com/kainpl/bambuddy-he/main/docker-compose.yml
     fi
 
     log_success "docker-compose.yml ready"

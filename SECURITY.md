@@ -13,7 +13,7 @@ Instead, please report them via email to:
 **security@bambuddy.cool**
 
 Or use GitHub's private vulnerability reporting feature:
-1. Go to the [Security tab](https://github.com/maziggy/bambuddy/security)
+1. Go to the [Security tab](https://github.com/kainpl/bambuddy-he/security)
 2. Click "Report a vulnerability"
 3. Fill out the form with details
 

@@ -15,7 +15,7 @@ To protect the `main` branch, go to **Settings > Rules > Rulesets > New ruleset 
 
 ### Step 2: Bypass List (optional)
 
-Add yourself (`@maziggy`) to bypass if you want to push directly in emergencies.
+Add yourself (`@kainpl`) to bypass if you want to push directly in emergencies.
 Set "Always" or "Pull requests only" based on preference.
 
 ### Step 3: Target Branches
@@ -101,7 +101,7 @@ npm run test:run
 
 ## CODEOWNERS
 
-The `CODEOWNERS` file automatically requests reviews from `@maziggy` for all changes.
+The `CODEOWNERS` file automatically requests reviews from `@kainpl` for all changes.
 
 To add more code owners:
 1. Edit `.github/CODEOWNERS`
@@ -110,8 +110,8 @@ To add more code owners:
 
 Example:
 ```
-/backend/ @maziggy @backend-contributor
-/frontend/ @maziggy @frontend-contributor
+/backend/ @kainpl @backend-contributor
+/frontend/ @kainpl @frontend-contributor
 ```
 
 ## Release Process

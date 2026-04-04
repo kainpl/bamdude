@@ -8,14 +8,14 @@ Interactive installation scripts for BamBuddy with support for both native and D
 
 **Linux/macOS:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/maziggy/bambuddy/main/install/docker-install.sh -o docker-install.sh && chmod +x docker-install.sh && ./docker-install.sh
+curl -fsSL https://raw.githubusercontent.com/kainpl/bambuddy-he/main/install/docker-install.sh -o docker-install.sh && chmod +x docker-install.sh && ./docker-install.sh
 ```
 
 ### Native Installation
 
 **Linux/macOS:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/maziggy/bambuddy/main/install/install.sh -o install.sh && chmod +x install.sh && ./install.sh
+curl -fsSL https://raw.githubusercontent.com/kainpl/bambuddy-he/main/install/install.sh -o install.sh && chmod +x install.sh && ./install.sh
 ```
 
 ---
@@ -160,7 +160,7 @@ docker compose logs -f      # View logs
 
 **Native installation:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/maziggy/bambuddy/main/install/update.sh -o update.sh
+curl -fsSL https://raw.githubusercontent.com/kainpl/bambuddy-he/main/install/update.sh -o update.sh
 chmod +x update.sh
 sudo ./update.sh
 ```
@@ -252,4 +252,4 @@ sudo lsof -i :8000  # Linux/macOS
 
 - **Documentation:** https://wiki.bambuddy.cool
 - **Discord:** https://discord.gg/aFS3ZfScHM
-- **Issues:** https://github.com/maziggy/bambuddy/issues
+- **Issues:** https://github.com/kainpl/bambuddy-he/issues
