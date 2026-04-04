@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from aiogram import Router, F
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram import F, Router
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
-from backend.app.i18n import t, get_language, escape_md
+from backend.app.i18n import escape_md, get_language, t
 from backend.app.services.printer_manager import printer_manager
-from backend.app.services.telegram_handlers.common import NS, has_perm, get_printers_data, ensure_fresh
+from backend.app.services.telegram_handlers.common import NS, ensure_fresh, get_printers_data, has_perm
 
 if TYPE_CHECKING:
     from backend.app.models.telegram_chat import TelegramChat

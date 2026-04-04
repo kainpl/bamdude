@@ -266,7 +266,7 @@ async def list_events(
 ):
     """List all available notification event types with labels and categories."""
     result = []
-    for category_key, category_data in EVENT_CATEGORIES.items():
+    for _category_key, category_data in EVENT_CATEGORIES.items():
         for event_type in category_data["events"]:
             result.append(NotifyEventInfo(
                 event_type=event_type,

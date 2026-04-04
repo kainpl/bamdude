@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from aiogram import Router, F
+from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
-from backend.app.i18n import t, get_language, escape_md
-from backend.app.services.telegram_handlers.common import NS, has_perm, get_printers_data
+from backend.app.i18n import escape_md, get_language, t
+from backend.app.services.telegram_handlers.common import NS, get_printers_data, has_perm
 from backend.app.services.telegram_handlers.pagination import build_page_nav
 
 if TYPE_CHECKING:
@@ -100,9 +100,10 @@ async def cb_qadd_select_file(callback: CallbackQuery, state: FSMContext, tg_cha
     file_id = int(callback.data.split(":")[2])
     await callback.answer()
 
+    from sqlalchemy import select
+
     from backend.app.core.database import async_session
     from backend.app.models.library import LibraryFile
-    from sqlalchemy import select
 
     async with async_session() as db:
         result = await db.execute(select(LibraryFile).where(LibraryFile.id == file_id))
@@ -225,9 +226,10 @@ async def cb_qadd_confirm(callback: CallbackQuery, state: FSMContext, tg_chat: T
 
     await state.clear()
 
+    from sqlalchemy import func, select
+
     from backend.app.core.database import async_session
     from backend.app.models.print_queue import PrintQueueItem
-    from sqlalchemy import select, func
 
     try:
         async with async_session() as db:

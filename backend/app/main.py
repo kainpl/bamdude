@@ -2428,18 +2428,7 @@ async def on_print_complete(printer_id: int, data: dict):
                         is_matching_bbl = fname_lower.endswith(".bbl") and f"_{sanitized_base}" in fname
 
                         # cleanup_after_print=True: delete .gcode and .bbl from /cache/
-                        if should_delete and (is_matching_gcode or is_matching_bbl):
-                            try:
-                                await delete_file_async(
-                                    printer.ip_address, printer.access_code,
-                                    f"/cache/{fname}", printer_model=printer.model,
-                                )
-                                logger.info("Deleted /cache/%s from printer %s", fname, printer.name)
-                            except Exception:
-                                pass
-
-                        # cleanup_after_print=False: delete .gcode, patch .bbl
-                        elif not should_delete and is_matching_gcode:
+                        if should_delete and (is_matching_gcode or is_matching_bbl) or not should_delete and is_matching_gcode:
                             try:
                                 await delete_file_async(
                                     printer.ip_address, printer.access_code,

@@ -2,8 +2,6 @@
 
 from aiogram.types import InlineKeyboardButton
 
-from backend.app.i18n import t
-
 NS = "telegram_ui"
 
 

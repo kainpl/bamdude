@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from aiogram import Router, F
+from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
-from backend.app.i18n import t, get_language, escape_md
-from backend.app.services.telegram_handlers.common import NS, has_perm, get_printers_data
+from backend.app.i18n import escape_md, get_language, t
+from backend.app.services.telegram_handlers.common import NS, get_printers_data, has_perm
 from backend.app.services.telegram_handlers.pagination import build_page_nav
 
 if TYPE_CHECKING:
@@ -29,9 +29,10 @@ class LibraryPrintState(StatesGroup):
 
 async def _get_library_files(offset: int = 0, limit: int = PAGE_SIZE):
     """Get printable library files."""
+    from sqlalchemy import func, select
+
     from backend.app.core.database import async_session
     from backend.app.models.library import LibraryFile
-    from sqlalchemy import select, func
 
     async with async_session() as db:
         total = (await db.execute(
@@ -122,9 +123,10 @@ async def cb_library_select_file(callback: CallbackQuery, state: FSMContext, tg_
     await callback.answer()
 
     # Get file info
+    from sqlalchemy import select
+
     from backend.app.core.database import async_session
     from backend.app.models.library import LibraryFile
-    from sqlalchemy import select
 
     async with async_session() as db:
         result = await db.execute(select(LibraryFile).where(LibraryFile.id == file_id))
@@ -193,7 +195,6 @@ async def cb_library_select_printer(callback: CallbackQuery, state: FSMContext, 
 
     data = await state.get_data()
     file_name = data.get("file_name", "?")
-    file_id = data.get("file_id")
 
     printers = await get_printers_data()
     printer = next((p for p in printers if p["id"] == printer_id), None)
@@ -269,9 +270,10 @@ async def cb_library_add_queue(callback: CallbackQuery, state: FSMContext, tg_ch
         await callback.answer(t(lang, NS, "library.failed"), show_alert=True)
         return
 
+    from sqlalchemy import func, select
+
     from backend.app.core.database import async_session
     from backend.app.models.print_queue import PrintQueueItem
-    from sqlalchemy import select, func
 
     try:
         async with async_session() as db:

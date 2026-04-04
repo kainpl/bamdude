@@ -1,12 +1,13 @@
 """Telegram bot auth middleware — checks chat authorization on every update."""
 
 import logging
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from aiogram import BaseMiddleware
-from aiogram.types import Message, CallbackQuery, TelegramObject
+from aiogram.types import CallbackQuery, Message, TelegramObject
 
-from backend.app.i18n import t, get_language, escape_md
+from backend.app.i18n import escape_md, get_language, t
 
 logger = logging.getLogger(__name__)
 
@@ -36,9 +37,10 @@ class TelegramAuthMiddleware(BaseMiddleware):
             return await handler(event, data)
 
         # Look up chat in DB
+        from sqlalchemy import select
+
         from backend.app.core.database import async_session
         from backend.app.models.telegram_chat import TelegramChat
-        from sqlalchemy import select, func
 
         async with async_session() as db:
             result = await db.execute(
@@ -86,9 +88,10 @@ class TelegramAuthMiddleware(BaseMiddleware):
     @staticmethod
     async def _should_auto_register(db) -> bool:
         """Check if auto-registration is allowed (table empty OR registration open)."""
-        from backend.app.models.telegram_chat import TelegramChat
+        from sqlalchemy import func, select
+
         from backend.app.models.settings import Settings
-        from sqlalchemy import select, func
+        from backend.app.models.telegram_chat import TelegramChat
 
         # Always allow if table is empty (first setup)
         count = (await db.execute(select(func.count(TelegramChat.id)))).scalar() or 0

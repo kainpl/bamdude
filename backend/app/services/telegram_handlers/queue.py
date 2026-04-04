@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from aiogram import Router, F
-from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram import F, Router
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
-from backend.app.i18n import t, get_language, escape_md
+from backend.app.i18n import escape_md, get_language, t
 from backend.app.services.telegram_handlers.common import NS, has_perm
 from backend.app.services.telegram_handlers.pagination import build_page_nav
 
@@ -37,10 +37,11 @@ async def render_queue(target, tg_chat: TelegramChat | None = None, offset: int 
             await target.answer(t(lang, NS, "auth.no_permission"), show_alert=True)
         return
 
+    from sqlalchemy import func, select
+
     from backend.app.core.database import async_session
     from backend.app.models.print_queue import PrintQueueItem
     from backend.app.models.printer import Printer
-    from sqlalchemy import select, func
 
     async with async_session() as db:
         # Total counts
@@ -157,10 +158,11 @@ async def cb_queue_detail(callback: CallbackQuery, tg_chat: TelegramChat | None 
 
     item_id = int(callback.data.split(":")[2])
 
+    from sqlalchemy import select
+
     from backend.app.core.database import async_session
     from backend.app.models.print_queue import PrintQueueItem
     from backend.app.models.printer import Printer
-    from sqlalchemy import select
 
     async with async_session() as db:
         result = await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == item_id))
@@ -241,9 +243,10 @@ async def cb_queue_move(callback: CallbackQuery, tg_chat: TelegramChat | None = 
     item_id = int(parts[2])
     direction = parts[3]  # "up" or "down"
 
+    from sqlalchemy import select
+
     from backend.app.core.database import async_session
     from backend.app.models.print_queue import PrintQueueItem
-    from sqlalchemy import select
 
     async with async_session() as db:
         result = await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == item_id))
@@ -292,9 +295,10 @@ async def cb_queue_cancel(callback: CallbackQuery, tg_chat: TelegramChat | None 
 
     item_id = int(callback.data.split(":")[2])
 
+    from sqlalchemy import select
+
     from backend.app.core.database import async_session
     from backend.app.models.print_queue import PrintQueueItem
-    from sqlalchemy import select
 
     async with async_session() as db:
         result = await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == item_id))

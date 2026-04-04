@@ -1,7 +1,7 @@
 {
   "id": "/",
-  "name": "Bambuddy",
-  "short_name": "Bambuddy",
+  "name": "Bambuddy HE",
+  "short_name": "Bambuddy HE",
   "description": "Monitor and manage your Bambu Lab 3D printers",
   "start_url": "/",
   "display": "standalone",

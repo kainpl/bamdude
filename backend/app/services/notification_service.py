@@ -649,17 +649,19 @@ class NotificationService:
         if not printer_id:
             return None
 
-        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-        from backend.app.i18n import t, get_language
+        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+        from backend.app.i18n import get_language, t
 
         buttons = []
         lang = await get_language()
         NS = "telegram_ui"
 
         try:
+            from sqlalchemy import select
+
             from backend.app.core.database import async_session
             from backend.app.models.telegram_chat import TelegramChat
-            from sqlalchemy import select
 
             async with async_session() as db:
                 result = await db.execute(
@@ -675,9 +677,10 @@ class NotificationService:
                 # Print complete/failed → clear plate button
                 if event_type in ("print_complete", "print_failed"):
                     if tg_chat.has_permission("printers:clear_plate"):
-                        from backend.app.services.printer_manager import printer_manager
-                        from backend.app.models.print_queue import PrintQueueItem
                         from sqlalchemy import func
+
+                        from backend.app.models.print_queue import PrintQueueItem
+                        from backend.app.services.printer_manager import printer_manager
 
                         if not printer_manager.is_plate_cleared(printer_id):
                             pending = (await db.execute(

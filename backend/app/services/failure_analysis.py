@@ -7,7 +7,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.models.archive import PrintArchive
 from backend.app.models.printer import Printer
 
-
 FAILED_STATUSES = ["failed", "aborted", "cancelled"]
 
 

@@ -10,7 +10,6 @@ from sqlalchemy.types import JSON
 
 from backend.app.core.database import Base
 
-
 # Default notification events for new chats (when notify_events is NULL)
 DEFAULT_NOTIFY_EVENTS = [
     "print_complete",

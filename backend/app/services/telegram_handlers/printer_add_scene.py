@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from aiogram import Router, F
+from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from backend.app.i18n import t, get_language, escape_md
+from backend.app.i18n import escape_md, get_language, t
 from backend.app.services.telegram_handlers.common import NS, has_perm
 
 if TYPE_CHECKING:
@@ -26,8 +26,8 @@ class AddPrinterState(StatesGroup):
 
 async def _probe_printer_ip(ip: str) -> dict | None:
     """Probe an IP for a Bambu printer. Returns {serial, name, model} or None."""
+
     from backend.app.services.discovery import subnet_scanner
-    import asyncio
 
     try:
         # Check ports (990 FTP + 8883 MQTT)
@@ -157,9 +157,10 @@ async def cb_confirm(callback: CallbackQuery, state: FSMContext, tg_chat: Telegr
     data = await state.get_data()
     await state.clear()
 
+    from sqlalchemy import select
+
     from backend.app.core.database import async_session
     from backend.app.models.printer import Printer
-    from sqlalchemy import select
 
     try:
         async with async_session() as db:

@@ -6,7 +6,6 @@ Bot token is read from the first Telegram notification provider in DB.
 
 import asyncio
 import logging
-from io import BytesIO
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -32,10 +31,10 @@ def get_dispatcher() -> Dispatcher | None:
 
 async def _get_bot_token() -> str | None:
     """Read bot token from the first enabled Telegram notification provider."""
+    from sqlalchemy import select
+
     from backend.app.core.database import async_session
     from backend.app.models.notification import NotificationProvider
-
-    from sqlalchemy import select
 
     async with async_session() as db:
         result = await db.execute(
@@ -70,17 +69,17 @@ async def start_telegram_bot() -> None:
     print(f"[TG-BOT] Token found: {token[:10]}...")
 
     # Register handlers
-    from backend.app.services.telegram_handlers.start import router as start_router
-    from backend.app.services.telegram_handlers.printers import router as printers_router
     from backend.app.services.telegram_handlers.actions import router as actions_router
-    from backend.app.services.telegram_handlers.calibration import router as calibration_router
-    from backend.app.services.telegram_handlers.maintenance_handlers import router as maintenance_router
-    from backend.app.services.telegram_handlers.queue import router as queue_router
-    from backend.app.services.telegram_handlers.stats import router as stats_router
-    from backend.app.services.telegram_handlers.library_scene import router as library_router
-    from backend.app.services.telegram_handlers.queue_scene import router as queue_scene_router
-    from backend.app.services.telegram_handlers.printer_add_scene import router as printer_add_router
     from backend.app.services.telegram_handlers.auth_middleware import TelegramAuthMiddleware
+    from backend.app.services.telegram_handlers.calibration import router as calibration_router
+    from backend.app.services.telegram_handlers.library_scene import router as library_router
+    from backend.app.services.telegram_handlers.maintenance_handlers import router as maintenance_router
+    from backend.app.services.telegram_handlers.printer_add_scene import router as printer_add_router
+    from backend.app.services.telegram_handlers.printers import router as printers_router
+    from backend.app.services.telegram_handlers.queue import router as queue_router
+    from backend.app.services.telegram_handlers.queue_scene import router as queue_scene_router
+    from backend.app.services.telegram_handlers.start import router as start_router
+    from backend.app.services.telegram_handlers.stats import router as stats_router
 
     _dispatcher = Dispatcher()
     _dispatcher.message.middleware(TelegramAuthMiddleware())
@@ -121,7 +120,7 @@ async def _register_commands() -> None:
     """Register bot commands for the Telegram menu button."""
     from aiogram.types import BotCommand
 
-    from backend.app.i18n import t, get_language
+    from backend.app.i18n import get_language, t
 
     lang = await get_language()
     NS = "telegram_ui"

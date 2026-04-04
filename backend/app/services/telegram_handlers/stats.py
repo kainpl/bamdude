@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from aiogram import Router, F
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram import F, Router
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
-from backend.app.i18n import t, get_language, escape_md
+from backend.app.i18n import escape_md, get_language, t
 from backend.app.services.telegram_handlers.common import NS, has_perm
 
 if TYPE_CHECKING:
@@ -25,9 +25,10 @@ async def render_stats(target, tg_chat: TelegramChat | None = None) -> None:
             await target.answer(t(lang, NS, "auth.no_permission"), show_alert=True)
         return
 
+    from sqlalchemy import func, select
+
     from backend.app.core.database import async_session
     from backend.app.models.archive import PrintArchive
-    from sqlalchemy import select, func
 
     async with async_session() as db:
         total = (await db.execute(select(func.count(PrintArchive.id)))).scalar() or 0

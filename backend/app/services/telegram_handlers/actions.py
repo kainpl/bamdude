@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from aiogram import Router, F
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram import F, Router
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
-from backend.app.i18n import t, get_language, escape_md
+from backend.app.i18n import escape_md, get_language, t
 from backend.app.services.printer_manager import printer_manager
-from backend.app.services.telegram_handlers.common import NS, has_perm, get_printers_data, ensure_fresh
+from backend.app.services.telegram_handlers.common import NS, ensure_fresh, get_printers_data, has_perm
 
 if TYPE_CHECKING:
     from backend.app.models.telegram_chat import TelegramChat
@@ -39,9 +39,10 @@ async def cb_camera_snapshot(callback: CallbackQuery, tg_chat: TelegramChat | No
     printer_id = int(callback.data.split(":")[2])
     await callback.answer(t(lang, NS, "camera.capturing"))
 
+    from sqlalchemy import select
+
     from backend.app.core.database import async_session
     from backend.app.models.printer import Printer
-    from sqlalchemy import select
 
     async with async_session() as db:
         result = await db.execute(select(Printer).where(Printer.id == printer_id))

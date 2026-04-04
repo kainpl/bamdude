@@ -108,9 +108,10 @@ def escape_md(text: str) -> str:
 async def get_language() -> str:
     """Read the current system language from DB settings."""
     try:
+        from sqlalchemy import select
+
         from backend.app.core.database import async_session
         from backend.app.models.settings import Settings
-        from sqlalchemy import select
 
         async with async_session() as db:
             result = await db.execute(

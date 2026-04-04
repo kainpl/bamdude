@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from aiogram import Router, F
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram import F, Router
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
-from backend.app.i18n import t, get_language, escape_md
+from backend.app.i18n import escape_md, get_language, t
 from backend.app.services.telegram_handlers.common import NS, has_perm
 
 if TYPE_CHECKING:
@@ -28,8 +28,8 @@ async def cb_maintenance_list(callback: CallbackQuery, tg_chat: TelegramChat | N
     printer_id = int(callback.data.split(":")[2])
     await callback.answer()
 
-    from backend.app.core.database import async_session
     from backend.app.api.routes.maintenance import _get_printer_maintenance_internal, ensure_default_types
+    from backend.app.core.database import async_session
 
     async with async_session() as db:
         await ensure_default_types(db)
@@ -106,12 +106,14 @@ async def cb_maintenance_done(callback: CallbackQuery, tg_chat: TelegramChat | N
     item_id = int(parts[2])
     printer_id = int(parts[3])
 
-    from backend.app.core.database import async_session
-    from backend.app.models.maintenance import PrinterMaintenance, MaintenanceHistory
-    from backend.app.api.routes.maintenance import get_printer_total_hours
+    from datetime import datetime, timezone
+
     from sqlalchemy import select
     from sqlalchemy.orm import selectinload
-    from datetime import datetime, timezone
+
+    from backend.app.api.routes.maintenance import get_printer_total_hours
+    from backend.app.core.database import async_session
+    from backend.app.models.maintenance import MaintenanceHistory, PrinterMaintenance
 
     async with async_session() as db:
         result = await db.execute(

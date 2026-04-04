@@ -1,10 +1,10 @@
 """Start and help command handlers + reply keyboard."""
 
-from aiogram import Router, F
-from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from aiogram import F, Router
+from aiogram.filters import Command, CommandStart
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, Message, ReplyKeyboardMarkup
 
-from backend.app.i18n import t, get_language, escape_md
+from backend.app.i18n import escape_md, get_language, t
 
 router = Router()
 
@@ -53,7 +53,7 @@ async def cmd_start(message: Message) -> None:
 
     # Send reply keyboard first (Telegram persists it for the chat)
     await message.answer(
-        f"\U0001f44b *Bambuddy HE*",
+        "\U0001f44b *Bambuddy HE*",
         reply_markup=_reply_keyboard(lang),
     )
 
@@ -122,10 +122,11 @@ async def cmd_camera(message: Message, tg_chat=None) -> None:
 
     if len(connected) == 1:
         # Direct snapshot
-        from backend.app.services.camera import capture_camera_frame_bytes
+        from sqlalchemy import select
+
         from backend.app.core.database import async_session
         from backend.app.models.printer import Printer
-        from sqlalchemy import select
+        from backend.app.services.camera import capture_camera_frame_bytes
 
         async with async_session() as db:
             result = await db.execute(select(Printer).where(Printer.id == connected[0]["id"]))
@@ -179,7 +180,7 @@ async def reply_library(message: Message, tg_chat=None) -> None:
     from backend.app.services.telegram_handlers.common import has_perm
     if not (has_perm(tg_chat, "library:read") and has_perm(tg_chat, "printers:control")):
         return
-    from backend.app.services.telegram_handlers.library_scene import _get_library_files, _show_file_list
+    from backend.app.services.telegram_handlers.library_scene import _get_library_files
     # Send as inline message so edit_text works
     files, total = await _get_library_files(0)
     if not files:

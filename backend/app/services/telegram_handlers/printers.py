@@ -4,16 +4,21 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from aiogram import Router, F
+from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from backend.app.i18n import t, get_language, escape_md
-from backend.app.services.printer_manager import printer_manager
+from backend.app.i18n import escape_md, get_language, t
 from backend.app.services.telegram_handlers.common import (
-    NS, state_emoji, has_perm, format_time,
-    get_printers_data, get_total_hours, get_next_queue_item, get_maintenance_counts,
+    NS,
+    format_time,
+    get_maintenance_counts,
+    get_next_queue_item,
+    get_printers_data,
+    get_total_hours,
+    has_perm,
+    state_emoji,
 )
 
 if TYPE_CHECKING:
@@ -134,9 +139,11 @@ async def show_printer_detail(
 
     if printer["connected"]:
         if printer["nozzle_temp"] is not None:
-            lines.append(f"\U0001f321 {escape_md(t(lang, NS, 'printers.nozzle'))}: {escape_md(f'{printer['nozzle_temp']:.0f}°C')}")
+            nozzle_val = f"{printer['nozzle_temp']:.0f}°C"
+            lines.append(f"\U0001f321 {escape_md(t(lang, NS, 'printers.nozzle'))}: {escape_md(nozzle_val)}")
         if printer["bed_temp"] is not None:
-            lines.append(f"\U0001f6cf {escape_md(t(lang, NS, 'printers.bed'))}: {escape_md(f'{printer['bed_temp']:.0f}°C')}")
+            bed_val = f"{printer['bed_temp']:.0f}°C"
+            lines.append(f"\U0001f6cf {escape_md(t(lang, NS, 'printers.bed'))}: {escape_md(bed_val)}")
 
     total_hours = await get_total_hours(printer_id)
     lines.append(f"\u23f0 {escape_md(t(lang, NS, 'printers.total_hours'))}: {escape_md(f'{total_hours:.1f}')}")
@@ -279,9 +286,10 @@ async def msg_set_hours(message: Message, state: FSMContext, tg_chat: TelegramCh
         await message.answer(escape_md(t(lang, NS, "printers.hours_invalid")))
         return
 
+    from sqlalchemy import select
+
     from backend.app.core.database import async_session
     from backend.app.models.printer import Printer
-    from sqlalchemy import select
 
     async with async_session() as db:
         result = await db.execute(select(Printer).where(Printer.id == printer_id))

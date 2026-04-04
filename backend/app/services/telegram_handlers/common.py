@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from backend.app.i18n import t, get_language, escape_md
+from backend.app.i18n import t
 from backend.app.services.printer_manager import printer_manager
 
 if TYPE_CHECKING:
@@ -51,25 +51,12 @@ def format_time(lang: str, minutes: int | None) -> str:
     return t(lang, NS, "printers.time_m", m=mins)
 
 
-async def ensure_fresh(printer_id: int) -> bool:
-    """Ensure MQTT connection is fresh before sending commands. Returns True if ok."""
-    from backend.app.core.database import async_session
-    from backend.app.models.printer import Printer
-    from sqlalchemy import select
-
-    async with async_session() as db:
-        result = await db.execute(select(Printer).where(Printer.id == printer_id))
-        printer_obj = result.scalar_one_or_none()
-        if not printer_obj:
-            return False
-        return await printer_manager.ensure_fresh_connection_for_printer(printer_obj)
-
-
 async def get_printers_data() -> list[dict]:
     """Get all printers with their status from printer_manager."""
+    from sqlalchemy import select
+
     from backend.app.core.database import async_session
     from backend.app.models.printer import Printer
-    from sqlalchemy import select
 
     async with async_session() as db:
         result = await db.execute(select(Printer).where(Printer.is_active == True))  # noqa: E712
@@ -99,9 +86,10 @@ async def get_printers_data() -> list[dict]:
 
 async def get_total_hours(printer_id: int) -> float:
     """Get total print hours for a printer."""
+    from sqlalchemy import select
+
     from backend.app.core.database import async_session
     from backend.app.models.printer import Printer
-    from sqlalchemy import select
 
     async with async_session() as db:
         result = await db.execute(
@@ -115,9 +103,10 @@ async def get_total_hours(printer_id: int) -> float:
 
 async def get_next_queue_item(printer_id: int) -> str | None:
     """Get the name of the next pending queue item for this printer."""
+    from sqlalchemy import select
+
     from backend.app.core.database import async_session
     from backend.app.models.print_queue import PrintQueueItem
-    from sqlalchemy import select
 
     async with async_session() as db:
         result = await db.execute(
@@ -135,8 +124,8 @@ async def get_next_queue_item(printer_id: int) -> str | None:
 async def get_maintenance_counts(printer_id: int) -> tuple[int, int]:
     """Get (due_count, warning_count) for a printer."""
     try:
-        from backend.app.core.database import async_session
         from backend.app.api.routes.maintenance import _get_printer_maintenance_internal, ensure_default_types
+        from backend.app.core.database import async_session
 
         async with async_session() as db:
             await ensure_default_types(db)
