@@ -24,6 +24,8 @@ Hard fork release. All changes below are relative to upstream Bambuddy v0.2.2.2.
 - **Notification buttons**: print_progress → pause/stop; print_complete/failed → clear plate; maintenance_due → mark done
 - **Handler restructuring**: split 882-line printers.py into 13 domain modules
 - **Pagination utility**: reusable page nav for queue and library lists
+- **MQTT freshness check** before all bot commands (ensure_fresh_connection)
+- **Printer list** shows model tag [P1S] per printer in text and buttons
 - **Printer status** with real-time info: state, temps, progress, ETA, total hours
 - **Maintenance indicators** in printer list (overdue/warning counts per printer)
 - **Maintenance management** from bot: view items with status, mark as done
