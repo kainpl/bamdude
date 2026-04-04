@@ -37,19 +37,23 @@ async def cmd_start(message: Message) -> None:
     """Handle /start command — welcome message with main menu."""
     lang = await get_language()
 
-    inline_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text=f"\U0001f5a8 {t(lang, NS, 'start.btn_printers')}", callback_data="menu:printers"),
-            InlineKeyboardButton(text=f"\U0001f4cb {t(lang, NS, 'start.btn_queue')}", callback_data="menu:queue"),
-        ],
-        [
-            InlineKeyboardButton(text=f"\U0001f4c2 {t(lang, NS, 'start.btn_library')}", callback_data="lib:start"),
-            InlineKeyboardButton(text=f"\U0001f4ca {t(lang, NS, 'start.btn_stats')}", callback_data="menu:stats"),
-        ],
-        [
-            InlineKeyboardButton(text=f"\u2139\ufe0f {t(lang, NS, 'start.btn_help')}", callback_data="menu:help"),
-        ],
-    ])
+    inline_keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"\U0001f5a8 {t(lang, NS, 'start.btn_printers')}", callback_data="menu:printers"
+                ),
+                InlineKeyboardButton(text=f"\U0001f4cb {t(lang, NS, 'start.btn_queue')}", callback_data="menu:queue"),
+            ],
+            [
+                InlineKeyboardButton(text=f"\U0001f4c2 {t(lang, NS, 'start.btn_library')}", callback_data="lib:start"),
+                InlineKeyboardButton(text=f"\U0001f4ca {t(lang, NS, 'start.btn_stats')}", callback_data="menu:stats"),
+            ],
+            [
+                InlineKeyboardButton(text=f"\u2139\ufe0f {t(lang, NS, 'start.btn_help')}", callback_data="menu:help"),
+            ],
+        ]
+    )
 
     # Send reply keyboard first (Telegram persists it for the chat)
     await message.answer(
@@ -91,6 +95,7 @@ async def cmd_status(message: Message) -> None:
 
 # === Reply keyboard text handlers ===
 # Match button text from ANY language — check all supported locales
+
 
 def _matches_reply_button(text: str, key: str) -> bool:
     """Check if message text matches a reply keyboard button in any locale."""
@@ -137,6 +142,7 @@ async def cmd_camera(message: Message, tg_chat=None) -> None:
                 jpeg = await capture_camera_frame_bytes(printer.ip_address, printer.access_code, printer.model)
                 if jpeg:
                     from aiogram.types import BufferedInputFile
+
                     await message.answer_photo(
                         photo=BufferedInputFile(jpeg, "snapshot.jpg"),
                         caption=f"\U0001f4f7 {escape_md(printer.name)}",
@@ -149,10 +155,14 @@ async def cmd_camera(message: Message, tg_chat=None) -> None:
         # Show picker
         btns = []
         for p in connected:
-            btns.append([InlineKeyboardButton(
-                text=f"\U0001f4f7 {p['name']}",
-                callback_data=f"action:camera:{p['id']}",
-            )])
+            btns.append(
+                [
+                    InlineKeyboardButton(
+                        text=f"\U0001f4f7 {p['name']}",
+                        callback_data=f"action:camera:{p['id']}",
+                    )
+                ]
+            )
         await message.answer(
             escape_md(t(lang, NS, "camera.select_printer")),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=btns),
@@ -163,6 +173,7 @@ async def cmd_camera(message: Message, tg_chat=None) -> None:
 async def reply_printers(message: Message, tg_chat=None) -> None:
     """Handle reply keyboard: Printers button."""
     from backend.app.services.telegram_handlers.printers import show_printer_list
+
     await show_printer_list(message, tg_chat)
 
 
@@ -170,6 +181,7 @@ async def reply_printers(message: Message, tg_chat=None) -> None:
 async def reply_queue(message: Message, tg_chat=None) -> None:
     """Handle reply keyboard: Queue button."""
     from backend.app.services.telegram_handlers.queue import render_queue
+
     await render_queue(message, tg_chat)
 
 
@@ -178,9 +190,11 @@ async def reply_library(message: Message, tg_chat=None) -> None:
     """Handle reply keyboard: Library button."""
     lang = await get_language()
     from backend.app.services.telegram_handlers.common import has_perm
+
     if not (has_perm(tg_chat, "library:read") and has_perm(tg_chat, "printers:control")):
         return
     from backend.app.services.telegram_handlers.library_scene import _get_library_files
+
     # Send as inline message so edit_text works
     files, total = await _get_library_files(0)
     if not files:
@@ -192,6 +206,7 @@ async def reply_library(message: Message, tg_chat=None) -> None:
         escape_md(t(lang, NS, "library.select_file")),
     ]
     from backend.app.services.telegram_handlers.pagination import build_page_nav
+
     btns = []
     for f in files:
         btns.append([InlineKeyboardButton(text=f"\U0001f4c4 {f.filename}", callback_data=f"lib:file:{f.id}")])
@@ -206,6 +221,7 @@ async def reply_library(message: Message, tg_chat=None) -> None:
 async def reply_stats(message: Message, tg_chat=None) -> None:
     """Handle reply keyboard: Stats button."""
     from backend.app.services.telegram_handlers.stats import render_stats
+
     await render_stats(message, tg_chat)
 
 

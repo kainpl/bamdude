@@ -296,8 +296,12 @@ class NotificationService:
                 return False, f"HTTP {response.status_code}: {response.text[:200]}"
 
     async def _send_telegram(
-        self, config: dict, message: str, image_data: bytes | None = None,
-        event_type: str = "unknown", printer_id: int | None = None,
+        self,
+        config: dict,
+        message: str,
+        image_data: bytes | None = None,
+        event_type: str = "unknown",
+        printer_id: int | None = None,
         extra_data: dict | None = None,
     ) -> tuple[bool, str]:
         """Send notification via Telegram bot (aiogram or httpx fallback)."""
@@ -325,7 +329,10 @@ class NotificationService:
 
                 # Build inline keyboard for actionable notifications
                 reply_markup = await self._build_telegram_actions(
-                    event_type, printer_id, int(chat_id), extra_data,
+                    event_type,
+                    printer_id,
+                    int(chat_id),
+                    extra_data,
                 )
 
                 if image_data:
@@ -623,9 +630,12 @@ class NotificationService:
                 return await self._send_pushover(config, title, message, image_data=image_data)
             elif provider.provider_type == "telegram":
                 return await self._send_telegram(
-                    config, f"*{title}*\n{message}",
-                    image_data=image_data, event_type=event_type,
-                    printer_id=printer_id, extra_data=extra_data,
+                    config,
+                    f"*{title}*\n{message}",
+                    image_data=image_data,
+                    event_type=event_type,
+                    printer_id=printer_id,
+                    extra_data=extra_data,
                 )
             elif provider.provider_type == "email":
                 return await self._send_email(config, title, message)
@@ -642,7 +652,10 @@ class NotificationService:
             return False, str(e)
 
     async def _build_telegram_actions(
-        self, event_type: str, printer_id: int | None, chat_id: int,
+        self,
+        event_type: str,
+        printer_id: int | None,
+        chat_id: int,
         extra_data: dict | None = None,
     ):
         """Build inline keyboard for Telegram notifications based on event and permissions."""
@@ -683,31 +696,39 @@ class NotificationService:
                         from backend.app.services.printer_manager import printer_manager
 
                         if not printer_manager.is_plate_cleared(printer_id):
-                            pending = (await db.execute(
-                                select(func.count(PrintQueueItem.id)).where(
-                                    PrintQueueItem.status == "pending",
-                                    PrintQueueItem.printer_id == printer_id,
+                            pending = (
+                                await db.execute(
+                                    select(func.count(PrintQueueItem.id)).where(
+                                        PrintQueueItem.status == "pending",
+                                        PrintQueueItem.printer_id == printer_id,
+                                    )
                                 )
-                            )).scalar() or 0
+                            ).scalar() or 0
                             if pending > 0:
-                                buttons.append([InlineKeyboardButton(
-                                    text=f"\u2705 {t(lang, NS, 'printers.btn_clear_plate')}",
-                                    callback_data=f"action:clear_plate:{printer_id}",
-                                )])
+                                buttons.append(
+                                    [
+                                        InlineKeyboardButton(
+                                            text=f"\u2705 {t(lang, NS, 'printers.btn_clear_plate')}",
+                                            callback_data=f"action:clear_plate:{printer_id}",
+                                        )
+                                    ]
+                                )
 
                 # Print progress → pause/stop buttons
                 if event_type == "print_progress":
                     if tg_chat.has_permission("printers:control"):
-                        buttons.append([
-                            InlineKeyboardButton(
-                                text=f"\u23f8 {t(lang, NS, 'actions.btn_pause')}",
-                                callback_data=f"action:pause:{printer_id}",
-                            ),
-                            InlineKeyboardButton(
-                                text=f"\u23f9 {t(lang, NS, 'actions.btn_stop')}",
-                                callback_data=f"action:stop:{printer_id}",
-                            ),
-                        ])
+                        buttons.append(
+                            [
+                                InlineKeyboardButton(
+                                    text=f"\u23f8 {t(lang, NS, 'actions.btn_pause')}",
+                                    callback_data=f"action:pause:{printer_id}",
+                                ),
+                                InlineKeyboardButton(
+                                    text=f"\u23f9 {t(lang, NS, 'actions.btn_stop')}",
+                                    callback_data=f"action:stop:{printer_id}",
+                                ),
+                            ]
+                        )
 
                 # Maintenance due → mark done buttons
                 if event_type == "maintenance_due" and extra_data:
@@ -716,10 +737,14 @@ class NotificationService:
                         for item in items:
                             item_id = item.get("id")
                             if item_id:
-                                buttons.append([InlineKeyboardButton(
-                                    text=f"\u2705 {item['name']}",
-                                    callback_data=f"maint:done:{item_id}:{printer_id}",
-                                )])
+                                buttons.append(
+                                    [
+                                        InlineKeyboardButton(
+                                            text=f"\u2705 {item['name']}",
+                                            callback_data=f"maint:done:{item_id}:{printer_id}",
+                                        )
+                                    ]
+                                )
         except Exception:
             return None
 
@@ -812,9 +837,14 @@ class NotificationService:
             try:
                 # Always send notification immediately
                 success, error = await self._send_to_provider(
-                    provider, title, message, db,
-                    image_data=image_data, event_type=event_type,
-                    printer_id=printer_id, extra_data=extra_data,
+                    provider,
+                    title,
+                    message,
+                    db,
+                    image_data=image_data,
+                    event_type=event_type,
+                    printer_id=printer_id,
+                    extra_data=extra_data,
                 )
 
                 # Also queue for digest if enabled (digest is a summary, not a queue)
@@ -1213,7 +1243,13 @@ class NotificationService:
         logger.info("Found %s providers for maintenance_due: %s", len(providers), [p.name for p in providers])
         title, message = await self._build_message_from_template(db, "maintenance_due", variables)
         await self._send_to_providers(
-            providers, title, message, db, "maintenance_due", printer_id, printer_name,
+            providers,
+            title,
+            message,
+            db,
+            "maintenance_due",
+            printer_id,
+            printer_name,
             extra_data={"maintenance_items": maintenance_items},
         )
 

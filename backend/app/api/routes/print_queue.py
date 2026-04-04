@@ -776,7 +776,9 @@ async def stop_queue_item(
 
     # re-Connect MQTT if stalled
     if not await printer_manager.ensure_fresh_connection(printer_id):
-        logger.warning("ensure_fresh_connection returned False for printer %s - printer may not be connected", printer_id)
+        logger.warning(
+            "ensure_fresh_connection returned False for printer %s - printer may not be connected", printer_id
+        )
 
     # Try to send stop command to printer
     stop_sent = False

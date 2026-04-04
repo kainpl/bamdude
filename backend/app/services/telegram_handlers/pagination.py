@@ -6,7 +6,11 @@ NS = "telegram_ui"
 
 
 def build_page_nav(
-    total: int, offset: int, page_size: int, callback_prefix: str, lang: str,
+    total: int,
+    offset: int,
+    page_size: int,
+    callback_prefix: str,
+    lang: str,
 ) -> list[InlineKeyboardButton]:
     """Build navigation row: [<< Prev] [2/5] [Next >>].
 
@@ -30,21 +34,27 @@ def build_page_nav(
 
     if current_page > 1:
         prev_offset = max(0, offset - page_size)
-        buttons.append(InlineKeyboardButton(
-            text="\u25c0\ufe0f",
-            callback_data=f"{callback_prefix}{prev_offset}",
-        ))
+        buttons.append(
+            InlineKeyboardButton(
+                text="\u25c0\ufe0f",
+                callback_data=f"{callback_prefix}{prev_offset}",
+            )
+        )
 
-    buttons.append(InlineKeyboardButton(
-        text=f"{current_page}/{total_pages}",
-        callback_data="noop",
-    ))
+    buttons.append(
+        InlineKeyboardButton(
+            text=f"{current_page}/{total_pages}",
+            callback_data="noop",
+        )
+    )
 
     if current_page < total_pages:
         next_offset = offset + page_size
-        buttons.append(InlineKeyboardButton(
-            text="\u25b6\ufe0f",
-            callback_data=f"{callback_prefix}{next_offset}",
-        ))
+        buttons.append(
+            InlineKeyboardButton(
+                text="\u25b6\ufe0f",
+                callback_data=f"{callback_prefix}{next_offset}",
+            )
+        )
 
     return buttons

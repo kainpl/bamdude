@@ -33,6 +33,7 @@ class PrinterHoursState(StatesGroup):
 
 # === Printer list ===
 
+
 async def show_printer_list(message_or_callback, tg_chat: TelegramChat | None = None) -> None:
     """Show printer list with inline buttons."""
     lang = await get_language()
@@ -48,10 +49,14 @@ async def show_printer_list(message_or_callback, tg_chat: TelegramChat | None = 
     if not printers:
         btns = []
         if has_perm(tg_chat, "printers:create"):
-            btns.append([InlineKeyboardButton(
-                text=f"\u2795 {t(lang, NS, 'printer_add.btn_add')}",
-                callback_data="printer_add:start",
-            )])
+            btns.append(
+                [
+                    InlineKeyboardButton(
+                        text=f"\u2795 {t(lang, NS, 'printer_add.btn_add')}",
+                        callback_data="printer_add:start",
+                    )
+                ]
+            )
         text = f"\U0001f5a8 *{title}*\n\n{escape_md(t(lang, NS, 'printers.empty'))}"
         kb = InlineKeyboardMarkup(inline_keyboard=btns) if btns else None
         if isinstance(message_or_callback, CallbackQuery):
@@ -90,15 +95,22 @@ async def show_printer_list(message_or_callback, tg_chat: TelegramChat | None = 
         btn_label = f"{emoji} {p['name']}"
         if p["model"]:
             btn_label += f" [{p['model']}]"
-        buttons.append(InlineKeyboardButton(
-            text=btn_label,
-            callback_data=f"printer:{p['id']}",
-        ))
+        buttons.append(
+            InlineKeyboardButton(
+                text=btn_label,
+                callback_data=f"printer:{p['id']}",
+            )
+        )
 
-    keyboard_rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
-    keyboard_rows.append([InlineKeyboardButton(
-        text=f"\U0001f504 {t(lang, NS, 'printers.btn_refresh')}", callback_data="menu:printers",
-    )])
+    keyboard_rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+    keyboard_rows.append(
+        [
+            InlineKeyboardButton(
+                text=f"\U0001f504 {t(lang, NS, 'printers.btn_refresh')}",
+                callback_data="menu:printers",
+            )
+        ]
+    )
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
     text = "\n".join(lines)
@@ -111,8 +123,11 @@ async def show_printer_list(message_or_callback, tg_chat: TelegramChat | None = 
 
 # === Printer detail ===
 
+
 async def show_printer_detail(
-    callback: CallbackQuery, printer_id: int, tg_chat: TelegramChat | None = None,
+    callback: CallbackQuery,
+    printer_id: int,
+    tg_chat: TelegramChat | None = None,
 ) -> None:
     """Show printer details with control buttons."""
     lang = await get_language()
@@ -151,7 +166,9 @@ async def show_printer_detail(
     if printer["state"] == "RUNNING":
         lines.append(f"\n\U0001f4c4 {escape_md(printer['current_file'] or '–')}")
         lines.append(f"\U0001f4ca {escape_md(t(lang, NS, 'printers.progress'))}: {printer['progress']}%")
-        lines.append(f"\u23f1 {escape_md(t(lang, NS, 'printers.remaining'))}: {escape_md(format_time(lang, printer['remaining_time']))}")
+        lines.append(
+            f"\u23f1 {escape_md(t(lang, NS, 'printers.remaining'))}: {escape_md(format_time(lang, printer['remaining_time']))}"
+        )
 
     # Control buttons
     btns = []
@@ -159,27 +176,63 @@ async def show_printer_detail(
 
     if printer["connected"] and can_control:
         if printer["state"] == "RUNNING":
-            btns.append([
-                InlineKeyboardButton(text=f"\u23f8 {t(lang, NS, 'actions.btn_pause')}", callback_data=f"action:pause:{printer_id}"),
-                InlineKeyboardButton(text=f"\u23f9 {t(lang, NS, 'actions.btn_stop')}", callback_data=f"action:stop:{printer_id}"),
-                InlineKeyboardButton(text=f"\U0001f3ce\ufe0f {t(lang, NS, 'actions.btn_speed')}", callback_data=f"action:speed:{printer_id}"),
-            ])
+            btns.append(
+                [
+                    InlineKeyboardButton(
+                        text=f"\u23f8 {t(lang, NS, 'actions.btn_pause')}", callback_data=f"action:pause:{printer_id}"
+                    ),
+                    InlineKeyboardButton(
+                        text=f"\u23f9 {t(lang, NS, 'actions.btn_stop')}", callback_data=f"action:stop:{printer_id}"
+                    ),
+                    InlineKeyboardButton(
+                        text=f"\U0001f3ce\ufe0f {t(lang, NS, 'actions.btn_speed')}",
+                        callback_data=f"action:speed:{printer_id}",
+                    ),
+                ]
+            )
         elif printer["state"] == "PAUSE":
-            btns.append([
-                InlineKeyboardButton(text=f"\u25b6\ufe0f {t(lang, NS, 'actions.btn_resume')}", callback_data=f"action:resume:{printer_id}"),
-                InlineKeyboardButton(text=f"\u23f9 {t(lang, NS, 'actions.btn_stop')}", callback_data=f"action:stop:{printer_id}"),
-                InlineKeyboardButton(text=f"\U0001f3ce\ufe0f {t(lang, NS, 'actions.btn_speed')}", callback_data=f"action:speed:{printer_id}"),
-            ])
+            btns.append(
+                [
+                    InlineKeyboardButton(
+                        text=f"\u25b6\ufe0f {t(lang, NS, 'actions.btn_resume')}",
+                        callback_data=f"action:resume:{printer_id}",
+                    ),
+                    InlineKeyboardButton(
+                        text=f"\u23f9 {t(lang, NS, 'actions.btn_stop')}", callback_data=f"action:stop:{printer_id}"
+                    ),
+                    InlineKeyboardButton(
+                        text=f"\U0001f3ce\ufe0f {t(lang, NS, 'actions.btn_speed')}",
+                        callback_data=f"action:speed:{printer_id}",
+                    ),
+                ]
+            )
 
-        btns.append([
-            InlineKeyboardButton(text=f"\U0001f4a1 {t(lang, NS, 'actions.btn_light')}", callback_data=f"action:light:{printer_id}"),
-            InlineKeyboardButton(text=f"\U0001f4f7 {t(lang, NS, 'actions.btn_camera')}", callback_data=f"action:camera:{printer_id}"),
-            InlineKeyboardButton(text=f"\U0001f504 {t(lang, NS, 'printers.btn_refresh')}", callback_data=f"printer:{printer_id}"),
-        ])
+        btns.append(
+            [
+                InlineKeyboardButton(
+                    text=f"\U0001f4a1 {t(lang, NS, 'actions.btn_light')}", callback_data=f"action:light:{printer_id}"
+                ),
+                InlineKeyboardButton(
+                    text=f"\U0001f4f7 {t(lang, NS, 'actions.btn_camera')}", callback_data=f"action:camera:{printer_id}"
+                ),
+                InlineKeyboardButton(
+                    text=f"\U0001f504 {t(lang, NS, 'printers.btn_refresh')}", callback_data=f"printer:{printer_id}"
+                ),
+            ]
+        )
     elif printer["connected"]:
-        row = [InlineKeyboardButton(text=f"\U0001f504 {t(lang, NS, 'printers.btn_refresh')}", callback_data=f"printer:{printer_id}")]
+        row = [
+            InlineKeyboardButton(
+                text=f"\U0001f504 {t(lang, NS, 'printers.btn_refresh')}", callback_data=f"printer:{printer_id}"
+            )
+        ]
         if has_perm(tg_chat, "camera:view"):
-            row.insert(0, InlineKeyboardButton(text=f"\U0001f4f7 {t(lang, NS, 'actions.btn_camera')}", callback_data=f"action:camera:{printer_id}"))
+            row.insert(
+                0,
+                InlineKeyboardButton(
+                    text=f"\U0001f4f7 {t(lang, NS, 'actions.btn_camera')}", callback_data=f"action:camera:{printer_id}"
+                ),
+            )
         btns.append(row)
 
     # Clear plate
@@ -191,34 +244,53 @@ async def show_printer_detail(
         next_job = await get_next_queue_item(printer_id)
         if next_job:
             lines.append(f"\n\U0001f4e5 {escape_md(t(lang, NS, 'printers.next_in_queue', name=next_job))}")
-            btns.append([InlineKeyboardButton(
-                text=f"\u2705 {t(lang, NS, 'printers.btn_clear_plate')}",
-                callback_data=f"action:clear_plate:{printer_id}",
-            )])
+            btns.append(
+                [
+                    InlineKeyboardButton(
+                        text=f"\u2705 {t(lang, NS, 'printers.btn_clear_plate')}",
+                        callback_data=f"action:clear_plate:{printer_id}",
+                    )
+                ]
+            )
 
     # Maintenance
     maint_btns = []
     if has_perm(tg_chat, "maintenance:read"):
-        maint_btns.append(InlineKeyboardButton(text=f"\U0001f527 {t(lang, NS, 'printers.btn_maintenance')}", callback_data=f"maint:list:{printer_id}"))
+        maint_btns.append(
+            InlineKeyboardButton(
+                text=f"\U0001f527 {t(lang, NS, 'printers.btn_maintenance')}", callback_data=f"maint:list:{printer_id}"
+            )
+        )
     if has_perm(tg_chat, "maintenance:update"):
-        maint_btns.append(InlineKeyboardButton(text=f"\u23f0 {t(lang, NS, 'printers.hours')}", callback_data=f"action:hours:{printer_id}"))
+        maint_btns.append(
+            InlineKeyboardButton(
+                text=f"\u23f0 {t(lang, NS, 'printers.hours')}", callback_data=f"action:hours:{printer_id}"
+            )
+        )
     if maint_btns:
         btns.append(maint_btns)
 
     # Calibration
     if printer["connected"] and printer["state"] in ("IDLE", "FINISH") and can_control:
-        btns.append([InlineKeyboardButton(
-            text=f"\U0001f527 {t(lang, NS, 'printers.btn_calibration')}",
-            callback_data=f"calib:show:{printer_id}",
-        )])
+        btns.append(
+            [
+                InlineKeyboardButton(
+                    text=f"\U0001f527 {t(lang, NS, 'printers.btn_calibration')}",
+                    callback_data=f"calib:show:{printer_id}",
+                )
+            ]
+        )
 
-    btns.append([InlineKeyboardButton(text=f"\u25c0\ufe0f {t(lang, NS, 'printers.btn_back')}", callback_data="menu:printers")])
+    btns.append(
+        [InlineKeyboardButton(text=f"\u25c0\ufe0f {t(lang, NS, 'printers.btn_back')}", callback_data="menu:printers")]
+    )
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=btns)
     await callback.message.edit_text("\n".join(lines), reply_markup=keyboard)
 
 
 # === Callback handlers ===
+
 
 @router.callback_query(F.data == "menu:printers")
 async def cb_printer_list(callback: CallbackQuery, tg_chat: TelegramChat | None = None) -> None:
@@ -235,6 +307,7 @@ async def cb_printer_detail(callback: CallbackQuery, tg_chat: TelegramChat | Non
 
 # === Hours FSM ===
 
+
 @router.callback_query(F.data.startswith("action:hours:"))
 async def cb_edit_hours(callback: CallbackQuery, state: FSMContext, tg_chat: TelegramChat | None = None) -> None:
     lang = await get_language()
@@ -249,9 +322,15 @@ async def cb_edit_hours(callback: CallbackQuery, state: FSMContext, tg_chat: Tel
     await callback.message.answer(
         f"\u23f0 {escape_md(t(lang, NS, 'printers.total_hours'))}: *{escape_md(f'{total_hours:.1f}')}*\n\n"
         f"{escape_md(t(lang, NS, 'printers.enter_hours'))}",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=f"\u274c {t(lang, NS, 'printers.btn_cancel')}", callback_data=f"cancel_hours:{printer_id}")],
-        ]),
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text=f"\u274c {t(lang, NS, 'printers.btn_cancel')}", callback_data=f"cancel_hours:{printer_id}"
+                    )
+                ],
+            ]
+        ),
     )
     await state.set_state(PrinterHoursState.waiting_for_hours)
     await state.update_data(printer_id=printer_id)
@@ -307,10 +386,12 @@ async def msg_set_hours(message: Message, state: FSMContext, tg_chat: TelegramCh
 
 # === Menu callbacks ===
 
+
 @router.callback_query(F.data == "menu:help")
 async def cb_help(callback: CallbackQuery, **kwargs) -> None:
     await callback.answer()
     from backend.app.services.telegram_handlers.start import cmd_help
+
     await cmd_help(callback.message)
 
 
@@ -318,4 +399,5 @@ async def cb_help(callback: CallbackQuery, **kwargs) -> None:
 async def cb_main_menu(callback: CallbackQuery, **kwargs) -> None:
     await callback.answer()
     from backend.app.services.telegram_handlers.start import cmd_start
+
     await cmd_start(callback.message)

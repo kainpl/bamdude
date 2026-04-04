@@ -32,12 +32,14 @@ async def render_stats(target, tg_chat: TelegramChat | None = None) -> None:
 
     async with async_session() as db:
         total = (await db.execute(select(func.count(PrintArchive.id)))).scalar() or 0
-        completed = (await db.execute(
-            select(func.count(PrintArchive.id)).where(PrintArchive.status == "completed")
-        )).scalar() or 0
-        failed = (await db.execute(
-            select(func.count(PrintArchive.id)).where(PrintArchive.status.in_(["failed", "aborted", "cancelled"]))
-        )).scalar() or 0
+        completed = (
+            await db.execute(select(func.count(PrintArchive.id)).where(PrintArchive.status == "completed"))
+        ).scalar() or 0
+        failed = (
+            await db.execute(
+                select(func.count(PrintArchive.id)).where(PrintArchive.status.in_(["failed", "aborted", "cancelled"]))
+            )
+        ).scalar() or 0
 
     success_rate = round(completed / (completed + failed) * 100) if (completed + failed) > 0 else 0
 
@@ -49,9 +51,15 @@ async def render_stats(target, tg_chat: TelegramChat | None = None) -> None:
         f"\U0001f4c8 {escape_md(t(lang, NS, 'stats.success_rate'))}: {success_rate}%"
     )
 
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"\u25c0\ufe0f {t(lang, NS, 'printers.btn_main_menu')}", callback_data="menu:main")],
-    ])
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"\u25c0\ufe0f {t(lang, NS, 'printers.btn_main_menu')}", callback_data="menu:main"
+                )
+            ],
+        ]
+    )
 
     if isinstance(target, CallbackQuery):
         await target.message.edit_text(text, reply_markup=keyboard)

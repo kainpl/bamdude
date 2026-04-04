@@ -2413,8 +2413,10 @@ async def on_print_complete(printer_id: int, data: dict):
                 # Process /cache/ files: delete .gcode, patch .bbl (disable auto_recovery)
                 try:
                     cache_files = await list_files_async(
-                        printer.ip_address, printer.access_code,
-                        "/cache", printer_model=printer.model,
+                        printer.ip_address,
+                        printer.access_code,
+                        "/cache",
+                        printer_model=printer.model,
                     )
                     sanitized_base = subtask_name.replace(" ", "_")
                     for f in cache_files:
@@ -2428,11 +2430,18 @@ async def on_print_complete(printer_id: int, data: dict):
                         is_matching_bbl = fname_lower.endswith(".bbl") and f"_{sanitized_base}" in fname
 
                         # cleanup_after_print=True: delete .gcode and .bbl from /cache/
-                        if should_delete and (is_matching_gcode or is_matching_bbl) or not should_delete and is_matching_gcode:
+                        if (
+                            should_delete
+                            and (is_matching_gcode or is_matching_bbl)
+                            or not should_delete
+                            and is_matching_gcode
+                        ):
                             try:
                                 await delete_file_async(
-                                    printer.ip_address, printer.access_code,
-                                    f"/cache/{fname}", printer_model=printer.model,
+                                    printer.ip_address,
+                                    printer.access_code,
+                                    f"/cache/{fname}",
+                                    printer_model=printer.model,
                                 )
                                 logger.info("Deleted /cache/%s from printer %s", fname, printer.name)
                             except Exception:
@@ -2444,8 +2453,10 @@ async def on_print_complete(printer_id: int, data: dict):
                             try:
                                 bbl_path = f"/cache/{fname}"
                                 bbl_data = await download_file_bytes_async(
-                                    printer.ip_address, printer.access_code,
-                                    bbl_path, printer_model=printer.model,
+                                    printer.ip_address,
+                                    printer.access_code,
+                                    bbl_path,
+                                    printer_model=printer.model,
                                 )
                                 if bbl_data:
                                     import json as _json
@@ -2470,12 +2481,16 @@ async def on_print_complete(printer_id: int, data: dict):
                                         # Preserve original formatting (4-space indent)
                                         patched = _json.dumps(bbl_json, indent=4).encode("utf-8")
                                         await upload_bytes_async(
-                                            printer.ip_address, printer.access_code,
-                                            patched, bbl_path, printer_model=printer.model,
+                                            printer.ip_address,
+                                            printer.access_code,
+                                            patched,
+                                            bbl_path,
+                                            printer_model=printer.model,
                                         )
                                         logger.info(
                                             "Patched .bbl /cache/%s on printer %s (auto_recovery=false%s)",
-                                            fname, printer.name,
+                                            fname,
+                                            printer.name,
                                             ", file path updated" if "/cache/" in bbl_json.get("file path", "") else "",
                                         )
                             except Exception as e:
@@ -2489,8 +2504,10 @@ async def on_print_complete(printer_id: int, data: dict):
                     for attempt in range(1, 4):
                         try:
                             r = await delete_file_async(
-                                printer.ip_address, printer.access_code,
-                                remote_3mf, printer_model=printer.model,
+                                printer.ip_address,
+                                printer.access_code,
+                                remote_3mf,
+                                printer_model=printer.model,
                             )
                             if r:
                                 logger.info("Deleted %s from printer %s SD card", remote_3mf, printer.name)
@@ -2508,8 +2525,11 @@ async def on_print_complete(printer_id: int, data: dict):
                     for attempt in range(1, 4):
                         try:
                             r = await rename_file_async(
-                                printer.ip_address, printer.access_code,
-                                remote_3mf, cache_3mf, printer_model=printer.model,
+                                printer.ip_address,
+                                printer.access_code,
+                                remote_3mf,
+                                cache_3mf,
+                                printer_model=printer.model,
                             )
                             if r:
                                 logger.info("Moved %s to %s on printer %s", remote_3mf, cache_3mf, printer.name)
@@ -3229,7 +3249,12 @@ async def on_print_complete(printer_id: int, data: dict):
                 overview = await _get_printer_maintenance_internal(printer_id, db, commit=True)
 
                 items_needing_attention = [
-                    {"id": item.id, "name": item.maintenance_type_name, "is_due": item.is_due, "is_warning": item.is_warning}
+                    {
+                        "id": item.id,
+                        "name": item.maintenance_type_name,
+                        "is_due": item.is_due,
+                        "is_warning": item.is_warning,
+                    }
                     for item in overview.maintenance_items
                     if item.enabled and (item.is_due or item.is_warning)
                 ]
@@ -3951,6 +3976,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[MAIN] Failed to start Telegram bot: {e}")
         import traceback
+
         traceback.print_exc()
 
     yield

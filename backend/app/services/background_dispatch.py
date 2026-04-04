@@ -590,8 +590,11 @@ class BackgroundDispatchService:
             sanitized_base = remote_filename[:-4] if remote_filename.endswith(".3mf") else remote_filename
             try:
                 cache_files = await list_files_async(
-                    printer_ip, printer_access_code,
-                    "/cache", socket_timeout=ftp_timeout, printer_model=printer_model,
+                    printer_ip,
+                    printer_access_code,
+                    "/cache",
+                    socket_timeout=ftp_timeout,
+                    printer_model=printer_model,
                 )
                 for f in cache_files:
                     fname = f.get("name", "")
@@ -600,8 +603,11 @@ class BackgroundDispatchService:
                     if fname == remote_filename or fname.endswith(f"_{sanitized_base}.bbl"):
                         try:
                             await delete_file_async(
-                                printer_ip, printer_access_code,
-                                f"/cache/{fname}", socket_timeout=ftp_timeout, printer_model=printer_model,
+                                printer_ip,
+                                printer_access_code,
+                                f"/cache/{fname}",
+                                socket_timeout=ftp_timeout,
+                                printer_model=printer_model,
                             )
                             logger.info("Dispatch job %s: Deleted /cache/%s", job.id, fname)
                         except Exception:
@@ -786,8 +792,11 @@ class BackgroundDispatchService:
             sanitized_base = remote_filename[:-4] if remote_filename.endswith(".3mf") else remote_filename
             try:
                 cache_files = await list_files_async(
-                    printer_ip, printer_access_code,
-                    "/cache", socket_timeout=ftp_timeout, printer_model=printer_model,
+                    printer_ip,
+                    printer_access_code,
+                    "/cache",
+                    socket_timeout=ftp_timeout,
+                    printer_model=printer_model,
                 )
                 for f in cache_files:
                     fname = f.get("name", "")
@@ -796,8 +805,11 @@ class BackgroundDispatchService:
                     if fname == remote_filename or fname.endswith(f"_{sanitized_base}.bbl"):
                         try:
                             await delete_file_async(
-                                printer_ip, printer_access_code,
-                                f"/cache/{fname}", socket_timeout=ftp_timeout, printer_model=printer_model,
+                                printer_ip,
+                                printer_access_code,
+                                f"/cache/{fname}",
+                                socket_timeout=ftp_timeout,
+                                printer_model=printer_model,
                             )
                             logger.info("Dispatch job %s: Deleted /cache/%s", job.id, fname)
                         except Exception:

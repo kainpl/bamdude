@@ -149,9 +149,7 @@ async def create_chat(
 ):
     """Register a new Telegram chat."""
     # Check duplicate
-    existing = await db.execute(
-        select(TelegramChat).where(TelegramChat.chat_id == data.chat_id)
-    )
+    existing = await db.execute(select(TelegramChat).where(TelegramChat.chat_id == data.chat_id))
     if existing.scalar_one_or_none():
         raise HTTPException(400, "Chat ID already registered")
 
@@ -268,10 +266,12 @@ async def list_events(
     result = []
     for _category_key, category_data in EVENT_CATEGORIES.items():
         for event_type in category_data["events"]:
-            result.append(NotifyEventInfo(
-                event_type=event_type,
-                category=category_data["label"],
-                label=EVENT_LABELS.get(event_type, event_type),
-                default=event_type in DEFAULT_NOTIFY_EVENTS,
-            ))
+            result.append(
+                NotifyEventInfo(
+                    event_type=event_type,
+                    category=category_data["label"],
+                    label=EVENT_LABELS.get(event_type, event_type),
+                    default=event_type in DEFAULT_NOTIFY_EVENTS,
+                )
+            )
     return result

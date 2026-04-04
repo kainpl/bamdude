@@ -27,6 +27,7 @@ SPEED_MODES = {
 
 # === Camera ===
 
+
 @router.callback_query(F.data.startswith("action:camera:"))
 async def cb_camera_snapshot(callback: CallbackQuery, tg_chat: TelegramChat | None = None) -> None:
     """Capture and send a camera snapshot."""
@@ -78,6 +79,7 @@ async def cb_camera_snapshot(callback: CallbackQuery, tg_chat: TelegramChat | No
 
 # === Speed ===
 
+
 @router.callback_query(F.data.startswith("action:speed:"))
 async def cb_speed_menu(callback: CallbackQuery, tg_chat: TelegramChat | None = None) -> None:
     """Show speed mode selection."""
@@ -101,15 +103,23 @@ async def cb_speed_menu(callback: CallbackQuery, tg_chat: TelegramChat | None = 
     for mode, info in SPEED_MODES.items():
         label = t(lang, NS, info["key"])
         check = " \u2705" if mode == current_speed else ""
-        btns.append([InlineKeyboardButton(
-            text=f"{info['emoji']} {label}{check}",
-            callback_data=f"speed:set:{printer_id}:{mode}",
-        )])
+        btns.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{info['emoji']} {label}{check}",
+                    callback_data=f"speed:set:{printer_id}:{mode}",
+                )
+            ]
+        )
 
-    btns.append([InlineKeyboardButton(
-        text=f"\u25c0\ufe0f {t(lang, NS, 'printers.btn_back')}",
-        callback_data=f"printer:{printer_id}",
-    )])
+    btns.append(
+        [
+            InlineKeyboardButton(
+                text=f"\u25c0\ufe0f {t(lang, NS, 'printers.btn_back')}",
+                callback_data=f"printer:{printer_id}",
+            )
+        ]
+    )
 
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=btns))
 
@@ -144,6 +154,7 @@ async def cb_speed_set(callback: CallbackQuery, tg_chat: TelegramChat | None = N
 
 # === Clear plate ===
 
+
 @router.callback_query(F.data.startswith("action:clear_plate:"))
 async def cb_clear_plate(callback: CallbackQuery, tg_chat: TelegramChat | None = None) -> None:
     """Clear plate confirmation."""
@@ -164,10 +175,12 @@ async def cb_clear_plate(callback: CallbackQuery, tg_chat: TelegramChat | None =
 
     # Refresh printer detail
     from backend.app.services.telegram_handlers.printers import show_printer_detail
+
     await show_printer_detail(callback, printer_id, tg_chat)
 
 
 # === Generic actions (pause, stop, resume, light) — catch-all, must be last ===
+
 
 @router.callback_query(F.data.startswith("action:"))
 async def cb_printer_action(callback: CallbackQuery, tg_chat: TelegramChat | None = None) -> None:
@@ -218,4 +231,5 @@ async def cb_printer_action(callback: CallbackQuery, tg_chat: TelegramChat | Non
             await callback.answer(t(lang, NS, "printers.not_connected"), show_alert=True)
 
     from backend.app.services.telegram_handlers.printers import show_printer_detail
+
     await show_printer_detail(callback, printer_id, tg_chat)

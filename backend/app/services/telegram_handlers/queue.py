@@ -45,19 +45,19 @@ async def render_queue(target, tg_chat: TelegramChat | None = None, offset: int 
 
     async with async_session() as db:
         # Total counts
-        total_pending = (await db.execute(
-            select(func.count(PrintQueueItem.id)).where(PrintQueueItem.status == "pending")
-        )).scalar() or 0
-        total_printing = (await db.execute(
-            select(func.count(PrintQueueItem.id)).where(PrintQueueItem.status == "printing")
-        )).scalar() or 0
+        total_pending = (
+            await db.execute(select(func.count(PrintQueueItem.id)).where(PrintQueueItem.status == "pending"))
+        ).scalar() or 0
+        total_printing = (
+            await db.execute(select(func.count(PrintQueueItem.id)).where(PrintQueueItem.status == "printing"))
+        ).scalar() or 0
 
         # Active items (pending + printing) for list
-        total_active = (await db.execute(
-            select(func.count(PrintQueueItem.id)).where(
-                PrintQueueItem.status.in_(["pending", "printing"])
+        total_active = (
+            await db.execute(
+                select(func.count(PrintQueueItem.id)).where(PrintQueueItem.status.in_(["pending", "printing"]))
             )
-        )).scalar() or 0
+        ).scalar() or 0
 
         # Paginated items
         result = await db.execute(
@@ -98,10 +98,14 @@ async def render_queue(target, tg_chat: TelegramChat | None = None, offset: int 
 
             lines.append(f"{emoji} *{fname}*{printer_label}")
 
-            btns.append([InlineKeyboardButton(
-                text=f"{emoji} {item.file_name or f'Job #{item.id}'}",
-                callback_data=f"queue:detail:{item.id}",
-            )])
+            btns.append(
+                [
+                    InlineKeyboardButton(
+                        text=f"{emoji} {item.file_name or f'Job #{item.id}'}",
+                        callback_data=f"queue:detail:{item.id}",
+                    )
+                ]
+            )
 
         # Pagination nav
         nav = build_page_nav(total_active, offset, PAGE_SIZE, "page:queue:", lang)
@@ -112,15 +116,23 @@ async def render_queue(target, tg_chat: TelegramChat | None = None, offset: int 
 
     # Add to queue button
     if has_perm(tg_chat, "queue:create"):
-        btns.append([InlineKeyboardButton(
-            text=f"\u2795 {t(lang, NS, 'queue_add.title')}",
-            callback_data="qadd:start",
-        )])
+        btns.append(
+            [
+                InlineKeyboardButton(
+                    text=f"\u2795 {t(lang, NS, 'queue_add.title')}",
+                    callback_data="qadd:start",
+                )
+            ]
+        )
 
-    btns.append([InlineKeyboardButton(
-        text=f"\u25c0\ufe0f {t(lang, NS, 'printers.btn_main_menu')}",
-        callback_data="menu:main",
-    )])
+    btns.append(
+        [
+            InlineKeyboardButton(
+                text=f"\u25c0\ufe0f {t(lang, NS, 'printers.btn_main_menu')}",
+                callback_data="menu:main",
+            )
+        ]
+    )
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=btns)
     text = "\n".join(lines)
@@ -194,7 +206,9 @@ async def cb_queue_detail(callback: CallbackQuery, tg_chat: TelegramChat | None 
     lines.append(f"\U0001f522 {escape_md(t(lang, NS, 'queue.position'))}: {item.position}")
 
     if item.scheduled_time:
-        lines.append(f"\U0001f4c5 {escape_md(t(lang, NS, 'queue.scheduled'))}: {escape_md(str(item.scheduled_time)[:16])}")
+        lines.append(
+            f"\U0001f4c5 {escape_md(t(lang, NS, 'queue.scheduled'))}: {escape_md(str(item.scheduled_time)[:16])}"
+        )
 
     btns = []
 
@@ -202,27 +216,39 @@ async def cb_queue_detail(callback: CallbackQuery, tg_chat: TelegramChat | None 
     if item.status == "pending":
         action_row = []
         if has_perm(tg_chat, "queue:reorder"):
-            action_row.append(InlineKeyboardButton(
-                text=f"\u2b06 {t(lang, NS, 'queue.btn_move_up')}",
-                callback_data=f"queue:move:{item.id}:up",
-            ))
-            action_row.append(InlineKeyboardButton(
-                text=f"\u2b07 {t(lang, NS, 'queue.btn_move_down')}",
-                callback_data=f"queue:move:{item.id}:down",
-            ))
+            action_row.append(
+                InlineKeyboardButton(
+                    text=f"\u2b06 {t(lang, NS, 'queue.btn_move_up')}",
+                    callback_data=f"queue:move:{item.id}:up",
+                )
+            )
+            action_row.append(
+                InlineKeyboardButton(
+                    text=f"\u2b07 {t(lang, NS, 'queue.btn_move_down')}",
+                    callback_data=f"queue:move:{item.id}:down",
+                )
+            )
         if action_row:
             btns.append(action_row)
 
         if has_perm(tg_chat, "queue:delete_own") or has_perm(tg_chat, "queue:delete_all"):
-            btns.append([InlineKeyboardButton(
-                text=f"\u274c {t(lang, NS, 'queue.btn_cancel')}",
-                callback_data=f"queue:cancel:{item.id}",
-            )])
+            btns.append(
+                [
+                    InlineKeyboardButton(
+                        text=f"\u274c {t(lang, NS, 'queue.btn_cancel')}",
+                        callback_data=f"queue:cancel:{item.id}",
+                    )
+                ]
+            )
 
-    btns.append([InlineKeyboardButton(
-        text=f"\u25c0\ufe0f {t(lang, NS, 'printers.btn_back')}",
-        callback_data="menu:queue",
-    )])
+    btns.append(
+        [
+            InlineKeyboardButton(
+                text=f"\u25c0\ufe0f {t(lang, NS, 'printers.btn_back')}",
+                callback_data="menu:queue",
+            )
+        ]
+    )
 
     await callback.message.edit_text(
         "\n".join(lines),

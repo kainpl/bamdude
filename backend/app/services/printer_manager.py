@@ -369,7 +369,9 @@ class PrinterManager:
 
         logger.info(
             "MQTT connection stale for printer %s (%.0fs > %ds), reconnecting...",
-            printer.name, elapsed, timeout,
+            printer.name,
+            elapsed,
+            timeout,
         )
         return await self.connect_printer(printer)
 

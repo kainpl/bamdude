@@ -66,20 +66,22 @@ async def get_printers_data() -> list[dict]:
     for p in printers:
         status = printer_manager.get_status(p.id)
         temps = status.temperatures if status else {}
-        data.append({
-            "id": p.id,
-            "name": p.name,
-            "model": p.model,
-            "connected": status.connected if status else False,
-            "state": status.state if status else None,
-            "progress": status.progress if status else 0,
-            "current_file": (status.subtask_name or status.current_print) if status else None,
-            "nozzle_temp": temps.get("nozzle"),
-            "bed_temp": temps.get("bed"),
-            "remaining_time": status.remaining_time if status else None,
-            "plate_cleared": printer_manager.is_plate_cleared(p.id),
-            "speed_level": status.speed_level if status else 2,
-        })
+        data.append(
+            {
+                "id": p.id,
+                "name": p.name,
+                "model": p.model,
+                "connected": status.connected if status else False,
+                "state": status.state if status else None,
+                "progress": status.progress if status else 0,
+                "current_file": (status.subtask_name or status.current_print) if status else None,
+                "nozzle_temp": temps.get("nozzle"),
+                "bed_temp": temps.get("bed"),
+                "remaining_time": status.remaining_time if status else None,
+                "plate_cleared": printer_manager.is_plate_cleared(p.id),
+                "speed_level": status.speed_level if status else 2,
+            }
+        )
 
     return data
 

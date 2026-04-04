@@ -44,7 +44,11 @@ def _get_available_calibrations(model: str | None) -> list[str]:
 
 
 def _render_calibration_screen(
-    lang: str, printer_id: int, printer_name: str, model: str | None, selected: set[str],
+    lang: str,
+    printer_id: int,
+    printer_name: str,
+    model: str | None,
+    selected: set[str],
 ) -> tuple[str, InlineKeyboardMarkup]:
     available = _get_available_calibrations(model)
 
@@ -58,15 +62,25 @@ def _render_calibration_screen(
     for cal_type in available:
         label = t(lang, NS, CALIBRATION_TYPES[cal_type]["label_key"])
         prefix = "\u2705" if cal_type in selected else "\u2b1c"
-        btns.append([InlineKeyboardButton(
-            text=f"{prefix} {label}",
-            callback_data=f"calib:toggle:{printer_id}:{cal_type}",
-        )])
+        btns.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{prefix} {label}",
+                    callback_data=f"calib:toggle:{printer_id}:{cal_type}",
+                )
+            ]
+        )
 
-    btns.append([
-        InlineKeyboardButton(text=f"\u25b6\ufe0f {t(lang, NS, 'calibration.btn_start')}", callback_data=f"calib:start:{printer_id}"),
-        InlineKeyboardButton(text=f"\u25c0\ufe0f {t(lang, NS, 'printers.btn_back')}", callback_data=f"printer:{printer_id}"),
-    ])
+    btns.append(
+        [
+            InlineKeyboardButton(
+                text=f"\u25b6\ufe0f {t(lang, NS, 'calibration.btn_start')}", callback_data=f"calib:start:{printer_id}"
+            ),
+            InlineKeyboardButton(
+                text=f"\u25c0\ufe0f {t(lang, NS, 'printers.btn_back')}", callback_data=f"printer:{printer_id}"
+            ),
+        ]
+    )
 
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=btns)
 
@@ -111,7 +125,8 @@ async def cb_calibration_toggle(callback: CallbackQuery, tg_chat: TelegramChat |
     printers = await get_printers_data()
     printer = next((p for p in printers if p["id"] == printer_id), None)
     text, keyboard = _render_calibration_screen(
-        lang, printer_id,
+        lang,
+        printer_id,
         printer["name"] if printer else f"#{printer_id}",
         printer["model"] if printer else None,
         selected,
@@ -153,4 +168,5 @@ async def cb_calibration_start(callback: CallbackQuery, tg_chat: TelegramChat | 
         await callback.answer(t(lang, NS, "calibration.failed"), show_alert=True)
 
     from backend.app.services.telegram_handlers.printers import show_printer_detail
+
     await show_printer_detail(callback, printer_id, tg_chat)

@@ -114,9 +114,7 @@ async def get_language() -> str:
         from backend.app.models.settings import Settings
 
         async with async_session() as db:
-            result = await db.execute(
-                select(Settings.value).where(Settings.key == "language")
-            )
+            result = await db.execute(select(Settings.value).where(Settings.key == "language"))
             lang = result.scalar_one_or_none()
             return lang or FALLBACK_LANG
     except Exception:

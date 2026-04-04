@@ -66,9 +66,7 @@ class FailureAnalysisService:
         total_prints = total_result.scalar() or 0
 
         failed_result = await self.db.execute(
-            select(func.count(PrintArchive.id)).where(
-                and_(*base_filter, PrintArchive.status.in_(FAILED_STATUSES))
-            )
+            select(func.count(PrintArchive.id)).where(and_(*base_filter, PrintArchive.status.in_(FAILED_STATUSES)))
         )
         failed_prints = failed_result.scalar() or 0
 
@@ -104,9 +102,7 @@ class FailureAnalysisService:
                 PrintArchive.printer_id,
                 func.count(PrintArchive.id).label("count"),
             )
-            .where(
-                and_(*base_filter, PrintArchive.status.in_(FAILED_STATUSES), PrintArchive.printer_id.isnot(None))
-            )
+            .where(and_(*base_filter, PrintArchive.status.in_(FAILED_STATUSES), PrintArchive.printer_id.isnot(None)))
             .group_by(PrintArchive.printer_id)
             .order_by(func.count(PrintArchive.id).desc())
         )
@@ -176,9 +172,7 @@ class FailureAnalysisService:
 
             week_total = await self.db.execute(select(func.count(PrintArchive.id)).where(and_(*week_filter)))
             week_failed = await self.db.execute(
-                select(func.count(PrintArchive.id)).where(
-                    and_(*week_filter, PrintArchive.status.in_(FAILED_STATUSES))
-                )
+                select(func.count(PrintArchive.id)).where(and_(*week_filter, PrintArchive.status.in_(FAILED_STATUSES)))
             )
 
             total = week_total.scalar() or 0

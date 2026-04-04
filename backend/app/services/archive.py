@@ -1195,9 +1195,7 @@ class ArchiveService:
 
         # Tags
         tag_result = await self.db.execute(
-            select(PrintArchive.tags)
-            .where(PrintArchive.tags.isnot(None), PrintArchive.tags != "")
-            .distinct()
+            select(PrintArchive.tags).where(PrintArchive.tags.isnot(None), PrintArchive.tags != "").distinct()
         )
         raw_tags = [r[0] for r in tag_result.all()]
         tags = sorted({t.strip() for raw in raw_tags for t in raw.split(",") if t.strip()})

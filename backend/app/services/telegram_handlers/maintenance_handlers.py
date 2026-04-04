@@ -39,9 +39,16 @@ async def cb_maintenance_list(callback: CallbackQuery, tg_chat: TelegramChat | N
         await callback.message.edit_text(
             f"\U0001f527 *{escape_md(t(lang, NS, 'maintenance.title'))}*\n\n"
             f"{escape_md(t(lang, NS, 'maintenance.no_items'))}",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text=f"\u25c0\ufe0f {t(lang, NS, 'printers.btn_back')}", callback_data=f"printer:{printer_id}")],
-            ]),
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text=f"\u25c0\ufe0f {t(lang, NS, 'printers.btn_back')}",
+                            callback_data=f"printer:{printer_id}",
+                        )
+                    ],
+                ]
+            ),
         )
         return
 
@@ -70,22 +77,36 @@ async def cb_maintenance_list(callback: CallbackQuery, tg_chat: TelegramChat | N
 
         if item.interval_type == "days":
             if item.days_since_maintenance is not None:
-                lines.append(f"  {escape_md(t(lang, NS, 'maintenance.days_since', days=f'{item.days_since_maintenance:.0f}'))}")
+                lines.append(
+                    f"  {escape_md(t(lang, NS, 'maintenance.days_since', days=f'{item.days_since_maintenance:.0f}'))}"
+                )
             if item.days_until_due is not None:
                 lines.append(f"  {escape_md(t(lang, NS, 'maintenance.days_until', days=f'{item.days_until_due:.0f}'))}")
         else:
-            lines.append(f"  {escape_md(t(lang, NS, 'maintenance.hours_since', hours=f'{item.hours_since_maintenance:.1f}'))}")
+            lines.append(
+                f"  {escape_md(t(lang, NS, 'maintenance.hours_since', hours=f'{item.hours_since_maintenance:.1f}'))}"
+            )
             lines.append(f"  {escape_md(t(lang, NS, 'maintenance.hours_until', hours=f'{item.hours_until_due:.1f}'))}")
 
         lines.append("")
 
         if can_update and (item.is_due or item.is_warning):
-            btns.append([InlineKeyboardButton(
-                text=f"\u2705 {item.maintenance_type_name}",
-                callback_data=f"maint:done:{item.id}:{printer_id}",
-            )])
+            btns.append(
+                [
+                    InlineKeyboardButton(
+                        text=f"\u2705 {item.maintenance_type_name}",
+                        callback_data=f"maint:done:{item.id}:{printer_id}",
+                    )
+                ]
+            )
 
-    btns.append([InlineKeyboardButton(text=f"\u25c0\ufe0f {t(lang, NS, 'printers.btn_back')}", callback_data=f"printer:{printer_id}")])
+    btns.append(
+        [
+            InlineKeyboardButton(
+                text=f"\u25c0\ufe0f {t(lang, NS, 'printers.btn_back')}", callback_data=f"printer:{printer_id}"
+            )
+        ]
+    )
 
     await callback.message.edit_text(
         "\n".join(lines),

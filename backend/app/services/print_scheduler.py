@@ -1621,8 +1621,11 @@ class PrintScheduler:
         sanitized_base = remote_filename[:-4] if remote_filename.endswith(".3mf") else remote_filename  # strip .3mf
         try:
             cache_files = await list_files_async(
-                printer.ip_address, printer.access_code,
-                "/cache", socket_timeout=ftp_timeout, printer_model=printer.model,
+                printer.ip_address,
+                printer.access_code,
+                "/cache",
+                socket_timeout=ftp_timeout,
+                printer_model=printer.model,
             )
             for f in cache_files:
                 fname = f.get("name", "")
@@ -1634,8 +1637,11 @@ class PrintScheduler:
                 if is_matching_3mf or is_matching_bbl:
                     try:
                         await delete_file_async(
-                            printer.ip_address, printer.access_code,
-                            f"/cache/{fname}", socket_timeout=ftp_timeout, printer_model=printer.model,
+                            printer.ip_address,
+                            printer.access_code,
+                            f"/cache/{fname}",
+                            socket_timeout=ftp_timeout,
+                            printer_model=printer.model,
                         )
                         logger.info("Queue item %s: Deleted /cache/%s", item.id, fname)
                     except Exception:

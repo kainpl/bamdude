@@ -30,6 +30,7 @@ async def update_locale_data(db: AsyncSession, language: str) -> dict:
     # Invalidate cached locale-to-english name mapping
     try:
         import backend.app.api.routes.maintenance as maint_module
+
         maint_module._locale_name_to_english = None
     except Exception:
         pass
@@ -37,13 +38,16 @@ async def update_locale_data(db: AsyncSession, language: str) -> dict:
     # Invalidate i18n translation cache
     try:
         from backend.app.i18n import invalidate_cache
+
         invalidate_cache()
     except Exception:
         pass
 
     logger.info(
         "Locale data updated to '%s': %d notification templates, %d maintenance types",
-        lang, notification_count, maintenance_count,
+        lang,
+        notification_count,
+        maintenance_count,
     )
 
     return {

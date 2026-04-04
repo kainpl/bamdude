@@ -185,9 +185,7 @@ async def ensure_default_types(db: AsyncSession) -> None:
     import json
     from pathlib import Path
 
-    result = await db.execute(
-        select(MaintenanceType).where(MaintenanceType.is_system.is_(True))
-    )
+    result = await db.execute(select(MaintenanceType).where(MaintenanceType.is_system.is_(True)))
     existing = result.scalars().all()
 
     if len(existing) >= len(DEFAULT_MAINTENANCE_TYPES):

@@ -65,9 +65,15 @@ async def cb_add_printer_start(callback: CallbackQuery, state: FSMContext, tg_ch
     await callback.message.answer(
         f"\U0001f5a8 *{escape_md(t(lang, NS, 'printer_add.title'))}*\n\n"
         f"{escape_md(t(lang, NS, 'printer_add.enter_ip'))}",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=f"\u274c {t(lang, NS, 'printers.btn_cancel')}", callback_data="printer_add:cancel")],
-        ]),
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text=f"\u274c {t(lang, NS, 'printers.btn_cancel')}", callback_data="printer_add:cancel"
+                    )
+                ],
+            ]
+        ),
     )
 
 
@@ -78,6 +84,7 @@ async def msg_ip(message: Message, state: FSMContext, **kwargs) -> None:
     ip = message.text.strip() if message.text else ""
 
     import re
+
     if not re.match(r"^\d{1,3}(\.\d{1,3}){3}$", ip):
         await message.answer(escape_md(t(lang, NS, "printer_add.ip_invalid")))
         return
@@ -90,9 +97,15 @@ async def msg_ip(message: Message, state: FSMContext, **kwargs) -> None:
     if not info:
         await message.answer(
             escape_md(t(lang, NS, "printer_add.not_found")),
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text=f"\u274c {t(lang, NS, 'printers.btn_cancel')}", callback_data="printer_add:cancel")],
-            ]),
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text=f"\u274c {t(lang, NS, 'printers.btn_cancel')}", callback_data="printer_add:cancel"
+                        )
+                    ],
+                ]
+            ),
         )
         return
 
@@ -115,9 +128,15 @@ async def msg_ip(message: Message, state: FSMContext, **kwargs) -> None:
         f"{escape_md(t(lang, NS, 'printers.model'))}: *{model_str}*\n"
         f"Serial: *{serial_str}*\n\n"
         f"{escape_md(t(lang, NS, 'printer_add.enter_access_code'))}",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=f"\u274c {t(lang, NS, 'printers.btn_cancel')}", callback_data="printer_add:cancel")],
-        ]),
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text=f"\u274c {t(lang, NS, 'printers.btn_cancel')}", callback_data="printer_add:cancel"
+                    )
+                ],
+            ]
+        ),
     )
 
 
@@ -144,10 +163,23 @@ async def msg_access_code(message: Message, state: FSMContext, **kwargs) -> None
         f"Serial: *{escape_md(data['serial_number'])}*"
     )
 
-    await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"\u2705 {t(lang, NS, 'printer_add.btn_add')}", callback_data="printer_add:confirm")],
-        [InlineKeyboardButton(text=f"\u274c {t(lang, NS, 'printers.btn_cancel')}", callback_data="printer_add:cancel")],
-    ]))
+    await message.answer(
+        text,
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text=f"\u2705 {t(lang, NS, 'printer_add.btn_add')}", callback_data="printer_add:confirm"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text=f"\u274c {t(lang, NS, 'printers.btn_cancel')}", callback_data="printer_add:cancel"
+                    )
+                ],
+            ]
+        ),
+    )
 
 
 @router.callback_query(F.data == "printer_add:confirm")
@@ -165,9 +197,7 @@ async def cb_confirm(callback: CallbackQuery, state: FSMContext, tg_chat: Telegr
     try:
         async with async_session() as db:
             # Check duplicate serial
-            existing = await db.execute(
-                select(Printer).where(Printer.serial_number == data["serial_number"])
-            )
+            existing = await db.execute(select(Printer).where(Printer.serial_number == data["serial_number"]))
             if existing.scalar_one_or_none():
                 await callback.answer(t(lang, NS, "printer_add.duplicate_serial"), show_alert=True)
                 return
@@ -184,6 +214,7 @@ async def cb_confirm(callback: CallbackQuery, state: FSMContext, tg_chat: Telegr
 
             # Connect
             from backend.app.services.printer_manager import printer_manager
+
             await printer_manager.connect_printer(printer)
 
         await callback.answer(f"\u2705 {t(lang, NS, 'printer_add.success')}")
@@ -191,6 +222,7 @@ async def cb_confirm(callback: CallbackQuery, state: FSMContext, tg_chat: Telegr
         await callback.answer(t(lang, NS, "printer_add.failed"), show_alert=True)
 
     from backend.app.services.telegram_handlers.printers import show_printer_list
+
     await show_printer_list(callback, tg_chat)
 
 

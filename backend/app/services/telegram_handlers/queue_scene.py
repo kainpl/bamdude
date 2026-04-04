@@ -49,11 +49,16 @@ async def _show_file_list(callback: CallbackQuery, lang: str, offset: int) -> No
 
     if not files and offset == 0:
         await callback.message.edit_text(
-            f"\U0001f4cb *{escape_md(t(lang, NS, 'queue_add.title'))}*\n\n"
-            f"{escape_md(t(lang, NS, 'library.no_files'))}",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text=f"\u25c0\ufe0f {t(lang, NS, 'printers.btn_back')}", callback_data="menu:queue")],
-            ]),
+            f"\U0001f4cb *{escape_md(t(lang, NS, 'queue_add.title'))}*\n\n{escape_md(t(lang, NS, 'library.no_files'))}",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text=f"\u25c0\ufe0f {t(lang, NS, 'printers.btn_back')}", callback_data="menu:queue"
+                        )
+                    ],
+                ]
+            ),
         )
         return
 
@@ -64,19 +69,27 @@ async def _show_file_list(callback: CallbackQuery, lang: str, offset: int) -> No
 
     btns = []
     for f in files:
-        btns.append([InlineKeyboardButton(
-            text=f"\U0001f4c4 {f.filename}",
-            callback_data=f"qadd:file:{f.id}",
-        )])
+        btns.append(
+            [
+                InlineKeyboardButton(
+                    text=f"\U0001f4c4 {f.filename}",
+                    callback_data=f"qadd:file:{f.id}",
+                )
+            ]
+        )
 
     nav = build_page_nav(total, offset, PAGE_SIZE, "page:qadd:", lang)
     if nav:
         btns.append(nav)
 
-    btns.append([InlineKeyboardButton(
-        text=f"\u274c {t(lang, NS, 'queue_add.btn_cancel')}",
-        callback_data="qadd:cancel",
-    )])
+    btns.append(
+        [
+            InlineKeyboardButton(
+                text=f"\u274c {t(lang, NS, 'queue_add.btn_cancel')}",
+                callback_data="qadd:cancel",
+            )
+        ]
+    )
 
     await callback.message.edit_text(
         "\n".join(lines),
@@ -145,22 +158,34 @@ async def cb_qadd_select_file(callback: CallbackQuery, state: FSMContext, tg_cha
     # Model-based assignment
     if models:
         for model in models:
-            btns.append([InlineKeyboardButton(
-                text=f"\U0001f3af {t(lang, NS, 'queue_add.btn_any_model')} {model}",
-                callback_data=f"qadd:model:{model}",
-            )])
+            btns.append(
+                [
+                    InlineKeyboardButton(
+                        text=f"\U0001f3af {t(lang, NS, 'queue_add.btn_any_model')} {model}",
+                        callback_data=f"qadd:model:{model}",
+                    )
+                ]
+            )
 
     # Specific printers
     for p in active_printers:
-        btns.append([InlineKeyboardButton(
-            text=f"\U0001f5a8 {p['name']}",
-            callback_data=f"qadd:printer:{p['id']}",
-        )])
+        btns.append(
+            [
+                InlineKeyboardButton(
+                    text=f"\U0001f5a8 {p['name']}",
+                    callback_data=f"qadd:printer:{p['id']}",
+                )
+            ]
+        )
 
-    btns.append([InlineKeyboardButton(
-        text=f"\u25c0\ufe0f {t(lang, NS, 'printers.btn_back')}",
-        callback_data="qadd:start",
-    )])
+    btns.append(
+        [
+            InlineKeyboardButton(
+                text=f"\u25c0\ufe0f {t(lang, NS, 'printers.btn_back')}",
+                callback_data="qadd:start",
+            )
+        ]
+    )
 
     await callback.message.edit_text(
         "\n".join(lines),
@@ -169,7 +194,9 @@ async def cb_qadd_select_file(callback: CallbackQuery, state: FSMContext, tg_cha
 
 
 @router.callback_query(F.data.startswith("qadd:printer:"))
-async def cb_qadd_select_printer(callback: CallbackQuery, state: FSMContext, tg_chat: TelegramChat | None = None) -> None:
+async def cb_qadd_select_printer(
+    callback: CallbackQuery, state: FSMContext, tg_chat: TelegramChat | None = None
+) -> None:
     """Specific printer selected."""
     lang = await get_language()
     printer_id = int(callback.data.split(":")[2])
@@ -207,10 +234,19 @@ async def _show_confirm(callback: CallbackQuery, state: FSMContext, lang: str) -
         f"\U0001f3af {escape_md(target_label)}"
     )
 
-    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"\u2795 {t(lang, NS, 'queue_add.btn_add')}", callback_data="qadd:confirm")],
-        [InlineKeyboardButton(text=f"\u274c {t(lang, NS, 'queue_add.btn_cancel')}", callback_data="qadd:cancel")],
-    ]))
+    await callback.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text=f"\u2795 {t(lang, NS, 'queue_add.btn_add')}", callback_data="qadd:confirm")],
+                [
+                    InlineKeyboardButton(
+                        text=f"\u274c {t(lang, NS, 'queue_add.btn_cancel')}", callback_data="qadd:cancel"
+                    )
+                ],
+            ]
+        ),
+    )
 
 
 @router.callback_query(F.data == "qadd:confirm")
@@ -252,6 +288,7 @@ async def cb_qadd_confirm(callback: CallbackQuery, state: FSMContext, tg_chat: T
         await callback.answer(t(lang, NS, "queue_add.failed"), show_alert=True)
 
     from backend.app.services.telegram_handlers.queue import render_queue
+
     await render_queue(callback, tg_chat)
 
 
@@ -261,4 +298,5 @@ async def cb_qadd_cancel(callback: CallbackQuery, state: FSMContext, **kwargs) -
     await state.clear()
     await callback.answer()
     from backend.app.services.telegram_handlers.queue import render_queue
+
     await render_queue(callback)

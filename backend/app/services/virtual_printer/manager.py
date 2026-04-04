@@ -321,6 +321,7 @@ class VirtualPrinterInstance:
                 dest_path = library_files_dir / unique_filename
 
                 import shutil
+
                 shutil.copy2(str(file_path), str(dest_path))
 
                 sha256_hash = hashlib.sha256()
@@ -381,9 +382,8 @@ class VirtualPrinterInstance:
                 # Notify frontend to refresh File Manager
                 try:
                     from backend.app.core.websocket import ws_manager
-                    await ws_manager.send_library_file_added(
-                        {"id": library_file.id, "filename": filename}
-                    )
+
+                    await ws_manager.send_library_file_added({"id": library_file.id, "filename": filename})
                 except Exception:
                     pass
 

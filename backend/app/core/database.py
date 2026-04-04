@@ -1589,7 +1589,6 @@ async def run_migrations(conn):
         except OperationalError:
             pass
 
-
     # Migration: Add telegram_chats columns
     for col in [
         "daily_digest BOOLEAN DEFAULT 0",

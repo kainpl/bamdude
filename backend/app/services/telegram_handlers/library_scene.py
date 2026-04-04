@@ -35,9 +35,9 @@ async def _get_library_files(offset: int = 0, limit: int = PAGE_SIZE):
     from backend.app.models.library import LibraryFile
 
     async with async_session() as db:
-        total = (await db.execute(
-            select(func.count(LibraryFile.id)).where(LibraryFile.file_type == "3mf")
-        )).scalar() or 0
+        total = (
+            await db.execute(select(func.count(LibraryFile.id)).where(LibraryFile.file_type == "3mf"))
+        ).scalar() or 0
 
         result = await db.execute(
             select(LibraryFile)
@@ -71,11 +71,16 @@ async def _show_file_list(callback: CallbackQuery, lang: str, offset: int) -> No
 
     if not files and offset == 0:
         await callback.message.edit_text(
-            f"\U0001f4c2 *{escape_md(t(lang, NS, 'library.title'))}*\n\n"
-            f"{escape_md(t(lang, NS, 'library.no_files'))}",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text=f"\u25c0\ufe0f {t(lang, NS, 'printers.btn_main_menu')}", callback_data="menu:main")],
-            ]),
+            f"\U0001f4c2 *{escape_md(t(lang, NS, 'library.title'))}*\n\n{escape_md(t(lang, NS, 'library.no_files'))}",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text=f"\u25c0\ufe0f {t(lang, NS, 'printers.btn_main_menu')}", callback_data="menu:main"
+                        )
+                    ],
+                ]
+            ),
         )
         return
 
@@ -86,19 +91,27 @@ async def _show_file_list(callback: CallbackQuery, lang: str, offset: int) -> No
 
     btns = []
     for f in files:
-        btns.append([InlineKeyboardButton(
-            text=f"\U0001f4c4 {f.filename}",
-            callback_data=f"lib:file:{f.id}",
-        )])
+        btns.append(
+            [
+                InlineKeyboardButton(
+                    text=f"\U0001f4c4 {f.filename}",
+                    callback_data=f"lib:file:{f.id}",
+                )
+            ]
+        )
 
     nav = build_page_nav(total, offset, PAGE_SIZE, "page:lib:", lang)
     if nav:
         btns.append(nav)
 
-    btns.append([InlineKeyboardButton(
-        text=f"\u274c {t(lang, NS, 'library.btn_cancel')}",
-        callback_data="lib:cancel",
-    )])
+    btns.append(
+        [
+            InlineKeyboardButton(
+                text=f"\u274c {t(lang, NS, 'library.btn_cancel')}",
+                callback_data="lib:cancel",
+            )
+        ]
+    )
 
     await callback.message.edit_text(
         "\n".join(lines),
@@ -116,7 +129,9 @@ async def cb_library_page(callback: CallbackQuery, state: FSMContext, tg_chat: T
 
 
 @router.callback_query(F.data.startswith("lib:file:"))
-async def cb_library_select_file(callback: CallbackQuery, state: FSMContext, tg_chat: TelegramChat | None = None) -> None:
+async def cb_library_select_file(
+    callback: CallbackQuery, state: FSMContext, tg_chat: TelegramChat | None = None
+) -> None:
     """File selected — show printer list."""
     lang = await get_language()
     file_id = int(callback.data.split(":")[2])
@@ -157,9 +172,15 @@ async def cb_library_select_file(callback: CallbackQuery, state: FSMContext, tg_
     if not idle_printers:
         await callback.message.edit_text(
             f"\U0001f5a8 {escape_md(t(lang, NS, 'library.no_printers'))}",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text=f"\u25c0\ufe0f {t(lang, NS, 'printers.btn_back')}", callback_data="lib:start")],
-            ]),
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text=f"\u25c0\ufe0f {t(lang, NS, 'printers.btn_back')}", callback_data="lib:start"
+                        )
+                    ],
+                ]
+            ),
         )
         return
 
@@ -170,15 +191,23 @@ async def cb_library_select_file(callback: CallbackQuery, state: FSMContext, tg_
 
     btns = []
     for p in idle_printers:
-        btns.append([InlineKeyboardButton(
-            text=f"\U0001f5a8 {p['name']}",
-            callback_data=f"lib:printer:{p['id']}",
-        )])
+        btns.append(
+            [
+                InlineKeyboardButton(
+                    text=f"\U0001f5a8 {p['name']}",
+                    callback_data=f"lib:printer:{p['id']}",
+                )
+            ]
+        )
 
-    btns.append([InlineKeyboardButton(
-        text=f"\u25c0\ufe0f {t(lang, NS, 'printers.btn_back')}",
-        callback_data="lib:start",
-    )])
+    btns.append(
+        [
+            InlineKeyboardButton(
+                text=f"\u25c0\ufe0f {t(lang, NS, 'printers.btn_back')}",
+                callback_data="lib:start",
+            )
+        ]
+    )
 
     await callback.message.edit_text(
         "\n".join(lines),
@@ -187,7 +216,9 @@ async def cb_library_select_file(callback: CallbackQuery, state: FSMContext, tg_
 
 
 @router.callback_query(F.data.startswith("lib:printer:"))
-async def cb_library_select_printer(callback: CallbackQuery, state: FSMContext, tg_chat: TelegramChat | None = None) -> None:
+async def cb_library_select_printer(
+    callback: CallbackQuery, state: FSMContext, tg_chat: TelegramChat | None = None
+) -> None:
     """Printer selected — show confirmation."""
     lang = await get_language()
     printer_id = int(callback.data.split(":")[2])
@@ -209,11 +240,24 @@ async def cb_library_select_printer(callback: CallbackQuery, state: FSMContext, 
         f"\U0001f5a8 {escape_md(t(lang, NS, 'library.confirm_printer'))}: *{escape_md(printer_name)}*"
     )
 
-    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"\u25b6\ufe0f {t(lang, NS, 'library.btn_print_now')}", callback_data="lib:print_now")],
-        [InlineKeyboardButton(text=f"\U0001f4cb {t(lang, NS, 'library.btn_add_queue')}", callback_data="lib:add_queue")],
-        [InlineKeyboardButton(text=f"\u274c {t(lang, NS, 'library.btn_cancel')}", callback_data="lib:cancel")],
-    ]))
+    await callback.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text=f"\u25b6\ufe0f {t(lang, NS, 'library.btn_print_now')}", callback_data="lib:print_now"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text=f"\U0001f4cb {t(lang, NS, 'library.btn_add_queue')}", callback_data="lib:add_queue"
+                    )
+                ],
+                [InlineKeyboardButton(text=f"\u274c {t(lang, NS, 'library.btn_cancel')}", callback_data="lib:cancel")],
+            ]
+        ),
+    )
 
 
 @router.callback_query(F.data == "lib:print_now")
@@ -251,6 +295,7 @@ async def cb_library_print_now(callback: CallbackQuery, state: FSMContext, tg_ch
         await callback.answer(t(lang, NS, "library.failed"), show_alert=True)
 
     from backend.app.services.telegram_handlers.start import cmd_start
+
     await cmd_start(callback.message)
 
 
@@ -294,6 +339,7 @@ async def cb_library_add_queue(callback: CallbackQuery, state: FSMContext, tg_ch
 
     # Return to main menu
     from backend.app.services.telegram_handlers.start import cmd_start
+
     await cmd_start(callback.message)
 
 
@@ -303,4 +349,5 @@ async def cb_library_cancel(callback: CallbackQuery, state: FSMContext, **kwargs
     await state.clear()
     await callback.answer()
     from backend.app.services.telegram_handlers.start import cmd_start
+
     await cmd_start(callback.message)

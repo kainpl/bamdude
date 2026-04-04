@@ -69,14 +69,10 @@ class TelegramChat(Base):
     label: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
     # Role — defines permissions. NULL only for auto-registered chats pending setup.
-    group_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("groups.id", ondelete="RESTRICT"), nullable=True
-    )
+    group_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("groups.id", ondelete="RESTRICT"), nullable=True)
 
     # Optional link to system user (does NOT override group permissions)
-    user_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
-    )
+    user_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
     is_active: Mapped[bool] = mapped_column(Boolean, default=False)
 
@@ -123,6 +119,7 @@ class TelegramChat(Base):
         if not self.quiet_hours_enabled or not self.quiet_hours_start or not self.quiet_hours_end:
             return False
         from datetime import datetime
+
         now = datetime.now()
         try:
             start_h, start_m = map(int, self.quiet_hours_start.split(":"))

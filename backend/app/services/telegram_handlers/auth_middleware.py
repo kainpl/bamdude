@@ -43,9 +43,7 @@ class TelegramAuthMiddleware(BaseMiddleware):
         from backend.app.models.telegram_chat import TelegramChat
 
         async with async_session() as db:
-            result = await db.execute(
-                select(TelegramChat).where(TelegramChat.chat_id == chat_id)
-            )
+            result = await db.execute(select(TelegramChat).where(TelegramChat.chat_id == chat_id))
             tg_chat = result.scalar_one_or_none()
 
             if tg_chat is None:
@@ -99,9 +97,7 @@ class TelegramAuthMiddleware(BaseMiddleware):
             return True
 
         # Check setting
-        result = await db.execute(
-            select(Settings.value).where(Settings.key == "telegram_registration_open")
-        )
+        result = await db.execute(select(Settings.value).where(Settings.key == "telegram_registration_open"))
         val = result.scalar_one_or_none()
         return val == "true"
 
