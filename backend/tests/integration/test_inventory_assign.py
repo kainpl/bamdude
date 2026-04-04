@@ -7,6 +7,12 @@ lower-priority fallbacks.
 
 from unittest.mock import AsyncMock, MagicMock, patch as _orig_patch
 
+import pytest
+from httpx import AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from backend.app.models.spool import Spool
+
 
 class _PrinterManagerPatch:
     def __init__(self, target, **kwargs):
@@ -24,13 +30,7 @@ class _PrinterManagerPatch:
         return self._patcher.__exit__(*args)
 
 
-patch = _PrinterManagerPatch
-
-import pytest
-from httpx import AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from backend.app.models.spool import Spool
+patch = _PrinterManagerPatch  # noqa: E811
 
 
 @pytest.fixture

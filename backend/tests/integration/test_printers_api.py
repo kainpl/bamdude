@@ -3,10 +3,10 @@
 Tests the full request/response cycle for /api/v1/printers/ endpoints.
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch as _orig_patch
 
-# All printer_manager mocks need async ensure_fresh_connection* methods
-_orig_patch = patch
+import pytest
+from httpx import AsyncClient
 
 
 class _PrinterManagerPatch:
@@ -27,11 +27,7 @@ class _PrinterManagerPatch:
         return self._patcher.__exit__(*args)
 
 
-# Monkey-patch: all `patch()` calls in this module auto-configure printer_manager mocks
-patch = _PrinterManagerPatch
-
-import pytest
-from httpx import AsyncClient
+patch = _PrinterManagerPatch  # noqa: E811
 
 
 class TestPrintersAPI:
