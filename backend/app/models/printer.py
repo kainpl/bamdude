@@ -52,6 +52,7 @@ class Printer(Base):
     )
     kprofile_notes: Mapped[list["KProfileNote"]] = relationship(back_populates="printer", cascade="all, delete-orphan")
     ams_history: Mapped[list["AMSSensorHistory"]] = relationship(back_populates="printer", cascade="all, delete-orphan")
+    queue: Mapped["PrinterQueue | None"] = relationship(back_populates="printer", uselist=False, cascade="all, delete-orphan")
 
 
 from backend.app.models.ams_history import AMSSensorHistory  # noqa: E402

@@ -73,6 +73,13 @@ async def create_printer(
     await db.commit()
     await db.refresh(printer)
 
+    # Auto-create printer queue
+    from backend.app.models.printer_queue import PrinterQueue
+
+    queue = PrinterQueue(id=printer.id, printer_id=printer.id)
+    db.add(queue)
+    await db.commit()
+
     # Connect to the printer
     if printer.is_active:
         await printer_manager.connect_printer(printer)

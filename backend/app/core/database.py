@@ -97,6 +97,7 @@ async def init_db():
         print_log,
         print_queue,
         printer,
+        printer_queue,
         project,
         project_bom,
         settings,
@@ -1600,6 +1601,38 @@ async def run_migrations(conn):
             await conn.execute(text(f"ALTER TABLE telegram_chats ADD COLUMN {col}"))
         except OperationalError:
             pass
+
+    # Migration: Queue rework — add queue_id to print_queue, create printer_queues for existing printers
+    try:
+        await conn.execute(text("ALTER TABLE print_queue ADD COLUMN queue_id INTEGER REFERENCES printer_queues(id)"))
+    except OperationalError:
+        pass
+
+    # Populate printer_queues from existing printers (idempotent)
+    try:
+        await conn.execute(text(
+            "INSERT OR IGNORE INTO printer_queues (id, printer_id, status) "
+            "SELECT id, id, 'idle' FROM printers WHERE id NOT IN (SELECT printer_id FROM printer_queues)"
+        ))
+    except OperationalError:
+        pass
+
+    # Migrate existing print_queue items: set queue_id = printer_id where not yet set
+    try:
+        await conn.execute(text(
+            "UPDATE print_queue SET queue_id = printer_id "
+            "WHERE queue_id IS NULL AND printer_id IS NOT NULL"
+        ))
+    except OperationalError:
+        pass
+
+    # Delete orphaned items (model-based items that were never assigned a printer)
+    try:
+        await conn.execute(text(
+            "DELETE FROM print_queue WHERE queue_id IS NULL AND printer_id IS NULL"
+        ))
+    except OperationalError:
+        pass
 
 
 async def seed_notification_templates():
