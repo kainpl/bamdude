@@ -256,9 +256,7 @@ async def cb_qadd_confirm(callback: CallbackQuery, state: FSMContext, tg_chat: T
 
     data = await state.get_data()
     file_id = data.get("file_id")
-    file_name = data.get("file_name")
     printer_id = data.get("printer_id")
-    target_model = data.get("target_model")
 
     await state.clear()
 

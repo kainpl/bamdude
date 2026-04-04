@@ -306,7 +306,6 @@ async def cb_library_add_queue(callback: CallbackQuery, state: FSMContext, tg_ch
 
     data = await state.get_data()
     file_id = data.get("file_id")
-    file_name = data.get("file_name")
     printer_id = data.get("printer_id")
 
     await state.clear()
