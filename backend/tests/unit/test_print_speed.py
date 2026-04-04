@@ -4,10 +4,29 @@ Tests POST /api/v1/printers/{printer_id}/print-speed?mode=N
 where mode is 1=silent, 2=standard, 3=sport, 4=ludicrous.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch as _orig_patch
 
 import pytest
 from httpx import AsyncClient
+
+
+class _PrinterManagerPatch:
+    def __init__(self, target, **kwargs):
+        self._patcher = _orig_patch(target, **kwargs)
+        self._is_pm = "printer_manager" in target
+
+    def __enter__(self):
+        mock = self._patcher.__enter__()
+        if self._is_pm:
+            mock.ensure_fresh_connection = AsyncMock(return_value=True)
+            mock.ensure_fresh_connection_for_printer = AsyncMock(return_value=True)
+        return mock
+
+    def __exit__(self, *args):
+        return self._patcher.__exit__(*args)
+
+
+patch = _PrinterManagerPatch  # noqa: E811
 
 
 class TestPrintSpeedAPI:

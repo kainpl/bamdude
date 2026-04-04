@@ -307,7 +307,7 @@ async def test_get_spool_by_tag_no_false_positive_different_suffix(db_session):
 @pytest.mark.asyncio
 async def test_auto_assign_creates_assignment(db_session, printer_factory):
     """auto_assign_spool creates a SpoolAssignment for the given slot."""
-    from unittest.mock import MagicMock
+    from unittest.mock import AsyncMock, MagicMock
 
     printer = await printer_factory()
     spool = await create_spool_from_tray(db_session, SAMPLE_TRAY)
@@ -316,6 +316,8 @@ async def test_auto_assign_creates_assignment(db_session, printer_factory):
     mock_pm = MagicMock()
     mock_pm.get_status.return_value = None
     mock_pm.get_client.return_value = None
+    mock_pm.ensure_fresh_connection = AsyncMock(return_value=True)
+    mock_pm.ensure_fresh_connection_for_printer = AsyncMock(return_value=True)
 
     assignment = await auto_assign_spool(
         printer_id=printer.id,
@@ -336,7 +338,7 @@ async def test_auto_assign_creates_assignment(db_session, printer_factory):
 @pytest.mark.asyncio
 async def test_auto_assign_replaces_existing(db_session, printer_factory):
     """auto_assign_spool removes old assignment for the same slot."""
-    from unittest.mock import MagicMock
+    from unittest.mock import AsyncMock, MagicMock
 
     from sqlalchemy import select
 
@@ -358,6 +360,8 @@ async def test_auto_assign_replaces_existing(db_session, printer_factory):
     mock_pm = MagicMock()
     mock_pm.get_status.return_value = None
     mock_pm.get_client.return_value = None
+    mock_pm.ensure_fresh_connection = AsyncMock(return_value=True)
+    mock_pm.ensure_fresh_connection_for_printer = AsyncMock(return_value=True)
 
     # Assign spool1 to slot
     await auto_assign_spool(printer.id, 0, 0, spool1, mock_pm, db_session)
@@ -388,7 +392,7 @@ async def test_auto_assign_no_greenlet_error_new_spool(db_session, printer_facto
     back_populates synchronously. If spool.assignments is uninitialized,
     SQLAlchemy attempts a lazy load outside the async greenlet.
     """
-    from unittest.mock import MagicMock
+    from unittest.mock import AsyncMock, MagicMock
 
     printer = await printer_factory()
     spool = await create_spool_from_tray(db_session, SAMPLE_TRAY)
@@ -397,6 +401,8 @@ async def test_auto_assign_no_greenlet_error_new_spool(db_session, printer_facto
     mock_pm = MagicMock()
     mock_pm.get_status.return_value = None
     mock_pm.get_client.return_value = None
+    mock_pm.ensure_fresh_connection = AsyncMock(return_value=True)
+    mock_pm.ensure_fresh_connection_for_printer = AsyncMock(return_value=True)
 
     # This must NOT raise MissingGreenlet / greenlet_spawn error
     assignment = await auto_assign_spool(
@@ -420,7 +426,7 @@ async def test_auto_assign_no_greenlet_error_existing_spool(db_session, printer_
 
     Regression test for #612.
     """
-    from unittest.mock import MagicMock
+    from unittest.mock import AsyncMock, MagicMock
 
     printer = await printer_factory()
 
@@ -443,6 +449,8 @@ async def test_auto_assign_no_greenlet_error_existing_spool(db_session, printer_
     mock_pm = MagicMock()
     mock_pm.get_status.return_value = None
     mock_pm.get_client.return_value = None
+    mock_pm.ensure_fresh_connection = AsyncMock(return_value=True)
+    mock_pm.ensure_fresh_connection_for_printer = AsyncMock(return_value=True)
 
     # This must NOT raise MissingGreenlet / greenlet_spawn error
     assignment = await auto_assign_spool(

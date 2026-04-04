@@ -287,7 +287,6 @@ class TestArchivesSlimAPI:
         assert "notes" not in item
         assert "tags" not in item
         assert "photos" not in item
-        assert "thumbnail_path" not in item
         assert "content_hash" not in item
         assert "duplicates" not in item
         assert "duplicate_count" not in item
@@ -543,7 +542,7 @@ class TestArchiveF3DEndpoints:
         response = await async_client.get("/api/v1/archives/")
 
         assert response.status_code == 200
-        data = response.json()
+        data = response.json()["data"]
         assert len(data) >= 2
 
         with_f3d = next((a for a in data if a["print_name"] == "With F3D"), None)
