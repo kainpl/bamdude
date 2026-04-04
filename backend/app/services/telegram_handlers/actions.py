@@ -9,7 +9,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardBut
 
 from backend.app.i18n import t, get_language, escape_md
 from backend.app.services.printer_manager import printer_manager
-from backend.app.services.telegram_handlers.common import NS, has_perm, get_printers_data
+from backend.app.services.telegram_handlers.common import NS, has_perm, get_printers_data, ensure_fresh
 
 if TYPE_CHECKING:
     from backend.app.models.telegram_chat import TelegramChat
@@ -126,6 +126,7 @@ async def cb_speed_set(callback: CallbackQuery, tg_chat: TelegramChat | None = N
     printer_id = int(parts[2])
     mode = int(parts[3])
 
+    await ensure_fresh(printer_id)
     client = printer_manager.get_client(printer_id)
     if not client or not client.state.connected:
         await callback.answer(t(lang, NS, "printers.not_connected"), show_alert=True)
@@ -179,6 +180,8 @@ async def cb_printer_action(callback: CallbackQuery, tg_chat: TelegramChat | Non
     parts = callback.data.split(":")
     action = parts[1]
     printer_id = int(parts[2])
+
+    await ensure_fresh(printer_id)
 
     if action == "pause":
         client = printer_manager.get_client(printer_id)

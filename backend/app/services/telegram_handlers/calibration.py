@@ -9,7 +9,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardBut
 
 from backend.app.i18n import t, get_language, escape_md
 from backend.app.services.printer_manager import printer_manager
-from backend.app.services.telegram_handlers.common import NS, has_perm, get_printers_data
+from backend.app.services.telegram_handlers.common import NS, has_perm, get_printers_data, ensure_fresh
 
 if TYPE_CHECKING:
     from backend.app.models.telegram_chat import TelegramChat
@@ -133,6 +133,7 @@ async def cb_calibration_start(callback: CallbackQuery, tg_chat: TelegramChat | 
         await callback.answer(t(lang, NS, "calibration.none_selected"), show_alert=True)
         return
 
+    await ensure_fresh(printer_id)
     client = printer_manager.get_client(printer_id)
     if not client or not client.state.connected:
         await callback.answer(t(lang, NS, "printers.not_connected"), show_alert=True)

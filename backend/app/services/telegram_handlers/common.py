@@ -32,6 +32,15 @@ def has_perm(tg_chat: TelegramChat | None, perm: str) -> bool:
     return tg_chat.has_permission(perm)
 
 
+async def ensure_fresh(printer_id: int) -> bool:
+    """Ensure MQTT connection is fresh before sending a command.
+
+    Uses ensure_fresh_connection(printer_id) which fetches Printer from DB internally.
+    Returns True if connection is ok or was refreshed, False if failed.
+    """
+    return await printer_manager.ensure_fresh_connection(printer_id)
+
+
 def format_time(lang: str, minutes: int | None) -> str:
     if not minutes:
         return "–"
@@ -40,6 +49,20 @@ def format_time(lang: str, minutes: int | None) -> str:
     if hours > 0:
         return t(lang, NS, "printers.time_hm", h=hours, m=mins)
     return t(lang, NS, "printers.time_m", m=mins)
+
+
+async def ensure_fresh(printer_id: int) -> bool:
+    """Ensure MQTT connection is fresh before sending commands. Returns True if ok."""
+    from backend.app.core.database import async_session
+    from backend.app.models.printer import Printer
+    from sqlalchemy import select
+
+    async with async_session() as db:
+        result = await db.execute(select(Printer).where(Printer.id == printer_id))
+        printer_obj = result.scalar_one_or_none()
+        if not printer_obj:
+            return False
+        return await printer_manager.ensure_fresh_connection_for_printer(printer_obj)
 
 
 async def get_printers_data() -> list[dict]:

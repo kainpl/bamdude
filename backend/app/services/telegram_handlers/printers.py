@@ -67,7 +67,11 @@ async def show_printer_list(message_or_callback, tg_chat: TelegramChat | None = 
         )
         name = escape_md(p["name"])
 
-        line = f"{emoji} *{name}* – {label}"
+        model = escape_md(p["model"] or "") if p["model"] else ""
+        line = f"{emoji} *{name}*"
+        if model:
+            line += f" \\[{model}\\]"
+        line += f" – {label}"
         if p["state"] == "RUNNING" and p["progress"]:
             line += f" \\({p['progress']}%\\)"
 
@@ -78,8 +82,11 @@ async def show_printer_list(message_or_callback, tg_chat: TelegramChat | None = 
             line += f" \U0001f7e1\U0001f527{warning}"
 
         lines.append(line)
+        btn_label = f"{emoji} {p['name']}"
+        if p["model"]:
+            btn_label += f" [{p['model']}]"
         buttons.append(InlineKeyboardButton(
-            text=f"{emoji} {p['name']}",
+            text=btn_label,
             callback_data=f"printer:{p['id']}",
         ))
 
