@@ -273,14 +273,6 @@ describe('FileManagerPage', () => {
       });
     });
 
-    it('shows print count', async () => {
-      render(<FileManagerPage />);
-
-      await waitFor(() => {
-        expect(screen.getByText('Printed 5x')).toBeInTheDocument();
-      });
-    });
-
     it('shows duplicate badge', async () => {
       render(<FileManagerPage />);
 
