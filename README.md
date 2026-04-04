@@ -22,6 +22,11 @@ Bambuddy HE is a hard fork focused on print farm operators who need deeper autom
 - **Per-chat notification settings** — event types, quiet hours, daily digest per chat
 - **Printer maintenance in bot** — view overdue items, mark done, edit hours
 - **Clear plate from bot** — confirm plate cleared for queue auto-dispatch
+- **Print from Library** — select file, pick printer (model-filtered), print now or add to queue
+- **Queue management** — paginated list, detail, move, cancel, add to queue
+- **Add Printer via bot** — enter IP, auto-detect serial/name/model via SSDP, enter access code
+- **Camera snapshots** — `/camera` command and inline button per printer
+- **Speed control** — change print speed mode from bot
 - **Ukrainian locale** — full UI + bot + notification templates
 - **Backend i18n system** — JSON-file-based translations for bot UI (easy to add languages)
 - **MarkdownV2** — Telegram messages with proper formatting
@@ -93,7 +98,7 @@ Bambuddy HE is a hard fork focused on print farm operators who need deeper autom
 <td width="50%" valign="top">
 
 ### Telegram Bot (NEW in HE)
-- Full printer control: pause, resume, stop, light, calibration
+- Full printer control: pause, resume, stop, light, calibration, speed, camera
 - Printer status with maintenance indicators
 - Edit printer hours, view/mark maintenance
 - Clear plate confirmation for queue dispatch

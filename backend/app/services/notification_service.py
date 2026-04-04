@@ -692,6 +692,20 @@ class NotificationService:
                                     callback_data=f"action:clear_plate:{printer_id}",
                                 )])
 
+                # Print progress → pause/stop buttons
+                if event_type == "print_progress":
+                    if tg_chat.has_permission("printers:control"):
+                        buttons.append([
+                            InlineKeyboardButton(
+                                text=f"\u23f8 {t(lang, NS, 'actions.btn_pause')}",
+                                callback_data=f"action:pause:{printer_id}",
+                            ),
+                            InlineKeyboardButton(
+                                text=f"\u23f9 {t(lang, NS, 'actions.btn_stop')}",
+                                callback_data=f"action:stop:{printer_id}",
+                            ),
+                        ])
+
                 # Maintenance due → mark done buttons
                 if event_type == "maintenance_due" and extra_data:
                     if tg_chat.has_permission("maintenance:update"):

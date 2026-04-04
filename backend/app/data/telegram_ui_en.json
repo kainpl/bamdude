@@ -2,18 +2,21 @@
   "commands": {
     "start": "Main menu",
     "status": "Printer status",
+    "camera": "Camera snapshot",
     "help": "Help & commands"
   },
   "start": {
     "welcome": "Bambu Lab 3D printer management.\n\nChoose an action:",
     "btn_printers": "Printers",
     "btn_queue": "Queue",
+    "btn_library": "Library",
     "btn_stats": "Stats",
     "btn_help": "Help"
   },
   "reply_kb": {
     "printers": "\ud83d\udda8 Printers",
     "queue": "\ud83d\udccb Queue",
+    "library": "\ud83d\udcc2 Library",
     "stats": "\ud83d\udcca Stats",
     "help": "\u2139\ufe0f Help"
   },
@@ -93,11 +96,27 @@
     "failed": "Failed to start calibration",
     "none_selected": "Select at least one calibration"
   },
+  "camera": {
+    "capturing": "Capturing...",
+    "failed": "Camera capture failed",
+    "not_available": "No printers with camera available",
+    "select_printer": "Select a printer for snapshot:"
+  },
+  "speed": {
+    "title": "Print Speed",
+    "silent": "Silent",
+    "standard": "Standard",
+    "sport": "Sport",
+    "ludicrous": "Ludicrous",
+    "set_ok": "Speed: {mode}"
+  },
   "actions": {
     "btn_pause": "Pause",
     "btn_stop": "Stop",
     "btn_resume": "Resume",
     "btn_light": "Light",
+    "btn_camera": "Camera",
+    "btn_speed": "Speed",
     "pause_ok": "Print paused",
     "resume_ok": "Print resumed",
     "stop_ok": "Print stopped",
@@ -115,7 +134,69 @@
   "queue": {
     "title": "Print Queue",
     "pending": "Pending",
-    "printing": "Printing"
+    "printing": "Printing",
+    "empty": "Queue is empty",
+    "item_detail": "Queue Job",
+    "file": "File",
+    "printer": "Printer",
+    "target_model": "Target model",
+    "position": "Position",
+    "status": "Status",
+    "scheduled": "Scheduled",
+    "btn_move_up": "Up",
+    "btn_move_down": "Down",
+    "btn_cancel": "Cancel job",
+    "cancel_ok": "Job cancelled",
+    "move_ok": "Job moved",
+    "status_pending": "Pending",
+    "status_printing": "Printing",
+    "status_completed": "Completed",
+    "status_failed": "Failed",
+    "status_cancelled": "Cancelled",
+    "status_skipped": "Skipped"
+  },
+  "queue_add": {
+    "title": "Add to Queue",
+    "select_file": "Select a file:",
+    "select_target": "Select a target:",
+    "btn_any_model": "Any",
+    "confirm_title": "Confirm",
+    "btn_add": "Add to Queue",
+    "btn_cancel": "Cancel",
+    "added": "Added to queue (#{pos})",
+    "failed": "Failed to add to queue"
+  },
+  "library": {
+    "title": "Library",
+    "select_file": "Select a file to print:",
+    "select_printer": "Select a printer:",
+    "no_files": "No printable files in library",
+    "no_printers": "No idle printers available",
+    "confirm_title": "Confirm Print",
+    "confirm_file": "File",
+    "confirm_printer": "Printer",
+    "btn_print_now": "Print Now",
+    "btn_add_queue": "Add to Queue",
+    "btn_cancel": "Cancel",
+    "print_dispatched": "Sending to printer...",
+    "queued": "Added to queue!",
+    "failed": "Failed to start print"
+  },
+  "printer_add": {
+    "title": "Add Printer",
+    "enter_ip": "Enter printer IP address:",
+    "probing": "Searching for printer...",
+    "found": "Printer found!",
+    "not_found": "No Bambu printer found at this IP. Check that the printer is on and Developer Mode is enabled.",
+    "enter_access_code": "Enter access code (from printer screen):",
+    "confirm_title": "Confirm New Printer",
+    "field_name": "Name",
+    "btn_add": "Add Printer",
+    "success": "Printer added and connecting!",
+    "failed": "Failed to add printer",
+    "duplicate_serial": "Printer with this serial already exists",
+    "ip_invalid": "Invalid IP address (e.g. 192.168.1.100)",
+    "access_code_invalid": "Access code must be 1-20 characters"
   },
   "auth": {
     "registered": "Chat registered. Ask admin to activate and assign a role in Settings.",

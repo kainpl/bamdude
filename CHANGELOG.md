@@ -14,7 +14,16 @@ Hard fork release. All changes below are relative to upstream Bambuddy v0.2.2.2.
 
 - **Full Telegram bot** with inline menus, reply keyboard, and registered bot commands
 - **Printer control** from Telegram: pause, resume, stop, chamber light, calibration
-- **Printer calibration** from bot: model-aware selection with toggle buttons (bed leveling, vibration, motor noise, nozzle offset, high-temp heatbed)
+- **Printer calibration** from bot: model-aware selection with toggle buttons
+- **Camera snapshot** from bot and `/camera` command
+- **Speed control** submenu: silent/standard/sport/ludicrous with current highlighted
+- **Queue management**: paginated job list, detail, move up/down, cancel
+- **Print from Library scene**: file selection → printer (filtered by model) → Print Now or Add to Queue
+- **Add to Queue scene**: file → target (specific printer or any model) → confirm
+- **Add Printer scene**: enter IP → auto-detect (SSDP probe for serial/name/model) → access code → confirm
+- **Notification buttons**: print_progress → pause/stop; print_complete/failed → clear plate; maintenance_due → mark done
+- **Handler restructuring**: split 882-line printers.py into 13 domain modules
+- **Pagination utility**: reusable page nav for queue and library lists
 - **Printer status** with real-time info: state, temps, progress, ETA, total hours
 - **Maintenance indicators** in printer list (overdue/warning counts per printer)
 - **Maintenance management** from bot: view items with status, mark as done

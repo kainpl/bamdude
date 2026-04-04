@@ -72,6 +72,14 @@ async def start_telegram_bot() -> None:
     # Register handlers
     from backend.app.services.telegram_handlers.start import router as start_router
     from backend.app.services.telegram_handlers.printers import router as printers_router
+    from backend.app.services.telegram_handlers.actions import router as actions_router
+    from backend.app.services.telegram_handlers.calibration import router as calibration_router
+    from backend.app.services.telegram_handlers.maintenance_handlers import router as maintenance_router
+    from backend.app.services.telegram_handlers.queue import router as queue_router
+    from backend.app.services.telegram_handlers.stats import router as stats_router
+    from backend.app.services.telegram_handlers.library_scene import router as library_router
+    from backend.app.services.telegram_handlers.queue_scene import router as queue_scene_router
+    from backend.app.services.telegram_handlers.printer_add_scene import router as printer_add_router
     from backend.app.services.telegram_handlers.auth_middleware import TelegramAuthMiddleware
 
     _dispatcher = Dispatcher()
@@ -79,6 +87,14 @@ async def start_telegram_bot() -> None:
     _dispatcher.callback_query.middleware(TelegramAuthMiddleware())
     _dispatcher.include_router(start_router)
     _dispatcher.include_router(printers_router)
+    _dispatcher.include_router(calibration_router)
+    _dispatcher.include_router(maintenance_router)
+    _dispatcher.include_router(actions_router)
+    _dispatcher.include_router(queue_router)
+    _dispatcher.include_router(stats_router)
+    _dispatcher.include_router(library_router)
+    _dispatcher.include_router(queue_scene_router)
+    _dispatcher.include_router(printer_add_router)
 
     _bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN_V2))
 
@@ -113,6 +129,7 @@ async def _register_commands() -> None:
     commands = [
         BotCommand(command="start", description=t(lang, NS, "commands.start")),
         BotCommand(command="status", description=t(lang, NS, "commands.status")),
+        BotCommand(command="camera", description=t(lang, NS, "commands.camera")),
         BotCommand(command="help", description=t(lang, NS, "commands.help")),
     ]
 
