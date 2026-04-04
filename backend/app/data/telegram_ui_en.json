@@ -52,6 +52,7 @@
     "hours_cancelled": "Cancelled",
     "btn_cancel": "Cancel",
     "btn_maintenance": "Maintenance",
+    "btn_calibration": "Calibration",
     "btn_clear_plate": "Plate cleared",
     "clear_plate_ok": "Plate cleared! Next print starts shortly.",
     "clear_plate_fail": "Failed to clear plate",
@@ -78,6 +79,19 @@
     "PAUSE": "Paused",
     "FINISH": "Finished",
     "FAILED": "Failed"
+  },
+  "calibration": {
+    "title": "Calibration",
+    "select": "Select calibrations and tap Start:",
+    "bed_leveling": "Bed Leveling",
+    "vibration": "Vibration Compensation",
+    "motor_noise": "Motor Noise Cancellation",
+    "nozzle_offset": "Nozzle Offset (dual nozzle)",
+    "high_temp_heatbed": "High-Temp Bed Leveling",
+    "btn_start": "Start",
+    "started": "Calibration started!",
+    "failed": "Failed to start calibration",
+    "none_selected": "Select at least one calibration"
   },
   "actions": {
     "btn_pause": "Pause",

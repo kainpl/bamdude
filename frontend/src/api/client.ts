@@ -2459,6 +2459,17 @@ export const api = {
     request<{ success: boolean; message: string }>(`/printers/${printerId}/clear-plate`, {
       method: 'POST',
     }),
+  startCalibration: (printerId: number, options: {
+    bed_leveling?: boolean;
+    vibration?: boolean;
+    motor_noise?: boolean;
+    nozzle_offset?: boolean;
+    high_temp_heatbed?: boolean;
+  }) => {
+    const params = new URLSearchParams();
+    Object.entries(options).forEach(([k, v]) => { if (v) params.set(k, 'true'); });
+    return request<{ success: boolean }>(`/printers/${printerId}/calibration?${params}`, { method: 'POST' });
+  },
 
   // Get current print user (for reprint tracking - Issue #206)
   getCurrentPrintUser: (printerId: number) =>

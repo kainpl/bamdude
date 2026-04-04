@@ -56,6 +56,7 @@ Bambuddy HE is a hard fork focused on print farm operators who need deeper autom
 - Print Log with filtering and pagination
 
 ### Monitoring & Control
+- **Printer calibration** — bed leveling, vibration, motor noise, nozzle offset, high-temp heatbed (model-aware, from UI and Telegram bot)
 - Real-time printer status via WebSocket
 - Live camera streaming & snapshots
 - Streaming overlay for OBS
@@ -92,7 +93,7 @@ Bambuddy HE is a hard fork focused on print farm operators who need deeper autom
 <td width="50%" valign="top">
 
 ### Telegram Bot (NEW in HE)
-- Full printer control: pause, resume, stop, light
+- Full printer control: pause, resume, stop, light, calibration
 - Printer status with maintenance indicators
 - Edit printer hours, view/mark maintenance
 - Clear plate confirmation for queue dispatch

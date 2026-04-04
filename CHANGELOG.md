@@ -13,7 +13,8 @@ Hard fork release. All changes below are relative to upstream Bambuddy v0.2.2.2.
 ### Telegram Bot (aiogram 3.x)
 
 - **Full Telegram bot** with inline menus, reply keyboard, and registered bot commands
-- **Printer control** from Telegram: pause, resume, stop, chamber light
+- **Printer control** from Telegram: pause, resume, stop, chamber light, calibration
+- **Printer calibration** from bot: model-aware selection with toggle buttons (bed leveling, vibration, motor noise, nozzle offset, high-temp heatbed)
 - **Printer status** with real-time info: state, temps, progress, ETA, total hours
 - **Maintenance indicators** in printer list (overdue/warning counts per printer)
 - **Maintenance management** from bot: view items with status, mark as done
@@ -65,6 +66,7 @@ Hard fork release. All changes below are relative to upstream Bambuddy v0.2.2.2.
 - **Ghost print prevention** — patch `.bbl_auto_recovery` flag on print start
 - **Pre-upload cache cleanup** — remove stale files before FTP upload
 - **Printer connection timestamp** — track when each printer connected
+- **Printer calibration UI** — CalibrationModal in printer dropdown menu with model-aware toggles (bed leveling, vibration, motor noise, nozzle offset, high-temp heatbed)
 - **Server-side archive pagination** — offset-based with 30-day heatmap
 
 ### Code Quality

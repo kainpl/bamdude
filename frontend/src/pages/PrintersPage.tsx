@@ -59,6 +59,7 @@ import { ConfirmModal } from '../components/ConfirmModal';
 import { FileManagerModal } from '../components/FileManagerModal';
 import { EmbeddedCameraViewer } from '../components/EmbeddedCameraViewer';
 import { MQTTDebugModal } from '../components/MQTTDebugModal';
+import { CalibrationModal } from '../components/CalibrationModal';
 import { HMSErrorModal, filterKnownHMSErrors } from '../components/HMSErrorModal';
 import { PrinterQueueWidget } from '../components/PrinterQueueWidget';
 import { AMSHistoryModal } from '../components/AMSHistoryModal';
@@ -1554,6 +1555,7 @@ function PrinterCard({
   const [showEditModal, setShowEditModal] = useState(false);
   const [showFileManager, setShowFileManager] = useState(false);
   const [showMQTTDebug, setShowMQTTDebug] = useState(false);
+  const [showCalibration, setShowCalibration] = useState(false);
   const [showPowerOnConfirm, setShowPowerOnConfirm] = useState(false);
   const [showPowerOffConfirm, setShowPowerOffConfirm] = useState(false);
   const [showHMSModal, setShowHMSModal] = useState(false);
@@ -2498,6 +2500,19 @@ function PrinterCard({
                   >
                     <Terminal className="w-4 h-4" />
                     {t('printers.mqttDebug')}
+                  </button>
+                  <button
+                    className={`w-full px-4 py-2 text-left text-sm hover:bg-bambu-dark-tertiary flex items-center gap-2 ${
+                      !hasPermission('printers:control') ? 'opacity-50 cursor-not-allowed' : ''
+                    }`}
+                    onClick={() => {
+                      if (!hasPermission('printers:control')) return;
+                      setShowCalibration(true);
+                      setShowMenu(false);
+                    }}
+                  >
+                    <Wrench className="w-4 h-4" />
+                    {t('printers.calibration.menuItem')}
                   </button>
                   <button
                     className={`w-full px-4 py-2 text-left text-sm flex items-center gap-2 ${
@@ -4287,6 +4302,16 @@ function PrinterCard({
           printerId={printer.id}
           printerName={printer.name}
           onClose={() => setShowMQTTDebug(false)}
+        />
+      )}
+
+      {/* Calibration Modal */}
+      {showCalibration && (
+        <CalibrationModal
+          printerId={printer.id}
+          printerName={printer.name}
+          printerModel={printer.model}
+          onClose={() => setShowCalibration(false)}
         />
       )}
 
