@@ -938,7 +938,6 @@ export default {
     // Badges
     badges: {
       staged: 'Staged',
-      requiresPrevious: 'Requires previous success',
       autoPowerOff: 'Auto power off',
     },
     // Empty state
@@ -971,7 +970,6 @@ export default {
       queueOptions: 'Queue Options',
       staged: 'Staged (manual start)',
       autoPowerOff: 'Auto power off after print',
-      requirePrevious: 'Require previous success',
       printOptions: 'Print Options',
       bedLevelling: 'Bed levelling',
       flowCalibration: 'Flow calibration',

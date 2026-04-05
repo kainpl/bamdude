@@ -16,7 +16,7 @@ import {
 /**
  * Schedule options component for queue items.
  * Includes schedule type (ASAP/Scheduled/Queue Only), datetime picker,
- * and options for require previous success and auto power off.
+ * and auto power off option.
  */
 export function ScheduleOptionsPanel({
   options,
@@ -216,20 +216,6 @@ export function ScheduleOptionsPanel({
           )}
         </div>
       )}
-
-      {/* Require previous success */}
-      <div className="flex items-center gap-2">
-        <input
-          type="checkbox"
-          id="requirePrevious"
-          checked={options.requirePreviousSuccess}
-          onChange={(e) => onChange({ ...options, requirePreviousSuccess: e.target.checked })}
-          className="rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
-        />
-        <label htmlFor="requirePrevious" className="text-sm text-bambu-gray">
-          Only start if previous print succeeded
-        </label>
-      </div>
 
       {/* Auto power off */}
       <div className="flex items-center gap-2">

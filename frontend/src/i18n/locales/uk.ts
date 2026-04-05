@@ -934,7 +934,6 @@ export default {
     // Badges
     badges: {
       staged: 'Підготовлено',
-      requiresPrevious: 'Потрібен успіх попереднього',
       autoPowerOff: 'Автовимкнення',
     },
     // Empty state
@@ -967,7 +966,6 @@ export default {
       queueOptions: 'Параметри черги',
       staged: 'Підготовлено (ручний запуск)',
       autoPowerOff: 'Автовимкнення після друку',
-      requirePrevious: 'Потрібен успіх попереднього',
       printOptions: 'Параметри друку',
       bedLevelling: 'Вирівнювання столу',
       flowCalibration: 'Калібрування потоку',

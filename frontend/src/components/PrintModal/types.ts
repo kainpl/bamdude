@@ -67,7 +67,6 @@ export type ScheduleType = 'asap' | 'scheduled' | 'manual';
 export interface ScheduleOptions {
   scheduleType: ScheduleType;
   scheduledTime: string;
-  requirePreviousSuccess: boolean;
   autoOffAfter: boolean;
 }
 
@@ -77,7 +76,6 @@ export interface ScheduleOptions {
 export const DEFAULT_SCHEDULE_OPTIONS: ScheduleOptions = {
   scheduleType: 'asap',
   scheduledTime: '',
-  requirePreviousSuccess: false,
   autoOffAfter: false,
 };
 

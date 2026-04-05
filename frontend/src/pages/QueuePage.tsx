@@ -125,7 +125,6 @@ function BulkEditModal({
   const [printerId, setPrinterId] = useState<number | null | 'unchanged'>('unchanged');
   const [manualStart, setManualStart] = useState<boolean | 'unchanged'>('unchanged');
   const [autoOffAfter, setAutoOffAfter] = useState<boolean | 'unchanged'>('unchanged');
-  const [requirePreviousSuccess, setRequirePreviousSuccess] = useState<boolean | 'unchanged'>('unchanged');
   const [bedLevelling, setBedLevelling] = useState<boolean | 'unchanged'>('unchanged');
   const [flowCali, setFlowCali] = useState<boolean | 'unchanged'>('unchanged');
   const [vibrationCali, setVibrationCali] = useState<boolean | 'unchanged'>('unchanged');
@@ -138,7 +137,6 @@ function BulkEditModal({
     if (printerId !== 'unchanged') data.queue_id = printerId;
     if (manualStart !== 'unchanged') data.manual_start = manualStart;
     if (autoOffAfter !== 'unchanged') data.auto_off_after = autoOffAfter;
-    if (requirePreviousSuccess !== 'unchanged') data.require_previous_success = requirePreviousSuccess;
     if (bedLevelling !== 'unchanged') data.bed_levelling = bedLevelling;
     if (flowCali !== 'unchanged') data.flow_cali = flowCali;
     if (vibrationCali !== 'unchanged') data.vibration_cali = vibrationCali;
@@ -149,7 +147,7 @@ function BulkEditModal({
   };
 
   const hasChanges = printerId !== 'unchanged' || manualStart !== 'unchanged' || autoOffAfter !== 'unchanged' ||
-    requirePreviousSuccess !== 'unchanged' || bedLevelling !== 'unchanged' || flowCali !== 'unchanged' ||
+    bedLevelling !== 'unchanged' || flowCali !== 'unchanged' ||
     vibrationCali !== 'unchanged' || layerInspect !== 'unchanged' || timelapse !== 'unchanged' || useAms !== 'unchanged';
 
   return (
@@ -196,7 +194,6 @@ function BulkEditModal({
             <div className="space-y-2">
               <TriStateToggle label={t('queue.bulkEdit.staged')} value={manualStart} onChange={setManualStart} t={t} />
               <TriStateToggle label={t('queue.bulkEdit.autoPowerOff')} value={autoOffAfter} onChange={setAutoOffAfter} disabled={!canControlPrinter} t={t} />
-              <TriStateToggle label={t('queue.bulkEdit.requirePrevious')} value={requirePreviousSuccess} onChange={setRequirePreviousSuccess} t={t} />
             </div>
           </div>
 
@@ -511,11 +508,6 @@ function SortableQueueItem({
               <span className="text-[10px] sm:text-xs px-1.5 sm:px-2 py-0.5 bg-purple-500/10 text-purple-400 rounded-full border border-purple-500/20 flex items-center gap-1">
                 <Hand className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
                 {t('queue.badges.staged')}
-              </span>
-            )}
-            {item.require_previous_success && (
-              <span className="text-[10px] sm:text-xs px-1.5 sm:px-2 py-0.5 bg-orange-500/10 text-orange-400 rounded-full border border-orange-500/20">
-                {t('queue.badges.requiresPrevious')}
               </span>
             )}
             {item.auto_off_after && (

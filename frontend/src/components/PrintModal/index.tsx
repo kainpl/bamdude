@@ -116,7 +116,6 @@ export function PrintModal({
       return {
         scheduleType,
         scheduledTime,
-        requirePreviousSuccess: queueItem.require_previous_success,
         autoOffAfter: queueItem.auto_off_after,
       };
     }
@@ -491,7 +490,7 @@ export function PrintModal({
       // Use library_file_id for library files, archive_id for archives
       archive_id: isLibraryFile ? undefined : archiveId,
       library_file_id: isLibraryFile ? libraryFileId : undefined,
-      require_previous_success: scheduleOptions.requirePreviousSuccess,
+      require_previous_success: false,
       auto_off_after: scheduleOptions.autoOffAfter,
       manual_start: scheduleOptions.scheduleType === 'manual',
       ams_mapping: getMappingForPrinter(printerId),
@@ -536,7 +535,7 @@ export function PrintModal({
             const printerMapping = getMappingForPrinter(printerId);
             const updateData: PrintQueueItemUpdate = {
               queue_id: printerId,  // queue_id == printer_id
-              require_previous_success: scheduleOptions.requirePreviousSuccess,
+              require_previous_success: false,
               auto_off_after: scheduleOptions.autoOffAfter,
               manual_start: scheduleOptions.scheduleType === 'manual',
               ams_mapping: printerMapping,
