@@ -1281,6 +1281,7 @@ export default {
     // Tab names
     tabs: {
       general: 'Загальне',
+      printing: 'Друк',
       smartPlugs: 'Розумні розетки',
       notifications: 'Сповіщення',
       filament: 'Філамент',
@@ -1458,6 +1459,7 @@ export default {
     // Default printer
     noDefaultPrinter: 'Без замовчування (питати кожного разу)',
     // Sidebar
+    sidebar: 'Бічна панель',
     sidebarOrder: 'Порядок бічної панелі',
     // Camera
     saveThumbnails: 'Зберігати мініатюри',
@@ -1646,6 +1648,7 @@ export default {
     configureBambuddy: 'Налаштувати Bambuddy',
     systemDefault: 'Системне значення',
     archiveSettings: 'Налаштування архіву',
+    queueAndScheduling: 'Черги та планування',
     newWindow: 'Нове вікно',
     embeddedOverlay: 'Вбудоване накладання',
     preferredSlicer: 'Бажаний слайсер',
@@ -3307,16 +3310,82 @@ export default {
     rightNozzle: 'П',
     leftNozzleTooltip: 'Ліве сопло',
     rightNozzleTooltip: 'Праве сопло',
-    filamentOverride: 'Перевизначення філаменту',
-    filamentOverrideHint: 'Опціонально перевизначте філаменти для призначення на основі моделі. Планувальник підбиратиме за вибраними філаментами замість оригінальних значень 3MF.',
-    originalFilament: 'Оригінальний',
-    overrideWith: 'Замінити на',
-    resetToOriginal: 'Повернути оригінал',
     insufficientFilamentTitle: 'Недостатньо філаменту',
     insufficientFilamentMessage: 'Деякі призначені котушки мають менше філаменту, ніж потрібно для цього друку:',
     insufficientFilamentLine: '{{printer}} - {{slot}}: потрібно {{required}}г, залишилось {{remaining}}г',
     printAnyway: 'Друкувати все одно',
-    forceColorMatch: 'Примусове збігання кольору',
+
+    // PrintOptions descriptions
+    bedLevelingDesc: 'Автовирівнювання столу перед друком',
+    flowCalibrationDesc: 'Калібрування потоку екструзії',
+    vibrationCalibrationDesc: 'Зменшення артефактів вібрації',
+    layerInspectionDesc: 'AI-інспекція першого шару',
+    timelapseDesc: 'Запис таймлапс-відео',
+    printOptions: 'Параметри друку',
+
+    // ScheduleOptions
+    whenToPrint: 'Коли друкувати',
+    scheduleAsap: 'Якнайшвидше',
+    scheduleScheduled: 'За розкладом',
+    scheduleQueueOnly: 'Тільки черга',
+    dateAndTime: 'Дата і час',
+    invalidDateTime: 'Введіть правильну дату та час',
+    powerOffWhenDone: 'Вимкнути принтер після завершення',
+    hintAsap: 'Друк розпочнеться, щойно принтер звільниться.',
+    hintScheduled: 'Друк розпочнеться у запланований час, якщо принтер вільний. Якщо зайнятий — чекатиме звільнення.',
+    hintManual: 'Друк буде підготовлено, але не запущено автоматично. Натисніть кнопку Старт для запуску.',
+
+    // PrinterSelector
+    printerStateOffline: 'Офлайн',
+    printerStatePrinting: 'Друкує',
+    printerStatePreparing: 'Підготовка',
+    printerStatePaused: 'Пауза',
+    printerStateIdle: 'Очікує',
+    printerStateFinished: 'Завершено',
+    printerStateFailed: 'Помилка',
+    selectPrinters: 'Виберіть принтери',
+    printersSelected: '{{count}} принтер(ів) вибрано',
+    unknownModel: 'Невідома модель',
+    inactive: '(неактивний)',
+    manuallySelected: 'Вибрано вручну',
+    autoMatched: 'Автопідбір',
+    requiredFilament: 'Потрібно: {{type}} - {{color}}',
+    selectSlot: '-- Виберіть слот --',
+    customSlotMapping: 'Власне призначення слотів',
+    reRead: 'Перечитати',
+    customMapping: 'Власне призначення',
+    matched: '{{matched}}/{{total}} збігається',
+    selectAll: 'Вибрати все',
+    clear: 'Очистити',
+    noPrintersActive: 'Немає активних принтерів',
+    noPrintersAll: 'Немає доступних принтерів',
+    hiddenPrinters: '{{count}} інших принтерів приховано (інша модель) —',
+    showAll: 'показати всі',
+    showOnlyModel: 'Показати тільки принтери {{model}}',
+    selectAtLeastOne: 'Виберіть принаймні один принтер',
+    selectAtLeastOnePrinter: 'Будь ласка, виберіть принаймні один принтер',
+    slicedForWarning: 'Файл нарізано для {{slicedModel}}, але друкується на {{printerModel}}',
+    archiveDataUnavailable: 'Дані архіву недоступні. Вихідний файл міг бути видалений. Призначення філаменту вимкнено.',
+    clickToChangeSlot: 'Натисніть для зміни призначення слоту',
+    filamentTypeMismatch: 'Потрібний тип філаменту не знайдено у принтері.',
+    plateNFallback: 'Платформа {{index}}',
+
+    // index.tsx
+    failedToUpdateQueue: 'Не вдалося оновити елемент черги',
+    failedToComplete: 'Не вдалося завершити операцію',
+    failedPrefix: 'Помилка: {{error}}',
+    partialSuccess: '{{success}} успішно, {{failed}} невдало',
+    queueItemUpdated: 'Елемент черги оновлено',
+    sendLabel: 'Надіслати',
+    toLabel: 'на',
+    printJob: 'Завдання друку',
+
+    // FilamentOverride
+    filamentOverride: 'Заміна філаменту',
+    filamentOverrideHint: 'Замініть оригінальний вибір філаменту на філаменти, доступні на обраних принтерах.',
+    originalFilament: 'Оригінал',
+    resetToOriginal: 'Скинути до оригіналу',
+    forceColorMatch: 'Примусова відповідність кольору',
   },
 
   // Backup
@@ -4230,8 +4299,13 @@ export default {
 
   // External Links
   externalLinks: {
+    title: 'Посилання бічної панелі',
+    addLink: 'Додати посилання',
+    description: 'Додайте зовнішні посилання до бічної панелі навігації. Перетягуйте для зміни порядку.',
     noLinksConfigured: 'Зовнішні посилання не налаштовано',
+    noLinksHint: 'Натисніть "Додати посилання" щоб додати',
     deleteLink: 'Видалити посилання',
+    deleteLinkConfirm: 'Ви впевнені, що хочете видалити "{{name}}"? Цю дію неможливо скасувати.',
     removeCustomIcon: 'Видалити власну іконку',
     openInNewTab: 'Відкрити в новій вкладці',
     placeholders: {

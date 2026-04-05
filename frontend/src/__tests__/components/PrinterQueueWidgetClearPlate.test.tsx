@@ -44,7 +44,7 @@ describe('PrinterQueueWidget - Clear Plate', () => {
     server.use(
       http.get('/api/v1/queue/', ({ request }) => {
         const url = new URL(request.url);
-        const printerId = url.searchParams.get('printer_id');
+        const printerId = url.searchParams.get('queue_id');
         if (printerId === '1') {
           return HttpResponse.json(mockQueueItems);
         }
@@ -213,12 +213,12 @@ describe('PrinterQueueWidget - Clear Plate', () => {
       },
     ];
 
-    it('hides widget when queue item requires filament not loaded on printer', async () => {
+    it('shows widget even when queue item requires filament not loaded on printer (per-printer queues)', async () => {
       server.use(
         http.get('/api/v1/queue/', () => HttpResponse.json(petgQueueItems))
       );
 
-      const { container } = render(
+      render(
         <PrinterQueueWidget
           printerId={1}
           printerState="FINISH"
@@ -226,11 +226,10 @@ describe('PrinterQueueWidget - Clear Plate', () => {
         />
       );
 
-      // Wait for query to settle, then confirm widget is not rendered
+      // Per-printer queues no longer filter by filament compatibility
       await waitFor(() => {
-        expect(container.querySelector('button')).not.toBeInTheDocument();
+        expect(screen.getByText('PETG Print')).toBeInTheDocument();
       });
-      expect(screen.queryByText('PETG Print')).not.toBeInTheDocument();
     });
 
     it('shows widget when queue item required filaments match loaded', async () => {
@@ -283,7 +282,7 @@ describe('PrinterQueueWidget - Clear Plate', () => {
       });
     });
 
-    it('skips incompatible first item and shows compatible second item', async () => {
+    it('shows first item regardless of filament compatibility (per-printer queues)', async () => {
       const mixedQueue = [
         {
           id: 10,
@@ -323,10 +322,10 @@ describe('PrinterQueueWidget - Clear Plate', () => {
         />
       );
 
+      // Per-printer queues show items in order without filament filtering
       await waitFor(() => {
-        expect(screen.getByText('PLA Print')).toBeInTheDocument();
+        expect(screen.getByText('PETG Print')).toBeInTheDocument();
       });
-      expect(screen.queryByText('PETG Print')).not.toBeInTheDocument();
     });
 
     it('matches filament types case-insensitively', async () => {
@@ -381,12 +380,12 @@ describe('PrinterQueueWidget - Clear Plate', () => {
       },
     ];
 
-    it('hides widget when override color does not match loaded filaments', async () => {
+    it('shows widget even when override color does not match loaded filaments (per-printer queues)', async () => {
       server.use(
         http.get('/api/v1/queue/', () => HttpResponse.json(whitePetgOverrideItem))
       );
 
-      const { container } = render(
+      render(
         <PrinterQueueWidget
           printerId={1}
           printerState="FINISH"
@@ -395,10 +394,10 @@ describe('PrinterQueueWidget - Clear Plate', () => {
         />
       );
 
+      // Per-printer queues no longer filter by filament color compatibility
       await waitFor(() => {
-        expect(container.querySelector('button')).not.toBeInTheDocument();
+        expect(screen.getByText('White PETG Print')).toBeInTheDocument();
       });
-      expect(screen.queryByText('White PETG Print')).not.toBeInTheDocument();
     });
 
     it('shows widget when override color matches loaded filaments', async () => {

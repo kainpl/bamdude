@@ -379,12 +379,12 @@ export function PrintModal({
     mutationFn: (data: PrintQueueItemUpdate) => api.updateQueueItem(queueItem!.id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['queue'] });
-      showToast('Queue item updated');
+      showToast(t('printModal.queueItemUpdated'));
       onSuccess?.();
       onClose();
     },
     onError: (error: Error) => {
-      showToast(error.message || 'Failed to update queue item', 'error');
+      showToast(error.message || t('printModal.failedToUpdateQueue'), 'error');
     },
   });
 
@@ -454,7 +454,7 @@ export function PrintModal({
 
     // Validate printer selection
     if (selectedPrinters.length === 0) {
-      showToast('Please select at least one printer', 'error');
+      showToast(t('printModal.selectAtLeastOnePrinter'), 'error');
       return;
     }
 
@@ -565,7 +565,7 @@ export function PrintModal({
     if (results.failed === 0) {
       if (mode !== 'reprint') {
         if (mode === 'edit-queue-item') {
-          showToast('Queue item updated');
+          showToast(t('printModal.queueItemUpdated'));
         } else if (results.success === 1) {
           showToast(t('queue.printQueued'));
         } else {
@@ -576,9 +576,9 @@ export function PrintModal({
       onSuccess?.();
       onClose();
     } else if (results.success === 0) {
-      showToast(`Failed: ${results.errors[0]}`, 'error');
+      showToast(t('printModal.failedPrefix', { error: results.errors[0] }), 'error');
     } else {
-      showToast(`${results.success} succeeded, ${results.failed} failed`, 'error');
+      showToast(t('printModal.partialSuccess', { success: results.success, failed: results.failed }), 'error');
       queryClient.invalidateQueries({ queryKey: ['queue'] });
     }
   };
@@ -683,14 +683,14 @@ export function PrintModal({
             <p className={`text-sm text-bambu-gray ${mode === 'reprint' ? 'mb-4' : ''}`}>
               {mode === 'reprint' ? (
                 <>
-                  Send <span className="text-white">{archiveName}</span> to{' '}
+                  {t('printModal.sendLabel')} <span className="text-white">{archiveName}</span> {t('printModal.toLabel')}{' '}
                   {initialSelectedPrinterIds?.length === 1 && printers
-                    ? <span className="text-white">{printers.find(p => p.id === initialSelectedPrinterIds[0])?.name ?? 'printer(s)'}</span>
-                    : 'printer(s)'}
+                    ? <span className="text-white">{printers.find(p => p.id === initialSelectedPrinterIds[0])?.name ?? t('printModal.selectPrinter')}</span>
+                    : t('printModal.selectPrinter')}
                 </>
               ) : (
                 <>
-                  <span className="block text-bambu-gray mb-1">Print Job</span>
+                  <span className="block text-bambu-gray mb-1">{t('printModal.printJob')}</span>
                   <span className="text-white font-medium truncate block">{archiveName}</span>
                 </>
               )}
@@ -750,7 +750,7 @@ export function PrintModal({
                   <div className="p-3 mb-2 bg-yellow-500/10 border border-yellow-500/30 rounded-lg flex items-center gap-2">
                     <AlertTriangle className="w-4 h-4 text-yellow-400 flex-shrink-0" />
                     <span className="text-sm text-yellow-400">
-                      File was sliced for {slicedForModel}, but printing on {selectedPrinter.model}
+                      {t('printModal.slicedForWarning', { slicedModel: slicedForModel, printerModel: selectedPrinter.model })}
                     </span>
                   </div>
                 );
@@ -763,7 +763,7 @@ export function PrintModal({
               <div className="flex items-start gap-2 p-3 mb-2 bg-orange-500/10 border border-orange-500/30 rounded-lg text-sm">
                 <AlertCircle className="w-4 h-4 text-orange-400 mt-0.5 flex-shrink-0" />
                 <p className="text-orange-400">
-                  Archive data unavailable. The source file may have been deleted. Filament mapping is disabled.
+                  {t('printModal.archiveDataUnavailable')}
                 </p>
               </div>
             )}
@@ -800,14 +800,14 @@ export function PrintModal({
             {/* Error message */}
             {updateQueueMutation.isError && (
               <div className="mb-4 p-3 bg-red-500/20 border border-red-500/50 rounded-lg text-sm text-red-400">
-                {(updateQueueMutation.error as Error)?.message || 'Failed to complete operation'}
+                {(updateQueueMutation.error as Error)?.message || t('printModal.failedToComplete')}
               </div>
             )}
 
             {/* Actions */}
             <div className={`flex gap-3 ${mode === 'reprint' ? '' : 'pt-2'}`}>
               <Button type="button" variant="secondary" onClick={onClose} className="flex-1" disabled={isSubmitting}>
-                Cancel
+                {t('printModal.cancel')}
               </Button>
               <Button
                 type="submit"

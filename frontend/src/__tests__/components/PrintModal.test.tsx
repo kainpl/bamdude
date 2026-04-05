@@ -33,8 +33,8 @@ const createMockQueueItem = (overrides: Partial<PrintQueueItem> = {}): PrintQueu
   ams_mapping: null,
   plate_id: null,
   bed_levelling: true,
-  flow_cali: false,
-  vibration_cali: true,
+  flow_cali: true,
+  vibration_cali: false,
   layer_inspect: false,
   timelapse: false,
   use_ams: true,
@@ -508,7 +508,7 @@ describe('PrintModal', () => {
       await user.click(screen.getByText('Select all'));
 
       await waitFor(() => {
-        expect(screen.getByText(/3 printers selected/)).toBeInTheDocument();
+        expect(screen.getByText(/3 printer\(?s?\)? selected/)).toBeInTheDocument();
       });
     });
 
@@ -607,7 +607,7 @@ describe('PrintModal', () => {
       await user.click(idleButton!);
 
       await waitFor(() => {
-        expect(screen.getByText('1 printer selected')).toBeInTheDocument();
+        expect(screen.getByText(/1 printer\(?s?\)? selected/)).toBeInTheDocument();
       });
     });
 
@@ -631,7 +631,7 @@ describe('PrintModal', () => {
 
       await waitFor(() => {
         // Only 2 available printers selected (IDLE + FINISH), not the RUNNING one
-        expect(screen.getByText(/2 printers selected/)).toBeInTheDocument();
+        expect(screen.getByText(/2 printer\(?s?\)? selected/)).toBeInTheDocument();
       });
     });
 
@@ -657,7 +657,7 @@ describe('PrintModal', () => {
       await user.click(busyButton!);
 
       await waitFor(() => {
-        expect(screen.getByText('1 printer selected')).toBeInTheDocument();
+        expect(screen.getByText(/1 printer\(?s?\)? selected/)).toBeInTheDocument();
       });
     });
 

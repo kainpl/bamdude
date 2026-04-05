@@ -1,13 +1,14 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Settings, ChevronDown, ChevronUp } from 'lucide-react';
 import type { PrintOptionsProps, PrintOptions as PrintOptionsType } from './types';
 
 const PRINT_OPTIONS_CONFIG = [
-  { key: 'bed_levelling', label: 'Bed Levelling', desc: 'Auto-level bed before print' },
-  { key: 'flow_cali', label: 'Flow Calibration', desc: 'Calibrate extrusion flow' },
-  { key: 'vibration_cali', label: 'Vibration Calibration', desc: 'Reduce ringing artifacts' },
-  { key: 'layer_inspect', label: 'First Layer Inspection', desc: 'AI inspection of first layer' },
-  { key: 'timelapse', label: 'Timelapse', desc: 'Record timelapse video' },
+  { key: 'bed_levelling', labelKey: 'printModal.bedLeveling', descKey: 'printModal.bedLevelingDesc' },
+  { key: 'flow_cali', labelKey: 'printModal.flowCalibration', descKey: 'printModal.flowCalibrationDesc' },
+  { key: 'vibration_cali', labelKey: 'printModal.vibrationCalibration', descKey: 'printModal.vibrationCalibrationDesc' },
+  { key: 'layer_inspect', labelKey: 'printModal.layerInspection', descKey: 'printModal.layerInspectionDesc' },
+  { key: 'timelapse', labelKey: 'printModal.timelapse', descKey: 'printModal.timelapseDesc' },
 ] as const;
 
 /**
@@ -19,6 +20,7 @@ export function PrintOptionsPanel({
   onChange,
   defaultExpanded = false,
 }: PrintOptionsProps) {
+  const { t } = useTranslation();
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
 
   const handleToggle = (key: keyof PrintOptionsType) => {
@@ -33,7 +35,7 @@ export function PrintOptionsPanel({
         className="flex items-center gap-2 text-sm text-bambu-gray hover:text-white transition-colors w-full"
       >
         <Settings className="w-4 h-4" />
-        <span>Print Options</span>
+        <span>{t('printModal.printOptions')}</span>
         {isExpanded ? (
           <ChevronUp className="w-4 h-4 ml-auto" />
         ) : (
@@ -42,11 +44,11 @@ export function PrintOptionsPanel({
       </button>
       {isExpanded && (
         <div className="mt-2 bg-bambu-dark rounded-lg p-3 space-y-2">
-          {PRINT_OPTIONS_CONFIG.map(({ key, label, desc }) => (
+          {PRINT_OPTIONS_CONFIG.map(({ key, labelKey, descKey }) => (
             <label key={key} className="flex items-center justify-between cursor-pointer group">
               <div>
-                <span className="text-sm text-white">{label}</span>
-                <p className="text-xs text-bambu-gray">{desc}</p>
+                <span className="text-sm text-white">{t(labelKey)}</span>
+                <p className="text-xs text-bambu-gray">{t(descKey)}</p>
               </div>
               <div
                 className={`relative w-10 h-5 rounded-full transition-colors ${

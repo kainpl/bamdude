@@ -83,6 +83,14 @@ class AppSettings(BaseModel):
         description="JSON blob of drying presets per filament type (empty = use built-in defaults)",
     )
 
+    # Staggered start settings (electrical load management for farms)
+    stagger_enabled: bool = Field(default=False, description="Enable staggered start to limit concurrent printer heating")
+    stagger_concurrent: int = Field(default=2, description="Max printers that can be heating simultaneously")
+    stagger_interval_minutes: int = Field(default=5, description="Wait time (minutes) after a slot frees before next start")
+    stagger_wait_for_bed: bool = Field(
+        default=True, description="Slot frees when bed reaches target temp (±1°C). When off, frees immediately after start."
+    )
+
     # Print modal settings
     per_printer_mapping_expanded: bool = Field(
         default=False, description="Expand custom filament mapping by default in print modal"
@@ -221,6 +229,10 @@ class AppSettingsUpdate(BaseModel):
     queue_drying_block: bool | None = None
     ambient_drying_enabled: bool | None = None
     drying_presets: str | None = None
+    stagger_enabled: bool | None = None
+    stagger_concurrent: int | None = None
+    stagger_interval_minutes: int | None = None
+    stagger_wait_for_bed: bool | None = None
     per_printer_mapping_expanded: bool | None = None
     date_format: str | None = None
     time_format: str | None = None

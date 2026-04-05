@@ -50,8 +50,8 @@ export interface PrintOptions {
  */
 export const DEFAULT_PRINT_OPTIONS: PrintOptions = {
   bed_levelling: true,
-  flow_cali: false,
-  vibration_cali: true,
+  flow_cali: true,
+  vibration_cali: false,
   layer_inspect: false,
   timelapse: false,
 };

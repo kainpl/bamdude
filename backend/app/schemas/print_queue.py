@@ -26,8 +26,8 @@ class PrintQueueItemCreate(BaseModel):
     plate_id: int | None = None
     # Print options
     bed_levelling: bool = True
-    flow_cali: bool = False
-    vibration_cali: bool = True
+    flow_cali: bool = True
+    vibration_cali: bool = False
     layer_inspect: bool = False
     timelapse: bool = False
     use_ams: bool = True
@@ -65,8 +65,8 @@ class PrintQueueItemResponse(BaseModel):
     plate_id: int | None = None
     # Print options
     bed_levelling: bool = True
-    flow_cali: bool = False
-    vibration_cali: bool = True
+    flow_cali: bool = True
+    vibration_cali: bool = False
     layer_inspect: bool = False
     timelapse: bool = False
     use_ams: bool = True

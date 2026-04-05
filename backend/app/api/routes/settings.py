@@ -101,6 +101,8 @@ async def get_settings(
                 "queue_drying_enabled",
                 "queue_drying_block",
                 "ambient_drying_enabled",
+                "stagger_enabled",
+                "stagger_wait_for_bed",
             ]:
                 settings_dict[setting.key] = setting.value.lower() == "true"
             elif setting.key in [
@@ -120,6 +122,8 @@ async def get_settings(
                 "ftp_retry_delay",
                 "ftp_timeout",
                 "mqtt_port",
+                "stagger_concurrent",
+                "stagger_interval_minutes",
             ]:
                 settings_dict[setting.key] = int(setting.value)
             elif setting.key == "default_printer_id":

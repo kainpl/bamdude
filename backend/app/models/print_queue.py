@@ -45,8 +45,8 @@ class PrintQueueItem(Base):
 
     # Print options
     bed_levelling: Mapped[bool] = mapped_column(Boolean, default=True)
-    flow_cali: Mapped[bool] = mapped_column(Boolean, default=False)
-    vibration_cali: Mapped[bool] = mapped_column(Boolean, default=True)
+    flow_cali: Mapped[bool] = mapped_column(Boolean, default=True)
+    vibration_cali: Mapped[bool] = mapped_column(Boolean, default=False)
     layer_inspect: Mapped[bool] = mapped_column(Boolean, default=False)
     timelapse: Mapped[bool] = mapped_column(Boolean, default=False)
     use_ams: Mapped[bool] = mapped_column(Boolean, default=True)

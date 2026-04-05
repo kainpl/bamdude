@@ -35,7 +35,7 @@ import { useTheme, type ThemeStyle, type DarkBackground, type LightBackground, t
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Palette } from 'lucide-react';
 
-const validTabs = ['general', 'network', 'plugs', 'notifications', 'filament', 'apikeys', 'virtual-printer', 'users', 'backup'] as const;
+const validTabs = ['general', 'printing', 'filament', 'notifications', 'plugs', 'network', 'virtual-printer', 'apikeys', 'users', 'backup'] as const;
 type TabType = typeof validTabs[number];
 type UsersSubTab = 'users' | 'email';
 
@@ -962,20 +962,26 @@ export function SettingsPage() {
           {t('settings.tabs.general')}
         </button>
         <button
-          onClick={() => handleTabChange('plugs')}
+          onClick={() => handleTabChange('printing')}
           className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
-            activeTab === 'plugs'
+            activeTab === 'printing'
               ? 'text-bambu-green border-bambu-green'
               : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
           }`}
         >
-          <Plug className="w-4 h-4" />
-          {t('settings.tabs.smartPlugs')}
-          {smartPlugs && smartPlugs.length > 0 && (
-            <span className="text-xs bg-bambu-dark-tertiary px-1.5 py-0.5 rounded-full">
-              {smartPlugs.length}
-            </span>
-          )}
+          <Printer className="w-4 h-4" />
+          {t('settings.tabs.printing')}
+        </button>
+        <button
+          onClick={() => handleTabChange('filament')}
+          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+            activeTab === 'filament'
+              ? 'text-bambu-green border-bambu-green'
+              : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+          }`}
+        >
+          <Cylinder className="w-4 h-4" />
+          {t('settings.tabs.filament')}
         </button>
         <button
           onClick={() => handleTabChange('notifications')}
@@ -994,15 +1000,20 @@ export function SettingsPage() {
           )}
         </button>
         <button
-          onClick={() => handleTabChange('filament')}
+          onClick={() => handleTabChange('plugs')}
           className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
-            activeTab === 'filament'
+            activeTab === 'plugs'
               ? 'text-bambu-green border-bambu-green'
               : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
           }`}
         >
-          <Cylinder className="w-4 h-4" />
-          {t('settings.tabs.filament')}
+          <Plug className="w-4 h-4" />
+          {t('settings.tabs.smartPlugs')}
+          {smartPlugs && smartPlugs.length > 0 && (
+            <span className="text-xs bg-bambu-dark-tertiary px-1.5 py-0.5 rounded-full">
+              {smartPlugs.length}
+            </span>
+          )}
         </button>
         <button
           onClick={() => handleTabChange('network')}
@@ -1015,6 +1026,18 @@ export function SettingsPage() {
           <Wifi className="w-4 h-4" />
           {t('settings.tabs.network')}
           <span className={`w-2 h-2 rounded-full ${mqttStatus?.enabled ? 'bg-green-400' : 'bg-gray-500'}`} />
+        </button>
+        <button
+          onClick={() => handleTabChange('virtual-printer')}
+          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+            activeTab === 'virtual-printer'
+              ? 'text-bambu-green border-bambu-green'
+              : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+          }`}
+        >
+          <Printer className="w-4 h-4" />
+          {t('settings.tabs.virtualPrinter')}
+          <span className={`w-2 h-2 rounded-full ${virtualPrinterRunning ? 'bg-green-400' : 'bg-gray-500'}`} />
         </button>
         <button
           onClick={() => handleTabChange('apikeys')}
@@ -1031,18 +1054,6 @@ export function SettingsPage() {
               {apiKeys.length}
             </span>
           )}
-        </button>
-        <button
-          onClick={() => handleTabChange('virtual-printer')}
-          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
-            activeTab === 'virtual-printer'
-              ? 'text-bambu-green border-bambu-green'
-              : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
-          }`}
-        >
-          <Printer className="w-4 h-4" />
-          {t('settings.tabs.virtualPrinter')}
-          <span className={`w-2 h-2 rounded-full ${virtualPrinterRunning ? 'bg-green-400' : 'bg-gray-500'}`} />
         </button>
         <button
           onClick={() => handleTabChange('users')}
@@ -1074,7 +1085,7 @@ export function SettingsPage() {
       {activeTab === 'general' && (
       <div className="flex flex-col lg:flex-row gap-6 lg:gap-8">
         {/* Left Column - General Settings */}
-        <div className="space-y-6 flex-1 lg:max-w-xl">
+        <div className="space-y-6 lg:w-1/2">
           <Card>
             <CardHeader>
               <h2 className="text-lg font-semibold text-white">{t('settings.general')}</h2>
@@ -1204,35 +1215,6 @@ export function SettingsPage() {
                   {t('settings.preferredSlicerDescription')}
                 </p>
               </div>
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-white">{t('settings.sidebarOrder')}</p>
-                  <p className="text-sm text-bambu-gray">
-                    {t('settings.sidebarOrderDescription')}
-                    {authEnabled && hasPermission('settings:update') && ` ${t('settings.sidebarOrderSetDefaultHint')}`}
-                  </p>
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={handleResetSidebarOrder}
-                  >
-                    <RotateCcw className="w-4 h-4" />
-                    {t('settings.reset')}
-                  </Button>
-                  {authEnabled && hasPermission('settings:update') && (
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm text-bambu-gray whitespace-nowrap">{t('settings.setDefault')}</span>
-                      <Toggle
-                        checked={isDefaultSidebarEnabled}
-                        onChange={handleToggleDefaultSidebarOrder}
-                        disabled={isLoading}
-                      />
-                    </div>
-                  )}
-                </div>
-              </div>
             </CardContent>
           </Card>
 
@@ -1351,307 +1333,51 @@ export function SettingsPage() {
             </CardContent>
           </Card>
 
-          <Card>
-            <CardHeader>
-              <h2 className="text-lg font-semibold text-white">{t('settings.archiveSettings')}</h2>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-white">{t('settings.saveThumbnails')}</p>
-                  <p className="text-sm text-bambu-gray">
-                    {t('settings.saveThumbnailsDescription')}
-                  </p>
-                </div>
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={localSettings.save_thumbnails}
-                    onChange={(e) => updateSetting('save_thumbnails', e.target.checked)}
-                    className="sr-only peer"
-                  />
-                  <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
-                </label>
-              </div>
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-white">{t('settings.captureFinishPhoto')}</p>
-                  <p className="text-sm text-bambu-gray">
-                    {t('settings.captureFinishPhotoDescription')}
-                  </p>
-                </div>
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={localSettings.capture_finish_photo}
-                    onChange={(e) => updateSetting('capture_finish_photo', e.target.checked)}
-                    className="sr-only peer"
-                  />
-                  <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
-                </label>
-              </div>
-              {localSettings.capture_finish_photo && ffmpegStatus && !ffmpegStatus.installed && (
-                <div className="flex items-start gap-2 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
-                  <AlertTriangle className="w-5 h-5 text-yellow-500 flex-shrink-0 mt-0.5" />
-                  <div className="text-sm">
-                    <p className="text-yellow-500 font-medium">{t('settings.ffmpegNotInstalled')}</p>
-                    <p className="text-bambu-gray mt-1">
-                      {t('settings.ffmpegRequired')}
-                    </p>
-                  </div>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-
-        </div>
-
-        {/* Second Column - Camera, Cost, AMS & Spoolman */}
-        <div className="space-y-6 flex-1 lg:max-w-md">
-          {/* Camera Settings */}
-          <Card>
-            <CardHeader>
-              <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-                <Video className="w-5 h-5 text-bambu-green" />
-                {t('settings.camera')}
-              </h2>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div>
-                <label className="block text-sm text-bambu-gray mb-1">
-                  {t('settings.cameraViewMode')}
-                </label>
-                <select
-                  value={localSettings.camera_view_mode ?? 'window'}
-                  onChange={(e) => updateSetting('camera_view_mode', e.target.value as 'window' | 'embedded')}
-                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                >
-                  <option value="window">{t('settings.newWindow')}</option>
-                  <option value="embedded">{t('settings.embeddedOverlay')}</option>
-                </select>
-                <p className="text-xs text-bambu-gray mt-1">
-                  {localSettings.camera_view_mode === 'embedded'
-                    ? t('settings.cameraOverlayDescription')
-                    : t('settings.cameraWindowDescription')}
-                </p>
-              </div>
-
-              {/* External Cameras Section */}
-              <div className="border-t border-bambu-dark-tertiary pt-4 mt-4">
-                <h3 className="text-sm font-medium text-white mb-2">{t('settings.externalCameras')}</h3>
-                <p className="text-xs text-bambu-gray mb-3">
-                  {t('settings.externalCamerasDescription')}
-                </p>
-
-                {printers && printers.length > 0 ? (
-                  <div className="space-y-3">
-                    {printers.map(printer => (
-                      <div key={printer.id} className="p-3 bg-bambu-dark rounded-lg">
-                        <div className="flex items-center justify-between mb-2">
-                          <span className="text-white font-medium text-sm">{printer.name}</span>
-                          <label className="relative inline-flex items-center cursor-pointer">
-                            <input
-                              type="checkbox"
-                              checked={printer.external_camera_enabled}
-                              onChange={(e) => handleUpdatePrinterCamera(printer.id, { enabled: e.target.checked })}
-                              className="sr-only peer"
-                            />
-                            <div className="w-9 h-5 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-bambu-green"></div>
-                          </label>
-                        </div>
-
-                        {printer.external_camera_enabled && (
-                          <div className="space-y-2 mt-2">
-                            <input
-                              type="text"
-                              placeholder={printer.external_camera_type === 'usb' ? t('settings.cameraPlaceholderUsb') : t('settings.cameraPlaceholderUrl')}
-                              value={localCameraUrls[printer.id] ?? printer.external_camera_url ?? ''}
-                              onChange={(e) => handleCameraUrlChange(printer.id, e.target.value)}
-                              className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-sm focus:border-bambu-green focus:outline-none"
-                            />
-                            <div className="flex gap-2">
-                              <select
-                                value={printer.external_camera_type || 'mjpeg'}
-                                onChange={(e) => handleUpdatePrinterCamera(printer.id, { type: e.target.value })}
-                                className="flex-1 px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-sm focus:border-bambu-green focus:outline-none"
-                              >
-                                <option value="mjpeg">{t('settings.cameraTypeMjpeg')}</option>
-                                <option value="rtsp">{t('settings.cameraTypeRtsp')}</option>
-                                <option value="snapshot">{t('settings.cameraTypeSnapshot')}</option>
-                                <option value="usb">{t('settings.cameraTypeUsb')}</option>
-                              </select>
-                              <Button
-                                size="sm"
-                                variant="secondary"
-                                onClick={() => handleTestExternalCamera(printer.id, localCameraUrls[printer.id] ?? printer.external_camera_url ?? '', printer.external_camera_type || 'mjpeg')}
-                                disabled={extCameraTestLoading[printer.id] || !(localCameraUrls[printer.id] ?? printer.external_camera_url)}
-                              >
-                                {extCameraTestLoading[printer.id] ? (
-                                  <Loader2 className="w-4 h-4 animate-spin" />
-                                ) : (
-                                  t('settings.test')
-                                )}
-                              </Button>
-                            </div>
-                            {extCameraTestResults[printer.id] && (
-                              <div className={`text-xs flex items-center gap-1 ${extCameraTestResults[printer.id]?.success ? 'text-green-500' : 'text-red-500'}`}>
-                                {extCameraTestResults[printer.id]?.success ? (
-                                  <>
-                                    <CheckCircle className="w-3 h-3" />
-                                    {t('settings.connected')}{extCameraTestResults[printer.id]?.resolution && ` (${extCameraTestResults[printer.id]?.resolution})`}
-                                  </>
-                                ) : (
-                                  <>
-                                    <XCircle className="w-3 h-3" />
-                                    {extCameraTestResults[printer.id]?.error || t('settings.toast.connectionFailed')}
-                                  </>
-                                )}
-                              </div>
-                            )}
-                            <div className="flex items-center gap-2">
-                              <label className="text-xs text-bambu-gray">{t('settings.cameraRotation')}</label>
-                              <select
-                                value={printer.camera_rotation || 0}
-                                onChange={(e) => handleUpdatePrinterCamera(printer.id, { rotation: parseInt(e.target.value) })}
-                                className="px-2 py-1 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-xs focus:border-bambu-green focus:outline-none"
-                              >
-                                <option value={0}>0°</option>
-                                <option value={90}>90°</option>
-                                <option value={180}>180°</option>
-                                <option value={270}>270°</option>
-                              </select>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="text-xs text-bambu-gray italic">{t('settings.noPrintersConfigured')}</p>
-                )}
-              </div>
-            </CardContent>
-          </Card>
-
-
-          <Card>
-            <CardHeader>
-              <h2 className="text-lg font-semibold text-white">{t('settings.costTracking')}</h2>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div>
-                <label className="block text-sm text-bambu-gray mb-1">{t('settings.currency')}</label>
-                <select
-                  value={localSettings.currency}
-                  onChange={(e) => updateSetting('currency', e.target.value)}
-                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                >
-                  {SUPPORTED_CURRENCIES.map((c) => (
-                    <option key={c.code} value={c.code}>{c.label}</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm text-bambu-gray mb-1">
-                  {t('settings.defaultFilamentCost')}
-                </label>
-                <div className="relative">
-                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-bambu-gray text-sm pointer-events-none">
-                    {getCurrencySymbol(localSettings.currency)}
-                  </span>
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    value={localSettings.default_filament_cost}
-                    onChange={(e) =>
-                      updateSetting('default_filament_cost', parseFloat(e.target.value) || 0)
-                    }
-                    style={{ paddingLeft: `${Math.max(2, getCurrencySymbol(localSettings.currency).length * 0.6 + 1)}rem` }}
-                    className="w-full pr-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                  />
-                </div>
-              </div>
-              <div>
-                <label className="block text-sm text-bambu-gray mb-1">
-                  {t('settings.electricityCost')}
-                </label>
-                <div className="relative">
-                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-bambu-gray text-sm pointer-events-none">
-                    {getCurrencySymbol(localSettings.currency)}
-                  </span>
-                  <input
-                    type="number"
-                    step="0.001"
-                    min="0"
-                    value={localSettings.energy_cost_per_kwh}
-                    onChange={(e) =>
-                      updateSetting('energy_cost_per_kwh', parseFloat(e.target.value) || 0)
-                    }
-                    style={{ paddingLeft: `${Math.max(2, getCurrencySymbol(localSettings.currency).length * 0.6 + 1)}rem` }}
-                    className="w-full pr-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                  />
-                </div>
-              </div>
-              <div>
-                <label className="block text-sm text-bambu-gray mb-1">
-                  {t('settings.energyDisplayMode')}
-                </label>
-                <select
-                  value={localSettings.energy_tracking_mode || 'total'}
-                  onChange={(e) => updateSetting('energy_tracking_mode', e.target.value as 'print' | 'total')}
-                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                >
-                  <option value="print">{t('settings.printsOnly')}</option>
-                  <option value="total">{t('settings.totalConsumption')}</option>
-                </select>
-                <p className="text-xs text-bambu-gray mt-1">
-                  {localSettings.energy_tracking_mode === 'print'
-                    ? t('settings.energyModePrintDescription')
-                    : t('settings.energyModeTotalDescription')}
-                </p>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* File Manager Settings */}
-          <Card>
-            <CardHeader>
-              <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-                <FileText className="w-5 h-5 text-bambu-green" />
-                {t('settings.fileManager')}
-              </h2>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {/* Disk Space Warning Threshold */}
-              <div>
-                <label className="block text-sm text-bambu-gray mb-1">
-                  {t('settings.lowDiskSpaceWarning')}
-                </label>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="number"
-                    min="0.5"
-                    max="100"
-                    step="0.5"
-                    value={localSettings.library_disk_warning_gb ?? 5}
-                    onChange={(e) => updateSetting('library_disk_warning_gb', parseFloat(e.target.value) || 5)}
-                    className="w-24 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                  />
-                  <span className="text-bambu-gray">GB</span>
-                </div>
-                <p className="text-xs text-bambu-gray mt-1">
-                  {t('settings.lowDiskSpaceDescription')}
-                </p>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* Third Column - Sidebar Links & Updates */}
-        <div className="space-y-6 flex-1 lg:max-w-sm">
           {/* Sidebar Links */}
           <ExternalLinksSettings />
+
+          {/* Sidebar Order */}
+          <Card>
+            <CardHeader>
+              <h2 className="text-lg font-semibold text-white">{t('settings.sidebar')}</h2>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-white">{t('settings.sidebarOrder')}</p>
+                  <p className="text-sm text-bambu-gray">
+                    {t('settings.sidebarOrderDescription')}
+                    {authEnabled && hasPermission('settings:update') && ` ${t('settings.sidebarOrderSetDefaultHint')}`}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleResetSidebarOrder}
+                  >
+                    <RotateCcw className="w-4 h-4" />
+                    {t('settings.reset')}
+                  </Button>
+                  {authEnabled && hasPermission('settings:update') && (
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-bambu-gray whitespace-nowrap">{t('settings.setDefault')}</span>
+                      <Toggle
+                        checked={isDefaultSidebarEnabled}
+                        onChange={handleToggleDefaultSidebarOrder}
+                        disabled={isLoading}
+                      />
+                    </div>
+                  )}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+        </div>
+
+        {/* Right Column - Updates & Data Management */}
+        <div className="space-y-6 lg:w-1/2">
 
           <Card>
             <CardHeader>
@@ -2007,6 +1733,461 @@ export function SettingsPage() {
                   <Database className="w-4 h-4" />
                   {t('settings.goToBackup')}
                 </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+      )}
+
+      {/* Printing Tab */}
+      {activeTab === 'printing' && localSettings && (
+      <div className="flex flex-col lg:flex-row gap-6 lg:gap-8">
+        {/* Left Column - Archive, Camera & Cost */}
+        <div className="space-y-6 lg:w-1/2">
+          <Card>
+            <CardHeader>
+              <h2 className="text-lg font-semibold text-white">{t('settings.archiveSettings')}</h2>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-white">{t('settings.saveThumbnails')}</p>
+                  <p className="text-sm text-bambu-gray">
+                    {t('settings.saveThumbnailsDescription')}
+                  </p>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={localSettings.save_thumbnails}
+                    onChange={(e) => updateSetting('save_thumbnails', e.target.checked)}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                </label>
+              </div>
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-white">{t('settings.captureFinishPhoto')}</p>
+                  <p className="text-sm text-bambu-gray">
+                    {t('settings.captureFinishPhotoDescription')}
+                  </p>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={localSettings.capture_finish_photo}
+                    onChange={(e) => updateSetting('capture_finish_photo', e.target.checked)}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                </label>
+              </div>
+              {localSettings.capture_finish_photo && ffmpegStatus && !ffmpegStatus.installed && (
+                <div className="flex items-start gap-2 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
+                  <AlertTriangle className="w-5 h-5 text-yellow-500 flex-shrink-0 mt-0.5" />
+                  <div className="text-sm">
+                    <p className="text-yellow-500 font-medium">{t('settings.ffmpegNotInstalled')}</p>
+                    <p className="text-bambu-gray mt-1">
+                      {t('settings.ffmpegRequired')}
+                    </p>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Camera Settings */}
+          <Card>
+            <CardHeader>
+              <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+                <Video className="w-5 h-5 text-bambu-green" />
+                {t('settings.camera')}
+              </h2>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div>
+                <label className="block text-sm text-bambu-gray mb-1">
+                  {t('settings.cameraViewMode')}
+                </label>
+                <select
+                  value={localSettings.camera_view_mode ?? 'window'}
+                  onChange={(e) => updateSetting('camera_view_mode', e.target.value as 'window' | 'embedded')}
+                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                >
+                  <option value="window">{t('settings.newWindow')}</option>
+                  <option value="embedded">{t('settings.embeddedOverlay')}</option>
+                </select>
+                <p className="text-xs text-bambu-gray mt-1">
+                  {localSettings.camera_view_mode === 'embedded'
+                    ? t('settings.cameraOverlayDescription')
+                    : t('settings.cameraWindowDescription')}
+                </p>
+              </div>
+
+              {/* External Cameras Section */}
+              <div className="border-t border-bambu-dark-tertiary pt-4 mt-4">
+                <h3 className="text-sm font-medium text-white mb-2">{t('settings.externalCameras')}</h3>
+                <p className="text-xs text-bambu-gray mb-3">
+                  {t('settings.externalCamerasDescription')}
+                </p>
+
+                {printers && printers.length > 0 ? (
+                  <div className="space-y-3">
+                    {printers.map(printer => (
+                      <div key={printer.id} className="p-3 bg-bambu-dark rounded-lg">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-white font-medium text-sm">{printer.name}</span>
+                          <label className="relative inline-flex items-center cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={printer.external_camera_enabled}
+                              onChange={(e) => handleUpdatePrinterCamera(printer.id, { enabled: e.target.checked })}
+                              className="sr-only peer"
+                            />
+                            <div className="w-9 h-5 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-bambu-green"></div>
+                          </label>
+                        </div>
+
+                        {printer.external_camera_enabled && (
+                          <div className="space-y-2 mt-2">
+                            <input
+                              type="text"
+                              placeholder={printer.external_camera_type === 'usb' ? t('settings.cameraPlaceholderUsb') : t('settings.cameraPlaceholderUrl')}
+                              value={localCameraUrls[printer.id] ?? printer.external_camera_url ?? ''}
+                              onChange={(e) => handleCameraUrlChange(printer.id, e.target.value)}
+                              className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-sm focus:border-bambu-green focus:outline-none"
+                            />
+                            <div className="flex gap-2">
+                              <select
+                                value={printer.external_camera_type || 'mjpeg'}
+                                onChange={(e) => handleUpdatePrinterCamera(printer.id, { type: e.target.value })}
+                                className="flex-1 px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-sm focus:border-bambu-green focus:outline-none"
+                              >
+                                <option value="mjpeg">{t('settings.cameraTypeMjpeg')}</option>
+                                <option value="rtsp">{t('settings.cameraTypeRtsp')}</option>
+                                <option value="snapshot">{t('settings.cameraTypeSnapshot')}</option>
+                                <option value="usb">{t('settings.cameraTypeUsb')}</option>
+                              </select>
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                onClick={() => handleTestExternalCamera(printer.id, localCameraUrls[printer.id] ?? printer.external_camera_url ?? '', printer.external_camera_type || 'mjpeg')}
+                                disabled={extCameraTestLoading[printer.id] || !(localCameraUrls[printer.id] ?? printer.external_camera_url)}
+                              >
+                                {extCameraTestLoading[printer.id] ? (
+                                  <Loader2 className="w-4 h-4 animate-spin" />
+                                ) : (
+                                  t('settings.test')
+                                )}
+                              </Button>
+                            </div>
+                            {extCameraTestResults[printer.id] && (
+                              <div className={`text-xs flex items-center gap-1 ${extCameraTestResults[printer.id]?.success ? 'text-green-500' : 'text-red-500'}`}>
+                                {extCameraTestResults[printer.id]?.success ? (
+                                  <>
+                                    <CheckCircle className="w-3 h-3" />
+                                    {t('settings.connected')}{extCameraTestResults[printer.id]?.resolution && ` (${extCameraTestResults[printer.id]?.resolution})`}
+                                  </>
+                                ) : (
+                                  <>
+                                    <XCircle className="w-3 h-3" />
+                                    {extCameraTestResults[printer.id]?.error || t('settings.toast.connectionFailed')}
+                                  </>
+                                )}
+                              </div>
+                            )}
+                            <div className="flex items-center gap-2">
+                              <label className="text-xs text-bambu-gray">{t('settings.cameraRotation')}</label>
+                              <select
+                                value={printer.camera_rotation || 0}
+                                onChange={(e) => handleUpdatePrinterCamera(printer.id, { rotation: parseInt(e.target.value) })}
+                                className="px-2 py-1 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-xs focus:border-bambu-green focus:outline-none"
+                              >
+                                <option value={0}>0°</option>
+                                <option value={90}>90°</option>
+                                <option value={180}>180°</option>
+                                <option value={270}>270°</option>
+                              </select>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-bambu-gray italic">{t('settings.noPrintersConfigured')}</p>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+
+        </div>
+
+        {/* Right Column - Queue, Cost & File Manager */}
+        <div className="space-y-6 lg:w-1/2">
+          {/* Cost Tracking */}
+          <Card>
+            <CardHeader>
+              <h2 className="text-lg font-semibold text-white">{t('settings.costTracking')}</h2>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div>
+                <label className="block text-sm text-bambu-gray mb-1">{t('settings.currency')}</label>
+                <select
+                  value={localSettings.currency}
+                  onChange={(e) => updateSetting('currency', e.target.value)}
+                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                >
+                  {SUPPORTED_CURRENCIES.map((c) => (
+                    <option key={c.code} value={c.code}>{c.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm text-bambu-gray mb-1">
+                  {t('settings.defaultFilamentCost')}
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-bambu-gray text-sm pointer-events-none">
+                    {getCurrencySymbol(localSettings.currency)}
+                  </span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={localSettings.default_filament_cost}
+                    onChange={(e) =>
+                      updateSetting('default_filament_cost', parseFloat(e.target.value) || 0)
+                    }
+                    style={{ paddingLeft: `${Math.max(2, getCurrencySymbol(localSettings.currency).length * 0.6 + 1)}rem` }}
+                    className="w-full pr-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm text-bambu-gray mb-1">
+                  {t('settings.electricityCost')}
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-bambu-gray text-sm pointer-events-none">
+                    {getCurrencySymbol(localSettings.currency)}
+                  </span>
+                  <input
+                    type="number"
+                    step="0.001"
+                    min="0"
+                    value={localSettings.energy_cost_per_kwh}
+                    onChange={(e) =>
+                      updateSetting('energy_cost_per_kwh', parseFloat(e.target.value) || 0)
+                    }
+                    style={{ paddingLeft: `${Math.max(2, getCurrencySymbol(localSettings.currency).length * 0.6 + 1)}rem` }}
+                    className="w-full pr-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm text-bambu-gray mb-1">
+                  {t('settings.energyDisplayMode')}
+                </label>
+                <select
+                  value={localSettings.energy_tracking_mode || 'total'}
+                  onChange={(e) => updateSetting('energy_tracking_mode', e.target.value as 'print' | 'total')}
+                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                >
+                  <option value="print">{t('settings.printsOnly')}</option>
+                  <option value="total">{t('settings.totalConsumption')}</option>
+                </select>
+                <p className="text-xs text-bambu-gray mt-1">
+                  {localSettings.energy_tracking_mode === 'print'
+                    ? t('settings.energyModePrintDescription')
+                    : t('settings.energyModeTotalDescription')}
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* File Manager */}
+          <Card>
+            <CardHeader>
+              <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+                <FileText className="w-5 h-5 text-bambu-green" />
+                {t('settings.fileManager')}
+              </h2>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div>
+                <label className="block text-sm text-bambu-gray mb-1">
+                  {t('settings.lowDiskSpaceWarning')}
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min="0.5"
+                    max="100"
+                    step="0.5"
+                    value={localSettings.library_disk_warning_gb ?? 5}
+                    onChange={(e) => updateSetting('library_disk_warning_gb', parseFloat(e.target.value) || 5)}
+                    className="w-24 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                  />
+                  <span className="text-bambu-gray">GB</span>
+                </div>
+                <p className="text-xs text-bambu-gray mt-1">
+                  {t('settings.lowDiskSpaceDescription')}
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Queue & Scheduling */}
+          <Card>
+            <CardHeader>
+              <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+                <Calendar className="w-5 h-5 text-bambu-green" />
+                {t('settings.queueAndScheduling')}
+              </h2>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {/* Staggered Start */}
+              <div className="space-y-3">
+                <div className="flex items-center gap-2 text-white">
+                  <Zap className="w-4 h-4 text-yellow-400" />
+                  <span className="font-medium">{t('settings.staggeredStart')}</span>
+                </div>
+                <p className="text-xs text-bambu-gray">
+                  {t('settings.staggeredStartDescription')}
+                </p>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <label className="block text-sm text-white">
+                      {t('settings.staggerEnabled')}
+                    </label>
+                    <p className="text-xs text-bambu-gray mt-0.5">
+                      {t('settings.staggerEnabledDescription')}
+                    </p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={localSettings.stagger_enabled ?? false}
+                      onChange={(e) => updateSetting('stagger_enabled', e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                  </label>
+                </div>
+                {localSettings.stagger_enabled && (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <label className="block text-sm text-white">
+                          {t('settings.staggerConcurrent')}
+                        </label>
+                        <p className="text-xs text-bambu-gray mt-0.5">
+                          {t('settings.staggerConcurrentDescription')}
+                        </p>
+                      </div>
+                      <input
+                        type="number"
+                        min="1"
+                        max="50"
+                        step="1"
+                        value={localSettings.stagger_concurrent ?? 2}
+                        onChange={(e) => updateSetting('stagger_concurrent', Math.max(1, parseInt(e.target.value) || 2))}
+                        className="w-20 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-center"
+                      />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <label className="block text-sm text-white">
+                          {t('settings.staggerInterval')}
+                        </label>
+                        <p className="text-xs text-bambu-gray mt-0.5">
+                          {t('settings.staggerIntervalDescription')}
+                        </p>
+                      </div>
+                      <input
+                        type="number"
+                        min="1"
+                        max="60"
+                        step="1"
+                        value={localSettings.stagger_interval_minutes ?? 5}
+                        onChange={(e) => updateSetting('stagger_interval_minutes', Math.max(1, parseInt(e.target.value) || 5))}
+                        className="w-20 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-center"
+                      />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <label className="block text-sm text-white">
+                          {t('settings.staggerWaitForBed')}
+                        </label>
+                        <p className="text-xs text-bambu-gray mt-0.5">
+                          {t('settings.staggerWaitForBedDescription')}
+                        </p>
+                      </div>
+                      <label className="relative inline-flex items-center cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={localSettings.stagger_wait_for_bed ?? true}
+                          onChange={(e) => updateSetting('stagger_wait_for_bed', e.target.checked)}
+                          className="sr-only peer"
+                        />
+                        <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                      </label>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* Per-Printer Mapping Default (Print Modal) */}
+              <div className="space-y-3 pt-4 border-t border-bambu-dark-tertiary">
+                <div className="flex items-center gap-2 text-white">
+                  <Printer className="w-4 h-4 text-bambu-green" />
+                  <span className="font-medium">{t('settings.printModal')}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <label className="block text-sm text-white">
+                      {t('settings.expandCustomMapping')}
+                    </label>
+                    <p className="text-xs text-bambu-gray mt-0.5">
+                      {t('settings.expandCustomMappingDescription')}
+                    </p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={localSettings.per_printer_mapping_expanded ?? false}
+                      onChange={(e) => updateSetting('per_printer_mapping_expanded', e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                  </label>
+                </div>
+              </div>
+
+              {/* Bed Cooled Threshold */}
+              <div className="space-y-3 pt-4 border-t border-bambu-dark-tertiary">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <label className="block text-sm text-white">
+                      {t('settings.bedCooledThreshold')}
+                    </label>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="number"
+                      min={20}
+                      max={80}
+                      step={1}
+                      value={localSettings.bed_cooled_threshold ?? 35}
+                      onChange={(e) => updateSetting('bed_cooled_threshold', Number(e.target.value))}
+                      className="w-20 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-center"
+                    />
+                    <span className="text-bambu-gray">°C</span>
+                  </div>
+                </div>
               </div>
             </CardContent>
           </Card>
@@ -2550,7 +2731,7 @@ export function SettingsPage() {
 
       {/* Smart Plugs Tab */}
       {activeTab === 'plugs' && (
-        <div className="max-w-4xl">
+        <div>
           <div className="flex items-start justify-between mb-6">
             <div>
               <h2 className="text-lg font-semibold text-white flex items-center gap-2">
@@ -2763,25 +2944,7 @@ export function SettingsPage() {
         {notifSubTab === 'providers' && (
           <div>
             {/* Settings + Actions bar */}
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-3">
-                {/* Bed Cooled Threshold - compact inline */}
-                <div className="flex items-center gap-2 text-sm">
-                  <span className="text-bambu-gray">{t('settings.bedCooledThreshold')}:</span>
-                  <div className="flex items-center gap-1">
-                    <input
-                      type="number"
-                      min={20}
-                      max={80}
-                      step={1}
-                      value={localSettings.bed_cooled_threshold ?? 35}
-                      onChange={(e) => updateSetting('bed_cooled_threshold', Number(e.target.value))}
-                      className="w-14 px-2 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-sm text-center focus:outline-none focus:ring-1 focus:ring-bambu-green"
-                    />
-                    <span className="text-bambu-gray">°C</span>
-                  </div>
-                </div>
-              </div>
+            <div className="flex items-center justify-end mb-4">
               <div className="flex items-center gap-2">
                 <Button size="sm" variant="secondary" onClick={() => setShowLogViewer(true)}>
                   <History className="w-4 h-4" />
@@ -3593,123 +3756,6 @@ export function SettingsPage() {
                   </div>
                 </div>
 
-                {/* Staggered Start */}
-                <div className="space-y-3 pt-4 border-t border-bambu-dark-tertiary">
-                  <div className="flex items-center gap-2 text-white">
-                    <Zap className="w-4 h-4 text-yellow-400" />
-                    <span className="font-medium">{t('settings.staggeredStart')}</span>
-                  </div>
-                  <p className="text-xs text-bambu-gray">
-                    {t('settings.staggeredStartDescription')}
-                  </p>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <label className="block text-sm text-white">
-                        {t('settings.staggerEnabled')}
-                      </label>
-                      <p className="text-xs text-bambu-gray mt-0.5">
-                        {t('settings.staggerEnabledDescription')}
-                      </p>
-                    </div>
-                    <label className="relative inline-flex items-center cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={localSettings.stagger_enabled ?? false}
-                        onChange={(e) => updateSetting('stagger_enabled', e.target.checked)}
-                        className="sr-only peer"
-                      />
-                      <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
-                    </label>
-                  </div>
-                  {localSettings.stagger_enabled && (
-                    <>
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <label className="block text-sm text-white">
-                            {t('settings.staggerConcurrent')}
-                          </label>
-                          <p className="text-xs text-bambu-gray mt-0.5">
-                            {t('settings.staggerConcurrentDescription')}
-                          </p>
-                        </div>
-                        <input
-                          type="number"
-                          min="1"
-                          max="50"
-                          step="1"
-                          value={localSettings.stagger_concurrent ?? 2}
-                          onChange={(e) => updateSetting('stagger_concurrent', Math.max(1, parseInt(e.target.value) || 2))}
-                          className="w-20 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-center"
-                        />
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <label className="block text-sm text-white">
-                            {t('settings.staggerInterval')}
-                          </label>
-                          <p className="text-xs text-bambu-gray mt-0.5">
-                            {t('settings.staggerIntervalDescription')}
-                          </p>
-                        </div>
-                        <input
-                          type="number"
-                          min="1"
-                          max="60"
-                          step="1"
-                          value={localSettings.stagger_interval_minutes ?? 5}
-                          onChange={(e) => updateSetting('stagger_interval_minutes', Math.max(1, parseInt(e.target.value) || 5))}
-                          className="w-20 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-center"
-                        />
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <label className="block text-sm text-white">
-                            {t('settings.staggerWaitForBed')}
-                          </label>
-                          <p className="text-xs text-bambu-gray mt-0.5">
-                            {t('settings.staggerWaitForBedDescription')}
-                          </p>
-                        </div>
-                        <label className="relative inline-flex items-center cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={localSettings.stagger_wait_for_bed ?? true}
-                            onChange={(e) => updateSetting('stagger_wait_for_bed', e.target.checked)}
-                            className="sr-only peer"
-                          />
-                          <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
-                        </label>
-                      </div>
-                    </>
-                  )}
-                </div>
-
-                {/* Per-Printer Mapping Default */}
-                <div className="space-y-3 pt-4 border-t border-bambu-dark-tertiary">
-                  <div className="flex items-center gap-2 text-white">
-                    <Printer className="w-4 h-4 text-bambu-green" />
-                    <span className="font-medium">{t('settings.printModal')}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <label className="block text-sm text-white">
-                        {t('settings.expandCustomMapping')}
-                      </label>
-                      <p className="text-xs text-bambu-gray mt-0.5">
-                        {t('settings.expandCustomMappingDescription')}
-                      </p>
-                    </div>
-                    <label className="relative inline-flex items-center cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={localSettings.per_printer_mapping_expanded ?? false}
-                        onChange={(e) => updateSetting('per_printer_mapping_expanded', e.target.checked)}
-                        className="sr-only peer"
-                      />
-                      <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
-                    </label>
-                  </div>
-                </div>
               </CardContent>
             </Card>
           </div>

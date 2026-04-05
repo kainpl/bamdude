@@ -1285,6 +1285,7 @@ export default {
     // Tab names
     tabs: {
       general: 'General',
+      printing: 'Printing',
       smartPlugs: 'Smart Plugs',
       notifications: 'Notifications',
       filament: 'Filament',
@@ -1462,6 +1463,7 @@ export default {
     // Default printer
     noDefaultPrinter: 'No default (ask each time)',
     // Sidebar
+    sidebar: 'Sidebar',
     sidebarOrder: 'Sidebar order',
     // Camera
     saveThumbnails: 'Save thumbnails',
@@ -1650,6 +1652,7 @@ export default {
     configureBambuddy: 'Configure Bambuddy',
     systemDefault: 'System Default',
     archiveSettings: 'Archive Settings',
+    queueAndScheduling: 'Queue & Scheduling',
     newWindow: 'New Window',
     embeddedOverlay: 'Embedded Overlay',
     preferredSlicer: 'Preferred Slicer',
@@ -3319,15 +3322,81 @@ export default {
     rightNozzle: 'R',
     leftNozzleTooltip: 'Left nozzle',
     rightNozzleTooltip: 'Right nozzle',
-    filamentOverride: 'Filament Override',
-    filamentOverrideHint: 'Optionally override filaments for model-based assignment. The scheduler will match against your selected filaments instead of the original 3MF values.',
-    originalFilament: 'Original',
-    overrideWith: 'Override with',
-    resetToOriginal: 'Reset to original',
     insufficientFilamentTitle: 'Not enough filament',
     insufficientFilamentMessage: 'Some assigned spools have less filament remaining than this print needs:',
     insufficientFilamentLine: '{{printer}} - {{slot}}: needs {{required}}g, remaining {{remaining}}g',
     printAnyway: 'Print anyway',
+
+    // PrintOptions descriptions
+    bedLevelingDesc: 'Auto-level bed before print',
+    flowCalibrationDesc: 'Calibrate extrusion flow',
+    vibrationCalibrationDesc: 'Reduce ringing artifacts',
+    layerInspectionDesc: 'AI inspection of first layer',
+    timelapseDesc: 'Record timelapse video',
+    printOptions: 'Print Options',
+
+    // ScheduleOptions
+    whenToPrint: 'When to print',
+    scheduleAsap: 'ASAP',
+    scheduleScheduled: 'Scheduled',
+    scheduleQueueOnly: 'Queue Only',
+    dateAndTime: 'Date & Time',
+    invalidDateTime: 'Please enter a valid date and time',
+    powerOffWhenDone: 'Power off printer when done',
+    hintAsap: 'Print will start as soon as the printer is idle.',
+    hintScheduled: 'Print will start at the scheduled time if the printer is idle. If busy, it will wait until the printer becomes available.',
+    hintManual: "Print will be staged but won't start automatically. Use the Start button to release it to the queue.",
+
+    // PrinterSelector
+    printerStateOffline: 'Offline',
+    printerStatePrinting: 'Printing',
+    printerStatePreparing: 'Preparing',
+    printerStatePaused: 'Paused',
+    printerStateIdle: 'Idle',
+    printerStateFinished: 'Finished',
+    printerStateFailed: 'Failed',
+    selectPrinters: 'Select printers',
+    printersSelected: '{{count}} printer(s) selected',
+    unknownModel: 'Unknown model',
+    inactive: '(inactive)',
+    manuallySelected: 'Manually selected',
+    autoMatched: 'Auto-matched',
+    requiredFilament: 'Required: {{type}} - {{color}}',
+    selectSlot: '-- Select slot --',
+    customSlotMapping: 'Custom slot mapping',
+    reRead: 'Re-read',
+    customMapping: 'Custom mapping',
+    matched: '{{matched}}/{{total}} matched',
+    selectAll: 'Select all',
+    clear: 'Clear',
+    noPrintersActive: 'No active printers available',
+    noPrintersAll: 'No printers available',
+    hiddenPrinters: '{{count}} other printer(s) hidden (different model) —',
+    showAll: 'show all',
+    showOnlyModel: 'Show only {{model}} printers',
+    selectAtLeastOne: 'Select at least one printer',
+    selectAtLeastOnePrinter: 'Please select at least one printer',
+    slicedForWarning: 'File was sliced for {{slicedModel}}, but printing on {{printerModel}}',
+    archiveDataUnavailable: 'Archive data unavailable. The source file may have been deleted. Filament mapping is disabled.',
+    clickToChangeSlot: 'Click to change slot assignment',
+    filamentTypeMismatch: 'Required filament type not found in printer.',
+    plateNFallback: 'Plate {{index}}',
+
+    // index.tsx
+    failedToUpdateQueue: 'Failed to update queue item',
+    failedToComplete: 'Failed to complete operation',
+    failedPrefix: 'Failed: {{error}}',
+    partialSuccess: '{{success}} succeeded, {{failed}} failed',
+    queueItemUpdated: 'Queue item updated',
+    sendLabel: 'Send',
+    toLabel: 'to',
+    printJob: 'Print Job',
+
+    // FilamentOverride
+    filamentOverride: 'Filament Override',
+    filamentOverrideHint: 'Override the original filament choices with filaments available on the selected printers.',
+    originalFilament: 'Original',
+    resetToOriginal: 'Reset to original',
     forceColorMatch: 'Force color match',
   },
 
@@ -4243,8 +4312,13 @@ export default {
 
   // External Links
   externalLinks: {
+    title: 'Sidebar Links',
+    addLink: 'Add Link',
+    description: 'Add external links to the sidebar navigation. Drag to reorder.',
     noLinksConfigured: 'No external links configured',
+    noLinksHint: 'Click "Add Link" to add one',
     deleteLink: 'Delete Link',
+    deleteLinkConfirm: 'Are you sure you want to delete "{{name}}"? This action cannot be undone.',
     removeCustomIcon: 'Remove custom icon',
     openInNewTab: 'Open in new tab',
     placeholders: {

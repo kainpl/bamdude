@@ -1,4 +1,5 @@
 import { useState, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useQueryClient, useQueries } from '@tanstack/react-query';
 import {
   Printer as PrinterIcon,
@@ -48,6 +49,7 @@ function InlineMappingEditor({
   filamentReqs: FilamentRequirement[];
   onUpdateConfig: (config: Partial<PerPrinterConfig>) => void;
 }) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [isRefreshing, setIsRefreshing] = useState(false);
 
@@ -116,7 +118,7 @@ function InlineMappingEditor({
   return (
     <div className="mt-2 bg-bambu-dark rounded-lg p-3 space-y-2">
       <div className="flex items-center justify-between mb-2">
-        <span className="text-xs text-bambu-gray">Custom slot mapping</span>
+        <span className="text-xs text-bambu-gray">{t('printModal.customSlotMapping')}</span>
         <button
           type="button"
           onClick={handleRefresh}
@@ -124,7 +126,7 @@ function InlineMappingEditor({
           disabled={isRefreshing}
         >
           <RefreshCw className={`w-3 h-3 ${isRefreshing ? 'animate-spin' : ''}`} />
-          <span>Re-read</span>
+          <span>{t('printModal.reRead')}</span>
         </button>
       </div>
 
@@ -134,7 +136,7 @@ function InlineMappingEditor({
           className="grid items-center gap-2 text-xs"
           style={{ gridTemplateColumns: '16px minmax(70px, 1fr) auto 2fr 16px' }}
         >
-          <span title={`Required: ${req.type} - ${getColorName(req.color)}`}>
+          <span title={t('printModal.requiredFilament', { type: req.type, color: getColorName(req.color) })}>
             <Circle className="w-3 h-3" fill={req.color} stroke={req.color} />
           </span>
           <span className="text-white truncate">
@@ -151,10 +153,10 @@ function InlineMappingEditor({
                 ? 'border-yellow-400/50 text-yellow-400'
                 : 'border-orange-400/50 text-orange-400'
             } ${isManual ? 'ring-1 ring-blue-400/50' : ''}`}
-            title={isManual ? 'Manually selected' : 'Auto-matched'}
+            title={isManual ? t('printModal.manuallySelected') : t('printModal.autoMatched')}
           >
             <option value="" className="bg-bambu-dark text-bambu-gray">
-              -- Select slot --
+              {t('printModal.selectSlot')}
             </option>
             {filterFilamentsByNozzle(printerResult.loadedFilaments, req.nozzle_id)
               .map((f) => (
@@ -166,11 +168,11 @@ function InlineMappingEditor({
           {status === 'match' ? (
             <Check className="w-3 h-3 text-bambu-green" />
           ) : status === 'type_only' ? (
-            <span title="Same type, different color">
+            <span title={t('printModal.sameTypeDifferentColor')}>
               <AlertTriangle className="w-3 h-3 text-yellow-400" />
             </span>
           ) : (
-            <span title="Filament type not loaded">
+            <span title={t('printModal.filamentTypeNotLoaded')}>
               <AlertTriangle className="w-3 h-3 text-orange-400" />
             </span>
           )}
@@ -199,6 +201,7 @@ export function PrinterSelector({
   onUpdatePrinterConfig,
   slicedForModel,
 }: PrinterSelectorWithMappingProps) {
+  const { t } = useTranslation();
   // State for showing all printers vs only matching model
   const [showAllPrinters, setShowAllPrinters] = useState(false);
 
@@ -236,15 +239,15 @@ export function PrinterSelector({
   const getPrinterStateLabel = (printerId: number): string | null => {
     const status = printerStatusMap.get(printerId);
     if (!status) return null;
-    if (!status.connected) return 'Offline';
+    if (!status.connected) return t('printModal.printerStateOffline');
     const state = status.state;
     if (!state) return null;
-    if (state === 'RUNNING') return status.stg_cur_name || 'Printing';
-    if (state === 'PREPARE') return 'Preparing';
-    if (state === 'PAUSE') return 'Paused';
-    if (state === 'IDLE') return 'Idle';
-    if (state === 'FINISH') return 'Finished';
-    if (state === 'FAILED') return 'Failed';
+    if (state === 'RUNNING') return status.stg_cur_name || t('printModal.printerStatePrinting');
+    if (state === 'PREPARE') return t('printModal.printerStatePreparing');
+    if (state === 'PAUSE') return t('printModal.printerStatePaused');
+    if (state === 'IDLE') return t('printModal.printerStateIdle');
+    if (state === 'FINISH') return t('printModal.printerStateFinished');
+    if (state === 'FAILED') return t('printModal.printerStateFailed');
     return state;
   };
 
@@ -282,7 +285,7 @@ export function PrinterSelector({
     return (
       <div className="flex items-center gap-2 text-red-400 text-sm mb-4">
         <AlertCircle className="w-4 h-4" />
-        No {showInactive ? '' : 'active '}printers available
+        {showInactive ? t('printModal.noPrintersAll') : t('printModal.noPrintersActive')}
       </div>
     );
   }
@@ -341,8 +344,8 @@ export function PrinterSelector({
         <div className="flex items-center justify-between text-xs text-bambu-gray mb-2">
           <span>
             {selectedCount === 0
-              ? 'Select printers'
-              : `${selectedCount} printer${selectedCount !== 1 ? 's' : ''} selected`}
+              ? t('printModal.selectPrinters')
+              : t('printModal.printersSelected', { count: selectedCount })}
           </span>
           <div className="flex gap-2">
             {selectedCount < displayPrinters.length && (
@@ -351,7 +354,7 @@ export function PrinterSelector({
                 onClick={handleSelectAll}
                 className="text-bambu-green hover:text-bambu-green/80 transition-colors"
               >
-                Select all
+                {t('printModal.selectAll')}
               </button>
             )}
             {selectedCount > 0 && (
@@ -360,7 +363,7 @@ export function PrinterSelector({
                 onClick={handleDeselectAll}
                 className="text-bambu-gray hover:text-white transition-colors"
               >
-                Clear
+                {t('printModal.clear')}
               </button>
             )}
           </div>
@@ -405,10 +408,10 @@ export function PrinterSelector({
               <div className="text-left flex-1">
                 <p className={`font-medium ${disabled ? 'text-bambu-gray' : 'text-white'}`}>
                   {printer.name}
-                  {!printer.is_active && <span className="text-bambu-gray text-xs ml-2">(inactive)</span>}
+                  {!printer.is_active && <span className="text-bambu-gray text-xs ml-2">{t('printModal.inactive')}</span>}
                 </p>
                 <p className="text-xs text-bambu-gray">
-                  {printer.model || 'Unknown model'} • {printer.ip_address}
+                  {printer.model || t('printModal.unknownModel')} • {printer.ip_address}
                 </p>
               </div>
               {stateLabel && (
@@ -450,7 +453,7 @@ export function PrinterSelector({
                       onChange={(e) => handleOverrideToggle(printer.id, e.target.checked, e as unknown as React.MouseEvent)}
                       className="w-3.5 h-3.5 rounded border-bambu-gray/30 bg-bambu-dark-secondary text-bambu-green focus:ring-bambu-green focus:ring-offset-0"
                     />
-                    <span className="text-xs text-bambu-gray">Custom mapping</span>
+                    <span className="text-xs text-bambu-gray">{t('printModal.customMapping')}</span>
                   </label>
 
                   {/* Match status indicator */}
@@ -461,7 +464,7 @@ export function PrinterSelector({
                       ? 'text-yellow-400'
                       : 'text-orange-400'
                   }`}>
-                    ({mappingResult.exactMatches}/{mappingResult.totalSlots} matched)
+                    ({t('printModal.matched', { matched: mappingResult.exactMatches, total: mappingResult.totalSlots })})
                   </span>
 
                   {/* Loading indicator */}
@@ -507,8 +510,8 @@ export function PrinterSelector({
           className="text-xs text-bambu-gray hover:text-white transition-colors mt-2 flex items-center gap-1"
         >
           <AlertTriangle className="w-3 h-3 text-yellow-400" />
-          {hiddenPrinterCount} other printer{hiddenPrinterCount > 1 ? 's' : ''} hidden (different model) —
-          <span className="underline">show all</span>
+          {t('printModal.hiddenPrinters', { count: hiddenPrinterCount })}{' '}
+          <span className="underline">{t('printModal.showAll')}</span>
         </button>
       )}
 
@@ -519,7 +522,7 @@ export function PrinterSelector({
           onClick={() => setShowAllPrinters(false)}
           className="text-xs text-bambu-gray hover:text-white transition-colors mt-2"
         >
-          <span className="underline">Show only {slicedForModel} printers</span>
+          <span className="underline">{t('printModal.showOnlyModel', { model: slicedForModel })}</span>
         </button>
       )}
 
@@ -527,7 +530,7 @@ export function PrinterSelector({
       {selectedCount === 0 && (
         <p className="text-xs text-orange-400 mt-1 flex items-center gap-1">
           <AlertCircle className="w-3 h-3" />
-          Select at least one printer
+          {t('printModal.selectAtLeastOne')}
         </p>
       )}
     </div>

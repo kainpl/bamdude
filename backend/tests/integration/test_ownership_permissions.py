@@ -319,13 +319,20 @@ class TestQueueOwnershipPermissions(TestOwnershipPermissionsSetup):
 
         async def _create_item(**kwargs):
             from backend.app.models.print_queue import PrintQueueItem
+            from backend.app.models.printer_queue import PrinterQueue
 
             printer = await printer_factory()
+            # Create printer queue (queue_id == printer_id)
+            queue = PrinterQueue(printer_id=printer.id)
+            db_session.add(queue)
+            await db_session.commit()
+            await db_session.refresh(queue)
+
             # Create an archive to link to the queue item
             archive = await archive_factory(printer.id)
 
             defaults = {
-                "printer_id": printer.id,
+                "queue_id": queue.id,
                 "archive_id": archive.id,
                 "status": "pending",
                 "position": 0,
