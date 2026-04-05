@@ -87,7 +87,7 @@ class Settings(BaseSettings):
         object.__setattr__(self, "base_dir", self.data_dir)
         object.__setattr__(self, "archive_dir", self.data_dir / "archive")
         # Recalculate database_url if data_dir was overridden from env
-        db_path = self.data_dir / "bambuddy.db"
+        db_path = self.data_dir / "bamdude.db"
         object.__setattr__(self, "database_url", f"sqlite+aiosqlite:///{db_path}")
 
 
