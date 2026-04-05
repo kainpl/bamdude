@@ -9,7 +9,6 @@ import {
   Circle,
   RefreshCw,
   Wand2,
-  Users,
 } from 'lucide-react';
 import { api, type PrinterStatus } from '../../api/client';
 import { getColorName } from '../../utils/colors';
@@ -19,7 +18,7 @@ import {
   autoMatchFilament,
   filterFilamentsByNozzle,
 } from '../../utils/amsHelpers';
-import type { PrinterSelectorProps, AssignmentMode } from './types';
+import type { PrinterSelectorProps } from './types';
 import type { PrinterMappingResult, PerPrinterConfig } from '../../hooks/useMultiPrinterFilamentMapping';
 import type { FilamentRequirement, LoadedFilament } from '../../hooks/useFilamentMapping';
 
@@ -32,20 +31,6 @@ interface PrinterSelectorWithMappingProps extends PrinterSelectorProps {
   onAutoConfigurePrinter?: (printerId: number) => void;
   /** Callback to update printer config */
   onUpdatePrinterConfig?: (printerId: number, config: Partial<PerPrinterConfig>) => void;
-  /** Current assignment mode */
-  assignmentMode?: AssignmentMode;
-  /** Handler for assignment mode change */
-  onAssignmentModeChange?: (mode: AssignmentMode) => void;
-  /** Selected target model (when assignmentMode is 'model') */
-  targetModel?: string | null;
-  /** Handler for target model change */
-  onTargetModelChange?: (model: string | null) => void;
-  /** Selected target location (when assignmentMode is 'model') */
-  targetLocation?: string | null;
-  /** Handler for target location change */
-  onTargetLocationChange?: (location: string | null) => void;
-  /** Suggested model from sliced file (for pre-selection) */
-  slicedForModel?: string | null;
 }
 
 /** States where the printer is available to accept a new print */
@@ -212,12 +197,6 @@ export function PrinterSelector({
   filamentReqs,
   onAutoConfigurePrinter,
   onUpdatePrinterConfig,
-  assignmentMode = 'printer',
-  onAssignmentModeChange,
-  targetModel,
-  onTargetModelChange,
-  targetLocation,
-  onTargetLocationChange,
   slicedForModel,
 }: PrinterSelectorWithMappingProps) {
   // State for showing all printers vs only matching model
@@ -269,40 +248,19 @@ export function PrinterSelector({
     return state;
   };
 
-  // Filter by sliced model (only in printer mode, when slicedForModel is set)
+  // Filter by sliced model when slicedForModel is set
   const displayPrinters = useMemo(() => {
-    if (assignmentMode !== 'printer' || !slicedForModel || showAllPrinters) {
+    if (!slicedForModel || showAllPrinters) {
       return activePrinters;
     }
     // Filter to only show printers matching the sliced model
     const matching = activePrinters.filter((p) => p.model === slicedForModel);
     // If no matching printers, show all
     return matching.length > 0 ? matching : activePrinters;
-  }, [activePrinters, assignmentMode, slicedForModel, showAllPrinters]);
+  }, [activePrinters, slicedForModel, showAllPrinters]);
 
   // Check if there are hidden printers due to model filtering
   const hiddenPrinterCount = activePrinters.length - displayPrinters.length;
-
-  // Get unique models from available printers (for model-based assignment)
-  const uniqueModels = useMemo(() => {
-    const models = activePrinters
-      .map(p => p.model)
-      .filter((m): m is string => Boolean(m));
-    return [...new Set(models)].sort();
-  }, [activePrinters]);
-
-  // Get unique locations for the selected target model (for location filtering)
-  const uniqueLocations = useMemo(() => {
-    if (!targetModel) return [];
-    const locations = activePrinters
-      .filter(p => p.model === targetModel && p.location)
-      .map(p => p.location)
-      .filter((l): l is string => Boolean(l));
-    return [...new Set(locations)].sort();
-  }, [activePrinters, targetModel]);
-
-  // Check if model-based assignment is available (need callbacks and multiple printers of same model)
-  const modelAssignmentAvailable = onAssignmentModeChange && onTargetModelChange && uniqueModels.length > 0;
 
   const showMappingOptions = allowMultiple &&
     selectedPrinterIds.length > 1 &&
@@ -378,106 +336,8 @@ export function PrinterSelector({
 
   return (
     <div className="space-y-2 mb-6">
-      {/* Assignment mode toggle (model vs specific printer) */}
-      {modelAssignmentAvailable && (
-        <div className="flex gap-2 mb-4">
-          <button
-            type="button"
-            onClick={() => {
-              onAssignmentModeChange!('printer');
-              onTargetModelChange!(null);
-            }}
-            className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg border transition-colors ${
-              assignmentMode === 'printer'
-                ? 'border-bambu-green bg-bambu-green/10 text-white'
-                : 'border-bambu-dark-tertiary bg-bambu-dark text-bambu-gray hover:border-bambu-gray'
-            }`}
-          >
-            <PrinterIcon className="w-4 h-4" />
-            <span className="text-sm">Specific Printer</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              onAssignmentModeChange!('model');
-              onMultiSelect([]);
-              // Pre-select the sliced-for model if available, otherwise first model
-              const defaultModel = slicedForModel && uniqueModels.includes(slicedForModel)
-                ? slicedForModel
-                : uniqueModels[0];
-              onTargetModelChange!(defaultModel);
-            }}
-            className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg border transition-colors ${
-              assignmentMode === 'model'
-                ? 'border-bambu-green bg-bambu-green/10 text-white'
-                : 'border-bambu-dark-tertiary bg-bambu-dark text-bambu-gray hover:border-bambu-gray'
-            }`}
-          >
-            <Users className="w-4 h-4" />
-            <span className="text-sm">Any {slicedForModel || 'Model'}</span>
-          </button>
-        </div>
-      )}
-
-      {/* Model selection and location filter (when in model mode) */}
-      {assignmentMode === 'model' && modelAssignmentAvailable && (
-        <div className="space-y-3 mb-4">
-          {/* Model selector — only show when sliced model is unknown */}
-          {!slicedForModel && (
-            <div>
-              <label className="block text-xs text-bambu-gray mb-1">Target Model</label>
-              <select
-                value={targetModel || ''}
-                onChange={(e) => {
-                  onTargetModelChange!(e.target.value || null);
-                  // Clear location when model changes
-                  if (onTargetLocationChange) {
-                    onTargetLocationChange(null);
-                  }
-                }}
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
-              >
-                <option value="">Select a model...</option>
-                {uniqueModels.map((model) => (
-                  <option key={model} value={model}>
-                    {model}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-
-          {/* Location filter (only show when target model is selected and locations exist) */}
-          {targetModel && uniqueLocations.length > 0 && onTargetLocationChange && (
-            <div>
-              <label className="block text-xs text-bambu-gray mb-1">Location Filter (optional)</label>
-              <select
-                value={targetLocation || ''}
-                onChange={(e) => onTargetLocationChange(e.target.value || null)}
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
-              >
-                <option value="">Any location</option>
-                {uniqueLocations.map((location) => (
-                  <option key={location} value={location}>
-                    {location}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-
-          {/* Info text */}
-          {targetModel && (
-            <p className="text-xs text-bambu-gray">
-              Scheduler will assign to first available idle {targetModel} printer
-              {targetLocation ? ` in ${targetLocation}` : ''}
-            </p>
-          )}
-        </div>
-      )}
-
-      {/* Multi-select header (only in printer mode) */}
-      {assignmentMode === 'printer' && allowMultiple && displayPrinters.length > 1 && (
+      {/* Multi-select header */}
+      {allowMultiple && displayPrinters.length > 1 && (
         <div className="flex items-center justify-between text-xs text-bambu-gray mb-2">
           <span>
             {selectedCount === 0
@@ -507,8 +367,8 @@ export function PrinterSelector({
         </div>
       )}
 
-      {/* Printer list (only in printer mode) */}
-      {assignmentMode === 'printer' && displayPrinters.map((printer) => {
+      {/* Printer list */}
+      {displayPrinters.map((printer) => {
         const selected = isSelected(printer.id);
         const mappingResult = getPrinterMappingResult(printer.id);
         const hasOverride = mappingResult && !mappingResult.config.useDefault;
@@ -640,7 +500,7 @@ export function PrinterSelector({
       })}
 
       {/* Show hidden printers toggle */}
-      {assignmentMode === 'printer' && hiddenPrinterCount > 0 && !showAllPrinters && (
+      {hiddenPrinterCount > 0 && !showAllPrinters && (
         <button
           type="button"
           onClick={() => setShowAllPrinters(true)}
@@ -653,7 +513,7 @@ export function PrinterSelector({
       )}
 
       {/* Show matching only toggle */}
-      {assignmentMode === 'printer' && showAllPrinters && slicedForModel && (
+      {showAllPrinters && slicedForModel && (
         <button
           type="button"
           onClick={() => setShowAllPrinters(false)}
@@ -663,19 +523,11 @@ export function PrinterSelector({
         </button>
       )}
 
-      {/* Warning when no printer selected (only in printer mode) */}
-      {assignmentMode === 'printer' && selectedCount === 0 && (
+      {/* Warning when no printer selected */}
+      {selectedCount === 0 && (
         <p className="text-xs text-orange-400 mt-1 flex items-center gap-1">
           <AlertCircle className="w-3 h-3" />
           Select at least one printer
-        </p>
-      )}
-
-      {/* Warning when no model selected (only in model mode) */}
-      {assignmentMode === 'model' && !targetModel && (
-        <p className="text-xs text-orange-400 mt-1 flex items-center gap-1">
-          <AlertCircle className="w-3 h-3" />
-          Select a target printer model
         </p>
       )}
     </div>
