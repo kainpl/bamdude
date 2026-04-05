@@ -1610,27 +1610,26 @@ async def run_migrations(conn):
 
     # Populate printer_queues from existing printers (idempotent)
     try:
-        await conn.execute(text(
-            "INSERT OR IGNORE INTO printer_queues (id, printer_id, status) "
-            "SELECT id, id, 'idle' FROM printers WHERE id NOT IN (SELECT printer_id FROM printer_queues)"
-        ))
+        await conn.execute(
+            text(
+                "INSERT OR IGNORE INTO printer_queues (id, printer_id, status) "
+                "SELECT id, id, 'idle' FROM printers WHERE id NOT IN (SELECT printer_id FROM printer_queues)"
+            )
+        )
     except OperationalError:
         pass
 
     # Migrate existing print_queue items: set queue_id = printer_id where not yet set
     try:
-        await conn.execute(text(
-            "UPDATE print_queue SET queue_id = printer_id "
-            "WHERE queue_id IS NULL AND printer_id IS NOT NULL"
-        ))
+        await conn.execute(
+            text("UPDATE print_queue SET queue_id = printer_id WHERE queue_id IS NULL AND printer_id IS NOT NULL")
+        )
     except OperationalError:
         pass
 
     # Delete orphaned items (model-based items that were never assigned a printer)
     try:
-        await conn.execute(text(
-            "DELETE FROM print_queue WHERE queue_id IS NULL AND printer_id IS NULL"
-        ))
+        await conn.execute(text("DELETE FROM print_queue WHERE queue_id IS NULL AND printer_id IS NULL"))
     except OperationalError:
         pass
 

@@ -14,9 +14,7 @@ class PrinterQueue(Base):
     __tablename__ = "printer_queues"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    printer_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("printers.id", ondelete="CASCADE"), unique=True
-    )
+    printer_id: Mapped[int] = mapped_column(Integer, ForeignKey("printers.id", ondelete="CASCADE"), unique=True)
 
     # Queue status: idle, printing, paused, error
     status: Mapped[str] = mapped_column(String(20), default="idle")
@@ -32,9 +30,7 @@ class PrinterQueue(Base):
     total_count: Mapped[int] = mapped_column(default=0)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, server_default=func.now(), onupdate=func.now()
-    )
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
     # Relationships
     printer = relationship("Printer", back_populates="queue")

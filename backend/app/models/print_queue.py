@@ -21,15 +21,11 @@ class PrintQueueItem(Base):
     waiting_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Source file (either archive_id OR library_file_id; archive created at print start from library file)
-    archive_id: Mapped[int | None] = mapped_column(
-        ForeignKey("print_archives.id", ondelete="CASCADE"), nullable=True
-    )
+    archive_id: Mapped[int | None] = mapped_column(ForeignKey("print_archives.id", ondelete="CASCADE"), nullable=True)
     library_file_id: Mapped[int | None] = mapped_column(
         ForeignKey("library_files.id", ondelete="CASCADE"), nullable=True
     )
-    project_id: Mapped[int | None] = mapped_column(
-        ForeignKey("projects.id", ondelete="SET NULL"), nullable=True
-    )
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
 
     # Scheduling
     position: Mapped[int] = mapped_column(Integer, default=0)
@@ -69,9 +65,7 @@ class PrintQueueItem(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     # User tracking
-    created_by_id: Mapped[int | None] = mapped_column(
-        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
-    )
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
     # Relationships
     queue: Mapped["PrinterQueue"] = relationship(back_populates="items")
