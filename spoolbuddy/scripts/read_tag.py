@@ -600,11 +600,11 @@ def main():
             print("\nGPIO/SPI RESOURCE IN USE: Another process is using the NFC reader.")
             print("This typically means the SpoolBuddy daemon is already reading tags.")
             print("\nTo run this diagnostic, stop the daemon first:")
-            print("  sudo systemctl stop bambuddy")
+            print("  sudo systemctl stop bamdude")
             print("  # Run diagnostic")
             print("  .../read_tag.py")
             print("  # Restart daemon when done:")
-            print("  sudo systemctl start bambuddy")
+            print("  sudo systemctl start bamdude")
         else:
             print("\nCheck:")
             print("  - Correct GPIO chip is available (/dev/gpiochip0 or /dev/gpiochip4)")

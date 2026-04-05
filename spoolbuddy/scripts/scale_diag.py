@@ -197,11 +197,11 @@ def main():
                 print("\nI2C DEVICE BUSY (Errno 16): Another process is using the I2C bus.")
                 print("This typically means the SpoolBuddy daemon is already reading the scale.")
                 print("\nTo run this diagnostic, stop the daemon first:")
-                print("  sudo systemctl stop bambuddy")
+                print("  sudo systemctl stop bamdude")
                 print("  # Run diagnostic")
                 print("  .../scale_diag.py")
                 print("  # Restart daemon when done:")
-                print("  sudo systemctl start bambuddy")
+                print("  sudo systemctl start bamdude")
             elif e.errno == 121:
                 is_known_error = True
                 print("\nI2C NACK (Errno 121): the device did not acknowledge reads at 0x2A.")

@@ -1,6 +1,6 @@
-# Bambuddy HE — Installation from dev branch on Ubuntu
+# BamDude — Installation from dev branch on Ubuntu
 
-Step-by-step guide for installing Bambuddy HE from the `dev` branch on Ubuntu (22.04/24.04), running as a systemd service, and updating.
+Step-by-step guide for installing BamDude from the `dev` branch on Ubuntu (22.04/24.04), running as a systemd service, and updating.
 
 ---
 
@@ -34,9 +34,9 @@ sudo apt install -y nodejs
 
 ```bash
 cd /opt
-sudo git clone -b dev https://github.com/kainpl/bambuddy-he.git
-sudo chown -R $USER:$USER /opt/bambuddy-he
-cd /opt/bambuddy-he
+sudo git clone -b dev https://github.com/kainpl/bamdude.git
+sudo chown -R $USER:$USER /opt/bamdude
+cd /opt/bamdude
 ```
 
 ---
@@ -44,7 +44,7 @@ cd /opt/bambuddy-he
 ## 3. Backend setup (Python venv)
 
 ```bash
-cd /opt/bambuddy-he
+cd /opt/bamdude
 
 # Create virtual environment
 python3 -m venv venv
@@ -67,12 +67,12 @@ uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
 ## 4. Frontend build
 
 ```bash
-cd /opt/bambuddy-he/frontend
+cd /opt/bamdude/frontend
 
 # Install dependencies
 npm ci
 
-# Build — output goes to /opt/bambuddy-he/static/
+# Build — output goes to /opt/bamdude/static/
 npm run build
 ```
 
@@ -83,10 +83,10 @@ The backend serves the built frontend from `static/` automatically. No separate 
 ## 5. Create data directories and .env
 
 ```bash
-mkdir -p /opt/bambuddy-he/data /opt/bambuddy-he/logs
+mkdir -p /opt/bamdude/data /opt/bamdude/logs
 
 # Create .env so the app stores DB and logs in subdirectories (not project root)
-cat > /opt/bambuddy-he/.env << 'EOF'
+cat > /opt/bamdude/.env << 'EOF'
 DATA_DIR=./data
 LOG_DIR=./logs
 DEBUG=false
@@ -102,24 +102,24 @@ Without `DATA_DIR`, the database (`bambuddy.db`) is created in the project root.
 Create the service file:
 
 ```bash
-sudo nano /etc/systemd/system/bambuddy-he.service
+sudo nano /etc/systemd/system/bamdude.service
 ```
 
 Paste:
 
 ```ini
 [Unit]
-Description=Bambuddy HE - 3D Printer Management
+Description=BamDude - 3D Printer Management
 After=network.target
 
 [Service]
 Type=simple
 User=YOUR_USERNAME
 Group=YOUR_USERNAME
-WorkingDirectory=/opt/bambuddy-he
-Environment="PATH=/opt/bambuddy-he/venv/bin:/usr/local/bin:/usr/bin:/bin"
-EnvironmentFile=/opt/bambuddy-he/.env
-ExecStart=/opt/bambuddy-he/venv/bin/uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
+WorkingDirectory=/opt/bamdude
+Environment="PATH=/opt/bamdude/venv/bin:/usr/local/bin:/usr/bin:/bin"
+EnvironmentFile=/opt/bamdude/.env
+ExecStart=/opt/bamdude/venv/bin/uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
 Restart=always
 RestartSec=5
 
@@ -127,26 +127,26 @@ RestartSec=5
 WantedBy=multi-user.target
 ```
 
-Replace `YOUR_USERNAME` with your actual username (e.g., `ubuntu`, `bambuddy`).
+Replace `YOUR_USERNAME` with your actual username (e.g., `ubuntu`, `bamdude`).
 
 Enable and start:
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable bambuddy-he
-sudo systemctl start bambuddy-he
+sudo systemctl enable bamdude
+sudo systemctl start bamdude
 ```
 
 Check status:
 
 ```bash
-sudo systemctl status bambuddy-he
+sudo systemctl status bamdude
 ```
 
 View logs:
 
 ```bash
-sudo journalctl -u bambuddy-he -f
+sudo journalctl -u bamdude -f
 ```
 
 ---
@@ -160,7 +160,7 @@ Go to **http://YOUR_SERVER_IP:8000** and add your first printer.
 ## 8. Telegram bot setup
 
 1. Create a bot via [@BotFather](https://t.me/BotFather) in Telegram, copy the token
-2. In Bambuddy HE Settings > Notifications > Add Provider > Telegram, paste the bot token
+2. In BamDude Settings > Notifications > Add Provider > Telegram, paste the bot token
 3. Enable Registration Mode in the Telegram Chats section
 4. Send `/start` to the bot from your Telegram
 5. Back in Settings, your chat appears as "pending" — assign a role (e.g., Administrators), enable it
@@ -174,10 +174,10 @@ Go to **http://YOUR_SERVER_IP:8000** and add your first printer.
 When you want to pull new changes:
 
 ```bash
-cd /opt/bambuddy-he
+cd /opt/bamdude
 
 # Stop the service
-sudo systemctl stop bambuddy-he
+sudo systemctl stop bamdude
 
 # Pull latest changes
 git pull origin dev
@@ -193,20 +193,20 @@ npm run build
 cd ..
 
 # Restart the service
-sudo systemctl start bambuddy-he
+sudo systemctl start bamdude
 ```
 
 ### Quick update script
 
-Create `/opt/bambuddy-he/update.sh`:
+Create `/opt/bamdude/update.sh`:
 
 ```bash
 #!/bin/bash
 set -e
 
-cd /opt/bambuddy-he
+cd /opt/bamdude
 echo "Stopping service..."
-sudo systemctl stop bambuddy-he
+sudo systemctl stop bamdude
 
 echo "Pulling latest changes..."
 git pull origin dev
@@ -222,20 +222,20 @@ npm run build
 cd ..
 
 echo "Starting service..."
-sudo systemctl start bambuddy-he
+sudo systemctl start bamdude
 
 echo "Done! Version:"
 grep APP_VERSION backend/app/core/config.py
 ```
 
 ```bash
-chmod +x /opt/bambuddy-he/update.sh
+chmod +x /opt/bamdude/update.sh
 ```
 
 Run update:
 
 ```bash
-/opt/bambuddy-he/update.sh
+/opt/bamdude/update.sh
 ```
 
 ---
@@ -244,7 +244,7 @@ Run update:
 
 | What changed | Action needed |
 |---|---|
-| `backend/**/*.py` | Just restart service: `sudo systemctl restart bambuddy-he` |
+| `backend/**/*.py` | Just restart service: `sudo systemctl restart bamdude` |
 | `requirements.txt` | `source venv/bin/activate && pip install -r requirements.txt` + restart |
 | `frontend/src/**` | `cd frontend && npm run build` + restart |
 | `frontend/package.json` | `cd frontend && npm ci && npm run build` + restart |
@@ -261,10 +261,10 @@ Run update:
 
 ```bash
 # Check logs
-sudo journalctl -u bambuddy-he -n 50 --no-pager
+sudo journalctl -u bamdude -n 50 --no-pager
 
 # Try running manually
-cd /opt/bambuddy-he
+cd /opt/bamdude
 source venv/bin/activate
 uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
 ```
@@ -279,17 +279,17 @@ sudo lsof -i :8000
 ### Permission errors
 
 ```bash
-sudo chown -R $USER:$USER /opt/bambuddy-he
+sudo chown -R $USER:$USER /opt/bamdude
 ```
 
 ### Frontend shows old version after update
 
 ```bash
-cd /opt/bambuddy-he/frontend
+cd /opt/bamdude/frontend
 rm -rf node_modules
 npm ci
 npm run build
-sudo systemctl restart bambuddy-he
+sudo systemctl restart bamdude
 ```
 
 ### Database issues after update
@@ -298,10 +298,10 @@ The database auto-migrates on startup (`Base.metadata.create_all` + `run_migrati
 
 ```bash
 # Backup first!
-cp /opt/bambuddy-he/data/bambuddy.db /opt/bambuddy-he/data/bambuddy.db.bak
+cp /opt/bamdude/data/bambuddy.db /opt/bamdude/data/bambuddy.db.bak
 
 # Restart — migrations run on startup
-sudo systemctl restart bambuddy-he
+sudo systemctl restart bamdude
 ```
 
 ---
@@ -315,13 +315,13 @@ sudo apt install -y nginx certbot python3-certbot-nginx
 Create config:
 
 ```bash
-sudo nano /etc/nginx/sites-available/bambuddy-he
+sudo nano /etc/nginx/sites-available/bamdude
 ```
 
 ```nginx
 server {
     listen 80;
-    server_name bambuddy.yourdomain.com;
+    server_name bamdude.yourdomain.com;
 
     location / {
         proxy_pass http://127.0.0.1:8000;
@@ -341,9 +341,9 @@ server {
 Enable and get SSL:
 
 ```bash
-sudo ln -s /etc/nginx/sites-available/bambuddy-he /etc/nginx/sites-enabled/
+sudo ln -s /etc/nginx/sites-available/bamdude /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
-sudo certbot --nginx -d bambuddy.yourdomain.com
+sudo certbot --nginx -d bamdude.yourdomain.com
 ```
 
 > **Important:** `proxy_read_timeout 86400` and WebSocket headers are required for real-time printer updates. `client_max_body_size 500M` allows large 3MF uploads.

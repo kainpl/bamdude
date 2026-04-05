@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 #
-# BamBuddy Native Installation Script
+# BamDude Native Installation Script
 # Supports: Debian/Ubuntu, RHEL/Fedora/CentOS, Arch Linux, macOS
 #
 # Usage:
-#   Interactive:  curl -fsSL https://raw.githubusercontent.com/kainpl/bambuddy-he/main/install/install.sh -o install.sh && chmod +x install.sh && ./install.sh
-#   Unattended:   ./install.sh --path /opt/bambuddy --port 8000 --yes
+#   Interactive:  curl -fsSL https://raw.githubusercontent.com/kainpl/bamdude/main/install/install.sh -o install.sh && chmod +x install.sh && ./install.sh
+#   Unattended:   ./install.sh --path /opt/bamdude --port 8000 --yes
 #
 # Options:
-#   --path PATH        Installation directory (default: /opt/bambuddy)
+#   --path PATH        Installation directory (default: /opt/bamdude)
 #   --port PORT        Port to listen on (default: 8000)
 #   --bind ADDRESS     Bind address: 0.0.0.0 (network) or 127.0.0.1 (local only)
 #   --tz TIMEZONE      Timezone (default: system timezone or UTC)
@@ -35,7 +35,7 @@ NC='\033[0m' # No Color
 BOLD='\033[1m'
 
 # Default values
-DEFAULT_INSTALL_PATH="/opt/bambuddy"
+DEFAULT_INSTALL_PATH="/opt/bamdude"
 DEFAULT_PORT="8000"
 DEFAULT_BIND_ADDRESS="0.0.0.0"
 DEFAULT_LOG_LEVEL="INFO"
@@ -57,7 +57,7 @@ OS_TYPE=""
 PKG_MANAGER=""
 PYTHON_CMD=""
 BRANCH=""
-SERVICE_USER="bambuddy"
+SERVICE_USER="bamdude"
 
 # -----------------------------------------------------------------------------
 # Helper Functions
@@ -67,12 +67,11 @@ print_banner() {
     echo -e "${CYAN}"
     echo "╔════════════════════════════════════════════════════════╗"
     echo "║                                                        ║"
-    echo "║   ____                  _               _     _        ║"
-    echo "║  | __ )  __ _ _ __ ___ | |__  _   _  __| | __| |_   _  ║"
-    echo "║  |  _ \\ / _\` | '_ \` _ \\| '_ \\| | | |/ _\` |/ _\` | | | | ║"
-    echo "║  | |_) | (_| | | | | | | |_) | |_| | (_| | (_| | |_| | ║"
-    echo "║  |____/ \\__,_|_| |_| |_|_.__/ \\__,_|\\__,_|\\__,_|\\__, | ║"
-    echo "║                                                 |___/  ║"
+    echo "║   ____                  ____            _              ║"
+    echo "║  | __ )  __ _ _ __ ___ |  _ \\ _   _  __| | ___        ║"
+    echo "║  |  _ \\ / _\` | '_ \` _ \\| | | | | | |/ _\` |/ _ \\       ║"
+    echo "║  | |_) | (_| | | | | | | |_| | |_| | (_| |  __/       ║"
+    echo "║  |____/ \\__,_|_| |_| |_|____/ \\__,_|\\__,_|\\___|       ║"
     echo "║                                                        ║"
     echo "║            Native Installation Script                  ║"
     echo "║                                                        ║"
@@ -145,12 +144,12 @@ prompt_yes_no() {
 }
 
 show_help() {
-    echo "BamBuddy Native Installation Script"
+    echo "BamDude Native Installation Script"
     echo ""
     echo "Usage: $0 [OPTIONS]"
     echo ""
     echo "Options:"
-    echo "  --path PATH        Installation directory (default: /opt/bambuddy)"
+    echo "  --path PATH        Installation directory (default: /opt/bamdude)"
     echo "  --port PORT        Port to listen on (default: 8000)"
     echo "  --bind ADDRESS     Bind address: 0.0.0.0 (network) or 127.0.0.1 (local only)"
     echo "  --tz TIMEZONE      Timezone (default: system timezone or UTC)"
@@ -169,7 +168,7 @@ show_help() {
     echo "    ./install.sh"
     echo ""
     echo "  Unattended installation with custom settings:"
-    echo "    ./install.sh --path /srv/bambuddy --port 3000 --tz America/New_York --yes"
+    echo "    ./install.sh --path /srv/bamdude --port 3000 --tz America/New_York --yes"
     echo ""
     echo "  Minimal unattended installation:"
     echo "    ./install.sh -y"
@@ -332,14 +331,14 @@ create_user() {
     log_success "Service user created"
 }
 
-download_bambuddy() {
-    log_info "Downloading BamBuddy..."
+download_bamdude() {
+    log_info "Downloading BamDude..."
 
     # Validate branch exists on remote before proceeding
-    if ! git ls-remote --exit-code --heads https://github.com/kainpl/bambuddy-he.git "$BRANCH" &>/dev/null; then
-        log_error "Branch '$BRANCH' not found in the BamBuddy repository."
+    if ! git ls-remote --exit-code --heads https://github.com/kainpl/bamdude.git "$BRANCH" &>/dev/null; then
+        log_error "Branch '$BRANCH' not found in the BamDude repository."
         log_info "Available branches:"
-        git ls-remote --heads https://github.com/kainpl/bambuddy-he.git | sed 's|.*refs/heads/|  - |'
+        git ls-remote --heads https://github.com/kainpl/bamdude.git | sed 's|.*refs/heads/|  - |'
         exit 1
     fi
 
@@ -356,11 +355,11 @@ download_bambuddy() {
     else
         sudo mkdir -p "$INSTALL_PATH"
         sudo chown "$SERVICE_USER:$SERVICE_USER" "$INSTALL_PATH" 2>/dev/null || true
-        git clone --branch "$BRANCH" https://github.com/kainpl/bambuddy-he.git "$INSTALL_PATH"
+        git clone --branch "$BRANCH" https://github.com/kainpl/bamdude.git "$INSTALL_PATH"
         sudo chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_PATH" 2>/dev/null || true
     fi
 
-    log_success "BamBuddy downloaded to $INSTALL_PATH (branch: $BRANCH)"
+    log_success "BamDude downloaded to $INSTALL_PATH (branch: $BRANCH)"
 }
 
 setup_virtualenv() {
@@ -475,8 +474,8 @@ create_env_file() {
 
     # Note: Only include settings recognized by the app's pydantic Settings class
     # Other settings (PORT, BIND_ADDRESS, DATA_DIR, LOG_DIR, TZ) are set in systemd service
-    cat > /tmp/bambuddy.env << EOF
-# BamBuddy Configuration
+    cat > /tmp/bamdude.env << EOF
+# BamDude Configuration
 # Generated by install.sh on $(date)
 
 # Debug mode (true = verbose logging)
@@ -490,7 +489,7 @@ LOG_LEVEL=$LOG_LEVEL
 LOG_TO_FILE=true
 EOF
 
-    sudo mv /tmp/bambuddy.env "$env_file"
+    sudo mv /tmp/bamdude.env "$env_file"
     if [[ "$OS_TYPE" != "macos" ]]; then
         sudo chown "$SERVICE_USER:$SERVICE_USER" "$env_file"
     fi
@@ -506,10 +505,10 @@ create_systemd_service() {
 
     log_info "Creating systemd service..."
 
-    cat > /tmp/bambuddy.service << EOF
+    cat > /tmp/bamdude.service << EOF
 [Unit]
-Description=BamBuddy - Bambu Lab Print Management
-Documentation=https://github.com/kainpl/bambuddy-he
+Description=BamDude - Bambu Lab Print Management
+Documentation=https://github.com/kainpl/bamdude
 After=network.target
 
 [Service]
@@ -546,23 +545,23 @@ ReadWritePaths=$DATA_DIR $LOG_DIR $INSTALL_PATH
 WantedBy=multi-user.target
 EOF
 
-    sudo mv /tmp/bambuddy.service /etc/systemd/system/bambuddy.service
+    sudo mv /tmp/bamdude.service /etc/systemd/system/bamdude.service
     sudo systemctl daemon-reload
 
     log_success "Systemd service created"
 
-    if prompt_yes_no "Enable BamBuddy to start on boot?" "y"; then
-        sudo systemctl enable bambuddy
+    if prompt_yes_no "Enable BamDude to start on boot?" "y"; then
+        sudo systemctl enable bamdude
         log_success "Service enabled"
     fi
 
-    if prompt_yes_no "Start BamBuddy now?" "y"; then
-        sudo systemctl start bambuddy
+    if prompt_yes_no "Start BamDude now?" "y"; then
+        sudo systemctl start bamdude
         sleep 2
-        if sudo systemctl is-active --quiet bambuddy; then
-            log_success "BamBuddy is running"
+        if sudo systemctl is-active --quiet bamdude; then
+            log_success "BamDude is running"
         else
-            log_warn "Service may have failed to start. Check: sudo journalctl -u bambuddy -f"
+            log_warn "Service may have failed to start. Check: sudo journalctl -u bamdude -f"
         fi
     fi
 }
@@ -574,7 +573,7 @@ create_launchd_service() {
 
     log_info "Creating launchd service..."
 
-    local plist_path="$HOME/Library/LaunchAgents/com.bambuddy.app.plist"
+    local plist_path="$HOME/Library/LaunchAgents/com.bamdude.app.plist"
 
     cat > "$plist_path" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -582,7 +581,7 @@ create_launchd_service() {
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.bambuddy.app</string>
+    <string>com.bamdude.app</string>
     <key>ProgramArguments</key>
     <array>
         <string>$INSTALL_PATH/venv/bin/uvicorn</string>
@@ -612,22 +611,22 @@ create_launchd_service() {
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>$LOG_DIR/bambuddy.log</string>
+    <string>$LOG_DIR/bamdude.log</string>
     <key>StandardErrorPath</key>
-    <string>$LOG_DIR/bambuddy.error.log</string>
+    <string>$LOG_DIR/bamdude.error.log</string>
 </dict>
 </plist>
 EOF
 
     log_success "Launchd plist created at $plist_path"
 
-    if prompt_yes_no "Load BamBuddy service now?" "y"; then
+    if prompt_yes_no "Load BamDude service now?" "y"; then
         launchctl load "$plist_path"
         sleep 2
-        if launchctl list | grep -q "com.bambuddy.app"; then
-            log_success "BamBuddy is running"
+        if launchctl list | grep -q "com.bamdude.app"; then
+            log_success "BamDude is running"
         else
-            log_warn "Service may have failed to start. Check: cat $LOG_DIR/bambuddy.error.log"
+            log_warn "Service may have failed to start. Check: cat $LOG_DIR/bamdude.error.log"
         fi
     fi
 }
@@ -853,7 +852,7 @@ main() {
         SERVICE_USER="$USER"
     fi
 
-    download_bambuddy
+    download_bamdude
     setup_virtualenv
     build_frontend
     create_directories
@@ -877,33 +876,34 @@ main() {
     if [[ "$BIND_ADDRESS" == "0.0.0.0" ]]; then
         local ip_addr
         ip_addr=$(hostname -I 2>/dev/null | awk '{print $1}') || ip_addr="<your-ip>"
-        echo -e "  ${BOLD}Access BamBuddy:${NC}  ${CYAN}http://localhost:$PORT${NC}"
+        echo -e "  ${BOLD}Access BamDude:${NC}  ${CYAN}http://localhost:$PORT${NC}"
         echo -e "                    ${CYAN}http://$ip_addr:$PORT${NC} (from other devices)"
     else
-        echo -e "  ${BOLD}Access BamBuddy:${NC}  ${CYAN}http://localhost:$PORT${NC}"
+        echo -e "  ${BOLD}Access BamDude:${NC}  ${CYAN}http://localhost:$PORT${NC}"
     fi
     echo ""
     if [[ "$OS_TYPE" == "macos" ]]; then
         echo -e "  ${BOLD}Manage service:${NC}"
-        echo -e "    Start:   launchctl load ~/Library/LaunchAgents/com.bambuddy.app.plist"
-        echo -e "    Stop:    launchctl unload ~/Library/LaunchAgents/com.bambuddy.app.plist"
-        echo -e "    Logs:    tail -f $LOG_DIR/bambuddy.log"
+        echo -e "    Start:   launchctl load ~/Library/LaunchAgents/com.bamdude.app.plist"
+        echo -e "    Stop:    launchctl unload ~/Library/LaunchAgents/com.bamdude.app.plist"
+        echo -e "    Logs:    tail -f $LOG_DIR/bamdude.log"
+
     else
         echo -e "  ${BOLD}Manage service:${NC}"
-        echo -e "    Status:  sudo systemctl status bambuddy"
-        echo -e "    Start:   sudo systemctl start bambuddy"
-        echo -e "    Stop:    sudo systemctl stop bambuddy"
-        echo -e "    Logs:    sudo journalctl -u bambuddy -f"
+        echo -e "    Status:  sudo systemctl status bamdude"
+        echo -e "    Start:   sudo systemctl start bamdude"
+        echo -e "    Stop:    sudo systemctl stop bamdude"
+        echo -e "    Logs:    sudo journalctl -u bamdude -f"
     fi
     echo ""
-    echo -e "  ${BOLD}Update BamBuddy:${NC}"
+    echo -e "  ${BOLD}Update BamDude:${NC}"
     echo -e "    cd $INSTALL_PATH && git pull && source venv/bin/activate"
     echo -e "    pip install -r requirements.txt && cd frontend && npm ci && npm run build"
     if [[ "$OS_TYPE" != "macos" ]]; then
-        echo -e "    sudo systemctl restart bambuddy"
+        echo -e "    sudo systemctl restart bamdude"
     fi
     echo ""
-    echo -e "  ${BOLD}Documentation:${NC}  ${CYAN}https://wiki.bambuddy.cool${NC}"
+    echo -e "  ${BOLD}Documentation:${NC}  ${CYAN}https://wiki.bamdude.cool${NC}"
     echo ""
 }
 

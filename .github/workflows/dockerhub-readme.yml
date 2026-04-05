@@ -17,6 +17,6 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-          repository: kainpl/bambuddy-he
+          repository: kainpl/bamdude
           readme-filepath: ./DOCKERHUB.md
-          short-description: "Self-hosted 3D print management for Bambu Lab printers"
+          short-description: "BamDude — Self-hosted 3D print management for Bambu Lab printers"

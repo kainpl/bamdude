@@ -76,7 +76,7 @@
   },
   "test": {
     "name": "Тестове сповіщення",
-    "title_template": "Тест Bambuddy HE",
+    "title_template": "Тест BamDude",
     "body_template": "Це тестове сповіщення. Якщо ви його бачите — сповіщення працюють!"
   },
   "queue_job_added": {

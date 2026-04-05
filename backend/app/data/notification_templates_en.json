@@ -76,7 +76,7 @@
   },
   "test": {
     "name": "Test Notification",
-    "title_template": "Bambuddy HE Test",
+    "title_template": "BamDude Test",
     "body_template": "This is a test notification. If you see this, notifications are working!"
   },
   "queue_job_added": {

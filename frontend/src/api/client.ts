@@ -3271,7 +3271,7 @@ export const api = {
 
     // Get filename from Content-Disposition header
     const contentDisposition = response.headers.get('Content-Disposition');
-    let filename = 'bambuddy-backup.zip';
+    let filename = 'bamdude-backup.zip';
     if (contentDisposition) {
       const match = contentDisposition.match(/filename=([^;]+)/);
       if (match) filename = match[1].trim();
@@ -5105,7 +5105,7 @@ export const supportApi = {
     }
     // Get filename from Content-Disposition header or use default
     const disposition = response.headers.get('Content-Disposition');
-    const filename = parseContentDispositionFilename(disposition) || 'bambuddy-support.zip';
+    const filename = parseContentDispositionFilename(disposition) || 'bamdude-support.zip';
 
     // Download the blob
     const blob = await response.blob();

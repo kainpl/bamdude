@@ -107,11 +107,11 @@ describe('StreamOverlayPage', () => {
       });
     });
 
-    it('shows Bambuddy logo', async () => {
+    it('shows BamDude logo', async () => {
       renderOverlayPage(1);
 
       await waitFor(() => {
-        expect(screen.getByAltText('Bambuddy-HE')).toBeInTheDocument();
+        expect(screen.getByAltText('BamDude')).toBeInTheDocument();
       });
     });
 
@@ -119,7 +119,7 @@ describe('StreamOverlayPage', () => {
       renderOverlayPage(1);
 
       await waitFor(() => {
-        const logo = screen.getByAltText('Bambuddy-HE');
+        const logo = screen.getByAltText('BamDude');
         const link = logo.closest('a');
         expect(link).toHaveAttribute('href', 'https://github.com/kainpl/bambuddy-he');
       });
@@ -185,7 +185,7 @@ describe('StreamOverlayPage', () => {
 
       await waitFor(() => {
         // Just verify it renders without error
-        expect(screen.getByAltText('Bambuddy-HE')).toBeInTheDocument();
+        expect(screen.getByAltText('BamDude')).toBeInTheDocument();
       });
     });
 

@@ -1,8 +1,8 @@
 # Changelog
 
-All notable changes to Bambuddy HE will be documented in this file.
+All notable changes to BamDude will be documented in this file.
 
-> Bambuddy HE is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy). Forked from v0.2.2.2 (2026-03-27).
+> BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) by maziggy. Forked from v0.2.2.2 (2026-03-27).
 
 ---
 
@@ -151,9 +151,9 @@ Hard fork release. All changes below are relative to upstream Bambuddy v0.2.2.2.
 - **UI polish** — scrollbar theming, button alignment, encoding fixes
 - **Date format support** — configurable date/time format in settings
 - **Permission group i18n** — localized group names and descriptions
-- **Rebrand to Bambuddy HE** — updated titles, about page, PWA manifest
+- **Rebrand to BamDude** (formerly Bambuddy HE) — updated titles, about page, PWA manifest
 - **Data directory** — default changed from project root to `data/` subfolder, configurable via `DATA_DIR` env
-- **Docker/CI** — all image refs updated to `kainpl/bambuddy-he`, install scripts, publish scripts
+- **Docker/CI** — all image refs updated to `kainpl/bamdude`, install scripts, publish scripts
 
 ---
 

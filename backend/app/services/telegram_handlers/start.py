@@ -57,7 +57,7 @@ async def cmd_start(message: Message) -> None:
 
     # Send reply keyboard first (Telegram persists it for the chat)
     await message.answer(
-        "\U0001f44b *Bambuddy HE*",
+        "\U0001f44b *BamDude*",
         reply_markup=_reply_keyboard(lang),
     )
 

@@ -165,7 +165,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
       case 'ntfy':
         return [
           { key: 'server', label: 'Server URL', placeholder: 'https://ntfy.sh', type: 'text', required: false },
-          { key: 'topic', label: 'Topic', placeholder: 'my-bambuddy', type: 'text', required: true },
+          { key: 'topic', label: 'Topic', placeholder: 'my-bamdude', type: 'text', required: true },
           { key: 'auth_token', label: 'Auth Token', placeholder: 'Optional authentication', type: 'password', required: false },
         ];
       case 'pushover':

@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings
 
 # Application version - single source of truth
 APP_VERSION = "0.3.1.1"
-GITHUB_REPO = "kainpl/bambuddy-he"
+GITHUB_REPO = "kainpl/bamdude"
 
 # App directory - where the application is installed (for static files)
 _app_dir = Path(__file__).resolve().parent.parent.parent.parent
@@ -27,23 +27,24 @@ _log_dir = Path(_log_dir_env) if _log_dir_env else _app_dir / "logs"
 
 
 def _migrate_database() -> Path:
-    """Migrate database from old name to new name if needed."""
-    old_db = _data_dir / "bambutrack.db"
-    new_db = _data_dir / "bambuddy.db"
+    """Migrate database from old names to current name if needed.
 
-    # If old database exists and new one doesn't, rename it
-    if old_db.exists() and not new_db.exists():
-        try:
-            old_db.rename(new_db)
-            logging.info("Migrated database: %s -> %s", old_db, new_db)
-        except Exception as e:
-            logging.warning("Could not migrate database: %s. Using old location.", e)
-            return old_db
+    Chain: bambutrack.db → bambuddy.db → bamdude.db
+    """
+    target = _data_dir / "bamdude.db"
 
-    # If old database exists (and new one now exists too), it was migrated
-    # If only new exists, use new
-    # If neither exists, use new (will be created)
-    return new_db if new_db.exists() or not old_db.exists() else old_db
+    # Try each old name in order
+    for old_name in ("bambuddy.db", "bambutrack.db"):
+        old_db = _data_dir / old_name
+        if old_db.exists() and not target.exists():
+            try:
+                old_db.rename(target)
+                logging.info("Migrated database: %s -> %s", old_db, target)
+            except Exception as e:
+                logging.warning("Could not migrate database: %s. Using old location.", e)
+                return old_db
+
+    return target
 
 
 # Determine database path (handles migration)
@@ -51,7 +52,7 @@ _db_path = _migrate_database()
 
 
 class Settings(BaseSettings):
-    app_name: str = "Bambuddy"
+    app_name: str = "BamDude"
     debug: bool = False  # Default to production mode
 
     # Paths — these accept env vars DATA_DIR, LOG_DIR etc.

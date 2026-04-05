@@ -1,20 +1,20 @@
 <p align="center">
-  <img src="static/img/bambuddy_logo_dark.png" alt="Bambuddy HE Logo" width="300">
+  <img src="static/img/bambuddy_logo_dark.png" alt="BamDude Logo" width="300">
 </p>
 
-<h1 align="center">Bambuddy HE</h1>
+<h1 align="center">BamDude</h1>
 
 <p align="center">
   <strong>Self-hosted print archive, management and automation system for Bambu Lab 3D printers</strong>
   <br>
-  <em>Hard fork of <a href="https://github.com/maziggy/bambuddy">Bambuddy</a> with Telegram bot, multi-chat auth, Ukrainian locale and more</em>
+  <em>Hard fork of <a href="https://github.com/maziggy/bambuddy">Bambuddy</a> by maziggy, with Telegram bot, multi-chat auth, Ukrainian locale and more</em>
 </p>
 
 ---
 
 ## What's different from Bambuddy?
 
-Bambuddy HE is a hard fork focused on print farm operators who need deeper automation and Telegram-based control. Key additions:
+BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focused on print farm operators who need deeper automation and Telegram-based control. Key additions:
 
 - **Full Telegram bot** (aiogram 3.x) — printer control, status, maintenance, queue from Telegram
 - **Multi-chat authorization** — each Telegram chat gets a role (group) with granular permissions
@@ -37,7 +37,7 @@ Bambuddy HE is a hard fork focused on print farm operators who need deeper autom
 
 ---
 
-## Why Bambuddy?
+## Why BamDude?
 
 - **Own your data** — All print history stored locally, no cloud dependency
 - **Works offline** — Uses Developer Mode for direct printer control via local network
@@ -100,7 +100,7 @@ Bambuddy HE is a hard fork focused on print farm operators who need deeper autom
 </td>
 <td width="50%" valign="top">
 
-### Telegram Bot (NEW in HE)
+### Telegram Bot
 - Full printer control: pause, resume, stop, light, speed, camera snapshot
 - Printer calibration from bot: model-aware selection (bed leveling, vibration, motor noise, nozzle offset, high-temp heatbed)
 - Printer status with model tag, maintenance indicators
@@ -111,7 +111,7 @@ Bambuddy HE is a hard fork focused on print farm operators who need deeper autom
 - Queue management: paginated list, detail, move up/down, cancel
 - Add Printer: enter IP → SSDP auto-detect serial/name/model → access code → done
 - Reply keyboard + inline menus + /start /status /camera /help commands
-- Multi-chat auth with per-chat roles (Bambuddy permission groups)
+- Multi-chat auth with per-chat roles (BamDude permission groups)
 - Per-chat notification events, quiet hours, daily digest
 - Actionable notification buttons: clear plate, mark maintenance done, pause/stop on progress
 - Auto-registration mode for new chats
@@ -176,13 +176,13 @@ Bambuddy HE is a hard fork focused on print farm operators who need deeper autom
 
 ```bash
 docker run -d \
-  --name bambuddy-he \
+  --name bamdude \
   --network host \
   -e TZ=Europe/Kyiv \
-  -v bambuddy_data:/app/data \
-  -v bambuddy_logs:/app/logs \
+  -v bamdude_data:/app/data \
+  -v bamdude_logs:/app/logs \
   --restart unless-stopped \
-  kainpl/bambuddy-he:latest
+  kainpl/bamdude:latest
 ```
 
 Open **http://localhost:8000** in your browser.
@@ -192,16 +192,16 @@ Open **http://localhost:8000** in your browser.
 ### Docker Compose (from source)
 
 ```bash
-git clone https://github.com/kainpl/bambuddy-he.git
-cd bambuddy-he
+git clone https://github.com/kainpl/bamdude.git
+cd bamdude
 docker compose up -d --build
 ```
 
 ### Manual Installation
 
 ```bash
-git clone https://github.com/kainpl/bambuddy-he.git
-cd bambuddy-he
+git clone https://github.com/kainpl/bamdude.git
+cd bamdude
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
@@ -211,7 +211,7 @@ uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
 ### Telegram Bot Setup
 
 1. Create a bot via [@BotFather](https://t.me/BotFather), get the token
-2. In Bambuddy Settings > Notifications, add a Telegram provider with the bot token
+2. In BamDude Settings > Notifications, add a Telegram provider with the bot token
 3. Enable Registration Mode, send `/start` to the bot from your Telegram
 4. In Settings > Telegram Chats, assign a role to your chat and enable it
 5. Done! Use the reply keyboard or inline menus to control printers

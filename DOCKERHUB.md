@@ -1,8 +1,8 @@
-# Bambuddy HE
+# BamDude
 
 **Self-hosted print archive, management and automation system for Bambu Lab 3D printers.**
 
-Hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) with Telegram bot, multi-chat auth, and print farm automation.
+Hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) by maziggy, with Telegram bot, multi-chat auth, and print farm automation.
 
 ## Quick Start
 
@@ -10,20 +10,20 @@ Hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) with Telegram bot, 
 
 ```bash
 docker run -d \
-  --name bambuddy-he \
+  --name bamdude \
   --network host \
   -e TZ=Europe/Kyiv \
-  -v bambuddy_data:/app/data \
-  -v bambuddy_logs:/app/logs \
+  -v bamdude_data:/app/data \
+  -v bamdude_logs:/app/logs \
   --restart unless-stopped \
-  kainpl/bambuddy-he:latest
+  kainpl/bamdude:latest
 ```
 
 ### From source (docker compose)
 
 ```bash
-git clone https://github.com/kainpl/bambuddy-he.git
-cd bambuddy-he
+git clone https://github.com/kainpl/bamdude.git
+cd bamdude
 docker compose up -d --build
 ```
 
@@ -77,20 +77,20 @@ Open **http://localhost:8000** and add your printer.
 
 ```yaml
 services:
-  bambuddy-he:
+  bamdude:
     build: .
-    container_name: bambuddy-he
+    container_name: bamdude
     network_mode: host
     environment:
       - TZ=Europe/Kyiv
     volumes:
-      - bambuddy_data:/app/data
-      - bambuddy_logs:/app/logs
+      - bamdude_data:/app/data
+      - bamdude_logs:/app/logs
     restart: unless-stopped
 
 volumes:
-  bambuddy_data:
-  bambuddy_logs:
+  bamdude_data:
+  bamdude_logs:
 ```
 
 ## Telegram Bot Setup

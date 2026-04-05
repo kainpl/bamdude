@@ -1608,7 +1608,7 @@ export default {
     authentication: 'Authentication',
     authEnabledDescription: 'Your instance is secured with user authentication',
     authDisabledDescription: 'Enable to require login and manage user access',
-    authDisabledMessage: 'Enable authentication to create user accounts, manage permissions, and secure your Bambuddy instance.',
+    authDisabledMessage: 'Enable authentication to create user accounts, manage permissions, and secure your BamDude instance.',
     enableAuthentication: 'Enable Authentication',
     currentUser: 'Current User',
     changePassword: 'Change Password',
@@ -1646,10 +1646,10 @@ export default {
     deleteGroup: 'Delete Group',
     // Modal: Disable auth
     disableAuthenticationTitle: 'Disable Authentication',
-    disableAuthenticationMessage: 'Are you sure you want to disable authentication? This will make your Bambuddy instance accessible without login. All users will remain in the database but authentication will be disabled.',
+    disableAuthenticationMessage: 'Are you sure you want to disable authentication? This will make your BamDude instance accessible without login. All users will remain in the database but authentication will be disabled.',
     disableAuthentication: 'Disable Authentication',
     // Additional settings
-    configureBambuddy: 'Configure Bambuddy',
+    configureBamdude: 'Configure BamDude',
     systemDefault: 'System Default',
     archiveSettings: 'Archive Settings',
     queueAndScheduling: 'Queue & Scheduling',
@@ -1880,7 +1880,7 @@ export default {
     // Updates
     printerFirmware: 'Printer Firmware',
     checkFirmwareDescription: 'Check for printer firmware updates from Bambu Lab',
-    bambuddySoftware: 'Bambuddy Software',
+    bamdudeSoftware: 'BamDude Software',
     autoCheckDescription: 'Automatically check for new versions on startup',
     checkNow: 'Check now',
     updateAvailableVersion: 'Update available: v{{version}}',
@@ -1895,8 +1895,8 @@ export default {
     goToBackup: 'Go to Backup',
     // Network tab
     externalUrl: 'External URL',
-    externalUrlDescription: 'The external URL where Bambuddy is accessible. Used for notification images and external integrations.',
-    bambuddyUrl: 'Bambuddy URL',
+    externalUrlDescription: 'The external URL where BamDude is accessible. Used for notification images and external integrations.',
+    bamdudeUrl: 'BamDude URL',
     externalUrlHint: 'Include protocol and port (e.g., http://192.168.1.100:8000)',
     ftpRetry: 'FTP Retry',
     ftpRetryDescription: 'Retry FTP operations when printer WiFi is unreliable. Applies to 3MF downloads, print uploads, timelapse downloads, and firmware updates.',
@@ -1922,7 +1922,7 @@ export default {
     haConnectionFailed: 'Failed to connect to Home Assistant.',
     // MQTT
     mqttPublishing: 'MQTT Publishing',
-    mqttDescription: 'Publish BamBuddy events to an external MQTT broker for integration with Node-RED, Home Assistant, and other automation systems.',
+    mqttDescription: 'Publish BamDude events to an external MQTT broker for integration with Node-RED, Home Assistant, and other automation systems.',
     mqttEnableDescription: 'Publish events to external MQTT broker',
     brokerHostname: 'Broker hostname',
     port: 'Port',
@@ -2078,7 +2078,7 @@ export default {
 
   // Login page
   login: {
-    title: 'Bambuddy Login',
+    title: 'BamDude Login',
     subtitle: 'Sign in to your account',
     username: 'Username',
     usernamePlaceholder: 'Enter your username',
@@ -2101,7 +2101,7 @@ export default {
     sending: 'Sending...',
     sendResetEmail: 'Send Reset Email',
     howToReset: 'How to reset your password:',
-    resetStep1: 'Contact your Bambuddy administrator',
+    resetStep1: 'Contact your BamDude administrator',
     resetStep2: 'Ask them to reset your password in User Management',
     resetStep3: 'They can set a new temporary password for you',
     resetStep4: 'Log in with the new password and change it in Settings',
@@ -2110,8 +2110,8 @@ export default {
 
   // Setup page
   setup: {
-    title: 'Bambuddy Setup',
-    subtitle: 'Configure authentication for your Bambuddy instance',
+    title: 'BamDude Setup',
+    subtitle: 'Configure authentication for your BamDude instance',
     enableAuth: 'Enable Authentication',
     adminAccount: 'Admin Account',
     adminAccountDesc: 'If admin users already exist, authentication will be enabled using the existing admin accounts. Leave the fields below empty to use existing admins, or enter new credentials to create a new admin user.',
@@ -2255,7 +2255,7 @@ export default {
   // Users management
   users: {
     title: 'User Management',
-    subtitle: 'Manage users and their access to your Bambuddy instance',
+    subtitle: 'Manage users and their access to your BamDude instance',
     backToSettings: 'Back to Settings',
     createUser: 'Create User',
     noPermission: 'You do not have permission to access this page.',
@@ -3445,7 +3445,7 @@ export default {
     cloudProfiles: 'Cloud Profiles',
     cloudProfilesDescription: 'Filament, printer, and process presets from Bambu Cloud',
     appSettings: 'App Settings',
-    appSettingsDescription: 'Bambuddy configuration (complete database)',
+    appSettingsDescription: 'BamDude configuration (complete database)',
     lastBackupAt: 'Last backup:',
     noBackupsYet: 'No backups yet',
     next: 'Next:',
@@ -3476,7 +3476,7 @@ export default {
 
     // Local Backup
     localBackup: 'Local Backup',
-    localBackupDescription: 'Create a complete backup of your Bambuddy data including the database, archives, uploads, and all files.',
+    localBackupDescription: 'Create a complete backup of your BamDude data including the database, archives, uploads, and all files.',
     downloadBackupLabel: 'Download Backup',
     completeBackupZip: 'Complete backup: database + all files (ZIP)',
     download: 'Download',
@@ -3492,7 +3492,7 @@ export default {
     restoreConfirmMessage: 'Are you sure you want to restore from "{{filename}}"? This will completely replace your current database and all files. The application will need to be restarted after restore.',
     restoreConfirmButton: 'Restore Backup',
     uploadingFile: 'Uploading backup file...',
-    backupRestoredRestart: 'Backup restored. Please restart Bambuddy.',
+    backupRestoredRestart: 'Backup restored. Please restart BamDude.',
     failedToRestore: 'Failed to restore backup. Please check the file format.',
     reloadNow: 'Reload Now',
     creatingBackup: 'Creating Backup',
@@ -3701,7 +3701,7 @@ export default {
       right: 'Right',
       notes: 'Notes (stored locally)',
       notesPlaceholder: 'Add notes about this profile...',
-      notesHelp: 'Notes are saved in Bambuddy, not on the printer',
+      notesHelp: 'Notes are saved in BamDude, not on the printer',
       syncing: 'Syncing with printer...',
       savingExtruder: 'Saving to extruder {{current}}/{{total}}...',
       pleaseWait: 'Please wait',
@@ -3756,7 +3756,7 @@ export default {
     },
     enable: {
       title: 'Enable Virtual Printer',
-      visibleInSlicer: 'Visible as "Bambuddy HE" in slicer discovery',
+      visibleInSlicer: 'Visible as "BamDude" in slicer discovery',
       proxyingTo: 'Proxying to {{name}}',
       notActive: 'Not active',
     },
@@ -3787,7 +3787,7 @@ export default {
       configured: 'Interface override active',
       optional: 'Optional - use if auto-detected IP is wrong (e.g. multiple NICs, Docker, VPN)',
       placeholder: 'Auto-detect (default)...',
-      hint: 'Override the IP address advertised via SSDP and used in the TLS certificate. Useful when Bambuddy has multiple network interfaces.',
+      hint: 'Override the IP address advertised via SSDP and used in the TLS certificate. Useful when BamDude has multiple network interfaces.',
     },
     mode: {
       title: 'Mode',
@@ -3814,7 +3814,7 @@ export default {
     howItWorks: {
       title: 'How it works',
       step1: 'On the same LAN, virtual printers appear in your slicer (Bambu Studio / OrcaSlicer) automatically via discovery. From other networks, add them manually by IP address and access code.',
-      step2: 'In Archive, Review, Queue, and File Manager modes, use the "Send" button in your slicer to upload 3MF files to Bambuddy. The slicer will show "Print success" — the file is stored, not printed.',
+      step2: 'In Archive, Review, Queue, and File Manager modes, use the "Send" button in your slicer to upload 3MF files to BamDude. The slicer will show "Print success" — the file is stored, not printed.',
       step3: 'In Proxy mode, the virtual printer relays all traffic to a real printer — prints start immediately as if connected directly.',
     },
     status: {
@@ -4522,7 +4522,7 @@ export default {
   // Email Settings
   emailSettings: {
     placeholders: {
-      fromName: 'BamBuddy',
+      fromName: 'BamDude',
     },
   },
 
@@ -4787,7 +4787,7 @@ export default {
       hostname: 'Host',
       uptime: 'Uptime',
       systemConfig: 'Backend & Auth',
-      backendUrl: 'Bambuddy Backend URL',
+      backendUrl: 'BamDude Backend URL',
       apiToken: 'API Token',
       apiTokenPlaceholder: 'Enter API token',
       saveConfig: 'Save Config',

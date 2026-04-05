@@ -128,10 +128,10 @@ scan_codeql_python() {
         return 2
     fi
     echo "Creating database..."
-    gh codeql database create --overwrite --language=python --threads=0 /tmp/bambuddy-codeql-python &>/dev/null
+    gh codeql database create --overwrite --language=python --threads=0 /tmp/bamdude-codeql-python &>/dev/null
     echo "Analyzing..."
-    gh codeql database analyze /tmp/bambuddy-codeql-python \
-        "$PROJECT_ROOT/.codeql/python-bambuddy.qls" \
+    gh codeql database analyze /tmp/bamdude-codeql-python \
+        "$PROJECT_ROOT/.codeql/python-bamdude.qls" \
         --threads=0 --format=sarifv2.1.0 --output="$sarif" &>/dev/null
     echo ""
     parse_sarif "$sarif"
@@ -144,10 +144,10 @@ scan_codeql_js() {
         return 2
     fi
     echo "Creating database..."
-    gh codeql database create --overwrite --language=javascript --source-root=frontend --threads=0 /tmp/bambuddy-codeql-javascript &>/dev/null
+    gh codeql database create --overwrite --language=javascript --source-root=frontend --threads=0 /tmp/bamdude-codeql-javascript &>/dev/null
     echo "Analyzing..."
-    gh codeql database analyze /tmp/bambuddy-codeql-javascript \
-        "$PROJECT_ROOT/.codeql/javascript-bambuddy.qls" \
+    gh codeql database analyze /tmp/bamdude-codeql-javascript \
+        "$PROJECT_ROOT/.codeql/javascript-bamdude.qls" \
         --threads=0 --format=sarifv2.1.0 --output="$sarif" &>/dev/null
     echo ""
     parse_sarif "$sarif"

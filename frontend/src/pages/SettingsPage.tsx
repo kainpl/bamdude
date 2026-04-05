@@ -946,7 +946,7 @@ export function SettingsPage() {
     <div className="p-4 md:p-8">
       <div className="mb-8">
         <h1 className="text-2xl font-bold text-white">{t('settings.title')}</h1>
-        <p className="text-bambu-gray">{t('settings.configureBambuddy')}</p>
+        <p className="text-bambu-gray">{t('settings.configureBamdude')}</p>
       </div>
 
       {/* Tab Navigation */}
@@ -1403,7 +1403,7 @@ export function SettingsPage() {
                 </label>
               </div>
               <div className="border-t border-bambu-dark-tertiary pt-4">
-                <p className="text-xs font-medium text-bambu-gray uppercase tracking-wider mb-4">{t('settings.bambuddySoftware')}</p>
+                <p className="text-xs font-medium text-bambu-gray uppercase tracking-wider mb-4">{t('settings.bamdudeSoftware')}</p>
               </div>
               <div className="flex items-center justify-between">
                 <div>
@@ -2214,7 +2214,7 @@ export function SettingsPage() {
               </p>
               <div>
                 <label className="block text-sm text-bambu-gray mb-1">
-                  {t('settings.bambuddyUrl')}
+                  {t('settings.bamdudeUrl')}
                 </label>
                 <input
                   type="text"
@@ -2599,13 +2599,13 @@ export function SettingsPage() {
                     </label>
                     <input
                       type="text"
-                      value={localSettings.mqtt_topic_prefix ?? 'bambuddy'}
+                      value={localSettings.mqtt_topic_prefix ?? 'bamdude'}
                       onChange={(e) => updateSetting('mqtt_topic_prefix', e.target.value)}
-                      placeholder="bambuddy"
+                      placeholder="bamdude"
                       className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                     />
                     <p className="text-xs text-bambu-gray mt-1">
-                      {t('settings.topicPrefixHint', { prefix: localSettings.mqtt_topic_prefix || 'bambuddy' })}
+                      {t('settings.topicPrefixHint', { prefix: localSettings.mqtt_topic_prefix || 'bamdude' })}
                     </p>
                   </div>
 
@@ -2681,12 +2681,12 @@ export function SettingsPage() {
                   <div className="pt-2 border-t border-bambu-dark-tertiary">
                     <p className="text-sm text-white mb-2">{t('settings.availableMetrics')}</p>
                     <div className="text-xs text-bambu-gray space-y-1">
-                      <p><code className="text-orange-400">bambuddy_printer_connected</code> - {t('settings.metricsConnectionStatus')}</p>
-                      <p><code className="text-orange-400">bambuddy_printer_state</code> - {t('settings.metricsPrinterState')}</p>
-                      <p><code className="text-orange-400">bambuddy_print_progress</code> - {t('settings.metricsPrintProgress')}</p>
-                      <p><code className="text-orange-400">bambuddy_bed_temp_celsius</code> - {t('settings.metricsBedTemp')}</p>
-                      <p><code className="text-orange-400">bambuddy_nozzle_temp_celsius</code> - {t('settings.metricsNozzleTemp')}</p>
-                      <p><code className="text-orange-400">bambuddy_prints_total</code> - {t('settings.metricsPrintsTotal')}</p>
+                      <p><code className="text-orange-400">bamdude_printer_connected</code> - {t('settings.metricsConnectionStatus')}</p>
+                      <p><code className="text-orange-400">bamdude_printer_state</code> - {t('settings.metricsPrinterState')}</p>
+                      <p><code className="text-orange-400">bamdude_print_progress</code> - {t('settings.metricsPrintProgress')}</p>
+                      <p><code className="text-orange-400">bamdude_bed_temp_celsius</code> - {t('settings.metricsBedTemp')}</p>
+                      <p><code className="text-orange-400">bamdude_nozzle_temp_celsius</code> - {t('settings.metricsNozzleTemp')}</p>
+                      <p><code className="text-orange-400">bamdude_prints_total</code> - {t('settings.metricsPrintsTotal')}</p>
                       <p className="text-bambu-gray/70 italic">{t('settings.metricsMore')}</p>
                     </div>
                   </div>

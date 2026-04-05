@@ -409,7 +409,7 @@ export function GitHubBackupSettings() {
                     type="text"
                     value={repoUrl}
                     onChange={(e) => { setRepoUrl(e.target.value); setTestResult(null); }}
-                    placeholder="https://github.com/username/bambuddy-backup"
+                    placeholder="https://github.com/username/bamdude-backup"
                     className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                   />
                 </div>

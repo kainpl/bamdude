@@ -49,8 +49,8 @@ COPY --from=frontend-builder /app/static ./static
 RUN mkdir -p /app/data /app/logs && chmod 777 /app/data /app/logs
 
 # OCI labels — auto-link GHCR package to repo
-LABEL org.opencontainers.image.source="https://github.com/kainpl/bambuddy-he"
-LABEL org.opencontainers.image.description="Bambuddy HE — 3D printer management for Bambu Lab"
+LABEL org.opencontainers.image.source="https://github.com/kainpl/bamdude"
+LABEL org.opencontainers.image.description="BamDude — 3D printer management for Bambu Lab"
 
 # Environment variables
 ENV PYTHONUNBUFFERED=1

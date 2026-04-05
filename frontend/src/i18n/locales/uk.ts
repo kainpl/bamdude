@@ -1604,7 +1604,7 @@ export default {
     authentication: 'Автентифікація',
     authEnabledDescription: 'Ваш екземпляр захищено автентифікацією користувачів',
     authDisabledDescription: 'Увімкніть для вимоги входу та керування доступом користувачів',
-    authDisabledMessage: 'Увімкніть автентифікацію для створення облікових записів, керування дозволами та захисту вашого екземпляра Bambuddy.',
+    authDisabledMessage: 'Увімкніть автентифікацію для створення облікових записів, керування дозволами та захисту вашого екземпляра BamDude.',
     enableAuthentication: 'Увімкнути автентифікацію',
     currentUser: 'Поточний користувач',
     changePassword: 'Змінити пароль',
@@ -1642,10 +1642,10 @@ export default {
     deleteGroup: 'Видалити групу',
     // Modal: Disable auth
     disableAuthenticationTitle: 'Вимкнути автентифікацію',
-    disableAuthenticationMessage: 'Ви впевнені, що хочете вимкнути автентифікацію? Це зробить ваш екземпляр Bambuddy доступним без входу. Усі користувачі залишаться в базі даних, але автентифікацію буде вимкнено.',
+    disableAuthenticationMessage: 'Ви впевнені, що хочете вимкнути автентифікацію? Це зробить ваш екземпляр BamDude доступним без входу. Усі користувачі залишаться в базі даних, але автентифікацію буде вимкнено.',
     disableAuthentication: 'Вимкнути автентифікацію',
     // Additional settings
-    configureBambuddy: 'Налаштувати Bambuddy',
+    configureBamdude: 'Налаштувати BamDude',
     systemDefault: 'Системне значення',
     archiveSettings: 'Налаштування архіву',
     queueAndScheduling: 'Черги та планування',
@@ -1876,7 +1876,7 @@ export default {
     // Updates
     printerFirmware: 'Прошивка принтера',
     checkFirmwareDescription: 'Перевіряти оновлення прошивки принтера від Bambu Lab',
-    bambuddySoftware: 'Програмне забезпечення Bambuddy',
+    bamdudeSoftware: 'Програмне забезпечення BamDude',
     autoCheckDescription: 'Автоматично перевіряти наявність нових версій при запуску',
     checkNow: 'Перевірити зараз',
     updateAvailableVersion: 'Доступне оновлення: v{{version}}',
@@ -1891,8 +1891,8 @@ export default {
     goToBackup: 'Перейти до резервного копіювання',
     // Network tab
     externalUrl: 'Зовнішній URL',
-    externalUrlDescription: 'Зовнішній URL, за яким доступний Bambuddy. Використовується для зображень у сповіщеннях та зовнішніх інтеграцій.',
-    bambuddyUrl: 'URL Bambuddy HE',
+    externalUrlDescription: 'Зовнішній URL, за яким доступний BamDude. Використовується для зображень у сповіщеннях та зовнішніх інтеграцій.',
+    bamdudeUrl: 'URL BamDude',
     externalUrlHint: 'Включіть протокол та порт (напр., http://192.168.1.100:8000)',
     ftpRetry: 'Повтор FTP',
     ftpRetryDescription: 'Повторювати FTP операції при нестабільному WiFi принтера. Застосовується до завантажень 3MF, відправки друків, завантажень таймлапсів та оновлень прошивки.',
@@ -1918,7 +1918,7 @@ export default {
     haConnectionFailed: 'Не вдалося підключитися до Home Assistant.',
     // MQTT
     mqttPublishing: 'Публікація MQTT',
-    mqttDescription: 'Публікуйте події BamBuddy на зовнішній MQTT брокер для інтеграції з Node-RED, Home Assistant та іншими системами автоматизації.',
+    mqttDescription: 'Публікуйте події BamDude на зовнішній MQTT брокер для інтеграції з Node-RED, Home Assistant та іншими системами автоматизації.',
     mqttEnableDescription: 'Публікувати події на зовнішній MQTT брокер',
     brokerHostname: "Ім'я хоста брокера",
     port: 'Порт',
@@ -2074,7 +2074,7 @@ export default {
 
   // Login page
   login: {
-    title: 'Вхід в Bambuddy',
+    title: 'Вхід в BamDude',
     subtitle: 'Увійдіть у свій обліковий запис',
     username: "Ім'я користувача",
     usernamePlaceholder: "Введіть ім'я користувача",
@@ -2097,7 +2097,7 @@ export default {
     sending: 'Надсилання...',
     sendResetEmail: 'Надіслати лист для скидання',
     howToReset: 'Як скинути пароль:',
-    resetStep1: 'Зверніться до адміністратора Bambuddy',
+    resetStep1: 'Зверніться до адміністратора BamDude',
     resetStep2: 'Попросіть скинути пароль у Керуванні користувачами',
     resetStep3: 'Вони можуть встановити новий тимчасовий пароль',
     resetStep4: 'Увійдіть з новим паролем та змініть його в Налаштуваннях',
@@ -2106,8 +2106,8 @@ export default {
 
   // Setup page
   setup: {
-    title: 'Налаштування Bambuddy',
-    subtitle: 'Налаштуйте автентифікацію для вашого екземпляра Bambuddy',
+    title: 'Налаштування BamDude',
+    subtitle: 'Налаштуйте автентифікацію для вашого екземпляра BamDude',
     enableAuth: 'Увімкнути автентифікацію',
     adminAccount: 'Обліковий запис адміністратора',
     adminAccountDesc: 'Якщо адміністратори вже існують, автентифікацію буде увімкнено з використанням існуючих облікових записів. Залиште поля нижче порожніми для використання існуючих адміністраторів або введіть нові дані для створення нового.',
@@ -2251,7 +2251,7 @@ export default {
   // Users management
   users: {
     title: 'Керування користувачами',
-    subtitle: 'Керуйте користувачами та їхнім доступом до Bambuddy',
+    subtitle: 'Керуйте користувачами та їхнім доступом до BamDude',
     backToSettings: 'Повернутися до Налаштувань',
     createUser: 'Створити користувача',
     noPermission: 'У вас немає дозволу для доступу до цієї сторінки.',
@@ -3433,7 +3433,7 @@ export default {
     cloudProfiles: 'Хмарні профілі',
     cloudProfilesDescription: 'Пресети філаменту, принтера та процесу з Bambu Cloud',
     appSettings: 'Налаштування додатку',
-    appSettingsDescription: 'Конфігурація Bambuddy (повна база даних)',
+    appSettingsDescription: 'Конфігурація BamDude (повна база даних)',
     lastBackupAt: 'Остання копія:',
     noBackupsYet: 'Копій ще немає',
     next: 'Наступна:',
@@ -3464,7 +3464,7 @@ export default {
 
     // Local Backup
     localBackup: 'Локальна резервна копія',
-    localBackupDescription: 'Створіть повну резервну копію даних Bambuddy, включаючи базу даних, архіви, завантаження та всі файли.',
+    localBackupDescription: 'Створіть повну резервну копію даних BamDude, включаючи базу даних, архіви, завантаження та всі файли.',
     downloadBackupLabel: 'Завантажити резервну копію',
     completeBackupZip: 'Повна копія: база даних + усі файли (ZIP)',
     download: 'Завантажити',
@@ -3480,7 +3480,7 @@ export default {
     restoreConfirmMessage: 'Ви впевнені, що хочете відновити з "{{filename}}"? Це повністю замінить вашу поточну базу даних та всі файли. Після відновлення потрібен перезапуск.',
     restoreConfirmButton: 'Відновити резервну копію',
     uploadingFile: 'Завантаження файлу резервної копії...',
-    backupRestoredRestart: 'Резервну копію відновлено. Перезапустіть Bambuddy.',
+    backupRestoredRestart: 'Резервну копію відновлено. Перезапустіть BamDude.',
     failedToRestore: 'Не вдалося відновити резервну копію. Перевірте формат файлу.',
     reloadNow: 'Перезавантажити зараз',
     creatingBackup: 'Створення резервної копії',
@@ -3688,7 +3688,7 @@ export default {
       right: 'Правий',
       notes: 'Нотатки (зберігаються локально)',
       notesPlaceholder: 'Додайте нотатки про цей профіль...',
-      notesHelp: 'Нотатки зберігаються в Bambuddy, не на принтері',
+      notesHelp: 'Нотатки зберігаються в BamDude, не на принтері',
       syncing: 'Синхронізація з принтером...',
       savingExtruder: 'Збереження на екструдер {{current}}/{{total}}...',
       pleaseWait: 'Зачекайте',
@@ -3743,7 +3743,7 @@ export default {
     },
     enable: {
       title: 'Увімкнути віртуальний принтер',
-      visibleInSlicer: 'Видимий як "Bambuddy HE" у виявленні слайсера',
+      visibleInSlicer: 'Видимий як "BamDude" у виявленні слайсера',
       proxyingTo: 'Проксі до {{name}}',
       notActive: 'Не активний',
     },
@@ -3774,7 +3774,7 @@ export default {
       configured: 'Перевизначення інтерфейсу активне',
       optional: "Необов'язково — використовуйте, якщо автовизначення IP невірне (напр., кілька NIC, Docker, VPN)",
       placeholder: 'Автовизначення (за замовчуванням)...',
-      hint: 'Перевизначте IP адресу, що оголошується через SSDP та використовується в TLS сертифікаті. Корисно при кількох мережевих інтерфейсах.',
+      hint: 'Перевизначте IP адресу, що оголошується через SSDP та використовується в TLS сертифікаті. Корисно коли BamDude має кілька мережевих інтерфейсів.',
     },
     mode: {
       title: 'Режим',
@@ -3801,7 +3801,7 @@ export default {
     howItWorks: {
       title: 'Як це працює',
       step1: 'У тій самій LAN віртуальні принтери з\'являються у вашому слайсері (Bambu Studio / OrcaSlicer) автоматично через виявлення. З інших мереж додайте їх вручну за IP адресою та кодом доступу.',
-      step2: 'У режимах Архів, Перегляд, Черга та Файловий менеджер використовуйте кнопку "Надіслати" у слайсері для завантаження 3MF файлів у Bambuddy. Слайсер покаже "Друк успішний" — файл збережено, не надруковано.',
+      step2: 'У режимах Архів, Перегляд, Черга та Файловий менеджер використовуйте кнопку "Надіслати" у слайсері для завантаження 3MF файлів у BamDude. Слайсер покаже "Друк успішний" — файл збережено, не надруковано.',
       step3: 'У режимі Проксі віртуальний принтер передає весь трафік на реальний принтер — друк починається одразу, як при прямому підключенні.',
     },
     status: {
@@ -4509,7 +4509,7 @@ export default {
   // Email Settings
   emailSettings: {
     placeholders: {
-      fromName: 'BamBuddy',
+      fromName: 'BamDude',
     },
   },
 
@@ -4774,7 +4774,7 @@ export default {
       hostname: 'Хост',
       uptime: 'Час роботи',
       systemConfig: 'Бекенд та автентифікація',
-      backendUrl: 'URL бекенду Bambuddy',
+      backendUrl: 'URL бекенду BamDude',
       apiToken: 'API токен',
       apiTokenPlaceholder: 'Введіть API токен',
       saveConfig: 'Зберегти конфігурацію',

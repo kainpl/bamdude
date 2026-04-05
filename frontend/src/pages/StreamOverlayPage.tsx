@@ -162,7 +162,7 @@ export function StreamOverlayPage() {
   useEffect(() => {
     document.title = printer ? `${printer.name} - ${t('streamOverlay.title')}` : t('streamOverlay.title');
     return () => {
-      document.title = 'Bambuddy';
+      document.title = 'BamDude';
     };
   }, [printer, t]);
 
@@ -207,7 +207,7 @@ export function StreamOverlayPage() {
         />
       )}
 
-      {/* Bambuddy logo - top right */}
+      {/* BamDude logo - top right */}
       <a
         href="https://github.com/kainpl/bambuddy-he"
         target="_blank"
@@ -216,7 +216,7 @@ export function StreamOverlayPage() {
       >
         <img
           src="/img/bambuddy_logo_dark_transparent.png"
-          alt="Bambuddy-HE"
+          alt="BamDude"
           className={`${sizes.logoHeight} object-contain drop-shadow-lg hover:scale-105 transition-transform`}
         />
       </a>

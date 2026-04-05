@@ -100,7 +100,7 @@ def _start_error_server(missing_packages: list):
     html = f"""<!DOCTYPE html>
 <html>
 <head>
-    <title>Bambuddy - Setup Required</title>
+    <title>BamDude - Setup Required</title>
     <style>
         body {{
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -137,8 +137,8 @@ def _start_error_server(missing_packages: list):
         <div class="command">pip install -r requirements.txt</div>
         <p>Or if using a virtual environment:</p>
         <div class="command">./venv/bin/pip install -r requirements.txt</div>
-        <p class="note">After installing, restart Bambuddy:<br>
-        <code>sudo systemctl restart bambuddy</code></p>
+        <p class="note">After installing, restart BamDude:<br>
+        <code>sudo systemctl restart bamdude</code></p>
     </div>
 </body>
 </html>"""
@@ -227,7 +227,7 @@ root_logger.addHandler(console_handler)
 
 # File handler - only in production or if explicitly enabled
 if app_settings.log_to_file:
-    log_file = app_settings.log_dir / "bambuddy.log"
+    log_file = app_settings.log_dir / "bamdude.log"
     file_handler = RotatingFileHandler(
         log_file,
         maxBytes=5 * 1024 * 1024,  # 5MB
@@ -246,7 +246,7 @@ if not app_settings.debug:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("paho.mqtt").setLevel(logging.WARNING)
 
-logging.info("Bambuddy starting - debug=%s, log_level=%s", app_settings.debug, log_level_str)
+logging.info("BamDude starting - debug=%s, log_level=%s", app_settings.debug, log_level_str)
 
 
 # Track active prints: {(printer_id, filename): archive_id}
@@ -3892,7 +3892,7 @@ async def lifespan(app: FastAPI):
             "mqtt_port": int(await get_setting(db, "mqtt_port") or "1883"),
             "mqtt_username": await get_setting(db, "mqtt_username") or "",
             "mqtt_password": await get_setting(db, "mqtt_password") or "",
-            "mqtt_topic_prefix": await get_setting(db, "mqtt_topic_prefix") or "bambuddy",
+            "mqtt_topic_prefix": await get_setting(db, "mqtt_topic_prefix") or "bamdude",
             "mqtt_use_tls": (await get_setting(db, "mqtt_use_tls") or "false") == "true",
         }
         await mqtt_relay.configure(mqtt_settings)
@@ -4263,7 +4263,7 @@ async def serve_frontend():
     if index_file.exists():
         return FileResponse(index_file)
     return {
-        "message": "Bambuddy API",
+        "message": "BamDude API",
         "docs": "/docs",
         "frontend": "Build and place React app in /static directory",
     }
