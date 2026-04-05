@@ -17,14 +17,14 @@ interface PrinterQueueWidgetProps {
   loadedFilaments?: Set<string>;  // "TYPE:rrggbb" pairs for filament override color matching
 }
 
-export function PrinterQueueWidget({ printerId, printerModel, printerState, plateCleared, loadedFilamentTypes, loadedFilaments }: PrinterQueueWidgetProps) {
+export function PrinterQueueWidget({ printerId, printerState, plateCleared, loadedFilamentTypes, loadedFilaments }: PrinterQueueWidgetProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
   const { hasPermission } = useAuth();
   const { data: queue } = useQuery({
-    queryKey: ['queue', printerId, 'pending', printerModel],
-    queryFn: () => api.getQueue(printerId, 'pending', printerModel || undefined),
+    queryKey: ['queue', printerId, 'pending'],
+    queryFn: () => api.getQueue(printerId, 'pending'),
     refetchInterval: 30000,
   });
 

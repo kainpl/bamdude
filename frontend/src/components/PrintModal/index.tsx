@@ -11,7 +11,7 @@ import { ConfirmModal } from '../ConfirmModal';
 import { useToast } from '../../contexts/ToastContext';
 import { buildLoadedFilaments, useFilamentMapping } from '../../hooks/useFilamentMapping';
 import { useMultiPrinterFilamentMapping, type PerPrinterConfig } from '../../hooks/useMultiPrinterFilamentMapping';
-import { getColorName } from '../../utils/colors';
+// getColorName removed (was used for filament overrides in model-based assignment)
 import { getCurrencySymbol } from '../../utils/currency';
 import { toDateTimeLocalValue, parseUTCDate } from '../../utils/date';
 import { getGlobalTrayId, isPlaceholderDate } from '../../utils/amsHelpers';
@@ -143,54 +143,19 @@ export function PrintModal({
   // Per-printer override configs (for multi-printer selection)
   const [perPrinterConfigs, setPerPrinterConfigs] = useState<Record<number, PerPrinterConfig>>({});
 
-  // Assignment mode: 'printer' (specific) or 'model' (any of model)
-  const [assignmentMode, setAssignmentMode] = useState<AssignmentMode>(() => {
-    // Initialize from queue item if editing with target_model
-    if (mode === 'edit-queue-item' && queueItem?.target_model) {
-      return 'model';
-    }
-    return 'printer';
-  });
+  // Assignment mode: always 'printer' (model-based removed)
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const [assignmentMode, setAssignmentMode] = useState<AssignmentMode>('printer');
 
-  // Target model for model-based assignment
-  const [targetModel, setTargetModel] = useState<string | null>(() => {
-    if (mode === 'edit-queue-item' && queueItem?.target_model) {
-      return queueItem.target_model;
-    }
-    return null;
-  });
-
-  // Target location for model-based assignment (optional filter)
-  const [targetLocation, setTargetLocation] = useState<string | null>(() => {
-    if (mode === 'edit-queue-item' && queueItem?.target_location) {
-      return queueItem.target_location;
-    }
-    return null;
-  });
-
-  // Filament overrides for model-based assignment: slot_id -> {type, color}
-  const [filamentOverrides, setFilamentOverrides] = useState<Record<number, { type: string; color: string }>>(() => {
-    if (mode === 'edit-queue-item' && queueItem?.filament_overrides) {
-      const overrides: Record<number, { type: string; color: string }> = {};
-      for (const o of queueItem.filament_overrides) {
-        overrides[o.slot_id] = { type: o.type, color: o.color };
-      }
-      return overrides;
-    }
-    return {};
-  });
-
-  // Per-slot force color match flags. Default is false (opt-in).
-  const [forceColorMatch, setForceColorMatch] = useState<Record<number, boolean>>(() => {
-    if (mode === 'edit-queue-item' && queueItem?.filament_overrides) {
-      const flags: Record<number, boolean> = {};
-      for (const o of queueItem.filament_overrides) {
-        flags[o.slot_id] = o.force_color_match === true;
-      }
-      return flags;
-    }
-    return {};
-  });
+  // Legacy state vars kept for code compatibility (always empty/null, setters used in dead UI code)
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const [targetModel, setTargetModel] = useState<string | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const [targetLocation, setTargetLocation] = useState<string | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const [filamentOverrides, setFilamentOverrides] = useState<Record<number, { type: string; color: string }>>({});
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const [forceColorMatch, setForceColorMatch] = useState<Record<number, boolean>>({});
 
   // Track initial values for clearing mappings on change (edit mode only)
   const [initialPrinterIds] = useState(() => (mode === 'edit-queue-item' && queueItem?.printer_id ? [queueItem.printer_id] : []));
@@ -567,44 +532,9 @@ export function PrintModal({
     };
 
     // Convert filament overrides from Record to array format for API.
-    // Include all slots that either have a user override or have force_color_match enabled
-    // (which is the default for model-based assignment).
-    const buildFilamentOverridesArray = () => {
-      const entries: Array<{ slot_id: number; type: string; color: string; color_name: string; force_color_match: boolean }> = [];
-
-      // Process all slots from filament requirements (to capture force_color_match defaults)
-      if (effectiveFilamentReqs?.filaments) {
-        for (const req of effectiveFilamentReqs.filaments) {
-          const userOverride = filamentOverrides[req.slot_id];
-          const isForceColor = forceColorMatch[req.slot_id] ?? false;
-          const effectiveType = userOverride?.type ?? req.type;
-          const effectiveColor = userOverride?.color ?? req.color;
-
-          // Include slot if user changed the filament OR force_color_match is enabled
-          if (userOverride || isForceColor) {
-            entries.push({ slot_id: req.slot_id, type: effectiveType, color: effectiveColor, color_name: getColorName(effectiveColor), force_color_match: isForceColor });
-          }
-        }
-      } else {
-        // Fallback: no filament requirements data — only include explicit user overrides
-        for (const [slotId, { type, color }] of Object.entries(filamentOverrides)) {
-          const id = parseInt(slotId, 10);
-          const isForceColor = forceColorMatch[id] ?? false;
-          entries.push({ slot_id: id, type, color, color_name: getColorName(color), force_color_match: isForceColor });
-        }
-      }
-
-      return entries.length > 0 ? entries : undefined;
-    };
-
-    const filamentOverridesArray = buildFilamentOverridesArray();
-
     // Common queue data for add-to-queue and edit modes
     const getQueueData = (printerId: number | null, plateOverride?: number | null): PrintQueueItemCreate => ({
-      printer_id: assignmentMode === 'printer' ? printerId : null,
-      target_model: assignmentMode === 'model' ? targetModel : null,
-      target_location: assignmentMode === 'model' ? targetLocation : null,
-      filament_overrides: assignmentMode === 'model' ? filamentOverridesArray : undefined,
+      queue_id: printerId!,  // queue_id == printer_id (always per-printer queue)
       // Use library_file_id for library files, archive_id for archives
       archive_id: isLibraryFile ? undefined : archiveId,
       library_file_id: isLibraryFile ? libraryFileId : undefined,
@@ -635,16 +565,11 @@ export function PrintModal({
 
         try {
           if (mode === 'edit-queue-item' && !plate) {
-            // Edit mode - update with target_model (only for single plate)
+            // Edit mode - update queue item
             const updateData: PrintQueueItemUpdate = {
-              printer_id: null,
-              target_model: targetModel,
-              target_location: targetLocation,
-              filament_overrides: filamentOverridesArray || null,
               require_previous_success: scheduleOptions.requirePreviousSuccess,
               auto_off_after: scheduleOptions.autoOffAfter,
               manual_start: scheduleOptions.scheduleType === 'manual',
-              ams_mapping: undefined,
               plate_id: plateId,
               scheduled_time: scheduleOptions.scheduleType === 'scheduled' && scheduleOptions.scheduledTime
                 ? new Date(scheduleOptions.scheduledTime).toISOString()
@@ -653,7 +578,7 @@ export function PrintModal({
             };
             await updateQueueMutation.mutateAsync(updateData);
           } else {
-            // Add-to-queue mode with model-based assignment
+            // Add-to-queue mode
             await addToQueueMutation.mutateAsync(getQueueData(null, plateId));
           }
           results.success++;
@@ -697,9 +622,7 @@ export function PrintModal({
               // Edit mode - update the original queue item for the first entry
               const printerMapping = getMappingForPrinter(printerId);
               const updateData: PrintQueueItemUpdate = {
-                printer_id: printerId,
-                target_model: null,
-                target_location: null,
+                queue_id: printerId,  // queue_id == printer_id
                 require_previous_success: scheduleOptions.requirePreviousSuccess,
                 auto_off_after: scheduleOptions.autoOffAfter,
                 manual_start: scheduleOptions.scheduleType === 'manual',

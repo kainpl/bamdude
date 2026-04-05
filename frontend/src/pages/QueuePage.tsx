@@ -135,7 +135,7 @@ function BulkEditModal({
 
   const handleSave = () => {
     const data: Partial<PrintQueueBulkUpdate> = {};
-    if (printerId !== 'unchanged') data.printer_id = printerId;
+    if (printerId !== 'unchanged') data.queue_id = printerId;
     if (manualStart !== 'unchanged') data.manual_start = manualStart;
     if (autoOffAfter !== 'unchanged') data.auto_off_after = autoOffAfter;
     if (requirePreviousSuccess !== 'unchanged') data.require_previous_success = requirePreviousSuccess;
@@ -469,14 +469,10 @@ function SortableQueueItem({
           </div>
 
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs sm:text-sm text-bambu-gray">
-            <span className={`flex items-center gap-1 sm:gap-1.5 ${item.printer_id === null && !item.target_model ? 'text-orange-400' : ''} ${item.target_model ? 'text-blue-400' : ''}`}>
+            <span className="flex items-center gap-1 sm:gap-1.5">
               <Printer className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
               <span className="truncate max-w-[120px] sm:max-w-none">
-              {item.target_model
-                ? `${t('queue.filter.any')} ${item.target_model}${item.target_location ? ` @ ${item.target_location}` : ''}${item.required_filament_types?.length ? ` (${item.required_filament_types.join(', ')})` : ''}`
-                : item.printer_id === null
-                  ? t('queue.filter.unassigned')
-                  : (item.printer_name || `${t('common.printer')} #${item.printer_id}`)}
+                {item.printer_name || `${t('common.printer')} #${item.queue_id}`}
               </span>
             </span>
             {item.print_time_seconds && (
@@ -838,24 +834,15 @@ export function QueuePage() {
     printers?.forEach(p => {
       if (p.location) locations.add(p.location);
     });
-    // Also include locations from queue items (for model-based assignments)
-    queue?.forEach(item => {
-      if (item.target_location) locations.add(item.target_location);
-    });
     return Array.from(locations).sort();
-  }, [printers, queue]);
+  }, [printers]);
 
   // Helper to check if a queue item matches the location filter
   const matchesLocationFilter = useCallback((item: PrintQueueItem): boolean => {
     if (!filterLocation) return true;
-    // For model-based assignments, check target_location
-    if (item.target_location) return item.target_location === filterLocation;
-    // For printer-based assignments, check the printer's location
-    if (item.printer_id) {
-      const printer = printers?.find(p => p.id === item.printer_id);
-      return printer?.location === filterLocation;
-    }
-    return false;
+    // Check the printer's location via queue_id (queue_id == printer_id)
+    const printer = printers?.find(p => p.id === item.queue_id);
+    return printer?.location === filterLocation;
   }, [filterLocation, printers]);
 
   const pendingItems = useMemo(() => {
