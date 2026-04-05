@@ -24,7 +24,6 @@ class QueueAddRequest(BaseModel):
     printer_id: int
     project_id: int | None = None
     scheduled_time: str | None = None  # ISO format datetime
-    require_previous_success: bool = False
     auto_off_after: bool = False
 
 
@@ -113,7 +112,6 @@ async def webhook_add_to_queue(
         project_id=data.project_id,
         position=next_position,
         scheduled_time=scheduled_time,
-        require_previous_success=data.require_previous_success,
         auto_off_after=data.auto_off_after,
     )
     db.add(queue_item)

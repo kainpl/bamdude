@@ -1318,7 +1318,6 @@ export interface PrintQueueItem {
   library_file_id: number | null;
   position: number;
   scheduled_time: string | null;
-  require_previous_success: boolean;
   auto_off_after: boolean;
   manual_start: boolean;
   ams_mapping: number[] | null;
@@ -1354,7 +1353,6 @@ export interface PrintQueueItemCreate {
   archive_id?: number | null;
   library_file_id?: number | null;
   scheduled_time?: string | null;
-  require_previous_success?: boolean;
   auto_off_after?: boolean;
   manual_start?: boolean;
   ams_mapping?: number[] | null;
@@ -1371,7 +1369,6 @@ export interface PrintQueueItemUpdate {
   queue_id?: number | null;  // Move to different queue
   position?: number;
   scheduled_time?: string | null;
-  require_previous_success?: boolean;
   auto_off_after?: boolean;
   manual_start?: boolean;
   ams_mapping?: number[];
@@ -1405,7 +1402,6 @@ export interface PrintQueueBulkUpdate {
   item_ids: number[];
   queue_id?: number | null;
   scheduled_time?: string | null;
-  require_previous_success?: boolean;
   auto_off_after?: boolean;
   manual_start?: boolean;
   // Print options

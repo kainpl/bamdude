@@ -19,7 +19,7 @@ const mockQueueItems = [
     position: 1,
     status: 'pending',
     scheduled_time: null,
-    require_previous_success: false,
+
     auto_off_after: false,
     manual_start: false,
     ams_mapping: null,
@@ -46,7 +46,7 @@ const mockQueueItems = [
     position: 2,
     status: 'printing',
     scheduled_time: null,
-    require_previous_success: false,
+
     auto_off_after: true,
     manual_start: false,
     ams_mapping: null,
@@ -73,7 +73,7 @@ const mockQueueItems = [
     position: 3,
     status: 'completed',
     scheduled_time: null,
-    require_previous_success: false,
+
     auto_off_after: false,
     manual_start: false,
     ams_mapping: null,

@@ -20,7 +20,6 @@ class PrintQueueItemCreate(BaseModel):
     archive_id: int | None = None
     library_file_id: int | None = None
     scheduled_time: datetime | None = None  # None = ASAP
-    require_previous_success: bool = False
     auto_off_after: bool = False
     manual_start: bool = False
     ams_mapping: list[int] | None = None
@@ -38,7 +37,6 @@ class PrintQueueItemUpdate(BaseModel):
     queue_id: int | None = None  # Move to different printer's queue
     position: int | None = None
     scheduled_time: datetime | None = None
-    require_previous_success: bool | None = None
     auto_off_after: bool | None = None
     manual_start: bool | None = None
     ams_mapping: list[int] | None = None
@@ -61,7 +59,6 @@ class PrintQueueItemResponse(BaseModel):
     library_file_id: int | None
     position: int
     scheduled_time: UTCDatetime
-    require_previous_success: bool
     auto_off_after: bool
     manual_start: bool
     ams_mapping: list[int] | None = None
@@ -116,7 +113,6 @@ class PrintQueueBulkUpdate(BaseModel):
     item_ids: list[int]
     queue_id: int | None = None  # Move all to different queue
     scheduled_time: datetime | None = None
-    require_previous_success: bool | None = None
     auto_off_after: bool | None = None
     manual_start: bool | None = None
     # Print options

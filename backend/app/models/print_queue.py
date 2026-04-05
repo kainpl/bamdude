@@ -33,8 +33,6 @@ class PrintQueueItem(Base):
     manual_start: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Conditions
-    require_previous_success: Mapped[bool] = mapped_column(Boolean, default=False)
-
     # Power management
     auto_off_after: Mapped[bool] = mapped_column(Boolean, default=False)
 

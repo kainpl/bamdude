@@ -28,7 +28,6 @@ const createMockQueueItem = (overrides: Partial<PrintQueueItem> = {}): PrintQueu
   archive_id: 1,
   position: 1,
   scheduled_time: null,
-  require_previous_success: false,
   auto_off_after: false,
   manual_start: false,
   ams_mapping: null,
