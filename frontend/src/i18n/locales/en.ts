@@ -4139,8 +4139,6 @@ export default {
     // Queue events
     jobAdded: 'Job Added',
     jobAddedDescription: 'Job added to queue',
-    jobAssigned: 'Job Assigned',
-    jobAssignedDescription: 'Model-based job assigned to printer',
     jobStarted: 'Job Started',
     jobStartedDescription: 'Queue job started printing',
     jobWaiting: 'Job Waiting',

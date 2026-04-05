@@ -508,17 +508,6 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
 
                                 <div className="flex items-center justify-between">
                                     <div>
-                                        <p className="text-sm text-white">{t('notifications.jobAssigned')}</p>
-                                        <p className="text-xs text-bambu-gray">{t('notifications.jobAssignedDescription')}</p>
-                                    </div>
-                                    <Toggle
-                                        checked={provider.on_queue_job_assigned ?? false}
-                                        onChange={(checked) => updateMutation.mutate({on_queue_job_assigned: checked})}
-                                    />
-                                </div>
-
-                                <div className="flex items-center justify-between">
-                                    <div>
                                         <p className="text-sm text-white">{t('notifications.jobStarted')}</p>
                                         <p className="text-xs text-bambu-gray">{t('notifications.jobStartedDescription')}</p>
                                     </div>

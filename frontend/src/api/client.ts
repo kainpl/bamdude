@@ -1547,7 +1547,6 @@ export interface NotificationProvider {
   on_first_layer_complete: boolean;
   // Print queue events
   on_queue_job_added: boolean;
-  on_queue_job_assigned: boolean;
   on_queue_job_started: boolean;
   on_queue_job_waiting: boolean;
   on_queue_job_skipped: boolean;
@@ -1602,7 +1601,7 @@ export interface NotificationProviderCreate {
   on_first_layer_complete?: boolean;
   // Print queue events
   on_queue_job_added?: boolean;
-  on_queue_job_assigned?: boolean;
+
   on_queue_job_started?: boolean;
   on_queue_job_waiting?: boolean;
   on_queue_job_skipped?: boolean;
@@ -1650,7 +1649,7 @@ export interface NotificationProviderUpdate {
   on_first_layer_complete?: boolean;
   // Print queue events
   on_queue_job_added?: boolean;
-  on_queue_job_assigned?: boolean;
+
   on_queue_job_started?: boolean;
   on_queue_job_waiting?: boolean;
   on_queue_job_skipped?: boolean;

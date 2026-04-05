@@ -92,7 +92,6 @@ EVENT_CATEGORIES = {
         "label": "Queue",
         "events": [
             "queue_job_added",
-            "queue_job_assigned",
             "queue_job_started",
             "queue_job_waiting",
             "queue_job_skipped",
@@ -121,7 +120,6 @@ EVENT_LABELS = {
     "bed_cooled": "Bed cooled",
     "first_layer_complete": "First layer complete",
     "queue_job_added": "Queue job added",
-    "queue_job_assigned": "Queue job assigned",
     "queue_job_started": "Queue job started",
     "queue_job_waiting": "Queue job waiting",
     "queue_job_skipped": "Queue job skipped",

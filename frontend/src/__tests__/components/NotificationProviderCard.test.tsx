@@ -67,7 +67,6 @@ const createMockProvider = (
   on_bed_cooled: false,
   on_first_layer_complete: false,
   on_queue_job_added: false,
-  on_queue_job_assigned: false,
   on_queue_job_started: false,
   on_queue_job_waiting: true,
   on_queue_job_skipped: true,
@@ -300,11 +299,6 @@ describe('NotificationProviderCard Queue notifications', () => {
       expect(provider.on_queue_job_added).toBe(true);
     });
 
-    it('includes on_queue_job_assigned in provider data', () => {
-      const provider = createMockProvider({ on_queue_job_assigned: true });
-      expect(provider.on_queue_job_assigned).toBe(true);
-    });
-
     it('includes on_queue_job_started in provider data', () => {
       const provider = createMockProvider({ on_queue_job_started: true });
       expect(provider.on_queue_job_started).toBe(true);
@@ -344,7 +338,6 @@ describe('NotificationProviderCard Queue notifications', () => {
       const provider = createMockProvider();
       // These should default to false (informational only)
       expect(provider.on_queue_job_added).toBe(false);
-      expect(provider.on_queue_job_assigned).toBe(false);
       expect(provider.on_queue_job_started).toBe(false);
       expect(provider.on_queue_completed).toBe(false);
     });
@@ -354,7 +347,6 @@ describe('NotificationProviderCard Queue notifications', () => {
     it('supports all queue toggles independently', () => {
       const provider = createMockProvider({
         on_queue_job_added: true,
-        on_queue_job_assigned: false,
         on_queue_job_started: true,
         on_queue_job_waiting: false,
         on_queue_job_skipped: true,
@@ -363,7 +355,6 @@ describe('NotificationProviderCard Queue notifications', () => {
       });
 
       expect(provider.on_queue_job_added).toBe(true);
-      expect(provider.on_queue_job_assigned).toBe(false);
       expect(provider.on_queue_job_started).toBe(true);
       expect(provider.on_queue_job_waiting).toBe(false);
       expect(provider.on_queue_job_skipped).toBe(true);

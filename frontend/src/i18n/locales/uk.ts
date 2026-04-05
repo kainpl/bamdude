@@ -4126,8 +4126,6 @@ export default {
     // Queue events
     jobAdded: 'Завдання додано',
     jobAddedDescription: 'Завдання додано до черги',
-    jobAssigned: 'Завдання призначено',
-    jobAssignedDescription: 'Завдання на основі моделі призначено принтеру',
     jobStarted: 'Завдання розпочато',
     jobStartedDescription: 'Завдання черги почало друкуватися',
     jobWaiting: 'Завдання чекає',
