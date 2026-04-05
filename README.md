@@ -75,8 +75,9 @@ Bambuddy HE is a hard fork focused on print farm operators who need deeper autom
 - Print success rates, filament usage, cost analytics
 
 ### Scheduling & Automation
-- Print queue with drag-and-drop
-- Model-based queue assignment (load balancing)
+- Per-printer queues with status tracking (idle/printing/paused/error)
+- Auto error-pause on print failure (queue stops, user decides next step)
+- Staggered start for farms (limit concurrent heating, bed temp monitoring)
 - Clear plate confirmation between prints
 - Smart plug integration (Tasmota, HA, MQTT)
 - Energy consumption tracking

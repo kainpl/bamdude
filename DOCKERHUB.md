@@ -21,7 +21,7 @@ Open **http://localhost:8000** and add your printer.
 - **Real-Time Monitoring** — Live printer status, camera streaming, HMS error tracking, multi-printer dashboard
 - **Telegram Bot** — Full printer control, status, maintenance, queue from Telegram with multi-chat auth and actionable notifications
 - **Print Archive** — Automatic 3MF archiving, 3D model viewer, timelapse editor, re-print with AMS mapping
-- **Print Scheduling** — Drag-and-drop queue, model-based assignment, clear plate confirmation between prints
+- **Print Scheduling** — Per-printer queues, staggered start for farms, error-pause, clear plate confirmation
 - **Smart Automation** — Smart plug control, auto power-on/off, energy monitoring, maintenance reminders
 - **Notifications** — Telegram, Discord, Email, Pushover, ntfy with per-chat settings, quiet hours, actionable buttons
 - **File Manager** — Upload sliced files, folder structure, external mounts, print directly

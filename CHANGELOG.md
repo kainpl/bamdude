@@ -6,6 +6,66 @@ All notable changes to Bambuddy HE will be documented in this file.
 
 ---
 
+## [0.3.1.1] - 2026-04-05
+
+### Per-Printer Queue Architecture
+
+Complete rework of the queue system. Replaced flat queue with model-based assignment with per-printer queues.
+
+- **PrinterQueue entity** — each printer gets its own queue with status tracking (`idle`, `printing`, `paused`, `error`) and cached counters
+- **Queue auto-creation** — queue is created automatically when a printer is added
+- **Removed model-based assignment** — no more "Any X1C" scheduling; user always selects a specific printer
+- **Removed fields**: `target_model`, `target_location`, `required_filament_types`, `filament_overrides`, `require_previous_success` from queue items
+- **Queue error-pause** — when a print fails, the queue automatically enters `error` state; pending items stay pending (no auto-skip); user resolves and resumes
+- **Split counters** — `pending_count`, `completed_count`, `failed_count`, `cancelled_count`, `skipped_count`, `total_count` per queue, updated on every status change
+- **Queue API** — `GET /queues/`, `GET /queues/{id}`, `PATCH /queues/{id}` (pause/resume/clear error)
+- **Migration** — existing items auto-migrated from `printer_id` to `queue_id`; orphaned model-based items cleaned up; counters recalculated on startup
+
+### Staggered Start (Farm Feature)
+
+Electrical load management for large print farms — spread printer startups over time to avoid tripping breakers.
+
+- **Rolling slot model** — configurable number of concurrent heating slots
+- **Bed temperature monitoring** — slot frees when bed reaches target temperature (±1 C); optional (can free immediately after start)
+- **Configurable interval** — wait time after a slot frees before allowing the next start
+- **Per-printer interval override** — each printer can have its own interval (0 = system default)
+- **Settings**: `stagger_enabled`, `stagger_concurrent`, `stagger_interval_minutes`, `stagger_wait_for_bed`
+- **Waiting reason** — queue items blocked by stagger show why they're waiting
+
+### Settings Restructure
+
+- **New "Printing" tab** — archive settings, camera, cost tracking, file manager, queue & scheduling (stagger, print modal defaults, bed cooled threshold)
+- **Reordered tabs** — General, Printing, Filament, Notifications, Smart Plugs, Network, Virtual Printer, API Keys, Users, Backup
+- **General tab cleanup** — sidebar links and sidebar order moved to left column; equal 2-column layout
+- **Fixed smart plugs tab** — removed `max-w-4xl` width restriction
+
+### Print Modal
+
+- **Full i18n** — all hardcoded strings translated (EN + UK); ~50 new keys across PrintOptions, ScheduleOptions, PrinterSelector, FilamentMapping, PlateSelector
+- **Removed model-based UI** — "Any Model" tab, filament overrides, force color match (-340 lines)
+- **Schedule button order** — ASAP, Queue Only, Scheduled
+- **Default print options** — bed levelling + flow calibration ON; vibration calibration, layer inspection, timelapse OFF
+- **Sidebar Links i18n** — all strings in ExternalLinksSettings translated
+
+### Dead Code Removal
+
+- **~1600 lines removed** across backend and frontend
+- Scheduler: `_find_idle_printer_for_model` and 4 helper methods (~300 lines)
+- PrintModal: model-based assignment UI (~340 lines)
+- Notification: `on_queue_job_assigned` event, template, schema
+- Telegram: `target_model` UI key, `queue_job_assigned` event
+- Obsolete ALTER TABLE migrations for dropped fields
+- Tests for removed features (`test_scheduler_busy_only`, `test_scheduler_filament_override`)
+
+### Tests
+
+- All 36 queue integration tests updated for `queue_id` migration
+- Virtual printer tests updated for `queue_id`
+- Ownership permission tests updated for `queue_id`
+- Frontend tests fixed for i18n, queue_id, default options (1227/1227 pass)
+
+---
+
 ## [0.3.0.1] - 2026-04-04
 
 Hard fork release. All changes below are relative to upstream Bambuddy v0.2.2.2.
