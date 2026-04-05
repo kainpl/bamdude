@@ -63,7 +63,6 @@ def _provider_to_dict(provider: NotificationProvider) -> dict:
         "on_first_layer_complete": provider.on_first_layer_complete,
         # Print queue events
         "on_queue_job_added": provider.on_queue_job_added,
-        "on_queue_job_assigned": provider.on_queue_job_assigned,
         "on_queue_job_started": provider.on_queue_job_started,
         "on_queue_job_waiting": provider.on_queue_job_waiting,
         "on_queue_job_skipped": provider.on_queue_job_skipped,
@@ -143,7 +142,6 @@ async def create_notification_provider(
         on_first_layer_complete=provider_data.on_first_layer_complete,
         # Print queue events
         on_queue_job_added=provider_data.on_queue_job_added,
-        on_queue_job_assigned=provider_data.on_queue_job_assigned,
         on_queue_job_started=provider_data.on_queue_job_started,
         on_queue_job_waiting=provider_data.on_queue_job_waiting,
         on_queue_job_skipped=provider_data.on_queue_job_skipped,

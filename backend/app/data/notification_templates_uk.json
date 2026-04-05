@@ -84,11 +84,6 @@
     "title_template": "Завдання в черзі",
     "body_template": "{job_name} додано в чергу для {target}"
   },
-  "queue_job_assigned": {
-    "name": "Завдання призначено",
-    "title_template": "Завдання призначено",
-    "body_template": "{job_name} призначено на {printer} (з черги «Будь-який {target_model}»)"
-  },
   "queue_job_started": {
     "name": "Завдання з черги розпочато",
     "title_template": "Завдання з черги розпочато",

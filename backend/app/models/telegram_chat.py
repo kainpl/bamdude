@@ -46,7 +46,6 @@ ALL_NOTIFY_EVENTS = [
     "first_layer_complete",
     # Queue
     "queue_job_added",
-    "queue_job_assigned",
     "queue_job_started",
     "queue_job_waiting",
     "queue_job_skipped",

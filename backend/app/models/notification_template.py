@@ -129,12 +129,6 @@ DEFAULT_TEMPLATES = [
         "body_template": "{job_name} added to queue for {target}",
     },
     {
-        "event_type": "queue_job_assigned",
-        "name": "Queue Job Assigned",
-        "title_template": "Job Assigned",
-        "body_template": "{job_name} assigned to {printer} (from Any {target_model} queue)",
-    },
-    {
         "event_type": "queue_job_started",
         "name": "Queue Job Started",
         "title_template": "Queue Job Started",
