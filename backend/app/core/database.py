@@ -1050,15 +1050,7 @@ async def run_migrations(conn):
     except OperationalError:
         pass  # Already applied
 
-    # Migration: Add model-based queue assignment columns to print_queue
-    try:
-        await conn.execute(text("ALTER TABLE print_queue ADD COLUMN target_model VARCHAR(50)"))
-    except OperationalError:
-        pass  # Already applied
-    try:
-        await conn.execute(text("ALTER TABLE print_queue ADD COLUMN required_filament_types TEXT"))
-    except OperationalError:
-        pass  # Already applied
+    # Migration: Add waiting_reason column to print_queue
     try:
         await conn.execute(text("ALTER TABLE print_queue ADD COLUMN waiting_reason TEXT"))
     except OperationalError:
@@ -1079,12 +1071,6 @@ async def run_migrations(conn):
     # Migration: Add queue notification event columns to notification_providers
     try:
         await conn.execute(text("ALTER TABLE notification_providers ADD COLUMN on_queue_job_added BOOLEAN DEFAULT 0"))
-    except OperationalError:
-        pass  # Already applied
-    try:
-        await conn.execute(
-            text("ALTER TABLE notification_providers ADD COLUMN on_queue_job_assigned BOOLEAN DEFAULT 0")
-        )
     except OperationalError:
         pass  # Already applied
     try:
@@ -1129,12 +1115,6 @@ async def run_migrations(conn):
         await conn.execute(
             text("ALTER TABLE library_files ADD COLUMN created_by_id INTEGER REFERENCES users(id) ON DELETE SET NULL")
         )
-    except OperationalError:
-        pass  # Already applied
-
-    # Migration: Add target_location column to print_queue for location-based filtering (Issue #220)
-    try:
-        await conn.execute(text("ALTER TABLE print_queue ADD COLUMN target_location VARCHAR(100)"))
     except OperationalError:
         pass  # Already applied
 
@@ -1376,12 +1356,6 @@ async def run_migrations(conn):
                 )
     except OperationalError:
         pass  # Table may not exist yet on first run
-
-    # Migration: Add filament_overrides column to print_queue for filament override in model-based assignment
-    try:
-        await conn.execute(text("ALTER TABLE print_queue ADD COLUMN filament_overrides TEXT"))
-    except OperationalError:
-        pass  # Already applied
 
     # Migration: Add NFC reader and display control columns to spoolbuddy_devices
     try:
