@@ -172,15 +172,30 @@ Bambuddy HE is a hard fork focused on print farm operators who need deeper autom
 - Bambu Lab printer with **Developer Mode** enabled
 - Same local network as printer
 
-### Docker (Recommended)
+### Docker Hub (Recommended)
+
+```bash
+docker run -d \
+  --name bambuddy-he \
+  --network host \
+  -e TZ=Europe/Kyiv \
+  -v bambuddy_data:/app/data \
+  -v bambuddy_logs:/app/logs \
+  --restart unless-stopped \
+  kainpl/bambuddy-he:latest
+```
+
+Open **http://localhost:8000** in your browser.
+
+> **macOS/Windows:** Docker Desktop doesn't support `--network host`. Use `-p 8000:8000` instead and add printers manually by IP.
+
+### Docker Compose (from source)
 
 ```bash
 git clone https://github.com/kainpl/bambuddy-he.git
 cd bambuddy-he
 docker compose up -d --build
 ```
-
-Open **http://localhost:8000** in your browser.
 
 ### Manual Installation
 

@@ -6,6 +6,21 @@ Hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) with Telegram bot, 
 
 ## Quick Start
 
+### From Docker Hub (recommended)
+
+```bash
+docker run -d \
+  --name bambuddy-he \
+  --network host \
+  -e TZ=Europe/Kyiv \
+  -v bambuddy_data:/app/data \
+  -v bambuddy_logs:/app/logs \
+  --restart unless-stopped \
+  kainpl/bambuddy-he:latest
+```
+
+### From source (docker compose)
+
 ```bash
 git clone https://github.com/kainpl/bambuddy-he.git
 cd bambuddy-he
@@ -15,6 +30,8 @@ docker compose up -d --build
 Open **http://localhost:8000** and add your printer.
 
 > **Requirements:** Bambu Lab printer with Developer Mode enabled, on the same local network.
+>
+> **macOS/Windows:** Docker Desktop doesn't support `--network host`. Use `-p 8000:8000` instead and add printers manually by IP.
 
 ## Features
 
@@ -75,8 +92,6 @@ volumes:
   bambuddy_data:
   bambuddy_logs:
 ```
-
-> **macOS/Windows:** Docker Desktop doesn't support `network_mode: host`. Replace with `ports: ["8000:8000"]` and add printers manually by IP.
 
 ## Telegram Bot Setup
 
