@@ -57,6 +57,7 @@ class PrinterUpdate(BaseModel):
     camera_rotation: int | None = None  # 0, 90, 180, 270 degrees
     plate_detection_enabled: bool | None = None
     plate_detection_roi: PlateDetectionROI | None = None
+    stagger_interval_minutes: int | None = None
 
 
 class PrinterResponse(PrinterBase):
@@ -70,6 +71,7 @@ class PrinterResponse(PrinterBase):
     camera_rotation: int = 0  # 0, 90, 180, 270 degrees
     plate_detection_enabled: bool = False
     plate_detection_roi: PlateDetectionROI | None = None
+    stagger_interval_minutes: int = 0
     created_at: datetime
     updated_at: datetime
 
@@ -98,6 +100,7 @@ class PrinterResponse(PrinterBase):
             "nozzle_count": printer.nozzle_count,
             "print_hours_offset": printer.print_hours_offset,
             "plate_detection_enabled": printer.plate_detection_enabled,
+            "stagger_interval_minutes": printer.stagger_interval_minutes,
             "created_at": printer.created_at,
             "updated_at": printer.updated_at,
         }

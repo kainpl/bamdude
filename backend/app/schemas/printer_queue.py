@@ -17,6 +17,8 @@ class PrinterQueueResponse(BaseModel):
     pending_count: int
     completed_count: int
     failed_count: int
+    cancelled_count: int
+    skipped_count: int
     total_count: int
     created_at: datetime
     updated_at: datetime

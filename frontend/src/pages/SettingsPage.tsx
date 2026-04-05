@@ -745,6 +745,10 @@ export function SettingsPage() {
       (settings.queue_drying_block ?? false) !== (localSettings.queue_drying_block ?? false) ||
       (settings.ambient_drying_enabled ?? false) !== (localSettings.ambient_drying_enabled ?? false) ||
       (settings.drying_presets ?? '') !== (localSettings.drying_presets ?? '') ||
+      (settings.stagger_enabled ?? false) !== (localSettings.stagger_enabled ?? false) ||
+      (settings.stagger_concurrent ?? 2) !== (localSettings.stagger_concurrent ?? 2) ||
+      (settings.stagger_interval_minutes ?? 5) !== (localSettings.stagger_interval_minutes ?? 5) ||
+      (settings.stagger_wait_for_bed ?? true) !== (localSettings.stagger_wait_for_bed ?? true) ||
       settings.per_printer_mapping_expanded !== localSettings.per_printer_mapping_expanded ||
       settings.date_format !== localSettings.date_format ||
       settings.time_format !== localSettings.time_format ||
@@ -814,6 +818,10 @@ export function SettingsPage() {
         queue_drying_block: localSettings.queue_drying_block,
         ambient_drying_enabled: localSettings.ambient_drying_enabled,
         drying_presets: localSettings.drying_presets,
+        stagger_enabled: localSettings.stagger_enabled,
+        stagger_concurrent: localSettings.stagger_concurrent,
+        stagger_interval_minutes: localSettings.stagger_interval_minutes,
+        stagger_wait_for_bed: localSettings.stagger_wait_for_bed,
         per_printer_mapping_expanded: localSettings.per_printer_mapping_expanded,
         date_format: localSettings.date_format,
         time_format: localSettings.time_format,
@@ -3583,6 +3591,97 @@ export function SettingsPage() {
                       </table>
                     </div>
                   </div>
+                </div>
+
+                {/* Staggered Start */}
+                <div className="space-y-3 pt-4 border-t border-bambu-dark-tertiary">
+                  <div className="flex items-center gap-2 text-white">
+                    <Zap className="w-4 h-4 text-yellow-400" />
+                    <span className="font-medium">{t('settings.staggeredStart')}</span>
+                  </div>
+                  <p className="text-xs text-bambu-gray">
+                    {t('settings.staggeredStartDescription')}
+                  </p>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <label className="block text-sm text-white">
+                        {t('settings.staggerEnabled')}
+                      </label>
+                      <p className="text-xs text-bambu-gray mt-0.5">
+                        {t('settings.staggerEnabledDescription')}
+                      </p>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={localSettings.stagger_enabled ?? false}
+                        onChange={(e) => updateSetting('stagger_enabled', e.target.checked)}
+                        className="sr-only peer"
+                      />
+                      <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                    </label>
+                  </div>
+                  {localSettings.stagger_enabled && (
+                    <>
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <label className="block text-sm text-white">
+                            {t('settings.staggerConcurrent')}
+                          </label>
+                          <p className="text-xs text-bambu-gray mt-0.5">
+                            {t('settings.staggerConcurrentDescription')}
+                          </p>
+                        </div>
+                        <input
+                          type="number"
+                          min="1"
+                          max="50"
+                          step="1"
+                          value={localSettings.stagger_concurrent ?? 2}
+                          onChange={(e) => updateSetting('stagger_concurrent', Math.max(1, parseInt(e.target.value) || 2))}
+                          className="w-20 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-center"
+                        />
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <label className="block text-sm text-white">
+                            {t('settings.staggerInterval')}
+                          </label>
+                          <p className="text-xs text-bambu-gray mt-0.5">
+                            {t('settings.staggerIntervalDescription')}
+                          </p>
+                        </div>
+                        <input
+                          type="number"
+                          min="1"
+                          max="60"
+                          step="1"
+                          value={localSettings.stagger_interval_minutes ?? 5}
+                          onChange={(e) => updateSetting('stagger_interval_minutes', Math.max(1, parseInt(e.target.value) || 5))}
+                          className="w-20 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-center"
+                        />
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <label className="block text-sm text-white">
+                            {t('settings.staggerWaitForBed')}
+                          </label>
+                          <p className="text-xs text-bambu-gray mt-0.5">
+                            {t('settings.staggerWaitForBedDescription')}
+                          </p>
+                        </div>
+                        <label className="relative inline-flex items-center cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={localSettings.stagger_wait_for_bed ?? true}
+                            onChange={(e) => updateSetting('stagger_wait_for_bed', e.target.checked)}
+                            className="sr-only peer"
+                          />
+                          <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                        </label>
+                      </div>
+                    </>
+                  )}
                 </div>
 
                 {/* Per-Printer Mapping Default */}

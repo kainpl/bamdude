@@ -27,6 +27,8 @@ class PrinterQueue(Base):
     pending_count: Mapped[int] = mapped_column(default=0)
     completed_count: Mapped[int] = mapped_column(default=0)
     failed_count: Mapped[int] = mapped_column(default=0)
+    cancelled_count: Mapped[int] = mapped_column(default=0)
+    skipped_count: Mapped[int] = mapped_column(default=0)
     total_count: Mapped[int] = mapped_column(default=0)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

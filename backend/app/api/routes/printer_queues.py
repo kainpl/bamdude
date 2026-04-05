@@ -30,6 +30,8 @@ def _to_response(queue: PrinterQueue) -> PrinterQueueResponse:
         pending_count=queue.pending_count,
         completed_count=queue.completed_count,
         failed_count=queue.failed_count,
+        cancelled_count=queue.cancelled_count,
+        skipped_count=queue.skipped_count,
         total_count=queue.total_count,
         created_at=queue.created_at,
         updated_at=queue.updated_at,
@@ -76,7 +78,7 @@ async def update_queue(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.QUEUE_UPDATE_ALL),
 ):
-    """Update queue status (pause/resume)."""
+    """Update queue status (pause/resume/clear error)."""
     from sqlalchemy.orm import selectinload
 
     result = await db.execute(
@@ -93,6 +95,7 @@ async def update_queue(
         if data.status == "paused" and queue.status == "printing":
             raise HTTPException(400, "Cannot pause queue while printing. Stop the print first.")
         queue.status = data.status
+        queue.current_item_id = None
         queue.last_activity_at = datetime.now(timezone.utc)
 
     await db.commit()

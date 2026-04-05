@@ -1602,6 +1602,12 @@ async def run_migrations(conn):
         except OperationalError:
             pass
 
+    # Stagger interval per printer
+    try:
+        await conn.execute(text("ALTER TABLE printers ADD COLUMN stagger_interval_minutes INTEGER NOT NULL DEFAULT 0"))
+    except OperationalError:
+        pass
+
     # Migration: Queue rework — add queue_id to print_queue, create printer_queues for existing printers
     try:
         await conn.execute(text("ALTER TABLE print_queue ADD COLUMN queue_id INTEGER REFERENCES printer_queues(id)"))
@@ -1612,12 +1618,21 @@ async def run_migrations(conn):
     try:
         await conn.execute(
             text(
-                "INSERT OR IGNORE INTO printer_queues (id, printer_id, status) "
-                "SELECT id, id, 'idle' FROM printers WHERE id NOT IN (SELECT printer_id FROM printer_queues)"
+                "INSERT OR IGNORE INTO printer_queues "
+                "(id, printer_id, status, pending_count, completed_count, failed_count, cancelled_count, skipped_count, total_count) "
+                "SELECT id, id, 'idle', 0, 0, 0, 0, 0, 0 FROM printers "
+                "WHERE id NOT IN (SELECT printer_id FROM printer_queues)"
             )
         )
     except OperationalError:
         pass
+
+    # Add new counter columns to printer_queues (for existing DBs)
+    for col in ["cancelled_count INTEGER NOT NULL DEFAULT 0", "skipped_count INTEGER NOT NULL DEFAULT 0"]:
+        try:
+            await conn.execute(text(f"ALTER TABLE printer_queues ADD COLUMN {col}"))
+        except OperationalError:
+            pass
 
     # Migrate existing print_queue items: set queue_id = printer_id where not yet set
     try:
@@ -1630,6 +1645,22 @@ async def run_migrations(conn):
     # Delete orphaned items (model-based items that were never assigned a printer)
     try:
         await conn.execute(text("DELETE FROM print_queue WHERE queue_id IS NULL AND printer_id IS NULL"))
+    except OperationalError:
+        pass
+
+    # Recount queue counters from actual items (fixes first-run and any drift)
+    try:
+        await conn.execute(
+            text(
+                "UPDATE printer_queues SET "
+                "pending_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id AND print_queue.status = 'pending'), "
+                "completed_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id AND print_queue.status = 'completed'), "
+                "failed_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id AND print_queue.status = 'failed'), "
+                "cancelled_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id AND print_queue.status = 'cancelled'), "
+                "skipped_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id AND print_queue.status = 'skipped'), "
+                "total_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id)"
+            )
+        )
     except OperationalError:
         pass
 

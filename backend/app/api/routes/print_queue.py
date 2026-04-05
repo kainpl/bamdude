@@ -19,6 +19,7 @@ from backend.app.core.permissions import Permission
 from backend.app.models.archive import PrintArchive
 from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
+from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.user import User
 from backend.app.schemas.print_queue import (
     PrintQueueBulkUpdate,
@@ -254,7 +255,7 @@ async def list_queue(
         select(PrintQueueItem)
         .options(
             selectinload(PrintQueueItem.archive),
-            selectinload(PrintQueueItem.queue),
+            selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
             selectinload(PrintQueueItem.library_file),
             selectinload(PrintQueueItem.created_by),
         )
@@ -283,9 +284,9 @@ async def add_to_queue(
         raise HTTPException(400, "Either archive_id or library_file_id must be provided")
 
     # Validate queue exists
-    from backend.app.models.printer_queue import PrinterQueue
-
-    result = await db.execute(select(PrinterQueue).where(PrinterQueue.id == data.queue_id))
+    result = await db.execute(
+        select(PrinterQueue).options(selectinload(PrinterQueue.printer)).where(PrinterQueue.id == data.queue_id)
+    )
     queue = result.scalar_one_or_none()
     if not queue:
         raise HTTPException(400, "Queue not found")
@@ -344,8 +345,18 @@ async def add_to_queue(
     queue.last_activity_at = datetime.now(timezone.utc)
     await db.commit()
 
-    # Load relationships for response
-    await db.refresh(item, ["archive", "queue", "library_file", "created_by"])
+    # Re-query with full eager loading (queue→printer chain)
+    result = await db.execute(
+        select(PrintQueueItem)
+        .options(
+            selectinload(PrintQueueItem.archive),
+            selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
+            selectinload(PrintQueueItem.library_file),
+            selectinload(PrintQueueItem.created_by),
+        )
+        .where(PrintQueueItem.id == item.id)
+    )
+    item = result.scalar_one()
 
     source_name = f"archive {data.archive_id}" if data.archive_id else f"library file {data.library_file_id}"
     target_desc = queue.printer.name if queue.printer else f"queue {data.queue_id}"
@@ -416,8 +427,6 @@ async def bulk_update_queue_items(
 
     # Validate queue_id if being changed
     if "queue_id" in update_data and update_data["queue_id"] is not None:
-        from backend.app.models.printer_queue import PrinterQueue
-
         result = await db.execute(select(PrinterQueue).where(PrinterQueue.id == update_data["queue_id"]))
         if not result.scalar_one_or_none():
             raise HTTPException(400, "Queue not found")
@@ -465,7 +474,7 @@ async def get_queue_item(
         select(PrintQueueItem)
         .options(
             selectinload(PrintQueueItem.archive),
-            selectinload(PrintQueueItem.queue),
+            selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
             selectinload(PrintQueueItem.library_file),
             selectinload(PrintQueueItem.created_by),
         )
@@ -509,8 +518,6 @@ async def update_queue_item(
 
     # Validate new queue_id if being changed
     if "queue_id" in update_data and update_data["queue_id"] is not None:
-        from backend.app.models.printer_queue import PrinterQueue
-
         result = await db.execute(select(PrinterQueue).where(PrinterQueue.id == update_data["queue_id"]))
         if not result.scalar_one_or_none():
             raise HTTPException(400, "Queue not found")
@@ -523,7 +530,19 @@ async def update_queue_item(
         setattr(item, field, value)
 
     await db.commit()
-    await db.refresh(item, ["archive", "queue", "library_file", "created_by"])
+
+    # Re-query with full eager loading (queue→printer chain)
+    result = await db.execute(
+        select(PrintQueueItem)
+        .options(
+            selectinload(PrintQueueItem.archive),
+            selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
+            selectinload(PrintQueueItem.library_file),
+            selectinload(PrintQueueItem.created_by),
+        )
+        .where(PrintQueueItem.id == item_id)
+    )
+    item = result.scalar_one()
 
     logger.info("Updated queue item %s", item_id)
     return _enrich_response(item)
@@ -556,7 +575,12 @@ async def delete_queue_item(
     if item.status == "printing":
         raise HTTPException(400, "Cannot delete item that is currently printing")
 
+    queue_id = item.queue_id
     await db.delete(item)
+
+    from backend.app.services.queue_counters import update_queue_counters
+
+    await update_queue_counters(db, queue_id)
     await db.commit()
 
     logger.info("Deleted queue item %s", item_id)
@@ -610,6 +634,10 @@ async def cancel_queue_item(
 
     item.status = "cancelled"
     item.completed_at = datetime.now(timezone.utc)
+
+    from backend.app.services.queue_counters import update_queue_counters
+
+    await update_queue_counters(db, item.queue_id)
     await db.commit()
 
     logger.info("Cancelled queue item %s", item_id)
@@ -671,6 +699,11 @@ async def stop_queue_item(
     item.status = "cancelled"
     item.completed_at = datetime.now(timezone.utc)
     item.error_message = "Stopped by user" if stop_sent else "Stopped by user (printer was offline)"
+
+    from backend.app.services.queue_counters import set_queue_idle, update_queue_counters
+
+    await set_queue_idle(db, item.queue_id)
+    await update_queue_counters(db, item.queue_id)
     await db.commit()
 
     # Get smart plug info if auto-off is enabled
@@ -717,7 +750,10 @@ async def start_queue_item(
     """
     result = await db.execute(
         select(PrintQueueItem)
-        .options(selectinload(PrintQueueItem.archive), selectinload(PrintQueueItem.printer))
+        .options(
+            selectinload(PrintQueueItem.archive),
+            selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
+        )
         .where(PrintQueueItem.id == item_id)
     )
     item = result.scalar_one_or_none()
@@ -730,7 +766,19 @@ async def start_queue_item(
     # Clear manual_start flag so scheduler picks it up
     item.manual_start = False
     await db.commit()
-    await db.refresh(item, ["archive", "queue", "library_file", "created_by"])
+
+    # Re-query with full eager loading (queue→printer chain)
+    result = await db.execute(
+        select(PrintQueueItem)
+        .options(
+            selectinload(PrintQueueItem.archive),
+            selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
+            selectinload(PrintQueueItem.library_file),
+            selectinload(PrintQueueItem.created_by),
+        )
+        .where(PrintQueueItem.id == item_id)
+    )
+    item = result.scalar_one()
 
     logger.info("Manually started queue item %s (cleared manual_start flag)", item_id)
     return _enrich_response(item)

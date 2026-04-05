@@ -426,29 +426,39 @@ class VirtualPrinterInstance:
                 )
                 if archive:
                     logger.info("[VP %s] Archived: %s - %s", self.name, archive.id, archive.print_name)
-                    # Assign to specific printer if configured, otherwise use model for "Any X" scheduling
-                    target_model = None
-                    if not self.target_printer_id and self.model:
-                        target_model = VIRTUAL_PRINTER_MODELS.get(self.model)
-                    plate_id = self._extract_plate_id(file_path)
-                    queue_item = PrintQueueItem(
-                        printer_id=self.target_printer_id,
-                        target_model=target_model,
-                        archive_id=archive.id,
-                        plate_id=plate_id,
-                        position=1,
-                        status="pending",
-                        manual_start=not self.auto_dispatch,
-                    )
-                    db.add(queue_item)
-                    await db.commit()
-                    logger.info("[VP %s] Added to queue: %s", self.name, queue_item.id)
+                    if not self.target_printer_id:
+                        logger.warning("[VP %s] No target printer configured, cannot add to queue", self.name)
+                    else:
+                        # Find or verify queue for target printer (queue_id == printer_id)
+                        from sqlalchemy import select as sa_select
+
+                        from backend.app.models.printer_queue import PrinterQueue
+
+                        result = await db.execute(
+                            sa_select(PrinterQueue).where(PrinterQueue.printer_id == self.target_printer_id)
+                        )
+                        queue = result.scalar_one_or_none()
+                        if not queue:
+                            logger.warning("[VP %s] No queue found for printer %s", self.name, self.target_printer_id)
+                        else:
+                            plate_id = self._extract_plate_id(file_path)
+                            queue_item = PrintQueueItem(
+                                queue_id=queue.id,
+                                archive_id=archive.id,
+                                plate_id=plate_id,
+                                position=1,
+                                status="pending",
+                                manual_start=not self.auto_dispatch,
+                            )
+                            db.add(queue_item)
+                            await db.commit()
+                            logger.info("[VP %s] Added to queue: %s", self.name, queue_item.id)
                     try:
                         file_path.unlink()
                     except OSError:
                         pass
                     self._pending_files.pop(file_path.name, None)
-                else:
+                else:  # archive is None
                     logger.error("Failed to archive file: %s", file_path.name)
         except Exception as e:
             logger.error("Error adding to print queue: %s", e)

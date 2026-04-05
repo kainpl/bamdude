@@ -53,6 +53,18 @@ def _canonical_filament_type(ftype: str) -> str:
     return _FILAMENT_EQUIV_MAP.get(upper, upper)
 
 
+class _StaggerSlot:
+    """Tracks a printer that recently started and is heating up."""
+
+    __slots__ = ("printer_id", "started_at", "temp_reached_at", "interval_seconds")
+
+    def __init__(self, printer_id: int, interval_seconds: int):
+        self.printer_id = printer_id
+        self.started_at = time.monotonic()
+        self.temp_reached_at: float | None = None
+        self.interval_seconds = interval_seconds  # per-printer or system default
+
+
 class PrintScheduler:
     """Background scheduler that processes the print queue."""
 
@@ -77,6 +89,8 @@ class PrintScheduler:
         self._min_drying_seconds = 1800  # 30 minutes minimum before humidity re-check can stop drying
         # Track which printers are currently auto-drying (printer_id -> start timestamp)
         self._drying_in_progress: dict[int, float] = {}
+        # Staggered start: rolling slots for electrical load management
+        self._stagger_slots: list[_StaggerSlot] = []
 
     async def run(self):
         """Main loop - check queue every interval."""
@@ -124,13 +138,21 @@ class PrintScheduler:
             # Track busy printers to avoid assigning multiple items to same printer
             busy_printers: set[int] = set()
 
+            # Staggered start: update temps and clean expired slots
+            stagger_enabled, stagger_concurrent, stagger_interval, stagger_wait_bed = (
+                await self._get_stagger_settings(db)
+            )
+            if stagger_enabled:
+                self._update_stagger_temps()
+                self._cleanup_stagger_slots(stagger_wait_bed)
+
             # Log skip reasons once per queue check (not per item)
             skip_reasons: dict[str, int] = {}
 
             for item in items:
-                # Skip items in paused queues
-                if item.queue and item.queue.status == "paused":
-                    skip_reasons["queue_paused"] = skip_reasons.get("queue_paused", 0) + 1
+                # Skip items in paused or error queues
+                if item.queue and item.queue.status in ("paused", "error"):
+                    skip_reasons[f"queue_{item.queue.status}"] = skip_reasons.get(f"queue_{item.queue.status}", 0) + 1
                     continue
 
                 # Get printer_id from queue
@@ -210,30 +232,19 @@ class PrintScheduler:
                         busy_printers.add(printer_id)
                         continue
 
+                # Staggered start: check if we have a free slot
+                if stagger_enabled and not self._can_start_staggered(stagger_concurrent):
+                    stagger_reason = self._stagger_reason(stagger_wait_bed)
+                    if item.waiting_reason != stagger_reason:
+                        item.waiting_reason = stagger_reason
+                        await db.commit()
+                    skip_reasons["stagger_wait"] = skip_reasons.get("stagger_wait", 0) + 1
+                    continue
+
                 # Clear waiting_reason — printer is ready
                 if item.waiting_reason:
                     item.waiting_reason = None
                     await db.commit()
-
-                # Check condition (previous print success)
-                if item.require_previous_success:
-                    if not await self._check_previous_success(db, item):
-                        item.status = "skipped"
-                        item.error_message = "Previous print failed or was aborted"
-                        item.completed_at = datetime.now(timezone.utc)
-                        await db.commit()
-                        logger.info("Skipped queue item %s - previous print failed", item.id)
-
-                        job_name = await self._get_job_name(db, item)
-                        printer = await self._get_printer(db, printer_id)
-                        await notification_service.on_queue_job_skipped(
-                            job_name=job_name,
-                            printer_id=printer_id,
-                            printer_name=printer.name if printer else "Unknown",
-                            reason="Previous print failed or was aborted",
-                            db=db,
-                        )
-                        continue
 
                 # Compute AMS mapping if not already set
                 if not item.ams_mapping:
@@ -248,6 +259,13 @@ class PrintScheduler:
                 # Start the print
                 await self._start_print(db, item)
                 busy_printers.add(printer_id)
+
+                # Register stagger slot after successful start
+                if stagger_enabled:
+                    # Per-printer interval override (0 = use system default)
+                    printer_obj = await self._get_printer(db, printer_id)
+                    per_printer_iv = (printer_obj.stagger_interval_minutes * 60) if printer_obj and printer_obj.stagger_interval_minutes else 0
+                    self._register_stagger_start(printer_id, per_printer_iv or stagger_interval)
 
             # Log summary of skip reasons (helps diagnose why queue items aren't starting)
             if skip_reasons:
@@ -950,6 +968,81 @@ class PrintScheduler:
 
         return mapping
 
+    # ── Staggered start helpers ──────────────────────────────────────────
+
+    async def _get_stagger_settings(self, db: AsyncSession) -> tuple[bool, int, int, bool]:
+        """Return (enabled, concurrent, interval_seconds, wait_for_bed)."""
+        enabled = await self._get_bool_setting(db, "stagger_enabled")
+        if not enabled:
+            return False, 0, 0, False
+        concurrent = int((await self._get_setting_value(db, "stagger_concurrent")) or "2")
+        interval_min = int((await self._get_setting_value(db, "stagger_interval_minutes")) or "5")
+        wait_for_bed = await self._get_bool_setting(db, "stagger_wait_for_bed")
+        return True, max(concurrent, 1), interval_min * 60, wait_for_bed
+
+    def _update_stagger_temps(self) -> None:
+        """Check bed temps for printers in stagger slots, mark reached."""
+        for slot in self._stagger_slots:
+            if slot.temp_reached_at is not None:
+                continue
+            state = printer_manager.get_status(slot.printer_id)
+            if not state:
+                continue
+            bed = state.temperatures.get("bed", 0)
+            target = state.temperatures.get("bed_target", 0)
+            if target > 0 and abs(bed - target) <= 1.0:
+                slot.temp_reached_at = time.monotonic()
+                logger.info(
+                    "Stagger: printer %d bed reached %.1f°C (target %.1f°C), slot freed",
+                    slot.printer_id, bed, target,
+                )
+
+    def _cleanup_stagger_slots(self, wait_for_bed: bool) -> None:
+        """Remove slots that are fully expired (temp reached + interval elapsed)."""
+        now = time.monotonic()
+        active = []
+        for slot in self._stagger_slots:
+            iv = slot.interval_seconds
+
+            # Check if the printer is still printing — if not, slot is done
+            state = printer_manager.get_status(slot.printer_id)
+            if state and state.state not in ("RUNNING", "PREPARE", "IDLE", "PAUSE"):
+                # Printer finished/failed/offline — don't hold the slot
+                if slot.temp_reached_at is not None:
+                    if now - slot.temp_reached_at < iv:
+                        active.append(slot)
+                    continue
+                continue
+
+            if wait_for_bed:
+                if slot.temp_reached_at is None:
+                    active.append(slot)  # still heating
+                elif now - slot.temp_reached_at < iv:
+                    active.append(slot)  # interval not elapsed
+            else:
+                if now - slot.started_at < iv:
+                    active.append(slot)  # interval not elapsed
+        self._stagger_slots = active
+
+    def _can_start_staggered(self, concurrent: int) -> bool:
+        """Check if there's a free stagger slot."""
+        return len(self._stagger_slots) < concurrent
+
+    def _register_stagger_start(self, printer_id: int, interval_seconds: int) -> None:
+        """Register a printer as occupying a stagger slot."""
+        # Remove any old slot for same printer
+        self._stagger_slots = [s for s in self._stagger_slots if s.printer_id != printer_id]
+        self._stagger_slots.append(_StaggerSlot(printer_id, interval_seconds))
+        logger.info("Stagger: printer %d started (interval=%ds), %d slots occupied", printer_id, interval_seconds, len(self._stagger_slots))
+
+    def _stagger_reason(self, wait_for_bed: bool) -> str:
+        """Get waiting reason for stagger-blocked items."""
+        if wait_for_bed:
+            heating = [s.printer_id for s in self._stagger_slots if s.temp_reached_at is None]
+            if heating:
+                return f"Staggered start: waiting for printer(s) {heating} to heat up"
+        return "Staggered start: waiting for interval"
+
     def _is_printer_idle(self, printer_id: int) -> bool:
         """Check if a printer is connected and idle."""
         if not printer_manager.is_connected(printer_id):
@@ -975,12 +1068,17 @@ class PrintScheduler:
             )
         return idle
 
-    async def _get_bool_setting(self, db: AsyncSession, key: str, default: bool = False) -> bool:
-        """Read a boolean setting from the database."""
+    async def _get_setting_value(self, db: AsyncSession, key: str) -> str | None:
+        """Read a raw setting value from the database."""
         result = await db.execute(select(Settings).where(Settings.key == key))
         setting = result.scalar_one_or_none()
-        if setting:
-            return setting.value.lower() == "true"
+        return setting.value if setting else None
+
+    async def _get_bool_setting(self, db: AsyncSession, key: str, default: bool = False) -> bool:
+        """Read a boolean setting from the database."""
+        val = await self._get_setting_value(db, key)
+        if val is not None:
+            return val.lower() == "true"
         return default
 
     async def _get_drying_presets(self, db: AsyncSession) -> dict[str, dict[str, int]]:
@@ -1327,25 +1425,6 @@ class PrintScheduler:
         logger.warning("Printer %s did not connect within %ss after power on", printer_id, self._power_on_wait_time)
         return False
 
-    async def _check_previous_success(self, db: AsyncSession, item: PrintQueueItem) -> bool:
-        """Check if the previous print on this printer succeeded."""
-        # Find the most recent completed queue item for this printer
-        result = await db.execute(
-            select(PrintQueueItem)
-            .where(PrintQueueItem.queue_id == item.queue_id)
-            .where(PrintQueueItem.id != item.id)
-            .where(PrintQueueItem.status.in_(["completed", "failed", "skipped", "aborted"]))
-            .order_by(PrintQueueItem.completed_at.desc())
-            .limit(1)
-        )
-        prev_item = result.scalar_one_or_none()
-
-        # If no previous item, assume success (first in queue)
-        if not prev_item:
-            return True
-
-        return prev_item.status == "completed"
-
     async def _power_off_if_needed(self, db: AsyncSession, item: PrintQueueItem):
         """Power off printer if auto_off_after is enabled (waits for cooldown)."""
         if not item.auto_off_after:
@@ -1379,6 +1458,17 @@ class PrintScheduler:
         result = await db.execute(select(Printer).where(Printer.id == printer_id))
         return result.scalar_one_or_none()
 
+    async def _fail_item(self, db: AsyncSession, item: PrintQueueItem, error_message: str) -> None:
+        """Mark item as failed and set queue to error state."""
+        from backend.app.services.queue_counters import set_queue_error, update_queue_counters
+
+        item.status = "failed"
+        item.error_message = error_message
+        item.completed_at = datetime.now(timezone.utc)
+        await set_queue_error(db, item.queue_id, failed_item_id=item.id)
+        await update_queue_counters(db, item.queue_id)
+        await db.commit()
+
     async def _start_print(self, db: AsyncSession, item: PrintQueueItem):
         """Upload file and start print for a queue item.
 
@@ -1392,30 +1482,21 @@ class PrintScheduler:
         result = await db.execute(select(Printer).where(Printer.id == item.queue_id))
         printer = result.scalar_one_or_none()
         if not printer:
-            item.status = "failed"
-            item.error_message = "Printer not found"
-            item.completed_at = datetime.now(timezone.utc)
-            await db.commit()
+            await self._fail_item(db, item, "Printer not found")
             logger.error("Queue item %s: Printer %s not found", item.id, item.queue_id)
             await self._power_off_if_needed(db, item)
             return
 
         # Check printer is connected
         if not printer_manager.is_connected(item.queue_id):
-            item.status = "failed"
-            item.error_message = "Printer not connected"
-            item.completed_at = datetime.now(timezone.utc)
-            await db.commit()
+            await self._fail_item(db, item, "Printer not connected")
             logger.error("Queue item %s: Printer %s not connected", item.id, item.queue_id)
             await self._power_off_if_needed(db, item)
             return
 
         # re-Connect MQTT if stalled
         if not await printer_manager.ensure_fresh_connection_for_printer(printer):
-            item.status = "failed"
-            item.error_message = "Printer not connected"
-            item.completed_at = datetime.now(timezone.utc)
-            await db.commit()
+            await self._fail_item(db, item, "Printer not connected")
             logger.error("Queue item %s: Printer %s not connected", item.id, item.queue_id)
             await self._power_off_if_needed(db, item)
             return
@@ -1431,10 +1512,7 @@ class PrintScheduler:
             result = await db.execute(select(PrintArchive).where(PrintArchive.id == item.archive_id))
             archive = result.scalar_one_or_none()
             if not archive:
-                item.status = "failed"
-                item.error_message = "Archive not found"
-                item.completed_at = datetime.now(timezone.utc)
-                await db.commit()
+                await self._fail_item(db, item, "Archive not found")
                 logger.error("Queue item %s: Archive %s not found", item.id, item.archive_id)
                 await self._power_off_if_needed(db, item)
                 return
@@ -1447,10 +1525,7 @@ class PrintScheduler:
             result = await db.execute(select(LibraryFile).where(LibraryFile.id == item.library_file_id))
             library_file = result.scalar_one_or_none()
             if not library_file:
-                item.status = "failed"
-                item.error_message = "Library file not found"
-                item.completed_at = datetime.now(timezone.utc)
-                await db.commit()
+                await self._fail_item(db, item, "Library file not found")
                 logger.error("Queue item %s: Library file %s not found", item.id, item.library_file_id)
                 await self._power_off_if_needed(db, item)
                 return
@@ -1484,20 +1559,14 @@ class PrintScheduler:
 
         else:
             # Neither archive nor library file specified
-            item.status = "failed"
-            item.error_message = "No source file specified"
-            item.completed_at = datetime.now(timezone.utc)
-            await db.commit()
+            await self._fail_item(db, item, "No source file specified")
             logger.error("Queue item %s: No archive_id or library_file_id specified", item.id)
             await self._power_off_if_needed(db, item)
             return
 
         # Check file exists on disk
         if not file_path.exists():
-            item.status = "failed"
-            item.error_message = "Source file not found on disk"
-            item.completed_at = datetime.now(timezone.utc)
-            await db.commit()
+            await self._fail_item(db, item, "Source file not found on disk")
             logger.error("Queue item %s: File not found: %s", item.id, file_path)
             await self._power_off_if_needed(db, item)
             return
@@ -1604,10 +1673,7 @@ class PrintScheduler:
                 "Failed to upload file to printer. Check if SD card is inserted and properly formatted (FAT32/exFAT). "
                 "See server logs for detailed diagnostics."
             )
-            item.status = "failed"
-            item.error_message = error_msg
-            item.completed_at = datetime.now(timezone.utc)
-            await db.commit()
+            await self._fail_item(db, item, error_msg)
             logger.error(
                 f"Queue item {item.id}: FTP upload failed - printer={printer.name}, model={printer.model}, "
                 f"ip={printer.ip_address}. Check logs above for storage diagnostics and specific error codes."
@@ -1651,8 +1717,12 @@ class PrintScheduler:
         # If we crash after this commit but before start_print(), the item will be
         # in "printing" status without actually printing - but that's safer than
         # accidentally reprinting the same file hours later.
+        from backend.app.services.queue_counters import set_queue_printing, update_queue_counters
+
         item.status = "printing"
         item.started_at = datetime.now(timezone.utc)
+        await set_queue_printing(db, item.queue_id, item.id)
+        await update_queue_counters(db, item.queue_id)
         await db.commit()
 
         # Consume the plate-cleared flag now that we're starting a print
@@ -1718,10 +1788,7 @@ class PrintScheduler:
                 pass  # Best-effort — don't fail the error handler
 
             # Print command failed - revert status
-            item.status = "failed"
-            item.error_message = "Failed to send print command to printer"
-            item.completed_at = datetime.now(timezone.utc)
-            await db.commit()
+            await self._fail_item(db, item, "Failed to send print command to printer")
             logger.error(
                 f"Queue item {item.id}: Failed to start print on {printer.name} ({printer.model}) - "
                 f"printer_manager.start_print() returned False. "

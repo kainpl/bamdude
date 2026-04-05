@@ -4923,6 +4923,7 @@ function AddPrinterModal({
     auto_archive: true,
     cleanup_after_print: true,
     mqtt_connection_timeout: 300,
+    stagger_interval_minutes: 0,
   });
 
   // Discovery state
@@ -5300,6 +5301,20 @@ function AddPrinterModal({
                 <span className="text-xs text-bambu-gray">{t('printers.modal.mqttConnectionTimeoutHint')}</span>
               </div>
             </div>
+            <div>
+              <label className="block text-sm text-bambu-gray mb-1">{t('printers.modal.staggerInterval')}</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min="0"
+                  max="60"
+                  value={form.stagger_interval_minutes ?? 0}
+                  onChange={(e) => setForm({ ...form, stagger_interval_minutes: parseInt(e.target.value) || 0 })}
+                  className="w-24 px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:ring-1 focus:ring-bambu-green"
+                />
+                <span className="text-xs text-bambu-gray">{t('printers.modal.staggerIntervalHint')}</span>
+              </div>
+            </div>
             <div className="flex gap-3 pt-4">
               <Button type="button" variant="secondary" onClick={onClose} className="flex-1">
                 {t('common.cancel')}
@@ -5546,6 +5561,7 @@ function EditPrinterModal({
     auto_archive: printer.auto_archive,
     cleanup_after_print: printer.cleanup_after_print ?? true,
     mqtt_connection_timeout: printer.mqtt_connection_timeout ?? 300,
+    stagger_interval_minutes: printer.stagger_interval_minutes ?? 0,
   });
 
   const updateMutation = useMutation({
@@ -5577,6 +5593,7 @@ function EditPrinterModal({
       auto_archive: form.auto_archive,
       cleanup_after_print: form.cleanup_after_print,
       mqtt_connection_timeout: form.mqtt_connection_timeout,
+      stagger_interval_minutes: form.stagger_interval_minutes,
     };
     // Only include access_code if it was changed
     if (form.access_code) {
@@ -5716,6 +5733,20 @@ function EditPrinterModal({
                   className="w-24 px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:ring-1 focus:ring-bambu-green"
                 />
                 <span className="text-xs text-bambu-gray">{t('printers.modal.mqttConnectionTimeoutHint')}</span>
+              </div>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-bambu-gray mb-1">{t('printers.modal.staggerInterval')}</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min="0"
+                  max="60"
+                  value={form.stagger_interval_minutes ?? 0}
+                  onChange={(e) => setForm({ ...form, stagger_interval_minutes: parseInt(e.target.value) || 0 })}
+                  className="w-24 px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:ring-1 focus:ring-bambu-green"
+                />
+                <span className="text-xs text-bambu-gray">{t('printers.modal.staggerIntervalHint')}</span>
               </div>
             </div>
             <div className="flex gap-3 pt-4">

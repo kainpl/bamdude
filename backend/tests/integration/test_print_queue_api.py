@@ -4,17 +4,32 @@ import pytest
 from httpx import AsyncClient
 
 
+async def _create_printer_with_queue(db_session, **printer_kwargs):
+    """Helper: create a Printer + its PrinterQueue, return (printer, queue)."""
+    from backend.app.models.printer import Printer
+    from backend.app.models.printer_queue import PrinterQueue
+
+    printer = Printer(**printer_kwargs)
+    db_session.add(printer)
+    await db_session.commit()
+    await db_session.refresh(printer)
+
+    queue = PrinterQueue(printer_id=printer.id)
+    db_session.add(queue)
+    await db_session.commit()
+    await db_session.refresh(queue)
+    return printer, queue
+
+
 class TestPrintQueueAPI:
     """Integration tests for /api/v1/queue endpoints."""
 
     @pytest.fixture
     async def printer_factory(self, db_session):
-        """Factory to create test printers."""
+        """Factory to create test printers with queues."""
         _counter = [0]
 
         async def _create_printer(**kwargs):
-            from backend.app.models.printer import Printer
-
             _counter[0] += 1
             counter = _counter[0]
 
@@ -26,12 +41,8 @@ class TestPrintQueueAPI:
                 "model": "X1C",
             }
             defaults.update(kwargs)
-
-            printer = Printer(**defaults)
-            db_session.add(printer)
-            await db_session.commit()
-            await db_session.refresh(printer)
-            return printer
+            printer, queue = await _create_printer_with_queue(db_session, **defaults)
+            return printer, queue
 
         return _create_printer
 
@@ -75,10 +86,10 @@ class TestPrintQueueAPI:
             _counter[0] += 1
             counter = _counter[0]
 
-            # Create printer and archive if not provided
-            if "printer_id" not in kwargs:
-                printer = await printer_factory()
-                kwargs["printer_id"] = printer.id
+            # Create printer+queue if not provided
+            if "queue_id" not in kwargs:
+                _printer, queue = await printer_factory()
+                kwargs["queue_id"] = queue.id
 
             if "archive_id" not in kwargs:
                 archive = await archive_factory()
@@ -110,16 +121,17 @@ class TestPrintQueueAPI:
     @pytest.mark.integration
     async def test_add_to_queue(self, async_client: AsyncClient, printer_factory, archive_factory, db_session):
         """Verify item can be added to queue."""
-        printer = await printer_factory()
+        printer, queue = await printer_factory()
         archive = await archive_factory()
 
         data = {
-            "printer_id": printer.id,
+            "queue_id": queue.id,
             "archive_id": archive.id,
         }
         response = await async_client.post("/api/v1/queue/", json=data)
         assert response.status_code == 200
         result = response.json()
+        assert result["queue_id"] == queue.id
         assert result["printer_id"] == printer.id
         assert result["archive_id"] == archive.id
         assert result["status"] == "pending"
@@ -131,17 +143,18 @@ class TestPrintQueueAPI:
         self, async_client: AsyncClient, printer_factory, archive_factory, db_session
     ):
         """Verify item can be added to queue with manual_start=True."""
-        printer = await printer_factory()
+        printer, queue = await printer_factory()
         archive = await archive_factory()
 
         data = {
-            "printer_id": printer.id,
+            "queue_id": queue.id,
             "archive_id": archive.id,
             "manual_start": True,
         }
         response = await async_client.post("/api/v1/queue/", json=data)
         assert response.status_code == 200
         result = response.json()
+        assert result["queue_id"] == queue.id
         assert result["printer_id"] == printer.id
         assert result["archive_id"] == archive.id
         assert result["status"] == "pending"
@@ -153,17 +166,18 @@ class TestPrintQueueAPI:
         self, async_client: AsyncClient, printer_factory, archive_factory, db_session
     ):
         """Verify item can be added to queue with ams_mapping."""
-        printer = await printer_factory()
+        printer, queue = await printer_factory()
         archive = await archive_factory()
 
         data = {
-            "printer_id": printer.id,
+            "queue_id": queue.id,
             "archive_id": archive.id,
             "ams_mapping": [5, -1, 2, -1],  # Slot 1 -> tray 5, slot 3 -> tray 2
         }
         response = await async_client.post("/api/v1/queue/", json=data)
         assert response.status_code == 200
         result = response.json()
+        assert result["queue_id"] == queue.id
         assert result["printer_id"] == printer.id
         assert result["archive_id"] == archive.id
         assert result["ams_mapping"] == [5, -1, 2, -1]
@@ -174,11 +188,11 @@ class TestPrintQueueAPI:
         self, async_client: AsyncClient, printer_factory, archive_factory, db_session
     ):
         """Verify item can be added to queue with plate_id for multi-plate 3MF."""
-        printer = await printer_factory()
+        _printer, queue = await printer_factory()
         archive = await archive_factory()
 
         data = {
-            "printer_id": printer.id,
+            "queue_id": queue.id,
             "archive_id": archive.id,
             "plate_id": 3,
         }
@@ -193,11 +207,11 @@ class TestPrintQueueAPI:
         self, async_client: AsyncClient, printer_factory, archive_factory, db_session
     ):
         """Verify item can be added to queue with print options."""
-        printer = await printer_factory()
+        _printer, queue = await printer_factory()
         archive = await archive_factory()
 
         data = {
-            "printer_id": printer.id,
+            "queue_id": queue.id,
             "archive_id": archive.id,
             "bed_levelling": False,
             "flow_cali": True,
@@ -301,12 +315,10 @@ class TestQueueStartEndpoint:
 
     @pytest.fixture
     async def printer_factory(self, db_session):
-        """Factory to create test printers."""
+        """Factory to create test printers with queues."""
         _counter = [0]
 
         async def _create_printer(**kwargs):
-            from backend.app.models.printer import Printer
-
             _counter[0] += 1
             counter = _counter[0]
 
@@ -318,12 +330,8 @@ class TestQueueStartEndpoint:
                 "model": "X1C",
             }
             defaults.update(kwargs)
-
-            printer = Printer(**defaults)
-            db_session.add(printer)
-            await db_session.commit()
-            await db_session.refresh(printer)
-            return printer
+            printer, queue = await _create_printer_with_queue(db_session, **defaults)
+            return printer, queue
 
         return _create_printer
 
@@ -367,9 +375,9 @@ class TestQueueStartEndpoint:
             _counter[0] += 1
             counter = _counter[0]
 
-            if "printer_id" not in kwargs:
-                printer = await printer_factory()
-                kwargs["printer_id"] = printer.id
+            if "queue_id" not in kwargs:
+                _printer, queue = await printer_factory()
+                kwargs["queue_id"] = queue.id
 
             if "archive_id" not in kwargs:
                 archive = await archive_factory()
@@ -446,11 +454,9 @@ class TestQueueCancelEndpoint:
 
     @pytest.fixture
     async def printer_factory(self, db_session):
-        """Factory to create test printers."""
+        """Factory to create test printers with queues."""
 
         async def _create_printer(**kwargs):
-            from backend.app.models.printer import Printer
-
             defaults = {
                 "name": "Cancel Test Printer",
                 "ip_address": "192.168.1.200",
@@ -459,12 +465,8 @@ class TestQueueCancelEndpoint:
                 "model": "X1C",
             }
             defaults.update(kwargs)
-
-            printer = Printer(**defaults)
-            db_session.add(printer)
-            await db_session.commit()
-            await db_session.refresh(printer)
-            return printer
+            printer, queue = await _create_printer_with_queue(db_session, **defaults)
+            return printer, queue
 
         return _create_printer
 
@@ -500,9 +502,9 @@ class TestQueueCancelEndpoint:
         async def _create_queue_item(**kwargs):
             from backend.app.models.print_queue import PrintQueueItem
 
-            if "printer_id" not in kwargs:
-                printer = await printer_factory()
-                kwargs["printer_id"] = printer.id
+            if "queue_id" not in kwargs:
+                _printer, queue = await printer_factory()
+                kwargs["queue_id"] = queue.id
 
             if "archive_id" not in kwargs:
                 archive = await archive_factory()
@@ -547,12 +549,10 @@ class TestQueueLibraryFileSupport:
 
     @pytest.fixture
     async def printer_factory(self, db_session):
-        """Factory to create test printers."""
+        """Factory to create test printers with queues."""
         _counter = [0]
 
         async def _create_printer(**kwargs):
-            from backend.app.models.printer import Printer
-
             _counter[0] += 1
             counter = _counter[0]
 
@@ -564,12 +564,8 @@ class TestQueueLibraryFileSupport:
                 "model": "X1C",
             }
             defaults.update(kwargs)
-
-            printer = Printer(**defaults)
-            db_session.add(printer)
-            await db_session.commit()
-            await db_session.refresh(printer)
-            return printer
+            printer, queue = await _create_printer_with_queue(db_session, **defaults)
+            return printer, queue
 
         return _create_printer
 
@@ -607,16 +603,17 @@ class TestQueueLibraryFileSupport:
         self, async_client: AsyncClient, printer_factory, library_file_factory, db_session
     ):
         """Verify item can be added to queue using library_file_id instead of archive_id."""
-        printer = await printer_factory()
+        printer, queue = await printer_factory()
         lib_file = await library_file_factory()
 
         data = {
-            "printer_id": printer.id,
+            "queue_id": queue.id,
             "library_file_id": lib_file.id,
         }
         response = await async_client.post("/api/v1/queue/", json=data)
         assert response.status_code == 200
         result = response.json()
+        assert result["queue_id"] == queue.id
         assert result["printer_id"] == printer.id
         assert result["library_file_id"] == lib_file.id
         assert result["archive_id"] is None
@@ -630,11 +627,11 @@ class TestQueueLibraryFileSupport:
         self, async_client: AsyncClient, printer_factory, library_file_factory, db_session
     ):
         """Verify library file queue item can have all options set."""
-        printer = await printer_factory()
+        _printer, queue = await printer_factory()
         lib_file = await library_file_factory()
 
         data = {
-            "printer_id": printer.id,
+            "queue_id": queue.id,
             "library_file_id": lib_file.id,
             "ams_mapping": [1, 2, -1, -1],
             "plate_id": 2,
@@ -658,10 +655,10 @@ class TestQueueLibraryFileSupport:
         self, async_client: AsyncClient, printer_factory, db_session
     ):
         """Verify 400 error when neither archive_id nor library_file_id provided."""
-        printer = await printer_factory()
+        _printer, queue = await printer_factory()
 
         data = {
-            "printer_id": printer.id,
+            "queue_id": queue.id,
         }
         response = await async_client.post("/api/v1/queue/", json=data)
         assert response.status_code == 400
@@ -677,12 +674,12 @@ class TestQueueLibraryFileSupport:
         """Verify queue item with library_file_id can be updated."""
         from backend.app.models.print_queue import PrintQueueItem
 
-        printer = await printer_factory()
+        _printer, queue = await printer_factory()
         lib_file = await library_file_factory()
 
         # Create queue item directly
         item = PrintQueueItem(
-            printer_id=printer.id,
+            queue_id=queue.id,
             library_file_id=lib_file.id,
             status="pending",
             position=1,
@@ -710,13 +707,13 @@ class TestQueueLibraryFileSupport:
         """Verify queue list includes library file metadata."""
         from backend.app.models.print_queue import PrintQueueItem
 
-        printer = await printer_factory()
+        _printer, queue = await printer_factory()
         lib_file = await library_file_factory(
             file_metadata={"print_name": "Custom Print Name", "print_time_seconds": 7200}
         )
 
         item = PrintQueueItem(
-            printer_id=printer.id,
+            queue_id=queue.id,
             library_file_id=lib_file.id,
             status="pending",
             position=1,
@@ -741,12 +738,10 @@ class TestBulkUpdateEndpoint:
 
     @pytest.fixture
     async def printer_factory(self, db_session):
-        """Factory to create test printers."""
+        """Factory to create test printers with queues."""
         _counter = [0]
 
         async def _create_printer(**kwargs):
-            from backend.app.models.printer import Printer
-
             _counter[0] += 1
             counter = _counter[0]
 
@@ -758,12 +753,8 @@ class TestBulkUpdateEndpoint:
                 "model": "X1C",
             }
             defaults.update(kwargs)
-
-            printer = Printer(**defaults)
-            db_session.add(printer)
-            await db_session.commit()
-            await db_session.refresh(printer)
-            return printer
+            printer, queue = await _create_printer_with_queue(db_session, **defaults)
+            return printer, queue
 
         return _create_printer
 
@@ -803,9 +794,9 @@ class TestBulkUpdateEndpoint:
         async def _create_item(**kwargs):
             from backend.app.models.print_queue import PrintQueueItem
 
-            if "printer_id" not in kwargs:
-                printer = await printer_factory()
-                kwargs["printer_id"] = printer.id
+            if "queue_id" not in kwargs:
+                _printer, queue = await printer_factory()
+                kwargs["queue_id"] = queue.id
 
             if "archive_id" not in kwargs:
                 archive = await archive_factory()
@@ -905,27 +896,27 @@ class TestBulkUpdateEndpoint:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_bulk_update_change_printer(
+    async def test_bulk_update_change_queue(
         self, async_client: AsyncClient, queue_item_factory, printer_factory, db_session
     ):
-        """Verify bulk update can reassign items to a different printer."""
-        new_printer = await printer_factory(name="New Target Printer")
+        """Verify bulk update can reassign items to a different queue."""
+        _new_printer, new_queue = await printer_factory(name="New Target Printer")
         item1 = await queue_item_factory()
         item2 = await queue_item_factory()
 
-        original_printer_id = item1.printer_id
+        original_queue_id = item1.queue_id
 
         response = await async_client.patch(
             "/api/v1/queue/bulk",
-            json={"item_ids": [item1.id, item2.id], "printer_id": new_printer.id},
+            json={"item_ids": [item1.id, item2.id], "queue_id": new_queue.id},
         )
         assert response.status_code == 200
 
         await db_session.refresh(item1)
         await db_session.refresh(item2)
-        assert item1.printer_id == new_printer.id
-        assert item2.printer_id == new_printer.id
-        assert item1.printer_id != original_printer_id
+        assert item1.queue_id == new_queue.id
+        assert item2.queue_id == new_queue.id
+        assert item1.queue_id != original_queue_id
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -953,229 +944,16 @@ class TestBulkUpdateEndpoint:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_bulk_update_invalid_printer(self, async_client: AsyncClient, queue_item_factory):
-        """Verify 400 error when printer_id doesn't exist."""
+    async def test_bulk_update_invalid_queue(self, async_client: AsyncClient, queue_item_factory):
+        """Verify 400 error when queue_id doesn't exist."""
         item = await queue_item_factory()
 
         response = await async_client.patch(
             "/api/v1/queue/bulk",
-            json={"item_ids": [item.id], "printer_id": 99999},
+            json={"item_ids": [item.id], "queue_id": 99999},
         )
         assert response.status_code == 400
-        assert "printer not found" in response.json()["detail"].lower()
-
-
-class TestTargetLocationFeature:
-    """Tests for queue items with target_location (Issue #220)."""
-
-    @pytest.fixture
-    async def printer_factory(self, db_session):
-        """Factory to create test printers."""
-        _counter = [0]
-
-        async def _create_printer(**kwargs):
-            from backend.app.models.printer import Printer
-
-            _counter[0] += 1
-            counter = _counter[0]
-
-            defaults = {
-                "name": f"Location Test Printer {counter}",
-                "ip_address": f"192.168.1.{50 + counter}",
-                "serial_number": f"TESTLOC{counter:04d}",
-                "access_code": "12345678",
-                "model": "X1C",
-            }
-            defaults.update(kwargs)
-
-            printer = Printer(**defaults)
-            db_session.add(printer)
-            await db_session.commit()
-            await db_session.refresh(printer)
-            return printer
-
-        return _create_printer
-
-    @pytest.fixture
-    async def archive_factory(self, db_session):
-        """Factory to create test archives."""
-        _counter = [0]
-
-        async def _create_archive(**kwargs):
-            from backend.app.models.archive import PrintArchive
-
-            _counter[0] += 1
-            counter = _counter[0]
-
-            defaults = {
-                "filename": f"location_test_{counter}.3mf",
-                "print_name": f"Location Test Print {counter}",
-                "file_path": f"/tmp/location_test_{counter}.3mf",
-                "file_size": 1024,
-                "content_hash": f"lochash{counter:08d}",
-                "status": "completed",
-            }
-            defaults.update(kwargs)
-
-            archive = PrintArchive(**defaults)
-            db_session.add(archive)
-            await db_session.commit()
-            await db_session.refresh(archive)
-            return archive
-
-        return _create_archive
-
-    @pytest.fixture
-    async def queue_item_factory(self, db_session, printer_factory, archive_factory):
-        """Factory to create test queue items."""
-        _counter = [0]
-
-        async def _create_queue_item(**kwargs):
-            from backend.app.models.print_queue import PrintQueueItem
-
-            _counter[0] += 1
-            counter = _counter[0]
-
-            if "printer_id" not in kwargs and "target_model" not in kwargs:
-                printer = await printer_factory()
-                kwargs["printer_id"] = printer.id
-
-            if "archive_id" not in kwargs:
-                archive = await archive_factory()
-                kwargs["archive_id"] = archive.id
-
-            defaults = {
-                "status": "pending",
-                "position": counter,
-            }
-            defaults.update(kwargs)
-
-            item = PrintQueueItem(**defaults)
-            db_session.add(item)
-            await db_session.commit()
-            await db_session.refresh(item)
-            return item
-
-        return _create_queue_item
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_add_to_queue_with_target_location(
-        self, async_client: AsyncClient, printer_factory, archive_factory, db_session
-    ):
-        """Verify item can be added with target_model and target_location."""
-        # Create a printer with model X1C so the API can validate
-        await printer_factory(model="X1C", location="Office")
-        archive = await archive_factory()
-
-        data = {
-            "target_model": "X1C",
-            "target_location": "Workbench",
-            "archive_id": archive.id,
-        }
-        response = await async_client.post("/api/v1/queue/", json=data)
-        assert response.status_code == 200
-        result = response.json()
-        assert result["target_model"] == "X1C"
-        assert result["target_location"] == "Workbench"
-        assert result["printer_id"] is None
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_add_to_queue_location_without_model_ignored(
-        self, async_client: AsyncClient, printer_factory, archive_factory, db_session
-    ):
-        """Verify target_location without target_model is allowed (location is just ignored)."""
-        printer = await printer_factory()
-        archive = await archive_factory()
-
-        data = {
-            "printer_id": printer.id,
-            "target_location": "Workbench",  # This gets ignored since printer_id is set
-            "archive_id": archive.id,
-        }
-        response = await async_client.post("/api/v1/queue/", json=data)
-        # The API accepts this but the location is only used with target_model
-        assert response.status_code == 200
-        result = response.json()
-        assert result["printer_id"] == printer.id
-        # Location may or may not be stored since it's meaningless without target_model
-        # The important thing is the request succeeds
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_queue_item_target_location_in_response(
-        self, async_client: AsyncClient, queue_item_factory, db_session
-    ):
-        """Verify target_location is returned in queue item response."""
-        item = await queue_item_factory(
-            printer_id=None,
-            target_model="X1C",
-            target_location="Workshop",
-        )
-
-        response = await async_client.get(f"/api/v1/queue/{item.id}")
-        assert response.status_code == 200
-        result = response.json()
-        assert result["target_model"] == "X1C"
-        assert result["target_location"] == "Workshop"
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_queue_list_includes_target_location(self, async_client: AsyncClient, queue_item_factory, db_session):
-        """Verify target_location is included in queue list."""
-        await queue_item_factory(
-            printer_id=None,
-            target_model="P1S",
-            target_location="Garage",
-        )
-
-        response = await async_client.get("/api/v1/queue/")
-        assert response.status_code == 200
-        items = response.json()
-        assert len(items) >= 1
-
-        # Find our item
-        our_item = next((i for i in items if i["target_location"] == "Garage"), None)
-        assert our_item is not None
-        assert our_item["target_model"] == "P1S"
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_update_queue_item_target_location(self, async_client: AsyncClient, queue_item_factory, db_session):
-        """Verify target_location can be updated on existing queue item."""
-        item = await queue_item_factory(
-            printer_id=None,
-            target_model="X1C",
-            target_location="Office",
-        )
-
-        response = await async_client.patch(
-            f"/api/v1/queue/{item.id}",
-            json={"target_location": "Basement"},
-        )
-        assert response.status_code == 200
-        result = response.json()
-        assert result["target_location"] == "Basement"
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_clear_target_location(self, async_client: AsyncClient, queue_item_factory, db_session):
-        """Verify target_location can be cleared (set to None)."""
-        item = await queue_item_factory(
-            printer_id=None,
-            target_model="X1C",
-            target_location="Office",
-        )
-
-        # Note: Setting to empty string should clear it
-        response = await async_client.patch(
-            f"/api/v1/queue/{item.id}",
-            json={"target_location": None},
-        )
-        assert response.status_code == 200
-        result = response.json()
-        assert result["target_location"] is None
+        assert "queue not found" in response.json()["detail"].lower()
 
 
 class TestAbortedStatusNormalisation:
@@ -1183,12 +961,10 @@ class TestAbortedStatusNormalisation:
 
     @pytest.fixture
     async def printer_factory(self, db_session):
-        """Factory to create test printers."""
+        """Factory to create test printers with queues."""
         _counter = [0]
 
         async def _create_printer(**kwargs):
-            from backend.app.models.printer import Printer
-
             _counter[0] += 1
             counter = _counter[0]
 
@@ -1200,12 +976,8 @@ class TestAbortedStatusNormalisation:
                 "model": "P1S",
             }
             defaults.update(kwargs)
-
-            printer = Printer(**defaults)
-            db_session.add(printer)
-            await db_session.commit()
-            await db_session.refresh(printer)
-            return printer
+            printer, queue = await _create_printer_with_queue(db_session, **defaults)
+            return printer, queue
 
         return _create_printer
 
@@ -1249,9 +1021,9 @@ class TestAbortedStatusNormalisation:
             _counter[0] += 1
             counter = _counter[0]
 
-            if "printer_id" not in kwargs:
-                printer = await printer_factory()
-                kwargs["printer_id"] = printer.id
+            if "queue_id" not in kwargs:
+                _printer, queue = await printer_factory()
+                kwargs["queue_id"] = queue.id
             if "archive_id" not in kwargs:
                 archive = await archive_factory()
                 kwargs["archive_id"] = archive.id
@@ -1310,7 +1082,7 @@ class TestAbortedStatusNormalisation:
             from backend.app.main import on_print_complete
 
             await on_print_complete(
-                item.printer_id,
+                item.queue_id,  # queue_id == printer_id
                 {
                     "status": "aborted",
                     "filename": "test.gcode",
@@ -1405,7 +1177,7 @@ class TestAbortedStatusNormalisation:
             from backend.app.main import on_print_complete
 
             await on_print_complete(
-                item.printer_id,
+                item.queue_id,  # queue_id == printer_id
                 {
                     "status": "completed",
                     "filename": "test.gcode",

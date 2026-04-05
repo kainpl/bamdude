@@ -189,6 +189,13 @@ class TestVirtualPrinterInstance:
         mock_db.add = MagicMock(side_effect=capture_add)
         mock_db.commit = AsyncMock()
 
+        # Mock the PrinterQueue lookup
+        mock_queue = MagicMock()
+        mock_queue.id = 1
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = mock_queue
+        mock_db.execute = AsyncMock(return_value=mock_result)
+
         mock_session_factory = MagicMock()
         mock_session_ctx = AsyncMock()
         mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_db)
@@ -202,6 +209,7 @@ class TestVirtualPrinterInstance:
             model="C11",
             access_code="12345678",
             serial_suffix="391800011",
+            target_printer_id=1,
             auto_dispatch=True,
             base_dir=tmp_path,
             session_factory=mock_session_factory,
@@ -240,6 +248,13 @@ class TestVirtualPrinterInstance:
         mock_db.add = MagicMock(side_effect=capture_add)
         mock_db.commit = AsyncMock()
 
+        # Mock the PrinterQueue lookup
+        mock_queue = MagicMock()
+        mock_queue.id = 1
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = mock_queue
+        mock_db.execute = AsyncMock(return_value=mock_result)
+
         mock_session_factory = MagicMock()
         mock_session_ctx = AsyncMock()
         mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_db)
@@ -253,6 +268,7 @@ class TestVirtualPrinterInstance:
             model="C11",
             access_code="12345678",
             serial_suffix="391800012",
+            target_printer_id=1,
             auto_dispatch=False,
             base_dir=tmp_path,
             session_factory=mock_session_factory,

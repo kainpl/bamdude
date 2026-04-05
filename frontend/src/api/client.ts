@@ -104,6 +104,7 @@ export interface Printer {
   camera_rotation: number;  // 0, 90, 180, 270 degrees
   plate_detection_enabled: boolean;  // Check plate before print
   plate_detection_roi?: PlateDetectionROI;  // ROI for plate detection
+  stagger_interval_minutes: number;  // Per-printer stagger interval override (0 = system default)
   created_at: string;
   updated_at: string;
 }
@@ -288,6 +289,7 @@ export interface PrinterCreate {
   camera_rotation?: number;
   plate_detection_enabled?: boolean;
   plate_detection_roi?: PlateDetectionROI;
+  stagger_interval_minutes?: number;
 }
 
 // Plate Detection
@@ -913,6 +915,11 @@ export interface AppSettings {
   user_notifications_enabled: boolean;
   // Default sidebar order (admin-set for all users)
   default_sidebar_order: string;
+  // Staggered start settings (electrical load management for farms)
+  stagger_enabled: boolean;
+  stagger_concurrent: number;
+  stagger_interval_minutes: number;
+  stagger_wait_for_bed: boolean;
 }
 
 export type AppSettingsUpdate = Partial<AppSettings>;
@@ -1387,6 +1394,8 @@ export interface PrinterQueue {
   pending_count: number;
   completed_count: number;
   failed_count: number;
+  cancelled_count: number;
+  skipped_count: number;
   total_count: number;
   created_at: string;
   updated_at: string;
