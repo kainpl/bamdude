@@ -43,6 +43,7 @@ from backend.app.api.routes import (
     spoolman,
     support,
     system,
+    printer_queues,
     telegram,
     updates,
     user_notifications,
@@ -4214,6 +4215,7 @@ app.include_router(github_backup.router, prefix=app_settings.api_prefix)
 app.include_router(metrics.router, prefix=app_settings.api_prefix)
 app.include_router(virtual_printers.router, prefix=app_settings.api_prefix)
 app.include_router(spoolbuddy.router, prefix=app_settings.api_prefix)
+app.include_router(printer_queues.router, prefix=app_settings.api_prefix)
 app.include_router(telegram.router, prefix=app_settings.api_prefix)
 
 
