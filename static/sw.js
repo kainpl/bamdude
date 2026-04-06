@@ -12,7 +12,7 @@ const STATIC_ASSETS = [
   '/img/android-chrome-192x192.png',
   '/img/android-chrome-512x512.png',
   '/img/apple-touch-icon.png',
-  '/img/bambuddy_logo_dark.png',
+  '/img/bamdude_logo_dark.png',
 ];
 
 // Install event - cache static assets
