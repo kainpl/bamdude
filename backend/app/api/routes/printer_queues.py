@@ -24,6 +24,8 @@ def _to_response(queue: PrinterQueue) -> PrinterQueueResponse:
         id=queue.id,
         printer_id=queue.printer_id,
         printer_name=queue.printer.name if queue.printer else None,
+        printer_model=queue.printer.model if queue.printer else None,
+        printer_location=queue.printer.location if queue.printer else None,
         status=queue.status,
         last_activity_at=queue.last_activity_at,
         current_item_id=queue.current_item_id,

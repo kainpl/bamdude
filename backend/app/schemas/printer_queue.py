@@ -11,6 +11,8 @@ class PrinterQueueResponse(BaseModel):
     id: int
     printer_id: int
     printer_name: str | None = None
+    printer_model: str | None = None
+    printer_location: str | None = None
     status: str  # idle, printing, paused, error
     last_activity_at: datetime | None
     current_item_id: int | None

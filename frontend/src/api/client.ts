@@ -1385,6 +1385,8 @@ export interface PrinterQueue {
   id: number;
   printer_id: number;
   printer_name?: string | null;
+  printer_model?: string | null;
+  printer_location?: string | null;
   status: 'idle' | 'printing' | 'paused' | 'error';
   last_activity_at: string | null;
   current_item_id: number | null;
@@ -3443,6 +3445,15 @@ export const api = {
     request<PrintQueueItem>(`/queue/${id}/start`, { method: 'POST' }),
   bulkUpdateQueue: (data: PrintQueueBulkUpdate) =>
     request<PrintQueueBulkUpdateResponse>('/queue/bulk', {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+
+  // Printer Queues (queue-level operations)
+  getQueues: () =>
+    request<PrinterQueue[]>('/queues/'),
+  updateQueue: (queueId: number, data: { status: 'idle' | 'paused' }) =>
+    request<PrinterQueue>(`/queues/${queueId}`, {
       method: 'PATCH',
       body: JSON.stringify(data),
     }),

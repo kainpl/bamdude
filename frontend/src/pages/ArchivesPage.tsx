@@ -3019,7 +3019,7 @@ export function ArchivesPage() {
       </div>
 
       {/* View mode toggle + pagination + per page selector */}
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
         <div className="flex items-center border border-bambu-dark-tertiary rounded-lg overflow-hidden flex-shrink-0 w-fit">
           <button
             className={`p-2 ${viewMode === 'grid' ? 'bg-bambu-green text-white' : 'bg-bambu-dark text-bambu-gray hover:text-white'}`}
@@ -3068,18 +3068,19 @@ export function ArchivesPage() {
           </div>
         )}
         {(viewMode === 'grid' || viewMode === 'list') && (
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 sm:gap-2">
+            <span className="text-xs text-bambu-gray hidden sm:inline">{t('common.show')}</span>
             <select
-              className="px-2 py-1.5 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-bambu-gray focus:border-bambu-green focus:outline-none"
+              className="w-14 sm:w-16 px-1.5 sm:px-2 py-1.5 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-bambu-gray focus:border-bambu-green focus:outline-none text-center"
               value={perPage}
               onChange={(e) => { setPerPage(Number(e.target.value)); setPage(1); }}
             >
               {[12, 24, 48, 96].map((n) => (
-                <option key={n} value={n}>{n} / {t('common.perPage')}</option>
+                <option key={n} value={n}>{n}</option>
               ))}
             </select>
             <select
-              className="px-2 py-1.5 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-bambu-gray focus:border-bambu-green focus:outline-none"
+              className="px-1.5 sm:px-2 py-1.5 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-bambu-gray focus:border-bambu-green focus:outline-none max-w-[140px] sm:max-w-none"
               value={sortBy}
               onChange={(e) => { setSortBy(e.target.value as SortOption); setPage(1); }}
             >

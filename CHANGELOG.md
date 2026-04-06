@@ -57,6 +57,24 @@ Electrical load management for large print farms — spread printer startups ove
 - Obsolete ALTER TABLE migrations for dropped fields
 - Tests for removed features (`test_scheduler_busy_only`, `test_scheduler_filament_override`)
 
+### Queue UI
+
+- **Card-based queue view** — each printer queue as a card (like PrintersPage)
+- **Two view modes**: S (compact grid) and M (full cards with controls)
+- **All view**: flat list of all pending items across queues
+- **Sort & group**: by name, status, model, location — with grouping headers for location
+- **QueueCard component**: status badge, progress bar, clear plate, pause/resume, error banner, pending items with expand
+- **Per-item actions**: start (manual), cancel, edit — on hover
+
+### Rebrand
+
+- **Bambuddy HE → BamDude** — full rebrand across ~70 files
+- New logo: Nozzle Dude (sunglasses + filament worm)
+- GitHub repo renamed: `kainpl/bamdude` (old URL auto-redirects)
+- Docker image: `kainpl/bamdude`
+- Database auto-migration chain: `bambutrack.db → bambuddy.db → bamdude.db`
+- Docker volume migration script: `install/migrate-volumes.sh`
+
 ### Tests
 
 - All 36 queue integration tests updated for `queue_id` migration

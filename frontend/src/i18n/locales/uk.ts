@@ -116,6 +116,7 @@ export default {
     next: 'Наступна',
     showingRange: '{{from}}-{{to}} з {{total}}',
     perPage: 'на сторінку',
+    show: 'Показати',
   },
 
   // Printers page
@@ -1024,6 +1025,45 @@ export default {
       noEditItems: 'У вас немає дозволу редагувати елементи черги',
       noCancelItems: 'У вас немає дозволу скасовувати елементи черги',
     },
+  },
+
+  // QueueCard component
+  queueCard: {
+    status: {
+      idle: 'Очікує',
+      printing: 'Друкує',
+      paused: 'Призупинено',
+      error: 'Помилка',
+    },
+    pauseQueue: 'Призупинити чергу',
+    resumeQueue: 'Відновити чергу',
+    errorState: 'Черга зіткнулася з помилкою',
+    currentPrint: 'Зараз друкується',
+    showMore: 'Показати ще {{count}}',
+    showLess: 'Згорнути',
+    startItem: 'Почати друк',
+    cancelItem: 'Скасувати елемент',
+    editItem: 'Редагувати елемент',
+    footer: {
+      pending: '{{count}} в очікуванні',
+      done: '{{count}} завершено',
+      failed: '{{count}} з помилкою',
+    },
+    toast: {
+      statusUpdated: 'Статус черги оновлено',
+      itemStarted: 'Друк розпочато',
+    },
+    viewCompact: 'Компактний вигляд',
+    viewExpanded: 'Розгорнутий вигляд',
+    viewAll: 'Всі елементи',
+    noQueues: 'Немає черг принтерів',
+    noQueuesHint: 'Додайте принтер — черга створюється автоматично',
+    noPending: 'Немає елементів в очікуванні',
+    pending: 'в очікуванні',
+    manualStart: 'Вручну',
+    statusPrinting: 'Друкує:',
+    statusError: 'помилка',
+    ungrouped: 'Без розташування',
   },
 
   backgroundDispatch: {
@@ -2619,6 +2659,7 @@ export default {
     newFolder: 'Нова папка',
     folderName: 'Назва папки',
     folderNamePlaceholder: 'напр., Функціональні деталі',
+    filterByUser: 'Фільтр за користувачем',
     renameFile: 'Перейменувати файл',
     renameFolder: 'Перейменувати папку',
     moveFiles: 'Перемістити {{count}} файлів',

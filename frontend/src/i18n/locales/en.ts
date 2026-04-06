@@ -116,6 +116,7 @@ export default {
     next: 'Next',
     showingRange: 'Showing {{from}}-{{to}} of {{total}}',
     perPage: 'per page',
+    show: 'Show',
   },
 
   // Printers page
@@ -1028,6 +1029,45 @@ export default {
       noEditItems: 'You do not have permission to edit queue items',
       noCancelItems: 'You do not have permission to cancel queue items',
     },
+  },
+
+  // QueueCard component
+  queueCard: {
+    status: {
+      idle: 'Idle',
+      printing: 'Printing',
+      paused: 'Paused',
+      error: 'Error',
+    },
+    pauseQueue: 'Pause queue',
+    resumeQueue: 'Resume queue',
+    errorState: 'Queue encountered an error',
+    currentPrint: 'Currently printing',
+    showMore: 'Show {{count}} more',
+    showLess: 'Show less',
+    startItem: 'Start print',
+    cancelItem: 'Cancel item',
+    editItem: 'Edit item',
+    footer: {
+      pending: '{{count}} pending',
+      done: '{{count}} done',
+      failed: '{{count}} failed',
+    },
+    toast: {
+      statusUpdated: 'Queue status updated',
+      itemStarted: 'Print started',
+    },
+    viewCompact: 'Compact view',
+    viewExpanded: 'Expanded view',
+    viewAll: 'All items view',
+    noQueues: 'No printer queues',
+    noQueuesHint: 'Add a printer to create its queue automatically',
+    noPending: 'No pending items',
+    pending: 'pending',
+    manualStart: 'Manual',
+    statusPrinting: 'Printing:',
+    statusError: 'error',
+    ungrouped: 'Ungrouped',
   },
 
   backgroundDispatch: {
@@ -2623,6 +2663,7 @@ export default {
     newFolder: 'New Folder',
     folderName: 'Folder Name',
     folderNamePlaceholder: 'e.g., Functional Parts',
+    filterByUser: 'Filter by user',
     renameFile: 'Rename File',
     renameFolder: 'Rename Folder',
     moveFiles: 'Move {{count}} File(s)',
