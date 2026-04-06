@@ -2522,6 +2522,16 @@ function PrinterCard({
                     {t('printers.calibration.menuItem')}
                   </button>
                   <button
+                    className="w-full px-4 py-2 text-left text-sm hover:bg-bambu-dark-tertiary flex items-center gap-2"
+                    onClick={() => {
+                      navigate(`/maintenance?printer=${printer.id}`);
+                      setShowMenu(false);
+                    }}
+                  >
+                    <Wrench className="w-4 h-4" />
+                    {t('printers.maintenanceHistory')}
+                  </button>
+                  <button
                     className={`w-full px-4 py-2 text-left text-sm flex items-center gap-2 ${
                       hasPermission('printers:delete')
                         ? 'text-red-400 hover:bg-bambu-dark-tertiary'
@@ -5069,11 +5079,11 @@ function AddPrinterModal({
       className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
       onClick={onClose}
     >
-      <Card className="w-full max-w-md" onClick={(e: React.MouseEvent) => e.stopPropagation()}>
+      <Card className="w-full max-w-2xl max-h-[90vh] overflow-y-auto" onClick={(e: React.MouseEvent) => e.stopPropagation()}>
         <CardContent>
           <h2 className="text-xl font-semibold mb-4">{t('printers.addPrinter')}</h2>
 
-          {/* Discovery Section */}
+          {/* Discovery Section — full width */}
           <div className="mb-4 pb-4 border-b border-bambu-dark-tertiary">
             {isDocker && (
               <div className="mb-3">
@@ -5082,7 +5092,7 @@ function AddPrinterModal({
                 </label>
                 {detectedSubnets.length > 0 ? (
                   <select
-                    className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
+                    className="w-full px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
                     value={subnet}
                     onChange={(e) => setSubnet(e.target.value)}
                     disabled={discovering}
@@ -5094,7 +5104,7 @@ function AddPrinterModal({
                 ) : (
                   <input
                     type="text"
-                    className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
+                    className="w-full px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
                     value={subnet}
                     onChange={(e) => setSubnet(e.target.value)}
                     placeholder="192.168.1.0/24"
@@ -5181,162 +5191,179 @@ function AddPrinterModal({
               e.preventDefault();
               onAdd(form);
             }}
-            className="space-y-4"
           >
-            <div>
-              <label className="block text-sm text-bambu-gray mb-1">{t('printers.name')}</label>
-              <input
-                type="text"
-                required
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                value={form.name}
-                onChange={(e) => setForm({ ...form, name: e.target.value })}
-                placeholder={t('printers.modal.myPrinter')}
-              />
-            </div>
-            <div>
-              <label className="block text-sm text-bambu-gray mb-1">{t('printers.ipAddress')}</label>
-              <input
-                type="text"
-                required
-                pattern="(\d{1,3}(\.\d{1,3}){3}|[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*)"
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                value={form.ip_address}
-                onChange={(e) => setForm({ ...form, ip_address: e.target.value })}
-                placeholder="192.168.1.100 or printer.local"
-              />
-            </div>
-            <div>
-              <label className="block text-sm text-bambu-gray mb-1">{t('printers.serialNumber')}</label>
-              <input
-                type="text"
-                required
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                value={form.serial_number}
-                onChange={(e) => setForm({ ...form, serial_number: e.target.value })}
-                placeholder="01P00A000000000"
-              />
-            </div>
-            <div>
-              <label className="block text-sm text-bambu-gray mb-1">{t('printers.accessCode')}</label>
-              <input
-                type="password"
-                required
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                value={form.access_code}
-                onChange={(e) => setForm({ ...form, access_code: e.target.value })}
-                placeholder={t('printers.modal.fromPrinterSettings')}
-              />
-            </div>
-            <div>
-              <label className="block text-sm text-bambu-gray mb-1">{t('printers.modal.modelOptional')}</label>
-              <select
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                value={form.model || ''}
-                onChange={(e) => setForm({ ...form, model: e.target.value })}
-              >
-                <option value="">{t('printers.modal.selectModel')}</option>
-                <optgroup label="H2 Series">
-                  <option value="H2C">H2C</option>
-                  <option value="H2D">H2D</option>
-                  <option value="H2D Pro">H2D Pro</option>
-                  <option value="H2S">H2S</option>
-                </optgroup>
-                <optgroup label="X1 Series">
-                  <option value="X1E">X1E</option>
-                  <option value="X1C">X1 Carbon</option>
-                  <option value="X1">X1</option>
-                </optgroup>
-                <optgroup label="P Series">
-                  <option value="P2S">P2S</option>
-                  <option value="P1S">P1S</option>
-                  <option value="P1P">P1P</option>
-                </optgroup>
-                <optgroup label="A1 Series">
-                  <option value="A1">A1</option>
-                  <option value="A1 Mini">A1 Mini</option>
-                </optgroup>
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm text-bambu-gray mb-1">{t('printers.modal.locationGroup')}</label>
-              <input
-                type="text"
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                value={form.location || ''}
-                onChange={(e) => setForm({ ...form, location: e.target.value })}
-                placeholder={t('printers.modal.locationPlaceholder')}
-              />
-              <p className="text-xs text-bambu-gray mt-1">{t('printers.locationHelp')}</p>
-            </div>
-            <div className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                id="auto_archive"
-                checked={form.auto_archive}
-                onChange={(e) => setForm({ ...form, auto_archive: e.target.checked })}
-                className="rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
-              />
-              <label htmlFor="auto_archive" className="text-sm text-bambu-gray">
-                {t('printers.modal.autoArchiveLabel')}
-              </label>
-            </div>
-            <div className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                id="cleanup_after_print"
-                checked={form.cleanup_after_print}
-                onChange={(e) => setForm({ ...form, cleanup_after_print: e.target.checked })}
-                className="rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
-              />
-              <label htmlFor="cleanup_after_print" className="text-sm text-bambu-gray">
-                {t('printers.modal.cleanupAfterPrintLabel')}
-              </label>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-bambu-gray mb-1">
-                {t('printers.modal.mqttConnectionTimeoutLabel')}
-              </label>
-              <div className="flex items-center gap-2">
-                <input
-                  type="number"
-                  min="0"
-                  max="3600"
-                  value={form.mqtt_connection_timeout}
-                  onChange={(e) => setForm({ ...form, mqtt_connection_timeout: parseInt(e.target.value) || 0 })}
-                  className="w-24 px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:ring-1 focus:ring-bambu-green"
-                />
-                <span className="text-xs text-bambu-gray">{t('printers.modal.mqttConnectionTimeoutHint')}</span>
+            {/* Two-column grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {/* Left column — Connection */}
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">{t('printers.name')}</label>
+                  <input
+                    type="text"
+                    required
+                    className="w-full px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                    value={form.name}
+                    onChange={(e) => setForm({ ...form, name: e.target.value })}
+                    placeholder={t('printers.modal.myPrinter')}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">{t('printers.ipAddress')}</label>
+                  <input
+                    type="text"
+                    required
+                    pattern="(\d{1,3}(\.\d{1,3}){3}|[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*)"
+                    className="w-full px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                    value={form.ip_address}
+                    onChange={(e) => setForm({ ...form, ip_address: e.target.value })}
+                    placeholder="192.168.1.100 or printer.local"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">{t('printers.serialNumber')}</label>
+                  <input
+                    type="text"
+                    required
+                    className="w-full px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                    value={form.serial_number}
+                    onChange={(e) => setForm({ ...form, serial_number: e.target.value })}
+                    placeholder="01P00A000000000"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">{t('printers.accessCode')}</label>
+                  <input
+                    type="password"
+                    required
+                    className="w-full px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                    value={form.access_code}
+                    onChange={(e) => setForm({ ...form, access_code: e.target.value })}
+                    placeholder={t('printers.modal.fromPrinterSettings')}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">{t('printers.modal.modelOptional')}</label>
+                  <select
+                    className="w-full px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                    value={form.model || ''}
+                    onChange={(e) => setForm({ ...form, model: e.target.value })}
+                  >
+                    <option value="">{t('printers.modal.selectModel')}</option>
+                    <optgroup label="H2 Series">
+                      <option value="H2C">H2C</option>
+                      <option value="H2D">H2D</option>
+                      <option value="H2D Pro">H2D Pro</option>
+                      <option value="H2S">H2S</option>
+                    </optgroup>
+                    <optgroup label="X1 Series">
+                      <option value="X1E">X1E</option>
+                      <option value="X1C">X1 Carbon</option>
+                      <option value="X1">X1</option>
+                    </optgroup>
+                    <optgroup label="P Series">
+                      <option value="P2S">P2S</option>
+                      <option value="P1S">P1S</option>
+                      <option value="P1P">P1P</option>
+                    </optgroup>
+                    <optgroup label="A1 Series">
+                      <option value="A1">A1</option>
+                      <option value="A1 Mini">A1 Mini</option>
+                    </optgroup>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">{t('printers.modal.locationGroup')}</label>
+                  <input
+                    type="text"
+                    className="w-full px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                    value={form.location || ''}
+                    onChange={(e) => setForm({ ...form, location: e.target.value })}
+                    placeholder={t('printers.modal.locationPlaceholder')}
+                  />
+                  <p className="text-xs text-bambu-gray mt-1">{t('printers.locationHelp')}</p>
+                </div>
+              </div>
+
+              {/* Right column — Settings */}
+              <div className="space-y-3">
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="auto_archive"
+                    checked={form.auto_archive}
+                    onChange={(e) => setForm({ ...form, auto_archive: e.target.checked })}
+                    className="rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                  />
+                  <label htmlFor="auto_archive" className="text-sm text-bambu-gray">
+                    {t('printers.modal.autoArchiveLabel')}
+                  </label>
+                </div>
+                {!form.auto_archive && (
+                  <div className="flex items-start gap-2 p-2 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
+                    <AlertTriangle className="w-4 h-4 text-yellow-500 flex-shrink-0 mt-0.5" />
+                    <p className="text-xs text-yellow-500">{t('printers.modal.autoArchiveWarning')}</p>
+                  </div>
+                )}
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="cleanup_after_print"
+                    checked={form.cleanup_after_print}
+                    onChange={(e) => setForm({ ...form, cleanup_after_print: e.target.checked })}
+                    className="rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                  />
+                  <label htmlFor="cleanup_after_print" className="text-sm text-bambu-gray">
+                    {t('printers.modal.cleanupAfterPrintLabel')}
+                  </label>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-bambu-gray mb-1">
+                    {t('printers.modal.mqttConnectionTimeoutLabel')}
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      min="0"
+                      max="3600"
+                      value={form.mqtt_connection_timeout}
+                      onChange={(e) => setForm({ ...form, mqtt_connection_timeout: parseInt(e.target.value) || 0 })}
+                      className="w-24 px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:ring-1 focus:ring-bambu-green"
+                    />
+                    <span className="text-xs text-bambu-gray">{t('printers.modal.mqttConnectionTimeoutHint')}</span>
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">{t('printers.modal.staggerInterval')}</label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      min="0"
+                      max="60"
+                      value={form.stagger_interval_minutes ?? 0}
+                      onChange={(e) => setForm({ ...form, stagger_interval_minutes: parseInt(e.target.value) || 0 })}
+                      className="w-24 px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:ring-1 focus:ring-bambu-green"
+                    />
+                    <span className="text-xs text-bambu-gray">{t('printers.modal.staggerIntervalHint')}</span>
+                  </div>
+                </div>
+                {form.model && /a1.?mini|a1m|n1/i.test(form.model) && (
+                <div>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={form.swap_mode_enabled ?? false}
+                      onChange={(e) => setForm({ ...form, swap_mode_enabled: e.target.checked })}
+                      className="w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                    />
+                    <span className="text-sm text-white">{t('printers.modal.swapMode')}</span>
+                  </label>
+                  <p className="text-xs text-bambu-gray mt-1 ml-6">{t('printers.modal.swapModeHint')}</p>
+                </div>
+                )}
               </div>
             </div>
-            <div>
-              <label className="block text-sm text-bambu-gray mb-1">{t('printers.modal.staggerInterval')}</label>
-              <div className="flex items-center gap-2">
-                <input
-                  type="number"
-                  min="0"
-                  max="60"
-                  value={form.stagger_interval_minutes ?? 0}
-                  onChange={(e) => setForm({ ...form, stagger_interval_minutes: parseInt(e.target.value) || 0 })}
-                  className="w-24 px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:ring-1 focus:ring-bambu-green"
-                />
-                <span className="text-xs text-bambu-gray">{t('printers.modal.staggerIntervalHint')}</span>
-              </div>
-            </div>
-            {form.model && /a1.?mini|a1m|n1/i.test(form.model) && (
-            <div>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={form.swap_mode_enabled ?? false}
-                  onChange={(e) => setForm({ ...form, swap_mode_enabled: e.target.checked })}
-                  className="w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
-                />
-                <span className="text-sm text-white">{t('printers.modal.swapMode')}</span>
-              </label>
-              <p className="text-xs text-bambu-gray mt-1 ml-6">{t('printers.modal.swapModeHint')}</p>
-            </div>
-            )}
+
+            {/* Buttons — full width */}
             <div className="flex gap-3 pt-4">
               <Button type="button" variant="secondary" onClick={onClose} className="flex-1">
                 {t('common.cancel')}
@@ -5631,162 +5658,180 @@ function EditPrinterModal({
       className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
       onClick={onClose}
     >
-      <Card className="w-full max-w-md" onClick={(e: React.MouseEvent) => e.stopPropagation()}>
+      <Card className="w-full max-w-2xl max-h-[90vh] overflow-y-auto" onClick={(e: React.MouseEvent) => e.stopPropagation()}>
         <CardContent>
           <h2 className="text-xl font-semibold mb-4">{t('printers.editPrinter')}</h2>
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <label className="block text-sm text-bambu-gray mb-1">{t('printers.name')}</label>
-              <input
-                type="text"
-                required
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                value={form.name}
-                onChange={(e) => setForm({ ...form, name: e.target.value })}
-                placeholder={t('printers.modal.myPrinter')}
-              />
-            </div>
-            <div>
-              <label className="block text-sm text-bambu-gray mb-1">{t('printers.ipAddress')}</label>
-              <input
-                type="text"
-                required
-                pattern="(\d{1,3}(\.\d{1,3}){3}|[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*)"
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                value={form.ip_address}
-                onChange={(e) => setForm({ ...form, ip_address: e.target.value })}
-                placeholder="192.168.1.100 or printer.local"
-              />
-            </div>
-            <div>
-              <label className="block text-sm text-bambu-gray mb-1">{t('printers.serialNumber')}</label>
-              <input
-                type="text"
-                disabled
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-bambu-gray cursor-not-allowed"
-                value={printer.serial_number}
-              />
-              <p className="text-xs text-bambu-gray mt-1">{t('printers.serialCannotBeChanged')}</p>
-            </div>
-            <div>
-              <label className="block text-sm text-bambu-gray mb-1">{t('printers.accessCode')}</label>
-              <input
-                type="password"
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                value={form.access_code}
-                onChange={(e) => setForm({ ...form, access_code: e.target.value })}
-                placeholder={t('printers.accessCodePlaceholder')}
-              />
-            </div>
-            <div>
-              <label className="block text-sm text-bambu-gray mb-1">{t('printers.model')}</label>
-              <select
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                value={form.model}
-                onChange={(e) => setForm({ ...form, model: e.target.value })}
-              >
-                <option value="">{t('printers.modal.selectModel')}</option>
-                <optgroup label="H2 Series">
-                  <option value="H2C">H2C</option>
-                  <option value="H2D">H2D</option>
-                  <option value="H2D Pro">H2D Pro</option>
-                  <option value="H2S">H2S</option>
-                </optgroup>
-                <optgroup label="X1 Series">
-                  <option value="X1E">X1E</option>
-                  <option value="X1C">X1 Carbon</option>
-                  <option value="X1">X1</option>
-                </optgroup>
-                <optgroup label="P Series">
-                  <option value="P2S">P2S</option>
-                  <option value="P1S">P1S</option>
-                  <option value="P1P">P1P</option>
-                </optgroup>
-                <optgroup label="A1 Series">
-                  <option value="A1">A1</option>
-                  <option value="A1 Mini">A1 Mini</option>
-                </optgroup>
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm text-bambu-gray mb-1">Location / Group</label>
-              <input
-                type="text"
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                value={form.location}
-                onChange={(e) => setForm({ ...form, location: e.target.value })}
-                placeholder={t('printers.modal.locationPlaceholder')}
-              />
-              <p className="text-xs text-bambu-gray mt-1">{t('printers.locationHelp')}</p>
-            </div>
-            <div className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                id="edit_auto_archive"
-                checked={form.auto_archive}
-                onChange={(e) => setForm({ ...form, auto_archive: e.target.checked })}
-                className="rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
-              />
-              <label htmlFor="edit_auto_archive" className="text-sm text-bambu-gray">
-                {t('printers.modal.autoArchiveLabel')}
-              </label>
-            </div>
-            <div className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                id="edit_cleanup_after_print"
-                checked={form.cleanup_after_print}
-                onChange={(e) => setForm({ ...form, cleanup_after_print: e.target.checked })}
-                className="rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
-              />
-              <label htmlFor="edit_cleanup_after_print" className="text-sm text-bambu-gray">
-                {t('printers.modal.cleanupAfterPrintLabel')}
-              </label>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-bambu-gray mb-1">
-                {t('printers.modal.mqttConnectionTimeoutLabel')}
-              </label>
-              <div className="flex items-center gap-2">
-                <input
-                  type="number"
-                  min="0"
-                  max="3600"
-                  value={form.mqtt_connection_timeout}
-                  onChange={(e) => setForm({ ...form, mqtt_connection_timeout: parseInt(e.target.value) || 0 })}
-                  className="w-24 px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:ring-1 focus:ring-bambu-green"
-                />
-                <span className="text-xs text-bambu-gray">{t('printers.modal.mqttConnectionTimeoutHint')}</span>
+          <form onSubmit={handleSubmit}>
+            {/* Two-column grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {/* Left column — Connection */}
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">{t('printers.name')}</label>
+                  <input
+                    type="text"
+                    required
+                    className="w-full px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                    value={form.name}
+                    onChange={(e) => setForm({ ...form, name: e.target.value })}
+                    placeholder={t('printers.modal.myPrinter')}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">{t('printers.ipAddress')}</label>
+                  <input
+                    type="text"
+                    required
+                    pattern="(\d{1,3}(\.\d{1,3}){3}|[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*)"
+                    className="w-full px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                    value={form.ip_address}
+                    onChange={(e) => setForm({ ...form, ip_address: e.target.value })}
+                    placeholder="192.168.1.100 or printer.local"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">{t('printers.serialNumber')}</label>
+                  <input
+                    type="text"
+                    disabled
+                    className="w-full px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-bambu-gray cursor-not-allowed"
+                    value={printer.serial_number}
+                  />
+                  <p className="text-xs text-bambu-gray mt-1">{t('printers.serialCannotBeChanged')}</p>
+                </div>
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">{t('printers.accessCode')}</label>
+                  <input
+                    type="password"
+                    className="w-full px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                    value={form.access_code}
+                    onChange={(e) => setForm({ ...form, access_code: e.target.value })}
+                    placeholder={t('printers.accessCodePlaceholder')}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">{t('printers.model')}</label>
+                  <select
+                    className="w-full px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                    value={form.model}
+                    onChange={(e) => setForm({ ...form, model: e.target.value })}
+                  >
+                    <option value="">{t('printers.modal.selectModel')}</option>
+                    <optgroup label="H2 Series">
+                      <option value="H2C">H2C</option>
+                      <option value="H2D">H2D</option>
+                      <option value="H2D Pro">H2D Pro</option>
+                      <option value="H2S">H2S</option>
+                    </optgroup>
+                    <optgroup label="X1 Series">
+                      <option value="X1E">X1E</option>
+                      <option value="X1C">X1 Carbon</option>
+                      <option value="X1">X1</option>
+                    </optgroup>
+                    <optgroup label="P Series">
+                      <option value="P2S">P2S</option>
+                      <option value="P1S">P1S</option>
+                      <option value="P1P">P1P</option>
+                    </optgroup>
+                    <optgroup label="A1 Series">
+                      <option value="A1">A1</option>
+                      <option value="A1 Mini">A1 Mini</option>
+                    </optgroup>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">Location / Group</label>
+                  <input
+                    type="text"
+                    className="w-full px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                    value={form.location}
+                    onChange={(e) => setForm({ ...form, location: e.target.value })}
+                    placeholder={t('printers.modal.locationPlaceholder')}
+                  />
+                  <p className="text-xs text-bambu-gray mt-1">{t('printers.locationHelp')}</p>
+                </div>
+              </div>
+
+              {/* Right column — Settings */}
+              <div className="space-y-3">
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="edit_auto_archive"
+                    checked={form.auto_archive}
+                    onChange={(e) => setForm({ ...form, auto_archive: e.target.checked })}
+                    className="rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                  />
+                  <label htmlFor="edit_auto_archive" className="text-sm text-bambu-gray">
+                    {t('printers.modal.autoArchiveLabel')}
+                  </label>
+                </div>
+                {!form.auto_archive && (
+                  <div className="flex items-start gap-2 p-2 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
+                    <AlertTriangle className="w-4 h-4 text-yellow-500 flex-shrink-0 mt-0.5" />
+                    <p className="text-xs text-yellow-500">{t('printers.modal.autoArchiveWarning')}</p>
+                  </div>
+                )}
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="edit_cleanup_after_print"
+                    checked={form.cleanup_after_print}
+                    onChange={(e) => setForm({ ...form, cleanup_after_print: e.target.checked })}
+                    className="rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                  />
+                  <label htmlFor="edit_cleanup_after_print" className="text-sm text-bambu-gray">
+                    {t('printers.modal.cleanupAfterPrintLabel')}
+                  </label>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-bambu-gray mb-1">
+                    {t('printers.modal.mqttConnectionTimeoutLabel')}
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      min="0"
+                      max="3600"
+                      value={form.mqtt_connection_timeout}
+                      onChange={(e) => setForm({ ...form, mqtt_connection_timeout: parseInt(e.target.value) || 0 })}
+                      className="w-24 px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:ring-1 focus:ring-bambu-green"
+                    />
+                    <span className="text-xs text-bambu-gray">{t('printers.modal.mqttConnectionTimeoutHint')}</span>
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-bambu-gray mb-1">{t('printers.modal.staggerInterval')}</label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      min="0"
+                      max="60"
+                      value={form.stagger_interval_minutes ?? 0}
+                      onChange={(e) => setForm({ ...form, stagger_interval_minutes: parseInt(e.target.value) || 0 })}
+                      className="w-24 px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:ring-1 focus:ring-bambu-green"
+                    />
+                    <span className="text-xs text-bambu-gray">{t('printers.modal.staggerIntervalHint')}</span>
+                  </div>
+                </div>
+                {form.model && /a1.?mini|a1m|n1/i.test(form.model) && (
+                <div>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={form.swap_mode_enabled ?? false}
+                      onChange={(e) => setForm({ ...form, swap_mode_enabled: e.target.checked })}
+                      className="w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                    />
+                    <span className="text-sm text-white">{t('printers.modal.swapMode')}</span>
+                  </label>
+                  <p className="text-xs text-bambu-gray mt-1 ml-6">{t('printers.modal.swapModeHint')}</p>
+                </div>
+                )}
               </div>
             </div>
-            <div>
-              <label className="block text-sm font-medium text-bambu-gray mb-1">{t('printers.modal.staggerInterval')}</label>
-              <div className="flex items-center gap-2">
-                <input
-                  type="number"
-                  min="0"
-                  max="60"
-                  value={form.stagger_interval_minutes ?? 0}
-                  onChange={(e) => setForm({ ...form, stagger_interval_minutes: parseInt(e.target.value) || 0 })}
-                  className="w-24 px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:ring-1 focus:ring-bambu-green"
-                />
-                <span className="text-xs text-bambu-gray">{t('printers.modal.staggerIntervalHint')}</span>
-              </div>
-            </div>
-            {form.model && /a1.?mini|a1m|n1/i.test(form.model) && (
-            <div>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={form.swap_mode_enabled ?? false}
-                  onChange={(e) => setForm({ ...form, swap_mode_enabled: e.target.checked })}
-                  className="w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
-                />
-                <span className="text-sm text-white">{t('printers.modal.swapMode')}</span>
-              </label>
-              <p className="text-xs text-bambu-gray mt-1 ml-6">{t('printers.modal.swapModeHint')}</p>
-            </div>
-            )}
+
+            {/* Buttons — full width */}
             <div className="flex gap-3 pt-4">
               <Button type="button" variant="secondary" onClick={onClose} className="flex-1">
                 {t('common.cancel')}

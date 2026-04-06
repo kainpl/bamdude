@@ -28,6 +28,35 @@ import {Toggle} from './Toggle';
 import {TelegramChatCard} from './TelegramChatCard';
 import {AddTelegramChatModal} from './AddTelegramChatModal';
 
+function RegistrationModeToggle() {
+    const { t } = useTranslation();
+    const queryClient = useQueryClient();
+
+    const { data: settings } = useQuery({
+        queryKey: ['settings'],
+        queryFn: api.getSettings,
+    });
+
+    const updateMutation = useMutation({
+        mutationFn: (open: boolean) => api.updateSettings({ telegram_registration_open: open }),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['settings'] });
+        },
+    });
+
+    const isOpen = settings?.telegram_registration_open ?? false;
+
+    return (
+        <div className="flex items-center gap-2">
+            <span className="text-xs text-bambu-gray">{t('telegram.registrationMode')}</span>
+            <Toggle
+                checked={isOpen}
+                onChange={(checked) => updateMutation.mutate(checked)}
+            />
+        </div>
+    );
+}
+
 interface NotificationProviderCardProps {
     provider: NotificationProvider;
     onEdit: (provider: NotificationProvider) => void;
@@ -652,7 +681,8 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                                     {t('telegram.title')}
                                 </h4>
                                 <div className="flex items-center gap-2">
-                                    <Button size="sm" variant="secondary" onClick={() => {
+                                    <RegistrationModeToggle />
+                                    <Button size="sm" onClick={() => {
                                         setEditingTelegramChat(null);
                                         setShowTelegramChatModal(true);
                                     }}>
@@ -682,7 +712,7 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                             ) : (
                                 <div className="text-center text-bambu-gray py-4">
                                     <p className="text-xs mb-2">{t('telegram.noChatsDescription')}</p>
-                                    <Button size="sm" variant="secondary" onClick={() => {
+                                    <Button size="sm" onClick={() => {
                                         setEditingTelegramChat(null);
                                         setShowTelegramChatModal(true);
                                     }}>

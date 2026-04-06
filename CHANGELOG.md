@@ -6,7 +6,7 @@ All notable changes to BamDude will be documented in this file.
 
 ---
 
-## [0.3.1.1] - 2026-04-05
+## [0.3.1.1] - 2026-04-07
 
 ### Per-Printer Queue Architecture
 
@@ -74,6 +74,39 @@ Electrical load management for large print farms — spread printer startups ove
 - Docker image: `kainpl/bamdude`
 - Database auto-migration chain: `bambutrack.db → bambuddy.db → bamdude.db`
 - Docker volume migration script: `install/migrate-volumes.sh`
+
+### Swap Mode
+
+- **Printer field**: `swap_mode_enabled` toggle (A1 Mini plate swapper)
+- **File/Archive field**: `swap_compatible` auto-detect from `*.swap.3mf` filenames
+- **Print filtering**: swap files only shown for swap-enabled printers
+- **SWAP badge**: on file manager cards/list and archive views
+
+### Macros System
+
+- **G-code macros**: reusable snippets triggered by events (swap_mode_start, swap_mode_change_table)
+- **Multi-model support**: each macro targets specific printer models (JSON array)
+- **Built-in macros**: swap start/change table sequences from swap-hub project
+- **G-code editor**: custom component with syntax highlighting (G/M commands, parameters, comments)
+- **Settings UI**: macros management in Printing tab with add/edit/delete/toggle
+
+### Maintenance Improvements
+
+- **Model-aware types**: maintenance types target specific printer models (`printer_models` field)
+- **Auto-assign**: only matching types created for new printers (A1 gets rail maintenance, X1C gets rod)
+- **History tracking**: `performed_by_user_id` and `performed_by_chat_id` on every action
+- **History tab**: sortable/paginated table with date, printer, type, hours, performer
+- **History export**: Excel (.xlsx) download with optional printer filter
+- **Printer filter**: filter history by printer, link from printer cards and maintenance status
+- **Per-printer links**: navigate to filtered maintenance history from printer dropdown menu
+
+### UI Polish
+
+- **Printer modals**: 2-column layout, scrollable (`max-h-90vh`)
+- **Maintenance status**: 2-column grid with `items-start` (independent card heights)
+- **Auto-archive warning**: yellow banner when disabled on printer forms
+- **Registration mode**: toggle in Telegram provider card
+- **Service worker**: updated cache names for rebrand
 
 ### Tests
 

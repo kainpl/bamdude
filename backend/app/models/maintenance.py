@@ -21,6 +21,8 @@ class MaintenanceType(Base):
     interval_type: Mapped[str] = mapped_column(String(20), default="hours")
     icon: Mapped[str | None] = mapped_column(String(50))  # Icon name for UI
     wiki_url: Mapped[str | None] = mapped_column(String(500))  # Documentation link
+    # Which printer models this type applies to — JSON array, e.g. '["*"]' or '["X1C", "P1S"]'
+    printer_models: Mapped[str] = mapped_column(Text, default='["*"]')
     is_system: Mapped[bool] = mapped_column(Boolean, default=False)  # Pre-defined vs custom
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)  # Hidden/removed type
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -72,9 +74,21 @@ class MaintenanceHistory(Base):
     hours_at_maintenance: Mapped[float] = mapped_column(Float, default=0.0)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Who performed this action
+    performed_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    performed_by_chat_id: Mapped[int | None] = mapped_column(
+        ForeignKey("telegram_chats.id", ondelete="SET NULL"), nullable=True
+    )
+
     # Relationships
     printer_maintenance: Mapped["PrinterMaintenance"] = relationship(back_populates="history")
+    performed_by_user: Mapped["User | None"] = relationship()
+    performed_by_chat: Mapped["TelegramChat | None"] = relationship()
 
 
 # Import at end to avoid circular imports
 from backend.app.models.printer import Printer  # noqa: E402
+from backend.app.models.telegram_chat import TelegramChat  # noqa: E402
+from backend.app.models.user import User  # noqa: E402

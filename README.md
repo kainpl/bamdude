@@ -78,6 +78,9 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 - Per-printer queues with status tracking (idle/printing/paused/error)
 - Auto error-pause on print failure (queue stops, user decides next step)
 - Staggered start for farms (limit concurrent heating, bed temp monitoring)
+- Swap Mode support (A1 Mini plate swapper, auto-detect swap files)
+- G-code macros system with syntax-highlighted editor
+- Model-aware maintenance types with history tracking and Excel export
 - Clear plate confirmation between prints
 - Smart plug integration (Tasmota, HA, MQTT)
 - Energy consumption tracking

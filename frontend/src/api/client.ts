@@ -2015,6 +2015,7 @@ export interface MaintenanceType {
   interval_type: 'hours' | 'days';  // "hours" = print hours, "days" = calendar days
   icon: string | null;
   wiki_url: string | null;  // Documentation link
+  printer_models: string[];  // ["*"] = all models, or specific model codes
   is_system: boolean;
   created_at: string;
 }
@@ -2026,6 +2027,7 @@ export interface MaintenanceTypeCreate {
   interval_type?: 'hours' | 'days';
   icon?: string | null;
   wiki_url?: string | null;
+  printer_models?: string[];
 }
 
 export interface MaintenanceStatus {
@@ -2066,6 +2068,27 @@ export interface MaintenanceHistory {
   performed_at: string;
   hours_at_maintenance: number;
   notes: string | null;
+}
+
+export interface MaintenanceHistoryEntry {
+  id: number;
+  performed_at: string;
+  hours_at_maintenance: number;
+  notes: string | null;
+  printer_name: string | null;
+  maintenance_type_name: string | null;
+  performed_by_user_id: number | null;
+  performed_by_username: string | null;
+  performed_by_chat_id: number | null;
+  performed_by_chat_label: string | null;
+}
+
+export interface MaintenanceHistoryPage {
+  items: MaintenanceHistoryEntry[];
+  total: number;
+  page: number;
+  per_page: number;
+  last_page: number;
 }
 
 export interface MaintenanceSummary {
@@ -3842,6 +3865,15 @@ export const api = {
     }),
   getMaintenanceHistory: (itemId: number) =>
     request<MaintenanceHistory[]>(`/maintenance/items/${itemId}/history`),
+  getAllMaintenanceHistory: (page?: number, perPage?: number, sortBy?: string, sortDir?: string, printerId?: number) => {
+    const params = new URLSearchParams();
+    if (page) params.set('page', String(page));
+    if (perPage) params.set('per_page', String(perPage));
+    if (sortBy) params.set('sort_by', sortBy);
+    if (sortDir) params.set('sort_dir', sortDir);
+    if (printerId) params.set('printer_id', String(printerId));
+    return request<MaintenanceHistoryPage>(`/maintenance/history?${params}`);
+  },
   getMaintenanceSummary: () => request<MaintenanceSummary>('/maintenance/summary'),
   setPrinterHours: (printerId: number, totalHours: number) =>
     request<{ printer_id: number; total_hours: number; archive_hours: number; offset_hours: number }>(

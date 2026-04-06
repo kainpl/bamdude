@@ -117,6 +117,7 @@ export default {
     showingRange: '{{from}}-{{to}} з {{total}}',
     perPage: 'на сторінку',
     show: 'Показати',
+    total: 'всього',
   },
 
   // Printers page
@@ -227,6 +228,7 @@ export default {
     skipObject: 'Пропустити об\'єкт',
     reconnect: 'Перепідключити',
     mqttDebug: 'Налагодження MQTT',
+    maintenanceHistory: 'Історія обслуговування',
     calibration: {
       menuItem: 'Калібрування',
       title: 'Калібрування принтера',
@@ -359,6 +361,7 @@ export default {
       locationGroup: 'Розташування / Група (необов\'язково)',
       locationPlaceholder: 'напр., Майстерня, Офіс, Підвал',
       autoArchiveLabel: 'Автоматично архівувати завершені друки',
+      autoArchiveWarning: 'Без автоархівування не працюватиме історія друків, статистика, відстеження витрат та календар активності для цього принтера.',
       cleanupAfterPrintLabel: 'Видаляти файли друку з SD-карти після друку (зніміть прапорець, щоб переміщувати в кеш)',
       mqttConnectionTimeoutLabel: 'Тайм-аут з\'єднання MQTT',
       mqttConnectionTimeoutHint: 'секунд (0 = вимкнено)',
@@ -1230,7 +1233,20 @@ export default {
     currentHours: 'Поточні години',
     // Tabs
     statusTab: 'Стан',
+    historyTab: 'Історія',
     settingsTab: 'Налаштування',
+    // History tab
+    historyEmpty: 'Історія обслуговування порожня',
+    historyDate: 'Дата',
+    historyPrinter: 'Принтер',
+    historyType: 'Тип',
+    historyHours: 'Години',
+    historyPerformedBy: 'Виконав',
+    historyNotes: 'Нотатки',
+    historyExport: 'Вигрузити в Excel',
+    viewHistory: 'Переглянути історію',
+    allPrinters: 'Усі принтери',
+    filterByPrinter: 'Фільтр за принтером',
     // Status
     overdueCount: '{{count}} прострочено',
     dueSoonCount: '{{count}} скоро',
@@ -1314,6 +1330,10 @@ export default {
     noPermissionRemovePrinter: 'У вас немає дозволу видаляти призначення принтерів',
     noPermissionAssignPrinter: 'У вас немає дозволу призначати принтери',
     noPermissionEditIntervals: 'У вас немає дозволу редагувати інтервали',
+    // Printer models
+    printerModels: 'Моделі принтерів',
+    allModels: 'Усі моделі',
+    addModel: 'Додати модель',
     // Configure link
     configureSettings: 'Налаштувати типи та інтервали обслуговування',
   },

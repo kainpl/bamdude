@@ -1614,6 +1614,56 @@ async def run_migrations(conn):
     except OperationalError:
         pass
 
+    # Maintenance types: printer_models field
+    try:
+        await conn.execute(text("ALTER TABLE maintenance_types ADD COLUMN printer_models TEXT NOT NULL DEFAULT '[\"*\"]'"))
+    except OperationalError:
+        pass
+
+    # Backfill printer_models for existing system maintenance types (EN + UK names)
+    _carbon = '["X1C", "X1", "X1E", "P1P", "P1S"]'
+    _steel = '["P2S"]'
+    _linear = '["A1", "A1 Mini", "H2D", "H2D Pro", "H2C", "H2S"]'
+    _maint_model_names = [
+        # (models, [english_name, ukrainian_name, ...])
+        (_carbon, ["Clean Carbon Rods", "Очистити карбонові штанги"]),
+        (_steel, ["Lubricate Steel Rods", "Змастити сталеві штанги"]),
+        (_steel, ["Clean Steel Rods", "Очистити сталеві штанги"]),
+        (_linear, ["Lubricate Linear Rails", "Змастити лінійні рейки"]),
+        (_linear, ["Clean Linear Rails", "Очистити лінійні рейки"]),
+    ]
+    for _models, _names in _maint_model_names:
+        for _name in _names:
+            try:
+                await conn.execute(
+                    text("UPDATE maintenance_types SET printer_models = :models WHERE name = :name AND printer_models = '[\"*\"]'"),
+                    {"models": _models, "name": _name},
+                )
+            except OperationalError:
+                pass
+
+    # Maintenance history: who performed the action
+    for col in [
+        "performed_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL",
+        "performed_by_chat_id INTEGER REFERENCES telegram_chats(id) ON DELETE SET NULL",
+    ]:
+        try:
+            await conn.execute(text(f"ALTER TABLE maintenance_history ADD COLUMN {col}"))
+        except OperationalError:
+            pass
+
+    # Backfill maintenance_history: set performed_by_user_id to first user where NULL
+    try:
+        await conn.execute(
+            text(
+                "UPDATE maintenance_history SET performed_by_user_id = ("
+                "  SELECT id FROM users ORDER BY id LIMIT 1"
+                ") WHERE performed_by_user_id IS NULL AND performed_by_chat_id IS NULL"
+            )
+        )
+    except OperationalError:
+        pass
+
     # Migration: Queue rework — add queue_id to print_queue, create printer_queues for existing printers
     try:
         await conn.execute(text("ALTER TABLE print_queue ADD COLUMN queue_id INTEGER REFERENCES printer_queues(id)"))

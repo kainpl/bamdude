@@ -117,6 +117,7 @@ export default {
     showingRange: 'Showing {{from}}-{{to}} of {{total}}',
     perPage: 'per page',
     show: 'Show',
+    total: 'total',
   },
 
   // Printers page
@@ -227,6 +228,7 @@ export default {
     skipObject: 'Skip Object',
     reconnect: 'Reconnect',
     mqttDebug: 'MQTT Debug',
+    maintenanceHistory: 'Maintenance History',
     calibration: {
       menuItem: 'Calibration',
       title: 'Printer Calibration',
@@ -359,6 +361,7 @@ export default {
       locationGroup: 'Location / Group (optional)',
       locationPlaceholder: 'e.g., Workshop, Office, Basement',
       autoArchiveLabel: 'Auto-archive completed prints',
+      autoArchiveWarning: 'Without auto-archive, print history, statistics, cost tracking, and activity calendar will not work for this printer.',
       cleanupAfterPrintLabel: 'Delete print files from SD card after print (uncheck to move to cache instead)',
       mqttConnectionTimeoutLabel: 'MQTT Connection Timeout',
       mqttConnectionTimeoutHint: 'seconds (0 = disabled)',
@@ -1234,7 +1237,20 @@ export default {
     currentHours: 'Current Hours',
     // Tabs
     statusTab: 'Status',
+    historyTab: 'History',
     settingsTab: 'Settings',
+    // History tab
+    historyEmpty: 'No maintenance history',
+    historyDate: 'Date',
+    historyPrinter: 'Printer',
+    historyType: 'Type',
+    historyHours: 'Hours',
+    historyPerformedBy: 'Performed by',
+    historyNotes: 'Notes',
+    historyExport: 'Export to Excel',
+    viewHistory: 'View history',
+    allPrinters: 'All printers',
+    filterByPrinter: 'Filter by printer',
     // Status
     overdueCount: '{{count}} overdue',
     dueSoonCount: '{{count}} due soon',
@@ -1318,6 +1334,10 @@ export default {
     noPermissionRemovePrinter: 'You do not have permission to remove printer assignments',
     noPermissionAssignPrinter: 'You do not have permission to assign printers',
     noPermissionEditIntervals: 'You do not have permission to edit intervals',
+    // Printer models
+    printerModels: 'Printer models',
+    allModels: 'All models',
+    addModel: 'Add model',
     // Configure link
     configureSettings: 'Configure maintenance types and intervals',
   },
