@@ -820,13 +820,18 @@ function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, 
           <FileBox className="w-12 h-12 text-bambu-gray/30" />
         )}
         {/* File type badge */}
-        <div className={`absolute top-2 right-2 text-xs px-1.5 py-0.5 rounded font-medium ${
-          file.file_type === '3mf' ? 'bg-bambu-green/90 text-white'
-          : file.file_type === 'gcode' ? 'bg-blue-500/90 text-white'
-          : file.file_type === 'stl' ? 'bg-purple-500/90 text-white'
-          : 'bg-bambu-gray/90 text-white'
-        }`}>
-          {file.file_type.toUpperCase()}
+        <div className="absolute top-2 right-2 flex items-center gap-1">
+          {file.swap_compatible && (
+            <span className="text-xs px-1.5 py-0.5 bg-amber-500/90 text-white rounded font-medium">SWAP</span>
+          )}
+          <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
+            file.file_type === '3mf' ? 'bg-bambu-green/90 text-white'
+            : file.file_type === 'gcode' ? 'bg-blue-500/90 text-white'
+            : file.file_type === 'stl' ? 'bg-purple-500/90 text-white'
+            : 'bg-bambu-gray/90 text-white'
+          }`}>
+            {file.file_type.toUpperCase()}
+          </span>
         </div>
       </div>
 
@@ -2060,7 +2065,7 @@ export function FileManagerPage() {
                       </div>
                     )}
                     {/* Type */}
-                    <div>
+                    <div className="flex items-center gap-1">
                       <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
                         file.file_type === '3mf' ? 'bg-bambu-green/20 text-bambu-green'
                         : file.file_type === 'gcode' ? 'bg-blue-500/20 text-blue-400'
@@ -2069,6 +2074,9 @@ export function FileManagerPage() {
                       }`}>
                         {file.file_type.toUpperCase()}
                       </span>
+                      {file.swap_compatible && (
+                        <span className="text-[10px] px-1 py-0.5 bg-amber-500/20 text-amber-400 rounded">SWAP</span>
+                      )}
                     </div>
                     {/* Size */}
                     <div className="text-sm text-bambu-gray">{formatFileSize(file.file_size)}</div>

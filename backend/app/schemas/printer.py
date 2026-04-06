@@ -58,6 +58,7 @@ class PrinterUpdate(BaseModel):
     plate_detection_enabled: bool | None = None
     plate_detection_roi: PlateDetectionROI | None = None
     stagger_interval_minutes: int | None = None
+    swap_mode_enabled: bool | None = None
 
 
 class PrinterResponse(PrinterBase):
@@ -72,6 +73,7 @@ class PrinterResponse(PrinterBase):
     plate_detection_enabled: bool = False
     plate_detection_roi: PlateDetectionROI | None = None
     stagger_interval_minutes: int = 0
+    swap_mode_enabled: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -101,6 +103,7 @@ class PrinterResponse(PrinterBase):
             "print_hours_offset": printer.print_hours_offset,
             "plate_detection_enabled": printer.plate_detection_enabled,
             "stagger_interval_minutes": printer.stagger_interval_minutes,
+            "swap_mode_enabled": printer.swap_mode_enabled,
             "created_at": printer.created_at,
             "updated_at": printer.updated_at,
         }

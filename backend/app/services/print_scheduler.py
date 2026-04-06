@@ -737,9 +737,14 @@ class PrintScheduler:
     def _stagger_reason(self, wait_for_bed: bool) -> str:
         """Get waiting reason for stagger-blocked items."""
         if wait_for_bed:
-            heating = [s.printer_id for s in self._stagger_slots if s.temp_reached_at is None]
+            heating = []
+            for s in self._stagger_slots:
+                if s.temp_reached_at is None:
+                    info = printer_manager.get_printer(s.printer_id)
+                    name = info.name if info else f"#{s.printer_id}"
+                    heating.append(name)
             if heating:
-                return f"Staggered start: waiting for printer(s) {heating} to heat up"
+                return f"Staggered start: waiting for {', '.join(heating)} to heat up"
         return "Staggered start: waiting for interval"
 
     def _is_printer_idle(self, printer_id: int) -> bool:
@@ -1245,6 +1250,9 @@ class PrintScheduler:
                     created_by_id=item.created_by_id,
                 )
                 if archive:
+                    # Copy swap_compatible from library file
+                    if library_file.swap_compatible:
+                        archive.swap_compatible = True
                     item.archive_id = archive.id
                     await db.flush()
                     logger.info(

@@ -152,10 +152,11 @@ export function QueueCard({ queue, compact = false }: QueueCardProps) {
 
   // --- Full (M) mode ---
 
+  const hasAutoDispatchItems = pendingItems?.some(item => !item.manual_start) ?? false;
   const needsClearPlate =
     (status?.state === 'FINISH' || status?.state === 'FAILED') &&
     !status?.plate_cleared &&
-    pendingCount > 0;
+    hasAutoDispatchItems;
 
   // Find the current printing item (first printing-status item from pending query, or use status info)
   const currentPrintName = status?.subtask_name || status?.current_print;
@@ -335,8 +336,8 @@ export function QueueCard({ queue, compact = false }: QueueCardProps) {
           {t('queueCard.footer.pending', { count: queue.pending_count })}
           {' \u00B7 '}
           {t('queueCard.footer.done', { count: queue.completed_count })}
-          {' \u00B7 '}
-          {t('queueCard.footer.failed', { count: queue.failed_count })}
+          {queue.failed_count > 0 && <>{' \u00B7 '}{t('queueCard.footer.failed', { count: queue.failed_count })}</>}
+          {queue.cancelled_count > 0 && <>{' \u00B7 '}{t('queueCard.footer.cancelled', { count: queue.cancelled_count })}</>}
         </div>
       </CardContent>
     </Card>

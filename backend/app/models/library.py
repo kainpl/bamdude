@@ -76,6 +76,7 @@ class LibraryFile(Base):
     file_metadata: Mapped[dict | None] = mapped_column(JSON)
 
     # Usage tracking
+    print_count: Mapped[int] = mapped_column(Integer, default=0)
     last_printed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     # User notes
@@ -83,6 +84,9 @@ class LibraryFile(Base):
 
     # User tracking (Issue #206)
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+    # Swap mode compatibility (processed for plate swapper)
+    swap_compatible: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

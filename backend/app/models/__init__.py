@@ -9,6 +9,7 @@ from backend.app.models.group import Group, user_groups
 from backend.app.models.kprofile_note import KProfileNote
 from backend.app.models.library import LibraryFile, LibraryFolder
 from backend.app.models.local_preset import LocalPreset
+from backend.app.models.macro import Macro
 from backend.app.models.maintenance import MaintenanceHistory, MaintenanceType, PrinterMaintenance
 from backend.app.models.notification import NotificationLog
 from backend.app.models.notification_template import NotificationTemplate
@@ -30,6 +31,7 @@ from backend.app.models.user import User
 from backend.app.models.user_email_pref import UserEmailPreference
 
 __all__ = [
+    "Macro",
     "Printer",
     "PrintArchive",
     "Filament",

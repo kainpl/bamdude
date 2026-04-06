@@ -985,6 +985,7 @@ async def list_files(
                 print_time_seconds=print_time,
                 filament_used_grams=filament_grams,
                 sliced_for_model=sliced_for_model,
+                swap_compatible=f.swap_compatible,
             )
         )
 
@@ -1097,6 +1098,10 @@ async def upload_file(
             if generate_stl_thumbnails:
                 thumbnail_path = generate_stl_thumbnail(file_path, thumbnails_dir)
 
+        # Detect swap mode compatibility from filename
+        fname_lower = filename.lower()
+        swap_compatible = fname_lower.endswith(".swap.3mf") or ".swap." in fname_lower
+
         # Create database entry (store relative paths for portability)
         library_file = LibraryFile(
             folder_id=folder_id,
@@ -1108,6 +1113,7 @@ async def upload_file(
             thumbnail_path=to_relative_path(thumbnail_path) if thumbnail_path else None,
             file_metadata=metadata if metadata else None,
             created_by_id=current_user.id if current_user else None,
+            swap_compatible=swap_compatible,
         )
         db.add(library_file)
         await db.commit()
@@ -2200,6 +2206,7 @@ async def get_file(
         print_time_seconds=print_time,
         filament_used_grams=filament_grams,
         sliced_for_model=sliced_for_model,
+        swap_compatible=file.swap_compatible,
     )
 
 

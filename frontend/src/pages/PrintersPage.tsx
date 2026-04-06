@@ -47,6 +47,7 @@ import {
   Cable,
   Flame,
   Gauge,
+  ArrowLeftRight,
 } from 'lucide-react';
 
 import { useNavigate } from 'react-router-dom';
@@ -2442,6 +2443,12 @@ function PrinterCard({
                     </span>
                   )}
                 </p>
+                {printer.swap_mode_enabled && cardSize >= 2 && (
+                  <span className="text-xs px-1.5 py-0.5 bg-amber-500/20 text-amber-400 rounded flex items-center gap-1 w-fit" title={t('printers.swapMode')}>
+                    <ArrowLeftRight className="w-3 h-3" />
+                    SWAP
+                  </span>
+                )}
               </div>
             </div>
             {/* Menu button */}
@@ -4924,6 +4931,7 @@ function AddPrinterModal({
     cleanup_after_print: true,
     mqtt_connection_timeout: 300,
     stagger_interval_minutes: 0,
+    swap_mode_enabled: false,
   });
 
   // Discovery state
@@ -5315,6 +5323,20 @@ function AddPrinterModal({
                 <span className="text-xs text-bambu-gray">{t('printers.modal.staggerIntervalHint')}</span>
               </div>
             </div>
+            {form.model && /a1.?mini|a1m|n1/i.test(form.model) && (
+            <div>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={form.swap_mode_enabled ?? false}
+                  onChange={(e) => setForm({ ...form, swap_mode_enabled: e.target.checked })}
+                  className="w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                />
+                <span className="text-sm text-white">{t('printers.modal.swapMode')}</span>
+              </label>
+              <p className="text-xs text-bambu-gray mt-1 ml-6">{t('printers.modal.swapModeHint')}</p>
+            </div>
+            )}
             <div className="flex gap-3 pt-4">
               <Button type="button" variant="secondary" onClick={onClose} className="flex-1">
                 {t('common.cancel')}
@@ -5562,6 +5584,7 @@ function EditPrinterModal({
     cleanup_after_print: printer.cleanup_after_print ?? true,
     mqtt_connection_timeout: printer.mqtt_connection_timeout ?? 300,
     stagger_interval_minutes: printer.stagger_interval_minutes ?? 0,
+    swap_mode_enabled: printer.swap_mode_enabled ?? false,
   });
 
   const updateMutation = useMutation({
@@ -5594,6 +5617,7 @@ function EditPrinterModal({
       cleanup_after_print: form.cleanup_after_print,
       mqtt_connection_timeout: form.mqtt_connection_timeout,
       stagger_interval_minutes: form.stagger_interval_minutes,
+      swap_mode_enabled: form.swap_mode_enabled,
     };
     // Only include access_code if it was changed
     if (form.access_code) {
@@ -5749,6 +5773,20 @@ function EditPrinterModal({
                 <span className="text-xs text-bambu-gray">{t('printers.modal.staggerIntervalHint')}</span>
               </div>
             </div>
+            {form.model && /a1.?mini|a1m|n1/i.test(form.model) && (
+            <div>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={form.swap_mode_enabled ?? false}
+                  onChange={(e) => setForm({ ...form, swap_mode_enabled: e.target.checked })}
+                  className="w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                />
+                <span className="text-sm text-white">{t('printers.modal.swapMode')}</span>
+              </label>
+              <p className="text-xs text-bambu-gray mt-1 ml-6">{t('printers.modal.swapModeHint')}</p>
+            </div>
+            )}
             <div className="flex gap-3 pt-4">
               <Button type="button" variant="secondary" onClick={onClose} className="flex-1">
                 {t('common.cancel')}

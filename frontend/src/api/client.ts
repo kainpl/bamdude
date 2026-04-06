@@ -105,6 +105,7 @@ export interface Printer {
   plate_detection_enabled: boolean;  // Check plate before print
   plate_detection_roi?: PlateDetectionROI;  // ROI for plate detection
   stagger_interval_minutes: number;  // Per-printer stagger interval override (0 = system default)
+  swap_mode_enabled: boolean;  // A1 Mini plate swapper
   created_at: string;
   updated_at: string;
 }
@@ -290,6 +291,7 @@ export interface PrinterCreate {
   plate_detection_enabled?: boolean;
   plate_detection_roi?: PlateDetectionROI;
   stagger_interval_minutes?: number;
+  swap_mode_enabled?: boolean;
 }
 
 // Plate Detection
@@ -390,6 +392,7 @@ export interface Archive {
   quantity: number;
   energy_kwh: number | null;
   energy_cost: number | null;
+  swap_compatible: boolean;
   created_at: string;
   // User tracking (Issue #206)
   created_by_id: number | null;
@@ -4685,6 +4688,7 @@ export interface LibraryFile {
   print_time_seconds: number | null;
   filament_used_grams: number | null;
   sliced_for_model: string | null;
+  swap_compatible: boolean;
 }
 
 export interface LibraryFileListItem {
@@ -4704,6 +4708,7 @@ export interface LibraryFileListItem {
   print_time_seconds: number | null;
   filament_used_grams: number | null;
   sliced_for_model: string | null;
+  swap_compatible: boolean;
 }
 
 export interface LibraryFileUpdate {
@@ -5184,6 +5189,52 @@ export interface DaemonUpdateCheck {
   latest_version: string | null;
   update_available: boolean;
 }
+
+// Macros
+export interface Macro {
+  id: number;
+  name: string;
+  printer_models: string[];
+  swap_mode_only: boolean;
+  event: string;
+  gcode: string;
+  is_custom: boolean;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MacroCreate {
+  name: string;
+  printer_models: string[];
+  swap_mode_only: boolean;
+  event: string;
+  gcode: string;
+  enabled: boolean;
+}
+
+export interface MacroUpdate {
+  name?: string;
+  printer_models?: string[];
+  swap_mode_only?: boolean;
+  event?: string;
+  gcode?: string;
+  enabled?: boolean;
+}
+
+export interface MacroMeta {
+  events: Record<string, string>;
+  printer_models: Record<string, string>;
+}
+
+// Macros API
+export const macrosApi = {
+  getMacros: () => request<Macro[]>('/macros/'),
+  getMacroMeta: () => request<MacroMeta>('/macros/meta'),
+  createMacro: (data: MacroCreate) => request<Macro>('/macros/', { method: 'POST', body: JSON.stringify(data) }),
+  updateMacro: (id: number, data: MacroUpdate) => request<Macro>('/macros/' + id, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteMacro: (id: number) => request<{ message: string }>('/macros/' + id, { method: 'DELETE' }),
+};
 
 // SpoolBuddy API
 export const spoolbuddyApi = {

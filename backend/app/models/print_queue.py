@@ -32,7 +32,9 @@ class PrintQueueItem(Base):
     scheduled_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # None = ASAP
     manual_start: Mapped[bool] = mapped_column(Boolean, default=False)
 
-    # Conditions
+    # Legacy field — kept for DB compatibility (NOT NULL in old schemas), not used in logic
+    require_previous_success: Mapped[bool] = mapped_column(Boolean, default=False)
+
     # Power management
     auto_off_after: Mapped[bool] = mapped_column(Boolean, default=False)
 

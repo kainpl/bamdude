@@ -28,6 +28,7 @@ from backend.app.api.routes import (
     kprofiles,
     library,
     local_presets,
+    macros,
     maintenance,
     metrics,
     notification_templates,
@@ -1880,6 +1881,12 @@ async def on_print_start(printer_id: int, data: dict):
             )
 
             if archive:
+                # Detect swap compatibility from filename
+                fname_lower = (filename or downloaded_filename or "").lower()
+                if fname_lower.endswith(".swap.3mf") or ".swap." in fname_lower:
+                    archive.swap_compatible = True
+                    await db.flush()
+
                 # Track this active print (use both original filename and downloaded filename)
                 _active_prints[(printer_id, downloaded_filename)] = archive.id
                 if filename and filename != downloaded_filename:
@@ -4213,6 +4220,7 @@ app.include_router(notification_templates.router, prefix=app_settings.api_prefix
 app.include_router(user_notifications.router, prefix=app_settings.api_prefix)
 app.include_router(spoolman.router, prefix=app_settings.api_prefix)
 app.include_router(updates.router, prefix=app_settings.api_prefix)
+app.include_router(macros.router, prefix=app_settings.api_prefix)
 app.include_router(maintenance.router, prefix=app_settings.api_prefix)
 app.include_router(camera.router, prefix=app_settings.api_prefix)
 app.include_router(external_links.router, prefix=app_settings.api_prefix)

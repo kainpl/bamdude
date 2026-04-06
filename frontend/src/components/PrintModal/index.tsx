@@ -196,6 +196,9 @@ export function PrintModal({
   // Get sliced_for_model from archive or library file
   const slicedForModel = archiveDetails?.sliced_for_model || libraryFileDetails?.sliced_for_model || null;
 
+  // Check swap compatibility
+  const swapCompatible = archiveDetails?.swap_compatible || libraryFileDetails?.swap_compatible || false;
+
   // Fetch plates for archives
   const { data: archivePlatesData, isError: archivePlatesError } = useQuery({
     queryKey: ['archive-plates', archiveId],
@@ -739,6 +742,7 @@ export function PrintModal({
                 onAutoConfigurePrinter={multiPrinterMapping.autoConfigurePrinter}
                 onUpdatePrinterConfig={multiPrinterMapping.updatePrinterConfig}
                 slicedForModel={slicedForModel}
+                swapCompatible={swapCompatible}
               />
             )}
 

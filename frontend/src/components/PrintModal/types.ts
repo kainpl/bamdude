@@ -119,6 +119,8 @@ export interface PrinterSelectorProps {
   disableBusy?: boolean;
   /** Suggested model from sliced file (for pre-selection) */
   slicedForModel?: string | null;
+  /** File is swap mode compatible — filter to swap-enabled printers only */
+  swapCompatible?: boolean;
 }
 
 /**

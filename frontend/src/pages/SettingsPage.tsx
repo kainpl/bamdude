@@ -1,12 +1,12 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, Unlock, ChevronDown, Save, Mail, Flame } from 'lucide-react';
+import { Loader2, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, Unlock, ChevronDown, Save, Mail, Flame, Code, Pencil } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { api } from '../api/client';
+import { api, macrosApi } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import { formatDateOnly } from '../utils/date';
 import { getCurrencySymbol, SUPPORTED_CURRENCIES } from '../utils/currency';
-import type { AppSettings, AppSettingsUpdate, SmartPlug, SmartPlugStatus, NotificationProvider, NotificationTemplate, UpdateStatus, GitHubBackupStatus, CloudAuthStatus, UserCreate, UserUpdate, UserResponse, StorageUsageResponse } from '../api/client';
+import type { AppSettings, AppSettingsUpdate, SmartPlug, SmartPlugStatus, NotificationProvider, NotificationTemplate, UpdateStatus, GitHubBackupStatus, CloudAuthStatus, UserCreate, UserUpdate, UserResponse, StorageUsageResponse, Macro, MacroCreate, MacroUpdate } from '../api/client';
 import { Card, CardContent, CardHeader } from '../components/Card';
 import { Button } from '../components/Button';
 import { SmartPlugCard } from '../components/SmartPlugCard';
@@ -16,6 +16,7 @@ import { AddNotificationModal } from '../components/AddNotificationModal';
 import { NotificationTemplateEditor } from '../components/NotificationTemplateEditor';
 import { NotificationLogViewer } from '../components/NotificationLogViewer';
 import { ConfirmModal } from '../components/ConfirmModal';
+import { GcodeEditor } from '../components/GcodeEditor';
 import { CreateUserAdvancedAuthModal } from '../components/CreateUserAdvancedAuthModal';
 import { SpoolmanSettings } from '../components/SpoolmanSettings';
 import { SpoolCatalogSettings } from '../components/SpoolCatalogSettings';
@@ -170,6 +171,19 @@ export function SettingsPage() {
   // External camera test state
   const [extCameraTestResults, setExtCameraTestResults] = useState<Record<number, { success: boolean; error?: string; resolution?: string } | null>>({});
   const [extCameraTestLoading, setExtCameraTestLoading] = useState<Record<number, boolean>>({});
+
+  // Macro management state
+  const [showMacroModal, setShowMacroModal] = useState(false);
+  const [editingMacro, setEditingMacro] = useState<Macro | null>(null);
+  const [macroForm, setMacroForm] = useState<MacroCreate>({
+    name: '',
+    printer_models: ['*'],
+    swap_mode_only: false,
+    event: 'swap_mode_start',
+    gcode: '',
+    enabled: true,
+  });
+  const [deleteMacroId, setDeleteMacroId] = useState<number | null>(null);
 
   const handleDefaultViewChange = (path: string) => {
     setDefaultViewState(path);
@@ -335,6 +349,90 @@ export function SettingsPage() {
       showToast(`Failed to delete API key: ${error.message}`, 'error');
     },
   });
+
+  // Macros
+  const { data: macros } = useQuery({
+    queryKey: ['macros'],
+    queryFn: macrosApi.getMacros,
+    enabled: activeTab === 'printing',
+  });
+
+  const { data: macroMeta } = useQuery({
+    queryKey: ['macroMeta'],
+    queryFn: macrosApi.getMacroMeta,
+    enabled: activeTab === 'printing',
+  });
+
+  const createMacroMutation = useMutation({
+    mutationFn: (data: MacroCreate) => macrosApi.createMacro(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['macros'] });
+      setShowMacroModal(false);
+      showToast(t('settings.toast.settingsSaved'), 'success');
+    },
+    onError: (error: Error) => {
+      showToast(error.message, 'error');
+    },
+  });
+
+  const updateMacroMutation = useMutation({
+    mutationFn: ({ id, data }: { id: number; data: MacroUpdate }) => macrosApi.updateMacro(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['macros'] });
+      setShowMacroModal(false);
+      setEditingMacro(null);
+      showToast(t('settings.toast.settingsSaved'), 'success');
+    },
+    onError: (error: Error) => {
+      showToast(error.message, 'error');
+    },
+  });
+
+  const deleteMacroMutation = useMutation({
+    mutationFn: (id: number) => macrosApi.deleteMacro(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['macros'] });
+      setDeleteMacroId(null);
+      showToast(t('settings.toast.settingsSaved'), 'success');
+    },
+    onError: (error: Error) => {
+      showToast(error.message, 'error');
+    },
+  });
+
+  const handleOpenAddMacro = () => {
+    setEditingMacro(null);
+    setMacroForm({
+      name: '',
+      printer_models: ['*'],
+      swap_mode_only: false,
+      event: 'swap_mode_start',
+      gcode: '',
+      enabled: true,
+    });
+    setShowMacroModal(true);
+  };
+
+  const handleOpenEditMacro = (macro: Macro) => {
+    setEditingMacro(macro);
+    setMacroForm({
+      name: macro.name,
+      printer_models: macro.printer_models,
+      swap_mode_only: macro.swap_mode_only,
+      event: macro.event,
+      gcode: macro.gcode,
+      enabled: macro.enabled,
+    });
+    setShowMacroModal(true);
+  };
+
+  const handleSaveMacro = () => {
+    if (editingMacro) {
+      updateMacroMutation.mutate({ id: editingMacro.id, data: macroForm });
+    } else {
+      createMacroMutation.mutate(macroForm);
+    }
+  };
 
   const { data: printers } = useQuery({
     queryKey: ['printers'],
@@ -1082,9 +1180,10 @@ export function SettingsPage() {
           <span className={`w-2 h-2 rounded-full ${cloudAuthStatus?.is_authenticated && githubBackupStatus?.configured && githubBackupStatus?.enabled ? 'bg-green-400' : 'bg-gray-500'}`} />
         </button>
       </div>
+      {/* ══════ GENERAL TAB ══════ */}
       {activeTab === 'general' && (
       <div className="flex flex-col lg:flex-row gap-6 lg:gap-8">
-        {/* Left Column - General Settings */}
+        {/* ── Left Column ── */}
         <div className="space-y-6 lg:w-1/2">
           <Card>
             <CardHeader>
@@ -1376,7 +1475,9 @@ export function SettingsPage() {
 
         </div>
 
-        {/* Right Column - Updates & Data Management */}
+        {/* ── /Left Column ── */}
+
+        {/* ── Right Column ── */}
         <div className="space-y-6 lg:w-1/2">
 
           <Card>
@@ -1737,67 +1838,16 @@ export function SettingsPage() {
             </CardContent>
           </Card>
         </div>
+        {/* ── /Right Column ── */}
       </div>
       )}
+      {/* ══════ /GENERAL TAB ══════ */}
 
-      {/* Printing Tab */}
+      {/* ══════ PRINTING TAB ══════ */}
       {activeTab === 'printing' && localSettings && (
       <div className="flex flex-col lg:flex-row gap-6 lg:gap-8">
-        {/* Left Column - Archive, Camera & Cost */}
+        {/* ── Left Column ── */}
         <div className="space-y-6 lg:w-1/2">
-          <Card>
-            <CardHeader>
-              <h2 className="text-lg font-semibold text-white">{t('settings.archiveSettings')}</h2>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-white">{t('settings.saveThumbnails')}</p>
-                  <p className="text-sm text-bambu-gray">
-                    {t('settings.saveThumbnailsDescription')}
-                  </p>
-                </div>
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={localSettings.save_thumbnails}
-                    onChange={(e) => updateSetting('save_thumbnails', e.target.checked)}
-                    className="sr-only peer"
-                  />
-                  <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
-                </label>
-              </div>
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-white">{t('settings.captureFinishPhoto')}</p>
-                  <p className="text-sm text-bambu-gray">
-                    {t('settings.captureFinishPhotoDescription')}
-                  </p>
-                </div>
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={localSettings.capture_finish_photo}
-                    onChange={(e) => updateSetting('capture_finish_photo', e.target.checked)}
-                    className="sr-only peer"
-                  />
-                  <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
-                </label>
-              </div>
-              {localSettings.capture_finish_photo && ffmpegStatus && !ffmpegStatus.installed && (
-                <div className="flex items-start gap-2 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
-                  <AlertTriangle className="w-5 h-5 text-yellow-500 flex-shrink-0 mt-0.5" />
-                  <div className="text-sm">
-                    <p className="text-yellow-500 font-medium">{t('settings.ffmpegNotInstalled')}</p>
-                    <p className="text-bambu-gray mt-1">
-                      {t('settings.ffmpegRequired')}
-                    </p>
-                  </div>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-
           {/* Camera Settings */}
           <Card>
             <CardHeader>
@@ -1923,10 +1973,6 @@ export function SettingsPage() {
             </CardContent>
           </Card>
 
-        </div>
-
-        {/* Right Column - Queue, Cost & File Manager */}
-        <div className="space-y-6 lg:w-1/2">
           {/* Cost Tracking */}
           <Card>
             <CardHeader>
@@ -2007,36 +2053,69 @@ export function SettingsPage() {
               </div>
             </CardContent>
           </Card>
+        </div>
 
-          {/* File Manager */}
+        {/* ── /Left Column ── */}
+
+        {/* ── Right Column ── */}
+        <div className="space-y-6 lg:w-1/2">
+          {/* Macros */}
           <Card>
             <CardHeader>
-              <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-                <FileText className="w-5 h-5 text-bambu-green" />
-                {t('settings.fileManager')}
-              </h2>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div>
-                <label className="block text-sm text-bambu-gray mb-1">
-                  {t('settings.lowDiskSpaceWarning')}
-                </label>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="number"
-                    min="0.5"
-                    max="100"
-                    step="0.5"
-                    value={localSettings.library_disk_warning_gb ?? 5}
-                    onChange={(e) => updateSetting('library_disk_warning_gb', parseFloat(e.target.value) || 5)}
-                    className="w-24 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                  />
-                  <span className="text-bambu-gray">GB</span>
-                </div>
-                <p className="text-xs text-bambu-gray mt-1">
-                  {t('settings.lowDiskSpaceDescription')}
-                </p>
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+                  <Code className="w-5 h-5 text-amber-400" />
+                  {t('settings.macros')}
+                </h2>
+                <Button size="sm" onClick={handleOpenAddMacro}>
+                  <Plus className="w-4 h-4" />
+                  {t('settings.addMacro')}
+                </Button>
               </div>
+            </CardHeader>
+            <CardContent>
+              {!macros || macros.length === 0 ? (
+                <p className="text-sm text-bambu-gray">{t('settings.macros')} — none configured</p>
+              ) : (
+                <div className="space-y-2">
+                  {macros.map((macro) => (
+                    <div
+                      key={macro.id}
+                      className="flex items-center justify-between p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-medium text-white text-sm">{macro.name}</span>
+                            <span className="text-xs px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-400 border border-amber-800/50">
+                              {t(`settings.macroEvents.${macro.event}` as const) || macro.event}
+                            </span>
+                            {!(macro.printer_models.length === 1 && macro.printer_models[0] === '*') && (
+                              <span className="text-xs px-1.5 py-0.5 rounded bg-bambu-dark-tertiary text-bambu-gray">
+                                {macro.printer_models.map(code => macroMeta?.printer_models?.[code] || code).join(', ')}
+                              </span>
+                            )}
+                            {macro.swap_mode_only && (
+                              <span className="text-xs px-1.5 py-0.5 rounded bg-purple-900/40 text-purple-400 border border-purple-800/50">Swap</span>
+                            )}
+                            {macro.gcode && <span className="text-xs text-bambu-gray" title="Has G-code"><Code className="w-3 h-3 inline" /></span>}
+                            {!macro.is_custom && <span className="text-xs text-bambu-gray" title={t('settings.macroBuiltIn')}><Lock className="w-3 h-3 inline" /></span>}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 flex-shrink-0 ml-3">
+                        <Toggle checked={macro.enabled} onChange={(checked) => updateMacroMutation.mutate({ id: macro.id, data: { enabled: checked } })} />
+                        <button onClick={() => handleOpenEditMacro(macro)} className="p-1.5 text-bambu-gray hover:text-white transition-colors" title={t('settings.editMacro')}><Pencil className="w-4 h-4" /></button>
+                        {macro.is_custom ? (
+                          <button onClick={() => setDeleteMacroId(macro.id)} className="p-1.5 text-bambu-gray hover:text-red-400 transition-colors"><Trash2 className="w-4 h-4" /></button>
+                        ) : (
+                          <span className="p-1.5 text-bambu-dark-tertiary"><Lock className="w-4 h-4" /></span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </CardContent>
           </Card>
 
@@ -2191,11 +2270,99 @@ export function SettingsPage() {
               </div>
             </CardContent>
           </Card>
+
+          {/* Archive Settings */}
+          <Card>
+            <CardHeader>
+              <h2 className="text-lg font-semibold text-white">{t('settings.archiveSettings')}</h2>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-white">{t('settings.saveThumbnails')}</p>
+                  <p className="text-sm text-bambu-gray">
+                    {t('settings.saveThumbnailsDescription')}
+                  </p>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={localSettings.save_thumbnails}
+                    onChange={(e) => updateSetting('save_thumbnails', e.target.checked)}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                </label>
+              </div>
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-white">{t('settings.captureFinishPhoto')}</p>
+                  <p className="text-sm text-bambu-gray">
+                    {t('settings.captureFinishPhotoDescription')}
+                  </p>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={localSettings.capture_finish_photo}
+                    onChange={(e) => updateSetting('capture_finish_photo', e.target.checked)}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                </label>
+              </div>
+              {localSettings.capture_finish_photo && ffmpegStatus && !ffmpegStatus.installed && (
+                <div className="flex items-start gap-2 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
+                  <AlertTriangle className="w-5 h-5 text-yellow-500 flex-shrink-0 mt-0.5" />
+                  <div className="text-sm">
+                    <p className="text-yellow-500 font-medium">{t('settings.ffmpegNotInstalled')}</p>
+                    <p className="text-bambu-gray mt-1">
+                      {t('settings.ffmpegRequired')}
+                    </p>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* File Manager */}
+          <Card>
+            <CardHeader>
+              <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+                <FileText className="w-5 h-5 text-bambu-green" />
+                {t('settings.fileManager')}
+              </h2>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div>
+                <label className="block text-sm text-bambu-gray mb-1">
+                  {t('settings.lowDiskSpaceWarning')}
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min="0.5"
+                    max="100"
+                    step="0.5"
+                    value={localSettings.library_disk_warning_gb ?? 5}
+                    onChange={(e) => updateSetting('library_disk_warning_gb', parseFloat(e.target.value) || 5)}
+                    className="w-24 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                  />
+                  <span className="text-bambu-gray">GB</span>
+                </div>
+                <p className="text-xs text-bambu-gray mt-1">
+                  {t('settings.lowDiskSpaceDescription')}
+                </p>
+              </div>
+            </CardContent>
+          </Card>
         </div>
+        {/* ── /Right Column ── */}
       </div>
       )}
+      {/* ══════ /PRINTING TAB ══════ */}
 
-      {/* Network Tab */}
+      {/* ══════ NETWORK TAB ══════ */}
       {activeTab === 'network' && localSettings && (
       <div className="flex flex-col lg:flex-row gap-6">
         {/* Left Column - External URL & FTP Retry */}
@@ -2697,6 +2864,7 @@ export function SettingsPage() {
         </div>
       </div>
       )}
+      {/* ══════ /NETWORK TAB ══════ */}
 
       {/* Home Assistant Test Connection Modal */}
       {haTestResult && (
@@ -2729,7 +2897,7 @@ export function SettingsPage() {
         </div>
       )}
 
-      {/* Smart Plugs Tab */}
+      {/* ══════ SMART PLUGS TAB ══════ */}
       {activeTab === 'plugs' && (
         <div>
           <div className="flex items-start justify-between mb-6">
@@ -2919,8 +3087,9 @@ export function SettingsPage() {
           )}
         </div>
       )}
+      {/* ══════ /SMART PLUGS TAB ══════ */}
 
-      {/* Notifications Tab */}
+      {/* ══════ NOTIFICATIONS TAB ══════ */}
       {activeTab === 'notifications' && (<>
         {/* Sub-tabs */}
         <div className="flex gap-1 mb-6 border-b border-bambu-dark-tertiary">
@@ -3103,8 +3272,9 @@ export function SettingsPage() {
           </div>
         )}
       </>)}
+      {/* ══════ /NOTIFICATIONS TAB ══════ */}
 
-      {/* API Keys Tab */}
+      {/* ══════ API KEYS TAB ══════ */}
       {activeTab === 'apikeys' && (
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
           {/* Left Column - API Keys Management */}
@@ -3412,13 +3582,15 @@ export function SettingsPage() {
           </div>
         </div>
       )}
+      {/* ══════ /API KEYS TAB ══════ */}
 
-      {/* Virtual Printer Tab */}
+      {/* ══════ VIRTUAL PRINTER TAB ══════ */}
       {activeTab === 'virtual-printer' && (
         <VirtualPrinterList />
       )}
+      {/* ══════ /VIRTUAL PRINTER TAB ══════ */}
 
-      {/* Filament Tab */}
+      {/* ══════ FILAMENT TAB ══════ */}
       {activeTab === 'filament' && localSettings && (
         <>
         <div className="flex flex-col lg:flex-row gap-6 lg:gap-8">
@@ -3768,6 +3940,7 @@ export function SettingsPage() {
         </div>
         </>
       )}
+      {/* ══════ /FILAMENT TAB ══════ */}
 
       {/* Delete API Key Confirmation */}
       {showDeleteAPIKeyConfirm !== null && (
@@ -3927,7 +4100,7 @@ export function SettingsPage() {
         </div>
       )}
 
-      {/* Users Tab */}
+      {/* ══════ USERS TAB ══════ */}
       {activeTab === 'users' && (
         <div className="space-y-6">
           {/* Sub-tab Navigation */}
@@ -4272,6 +4445,7 @@ export function SettingsPage() {
           )}
         </div>
       )}
+      {/* ══════ /USERS TAB ══════ */}
 
       {/* Create User Modal */}
       {showCreateUserModal && !advancedAuthStatus?.advanced_auth_enabled && (
@@ -4732,10 +4906,11 @@ export function SettingsPage() {
         />
       )}
 
-      {/* Backup Tab */}
+      {/* ══════ BACKUP TAB ══════ */}
       {activeTab === 'backup' && (
         <GitHubBackupSettings />
       )}
+      {/* ══════ /BACKUP TAB ══════ */}
 
       {/* Disable Authentication Confirmation Modal */}
       {showDisableAuthConfirm && (
@@ -4762,6 +4937,171 @@ export function SettingsPage() {
       )}
 
       {/* Change Password Modal */}
+      {/* Macro Add/Edit Modal */}
+      {showMacroModal && (
+        <div
+          className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
+          onClick={() => { setShowMacroModal(false); setEditingMacro(null); }}
+        >
+          <Card
+            className="w-full max-w-5xl"
+            onClick={(e: React.MouseEvent) => e.stopPropagation()}
+          >
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Code className="w-5 h-5 text-amber-400" />
+                  <h2 className="text-lg font-semibold text-white">
+                    {editingMacro ? t('settings.editMacro') : t('settings.addMacro')}
+                  </h2>
+                  {editingMacro && !editingMacro.is_custom && (
+                    <span className="text-xs text-bambu-gray flex items-center gap-1">
+                      <Lock className="w-3 h-3" />
+                      {t('settings.macroBuiltIn')}
+                    </span>
+                  )}
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => { setShowMacroModal(false); setEditingMacro(null); }}
+                >
+                  <X className="w-5 h-5" />
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="flex flex-col lg:flex-row gap-4">
+                {/* Left — metadata */}
+                <div className="lg:w-1/4 space-y-3">
+                  <div>
+                    <label className="block text-sm text-bambu-gray mb-1">{t('settings.macroName')}</label>
+                    <input
+                      type="text"
+                      value={macroForm.name}
+                      onChange={(e) => setMacroForm(prev => ({ ...prev, name: e.target.value }))}
+                      className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm text-bambu-gray mb-1">{t('settings.macroEvent')}</label>
+                    <select
+                      value={macroForm.event}
+                      onChange={(e) => setMacroForm(prev => ({ ...prev, event: e.target.value }))}
+                      className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
+                    >
+                      {macroMeta?.events ? (
+                        Object.entries(macroMeta.events).map(([code, label]) => (
+                          <option key={code} value={code}>{label}</option>
+                        ))
+                      ) : (
+                        <>
+                          <option value="swap_mode_start">{t('settings.macroEvents.swap_mode_start')}</option>
+                          <option value="swap_mode_change_table">{t('settings.macroEvents.swap_mode_change_table')}</option>
+                        </>
+                      )}
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="block text-sm text-bambu-gray">{t('settings.macroModel')}</label>
+                    <div className="flex flex-wrap gap-1 mb-1.5">
+                      {macroForm.printer_models.map(code => (
+                        <span key={code} className="text-xs px-1.5 py-0.5 bg-bambu-dark-tertiary text-white rounded flex items-center gap-1">
+                          {code === '*' ? t('settings.macroAllModels') : (macroMeta?.printer_models?.[code] || code)}
+                          <button
+                            type="button"
+                            onClick={() => setMacroForm(prev => ({
+                              ...prev,
+                              printer_models: prev.printer_models.filter(m => m !== code),
+                            }))}
+                            className="hover:text-red-400 transition-colors"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                    <select
+                      value=""
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (!val) return;
+                        setMacroForm(prev => {
+                          if (val === '*') return { ...prev, printer_models: ['*'] };
+                          const without_wildcard = prev.printer_models.filter(m => m !== '*');
+                          if (without_wildcard.includes(val)) return prev;
+                          return { ...prev, printer_models: [...without_wildcard, val] };
+                        });
+                      }}
+                      className="w-full px-2 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
+                    >
+                      <option value="">{t('settings.macroAddModel')}</option>
+                      <option value="*" disabled={macroForm.printer_models.includes('*')}>{t('settings.macroAllModels')}</option>
+                      {macroMeta?.printer_models && Object.entries(macroMeta.printer_models).filter(([code]) => code !== '*').map(([code, name]) => (
+                        <option key={code} value={code} disabled={macroForm.printer_models.includes(code) || macroForm.printer_models.includes('*')}>
+                          {name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <label className="text-sm text-white">{t('settings.macroSwapOnly')}</label>
+                    <Toggle
+                      checked={macroForm.swap_mode_only}
+                      onChange={(checked) => setMacroForm(prev => ({ ...prev, swap_mode_only: checked }))}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <label className="text-sm text-white">{t('settings.macroEnabled')}</label>
+                    <Toggle
+                      checked={macroForm.enabled}
+                      onChange={(checked) => setMacroForm(prev => ({ ...prev, enabled: checked }))}
+                    />
+                  </div>
+                </div>
+                {/* Right — G-code editor */}
+                <div className="lg:w-3/4 flex flex-col">
+                  <label className="block text-sm text-bambu-gray mb-1">{t('settings.macroGcode')}</label>
+                  <GcodeEditor
+                    value={macroForm.gcode}
+                    onChange={(val) => setMacroForm(prev => ({ ...prev, gcode: val }))}
+                  />
+                </div>
+              </div>
+              <div className="flex justify-end gap-2 pt-4">
+                <Button
+                  variant="ghost"
+                  onClick={() => { setShowMacroModal(false); setEditingMacro(null); }}
+                >
+                  {t('common.cancel')}
+                </Button>
+                <Button
+                  onClick={handleSaveMacro}
+                  disabled={createMacroMutation.isPending || updateMacroMutation.isPending}
+                >
+                  {(createMacroMutation.isPending || updateMacroMutation.isPending) && (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  )}
+                  {t('common.save')}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* Delete Macro Confirm */}
+      {deleteMacroId !== null && (
+        <ConfirmModal
+          title={t('settings.macroDeleteConfirm')}
+          message={t('settings.macroDeleteConfirm')}
+          confirmText={t('common.delete')}
+          variant="danger"
+          onConfirm={() => deleteMacroMutation.mutate(deleteMacroId)}
+          onCancel={() => setDeleteMacroId(null)}
+        />
+      )}
+
       {showChangePasswordModal && (
         <div
           className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"

@@ -152,6 +152,7 @@ class FileResponse(BaseModel):
     print_time_seconds: int | None = None
     filament_used_grams: float | None = None
     sliced_for_model: str | None = None
+    swap_compatible: bool = False
 
     class Config:
         from_attributes = True
@@ -178,6 +179,7 @@ class FileListResponse(BaseModel):
     print_time_seconds: int | None = None
     filament_used_grams: float | None = None
     sliced_for_model: str | None = None
+    swap_compatible: bool = False
 
     class Config:
         from_attributes = True

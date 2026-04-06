@@ -906,8 +906,11 @@ async def get_printer_cover(
             zf.close()
 
     finally:
-        if temp_path.exists():
-            temp_path.unlink()
+        try:
+            if temp_path.exists():
+                temp_path.unlink()
+        except OSError:
+            pass  # File may still be in use on Windows
 
 
 # ============================================

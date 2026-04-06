@@ -199,6 +199,9 @@ export function useWebSocket() {
         // Refetch printer status immediately when print starts to get printable_objects_count
         if (message.printer_id !== undefined) {
           queryClient.invalidateQueries({ queryKey: ['printerStatus', message.printer_id] });
+          // Update queue data (status, current print)
+          debouncedInvalidate('queues');
+          queryClient.invalidateQueries({ queryKey: ['queue', message.printer_id] });
         }
         break;
 
@@ -236,6 +239,11 @@ export function useWebSocket() {
         // The printer_status websocket messages will naturally update the status
         debouncedInvalidate('archives');
         debouncedInvalidate('archiveStats');
+        // Update queue data (counters, status, pending items)
+        debouncedInvalidate('queues');
+        if (message.printer_id !== undefined) {
+          queryClient.invalidateQueries({ queryKey: ['queue', message.printer_id] });
+        }
         break;
 
       case 'archive_created':

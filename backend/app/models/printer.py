@@ -42,6 +42,8 @@ class Printer(Base):
     plate_detection_roi_h: Mapped[float | None] = mapped_column(Float, nullable=True)  # Height %
     # Staggered start: per-printer interval override (0 = use system default)
     stagger_interval_minutes: Mapped[int] = mapped_column(default=0)
+    # Swap mode: A1 Mini plate swapper (swap-systems.com)
+    swap_mode_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 

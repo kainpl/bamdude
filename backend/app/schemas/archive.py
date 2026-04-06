@@ -93,6 +93,9 @@ class ArchiveResponse(BaseModel):
     energy_kwh: float | None = None
     energy_cost: float | None = None
 
+    # Swap mode
+    swap_compatible: bool = False
+
     created_at: datetime
 
     # User tracking (Issue #206)

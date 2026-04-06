@@ -911,6 +911,9 @@ function ArchiveCard({
           >
             {isSlicedFile(archive) ? t('archives.card.gcode') : t('archives.card.source')}
           </span>
+          {archive.swap_compatible && (
+            <span className="text-[10px] px-1 py-0.5 bg-amber-500/20 text-amber-400 rounded">SWAP</span>
+          )}
           {/* File hash badge */}
           {archive.content_hash && (
             <span
@@ -1932,6 +1935,9 @@ function ArchiveListRow({
                 <GitBranch className="w-3 h-3" />
                 +{archive.duplicate_count}
               </span>
+            )}
+            {archive.swap_compatible && (
+              <span className="text-[10px] px-1 py-0.5 bg-amber-500/20 text-amber-400 rounded flex-shrink-0">SWAP</span>
             )}
             {archive.timelapse_path && (
               <span title={t('archives.list.hasTimelapse')}>

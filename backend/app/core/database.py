@@ -131,6 +131,9 @@ async def init_db():
     await seed_spool_catalog()
     await seed_color_catalog()
 
+    # Seed default macros
+    await seed_default_macros()
+
 
 async def run_migrations(conn):
     """Add new columns to existing tables if they don't exist."""
@@ -1582,6 +1585,35 @@ async def run_migrations(conn):
     except OperationalError:
         pass
 
+    # Swap mode per printer (A1 Mini plate swapper)
+    try:
+        await conn.execute(text("ALTER TABLE printers ADD COLUMN swap_mode_enabled BOOLEAN NOT NULL DEFAULT 0"))
+    except OperationalError:
+        pass
+
+    # Swap compatibility flag on files and archives
+    for table in ("library_files", "print_archives"):
+        try:
+            await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN swap_compatible BOOLEAN NOT NULL DEFAULT 0"))
+        except OperationalError:
+            pass
+
+    # Macros: rename printer_model → printer_models (JSON array)
+    try:
+        await conn.execute(text("ALTER TABLE macros ADD COLUMN printer_models TEXT NOT NULL DEFAULT '[\"*\"]'"))
+    except OperationalError:
+        pass
+    # Migrate old printer_model → printer_models if old column exists
+    try:
+        await conn.execute(
+            text(
+                "UPDATE macros SET printer_models = '[\"' || printer_model || '\"]' "
+                "WHERE printer_models = '[\"*\"]' AND printer_model IS NOT NULL AND printer_model != '*'"
+            )
+        )
+    except OperationalError:
+        pass
+
     # Migration: Queue rework — add queue_id to print_queue, create printer_queues for existing printers
     try:
         await conn.execute(text("ALTER TABLE print_queue ADD COLUMN queue_id INTEGER REFERENCES printer_queues(id)"))
@@ -1619,6 +1651,20 @@ async def run_migrations(conn):
     # Delete orphaned items (model-based items that were never assigned a printer)
     try:
         await conn.execute(text("DELETE FROM print_queue WHERE queue_id IS NULL AND printer_id IS NULL"))
+    except OperationalError:
+        pass
+
+    # Fix queue_id in items where printer_queues.id != printer_id
+    try:
+        await conn.execute(
+            text(
+                "UPDATE print_queue SET queue_id = ("
+                "  SELECT pq.id FROM printer_queues pq WHERE pq.printer_id = print_queue.printer_id"
+                ") WHERE printer_id IS NOT NULL AND EXISTS ("
+                "  SELECT 1 FROM printer_queues pq2 WHERE pq2.printer_id = print_queue.printer_id AND pq2.id != print_queue.queue_id"
+                ")"
+            )
+        )
     except OperationalError:
         pass
 
@@ -1873,3 +1919,104 @@ async def seed_color_catalog():
             )
         await session.commit()
         logger.info("Seeded %d default color catalog entries", len(DEFAULT_COLOR_CATALOG))
+
+
+DEFAULT_MACROS = [
+    {
+        "name": "Swap Mode. Start Sequence",
+        "printer_models": '["A1 Mini"]',
+        "swap_mode_only": True,
+        "event": "swap_mode_start",
+        "gcode": (
+            ";swap ini code\n"
+            "G91 ;\n"
+            "G0 Z50 F1000;\n"
+            "G0 Z-20;\n"
+            "G90;\n"
+            "G28 XY;\n"
+            "G0 Y-4 F5000; grab\n"
+            "G0 Y145; pull and fix the plate\n"
+            "G0 Y115 F1000; rehook\n"
+            "G0 Y180 F5000; pull\n"
+            "G4 P500; wait\n"
+            "G0 Y186.5 F200; fix the plate\n"
+            "G4 P500; wait\n"
+            "G0 Y3 F15000; back\n"
+            "G0 Y-5 F200; snap\n"
+            "G4 P500; wait\n"
+            "G0 Y10 F1000; load\n"
+            "G0 Y20 F15000; ready\n"
+        ),
+    },
+    {
+        "name": "Swap Mode. Change Table",
+        "printer_models": '["A1 Mini"]',
+        "swap_mode_only": True,
+        "event": "swap_mode_change_table",
+        "gcode": (
+            ";swap\n"
+            "G0 X-10 F5000;\n"
+            "G0 Z175;\n"
+            "G0 Y-5 F2000;\n"
+            "G0 Y186.5 F2000;\n"
+            "G0 Y182 F10000;\n"
+            "G0 Z186;\n"
+            "G0 Y120 F500;\n"
+            "G0 Y-4 Z175 F5000;\n"
+            "G0 Y145;\n"
+            "G0 Y115 F1000;\n"
+            "G0 Y25 F500;\n"
+            "G0 Y85 F1000;\n"
+            "G0 Y180 F2000;\n"
+            "G4 P500; wait\n"
+            "G0 Y186.5 F200;\n"
+            "G4 P500; wait\n"
+            "G0 Y3 F3000;\n"
+            "G0 Y-5 F200;\n"
+            "G4 P500; wait\n"
+            "G0 Y10 F1000;\n"
+            "G0 Z100 Y186 F2000;\n"
+            "G0 Y150;\n"
+            "G4 P1000; wait\n"
+        ),
+    },
+]
+
+
+async def seed_default_macros():
+    """Seed built-in macros if they don't exist yet."""
+    import logging
+
+    from sqlalchemy import select
+
+    from backend.app.models.macro import Macro
+
+    logger = logging.getLogger(__name__)
+
+    async with async_session() as session:
+        # Check if we already have built-in macros
+        result = await session.execute(select(Macro).where(Macro.is_custom == False))  # noqa: E712
+        existing = result.scalars().all()
+
+        added = 0
+        updated = 0
+        existing_by_event = {m.event: m for m in existing}
+
+        for macro_def in DEFAULT_MACROS:
+            key = macro_def["event"]
+            if key not in existing_by_event:
+                session.add(Macro(**macro_def, is_custom=False))
+                added += 1
+            else:
+                # Update gcode if currently empty (first run after adding default gcode)
+                macro = existing_by_event[key]
+                if not macro.gcode and macro_def.get("gcode"):
+                    macro.gcode = macro_def["gcode"]
+                    updated += 1
+
+        if added or updated:
+            await session.commit()
+            if added:
+                logger.info("Seeded %d default macros", added)
+            if updated:
+                logger.info("Updated gcode for %d default macros", updated)

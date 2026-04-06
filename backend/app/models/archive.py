@@ -66,6 +66,9 @@ class PrintArchive(Base):
     energy_kwh: Mapped[float | None] = mapped_column(Float)  # Energy consumed in kWh
     energy_cost: Mapped[float | None] = mapped_column(Float)  # Cost of energy consumed
 
+    # Swap mode compatibility (processed for plate swapper)
+    swap_compatible: Mapped[bool] = mapped_column(Boolean, default=False)
+
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 

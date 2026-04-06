@@ -337,10 +337,10 @@ async def add_to_queue(
     await db.commit()
     await db.refresh(item)
 
-    # Update queue counters
-    queue.pending_count = (queue.pending_count or 0) + 1
-    queue.total_count = (queue.total_count or 0) + 1
-    queue.last_activity_at = datetime.now(timezone.utc)
+    # Update queue counters (full recount for accuracy)
+    from backend.app.services.queue_counters import update_queue_counters
+
+    await update_queue_counters(db, data.queue_id)
     await db.commit()
 
     # Re-query with full eager loading (queue→printer chain)

@@ -530,6 +530,14 @@ async def get_system_info(
     }
 
 
+@router.get("/printer-models")
+async def get_printer_models():
+    """Get all known printer model codes with display names."""
+    from backend.app.utils.printer_model_names import PRINTER_MODEL_DISPLAY_NAMES
+
+    return PRINTER_MODEL_DISPLAY_NAMES
+
+
 @router.get("/storage-usage")
 async def get_storage_usage(
     refresh: bool = False,

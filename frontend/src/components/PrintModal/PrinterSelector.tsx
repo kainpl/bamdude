@@ -200,6 +200,7 @@ export function PrinterSelector({
   onAutoConfigurePrinter,
   onUpdatePrinterConfig,
   slicedForModel,
+  swapCompatible,
 }: PrinterSelectorWithMappingProps) {
   const { t } = useTranslation();
   // State for showing all printers vs only matching model
@@ -251,16 +252,23 @@ export function PrinterSelector({
     return state;
   };
 
-  // Filter by sliced model when slicedForModel is set
+  // Filter by sliced model and swap compatibility
   const displayPrinters = useMemo(() => {
-    if (!slicedForModel || showAllPrinters) {
-      return activePrinters;
+    let filtered = activePrinters;
+
+    // Filter by swap mode: swap files ONLY on swap-enabled printers
+    if (swapCompatible && !showAllPrinters) {
+      filtered = filtered.filter((p) => p.swap_mode_enabled);
     }
-    // Filter to only show printers matching the sliced model
-    const matching = activePrinters.filter((p) => p.model === slicedForModel);
-    // If no matching printers, show all
-    return matching.length > 0 ? matching : activePrinters;
-  }, [activePrinters, slicedForModel, showAllPrinters]);
+
+    // Filter by sliced model
+    if (slicedForModel && !showAllPrinters) {
+      const matching = filtered.filter((p) => p.model === slicedForModel);
+      if (matching.length > 0) filtered = matching;
+    }
+
+    return filtered;
+  }, [activePrinters, slicedForModel, swapCompatible, showAllPrinters]);
 
   // Check if there are hidden printers due to model filtering
   const hiddenPrinterCount = activePrinters.length - displayPrinters.length;
@@ -285,7 +293,9 @@ export function PrinterSelector({
     return (
       <div className="flex items-center gap-2 text-red-400 text-sm mb-4">
         <AlertCircle className="w-4 h-4" />
-        {showInactive ? t('printModal.noPrintersAll') : t('printModal.noPrintersActive')}
+        {swapCompatible
+          ? t('printModal.noSwapPrinters')
+          : showInactive ? t('printModal.noPrintersAll') : t('printModal.noPrintersActive')}
       </div>
     );
   }
