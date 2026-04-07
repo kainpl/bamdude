@@ -108,6 +108,16 @@ Electrical load management for large print farms — spread printer startups ove
 - **Registration mode**: toggle in Telegram provider card
 - **Service worker**: updated cache names for rebrand
 
+### Migration System
+
+- **File-based migrations** — versioned auto-discovered migration files replacing monolithic 1,600-line `run_migrations()`
+- **Smart legacy detection** — differentiates Bambuddy 2.2.2 (import) vs BamDude 3.0.1 (rename+upgrade) by checking for `telegram_chats` table
+- **Bambuddy import** — table-by-table data import with transformations (47 tables, read-only source)
+- **`database.py`**: 2,059 → 122 lines
+- **m001**: baseline seeds (groups, templates, catalogs, macros)
+- **m002**: 3.0.1 → 3.1.1 schema changes (queues, macros, swap mode, maintenance)
+- **Migration helpers**: `add_column`, `recreate_table`, `column_exists` for SQLite DDL
+
 ### Tests
 
 - All 36 queue integration tests updated for `queue_id` migration
