@@ -25,6 +25,9 @@ logger = logging.getLogger(__name__)
 _DIRECT_COPY = [
     "settings",
     "filaments",
+    "spool_catalog",
+    "color_catalog",
+    "notification_templates",
     "spool_assignment",
     "spool_k_profile",
     "kprofile_notes",
@@ -443,6 +446,19 @@ async def import_bambuddy_data(engine, legacy_db_path: Path) -> None:
                     )
                 )
                 logger.info("Recounted printer queue counters")
+
+            # ---------------------------------------------------------------
+            # Phase 9: Backfill maintenance history performer
+            # ---------------------------------------------------------------
+            if summary.get("maintenance_history", 0) > 0:
+                await conn.execute(
+                    text(
+                        "UPDATE maintenance_history SET performed_by_user_id = ("
+                        "  SELECT id FROM users ORDER BY id LIMIT 1"
+                        ") WHERE performed_by_user_id IS NULL AND performed_by_chat_id IS NULL"
+                    )
+                )
+                logger.info("Backfilled maintenance history performer")
 
     finally:
         await old_db.close()

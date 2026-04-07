@@ -1,5 +1,9 @@
 <p align="center">
-  <img src="static/img/bamdude_logo_dark.png" alt="BamDude Logo" width="300">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="static/img/bamdude_logo_dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="static/img/bamdude_logo_light.png">
+    <img src="static/img/bamdude_logo_dark.png" alt="BamDude Logo" width="300">
+  </picture>
 </p>
 
 <h1 align="center">BamDude</h1>

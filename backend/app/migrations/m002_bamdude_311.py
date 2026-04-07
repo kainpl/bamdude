@@ -101,29 +101,30 @@ async def upgrade(conn):
     # ── Queue rework: add queue_id to print_queue ──
     await add_column(conn, "print_queue", "queue_id INTEGER REFERENCES printer_queues(id)")
 
-    # Migrate existing print_queue items: set queue_id = printer_id
-    await conn.execute(text(
-        "UPDATE print_queue SET queue_id = printer_id "
-        "WHERE queue_id IS NULL AND printer_id IS NOT NULL"
-    ))
-
-    # Delete orphaned items (model-based items without printer)
-    await conn.execute(text(
-        "DELETE FROM print_queue WHERE queue_id IS NULL AND printer_id IS NULL"
-    ))
-
-    # Fix queue_id where printer_queues.id != printer_id
-    try:
+    # Migrate existing print_queue items: set queue_id = printer_id (only if old schema)
+    if await column_exists(conn, "print_queue", "printer_id"):
         await conn.execute(text(
-            "UPDATE print_queue SET queue_id = ("
-            "  SELECT pq.id FROM printer_queues pq WHERE pq.printer_id = print_queue.printer_id"
-            ") WHERE printer_id IS NOT NULL AND EXISTS ("
-            "  SELECT 1 FROM printer_queues pq2 "
-            "  WHERE pq2.printer_id = print_queue.printer_id AND pq2.id != print_queue.queue_id"
-            ")"
+            "UPDATE print_queue SET queue_id = printer_id "
+            "WHERE queue_id IS NULL AND printer_id IS NOT NULL"
         ))
-    except Exception:
-        pass
+
+        # Delete orphaned items (model-based items without printer)
+        await conn.execute(text(
+            "DELETE FROM print_queue WHERE queue_id IS NULL AND printer_id IS NULL"
+        ))
+
+        # Fix queue_id where printer_queues.id != printer_id
+        try:
+            await conn.execute(text(
+                "UPDATE print_queue SET queue_id = ("
+                "  SELECT pq.id FROM printer_queues pq WHERE pq.printer_id = print_queue.printer_id"
+                ") WHERE printer_id IS NOT NULL AND EXISTS ("
+                "  SELECT 1 FROM printer_queues pq2 "
+                "  WHERE pq2.printer_id = print_queue.printer_id AND pq2.id != print_queue.queue_id"
+                ")"
+            ))
+        except Exception:
+            pass
 
     # Recount queue counters
     await conn.execute(text(

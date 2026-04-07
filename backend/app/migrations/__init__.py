@@ -1,9 +1,13 @@
 """BamDude migration system — auto-discovered versioned migrations.
 
-Three startup modes:
-1. Fresh install: create_all + run seeds
-2. Import from Bambuddy: create_all + import data + run seeds
-3. BamDude upgrade: create_all (new tables) + run pending migrations
+Runner logic:
+1. create_all() — creates/updates tables from models
+2. Ensure _migrations table
+3. Run all pending migrations sequentially (m000, m001, m002...)
+
+m000 is special — handles Bambuddy 2.2.2 → BamDude import if legacy DB found.
+m001 is baseline — FTS5 + seeds for BamDude 3.0.1.
+m002+ are incremental upgrades between BamDude versions.
 """
 
 import importlib
@@ -63,21 +67,21 @@ async def _record_migration(engine, version: int, name: str) -> None:
 
 
 async def _bootstrap_existing(engine) -> None:
-    """For existing BamDude installs that predate the migration system.
+    """For existing BamDude 3.0.1 installs that predate the migration system.
 
-    If _migrations table is empty, mark version 1 as applied
-    (schema is already current from previous run_migrations).
+    If _migrations table is empty, mark m000 and m001 as applied
+    (schema is already at 3.0.1 level).
     """
     applied = await _get_applied_versions(engine)
     if not applied:
-        migrations = _discover_migrations()
-        if migrations and migrations[0]["version"] == 1:
-            await _record_migration(engine, 1, migrations[0]["name"])
-            logger.info("Bootstrapped existing install at migration version 1")
+        # Mark m000 (import) and m001 (baseline) as already done
+        await _record_migration(engine, 0, "bambuddy_to_bamdude_301")
+        await _record_migration(engine, 1, "bamdude_baseline")
+        logger.info("Bootstrapped existing BamDude 3.0.1 install (m000+m001 marked as applied)")
 
 
 async def _run_pending(engine, session_factory) -> None:
-    """Discover and run all pending migrations."""
+    """Discover and run all pending migrations sequentially."""
     applied = await _get_applied_versions(engine)
     migrations = _discover_migrations()
     pending = [m for m in migrations if m["version"] not in applied]
@@ -94,7 +98,7 @@ async def _run_pending(engine, session_factory) -> None:
 
         logger.info("Applying migration %d: %s ...", version, name)
 
-        # DDL phase (schema changes) — FK off for the entire upgrade
+        # DDL phase (schema changes) — FK off for safety
         if hasattr(mod, "upgrade"):
             async with engine.begin() as conn:
                 await conn.execute(text("PRAGMA foreign_keys = OFF"))
@@ -113,84 +117,59 @@ async def _run_pending(engine, session_factory) -> None:
 async def run_all_migrations(engine, session_factory) -> None:
     """Main entry point — called from init_db().
 
-    Startup modes:
-    1. Fresh install (no bamdude.db, no legacy DB) → create_all + m001
-    2. Import from Bambuddy 2.2.2 (bambuddy.db without telegram_chats) → create fresh + import
-    3. Upgrade from BamDude 3.0.1 (bambuddy.db WITH telegram_chats) → rename + m002
-    4. BamDude 3.1.1+ upgrade (bamdude.db exists) → pending migrations
+    Simple flow:
+    1. create_all() — ensures all tables exist from models
+    2. Ensure _migrations table
+    3. Handle BamDude 3.0.1 upgrade (rename + bootstrap)
+    4. Run all pending migrations (m000 handles legacy import if needed)
     """
     from backend.app.core.config import settings
     from backend.app.core.database import Base
 
-    db_path = Path(settings.data_dir) / "bamdude.db"
     legacy_path = _find_legacy_database(settings.data_dir)
 
-    if db_path.exists():
-        # Mode 4: existing BamDude install
-        logger.info("Found existing BamDude database")
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+    # BamDude 3.0.1 upgrade: rename bambuddy.db → bamdude.db
+    # Must check BEFORE create_all (engine may create empty bamdude.db on connect)
+    if legacy_path and await _is_bamdude_301(legacy_path):
+        db_path = Path(settings.data_dir) / "bamdude.db"
+        logger.info("Found BamDude 3.0.1 database: %s — renaming to bamdude.db", legacy_path)
+        # Close engine connections so we can replace the file
+        await engine.dispose()
+        # Remove empty bamdude.db if engine created it
+        if db_path.exists():
+            db_path.unlink()
+        legacy_path.rename(db_path)
+        for suffix in ("-wal", "-shm"):
+            wal = legacy_path.parent / (legacy_path.name + suffix)
+            if wal.exists():
+                wal.rename(db_path.parent / (db_path.name + suffix))
 
-        await _ensure_migrations_table(engine)
+    # Create/update all tables from models
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    # Ensure _migrations table
+    await _ensure_migrations_table(engine)
+
+    # Check if this is an existing install (has user tables with data)
+    is_existing = await _has_existing_data(engine)
+    if is_existing:
         await _bootstrap_existing(engine)
-        await _run_pending(engine, session_factory)
 
-    elif legacy_path:
-        # Legacy DB found — determine if BamDude 3.0.1 or Bambuddy 2.2.2
-        is_bamdude_301 = await _is_bamdude_301(legacy_path)
+    # Run all pending migrations sequentially
+    await _run_pending(engine, session_factory)
 
-        if is_bamdude_301:
-            # Mode 3: BamDude 3.0.1 → rename and upgrade
-            logger.info("Found BamDude 3.0.1 database: %s — renaming to bamdude.db", legacy_path)
-            legacy_path.rename(db_path)
-            # Also rename WAL/SHM files if present
-            for suffix in ("-wal", "-shm"):
-                wal = legacy_path.parent / (legacy_path.name + suffix)
-                if wal.exists():
-                    wal.rename(db_path.parent / (db_path.name + suffix))
 
-            # Recreate engine connection to renamed file
-            async with engine.begin() as conn:
-                await conn.run_sync(Base.metadata.create_all)
-
-            await _ensure_migrations_table(engine)
-            # Bootstrap at version 1 (3.0.1 schema = baseline)
-            await _bootstrap_existing(engine)
-            # m002 will apply 3.0.1 → 3.1.1 changes
-            await _run_pending(engine, session_factory)
-        else:
-            # Mode 2: Bambuddy 2.2.2 → import into fresh DB
-            logger.info("Found Bambuddy 2.2.2 database: %s — importing to BamDude", legacy_path)
-            async with engine.begin() as conn:
-                await conn.run_sync(Base.metadata.create_all)
-
-            from backend.app.migrations.import_bambuddy import import_bambuddy_data
-
-            await import_bambuddy_data(engine, legacy_path)
-            logger.info("Bambuddy import complete")
-
-            await _ensure_migrations_table(engine)
-            # Schema is already current (create_all), only run seeds (m001)
-            # Mark all upgrade-only migrations as applied (they target older schemas)
-            all_migrations = _discover_migrations()
-            for mig in all_migrations:
-                if mig["version"] > 1:
-                    await _record_migration(engine, mig["version"], mig["name"])
-                    logger.info("Skipped migration %d (schema already current from import)", mig["version"])
-            await _run_pending(engine, session_factory)  # runs m001 only
-    else:
-        # Mode 1: fresh install
-        logger.info("No database found — creating fresh BamDude database")
+async def _has_existing_data(engine) -> bool:
+    """Check if database has existing data (not a fresh create_all)."""
+    try:
         async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-
-        await _ensure_migrations_table(engine)
-        # Schema is current (create_all), mark upgrade-only migrations as applied
-        all_migrations = _discover_migrations()
-        for mig in all_migrations:
-            if mig["version"] > 1:
-                await _record_migration(engine, mig["version"], mig["name"])
-        await _run_pending(engine, session_factory)  # runs m001 (seeds) only
+            # Check if printers table has any rows — if yes, this is an existing install
+            result = await conn.execute(text("SELECT COUNT(*) FROM printers"))
+            count = result.scalar() or 0
+            return count > 0
+    except Exception:
+        return False
 
 
 async def _is_bamdude_301(db_path: Path) -> bool:
