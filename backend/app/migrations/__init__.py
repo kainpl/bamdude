@@ -82,8 +82,20 @@ async def _bootstrap_existing(engine) -> None:
 
 async def _run_pending(engine, session_factory) -> None:
     """Discover and run all pending migrations sequentially."""
+    from backend.app.core.config import settings as app_settings
+
     applied = await _get_applied_versions(engine)
     migrations = _discover_migrations()
+
+    # Dev mode: re-run the latest migration every time (for iterating on schema/seeds)
+    if app_settings.debug and migrations and applied:
+        latest = max(m["version"] for m in migrations)
+        if latest in applied:
+            async with engine.begin() as conn:
+                await conn.execute(text("DELETE FROM _migrations WHERE version = :v"), {"v": latest})
+            applied.discard(latest)
+            logger.info("Dev mode: re-running migration %d", latest)
+
     pending = [m for m in migrations if m["version"] not in applied]
 
     if not pending:
@@ -158,6 +170,22 @@ async def run_all_migrations(engine, session_factory) -> None:
 
     # Run all pending migrations sequentially
     await _run_pending(engine, session_factory)
+
+    # Rename legacy DB to .bak after successful migration (prevent re-import on next start)
+    if legacy_path and legacy_path.exists():
+        bak_path = legacy_path.with_suffix(".db.bak")
+        try:
+            if bak_path.exists():
+                bak_path.unlink()
+            legacy_path.rename(bak_path)
+            # Also rename WAL/SHM
+            for suffix in ("-wal", "-shm"):
+                wal = legacy_path.parent / (legacy_path.name + suffix)
+                if wal.exists():
+                    wal.unlink()
+            logger.info("Renamed legacy database to %s", bak_path.name)
+        except OSError as e:
+            logger.warning("Could not rename legacy database: %s", e)
 
 
 async def _has_existing_data(engine) -> bool:

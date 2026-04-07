@@ -111,12 +111,15 @@ Electrical load management for large print farms — spread printer startups ove
 ### Migration System
 
 - **File-based migrations** — versioned auto-discovered migration files replacing monolithic 1,600-line `run_migrations()`
-- **Smart legacy detection** — differentiates Bambuddy 2.2.2 (import) vs BamDude 3.0.1 (rename+upgrade) by checking for `telegram_chats` table
-- **Bambuddy import** — table-by-table data import with transformations (47 tables, read-only source)
+- **Sequential execution** — all migrations run in order for any startup scenario (fresh, import, upgrade)
 - **`database.py`**: 2,059 → 122 lines
-- **m001**: baseline seeds (groups, templates, catalogs, macros)
-- **m002**: 3.0.1 → 3.1.1 schema changes (queues, macros, swap mode, maintenance)
-- **Migration helpers**: `add_column`, `recreate_table`, `column_exists` for SQLite DDL
+- **m000**: Bambuddy 2.2.2 → BamDude import (25 tables, 4696+ rows, read-only source, auto-detect)
+- **m001**: BamDude 3.0.1 baseline (FTS5, groups, templates, catalogs, maintenance types, macros)
+- **m002**: BamDude 3.0.1 → 3.1.1 (queues, macros, swap mode, maintenance tracking, schema cleanup)
+- **Schema cleanup**: DROP COLUMN via `recreate_table` for `print_count`, `require_previous_success`, `target_model`, `target_location`, `filament_overrides`, `required_filament_types`, `on_queue_job_assigned`
+- **Smart legacy detection**: Bambuddy 2.2.2 vs BamDude 3.0.1 by `telegram_chats` table presence
+- **Migration helpers**: `add_column`, `recreate_table`, `column_exists`, `table_exists` with `PRAGMA foreign_keys = OFF`
+- **Idempotent upgrades**: all DDL guarded by existence checks, safe to run on fresh DB
 
 ### Tests
 

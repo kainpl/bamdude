@@ -93,6 +93,17 @@ volumes:
   bamdude_logs:
 ```
 
+## Upgrading
+
+**From Bambuddy:** Place your `bambuddy.db` in the data volume and start the container. Data is imported automatically.
+
+**From Bambuddy HE Docker:** Run the volume migration script first:
+```bash
+docker compose down
+bash install/migrate-volumes.sh
+docker compose up -d
+```
+
 ## Telegram Bot Setup
 
 1. Create a bot via [@BotFather](https://t.me/BotFather)

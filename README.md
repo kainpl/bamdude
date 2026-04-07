@@ -215,6 +215,14 @@ pip install -r requirements.txt
 uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
 ```
 
+### Upgrading
+
+**From Bambuddy 2.2.2:** Place your `bambuddy.db` in the `data/` directory and start BamDude. Data is automatically imported into a fresh database. The original file is preserved as backup.
+
+**From BamDude 3.0.1:** Place your `bambuddy.db` in `data/` and start. The file is renamed to `bamdude.db` and schema is upgraded automatically.
+
+**Docker volume migration:** If upgrading from the `bambuddy-he` Docker image, run `install/migrate-volumes.sh` first to copy data volumes.
+
 ### Telegram Bot Setup
 
 1. Create a bot via [@BotFather](https://t.me/BotFather), get the token
