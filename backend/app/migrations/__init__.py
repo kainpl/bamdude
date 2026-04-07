@@ -111,47 +111,91 @@ async def _run_pending(engine, session_factory) -> None:
 async def run_all_migrations(engine, session_factory) -> None:
     """Main entry point — called from init_db().
 
-    Handles all three startup modes:
-    1. Fresh install (no DB) → create_all + migrations
-    2. Import from Bambuddy (legacy DB found) → create_all + import + migrations
-    3. BamDude upgrade (existing DB) → create_all + pending migrations
+    Startup modes:
+    1. Fresh install (no bamdude.db, no legacy DB) → create_all + m001
+    2. Import from Bambuddy 2.2.2 (bambuddy.db without telegram_chats) → create fresh + import
+    3. Upgrade from BamDude 3.0.1 (bambuddy.db WITH telegram_chats) → rename + m002
+    4. BamDude 3.1.1+ upgrade (bamdude.db exists) → pending migrations
     """
     from backend.app.core.config import settings
     from backend.app.core.database import Base
 
     db_path = Path(settings.data_dir) / "bamdude.db"
-
-    # Check for legacy Bambuddy database
     legacy_path = _find_legacy_database(settings.data_dir)
-    is_fresh = not db_path.exists()
 
-    # Mode 2: Import from Bambuddy
-    if is_fresh and legacy_path:
-        logger.info("Found legacy database: %s — importing to BamDude", legacy_path)
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        # Import data from old DB
-        from backend.app.migrations.import_bambuddy import import_bambuddy_data
-
-        await import_bambuddy_data(engine, legacy_path)
-        logger.info("Legacy import complete")
-    else:
-        # Mode 1 (fresh) or Mode 3 (upgrade)
+    if db_path.exists():
+        # Mode 4: existing BamDude install
+        logger.info("Found existing BamDude database")
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
 
-    # Ensure _migrations table and run pending
-    await _ensure_migrations_table(engine)
-
-    if not is_fresh and not legacy_path:
-        # Mode 3: existing BamDude install — bootstrap if needed
+        await _ensure_migrations_table(engine)
         await _bootstrap_existing(engine)
+        await _run_pending(engine, session_factory)
 
-    await _run_pending(engine, session_factory)
+    elif legacy_path:
+        # Legacy DB found — determine if BamDude 3.0.1 or Bambuddy 2.2.2
+        is_bamdude_301 = await _is_bamdude_301(legacy_path)
+
+        if is_bamdude_301:
+            # Mode 3: BamDude 3.0.1 → rename and upgrade
+            logger.info("Found BamDude 3.0.1 database: %s — renaming to bamdude.db", legacy_path)
+            legacy_path.rename(db_path)
+            # Also rename WAL/SHM files if present
+            for suffix in ("-wal", "-shm"):
+                wal = legacy_path.parent / (legacy_path.name + suffix)
+                if wal.exists():
+                    wal.rename(db_path.parent / (db_path.name + suffix))
+
+            # Recreate engine connection to renamed file
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+
+            await _ensure_migrations_table(engine)
+            # Bootstrap at version 1 (3.0.1 schema = baseline)
+            await _bootstrap_existing(engine)
+            # m002 will apply 3.0.1 → 3.1.1 changes
+            await _run_pending(engine, session_factory)
+        else:
+            # Mode 2: Bambuddy 2.2.2 → import into fresh DB
+            logger.info("Found Bambuddy 2.2.2 database: %s — importing to BamDude", legacy_path)
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+
+            from backend.app.migrations.import_bambuddy import import_bambuddy_data
+
+            await import_bambuddy_data(engine, legacy_path)
+            logger.info("Bambuddy import complete")
+
+            await _ensure_migrations_table(engine)
+            await _run_pending(engine, session_factory)
+    else:
+        # Mode 1: fresh install
+        logger.info("No database found — creating fresh BamDude database")
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        await _ensure_migrations_table(engine)
+        await _run_pending(engine, session_factory)
+
+
+async def _is_bamdude_301(db_path: Path) -> bool:
+    """Check if a legacy DB is BamDude 3.0.1 (has telegram_chats table)."""
+    import aiosqlite
+
+    try:
+        async with aiosqlite.connect(str(db_path)) as db:
+            cursor = await db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='telegram_chats'"
+            )
+            row = await cursor.fetchone()
+            return row is not None
+    except Exception:
+        return False
 
 
 def _find_legacy_database(data_dir) -> Path | None:
-    """Find a legacy Bambuddy database for import."""
+    """Find a legacy database (bambuddy.db or bambutrack.db)."""
     for name in ("bambuddy.db", "bambutrack.db"):
         path = Path(data_dir) / name
         if path.exists():
