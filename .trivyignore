@@ -1,4 +1,4 @@
-# Dockerfile USER directive (DS-0002): Bambuddy runs as a single-host
+# Dockerfile USER directive (DS-0002): bamdude runs as a single-host
 # Docker container where root is needed for device access and FFmpeg.
 DS-0002
 
