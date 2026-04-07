@@ -1,4 +1,3 @@
-import logging
 import os
 from pathlib import Path
 
@@ -26,29 +25,13 @@ _log_dir_env = os.environ.get("LOG_DIR")
 _log_dir = Path(_log_dir_env) if _log_dir_env else _app_dir / "logs"
 
 
-def _migrate_database() -> Path:
-    """Migrate database from old names to current name if needed.
-
-    Chain: bambutrack.db → bambuddy.db → bamdude.db
-    """
-    target = _data_dir / "bamdude.db"
-
-    # Try each old name in order
-    for old_name in ("bambuddy.db", "bambutrack.db"):
-        old_db = _data_dir / old_name
-        if old_db.exists() and not target.exists():
-            try:
-                old_db.rename(target)
-                logging.info("Migrated database: %s -> %s", old_db, target)
-            except Exception as e:
-                logging.warning("Could not migrate database: %s. Using old location.", e)
-                return old_db
-
-    return target
+def _get_database_path() -> Path:
+    """Return the path to bamdude.db (may not exist yet)."""
+    return _data_dir / "bamdude.db"
 
 
-# Determine database path (handles migration)
-_db_path = _migrate_database()
+# Determine database path
+_db_path = _get_database_path()
 
 
 class Settings(BaseSettings):

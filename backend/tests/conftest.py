@@ -141,9 +141,9 @@ async def async_client(test_engine, db_session) -> AsyncGenerator[AsyncClient, N
         patch("backend.app.main.init_printer_connections", mock_init_printer_connections),
     ):
         # Seed default groups for tests that need them
-        from backend.app.core.database import seed_default_groups
+        from backend.app.migrations.m001_bamdude_baseline import _seed_default_groups
 
-        await seed_default_groups()
+        await _seed_default_groups(test_async_session)
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             yield client
