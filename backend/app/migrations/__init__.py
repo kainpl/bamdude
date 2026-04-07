@@ -94,10 +94,12 @@ async def _run_pending(engine, session_factory) -> None:
 
         logger.info("Applying migration %d: %s ...", version, name)
 
-        # DDL phase (schema changes)
+        # DDL phase (schema changes) — FK off for the entire upgrade
         if hasattr(mod, "upgrade"):
             async with engine.begin() as conn:
+                await conn.execute(text("PRAGMA foreign_keys = OFF"))
                 await mod.upgrade(conn)
+                await conn.execute(text("PRAGMA foreign_keys = ON"))
 
         # Seed phase (data, uses ORM session)
         if hasattr(mod, "seed"):
@@ -168,7 +170,14 @@ async def run_all_migrations(engine, session_factory) -> None:
             logger.info("Bambuddy import complete")
 
             await _ensure_migrations_table(engine)
-            await _run_pending(engine, session_factory)
+            # Schema is already current (create_all), only run seeds (m001)
+            # Mark all upgrade-only migrations as applied (they target older schemas)
+            all_migrations = _discover_migrations()
+            for mig in all_migrations:
+                if mig["version"] > 1:
+                    await _record_migration(engine, mig["version"], mig["name"])
+                    logger.info("Skipped migration %d (schema already current from import)", mig["version"])
+            await _run_pending(engine, session_factory)  # runs m001 only
     else:
         # Mode 1: fresh install
         logger.info("No database found — creating fresh BamDude database")
@@ -176,7 +185,12 @@ async def run_all_migrations(engine, session_factory) -> None:
             await conn.run_sync(Base.metadata.create_all)
 
         await _ensure_migrations_table(engine)
-        await _run_pending(engine, session_factory)
+        # Schema is current (create_all), mark upgrade-only migrations as applied
+        all_migrations = _discover_migrations()
+        for mig in all_migrations:
+            if mig["version"] > 1:
+                await _record_migration(engine, mig["version"], mig["name"])
+        await _run_pending(engine, session_factory)  # runs m001 (seeds) only
 
 
 async def _is_bamdude_301(db_path: Path) -> bool:

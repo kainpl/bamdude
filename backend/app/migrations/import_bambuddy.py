@@ -81,7 +81,6 @@ _COPY_WITH_DEFAULTS: dict[str, dict[str, Any]] = {
     "library_files": {
         "is_external": 0,
         "swap_compatible": 0,
-        "print_count": 0,
     },
     "maintenance_types": {
         "printer_models": '["*"]',
@@ -420,17 +419,7 @@ async def import_bambuddy_data(engine, legacy_db_path: Path) -> None:
                     summary[tbl] = n
                     logger.info("Imported %d rows into %s", n, tbl)
 
-            # ---------------------------------------------------------------
-            # Phase 7: Rebuild FTS index for print_archives
-            # ---------------------------------------------------------------
-            if summary.get("print_archives", 0) > 0:
-                await conn.execute(
-                    text(
-                        "INSERT INTO archive_fts(rowid, print_name, filename, tags, notes, designer, filament_type) "
-                        "SELECT id, print_name, filename, tags, notes, designer, filament_type FROM print_archives"
-                    )
-                )
-                logger.info("Rebuilt archive_fts index")
+            # FTS index will be populated by m001 upgrade (archive_fts created there)
 
             # ---------------------------------------------------------------
             # Phase 8: Recount queue counters

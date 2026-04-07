@@ -52,6 +52,17 @@ async def upgrade(conn):
         """)
     )
 
+    # Populate FTS from existing archives (for import scenario)
+    try:
+        await conn.execute(
+            text(
+                "INSERT OR IGNORE INTO archive_fts(rowid, print_name, filename, tags, notes, designer, filament_type) "
+                "SELECT id, print_name, filename, tags, notes, designer, filament_type FROM print_archives"
+            )
+        )
+    except Exception:
+        pass  # Table may be empty on fresh install
+
 
 # ---------------------------------------------------------------------------
 # Seed constants
@@ -403,6 +414,15 @@ async def seed(session_factory):
     """Run all seed functions."""
     await _seed_notification_templates(session_factory)
     await _seed_default_groups(session_factory)
+    await _seed_maintenance_types(session_factory)
     await _seed_spool_catalog(session_factory)
     await _seed_color_catalog(session_factory)
     await _seed_default_macros(session_factory)
+
+
+async def _seed_maintenance_types(session_factory):
+    """Seed default maintenance types if they don't exist."""
+    from backend.app.api.routes.maintenance import ensure_default_types
+
+    async with session_factory() as session:
+        await ensure_default_types(session)

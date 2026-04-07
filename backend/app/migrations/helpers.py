@@ -30,6 +30,9 @@ async def add_column(conn, table: str, column_def: str) -> bool:
 async def recreate_table(conn, table: str, new_ddl: str, columns_to_copy: str) -> None:
     """SQLite DROP COLUMN workaround via table recreation.
 
+    Temporarily disables foreign key checks to avoid constraint errors
+    during the DROP/RENAME cycle.
+
     Args:
         conn: SQLAlchemy async connection (inside engine.begin())
         table: Table name
@@ -37,6 +40,7 @@ async def recreate_table(conn, table: str, new_ddl: str, columns_to_copy: str) -
         columns_to_copy: Comma-separated column names to preserve
     """
     tmp = f"_mig_tmp_{table}"
+    # Caller must ensure PRAGMA foreign_keys = OFF before calling
     await conn.execute(text(f"DROP TABLE IF EXISTS {tmp}"))
     # Create temp table with new schema
     await conn.execute(text(new_ddl.replace(f"CREATE TABLE {table}", f"CREATE TABLE {tmp}")))

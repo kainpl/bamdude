@@ -13,15 +13,43 @@ async def upgrade(conn):
 
     from sqlalchemy import text
 
-    from backend.app.migrations.helpers import add_column, table_exists
+    from backend.app.migrations.helpers import add_column, column_exists, recreate_table, table_exists
 
     # ── Printer enhancements ──
     await add_column(conn, "printers", "stagger_interval_minutes INTEGER NOT NULL DEFAULT 0")
     await add_column(conn, "printers", "swap_mode_enabled BOOLEAN NOT NULL DEFAULT 0")
 
-    # ── Library & Archive: swap compatibility ──
+    # ── Library files: add swap_compatible, drop print_count ──
     await add_column(conn, "library_files", "swap_compatible BOOLEAN NOT NULL DEFAULT 0")
-    await add_column(conn, "library_files", "print_count INTEGER NOT NULL DEFAULT 0")
+    if await column_exists(conn, "library_files", "print_count"):
+        await recreate_table(
+            conn,
+            "library_files",
+            """CREATE TABLE library_files (
+                id INTEGER PRIMARY KEY,
+                folder_id INTEGER REFERENCES library_folders(id) ON DELETE CASCADE,
+                project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+                is_external BOOLEAN NOT NULL DEFAULT 0,
+                filename VARCHAR(255) NOT NULL,
+                file_path VARCHAR(500) NOT NULL,
+                file_type VARCHAR(10) NOT NULL,
+                file_size INTEGER NOT NULL,
+                file_hash VARCHAR(64),
+                thumbnail_path VARCHAR(500),
+                file_metadata JSON,
+                last_printed_at DATETIME,
+                notes TEXT,
+                created_by_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                swap_compatible BOOLEAN NOT NULL DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )""",
+            "id, folder_id, project_id, is_external, filename, file_path, file_type, "
+            "file_size, file_hash, thumbnail_path, file_metadata, last_printed_at, notes, "
+            "created_by_id, swap_compatible, created_at, updated_at",
+        )
+
+    # ── Archive: swap compatibility ──
     await add_column(conn, "print_archives", "swap_compatible BOOLEAN NOT NULL DEFAULT 0")
 
     # ── Macros table ──
@@ -107,6 +135,110 @@ async def upgrade(conn):
         "skipped_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id AND print_queue.status = 'skipped'), "
         "total_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id)"
     ))
+
+    # ── Clean up print_queue: drop legacy columns ──
+    # Remove: printer_id, require_previous_success, target_model, target_location,
+    # filament_overrides, required_filament_types (all from removed model-based assignment)
+    has_legacy = await column_exists(conn, "print_queue", "require_previous_success")
+    if has_legacy:
+        await recreate_table(
+            conn,
+            "print_queue",
+            """CREATE TABLE print_queue (
+                id INTEGER PRIMARY KEY,
+                queue_id INTEGER NOT NULL REFERENCES printer_queues(id),
+                waiting_reason TEXT,
+                archive_id INTEGER REFERENCES print_archives(id) ON DELETE CASCADE,
+                library_file_id INTEGER REFERENCES library_files(id) ON DELETE CASCADE,
+                project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+                position INTEGER NOT NULL DEFAULT 0,
+                scheduled_time DATETIME,
+                manual_start BOOLEAN NOT NULL DEFAULT 0,
+                auto_off_after BOOLEAN NOT NULL DEFAULT 0,
+                ams_mapping TEXT,
+                plate_id INTEGER,
+                bed_levelling BOOLEAN NOT NULL DEFAULT 1,
+                flow_cali BOOLEAN NOT NULL DEFAULT 1,
+                vibration_cali BOOLEAN NOT NULL DEFAULT 0,
+                layer_inspect BOOLEAN NOT NULL DEFAULT 0,
+                timelapse BOOLEAN NOT NULL DEFAULT 0,
+                use_ams BOOLEAN NOT NULL DEFAULT 1,
+                status VARCHAR(20) NOT NULL DEFAULT 'pending',
+                started_at DATETIME,
+                completed_at DATETIME,
+                error_message TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                created_by_id INTEGER REFERENCES users(id) ON DELETE SET NULL
+            )""",
+            "id, queue_id, waiting_reason, archive_id, library_file_id, project_id, "
+            "position, scheduled_time, manual_start, auto_off_after, ams_mapping, plate_id, "
+            "bed_levelling, flow_cali, vibration_cali, layer_inspect, timelapse, use_ams, "
+            "status, started_at, completed_at, error_message, created_at, created_by_id",
+        )
+
+    # ── Clean up removed notification template and event ──
+    await conn.execute(text("DELETE FROM notification_templates WHERE event_type = 'queue_job_assigned'"))
+
+    # ── Notification providers: drop on_queue_job_assigned ──
+    if await column_exists(conn, "notification_providers", "on_queue_job_assigned"):
+        await recreate_table(
+            conn,
+            "notification_providers",
+            """CREATE TABLE notification_providers (
+                id INTEGER PRIMARY KEY,
+                name VARCHAR(100) NOT NULL,
+                provider_type VARCHAR(50) NOT NULL,
+                enabled BOOLEAN DEFAULT 1,
+                config TEXT NOT NULL,
+                on_print_start BOOLEAN DEFAULT 0,
+                on_print_complete BOOLEAN DEFAULT 1,
+                on_print_failed BOOLEAN DEFAULT 1,
+                on_print_stopped BOOLEAN DEFAULT 1,
+                on_print_progress BOOLEAN DEFAULT 0,
+                on_print_missing_spool_assignment BOOLEAN DEFAULT 0,
+                on_printer_offline BOOLEAN DEFAULT 0,
+                on_printer_error BOOLEAN DEFAULT 0,
+                on_filament_low BOOLEAN DEFAULT 0,
+                on_maintenance_due BOOLEAN DEFAULT 0,
+                on_ams_humidity_high BOOLEAN DEFAULT 0,
+                on_ams_temperature_high BOOLEAN DEFAULT 0,
+                on_ams_ht_humidity_high BOOLEAN DEFAULT 0,
+                on_ams_ht_temperature_high BOOLEAN DEFAULT 0,
+                on_plate_not_empty BOOLEAN DEFAULT 1,
+                on_bed_cooled BOOLEAN DEFAULT 0,
+                on_first_layer_complete BOOLEAN DEFAULT 0,
+                on_queue_job_added BOOLEAN DEFAULT 0,
+                on_queue_job_started BOOLEAN DEFAULT 0,
+                on_queue_job_waiting BOOLEAN DEFAULT 1,
+                on_queue_job_skipped BOOLEAN DEFAULT 1,
+                on_queue_job_failed BOOLEAN DEFAULT 1,
+                on_queue_completed BOOLEAN DEFAULT 0,
+                quiet_hours_enabled BOOLEAN DEFAULT 0,
+                quiet_hours_start VARCHAR(5),
+                quiet_hours_end VARCHAR(5),
+                daily_digest_enabled BOOLEAN DEFAULT 0,
+                daily_digest_time VARCHAR(5),
+                printer_id INTEGER REFERENCES printers(id) ON DELETE SET NULL,
+                last_success DATETIME,
+                last_error TEXT,
+                last_error_at DATETIME,
+                created_at DATETIME,
+                updated_at DATETIME
+            )""",
+            "id, name, provider_type, enabled, config, "
+            "on_print_start, on_print_complete, on_print_failed, on_print_stopped, "
+            "on_print_progress, on_print_missing_spool_assignment, "
+            "on_printer_offline, on_printer_error, on_filament_low, on_maintenance_due, "
+            "on_ams_humidity_high, on_ams_temperature_high, "
+            "on_ams_ht_humidity_high, on_ams_ht_temperature_high, "
+            "on_plate_not_empty, on_bed_cooled, on_first_layer_complete, "
+            "on_queue_job_added, on_queue_job_started, on_queue_job_waiting, "
+            "on_queue_job_skipped, on_queue_job_failed, on_queue_completed, "
+            "quiet_hours_enabled, quiet_hours_start, quiet_hours_end, "
+            "daily_digest_enabled, daily_digest_time, "
+            "printer_id, last_success, last_error, last_error_at, "
+            "created_at, updated_at",
+        )
 
     # ── Maintenance types: printer_models ──
     await add_column(conn, "maintenance_types", "printer_models TEXT NOT NULL DEFAULT '[\"*\"]'")
