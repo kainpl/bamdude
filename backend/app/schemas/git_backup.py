@@ -68,6 +68,8 @@ class GitBackupConfigCreate(BaseModel):
     backup_kprofiles: bool = Field(default=True, description="Backup K-profiles")
     backup_cloud_profiles: bool = Field(default=True, description="Backup Bambu Cloud profiles")
     backup_settings: bool = Field(default=False, description="Backup app settings")
+    backup_spools: bool = Field(default=False, description="Backup spool inventory")
+    backup_archives: bool = Field(default=False, description="Backup print archive metadata")
 
     enabled: bool = Field(default=True, description="Enable backup feature")
 
@@ -93,6 +95,8 @@ class GitBackupConfigUpdate(BaseModel):
     backup_kprofiles: bool | None = None
     backup_cloud_profiles: bool | None = None
     backup_settings: bool | None = None
+    backup_spools: bool | None = None
+    backup_archives: bool | None = None
 
     enabled: bool | None = None
 
@@ -128,6 +132,8 @@ class GitBackupConfigResponse(BaseModel):
     backup_kprofiles: bool
     backup_cloud_profiles: bool
     backup_settings: bool
+    backup_spools: bool
+    backup_archives: bool
 
     enabled: bool
     last_backup_at: datetime | None

@@ -19,6 +19,7 @@ async def upgrade(conn):
     # ── Printer enhancements ──
     await add_column(conn, "printers", "stagger_interval_minutes INTEGER NOT NULL DEFAULT 0")
     await add_column(conn, "printers", "swap_mode_enabled BOOLEAN NOT NULL DEFAULT 0")
+    await add_column(conn, "printers", "auto_light_off BOOLEAN NOT NULL DEFAULT 0")
 
     # ── Library files: add swap_compatible, drop print_count ──
     await add_column(conn, "library_files", "swap_compatible BOOLEAN NOT NULL DEFAULT 0")
@@ -287,6 +288,10 @@ async def upgrade(conn):
         await conn.execute(text("ALTER TABLE github_backup_config RENAME TO git_backup_config"))
         await add_column(conn, "git_backup_config", "provider VARCHAR(20) NOT NULL DEFAULT 'github'")
         await add_column(conn, "git_backup_config", "api_base_url VARCHAR(500)")
+    # ── Git backup: spool + archive backup flags ──
+    await add_column(conn, "git_backup_config", "backup_spools BOOLEAN NOT NULL DEFAULT 0")
+    await add_column(conn, "git_backup_config", "backup_archives BOOLEAN NOT NULL DEFAULT 0")
+
     if await table_exists(conn, "github_backup_logs") and not await table_exists(conn, "git_backup_logs"):
         # Recreate logs with FK pointing to new table name
         await recreate_table(

@@ -9,6 +9,20 @@ import { formatDuration, formatETA, type TimeFormat } from '../utils/date';
 
 type TFunction = (key: string, options?: Record<string, unknown>) => string;
 
+// Extract plate number from gcode_file path and append to print name
+function formatPrintName(
+  printName: string,
+  gcodeFile: string | null | undefined,
+  t: TFunction,
+): string {
+  if (!gcodeFile) return printName;
+  const match = gcodeFile.match(/plate_(\d+)\.gcode/i);
+  if (match && match[1] !== '1') {
+    return `${printName} — ${t('printers.plateNumber', { number: match[1] })}`;
+  }
+  return printName;
+}
+
 type OverlaySize = 'small' | 'medium' | 'large';
 
 interface OverlayConfig {
@@ -235,7 +249,7 @@ export function StreamOverlayPage() {
           {/* Filename */}
           {config.showFilename && status.current_print && (
             <div className={`${sizes.textLarge} text-white font-semibold mb-2 truncate drop-shadow-md`}>
-              {status.current_print.replace(/\.gcode\.3mf$|\.3mf$|\.gcode$/i, '')}
+              {formatPrintName(status.current_print.replace(/\.gcode\.3mf$|\.3mf$|\.gcode$/i, ''), status.gcode_file, t)}
             </div>
           )}
 

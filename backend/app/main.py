@@ -635,6 +635,13 @@ async def on_ams_change(printer_id: int, ams_data: list):
     """Handle AMS data changes - sync to Spoolman if enabled and auto mode."""
     logger = logging.getLogger(__name__)
 
+    # Check if a print is actively running on this printer — if so, skip AMS
+    # weight sync to avoid double-deducting spool weight (the usage tracker
+    # handles weight deduction precisely during prints via 3MF/G-code data).
+    from backend.app.services.usage_tracker import _active_sessions
+
+    _print_active = printer_id in _active_sessions
+
     # MQTT relay - publish AMS change
     try:
         printer_info = printer_manager.get_printer(printer_id)
@@ -817,6 +824,12 @@ async def on_ams_change(printer_id: int, ams_data: list):
                         )
                         existing_assignment = existing.scalar_one_or_none()
                         if existing_assignment:
+                            # Skip AMS weight sync while a print is active — the usage
+                            # tracker deducts weight precisely from 3MF/G-code data.
+                            # Syncing the coarse AMS remain% at the same time would
+                            # cause double-deduction of filament weight.
+                            if _print_active:
+                                continue
                             # Sync spool weight_used from AMS remain — only INCREASE, never decrease.
                             # The AMS remain% is low-resolution (integer %, i.e. 10g steps for 1kg spool)
                             # and must not overwrite precise values from the usage tracker (3MF/G-code).
@@ -1272,6 +1285,13 @@ async def on_print_start(printer_id: int, data: dict):
 
         result = await db.execute(select(Printer).where(Printer.id == printer_id))
         printer = result.scalar_one_or_none()
+
+        # Auto light off: turn off chamber light after print starts
+        if printer and printer.auto_light_off:
+            client = printer_manager.get_client(printer_id)
+            if client:
+                client.set_chamber_light(False)
+                logger.info("[LIGHT] Auto light off for printer %s", printer_id)
 
         # Plate detection check - pause if objects detected on build plate
         logger.info(
@@ -2639,25 +2659,28 @@ async def on_print_complete(printer_id: int, data: dict):
                 # Handle auto_off_after - power off printer if requested (after cooldown)
                 if queue_item.auto_off_after:
                     result = await db.execute(select(SmartPlug).where(SmartPlug.printer_id == printer_id))
-                    plug = result.scalar_one_or_none()
-                    if plug and plug.enabled:
+                    plugs = list(result.scalars().all())
+                    enabled_plugs = [p for p in plugs if p.enabled]
+                    if enabled_plugs:
                         logger.info("Auto-off requested for printer %s, waiting for cooldown...", printer_id)
 
-                        async def cooldown_and_poweroff(pid: int, plug_id: int):
+                        async def cooldown_and_poweroff(pid: int, plug_ids: list[int]):
                             # Wait for nozzle to cool down
                             await printer_manager.wait_for_cooldown(pid, target_temp=50.0, timeout=600)
-                            # Re-fetch plug in new session
+                            # Re-fetch plugs in new session and turn off each one
                             async with async_session() as new_db:
-                                result = await new_db.execute(select(SmartPlug).where(SmartPlug.id == plug_id))
-                                p = result.scalar_one_or_none()
-                                if p and p.enabled:
-                                    success = await tasmota_service.turn_off(p)
-                                    if success:
-                                        logger.info("Powered off printer %s via smart plug '%s'", pid, p.name)
-                                    else:
-                                        logger.warning("Failed to power off printer %s via smart plug", pid)
+                                for plug_id in plug_ids:
+                                    result = await new_db.execute(select(SmartPlug).where(SmartPlug.id == plug_id))
+                                    p = result.scalar_one_or_none()
+                                    if p and p.enabled:
+                                        service = await smart_plug_manager.get_service_for_plug(p, new_db)
+                                        success = await service.turn_off(p)
+                                        if success:
+                                            logger.info("Powered off printer %s via smart plug '%s'", pid, p.name)
+                                        else:
+                                            logger.warning("Failed to power off printer %s via smart plug '%s'", pid, p.name)
 
-                        asyncio.create_task(cooldown_and_poweroff(printer_id, plug.id))
+                        asyncio.create_task(cooldown_and_poweroff(printer_id, [p.id for p in enabled_plugs]))
     except Exception as e:
         logging.getLogger(__name__).warning(f"Queue item update failed: {e}")
 
@@ -3521,7 +3544,7 @@ async def record_ams_history():
                     setting = result.scalar_one_or_none()
                     retention_days = int(setting.value) if setting else AMS_HISTORY_RETENTION_DAYS
 
-                    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+                    cutoff = datetime.utcnow() - timedelta(days=retention_days)
                     result = await db.execute(delete(AMSSensorHistory).where(AMSSensorHistory.recorded_at < cutoff))
                     await db.commit()
                     if result.rowcount > 0:
@@ -4065,6 +4088,16 @@ PUBLIC_API_PATTERNS = [
     # download token in the URL path instead.
     "/dl/",  # /archives/{id}/dl/{token}/{filename}, /library/files/{id}/dl/{token}/{filename}
 ]
+
+
+@app.middleware("http")
+async def security_headers_middleware(request, call_next):
+    """Add security headers to all responses."""
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
 
 
 @app.middleware("http")

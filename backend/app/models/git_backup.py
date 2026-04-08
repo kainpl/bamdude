@@ -32,6 +32,8 @@ class GitBackupConfig(Base):
     backup_kprofiles: Mapped[bool] = mapped_column(Boolean, default=True)
     backup_cloud_profiles: Mapped[bool] = mapped_column(Boolean, default=True)
     backup_settings: Mapped[bool] = mapped_column(Boolean, default=False)
+    backup_spools: Mapped[bool] = mapped_column(Boolean, default=False)
+    backup_archives: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Status tracking
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)

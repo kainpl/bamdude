@@ -369,6 +369,8 @@ export default {
       staggerIntervalHint: '0 = системне значення',
       swapMode: 'Swap Mode',
       swapModeHint: 'Зміна столів для A1 Mini (swap-systems.com)',
+      autoLightOff: 'Вимикати світло після початку друку',
+      autoLightOffHint: 'Автоматично вимикає підсвітку камери при старті друку (P1S/P1P вмикають її автоматично)',
       fromPrinterSettings: 'З налаштувань принтера',
       modelOptional: 'Модель (необов\'язково)',
       saveChanges: 'Зберегти зміни',
@@ -510,6 +512,7 @@ export default {
     // HMS errors
     clickToViewHmsErrors: 'Натисніть для перегляду помилок HMS',
     estimatedCompletion: 'Орієнтовний час завершення',
+    plateNumber: 'Плита {{number}}',
     slotOptions: 'Параметри слота',
     // AMS hover popup
     amsPopup: {
@@ -3509,8 +3512,8 @@ export default {
     personalAccessToken: 'Персональний токен доступу',
     tokenSaved: '(збережено)',
     enterNewToken: 'Введіть новий токен для оновлення',
-    tokenHintGitHub: 'Токен з дрібнозернистим доступом з дозволом на читання/запис вмісту',
-    tokenHintGitLab: 'Персональний токен доступу з правами api або write_repository',
+    tokenHintGitHub: 'Fine-grained token з дозволом Contents: Read and write',
+    tokenHintGitLab: 'Personal access token з правами api або write_repository',
     branch: 'Гілка',
     manualOnly: 'Тільки вручну',
     hourly: 'Щогодини',
@@ -3525,6 +3528,10 @@ export default {
     cloudProfilesDescription: 'Пресети філаменту, принтера та процесу з Bambu Cloud',
     appSettings: 'Налаштування додатку',
     appSettingsDescription: 'Конфігурація BamDude (повна база даних)',
+    backupSpools: 'Інвентар котушок',
+    backupSpoolsHint: 'Котушки філаменту та історія використання',
+    backupArchives: 'Архів друку',
+    backupArchivesHint: 'Метадані архіву друку (без бінарних файлів)',
     lastBackupAt: 'Остання копія:',
     noBackupsYet: 'Копій ще немає',
     next: 'Наступна:',

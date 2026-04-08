@@ -426,6 +426,8 @@ class GitBackupService:
                 "kprofiles": config.backup_kprofiles,
                 "cloud_profiles": config.backup_cloud_profiles,
                 "settings": config.backup_settings,
+                "spools": config.backup_spools,
+                "archives": config.backup_archives,
             },
         }
         files["backup_metadata.json"] = metadata
@@ -444,6 +446,16 @@ class GitBackupService:
         if config.backup_settings:
             self._backup_progress = "Collecting app settings..."
             await self._collect_settings(db, files)
+
+        # Collect spool inventory
+        if config.backup_spools:
+            self._backup_progress = "Collecting spool inventory..."
+            await self._collect_spools(db, files)
+
+        # Collect print archive metadata
+        if config.backup_archives:
+            self._backup_progress = "Collecting print archive metadata..."
+            await self._collect_archives(db, files)
 
         return files
 
@@ -569,6 +581,117 @@ class GitBackupService:
             "version": "1.0",
             "settings": settings_data,
         }
+
+    async def _collect_spools(self, db: AsyncSession, files: dict):
+        """Collect spool inventory and usage history."""
+        from backend.app.models.spool import Spool
+        from backend.app.models.spool_usage_history import SpoolUsageHistory
+
+        # Active spools
+        result = await db.execute(select(Spool).where(Spool.archived_at == None))  # noqa: E711
+        spools = result.scalars().all()
+
+        spools_data = []
+        for s in spools:
+            spools_data.append({
+                "id": s.id,
+                "material": s.material,
+                "subtype": s.subtype,
+                "color_name": s.color_name,
+                "rgba": s.rgba,
+                "brand": s.brand,
+                "label_weight": s.label_weight,
+                "weight_used": s.weight_used,
+                "slicer_filament": s.slicer_filament,
+                "slicer_filament_name": s.slicer_filament_name,
+                "nozzle_temp_min": s.nozzle_temp_min,
+                "nozzle_temp_max": s.nozzle_temp_max,
+                "cost_per_kg": s.cost_per_kg,
+                "note": s.note,
+                "tag_uid": s.tag_uid,
+                "tray_uuid": s.tray_uuid,
+                "created_at": s.created_at.isoformat() if s.created_at else None,
+            })
+
+        files["spools/inventory.json"] = {
+            "version": "1.0",
+            "spool_count": len(spools_data),
+            "spools": spools_data,
+        }
+
+        # Usage history (last 500 entries)
+        result = await db.execute(
+            select(SpoolUsageHistory).order_by(desc(SpoolUsageHistory.created_at)).limit(500)
+        )
+        history = result.scalars().all()
+
+        history_data = []
+        for h in history:
+            history_data.append({
+                "id": h.id,
+                "spool_id": h.spool_id,
+                "printer_id": h.printer_id,
+                "print_name": h.print_name,
+                "weight_used": h.weight_used,
+                "percent_used": h.percent_used,
+                "status": h.status,
+                "cost": h.cost,
+                "created_at": h.created_at.isoformat() if h.created_at else None,
+            })
+
+        files["spools/usage_history.json"] = {
+            "version": "1.0",
+            "entry_count": len(history_data),
+            "history": history_data,
+        }
+
+        logger.info("Collected %d spools and %d usage history entries", len(spools_data), len(history_data))
+
+    async def _collect_archives(self, db: AsyncSession, files: dict):
+        """Collect print archive metadata (no binary files)."""
+        from backend.app.models.archive import PrintArchive
+
+        result = await db.execute(select(PrintArchive).order_by(desc(PrintArchive.created_at)))
+        archives = result.scalars().all()
+
+        archives_data = []
+        for a in archives:
+            archives_data.append({
+                "id": a.id,
+                "printer_id": a.printer_id,
+                "filename": a.filename,
+                "file_size": a.file_size,
+                "print_name": a.print_name,
+                "print_time_seconds": a.print_time_seconds,
+                "filament_used_grams": a.filament_used_grams,
+                "filament_type": a.filament_type,
+                "filament_color": a.filament_color,
+                "layer_height": a.layer_height,
+                "total_layers": a.total_layers,
+                "nozzle_diameter": a.nozzle_diameter,
+                "sliced_for_model": a.sliced_for_model,
+                "status": a.status,
+                "started_at": a.started_at.isoformat() if a.started_at else None,
+                "completed_at": a.completed_at.isoformat() if a.completed_at else None,
+                "makerworld_url": a.makerworld_url,
+                "designer": a.designer,
+                "is_favorite": a.is_favorite,
+                "tags": a.tags,
+                "notes": a.notes,
+                "cost": a.cost,
+                "energy_kwh": a.energy_kwh,
+                "energy_cost": a.energy_cost,
+                "quantity": a.quantity,
+                "created_at": a.created_at.isoformat() if a.created_at else None,
+            })
+
+        files["archives/print_archives.json"] = {
+            "version": "1.0",
+            "archive_count": len(archives_data),
+            "archives": archives_data,
+        }
+
+        logger.info("Collected %d print archive entries", len(archives_data))
 
     async def _push_to_provider(self, config: GitBackupConfig, files: dict) -> dict:
         """Push files to the configured Git provider.

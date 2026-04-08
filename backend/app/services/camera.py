@@ -591,10 +591,13 @@ async def test_camera_connection(
 
     Returns dict with success status and any error message.
     """
+    import os
     import tempfile
 
-    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
-        test_path = Path(f.name)
+    fd, tmp_name = tempfile.mkstemp(suffix=".jpg")
+    os.close(fd)
+    test_path = Path(tmp_name)
+    test_path.chmod(0o600)
 
     try:
         success = await capture_camera_frame(

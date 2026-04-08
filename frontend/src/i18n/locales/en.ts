@@ -369,6 +369,8 @@ export default {
       staggerIntervalHint: '0 = use system default',
       swapMode: 'Swap Mode',
       swapModeHint: 'A1 Mini plate swapper (swap-systems.com)',
+      autoLightOff: 'Turn off light after print starts',
+      autoLightOffHint: 'Automatically turn off chamber light when a print begins (P1S/P1P turn it on at start)',
       fromPrinterSettings: 'From printer settings',
       modelOptional: 'Model (optional)',
       saveChanges: 'Save Changes',
@@ -510,6 +512,7 @@ export default {
     // HMS errors
     clickToViewHmsErrors: 'Click to view HMS errors',
     estimatedCompletion: 'Estimated completion time',
+    plateNumber: 'Plate {{number}}',
     slotOptions: 'Slot options',
     // AMS hover popup
     amsPopup: {
@@ -3537,6 +3540,10 @@ export default {
     cloudProfilesDescription: 'Filament, printer, and process presets from Bambu Cloud',
     appSettings: 'App Settings',
     appSettingsDescription: 'BamDude configuration (complete database)',
+    backupSpools: 'Spool Inventory',
+    backupSpoolsHint: 'Filament spools and usage history',
+    backupArchives: 'Print Archives',
+    backupArchivesHint: 'Print archive metadata (no binary files)',
     lastBackupAt: 'Last backup:',
     noBackupsYet: 'No backups yet',
     next: 'Next:',

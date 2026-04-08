@@ -106,6 +106,7 @@ export interface Printer {
   plate_detection_roi?: PlateDetectionROI;  // ROI for plate detection
   stagger_interval_minutes: number;  // Per-printer stagger interval override (0 = system default)
   swap_mode_enabled: boolean;  // A1 Mini plate swapper
+  auto_light_off: boolean;  // Turn off chamber light after print starts
   created_at: string;
   updated_at: string;
 }
@@ -292,6 +293,7 @@ export interface PrinterCreate {
   plate_detection_roi?: PlateDetectionROI;
   stagger_interval_minutes?: number;
   swap_mode_enabled?: boolean;
+  auto_light_off?: boolean;
 }
 
 // Plate Detection
@@ -1644,6 +1646,8 @@ export interface GitBackupConfig {
   backup_kprofiles: boolean;
   backup_cloud_profiles: boolean;
   backup_settings: boolean;
+  backup_spools: boolean;
+  backup_archives: boolean;
   enabled: boolean;
   provider: string;
   api_base_url: string | null;
@@ -1665,6 +1669,8 @@ export interface GitBackupConfigCreate {
   backup_kprofiles?: boolean;
   backup_cloud_profiles?: boolean;
   backup_settings?: boolean;
+  backup_spools?: boolean;
+  backup_archives?: boolean;
   enabled?: boolean;
   provider?: string;
   api_base_url?: string | null;

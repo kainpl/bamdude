@@ -341,6 +341,22 @@ function getBambuColorName(trayIdName: string | null | undefined): string | null
   return BAMBU_COLOR_CODE_FALLBACK[colorCode] || null;
 }
 
+// Extract plate number from gcode_file path and append to print name
+function formatPrintName(
+  printName: string | null | undefined,
+  gcodeFile: string | null | undefined,
+  t: (key: string, opts?: Record<string, unknown>) => string,
+): string {
+  if (!printName) return '';
+  if (!gcodeFile) return printName;
+  // Match plate_N.gcode (e.g. "Metadata/plate_3.gcode")
+  const match = gcodeFile.match(/plate_(\d+)\.gcode/i);
+  if (match && match[1] !== '1') {
+    return `${printName} — ${t('printers.plateNumber', { number: match[1] })}`;
+  }
+  return printName;
+}
+
 // Format K value with 3 decimal places, default to 0.020 if null
 function formatKValue(k: number | null | undefined): string {
   const value = k ?? 0.020;
@@ -2807,7 +2823,7 @@ function PrinterCard({
                         <>
                           <p className="text-sm text-bambu-gray mb-1">{getStatusDisplay(status.state, status.stg_cur_name)}</p>
                           <p className="text-white text-sm mb-2 truncate">
-                            {status.subtask_name || status.current_print}
+                            {formatPrintName(status.subtask_name || status.current_print, status.gcode_file, t)}
                           </p>
                           <div className="flex items-center justify-between text-sm">
                             <div className="flex-1 bg-bambu-dark-tertiary rounded-full h-2 mr-3">
@@ -4942,6 +4958,7 @@ function AddPrinterModal({
     mqtt_connection_timeout: 300,
     stagger_interval_minutes: 0,
     swap_mode_enabled: false,
+    auto_light_off: false,
   });
 
   // Discovery state
@@ -5342,6 +5359,20 @@ function AddPrinterModal({
                   <p className="text-xs text-bambu-gray mt-1 ml-6">{t('printers.modal.swapModeHint')}</p>
                 </div>
                 )}
+                {form.model && /p1s|p1p/i.test(form.model) && (
+                <div>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={form.auto_light_off ?? false}
+                      onChange={(e) => setForm({ ...form, auto_light_off: e.target.checked })}
+                      className="w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                    />
+                    <span className="text-sm text-white">{t('printers.modal.autoLightOff')}</span>
+                  </label>
+                  <p className="text-xs text-bambu-gray mt-1 ml-6">{t('printers.modal.autoLightOffHint')}</p>
+                </div>
+                )}
               </div>
             </div>
 
@@ -5594,6 +5625,7 @@ function EditPrinterModal({
     mqtt_connection_timeout: printer.mqtt_connection_timeout ?? 300,
     stagger_interval_minutes: printer.stagger_interval_minutes ?? 0,
     swap_mode_enabled: printer.swap_mode_enabled ?? false,
+    auto_light_off: printer.auto_light_off ?? false,
   });
 
   const updateMutation = useMutation({
@@ -5627,6 +5659,7 @@ function EditPrinterModal({
       mqtt_connection_timeout: form.mqtt_connection_timeout,
       stagger_interval_minutes: form.stagger_interval_minutes,
       swap_mode_enabled: form.swap_mode_enabled,
+      auto_light_off: form.auto_light_off,
     };
     // Only include access_code if it was changed
     if (form.access_code) {
@@ -5790,6 +5823,20 @@ function EditPrinterModal({
                     <span className="text-sm text-white">{t('printers.modal.swapMode')}</span>
                   </label>
                   <p className="text-xs text-bambu-gray mt-1 ml-6">{t('printers.modal.swapModeHint')}</p>
+                </div>
+                )}
+                {form.model && /p1s|p1p/i.test(form.model) && (
+                <div>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={form.auto_light_off ?? false}
+                      onChange={(e) => setForm({ ...form, auto_light_off: e.target.checked })}
+                      className="w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                    />
+                    <span className="text-sm text-white">{t('printers.modal.autoLightOff')}</span>
+                  </label>
+                  <p className="text-xs text-bambu-gray mt-1 ml-6">{t('printers.modal.autoLightOffHint')}</p>
                 </div>
                 )}
               </div>

@@ -101,6 +101,7 @@ def has_stg_cur_idle_bug(model: str | None) -> bool:
 # incorrectly gate X1E (matched by "X1") and H2D Pro (matched by "H2D").
 _DRYING_MIN_FIRMWARE: dict[str, str] = {
     "H2D": "01.02.30.00",
+    "H2S": "01.02.00.00",
     "X1": "01.09.00.00",
     "X1C": "01.09.00.00",
     "P1P": "01.08.00.00",
@@ -108,7 +109,7 @@ _DRYING_MIN_FIRMWARE: dict[str, str] = {
 }
 # Models that definitely don't support AMS drying (no AMS 2 Pro / AMS-HT compatibility)
 _DRYING_UNSUPPORTED_MODELS = frozenset(
-    {"P2S", "A1", "A1MINI", "A1-MINI", "A1 MINI", "H2S", "H2C", "N7", "O1C", "O1C2", "O1S", "N1", "N2S"}
+    {"P2S", "A1", "A1MINI", "A1-MINI", "A1 MINI", "H2C", "N7", "O1C", "O1C2", "O1S", "N1", "N2S"}
 )
 
 
@@ -725,7 +726,12 @@ def printer_state_to_dict(state: PrinterState, printer_id: int | None = None, mo
 
     # Parse virtual tray (external spool) — now a list
     if "vt_tray" in raw_data:
-        for vt_data in raw_data["vt_tray"]:
+        vt_tray_raw = raw_data["vt_tray"]
+        if isinstance(vt_tray_raw, dict):
+            vt_tray_raw = [vt_tray_raw]
+        elif not isinstance(vt_tray_raw, list):
+            vt_tray_raw = []
+        for vt_data in vt_tray_raw:
             vt_tag_uid = vt_data.get("tag_uid")
             if vt_tag_uid in ("", "0000000000000000"):
                 vt_tag_uid = None

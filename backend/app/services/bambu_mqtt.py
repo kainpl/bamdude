@@ -347,6 +347,12 @@ class BambuMQTTClient:
         self._request_topic_sub_time: float = 0.0
         self._request_topic_confirmed: bool = False
 
+        # Developer mode probe: two-phase detection to avoid false negatives.
+        # Phase 1: wait for a "large" status push (len > 30) to confirm printer is ready.
+        # Phase 2: wait 5s after connect before sending the probe request.
+        self._dev_mode_needs_probe: bool = False
+        self._connect_time: float = 0.0
+
         # Set when check_staleness() force-closes the socket to trigger reconnect.
         # Prevents _on_disconnect from redundantly broadcasting state (already done).
         self._stale_reconnecting: bool = False
@@ -415,6 +421,10 @@ class BambuMQTTClient:
             self._stale_reconnecting = False  # Clear stale-reconnect flag on successful connect
             # Reset per-connection warning state so warnings fire once per (re)connection
             self._ams_version_warned = set()
+            # Reset developer mode probe state (don't clear developer_mode itself —
+            # it may still be valid from a previous connection)
+            self._dev_mode_needs_probe = False
+            self._connect_time = time.monotonic()
             client.subscribe(self.topic_subscribe)
             # Subscribe to request topic for ams_mapping capture (if supported by broker)
             if self._request_topic_supported:
@@ -2378,6 +2388,10 @@ class BambuMQTTClient:
                         if "diameter" in nozzle:
                             self.state.nozzles[idx].nozzle_diameter = str(nozzle["diameter"])
 
+        # Normalize vt_tray to list before storing (some firmware sends a dict)
+        if "vt_tray" in data and isinstance(data["vt_tray"], dict):
+            data["vt_tray"] = [data["vt_tray"]]
+
         # Preserve AMS, vt_tray, ams_extruder_map, and mapping data when updating raw_data
         # (these fields aren't sent in every MQTT push, only when changed)
         ams_data = self.state.raw_data.get("ams")
@@ -2385,6 +2399,16 @@ class BambuMQTTClient:
         ams_extruder_map_data = self.state.raw_data.get("ams_extruder_map")
         mapping_data = self.state.raw_data.get("mapping")
         self.state.raw_data = data
+
+        # Restore preserved fields immediately after raw_data assignment
+        if ams_data is not None:
+            self.state.raw_data["ams"] = ams_data
+        if vt_tray_data is not None:
+            self.state.raw_data["vt_tray"] = vt_tray_data
+        if ams_extruder_map_data is not None:
+            self.state.raw_data["ams_extruder_map"] = ams_extruder_map_data
+        if mapping_data is not None and "mapping" not in data:
+            self.state.raw_data["mapping"] = mapping_data
 
         # Parse developer LAN mode from "fun" field
         if "fun" in data:
@@ -2394,14 +2418,20 @@ class BambuMQTTClient:
                 self.state.developer_mode = (fun_int & 0x20000000) == 0
             except (ValueError, TypeError):
                 pass
-        if ams_data is not None:
-            self.state.raw_data["ams"] = ams_data
-        if vt_tray_data is not None:
-            self.state.raw_data["vt_tray"] = vt_tray_data
-        if ams_extruder_map_data is not None:
-            self.state.raw_data["ams_extruder_map"] = ams_extruder_map_data
-        if mapping_data is not None and "mapping" not in data:
-            self.state.raw_data["mapping"] = mapping_data
+        elif self.state.developer_mode is None:
+            # Two-phase developer mode probe:
+            # 1) Wait for a "large" status push (len > 30) confirming printer is streaming
+            # 2) Wait at least 5s after connect so the printer has time to send "fun" naturally
+            if not self._dev_mode_needs_probe and len(data) > 30:
+                self._dev_mode_needs_probe = True
+            if self._dev_mode_needs_probe and time.monotonic() - self._connect_time >= 5.0:
+                self._probe_developer_mode()
+            elif self._dev_mode_needs_probe:
+                logger.debug(
+                    "[%s] Deferring developer mode probe (%.1fs since connect, need 5s)",
+                    self.serial_number,
+                    time.monotonic() - self._connect_time,
+                )
 
         # Log mapping data when received (for usage tracking debugging)
         if "mapping" in data:
@@ -2569,6 +2599,21 @@ class BambuMQTTClient:
         if self.on_state_change:
             self.on_state_change(self.state)
 
+    def _probe_developer_mode(self):
+        """Send a pushall to coerce the printer into returning the 'fun' field.
+
+        Called once after connecting when developer_mode is still unknown and the
+        printer has been streaming status for at least 5 seconds without sending
+        'fun' on its own.
+        """
+        self._dev_mode_needs_probe = False  # Don't probe again
+        logger.info(
+            "[%s] Developer mode still unknown after %.1fs — sending pushall probe",
+            self.serial_number,
+            time.monotonic() - self._connect_time,
+        )
+        self._request_push_all()
+
     def _request_push_all(self):
         """Request full status update from printer."""
         if self._client:
@@ -2729,9 +2774,13 @@ class BambuMQTTClient:
                         # with a single slot (slot 0). BambuStudio convention:
                         #   255 = VIRTUAL_TRAY_MAIN_ID (main/left nozzle)
                         #   254 = VIRTUAL_TRAY_DEPUTY_ID (deputy/right nozzle)
+                        # Single-nozzle printers (P1S, A1, X1C) always need ams_id=255.
+                        # Only H2D series uses the actual tray_id (254 for deputy nozzle).
                         # Flat mapping must use -1 (firmware doesn't accept raw 254/255).
+                        _is_h2d = self.model and self.model.upper().strip() in ("H2D", "H2D PRO", "H2DPRO", "H2C", "H2S")
+                        ext_ams_id = tray_id if _is_h2d else 255
                         flat_ams_mapping.append(-1)
-                        ams_mapping2.append({"ams_id": tray_id, "slot_id": 0})
+                        ams_mapping2.append({"ams_id": ext_ams_id, "slot_id": 0})
                     elif tray_id >= 128:
                         # AMS-HT: global tray ID IS the ams_id (single tray per unit)
                         flat_ams_mapping.append(tray_id)

@@ -1069,10 +1069,15 @@ class PrintScheduler:
                 printer_manager.send_drying_command(printer_id, ams_id, 0, 0, mode=0)
         self._drying_in_progress.pop(printer_id, None)
 
-    async def _get_smart_plug(self, db: AsyncSession, printer_id: int) -> SmartPlug | None:
-        """Get the smart plug associated with a printer."""
+    async def _get_smart_plugs(self, db: AsyncSession, printer_id: int) -> list[SmartPlug]:
+        """Get all smart plugs associated with a printer."""
         result = await db.execute(select(SmartPlug).where(SmartPlug.printer_id == printer_id))
-        return result.scalar_one_or_none()
+        return list(result.scalars().all())
+
+    async def _get_smart_plug(self, db: AsyncSession, printer_id: int) -> SmartPlug | None:
+        """Get the first smart plug associated with a printer (backwards compat)."""
+        plugs = await self._get_smart_plugs(db, printer_id)
+        return plugs[0] if plugs else None
 
     async def _power_on_and_wait(self, plug: SmartPlug, printer_id: int, db: AsyncSession) -> bool:
         """Turn on smart plug and wait for printer to connect.
@@ -1134,14 +1139,16 @@ class PrintScheduler:
         if not item.auto_off_after:
             return
 
-        plug = await self._get_smart_plug(db, item.queue_id)
-        if plug and plug.enabled:
+        plugs = await self._get_smart_plugs(db, item.queue_id)
+        enabled_plugs = [p for p in plugs if p.enabled]
+        if enabled_plugs:
             logger.info("Auto-off: Waiting for printer %s to cool down before power off...", item.queue_id)
             # Wait for cooldown (up to 10 minutes)
             await printer_manager.wait_for_cooldown(item.queue_id, target_temp=50.0, timeout=600)
-            logger.info("Auto-off: Powering off printer %s", item.queue_id)
-            service = await smart_plug_manager.get_service_for_plug(plug, db)
-            await service.turn_off(plug)
+            for plug in enabled_plugs:
+                logger.info("Auto-off: Powering off printer %s via plug '%s'", item.queue_id, plug.name)
+                service = await smart_plug_manager.get_service_for_plug(plug, db)
+                await service.turn_off(plug)
 
     async def _get_job_name(self, db: AsyncSession, item: PrintQueueItem) -> str:
         """Get a human-readable name for a queue item."""

@@ -515,8 +515,8 @@ def check_printer_access(api_key: APIKey, printer_id: int) -> None:
     Raises:
         HTTPException: If access is denied
     """
-    # If printer_ids is None or empty, access to all printers
-    if api_key.printer_ids is None or len(api_key.printer_ids) == 0:
+    # If printer_ids is None, access to all printers (empty list = no access)
+    if api_key.printer_ids is None:
         return
 
     # Check if printer_id is in allowed list

@@ -40,6 +40,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/archives", tags=["archives"])
 
 
+def _safe_filename(name: str) -> str:
+    """Sanitize upload filename to prevent path traversal."""
+    return Path(name.replace("\\", "/")).name
+
+
 def compute_time_accuracy(archive: PrintArchive) -> dict:
     """Compute actual print time and accuracy for an archive.
 
@@ -1865,12 +1870,13 @@ async def upload_timelapse(
         raise HTTPException(400, "File must be a video file (.mp4, .avi, .mkv)")
 
     content = await file.read()
-    success = await service.attach_timelapse(archive_id, content, file.filename)
+    safe_name = _safe_filename(file.filename)
+    success = await service.attach_timelapse(archive_id, content, safe_name)
 
     if not success:
         raise HTTPException(500, "Failed to attach timelapse")
 
-    return {"status": "attached", "filename": file.filename}
+    return {"status": "attached", "filename": safe_name}
 
 
 @router.get("/{archive_id}/timelapse/info")
@@ -2076,7 +2082,7 @@ async def upload_photo(
     # Generate unique filename
     import uuid
 
-    ext = Path(file.filename).suffix.lower()
+    ext = Path(_safe_filename(file.filename)).suffix.lower()
     photo_filename = f"{uuid.uuid4().hex[:8]}{ext}"
     photo_path = photos_dir / photo_filename
 
@@ -2559,7 +2565,7 @@ async def upload_archive(
         raise HTTPException(400, "File must be a .3mf file")
 
     # Save uploaded file temporarily
-    temp_path = settings.archive_dir / "temp" / file.filename
+    temp_path = settings.archive_dir / "temp" / _safe_filename(file.filename)
     temp_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
@@ -2598,7 +2604,8 @@ async def upload_archives_bulk(
             errors.append({"filename": file.filename or "unknown", "error": "Not a .3mf file"})
             continue
 
-        temp_path = settings.archive_dir / "temp" / file.filename
+        safe_name = _safe_filename(file.filename)
+        temp_path = settings.archive_dir / "temp" / safe_name
         temp_path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
@@ -2615,16 +2622,16 @@ async def upload_archives_bulk(
             if archive:
                 results.append(
                     {
-                        "filename": file.filename,
+                        "filename": safe_name,
                         "id": archive.id,
                         "status": "success",
                     }
                 )
             else:
-                errors.append({"filename": file.filename, "error": "Failed to process"})
+                errors.append({"filename": safe_name, "error": "Failed to process"})
         except Exception as e:
-            logger.exception("Failed to upload archive %s: %s", file.filename, e)
-            errors.append({"filename": file.filename, "error": "Failed to process file"})
+            logger.exception("Failed to upload archive %s: %s", safe_name, e)
+            errors.append({"filename": safe_name, "error": "Failed to process file"})
         finally:
             if temp_path.exists():
                 temp_path.unlink()
@@ -3292,8 +3299,8 @@ async def upload_source_3mf(
         if old_source_path.exists():
             old_source_path.unlink()
 
-    # Save the source 3MF file - preserve original filename
-    source_filename = file.filename
+    # Save the source 3MF file - preserve original filename (sanitized)
+    source_filename = _safe_filename(file.filename)
     source_path = source_dir / source_filename
 
     content = await file.read()
@@ -3442,7 +3449,7 @@ async def upload_source_3mf_by_name(
     # Derive print name from filename if not provided
     if not print_name:
         # Remove .3mf extension and common suffixes
-        print_name = file.filename.rsplit(".3mf", 1)[0]
+        print_name = _safe_filename(file.filename).rsplit(".3mf", 1)[0]
         # Remove _source suffix if present
         if print_name.endswith("_source"):
             print_name = print_name[:-7]
@@ -3491,8 +3498,8 @@ async def upload_source_3mf_by_name(
         if old_source_path.exists():
             old_source_path.unlink()
 
-    # Save the source 3MF file - preserve original filename
-    source_filename = file.filename
+    # Save the source 3MF file - preserve original filename (sanitized)
+    source_filename = _safe_filename(file.filename)
     source_path = source_dir / source_filename
 
     content = await file.read()
@@ -3572,8 +3579,8 @@ async def upload_f3d(
         if old_f3d_path.exists():
             old_f3d_path.unlink()
 
-    # Save the F3D file - preserve original filename
-    f3d_filename = file.filename
+    # Save the F3D file - preserve original filename (sanitized)
+    f3d_filename = _safe_filename(file.filename)
     f3d_path = f3d_dir / f3d_filename
 
     content = await file.read()
