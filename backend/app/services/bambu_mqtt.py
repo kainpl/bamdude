@@ -2749,6 +2749,17 @@ class BambuMQTTClient:
             # Other printers (X1C, P1S, A1, etc.) require actual booleans for all fields
             is_h2d = self.model and self.model.upper().strip() in ("H2D", "H2D PRO", "H2DPRO", "H2C", "H2S")
 
+            # If all mapped slots are external spool (no real AMS trays), force use_ams=False.
+            # P1S/P1P with no AMS rejects use_ams=True with "Failed to get AMS mapping table".
+            # Skip for H2D series — use_ams controls nozzle routing on those printers.
+            if ams_mapping and use_ams and not is_h2d:
+                if all(t is None or int(t) < 0 or int(t) >= 254 for t in ams_mapping):
+                    use_ams = False
+                    logger.info(
+                        "[%s] All filament slots use external spool — setting use_ams=False",
+                        self.serial_number,
+                    )
+
             command = {
                 "print": {
                     "sequence_id": "20000",
