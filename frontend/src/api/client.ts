@@ -904,6 +904,16 @@ export interface AppSettings {
   stagger_concurrent: number;
   stagger_interval_minutes: number;
   stagger_wait_for_bed: boolean;
+  // LDAP authentication
+  ldap_enabled: boolean;
+  ldap_server_url: string;
+  ldap_bind_dn: string;
+  ldap_bind_password: string;
+  ldap_search_base: string;
+  ldap_user_filter: string;
+  ldap_security: string;
+  ldap_group_mapping: string;
+  ldap_auto_provision: boolean;
 }
 
 export type AppSettingsUpdate = Partial<AppSettings>;
@@ -2256,6 +2266,7 @@ export interface UserResponse {
   role: string;  // Deprecated, kept for backward compatibility
   is_active: boolean;
   is_admin: boolean;  // Computed from role and group membership
+  auth_source: string;  // "local" or "ldap"
   groups: GroupBrief[];
   permissions: Permission[];  // All permissions from groups
   created_at: string;
@@ -2325,6 +2336,16 @@ export interface AdvancedAuthStatus {
   smtp_configured: boolean;
 }
 
+export interface LDAPStatus {
+  ldap_enabled: boolean;
+  ldap_configured: boolean;
+}
+
+export interface LDAPTestResponse {
+  success: boolean;
+  message: string;
+}
+
 export interface SetupResponse {
   auth_enabled: boolean;
   admin_created?: boolean;
@@ -2380,6 +2401,12 @@ export const api = {
       method: 'POST',
     }),
   getAdvancedAuthStatus: () => request<AdvancedAuthStatus>('/auth/advanced-auth/status'),
+  // LDAP Authentication
+  getLDAPStatus: () => request<LDAPStatus>('/auth/ldap/status'),
+  testLDAP: () =>
+    request<LDAPTestResponse>('/auth/ldap/test', {
+      method: 'POST',
+    }),
   forgotPassword: (data: ForgotPasswordRequest) =>
     request<ForgotPasswordResponse>('/auth/forgot-password', {
       method: 'POST',

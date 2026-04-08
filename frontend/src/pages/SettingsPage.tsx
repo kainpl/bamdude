@@ -25,6 +25,7 @@ import { ExternalLinksSettings } from '../components/ExternalLinksSettings';
 import { VirtualPrinterList } from '../components/VirtualPrinterList';
 import { GitBackupSettings } from '../components/GitBackupSettings';
 import { EmailSettings } from '../components/EmailSettings';
+import { LDAPSettings } from '../components/LDAPSettings';
 import { APIBrowser } from '../components/APIBrowser';
 import { Toggle } from '../components/Toggle';
 import { getGroupName, getGroupDescription } from '../utils/groupI18n';
@@ -38,7 +39,7 @@ import { Palette } from 'lucide-react';
 
 const validTabs = ['general', 'printing', 'filament', 'notifications', 'plugs', 'network', 'virtual-printer', 'apikeys', 'users', 'backup'] as const;
 type TabType = typeof validTabs[number];
-type UsersSubTab = 'users' | 'email';
+type UsersSubTab = 'users' | 'email' | 'ldap';
 
 const STORAGE_CATEGORY_COLORS: Record<string, string> = {
   database: 'bg-blue-600',
@@ -505,6 +506,11 @@ export function SettingsPage() {
   const { data: advancedAuthStatus = { advanced_auth_enabled: false, smtp_configured: false } } = useQuery({
     queryKey: ['advancedAuthStatus'],
     queryFn: () => api.getAdvancedAuthStatus(),
+  });
+
+  const { data: ldapStatus } = useQuery({
+    queryKey: ['ldapStatus'],
+    queryFn: () => api.getLDAPStatus(),
   });
 
   // User management queries and mutations
@@ -4130,6 +4136,20 @@ export function SettingsPage() {
                 <span className="w-2 h-2 rounded-full bg-green-400" />
               )}
             </button>
+            <button
+              onClick={() => setUsersSubTab('ldap')}
+              className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+                usersSubTab === 'ldap'
+                  ? 'text-bambu-green border-bambu-green'
+                  : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+              }`}
+            >
+              <Shield className="w-4 h-4" />
+              {t('settings.tabs.ldap') || 'LDAP'}
+              {ldapStatus?.ldap_enabled && (
+                <span className="w-2 h-2 rounded-full bg-green-400" />
+              )}
+            </button>
           </div>
 
           {/* Users Sub-tab */}
@@ -4203,10 +4223,12 @@ export function SettingsPage() {
                           <Users className="w-5 h-5 text-bambu-green" />
                           {t('settings.currentUser')}
                         </h3>
+                        {user.auth_source !== 'ldap' && (
                         <Button size="sm" variant="ghost" onClick={() => setShowChangePasswordModal(true)}>
                           <Key className="w-4 h-4" />
                           {t('settings.changePassword')}
                         </Button>
+                        )}
                       </div>
                     </CardHeader>
                     <CardContent>
@@ -4278,6 +4300,11 @@ export function SettingsPage() {
                             <div className="flex-1 min-w-0">
                               <p className="text-white font-medium truncate">{userItem.username}</p>
                               <div className="flex flex-wrap gap-1 mt-1">
+                                {userItem.auth_source === 'ldap' && (
+                                  <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-cyan-500/20 text-cyan-300">
+                                    LDAP
+                                  </span>
+                                )}
                                 {userItem.is_admin && (
                                   <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-purple-500/20 text-purple-300">
                                     {t('settings.admin')}
@@ -4441,6 +4468,12 @@ export function SettingsPage() {
           {usersSubTab === 'email' && (
             <div className="max-w-2xl">
               <EmailSettings />
+            </div>
+          )}
+
+          {usersSubTab === 'ldap' && (
+            <div className="max-w-2xl">
+              <LDAPSettings />
             </div>
           )}
         </div>

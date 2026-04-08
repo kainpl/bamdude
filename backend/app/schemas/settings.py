@@ -193,6 +193,26 @@ class AppSettings(BaseModel):
         description="Enable user email notifications for print job events (requires Advanced Authentication)",
     )
 
+    # LDAP authentication
+    ldap_enabled: bool = Field(default=False, description="Enable LDAP authentication")
+    ldap_server_url: str = Field(default="", description="LDAP server URL (e.g., ldap://ldap.example.com:389)")
+    ldap_bind_dn: str = Field(default="", description="Bind DN for LDAP searches (e.g., cn=admin,dc=example,dc=com)")
+    ldap_bind_password: str = Field(default="", description="Bind password for LDAP searches")
+    ldap_search_base: str = Field(default="", description="Search base DN (e.g., ou=users,dc=example,dc=com)")
+    ldap_user_filter: str = Field(
+        default="(sAMAccountName={username})",
+        description="LDAP user search filter. {username} is replaced with the login username",
+    )
+    ldap_security: str = Field(default="starttls", description="LDAP security: 'starttls' or 'ldaps'")
+    ldap_group_mapping: str = Field(
+        default="",
+        description="JSON: LDAP group to BamDude group mapping {ldap_group_dn: bamdude_group_name}",
+    )
+    ldap_auto_provision: bool = Field(
+        default=False,
+        description="Auto-create BamDude user on first successful LDAP login",
+    )
+
     # Default sidebar order (admin-set for all users)
     default_sidebar_order: str = Field(
         default="",
@@ -269,7 +289,29 @@ class AppSettingsUpdate(BaseModel):
     prometheus_token: str | None = None
     low_stock_threshold: float | None = Field(default=None, ge=0.1, le=99.9)
     user_notifications_enabled: bool | None = None
+    ldap_enabled: bool | None = None
+    ldap_server_url: str | None = None
+    ldap_bind_dn: str | None = None
+    ldap_bind_password: str | None = None
+    ldap_search_base: str | None = None
+    ldap_user_filter: str | None = None
+    ldap_security: str | None = None
+    ldap_group_mapping: str | None = None
+    ldap_auto_provision: bool | None = None
     default_sidebar_order: str | None = None
+
+    @field_validator("ldap_group_mapping")
+    @classmethod
+    def validate_ldap_group_mapping(cls, v: str | None) -> str | None:
+        if v is None or v == "":
+            return v
+        try:
+            parsed = json.loads(v)
+        except json.JSONDecodeError:
+            raise ValueError("ldap_group_mapping must be valid JSON or empty")
+        if not isinstance(parsed, dict):
+            raise ValueError("ldap_group_mapping must be a JSON object mapping LDAP group DNs to BamDude group names")
+        return v
 
     @field_validator("default_sidebar_order")
     @classmethod

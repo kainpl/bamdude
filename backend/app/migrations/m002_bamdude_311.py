@@ -292,6 +292,9 @@ async def upgrade(conn):
         ") WHERE performed_by_user_id IS NULL AND performed_by_chat_id IS NULL"
     ))
 
+    # ── Users: LDAP auth_source ──
+    await add_column(conn, "users", "auth_source VARCHAR(20) NOT NULL DEFAULT 'local'")
+
     # ── Drop dead tables ──
     for dead_table in ("filaments", "print_log_entries"):
         if await table_exists(conn, dead_table):
