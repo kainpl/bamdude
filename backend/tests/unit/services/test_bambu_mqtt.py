@@ -2788,6 +2788,232 @@ class TestDeveloperModeDetection:
         assert mqtt_client.state.developer_mode is False
 
 
+class TestDeveloperModeProbeTimeout:
+    """Tests for developer mode probe timeout, retry, and forced reconnect (#887).
+
+    When a printer's MQTT session is half-broken (sends status but ignores
+    commands), the developer mode probe gets no response.  The timeout logic
+    retries once, then force-closes the socket on the second failure.
+    """
+
+    @pytest.fixture
+    def mqtt_client(self):
+        import time
+        from unittest.mock import MagicMock
+
+        from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+        client = BambuMQTTClient(
+            ip_address="192.168.1.100",
+            serial_number="TEST123",
+            access_code="12345678",
+        )
+        # Simulate connected state with a mock MQTT client
+        client.state.connected = True
+        mock_paho = MagicMock()
+        mock_paho.socket.return_value = MagicMock()
+        client._client = mock_paho
+        # Set connect time in the past so the 5s probe delay is satisfied
+        client._connect_time = time.monotonic() - 10.0
+        return client
+
+    def _make_pushall_data(self):
+        """Create a print data dict with >30 keys (triggers probe) and no 'fun' field."""
+        return {f"key_{i}": i for i in range(35)}
+
+    def test_on_connect_resets_probe_state_but_preserves_developer_mode(self, mqtt_client):
+        """_on_connect resets probe tracking but preserves cached developer_mode."""
+        import time
+
+        mqtt_client._dev_mode_probed = True
+        mqtt_client._dev_mode_probe_seq = "42"
+        mqtt_client._dev_mode_probe_time = time.monotonic()
+        mqtt_client._dev_mode_probe_failures = 2
+        mqtt_client.state.developer_mode = True
+
+        # subscribe() must return (result, mid) tuple
+        mqtt_client._client.subscribe.return_value = (0, 1)
+        mqtt_client._on_connect(mqtt_client._client, None, None, 0)
+
+        # developer_mode is preserved across reconnects (#887)
+        assert mqtt_client.state.developer_mode is True
+        assert mqtt_client._dev_mode_probed is False
+        assert mqtt_client._dev_mode_probe_seq is None
+        assert mqtt_client._dev_mode_probe_time == 0.0
+        assert mqtt_client._dev_mode_probe_failures == 0
+        assert mqtt_client._connect_time > 0
+
+    def test_probe_deferred_when_connect_too_recent(self, mqtt_client):
+        """Probe is deferred if less than 5s have passed since _on_connect."""
+        import time
+
+        data = self._make_pushall_data()
+
+        # Set connect time to 1 second ago -- too recent for probe
+        mqtt_client._connect_time = time.monotonic() - 1.0
+
+        mqtt_client._update_state(data)
+        # Pushall seen, so needs_probe is set, but probe NOT fired yet
+        assert mqtt_client._dev_mode_needs_probe is True
+        assert mqtt_client._dev_mode_probed is False
+        assert mqtt_client._dev_mode_probe_seq is None
+
+    def test_probe_fires_after_delay(self, mqtt_client):
+        """Probe fires once 5s have passed since _on_connect."""
+        import time
+
+        data = self._make_pushall_data()
+
+        # Set connect time to 6 seconds ago -- delay satisfied
+        mqtt_client._connect_time = time.monotonic() - 6.0
+
+        mqtt_client._update_state(data)
+        # Probe should have fired
+        assert mqtt_client._dev_mode_probed is True
+        # Probe uses pushall (no seq tracking in our implementation)
+
+    def test_probe_fires_on_incremental_after_delay(self, mqtt_client):
+        """After seeing a pushall within 5s, probe fires on later incremental message."""
+        import time
+
+        pushall_data = self._make_pushall_data()
+        incremental_data = {"gcode_state": "IDLE", "mc_percent": 0}  # < 30 keys
+
+        # Pushall arrives 1s after connect -- too early for probe
+        mqtt_client._connect_time = time.monotonic() - 1.0
+        mqtt_client._update_state(pushall_data)
+        assert mqtt_client._dev_mode_needs_probe is True
+        assert mqtt_client._dev_mode_probed is False
+
+        # 5s later, an incremental update arrives -- probe fires now
+        mqtt_client._connect_time = time.monotonic() - 6.0
+        mqtt_client._update_state(incremental_data)
+        assert mqtt_client._dev_mode_probed is True
+        # Probe uses pushall (no seq tracking in our implementation)
+
+    def test_no_reprobe_when_developer_mode_cached(self, mqtt_client):
+        """Auto-reconnect preserves developer_mode, skipping reprobe."""
+        import time
+
+        data = self._make_pushall_data()
+
+        # Simulate known developer_mode from previous connection
+        mqtt_client.state.developer_mode = True
+        mqtt_client._connect_time = time.monotonic() - 10.0
+
+        mqtt_client._update_state(data)
+        # Should NOT probe -- developer_mode is already known
+        assert mqtt_client._dev_mode_needs_probe is False
+        assert mqtt_client._dev_mode_probed is False
+        assert mqtt_client._dev_mode_probe_seq is None
+        assert mqtt_client.state.developer_mode is True
+
+    def test_on_connect_resets_needs_probe(self, mqtt_client):
+        """_on_connect resets _dev_mode_needs_probe for a clean start."""
+        mqtt_client._dev_mode_needs_probe = True
+
+        mqtt_client._client.subscribe.return_value = (0, 1)
+        mqtt_client._on_connect(mqtt_client._client, None, None, 0)
+
+        assert mqtt_client._dev_mode_needs_probe is False
+
+
+class TestVtTrayNormalization:
+    """Tests for vt_tray dict->list normalization in _update_state.
+
+    MQTT sends vt_tray as a dict for single-slot printers, but all consumers
+    expect a list.  _update_state must normalize it before any callback can
+    read raw_data, because the dev-mode probe may release the GIL and let
+    the event loop read the partially-updated state.
+    """
+
+    @pytest.fixture
+    def mqtt_client(self):
+        from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+        client = BambuMQTTClient(
+            ip_address="192.168.1.100",
+            serial_number="TEST123",
+            access_code="12345678",
+        )
+        return client
+
+    def test_vt_tray_dict_normalized_in_update_state(self, mqtt_client):
+        """Verify _update_state wraps a raw vt_tray dict into a list."""
+        vt_dict = {
+            "id": "254",
+            "tray_color": "FF0000",
+            "tray_type": "PLA",
+            "tag_uid": "0000000000000000",
+            "tray_uuid": "00000000000000000000000000000000",
+        }
+        data = {"gcode_state": "IDLE", "vt_tray": vt_dict}
+        mqtt_client._update_state(data)
+
+        stored = mqtt_client.state.raw_data.get("vt_tray")
+        assert isinstance(stored, list)
+        assert len(stored) == 1
+        assert stored[0]["tray_color"] == "FF0000"
+
+    def test_vt_tray_list_unchanged_in_update_state(self, mqtt_client):
+        """Verify _update_state keeps an already-list vt_tray unchanged."""
+        vt_list = [
+            {"id": "254", "tray_type": "PLA"},
+            {"id": "255", "tray_type": "PETG"},
+        ]
+        data = {"gcode_state": "IDLE", "vt_tray": vt_list}
+        mqtt_client._update_state(data)
+
+        stored = mqtt_client.state.raw_data.get("vt_tray")
+        assert isinstance(stored, list)
+        assert len(stored) == 2
+
+    def test_preserved_vt_tray_restored_before_probe(self, mqtt_client):
+        """Verify preserved vt_tray is restored before dev-mode probe runs.
+
+        On the first message, the incremental handler wraps vt_tray into a list
+        and stores it.  _update_state then replaces raw_data with the full data
+        dict, but must restore preserved fields BEFORE the probe publishes
+        (which can release the GIL).
+        """
+        # Simulate: incremental handler already stored a wrapped list
+        mqtt_client.state.raw_data = {
+            "vt_tray": [{"id": "254", "tray_type": "PLA", "tray_color": "00FF00"}],
+        }
+
+        # Now _update_state runs with new data that has vt_tray as dict
+        new_data = {
+            "gcode_state": "IDLE",
+            "vt_tray": {"id": "254", "tray_type": "PETG", "tray_color": "FF0000"},
+        }
+        mqtt_client._update_state(new_data)
+
+        # The preserved list (PLA/green) should take priority over new data
+        stored = mqtt_client.state.raw_data["vt_tray"]
+        assert isinstance(stored, list)
+        assert stored[0]["tray_type"] == "PLA"
+        assert stored[0]["tray_color"] == "00FF00"
+
+    def test_first_message_vt_tray_dict_becomes_list(self, mqtt_client):
+        """Verify on the very first message, vt_tray dict is still a list.
+
+        When there's no previously preserved data, the normalized dict should
+        remain as a list in raw_data.
+        """
+        # raw_data starts empty -- no preserved vt_tray
+        mqtt_client.state.raw_data = {}
+
+        data = {
+            "gcode_state": "IDLE",
+            "vt_tray": {"id": "254", "tray_type": "ABS"},
+        }
+        mqtt_client._update_state(data)
+
+        stored = mqtt_client.state.raw_data["vt_tray"]
+        assert isinstance(stored, list)
+        assert stored[0]["tray_type"] == "ABS"
+
+
 class TestSendDryingCommand:
     """Tests for send_drying_command MQTT payload construction."""
 
@@ -2919,13 +3145,18 @@ class TestStartPrintAmsMapping:
         assert cmd["ams_mapping"] == [-1]
         assert cmd["ams_mapping2"] == [{"ams_id": 255, "slot_id": 0}]
 
-    def test_external_deputy_nozzle_becomes_minus_one_in_flat(self, mqtt_client):
-        """Virtual tray 254 (deputy nozzle) must be -1 in flat mapping."""
+    def test_single_nozzle_external_spool_uses_main_id(self, mqtt_client):
+        """Single-nozzle external spool (254) maps to ams_id=255 (VIRTUAL_TRAY_MAIN_ID).
+
+        Firmware reports tray_now=254 for external spool, but the print command
+        must use ams_id=255 in ams_mapping2. Sending 254 causes the firmware to
+        target AMS tray 0 instead of external spool (07FF_8012 error).
+        """
         mqtt_client.start_print("test.3mf", ams_mapping=[254])
 
         cmd = self._get_published_command(mqtt_client)
         assert cmd["ams_mapping"] == [-1]
-        assert cmd["ams_mapping2"] == [{"ams_id": 254, "slot_id": 0}]
+        assert cmd["ams_mapping2"] == [{"ams_id": 255, "slot_id": 0}]
 
     def test_h2d_external_spool_mixed_with_ams(self, mqtt_client):
         """H2D scenario: AMS trays + unmapped + external deputy nozzle."""
@@ -2956,8 +3187,20 @@ class TestStartPrintAmsMapping:
             {"ams_id": 131, "slot_id": 0},
         ]
 
-    def test_dual_nozzle_both_external(self, mqtt_client):
-        """Both nozzles using external spools: 254 (deputy) + 255 (main)."""
+    def test_non_h2d_both_external_maps_to_main_id(self, mqtt_client):
+        """Non-H2D: both 254 and 255 map to ams_id=255 (single nozzle)."""
+        mqtt_client.start_print("test.3mf", ams_mapping=[254, 255])
+
+        cmd = self._get_published_command(mqtt_client)
+        assert cmd["ams_mapping"] == [-1, -1]
+        assert cmd["ams_mapping2"] == [
+            {"ams_id": 255, "slot_id": 0},
+            {"ams_id": 255, "slot_id": 0},
+        ]
+
+    def test_h2d_external_preserves_deputy_id(self, mqtt_client):
+        """H2D dual-nozzle: 254 (deputy) stays 254, 255 (main) stays 255."""
+        mqtt_client.model = "H2D"
         mqtt_client.start_print("test.3mf", ams_mapping=[254, 255])
 
         cmd = self._get_published_command(mqtt_client)
@@ -2966,6 +3209,51 @@ class TestStartPrintAmsMapping:
             {"ams_id": 254, "slot_id": 0},
             {"ams_id": 255, "slot_id": 0},
         ]
+
+    def test_h2d_single_external_deputy(self, mqtt_client):
+        """H2D: single external spool on deputy nozzle (254) keeps ams_id=254."""
+        mqtt_client.model = "H2D Pro"
+        mqtt_client.start_print("test.3mf", ams_mapping=[254])
+
+        cmd = self._get_published_command(mqtt_client)
+        assert cmd["ams_mapping"] == [-1]
+        assert cmd["ams_mapping2"] == [{"ams_id": 254, "slot_id": 0}]
+
+    def test_external_spool_only_sets_use_ams_false(self, mqtt_client):
+        """Single external spool on non-H2D printer sets use_ams=False."""
+        mqtt_client.start_print("test.3mf", ams_mapping=[254], use_ams=True)
+
+        cmd = self._get_published_command(mqtt_client)
+        assert cmd["use_ams"] is False
+
+    def test_all_unmapped_sets_use_ams_false(self, mqtt_client):
+        """All unmapped slots on non-H2D printer sets use_ams=False."""
+        mqtt_client.start_print("test.3mf", ams_mapping=[-1, -1], use_ams=True)
+
+        cmd = self._get_published_command(mqtt_client)
+        assert cmd["use_ams"] is False
+
+    def test_mixed_ams_and_external_keeps_use_ams_true(self, mqtt_client):
+        """AMS tray + external spool keeps use_ams=True."""
+        mqtt_client.start_print("test.3mf", ams_mapping=[0, 254], use_ams=True)
+
+        cmd = self._get_published_command(mqtt_client)
+        assert cmd["use_ams"] is True
+
+    def test_h2d_both_external_keeps_use_ams_true(self, mqtt_client):
+        """H2D with both external spools keeps use_ams=True (nozzle routing)."""
+        mqtt_client.model = "H2D"
+        mqtt_client.start_print("test.3mf", ams_mapping=[254, 255], use_ams=True)
+
+        cmd = self._get_published_command(mqtt_client)
+        assert cmd["use_ams"] is True
+
+    def test_empty_ams_mapping_keeps_use_ams_true(self, mqtt_client):
+        """Empty ams_mapping list does not override use_ams."""
+        mqtt_client.start_print("test.3mf", ams_mapping=[], use_ams=True)
+
+        cmd = self._get_published_command(mqtt_client)
+        assert cmd["use_ams"] is True
 
     def test_no_ams_mapping_omits_fields(self, mqtt_client):
         """When ams_mapping is None, neither field is in the command."""

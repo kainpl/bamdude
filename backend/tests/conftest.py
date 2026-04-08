@@ -344,6 +344,12 @@ def smart_plug_factory(db_session):
         if plug_type == "homeassistant":
             defaults["ha_entity_id"] = "switch.test"
             defaults["ip_address"] = None
+        elif plug_type == "rest":
+            defaults["ip_address"] = None
+            defaults["ha_entity_id"] = None
+            defaults["rest_on_url"] = kwargs.get("rest_on_url", "http://192.168.1.50:8080/api/plug/on")
+            defaults["rest_off_url"] = kwargs.get("rest_off_url", "http://192.168.1.50:8080/api/plug/off")
+            defaults["rest_method"] = kwargs.get("rest_method", "POST")
         elif plug_type == "mqtt":
             # Legacy fields (for backward compatibility tests)
             defaults["mqtt_topic"] = kwargs.get("mqtt_topic", "test/topic")

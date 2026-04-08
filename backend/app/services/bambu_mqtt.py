@@ -350,7 +350,11 @@ class BambuMQTTClient:
         # Developer mode probe: two-phase detection to avoid false negatives.
         # Phase 1: wait for a "large" status push (len > 30) to confirm printer is ready.
         # Phase 2: wait 5s after connect before sending the probe request.
+        self._dev_mode_probed: bool = False
         self._dev_mode_needs_probe: bool = False
+        self._dev_mode_probe_seq: str | None = None
+        self._dev_mode_probe_time: float = 0.0
+        self._dev_mode_probe_failures: int = 0
         self._connect_time: float = 0.0
 
         # Set when check_staleness() force-closes the socket to trigger reconnect.
@@ -421,9 +425,13 @@ class BambuMQTTClient:
             self._stale_reconnecting = False  # Clear stale-reconnect flag on successful connect
             # Reset per-connection warning state so warnings fire once per (re)connection
             self._ams_version_warned = set()
-            # Reset developer mode probe state (don't clear developer_mode itself —
-            # it may still be valid from a previous connection)
+            # Reset developer mode probe tracking (don't clear developer_mode itself —
+            # it may still be valid from a previous connection, avoids reprobe loop #887)
+            self._dev_mode_probed = False
             self._dev_mode_needs_probe = False
+            self._dev_mode_probe_seq = None
+            self._dev_mode_probe_time = 0.0
+            self._dev_mode_probe_failures = 0
             self._connect_time = time.monotonic()
             client.subscribe(self.topic_subscribe)
             # Subscribe to request topic for ams_mapping capture (if supported by broker)
@@ -2606,7 +2614,8 @@ class BambuMQTTClient:
         printer has been streaming status for at least 5 seconds without sending
         'fun' on its own.
         """
-        self._dev_mode_needs_probe = False  # Don't probe again
+        self._dev_mode_probed = True
+        self._dev_mode_needs_probe = False
         logger.info(
             "[%s] Developer mode still unknown after %.1fs — sending pushall probe",
             self.serial_number,
