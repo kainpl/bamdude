@@ -84,6 +84,52 @@ Electrical load management for large print farms — spread printer startups ove
 - **Migration**: existing configs auto-tagged as `provider = 'github'`; tables renamed `github_backup_config` → `git_backup_config`, `github_backup_logs` → `git_backup_logs`
 - **API path**: `/api/v1/github-backup/` → `/api/v1/git-backup/`
 
+### REST/Webhook Smart Plugs
+
+- **New plug type**: `rest` — control any device via HTTP API (openHAB, ioBroker, Node-RED, FHEM, etc.)
+- **Control URLs**: configurable ON/OFF URLs with HTTP method, body, and custom headers
+- **Status polling**: JSON path extraction from status endpoint with configurable ON value
+- **Energy monitoring**: separate power/energy URLs with multipliers for unit conversion (e.g. Wh→kWh)
+- **Test connection**: verify endpoint reachability from settings UI
+
+### LDAP/Active Directory Authentication
+
+- **LDAP authentication**: bind with service account, search for user, verify credentials
+- **Security**: StartTLS and LDAPS only (no plaintext), LDAP filter value escaping
+- **Auto-provisioning**: create local accounts on first LDAP login
+- **Group mapping**: AD memberOf + POSIX memberUid mapped to BamDude groups
+- **Password management**: disabled for LDAP users (managed by LDAP server)
+- **Settings UI**: server config, test connection, group mapping, enable/disable
+- **User indicators**: LDAP badge in user list, hidden password change for LDAP users
+
+### Upstream Bug Fixes (from Bambuddy v0.2.3b2)
+
+**Security:**
+- Fix path traversal in file uploads (`_safe_filename` helper)
+- Fix API key empty `printer_ids` granting full access
+- Add HTTP security headers middleware (nosniff, DENY, referrer-policy)
+- Restrict temp file permissions for camera snapshots (0o600)
+
+**Bug fixes:**
+- Fix external spool `ams_mapping2` using wrong `ams_id` on single-nozzle printers
+- Fix WebSocket crash on printers without `fun` field (vt_tray normalization)
+- Fix developer mode probe destabilizing MQTT on auto-reconnect (5s delay, cache across reconnects)
+- Fix spool manager double filament deduction during active prints
+- Fix multi-plug automation only working for first plug
+- Fix AMS history cleanup naive/aware datetime mismatch
+- Fix FilamentHoverCard z-index behind sidebar
+- Standardize webhook notification payloads with structured event data
+- Fix ffmpeg process leak causing multi-GB memory growth
+
+**Features:**
+- Enable AMS drying support for H2S with firmware gate
+- Show plate number on printer cards and stream overlay (plate 2+)
+- External folder scan preserves disk subfolder structure, cleans orphaned subfolders
+- File manager delete commits before response (fixes stale UI race)
+- AssignSpoolModal "Show all spools" toggle to bypass profile filtering
+- Spool inventory and archive metadata backup in git backup
+- Auto light off setting for P1S/P1P (turn off chamber light after print starts)
+
 ### Configuration
 
 - **`LOG_LEVEL` env var** — controls log level directly (`DEBUG`, `INFO`, `WARNING`, `ERROR`); `DEBUG=true` no longer forces debug logging
