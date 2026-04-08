@@ -47,15 +47,48 @@ Electrical load management for large print farms — spread printer startups ove
 - **Default print options** — bed levelling + flow calibration ON; vibration calibration, layer inspection, timelapse OFF
 - **Sidebar Links i18n** — all strings in ExternalLinksSettings translated
 
+### Archive Deduplication
+
+- **Per-printer file dedup** — same 3MF printed 10 times on one printer stores only 1 copy on disk
+- **Content hash check** — SHA256 hash computed before copy; reuses existing file if match found for same printer
+- **Safe deletion** — file only removed from disk when last archive record referencing it is deleted
+- **Upload button removed** — manual 3MF upload to archives removed (use File Manager instead)
+
 ### Dead Code Removal
 
-- **~1600 lines removed** across backend and frontend
+- **~3000 lines removed** across backend and frontend
+- **`filaments` table removed** — dead catalog with no UI; cost now from `spool.cost_per_kg` → `default_filament_cost` setting
+- **`print_log_entries` table removed** — redundant copy of archive data; all print history is in `print_archives`
+- **Filament catalog**: model, schema, routes, API client, permissions, tests — all deleted
+- **Print log**: model, schema, service, routes, API client, UI tab, tests — all deleted
 - Scheduler: `_find_idle_printer_for_model` and 4 helper methods (~300 lines)
 - PrintModal: model-based assignment UI (~340 lines)
 - Notification: `on_queue_job_assigned` event, template, schema
 - Telegram: `target_model` UI key, `queue_job_assigned` event
 - Obsolete ALTER TABLE migrations for dropped fields
 - Tests for removed features (`test_scheduler_busy_only`, `test_scheduler_filament_override`)
+
+### Virtual Printer
+
+- **Removed modes**: `immediate` (auto-archive) and `review` (pending uploads) — use File Manager or Print Queue
+- **Default mode**: `file_manager` (was `immediate`)
+- **Smart queue assignment**: when no `target_printer_id` set, auto-selects least busy online printer matching `sliced_for_model`; falls back to file manager if no match
+- **Migration**: existing VPs with `immediate`/`review` → `file_manager`, `queue` (legacy) → `print_queue`
+
+### Git Backup (GitHub + GitLab)
+
+- **Renamed**: `github_backup` → `git_backup` across all files, classes, tables, API endpoints
+- **GitLab support**: full provider with Commits API, self-hosted URL support
+- **Provider selector**: choose GitHub or GitLab in backup settings UI
+- **API base URL**: configurable for self-hosted GitLab instances
+- **Migration**: existing configs auto-tagged as `provider = 'github'`; tables renamed `github_backup_config` → `git_backup_config`, `github_backup_logs` → `git_backup_logs`
+- **API path**: `/api/v1/github-backup/` → `/api/v1/git-backup/`
+
+### Configuration
+
+- **`LOG_LEVEL` env var** — controls log level directly (`DEBUG`, `INFO`, `WARNING`, `ERROR`); `DEBUG=true` no longer forces debug logging
+- **Spoolman/Cloud permissions** — migrated from removed `FILAMENTS_*` to `INVENTORY_*` permissions
+- **Git Backup permissions** — renamed `github:backup` → `git:backup`, `github:restore` → `git:restore`
 
 ### Queue UI
 
@@ -104,7 +137,7 @@ Electrical load management for large print farms — spread printer startups ove
 
 - **Printer modals**: 2-column layout, scrollable (`max-h-90vh`)
 - **Maintenance status**: 2-column grid with `items-start` (independent card heights)
-- **Auto-archive warning**: yellow banner when disabled on printer forms
+- **Auto-archive**: always enabled, removed toggle from printer forms and info dialog
 - **Registration mode**: toggle in Telegram provider card
 - **Service worker**: updated cache names for rebrand
 
@@ -116,7 +149,7 @@ Electrical load management for large print farms — spread printer startups ove
 - **m000**: Bambuddy 2.2.2 → BamDude import (25 tables, 4696+ rows, read-only source, auto-detect)
 - **m001**: BamDude 3.0.1 baseline (FTS5, groups, templates, catalogs, maintenance types, macros)
 - **m002**: BamDude 3.0.1 → 3.1.1 (queues, macros, swap mode, maintenance tracking, schema cleanup)
-- **Schema cleanup**: DROP COLUMN via `recreate_table` for `print_count`, `require_previous_success`, `target_model`, `target_location`, `filament_overrides`, `required_filament_types`, `on_queue_job_assigned`
+- **Schema cleanup**: DROP COLUMN via `recreate_table` for `print_count`, `require_previous_success`, `target_model`, `target_location`, `filament_overrides`, `required_filament_types`, `on_queue_job_assigned`; DROP TABLE `filaments`, `print_log_entries`
 - **Smart legacy detection**: Bambuddy 2.2.2 vs BamDude 3.0.1 by `telegram_chats` table presence
 - **Migration helpers**: `add_column`, `recreate_table`, `column_exists`, `table_exists` with `PRAGMA foreign_keys = OFF`
 - **Idempotent upgrades**: all DDL guarded by existence checks, safe to run on fresh DB

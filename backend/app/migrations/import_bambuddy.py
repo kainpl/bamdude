@@ -35,10 +35,9 @@ _DIRECT_COPY = [
     "external_links",
     "orca_base_profiles",
     "api_keys",
-    "github_backup_config",
-    "github_backup_logs",
+    "git_backup_config",
+    "git_backup_logs",
     "local_presets",
-    "print_log_entries",
     "notification_logs",
     "slot_preset_mappings",
 ]

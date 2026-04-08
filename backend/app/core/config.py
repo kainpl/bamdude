@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     database_url: str = f"sqlite+aiosqlite:///{_db_path}"
 
     # Logging
-    log_level: str = "INFO"  # Override with LOG_LEVEL env var or DEBUG=true
+    log_level: str = "INFO"  # Override with LOG_LEVEL env var (DEBUG, INFO, WARNING, ERROR)
     log_to_file: bool = True  # Set to false to disable file logging
 
     # API

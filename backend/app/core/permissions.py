@@ -57,11 +57,6 @@ class Permission(StrEnum):
     PROJECTS_UPDATE = "projects:update"
     PROJECTS_DELETE = "projects:delete"
 
-    # Filaments
-    FILAMENTS_READ = "filaments:read"
-    FILAMENTS_CREATE = "filaments:create"
-    FILAMENTS_UPDATE = "filaments:update"
-    FILAMENTS_DELETE = "filaments:delete"
 
     # Inventory (Spool Inventory, Spool Catalog, Color Catalog)
     INVENTORY_READ = "inventory:read"
@@ -130,9 +125,9 @@ class Permission(StrEnum):
     SETTINGS_BACKUP = "settings:backup"
     SETTINGS_RESTORE = "settings:restore"
 
-    # GitHub Backup (admin-level)
-    GITHUB_BACKUP = "github:backup"
-    GITHUB_RESTORE = "github:restore"
+    # Git Backup (admin-level)
+    GIT_BACKUP = "git:backup"
+    GIT_RESTORE = "git:restore"
 
     # Cloud Auth (admin-level)
     CLOUD_AUTH = "cloud:auth"
@@ -204,12 +199,6 @@ PERMISSION_CATEGORIES = {
         Permission.PROJECTS_UPDATE,
         Permission.PROJECTS_DELETE,
     ],
-    "Filaments": [
-        Permission.FILAMENTS_READ,
-        Permission.FILAMENTS_CREATE,
-        Permission.FILAMENTS_UPDATE,
-        Permission.FILAMENTS_DELETE,
-    ],
     "Inventory": [
         Permission.INVENTORY_READ,
         Permission.INVENTORY_CREATE,
@@ -275,8 +264,8 @@ PERMISSION_CATEGORIES = {
         Permission.SETTINGS_RESTORE,
     ],
     "Backup": [
-        Permission.GITHUB_BACKUP,
-        Permission.GITHUB_RESTORE,
+        Permission.GIT_BACKUP,
+        Permission.GIT_RESTORE,
     ],
     "Cloud": [
         Permission.CLOUD_AUTH,
@@ -348,11 +337,6 @@ DEFAULT_GROUPS = {
             Permission.PROJECTS_CREATE.value,
             Permission.PROJECTS_UPDATE.value,
             Permission.PROJECTS_DELETE.value,
-            # Filaments - full access
-            Permission.FILAMENTS_READ.value,
-            Permission.FILAMENTS_CREATE.value,
-            Permission.FILAMENTS_UPDATE.value,
-            Permission.FILAMENTS_DELETE.value,
             # Inventory - full access
             Permission.INVENTORY_READ.value,
             Permission.INVENTORY_CREATE.value,
@@ -414,7 +398,6 @@ DEFAULT_GROUPS = {
             Permission.QUEUE_READ.value,
             Permission.LIBRARY_READ.value,
             Permission.PROJECTS_READ.value,
-            Permission.FILAMENTS_READ.value,
             Permission.INVENTORY_READ.value,
             Permission.INVENTORY_VIEW_ASSIGNMENTS.value,
             Permission.SMART_PLUGS_READ.value,

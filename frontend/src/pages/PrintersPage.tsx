@@ -5289,24 +5289,6 @@ function AddPrinterModal({
                 <div className="flex items-center gap-2">
                   <input
                     type="checkbox"
-                    id="auto_archive"
-                    checked={form.auto_archive}
-                    onChange={(e) => setForm({ ...form, auto_archive: e.target.checked })}
-                    className="rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
-                  />
-                  <label htmlFor="auto_archive" className="text-sm text-bambu-gray">
-                    {t('printers.modal.autoArchiveLabel')}
-                  </label>
-                </div>
-                {!form.auto_archive && (
-                  <div className="flex items-start gap-2 p-2 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
-                    <AlertTriangle className="w-4 h-4 text-yellow-500 flex-shrink-0 mt-0.5" />
-                    <p className="text-xs text-yellow-500">{t('printers.modal.autoArchiveWarning')}</p>
-                  </div>
-                )}
-                <div className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
                     id="cleanup_after_print"
                     checked={form.cleanup_after_print}
                     onChange={(e) => setForm({ ...form, cleanup_after_print: e.target.checked })}
@@ -5754,24 +5736,6 @@ function EditPrinterModal({
 
               {/* Right column — Settings */}
               <div className="space-y-3">
-                <div className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    id="edit_auto_archive"
-                    checked={form.auto_archive}
-                    onChange={(e) => setForm({ ...form, auto_archive: e.target.checked })}
-                    className="rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
-                  />
-                  <label htmlFor="edit_auto_archive" className="text-sm text-bambu-gray">
-                    {t('printers.modal.autoArchiveLabel')}
-                  </label>
-                </div>
-                {!form.auto_archive && (
-                  <div className="flex items-start gap-2 p-2 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
-                    <AlertTriangle className="w-4 h-4 text-yellow-500 flex-shrink-0 mt-0.5" />
-                    <p className="text-xs text-yellow-500">{t('printers.modal.autoArchiveWarning')}</p>
-                  </div>
-                )}
                 <div className="flex items-center gap-2">
                   <input
                     type="checkbox"

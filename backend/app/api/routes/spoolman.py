@@ -85,7 +85,7 @@ async def get_spoolman_settings(db: AsyncSession) -> dict:
 @router.get("/status", response_model=SpoolmanStatus)
 async def get_spoolman_status(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.FILAMENTS_READ),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_READ),
 ):
     """Get Spoolman integration status."""
     sm = await get_spoolman_settings(db)
@@ -150,7 +150,7 @@ async def disconnect_spoolman(
 async def sync_printer_ams(
     printer_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.FILAMENTS_UPDATE),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_UPDATE),
 ):
     """Sync AMS data from a specific printer to Spoolman."""
     # Check if Spoolman is enabled and connected
@@ -338,7 +338,7 @@ async def sync_printer_ams(
 @router.post("/sync-all", response_model=SyncResult)
 async def sync_all_printers(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.FILAMENTS_UPDATE),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_UPDATE),
 ):
     """Sync AMS data from all connected printers to Spoolman."""
     # Check if Spoolman is enabled
@@ -517,7 +517,7 @@ async def sync_all_printers(
 @router.get("/spools")
 async def get_spools(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.FILAMENTS_READ),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_READ),
 ):
     """Get all spools from Spoolman."""
     sm = await get_spoolman_settings(db)
@@ -542,7 +542,7 @@ async def get_spools(
 @router.get("/filaments")
 async def get_filaments(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.FILAMENTS_READ),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_READ),
 ):
     """Get all filaments from Spoolman."""
     sm = await get_spoolman_settings(db)
@@ -578,7 +578,7 @@ class UnlinkedSpool(BaseModel):
 @router.get("/spools/unlinked", response_model=list[UnlinkedSpool])
 async def get_unlinked_spools(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.FILAMENTS_READ),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_READ),
 ):
     """Get all Spoolman spools that don't have a tag (not linked to AMS)."""
     sm = await get_spoolman_settings(db)
@@ -624,7 +624,7 @@ async def get_unlinked_spools(
 @router.get("/spools/linked")
 async def get_linked_spools(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.FILAMENTS_READ),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_READ),
 ):
     """Get a map of tag -> spool_id for all Spoolman spools that have a tag assigned."""
     sm = await get_spoolman_settings(db)
@@ -679,7 +679,7 @@ async def link_spool(
     spool_id: int,
     request: LinkSpoolRequest,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.FILAMENTS_UPDATE),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_UPDATE),
 ):
     """Link a Spoolman spool to an AMS tag by setting Spoolman extra.tag."""
     sm = await get_spoolman_settings(db)
@@ -742,7 +742,7 @@ async def link_spool(
 async def unlink_spool(
     spool_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.FILAMENTS_UPDATE),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_UPDATE),
 ):
     """Unlink a Spoolman spool from AMS by clearing Spoolman extra.tag."""
     sm = await get_spoolman_settings(db)

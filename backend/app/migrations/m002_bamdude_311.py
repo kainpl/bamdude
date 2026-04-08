@@ -2,6 +2,7 @@
 
 Adds: printer_queues, macros, swap mode, stagger, maintenance history tracking,
 queue rework (queue_id), printer_models on maintenance types.
+Drops: filaments table (dead code, cost now from spool.cost_per_kg).
 """
 
 version = 2
@@ -272,6 +273,49 @@ async def upgrade(conn):
         "  SELECT id FROM users ORDER BY id LIMIT 1"
         ") WHERE performed_by_user_id IS NULL AND performed_by_chat_id IS NULL"
     ))
+
+    # ── Drop dead tables ──
+    for dead_table in ("filaments", "print_log_entries"):
+        if await table_exists(conn, dead_table):
+            await conn.execute(text(f"DROP TABLE {dead_table}"))  # noqa: S608
+
+    # ── Force auto_archive on all printers ──
+    await conn.execute(text("UPDATE printers SET auto_archive = 1 WHERE auto_archive = 0"))
+
+    # ── Rename github_backup → git_backup, add provider support ──
+    if await table_exists(conn, "github_backup_config") and not await table_exists(conn, "git_backup_config"):
+        await conn.execute(text("ALTER TABLE github_backup_config RENAME TO git_backup_config"))
+        await add_column(conn, "git_backup_config", "provider VARCHAR(20) NOT NULL DEFAULT 'github'")
+        await add_column(conn, "git_backup_config", "api_base_url VARCHAR(500)")
+    if await table_exists(conn, "github_backup_logs") and not await table_exists(conn, "git_backup_logs"):
+        # Recreate logs with FK pointing to new table name
+        await recreate_table(
+            conn,
+            "github_backup_logs",
+            """CREATE TABLE git_backup_logs (
+                id INTEGER PRIMARY KEY,
+                config_id INTEGER REFERENCES git_backup_config(id) ON DELETE CASCADE,
+                started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                completed_at DATETIME,
+                status VARCHAR(20) NOT NULL,
+                trigger VARCHAR(20) NOT NULL,
+                commit_sha VARCHAR(40),
+                files_changed INTEGER NOT NULL DEFAULT 0,
+                error_message TEXT
+            )""",
+            "id, config_id, started_at, completed_at, status, trigger, commit_sha, files_changed, error_message",
+        )
+
+    # ── Migrate legacy VP modes to file_manager ──
+    if await table_exists(conn, "virtual_printers"):
+        await conn.execute(text(
+            "UPDATE virtual_printers SET mode = 'file_manager' "
+            "WHERE mode IN ('immediate', 'review')"
+        ))
+        await conn.execute(text(
+            "UPDATE virtual_printers SET mode = 'print_queue' "
+            "WHERE mode = 'queue'"
+        ))
 
 
 async def seed(session_factory):

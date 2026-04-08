@@ -50,7 +50,6 @@ import {
   Settings,
   User,
   Play,
-  ClipboardList,
   Zap,
 } from 'lucide-react';
 import { api } from '../api/client';
@@ -2327,7 +2326,7 @@ function ArchiveListRow({
 }
 
 type SortOption = 'date-desc' | 'date-asc' | 'name-asc' | 'name-desc' | 'size-desc' | 'size-asc';
-type ViewMode = 'grid' | 'list' | 'calendar' | 'log';
+type ViewMode = 'grid' | 'list' | 'calendar';
 type Collection = 'all' | 'recent' | 'this-week' | 'this-month' | 'favorites' | 'failed' | 'duplicates';
 
 const collections: { id: Collection; labelKey: string; icon: React.ReactNode }[] = [
@@ -2406,28 +2405,7 @@ export function ArchivesPage() {
   const [highlightedArchiveId, setHighlightedArchiveId] = useState<number | null>(null);
   const [pendingNavigationArchiveId, setPendingNavigationArchiveId] = useState<number | null>(null);
 
-  // Log view state
-  const [logFilterUser, setLogFilterUser] = useState<string | null>(() =>
-    localStorage.getItem('logFilterUser') || null
-  );
-  const [logFilterStatus, setLogFilterStatus] = useState<string | null>(() =>
-    localStorage.getItem('logFilterStatus')
-  );
-  const [logFilterDateFrom, setLogFilterDateFrom] = useState(() =>
-    localStorage.getItem('logFilterDateFrom') || ''
-  );
-  const [logFilterDateTo, setLogFilterDateTo] = useState(() =>
-    localStorage.getItem('logFilterDateTo') || ''
-  );
-  const [logOffset, setLogOffset] = useState(() => {
-    const saved = localStorage.getItem('logOffset');
-    return saved ? Number(saved) : 0;
-  });
-  const [showClearLogConfirm, setShowClearLogConfirm] = useState(false);
-  const [logPageSize, setLogPageSize] = useState(() => {
-    const saved = localStorage.getItem('logPageSize');
-    return saved ? Number(saved) : 25;
-  });
+
 
   const handleNavigateToArchive = useCallback((archiveId: number) => {
     setPendingNavigationArchiveId(archiveId);
@@ -2523,22 +2501,6 @@ export function ArchivesPage() {
   const { data: users } = useQuery({
     queryKey: ['users'],
     queryFn: api.getUsers,
-    enabled: viewMode === 'log',
-  });
-
-  const { data: printLogData, isLoading: isLogLoading } = useQuery({
-    queryKey: ['print-log', filterPrinter, logFilterUser, logFilterStatus, logFilterDateFrom, logFilterDateTo, search, logOffset, logPageSize],
-    queryFn: () => api.getPrintLog({
-      search: search || undefined,
-      printerId: filterPrinter || undefined,
-      username: logFilterUser || undefined,
-      status: logFilterStatus || undefined,
-      dateFrom: logFilterDateFrom || undefined,
-      dateTo: logFilterDateTo || undefined,
-      limit: logPageSize,
-      offset: logOffset,
-    }),
-    enabled: viewMode === 'log',
   });
 
   const timeFormat: TimeFormat = settings?.time_format || 'system';
@@ -2562,17 +2524,6 @@ export function ArchivesPage() {
     },
   });
 
-  const clearLogMutation = useMutation({
-    mutationFn: () => api.clearPrintLog(),
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['print-log'] });
-      setLogOffset(0);
-      showToast(t('archives.log.cleared', { count: data.deleted }));
-    },
-    onError: () => {
-      showToast(t('archives.log.clearFailed'), 'error');
-    },
-  });
 
   // Persist all filters to localStorage
   useEffect(() => {
@@ -2644,46 +2595,6 @@ export function ArchivesPage() {
     return () => clearTimeout(timer);
   }, [search]);
 
-  // Persist log view filters
-  useEffect(() => {
-    if (logFilterUser) {
-      localStorage.setItem('logFilterUser', logFilterUser);
-    } else {
-      localStorage.removeItem('logFilterUser');
-    }
-  }, [logFilterUser]);
-
-  useEffect(() => {
-    if (logFilterStatus) {
-      localStorage.setItem('logFilterStatus', logFilterStatus);
-    } else {
-      localStorage.removeItem('logFilterStatus');
-    }
-  }, [logFilterStatus]);
-
-  useEffect(() => {
-    if (logFilterDateFrom) {
-      localStorage.setItem('logFilterDateFrom', logFilterDateFrom);
-    } else {
-      localStorage.removeItem('logFilterDateFrom');
-    }
-  }, [logFilterDateFrom]);
-
-  useEffect(() => {
-    if (logFilterDateTo) {
-      localStorage.setItem('logFilterDateTo', logFilterDateTo);
-    } else {
-      localStorage.removeItem('logFilterDateTo');
-    }
-  }, [logFilterDateTo]);
-
-  useEffect(() => {
-    localStorage.setItem('logOffset', logOffset.toString());
-  }, [logOffset]);
-
-  useEffect(() => {
-    localStorage.setItem('logPageSize', logPageSize.toString());
-  }, [logPageSize]);
 
   const printerMap = new Map(printers?.map((p) => [p.id, p.name]) || []);
 
@@ -2906,9 +2817,6 @@ export function ArchivesPage() {
           {viewMode === 'calendar' && (
             <p className="text-bambu-gray">{t('archives.calendarView')}</p>
           )}
-          {viewMode === 'log' && (
-            <p className="text-bambu-gray">{t('archives.logView')}</p>
-          )}
           {(viewMode === 'grid' || viewMode === 'list') && paginationMeta && (
             <p className="text-bambu-gray">
               {t('common.showingRange', {
@@ -3013,14 +2921,6 @@ export function ArchivesPage() {
               {t('archives.page.select')}
             </Button>
           )}
-          <Button
-            onClick={() => setShowUpload(true)}
-            disabled={!hasPermission('archives:create')}
-            title={!hasPermission('archives:create') ? t('archives.permission.noCreate') : undefined}
-          >
-            <Upload className="w-4 h-4" />
-            {t('archives.page.upload3mf')}
-          </Button>
         </div>
       </div>
 
@@ -3047,13 +2947,6 @@ export function ArchivesPage() {
             title={t('archives.calendarView')}
           >
             <CalendarDays className="w-4 h-4" />
-          </button>
-          <button
-            className={`p-2 ${viewMode === 'log' ? 'bg-bambu-green text-white' : 'bg-bambu-dark text-bambu-gray hover:text-white'}`}
-            onClick={() => setViewMode('log')}
-            title={t('archives.logView')}
-          >
-            <ClipboardList className="w-4 h-4" />
           </button>
         </div>
         {(viewMode === 'grid' || viewMode === 'list') && paginationMeta && paginationMeta.last_page > 1 && (
@@ -3379,217 +3272,6 @@ export function ArchivesPage() {
             ))}
           </div>
         </Card>
-      ) : viewMode === 'log' ? (
-        <div className="space-y-4">
-          {/* Log filters */}
-          <Card>
-            <CardContent className="py-3">
-              <div className="flex flex-col md:flex-row gap-3 md:items-center md:flex-wrap">
-                {/* Search */}
-                <div className="flex-1 relative md:min-w-[200px]">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray" />
-                  <input
-                    type="text"
-                    placeholder={t('archives.searchPlaceholder')}
-                    className="w-full pl-10 pr-4 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
-                    value={search}
-                    onChange={(e) => { setSearch(e.target.value); setLogOffset(0); }}
-                  />
-                </div>
-                {/* Printer filter */}
-                <select
-                  className="px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
-                  value={filterPrinter || ''}
-                  onChange={(e) => { setFilterPrinter(e.target.value ? Number(e.target.value) : null); setLogOffset(0); }}
-                >
-                  <option value="">{t('archives.log.allPrinters')}</option>
-                  {printers?.map((p) => (
-                    <option key={p.id} value={p.id}>{p.name}</option>
-                  ))}
-                </select>
-                {/* User filter */}
-                <select
-                  className="px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
-                  value={logFilterUser || ''}
-                  onChange={(e) => { setLogFilterUser(e.target.value || null); setLogOffset(0); }}
-                >
-                  <option value="">{t('archives.log.allUsers')}</option>
-                  {users?.map((u) => (
-                    <option key={u.id} value={u.username}>{u.username}</option>
-                  ))}
-                </select>
-                {/* Status filter */}
-                <select
-                  className="px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
-                  value={logFilterStatus || ''}
-                  onChange={(e) => { setLogFilterStatus(e.target.value || null); setLogOffset(0); }}
-                >
-                  <option value="">{t('archives.log.allStatuses')}</option>
-                  <option value="completed">{t('archives.status.completed')}</option>
-                  <option value="failed">{t('archives.status.failed')}</option>
-                  <option value="stopped">{t('archives.status.stopped')}</option>
-                  <option value="cancelled">{t('archives.log.cancelled')}</option>
-                  <option value="skipped">{t('archives.log.skipped')}</option>
-                </select>
-                {/* Date range */}
-                <div className="flex items-center gap-2">
-                  <label className="text-sm text-bambu-gray">{t('archives.log.dateFrom')}</label>
-                  <input
-                    type="date"
-                    className="px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
-                    value={logFilterDateFrom}
-                    onChange={(e) => { setLogFilterDateFrom(e.target.value); setLogOffset(0); }}
-                  />
-                </div>
-                <div className="flex items-center gap-2">
-                  <label className="text-sm text-bambu-gray">{t('archives.log.dateTo')}</label>
-                  <input
-                    type="date"
-                    className="px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
-                    value={logFilterDateTo}
-                    onChange={(e) => { setLogFilterDateTo(e.target.value); setLogOffset(0); }}
-                  />
-                </div>
-                {/* Clear log button */}
-                <div className="ml-auto">
-                  <Button
-                    variant="danger"
-                    size="sm"
-                    onClick={() => setShowClearLogConfirm(true)}
-                    disabled={!hasPermission('archives:delete_all') || clearLogMutation.isPending}
-                  >
-                    <Trash2 className="w-4 h-4" />
-                    {t('archives.log.clearLog')}
-                  </Button>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Log table */}
-          <Card>
-            {isLogLoading ? (
-              <div className="flex items-center justify-center py-12">
-                <Loader2 className="w-6 h-6 animate-spin text-bambu-green" />
-              </div>
-            ) : !printLogData?.items.length ? (
-              <div className="text-center py-12 text-bambu-gray">
-                {t('archives.log.noEntries')}
-              </div>
-            ) : (
-              <>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-bambu-dark-tertiary text-bambu-gray text-left">
-                        <th className="px-4 py-3 font-medium">{t('archives.log.date')}</th>
-                        <th className="px-4 py-3 font-medium">{t('archives.log.printName')}</th>
-                        <th className="px-4 py-3 font-medium">{t('archives.log.printer')}</th>
-                        <th className="px-4 py-3 font-medium">{t('archives.log.user')}</th>
-                        <th className="px-4 py-3 font-medium">{t('archives.log.status')}</th>
-                        <th className="px-4 py-3 font-medium">{t('archives.log.duration')}</th>
-                        <th className="px-4 py-3 font-medium">{t('archives.log.filament')}</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-bambu-dark-tertiary">
-                      {printLogData.items.map((entry) => (
-                        <tr key={entry.id} className="hover:bg-bambu-dark-secondary/50">
-                          <td className="px-4 py-3 text-white whitespace-nowrap">
-                            {formatDateTime(entry.started_at || entry.created_at, timeFormat, dateFormat)}
-                          </td>
-                          <td className="px-4 py-3">
-                            <div className="flex items-center gap-2">
-                              {entry.thumbnail_path && (
-                                <img
-                                  src={api.getPrintLogThumbnail(entry.id)}
-                                  alt=""
-                                  className="w-8 h-8 rounded object-cover flex-shrink-0"
-                                  onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-                                />
-                              )}
-                              <span className="text-white truncate max-w-[200px]">
-                                {entry.print_name || '—'}
-                              </span>
-                            </div>
-                          </td>
-                          <td className="px-4 py-3 text-bambu-gray-light">{entry.printer_name || '—'}</td>
-                          <td className="px-4 py-3 text-bambu-gray-light">{entry.created_by_username || '—'}</td>
-                          <td className="px-4 py-3">
-                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
-                              entry.status === 'completed' ? 'bg-green-500/20 text-green-400' :
-                              entry.status === 'failed' ? 'bg-red-500/20 text-red-400' :
-                              entry.status === 'stopped' ? 'bg-yellow-500/20 text-yellow-400' :
-                              entry.status === 'cancelled' ? 'bg-orange-500/20 text-orange-400' :
-                              entry.status === 'skipped' ? 'bg-blue-500/20 text-blue-400' :
-                              'bg-gray-500/20 text-gray-400'
-                            }`}>
-                              {entry.status}
-                            </span>
-                          </td>
-                          <td className="px-4 py-3 text-bambu-gray-light whitespace-nowrap">
-                            {entry.duration_seconds ? formatDuration(entry.duration_seconds) : '—'}
-                          </td>
-                          <td className="px-4 py-3">
-                            <div className="flex items-center gap-1.5">
-                              {entry.filament_color && (
-                                <span
-                                  className="w-3 h-3 rounded-full border border-black/20 flex-shrink-0"
-                                  style={{ backgroundColor: entry.filament_color.startsWith('#') ? entry.filament_color : undefined }}
-                                />
-                              )}
-                              <span className="text-bambu-gray-light text-xs">
-                                {entry.filament_type || '—'}
-                              </span>
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                {/* Pagination */}
-                <div className="flex items-center justify-between px-4 py-3 border-t border-bambu-dark-tertiary flex-wrap gap-2">
-                  <div className="flex items-center gap-3">
-                    <div className="flex items-center gap-1.5">
-                      <label className="text-xs text-bambu-gray">{t('archives.log.rowsPerPage')}</label>
-                      <select
-                        className="px-2 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-xs focus:border-bambu-green focus:outline-none"
-                        value={logPageSize}
-                        onChange={(e) => { setLogPageSize(Number(e.target.value)); setLogOffset(0); }}
-                      >
-                        <option value={10}>10</option>
-                        <option value={25}>25</option>
-                        <option value={50}>50</option>
-                        <option value={100}>100</option>
-                      </select>
-                    </div>
-                    <span className="text-sm text-bambu-gray">
-                      {t('archives.log.showing', { count: Math.min(logOffset + logPageSize, printLogData.total), total: printLogData.total })}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Button variant="secondary" size="sm" onClick={() => setLogOffset(0)} disabled={logOffset === 0}>
-                      <ChevronsLeft className="w-4 h-4" />
-                    </Button>
-                    <Button variant="secondary" size="sm" onClick={() => setLogOffset(Math.max(0, logOffset - logPageSize))} disabled={logOffset === 0}>
-                      <ChevronLeft className="w-4 h-4" />
-                    </Button>
-                    <span className="text-sm text-bambu-gray">
-                      {Math.floor(logOffset / logPageSize) + 1} / {Math.max(1, Math.ceil(printLogData.total / logPageSize))}
-                    </span>
-                    <Button variant="secondary" size="sm" onClick={() => setLogOffset(logOffset + logPageSize)} disabled={logOffset + logPageSize >= printLogData.total}>
-                      <ChevronRight className="w-4 h-4" />
-                    </Button>
-                    <Button variant="secondary" size="sm" onClick={() => setLogOffset(Math.max(0, (Math.ceil(printLogData.total / logPageSize) - 1) * logPageSize))} disabled={logOffset + logPageSize >= printLogData.total}>
-                      <ChevronsRight className="w-4 h-4" />
-                    </Button>
-                  </div>
-                </div>
-              </>
-            )}
-          </Card>
-
-        </div>
       ) : null}
 
       {/* Upload Modal */}
@@ -3652,20 +3334,6 @@ export function ArchivesPage() {
         <TagManagementModal onClose={() => setShowTagManagement(false)} />
       )}
 
-      {/* Clear Log Confirmation */}
-      {showClearLogConfirm && (
-        <ConfirmModal
-          title={t('archives.log.clearLogTitle')}
-          message={t('archives.log.clearLogConfirm')}
-          confirmText={t('archives.log.clearLogButton')}
-          variant="danger"
-          onConfirm={() => {
-            clearLogMutation.mutate();
-            setShowClearLogConfirm(false);
-          }}
-          onCancel={() => setShowClearLogConfirm(false)}
-        />
-      )}
     </div>
   );
 }

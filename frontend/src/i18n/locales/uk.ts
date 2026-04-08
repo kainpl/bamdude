@@ -1969,7 +1969,7 @@ export default {
     failedToCheckUpdates: 'Не вдалося перевірити оновлення: {{error}}',
     // Data Management
     backupRestore: 'Резервне копіювання та відновлення',
-    backupRestoreDescription: 'Експорт/імпорт налаштувань та налаштування резервного копіювання на GitHub',
+    backupRestoreDescription: 'Експорт/імпорт налаштувань та налаштування резервного копіювання Git',
     goToBackup: 'Перейти до резервного копіювання',
     // Network tab
     externalUrl: 'Зовнішній URL',
@@ -3493,17 +3493,24 @@ export default {
     restoreFailed: 'Помилка відновлення',
     restoreNote: 'Віртуальний принтер буде зупинено під час відновлення',
 
-    // GitHub Backup
-    githubBackup: 'Резервне копіювання GitHub',
+    // Git Backup
+    gitBackup: 'Резервне копіювання Git',
     enabled: 'Увімкнено',
-    cloudLoginRequired: 'Потрібен вхід до Bambu Cloud. Увійдіть у Профілі \u2192 Хмарні профілі для увімкнення резервного копіювання GitHub.',
+    cloudLoginRequired: 'Потрібен вхід до Bambu Cloud. Увійдіть у Профілі \u2192 Хмарні профілі для увімкнення резервного копіювання Git.',
     cloudLoginRequiredShort: 'Потрібен вхід до хмари',
-    githubDescription: 'Автоматично синхронізуйте профілі до приватного репозиторію GitHub для резервного копіювання та історії версій.',
+    gitDescription: 'Автоматично синхронізуйте профілі до приватного Git-репозиторію для резервного копіювання та історії версій.',
+    providerLabel: 'Провайдер',
+    providerGitHub: 'GitHub',
+    providerGitLab: 'GitLab',
+    apiBaseUrlLabel: 'Базова URL API',
+    apiBaseUrlPlaceholder: 'https://gitlab.com',
+    apiBaseUrlHint: 'Залиште порожнім для gitlab.com, або введіть URL вашого GitLab',
     repositoryUrl: 'URL репозиторію',
     personalAccessToken: 'Персональний токен доступу',
     tokenSaved: '(збережено)',
     enterNewToken: 'Введіть новий токен для оновлення',
-    tokenHint: 'Токен з дрібнозернистим доступом з дозволом на читання/запис вмісту',
+    tokenHintGitHub: 'Токен з дрібнозернистим доступом з дозволом на читання/запис вмісту',
+    tokenHintGitLab: 'Персональний токен доступу з правами api або write_repository',
     branch: 'Гілка',
     manualOnly: 'Тільки вручну',
     hourly: 'Щогодини',
@@ -3529,7 +3536,7 @@ export default {
     enterRepoAndToken: 'Введіть URL репозиторію та токен доступу',
     repoRequired: 'URL репозиторію обов\'язковий',
     tokenRequired: 'Токен доступу обов\'язковий',
-    githubBackupEnabled: 'Резервне копіювання GitHub увімкнено',
+    gitBackupEnabled: 'Резервне копіювання {{provider}} увімкнено',
     tokenUpdated: 'Токен оновлено',
     settingsSaved: 'Налаштування збережено',
     failedToSave: 'Не вдалося зберегти: {{message}}',
@@ -4579,9 +4586,9 @@ export default {
     configureSlot: 'Налаштувати слот',
   },
 
-  // GitHub Backup Settings
-  githubBackup: {
-    title: 'Резервне копіювання GitHub',
+  // Git Backup Settings
+  gitBackup: {
+    title: 'Резервне копіювання Git',
     history: 'Історія',
     downloadBackup: 'Завантажити резервну копію',
     restoreBackup: 'Відновити резервну копію',

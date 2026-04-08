@@ -1973,7 +1973,7 @@ export default {
     failedToCheckUpdates: 'Failed to check for updates: {{error}}',
     // Data Management
     backupRestore: 'Backup & Restore',
-    backupRestoreDescription: 'Export/import settings and configure GitHub backup',
+    backupRestoreDescription: 'Export/import settings and configure Git backup',
     goToBackup: 'Go to Backup',
     // Network tab
     externalUrl: 'External URL',
@@ -3505,17 +3505,24 @@ export default {
     restoreFailed: 'Restore failed',
     restoreNote: 'Virtual Printer will be stopped during restore',
 
-    // GitHub Backup
-    githubBackup: 'GitHub Backup',
+    // Git Backup
+    gitBackup: 'Git Backup',
     enabled: 'Enabled',
-    cloudLoginRequired: 'Bambu Cloud login required. Sign in under Profiles → Cloud Profiles to enable GitHub backup.',
+    cloudLoginRequired: 'Bambu Cloud login required. Sign in under Profiles → Cloud Profiles to enable Git backup.',
     cloudLoginRequiredShort: 'Cloud login required',
-    githubDescription: 'Automatically sync your profiles to a private GitHub repository for backup and version history.',
+    gitDescription: 'Automatically sync your profiles to a private Git repository for backup and version history.',
+    providerLabel: 'Provider',
+    providerGitHub: 'GitHub',
+    providerGitLab: 'GitLab',
+    apiBaseUrlLabel: 'API Base URL',
+    apiBaseUrlPlaceholder: 'https://gitlab.com',
+    apiBaseUrlHint: 'Leave empty for gitlab.com, or enter self-hosted GitLab URL',
     repositoryUrl: 'Repository URL',
     personalAccessToken: 'Personal Access Token',
     tokenSaved: '(saved)',
     enterNewToken: 'Enter new token to update',
-    tokenHint: 'Fine-grained token with Contents read/write permission',
+    tokenHintGitHub: 'Fine-grained token with Contents read/write permission',
+    tokenHintGitLab: 'Personal Access Token with api or write_repository scope',
     branch: 'Branch',
     manualOnly: 'Manual only',
     hourly: 'Hourly',
@@ -3541,7 +3548,7 @@ export default {
     enterRepoAndToken: 'Enter repository URL and access token',
     repoRequired: 'Repository URL is required',
     tokenRequired: 'Access token is required',
-    githubBackupEnabled: 'GitHub backup enabled',
+    gitBackupEnabled: '{{provider}} backup enabled',
     tokenUpdated: 'Token updated',
     settingsSaved: 'Settings saved',
     failedToSave: 'Failed to save: {{message}}',
@@ -4592,9 +4599,9 @@ export default {
     configureSlot: 'Configure Slot',
   },
 
-  // GitHub Backup Settings
-  githubBackup: {
-    title: 'GitHub Backup',
+  // Git Backup Settings
+  gitBackup: {
+    title: 'Git Backup',
     history: 'History',
     downloadBackup: 'Download Backup',
     restoreBackup: 'Restore Backup',

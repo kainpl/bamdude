@@ -1,25 +1,26 @@
-"""Integration tests for GitHub Backup API endpoints."""
+"""Integration tests for Git Backup API endpoints."""
 
 import pytest
 from httpx import AsyncClient
 
 
-class TestGitHubBackupConfigAPI:
-    """Integration tests for /api/v1/github-backup endpoints."""
+class TestGitBackupConfigAPI:
+    """Integration tests for /api/v1/git-backup endpoints."""
 
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_get_config_no_config(self, async_client: AsyncClient):
         """Verify getting config when none exists returns null."""
-        response = await async_client.get("/api/v1/github-backup/config")
+        response = await async_client.get("/api/v1/git-backup/config")
         assert response.status_code == 200
         assert response.json() is None
 
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_create_config(self, async_client: AsyncClient):
-        """Verify GitHub backup config can be created."""
+        """Verify Git backup config can be created."""
         data = {
+            "provider": "github",
             "repository_url": "https://github.com/test/repo",
             "access_token": "ghp_testtoken123",
             "branch": "main",
@@ -30,13 +31,14 @@ class TestGitHubBackupConfigAPI:
             "backup_settings": False,
             "enabled": True,
         }
-        response = await async_client.post("/api/v1/github-backup/config", json=data)
+        response = await async_client.post("/api/v1/git-backup/config", json=data)
         assert response.status_code == 200
         result = response.json()
         assert result["repository_url"] == "https://github.com/test/repo"
         assert result["branch"] == "main"
         assert result["has_token"] is True
         assert result["enabled"] is True
+        assert result["provider"] == "github"
         # Token should not be exposed in response
         assert "access_token" not in result
 
@@ -46,6 +48,7 @@ class TestGitHubBackupConfigAPI:
         """Verify getting config after creation returns the config."""
         # Create config first
         data = {
+            "provider": "github",
             "repository_url": "https://github.com/test/getrepo",
             "access_token": "ghp_testtoken456",
             "branch": "develop",
@@ -56,10 +59,10 @@ class TestGitHubBackupConfigAPI:
             "backup_settings": True,
             "enabled": True,
         }
-        await async_client.post("/api/v1/github-backup/config", json=data)
+        await async_client.post("/api/v1/git-backup/config", json=data)
 
         # Get config
-        response = await async_client.get("/api/v1/github-backup/config")
+        response = await async_client.get("/api/v1/git-backup/config")
         assert response.status_code == 200
         result = response.json()
         assert result is not None
@@ -70,9 +73,10 @@ class TestGitHubBackupConfigAPI:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_update_config_partial(self, async_client: AsyncClient):
-        """Verify partial update of GitHub backup config."""
+        """Verify partial update of Git backup config."""
         # Create config first
         create_data = {
+            "provider": "github",
             "repository_url": "https://github.com/test/update",
             "access_token": "ghp_token",
             "branch": "main",
@@ -83,14 +87,14 @@ class TestGitHubBackupConfigAPI:
             "backup_settings": False,
             "enabled": True,
         }
-        await async_client.post("/api/v1/github-backup/config", json=create_data)
+        await async_client.post("/api/v1/git-backup/config", json=create_data)
 
         # Partial update
         update_data = {
             "branch": "develop",
             "schedule_enabled": True,
         }
-        response = await async_client.patch("/api/v1/github-backup/config", json=update_data)
+        response = await async_client.patch("/api/v1/git-backup/config", json=update_data)
         assert response.status_code == 200
         result = response.json()
         assert result["branch"] == "develop"
@@ -101,9 +105,10 @@ class TestGitHubBackupConfigAPI:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_delete_config(self, async_client: AsyncClient):
-        """Verify GitHub backup config can be deleted."""
+        """Verify Git backup config can be deleted."""
         # Create config first
         create_data = {
+            "provider": "github",
             "repository_url": "https://github.com/test/delete",
             "access_token": "ghp_deletetoken",
             "branch": "main",
@@ -114,14 +119,14 @@ class TestGitHubBackupConfigAPI:
             "backup_settings": False,
             "enabled": True,
         }
-        await async_client.post("/api/v1/github-backup/config", json=create_data)
+        await async_client.post("/api/v1/git-backup/config", json=create_data)
 
         # Delete
-        response = await async_client.delete("/api/v1/github-backup/config")
+        response = await async_client.delete("/api/v1/git-backup/config")
         assert response.status_code == 200
 
         # Verify it's deleted
-        get_response = await async_client.get("/api/v1/github-backup/config")
+        get_response = await async_client.get("/api/v1/git-backup/config")
         assert get_response.status_code == 200
         assert get_response.json() is None
 
@@ -130,24 +135,24 @@ class TestGitHubBackupConfigAPI:
     async def test_delete_config_not_found(self, async_client: AsyncClient):
         """Verify deleting non-existent config returns 404."""
         # Make sure no config exists
-        await async_client.delete("/api/v1/github-backup/config")
+        await async_client.delete("/api/v1/git-backup/config")
 
         # Try to delete again
-        response = await async_client.delete("/api/v1/github-backup/config")
+        response = await async_client.delete("/api/v1/git-backup/config")
         assert response.status_code == 404
 
 
-class TestGitHubBackupStatusAPI:
-    """Integration tests for /api/v1/github-backup/status endpoint."""
+class TestGitBackupStatusAPI:
+    """Integration tests for /api/v1/git-backup/status endpoint."""
 
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_status_no_config(self, async_client: AsyncClient):
         """Verify status when no config exists."""
         # Ensure no config
-        await async_client.delete("/api/v1/github-backup/config")
+        await async_client.delete("/api/v1/git-backup/config")
 
-        response = await async_client.get("/api/v1/github-backup/status")
+        response = await async_client.get("/api/v1/git-backup/status")
         assert response.status_code == 200
         result = response.json()
         assert result["configured"] is False
@@ -160,6 +165,7 @@ class TestGitHubBackupStatusAPI:
         """Verify status when config exists."""
         # Create config
         create_data = {
+            "provider": "github",
             "repository_url": "https://github.com/test/status",
             "access_token": "ghp_statustoken",
             "branch": "main",
@@ -170,9 +176,9 @@ class TestGitHubBackupStatusAPI:
             "backup_settings": False,
             "enabled": True,
         }
-        await async_client.post("/api/v1/github-backup/config", json=create_data)
+        await async_client.post("/api/v1/git-backup/config", json=create_data)
 
-        response = await async_client.get("/api/v1/github-backup/status")
+        response = await async_client.get("/api/v1/git-backup/status")
         assert response.status_code == 200
         result = response.json()
         assert result["configured"] is True
@@ -181,17 +187,17 @@ class TestGitHubBackupStatusAPI:
         assert result["next_scheduled_run"] is not None
 
 
-class TestGitHubBackupLogsAPI:
-    """Integration tests for /api/v1/github-backup/logs endpoints."""
+class TestGitBackupLogsAPI:
+    """Integration tests for /api/v1/git-backup/logs endpoints."""
 
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_logs_no_config(self, async_client: AsyncClient):
         """Verify getting logs when no config exists returns empty list."""
         # Ensure no config
-        await async_client.delete("/api/v1/github-backup/config")
+        await async_client.delete("/api/v1/git-backup/config")
 
-        response = await async_client.get("/api/v1/github-backup/logs")
+        response = await async_client.get("/api/v1/git-backup/logs")
         assert response.status_code == 200
         assert response.json() == []
 
@@ -201,6 +207,7 @@ class TestGitHubBackupLogsAPI:
         """Verify getting logs with config."""
         # Create config
         create_data = {
+            "provider": "github",
             "repository_url": "https://github.com/test/logs",
             "access_token": "ghp_logstoken",
             "branch": "main",
@@ -211,25 +218,25 @@ class TestGitHubBackupLogsAPI:
             "backup_settings": False,
             "enabled": True,
         }
-        await async_client.post("/api/v1/github-backup/config", json=create_data)
+        await async_client.post("/api/v1/git-backup/config", json=create_data)
 
-        response = await async_client.get("/api/v1/github-backup/logs")
+        response = await async_client.get("/api/v1/git-backup/logs")
         assert response.status_code == 200
         # No backups run yet, so empty list
         assert response.json() == []
 
 
-class TestGitHubBackupTriggerAPI:
-    """Integration tests for /api/v1/github-backup/run endpoint."""
+class TestGitBackupTriggerAPI:
+    """Integration tests for /api/v1/git-backup/run endpoint."""
 
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_trigger_no_config(self, async_client: AsyncClient):
         """Verify triggering backup without config returns 404."""
         # Ensure no config
-        await async_client.delete("/api/v1/github-backup/config")
+        await async_client.delete("/api/v1/git-backup/config")
 
-        response = await async_client.post("/api/v1/github-backup/run")
+        response = await async_client.post("/api/v1/git-backup/run")
         assert response.status_code == 404
 
     @pytest.mark.asyncio
@@ -238,6 +245,7 @@ class TestGitHubBackupTriggerAPI:
         """Verify triggering backup with disabled config returns 400."""
         # Create disabled config
         create_data = {
+            "provider": "github",
             "repository_url": "https://github.com/test/trigger",
             "access_token": "ghp_triggertoken",
             "branch": "main",
@@ -248,8 +256,8 @@ class TestGitHubBackupTriggerAPI:
             "backup_settings": False,
             "enabled": False,  # Disabled
         }
-        await async_client.post("/api/v1/github-backup/config", json=create_data)
+        await async_client.post("/api/v1/git-backup/config", json=create_data)
 
-        response = await async_client.post("/api/v1/github-backup/run")
+        response = await async_client.post("/api/v1/git-backup/run")
         assert response.status_code == 400
         assert "disabled" in response.json()["detail"].lower()

@@ -3,8 +3,7 @@ from backend.app.models.ams_label import AmsLabel
 from backend.app.models.api_key import APIKey
 from backend.app.models.archive import PrintArchive
 from backend.app.models.color_catalog import ColorCatalogEntry
-from backend.app.models.filament import Filament
-from backend.app.models.github_backup import GitHubBackupConfig, GitHubBackupLog
+from backend.app.models.git_backup import GitBackupConfig, GitBackupLog
 from backend.app.models.group import Group, user_groups
 from backend.app.models.kprofile_note import KProfileNote
 from backend.app.models.library import LibraryFile, LibraryFolder
@@ -34,7 +33,6 @@ __all__ = [
     "Macro",
     "Printer",
     "PrintArchive",
-    "Filament",
     "Settings",
     "SmartPlug",
     "MaintenanceType",
@@ -53,8 +51,8 @@ __all__ = [
     "User",
     "Group",
     "user_groups",
-    "GitHubBackupConfig",
-    "GitHubBackupLog",
+    "GitBackupConfig",
+    "GitBackupLog",
     "LocalPreset",
     "OrcaBaseProfile",
     "Spool",

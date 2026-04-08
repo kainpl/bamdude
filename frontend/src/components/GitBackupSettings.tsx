@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Github,
+  Gitlab,
   Play,
   Clock,
   CheckCircle,
@@ -21,11 +22,11 @@ import {
 } from 'lucide-react';
 import { api } from '../api/client';
 import type {
-  GitHubBackupConfig,
-  GitHubBackupConfigCreate,
-  GitHubBackupLog,
-  GitHubBackupStatus,
-  GitHubBackupTriggerResponse,
+  GitBackupConfig,
+  GitBackupConfigCreate,
+  GitBackupLog,
+  GitBackupStatus,
+  GitBackupTriggerResponse,
   ScheduleType,
   CloudAuthStatus,
   Printer,
@@ -36,6 +37,8 @@ import { Toggle } from './Toggle';
 import { ConfirmModal } from './ConfirmModal';
 import { useToast } from '../contexts/ToastContext';
 import { formatRelativeTime, parseUTCDate } from '../utils/date';
+
+type GitProvider = 'github' | 'gitlab';
 
 function formatDateTime(dateStr: string | null): string {
   if (!dateStr) return '-';
@@ -73,12 +76,14 @@ function StatusBadge({ status }: StatusBadgeProps) {
   );
 }
 
-export function GitHubBackupSettings() {
+export function GitBackupSettings() {
   const queryClient = useQueryClient();
   const { showToast } = useToast();
   const { t } = useTranslation();
 
   // Local state for form
+  const [provider, setProvider] = useState<GitProvider>('github');
+  const [apiBaseUrl, setApiBaseUrl] = useState('');
   const [repoUrl, setRepoUrl] = useState('');
   const [accessToken, setAccessToken] = useState('');
   const [branch, setBranch] = useState('main');
@@ -122,21 +127,25 @@ export function GitHubBackupSettings() {
   const autoSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
   const isInitializedRef = useRef(false);
 
+  // Provider display name
+  const providerName = provider === 'github' ? 'GitHub' : 'GitLab';
+  const ProviderIcon = provider === 'github' ? Github : Gitlab;
+
   // Queries
-  const { data: config, isLoading: configLoading } = useQuery<GitHubBackupConfig | null>({
-    queryKey: ['github-backup-config'],
-    queryFn: api.getGitHubBackupConfig,
+  const { data: config, isLoading: configLoading } = useQuery<GitBackupConfig | null>({
+    queryKey: ['git-backup-config'],
+    queryFn: api.getGitBackupConfig,
   });
 
-  const { data: status } = useQuery<GitHubBackupStatus>({
-    queryKey: ['github-backup-status'],
-    queryFn: api.getGitHubBackupStatus,
+  const { data: status } = useQuery<GitBackupStatus>({
+    queryKey: ['git-backup-status'],
+    queryFn: api.getGitBackupStatus,
     refetchInterval: (query) => query.state.data?.is_running ? 500 : 10000, // Poll fast during backup
   });
 
-  const { data: logs } = useQuery<GitHubBackupLog[]>({
-    queryKey: ['github-backup-logs'],
-    queryFn: () => api.getGitHubBackupLogs(20),
+  const { data: logs } = useQuery<GitBackupLog[]>({
+    queryKey: ['git-backup-logs'],
+    queryFn: () => api.getGitBackupLogs(20),
   });
 
   const { data: cloudStatus } = useQuery<CloudAuthStatus>({
@@ -173,6 +182,8 @@ export function GitHubBackupSettings() {
   // Initialize form from config
   useEffect(() => {
     if (config) {
+      setProvider((config.provider as GitProvider) || 'github');
+      setApiBaseUrl(config.api_base_url || '');
       setRepoUrl(config.repository_url);
       setBranch(config.branch);
       setScheduleEnabled(config.schedule_enabled);
@@ -194,7 +205,7 @@ export function GitHubBackupSettings() {
     try {
       if (includeToken && accessToken) {
         // Full save with new token
-        await api.saveGitHubBackupConfig({
+        await api.saveGitBackupConfig({
           repository_url: repoUrl,
           access_token: accessToken,
           branch,
@@ -204,12 +215,14 @@ export function GitHubBackupSettings() {
           backup_cloud_profiles: backupCloudProfiles,
           backup_settings: backupSettings,
           enabled,
+          provider,
+          api_base_url: apiBaseUrl || null,
         });
         setAccessToken(''); // Clear after save
         showToast(t('backup.tokenUpdated'));
       } else {
         // Update without token
-        await api.updateGitHubBackupConfig({
+        await api.updateGitBackupConfig({
           repository_url: repoUrl,
           branch,
           schedule_enabled: scheduleEnabled,
@@ -218,15 +231,17 @@ export function GitHubBackupSettings() {
           backup_cloud_profiles: backupCloudProfiles,
           backup_settings: backupSettings,
           enabled,
+          provider,
+          api_base_url: apiBaseUrl || null,
         });
         showToast(t('backup.settingsSaved'));
       }
-      queryClient.invalidateQueries({ queryKey: ['github-backup-config'] });
-      queryClient.invalidateQueries({ queryKey: ['github-backup-status'] });
+      queryClient.invalidateQueries({ queryKey: ['git-backup-config'] });
+      queryClient.invalidateQueries({ queryKey: ['git-backup-status'] });
     } catch (error) {
       showToast(t('backup.failedToSave', { message: (error as Error).message }), 'error');
     }
-  }, [config?.has_token, repoUrl, accessToken, branch, scheduleEnabled, scheduleType, backupKProfiles, backupCloudProfiles, backupSettings, enabled, queryClient, showToast, t]);
+  }, [config?.has_token, repoUrl, accessToken, branch, scheduleEnabled, scheduleType, backupKProfiles, backupCloudProfiles, backupSettings, enabled, provider, apiBaseUrl, queryClient, showToast, t]);
 
   // Auto-save effect for existing configs (debounced)
   useEffect(() => {
@@ -245,7 +260,7 @@ export function GitHubBackupSettings() {
         clearTimeout(autoSaveTimerRef.current);
       }
     };
-  }, [repoUrl, branch, scheduleEnabled, scheduleType, backupKProfiles, backupCloudProfiles, backupSettings, enabled, autoSave, config?.has_token]);
+  }, [repoUrl, branch, scheduleEnabled, scheduleType, backupKProfiles, backupCloudProfiles, backupSettings, enabled, provider, apiBaseUrl, autoSave, config?.has_token]);
 
   // Auto-save token when it changes (with longer debounce)
   useEffect(() => {
@@ -268,11 +283,11 @@ export function GitHubBackupSettings() {
 
   // Mutations
   const saveConfigMutation = useMutation({
-    mutationFn: (data: GitHubBackupConfigCreate) => api.saveGitHubBackupConfig(data),
+    mutationFn: (data: GitBackupConfigCreate) => api.saveGitBackupConfig(data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['github-backup-config'] });
-      queryClient.invalidateQueries({ queryKey: ['github-backup-status'] });
-      showToast(t('backup.githubBackupEnabled'));
+      queryClient.invalidateQueries({ queryKey: ['git-backup-config'] });
+      queryClient.invalidateQueries({ queryKey: ['git-backup-status'] });
+      showToast(t('backup.gitBackupEnabled', { provider: providerName }));
       setAccessToken('');
       isInitializedRef.current = true;
     },
@@ -281,11 +296,11 @@ export function GitHubBackupSettings() {
     },
   });
 
-  const triggerBackupMutation = useMutation<GitHubBackupTriggerResponse, Error>({
-    mutationFn: api.triggerGitHubBackup,
+  const triggerBackupMutation = useMutation<GitBackupTriggerResponse, Error>({
+    mutationFn: api.triggerGitBackup,
     onSuccess: (result) => {
-      queryClient.invalidateQueries({ queryKey: ['github-backup-status'] });
-      queryClient.invalidateQueries({ queryKey: ['github-backup-logs'] });
+      queryClient.invalidateQueries({ queryKey: ['git-backup-status'] });
+      queryClient.invalidateQueries({ queryKey: ['git-backup-logs'] });
       if (result.success) {
         if (result.files_changed > 0) {
           showToast(t('backup.backupCompleteFiles', { count: result.files_changed }));
@@ -302,9 +317,9 @@ export function GitHubBackupSettings() {
   });
 
   const clearLogsMutation = useMutation<{ deleted: number; message: string }, Error>({
-    mutationFn: () => api.clearGitHubBackupLogs(0),
+    mutationFn: () => api.clearGitBackupLogs(0),
     onSuccess: (result) => {
-      queryClient.invalidateQueries({ queryKey: ['github-backup-logs'] });
+      queryClient.invalidateQueries({ queryKey: ['git-backup-logs'] });
       showToast(t('backup.clearedLogs', { count: result.deleted }));
     },
     onError: (error: Error) => {
@@ -324,10 +339,10 @@ export function GitHubBackupSettings() {
           setTestLoading(false);
           return;
         }
-        result = await api.testGitHubConnection(repoUrl, accessToken);
+        result = await api.testGitConnection(repoUrl, accessToken, provider, apiBaseUrl || undefined);
       } else if (config?.has_token) {
         // Use stored credentials
-        result = await api.testGitHubStoredConnection();
+        result = await api.testStoredGitConnection();
       } else {
         showToast(t('backup.enterRepoAndToken'), 'error');
         setTestLoading(false);
@@ -362,6 +377,8 @@ export function GitHubBackupSettings() {
       backup_cloud_profiles: backupCloudProfiles,
       backup_settings: backupSettings,
       enabled,
+      provider,
+      api_base_url: apiBaseUrl || null,
     });
   };
 
@@ -375,14 +392,14 @@ export function GitHubBackupSettings() {
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-      {/* Left Column - GitHub Backup */}
+      {/* Left Column - Git Backup */}
       <div className="space-y-6">
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <Github className="w-5 h-5 text-gray-400" />
-                <h2 className="text-lg font-semibold text-white">{t('backup.githubBackup')}</h2>
+                <ProviderIcon className="w-5 h-5 text-gray-400" />
+                <h2 className="text-lg font-semibold text-white">{t('backup.gitBackup')}</h2>
               </div>
               {config && (
                 <div className="flex items-center gap-2">
@@ -397,8 +414,60 @@ export function GitHubBackupSettings() {
           </CardHeader>
           <CardContent className="space-y-4">
                 <p className="text-sm text-bambu-gray">
-                  {t('backup.githubDescription')}
+                  {t('backup.gitDescription')}
                 </p>
+
+                {/* Provider selector */}
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">
+                    {t('backup.providerLabel')}
+                  </label>
+                  <div className="flex gap-3">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="provider"
+                        value="github"
+                        checked={provider === 'github'}
+                        onChange={() => { setProvider('github'); setTestResult(null); }}
+                        className="w-4 h-4 text-bambu-green focus:ring-bambu-green bg-bambu-dark border-bambu-dark-tertiary"
+                      />
+                      <Github className="w-4 h-4 text-white" />
+                      <span className="text-sm text-white">{t('backup.providerGitHub')}</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="provider"
+                        value="gitlab"
+                        checked={provider === 'gitlab'}
+                        onChange={() => { setProvider('gitlab'); setTestResult(null); }}
+                        className="w-4 h-4 text-bambu-green focus:ring-bambu-green bg-bambu-dark border-bambu-dark-tertiary"
+                      />
+                      <Gitlab className="w-4 h-4 text-white" />
+                      <span className="text-sm text-white">{t('backup.providerGitLab')}</span>
+                    </label>
+                  </div>
+                </div>
+
+                {/* GitLab API Base URL */}
+                {provider === 'gitlab' && (
+                  <div>
+                    <label className="block text-sm text-bambu-gray mb-1">
+                      {t('backup.apiBaseUrlLabel')}
+                    </label>
+                    <input
+                      type="text"
+                      value={apiBaseUrl}
+                      onChange={(e) => { setApiBaseUrl(e.target.value); setTestResult(null); }}
+                      placeholder={t('backup.apiBaseUrlPlaceholder')}
+                      className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                    />
+                    <p className="text-xs text-bambu-gray mt-1">
+                      {t('backup.apiBaseUrlHint')}
+                    </p>
+                  </div>
+                )}
 
                 {/* Repository URL */}
                 <div>
@@ -409,7 +478,7 @@ export function GitHubBackupSettings() {
                     type="text"
                     value={repoUrl}
                     onChange={(e) => { setRepoUrl(e.target.value); setTestResult(null); }}
-                    placeholder="https://github.com/username/bamdude-backup"
+                    placeholder={provider === 'github' ? 'https://github.com/username/repo' : 'https://gitlab.com/group/project'}
                     className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                   />
                 </div>
@@ -423,11 +492,11 @@ export function GitHubBackupSettings() {
                     type="password"
                     value={accessToken}
                     onChange={(e) => { setAccessToken(e.target.value); setTestResult(null); }}
-                    placeholder={config?.has_token ? t('backup.enterNewToken') : 'ghp_xxxxxxxxxxxx'}
+                    placeholder={config?.has_token ? t('backup.enterNewToken') : (provider === 'github' ? 'ghp_xxxxxxxxxxxx' : 'glpat-xxxxxxxxxxxx')}
                     className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                   />
                   <p className="text-xs text-bambu-gray mt-1">
-                    {t('backup.tokenHint')}
+                    {provider === 'github' ? t('backup.tokenHintGitHub') : t('backup.tokenHintGitLab')}
                   </p>
                 </div>
 

@@ -20,7 +20,6 @@ from backend.app.core.config import settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.archive import PrintArchive
-from backend.app.models.filament import Filament
 from backend.app.models.spool_usage_history import SpoolUsageHistory
 from backend.app.models.user import User
 from backend.app.schemas.archive import (
@@ -1121,7 +1120,7 @@ async def rescan_archive(
     if metadata.get("designer"):
         archive.designer = metadata["designer"]
 
-    # Calculate cost: prefer spool-based cost if available, else catalog-based
+    # Calculate cost: prefer spool usage history, fallback to default setting
 
     if archive.filament_used_grams and archive.filament_type:
         usage_result = await db.execute(
@@ -1131,24 +1130,13 @@ async def rescan_archive(
         if usage_cost is not None and usage_cost > 0:
             archive.cost = float(Decimal(str(usage_cost)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
         else:
-            primary_type = archive.filament_type.split(",")[0].strip()
-            filament_result = await db.execute(select(Filament).where(Filament.type == primary_type).limit(1))
-            filament = filament_result.scalar_one_or_none()
-            if filament:
-                archive.cost = float(
-                    Decimal(str((archive.filament_used_grams / 1000) * filament.cost_per_kg)).quantize(
-                        Decimal("0.01"), rounding=ROUND_HALF_UP
-                    )
+            default_cost_setting = await get_setting(db, "default_filament_cost")
+            default_cost_per_kg = float(default_cost_setting) if default_cost_setting else 25.0
+            archive.cost = float(
+                Decimal(str((archive.filament_used_grams / 1000) * default_cost_per_kg)).quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP
                 )
-            else:
-                # Use default filament cost from settings
-                default_cost_setting = await get_setting(db, "default_filament_cost")
-                default_cost_per_kg = float(default_cost_setting) if default_cost_setting else 25.0
-                archive.cost = float(
-                    Decimal(str((archive.filament_used_grams / 1000) * default_cost_per_kg)).quantize(
-                        Decimal("0.01"), rounding=ROUND_HALF_UP
-                    )
-                )
+            )
 
     await db.commit()
     await db.refresh(archive)
@@ -1166,10 +1154,6 @@ async def recalculate_all_costs(
 
     result = await db.execute(select(PrintArchive))
     archives = list(result.scalars().all())
-
-    # Load all filaments for lookup
-    filament_result = await db.execute(select(Filament))
-    filaments = {f.type: f.cost_per_kg for f in filament_result.scalars().all()}
 
     # Get default filament cost from settings
     default_cost_setting = await get_setting(db, "default_filament_cost")
@@ -1198,10 +1182,8 @@ async def recalculate_all_costs(
             fallback_cost = usage_result.scalar()
             if fallback_cost is not None and fallback_cost > 0:
                 new_cost = round(fallback_cost, 2)
-            elif archive.filament_used_grams and archive.filament_type:
-                primary_type = archive.filament_type.split(",")[0].strip()
-                cost_per_kg = filaments.get(primary_type, default_cost_per_kg)
-                new_cost = round((archive.filament_used_grams / 1000) * cost_per_kg, 2)
+            elif archive.filament_used_grams:
+                new_cost = round((archive.filament_used_grams / 1000) * default_cost_per_kg, 2)
             else:
                 new_cost = None
         if new_cost is not None and archive.cost != new_cost:

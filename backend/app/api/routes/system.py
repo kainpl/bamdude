@@ -18,10 +18,10 @@ from backend.app.core.config import APP_VERSION, settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.archive import PrintArchive
-from backend.app.models.filament import Filament
 from backend.app.models.printer import Printer
 from backend.app.models.project import Project
 from backend.app.models.smart_plug import SmartPlug
+from backend.app.models.spool import Spool
 from backend.app.models.user import User
 from backend.app.services.printer_manager import printer_manager
 
@@ -401,7 +401,7 @@ async def get_system_info(
     # Database stats
     archive_count = await db.scalar(select(func.count(PrintArchive.id)))
     printer_count = await db.scalar(select(func.count(Printer.id)))
-    filament_count = await db.scalar(select(func.count(Filament.id)))
+    spool_count = await db.scalar(select(func.count(Spool.id)))
     project_count = await db.scalar(select(func.count(Project.id)))
     smart_plug_count = await db.scalar(select(func.count(SmartPlug.id)))
 
@@ -476,7 +476,7 @@ async def get_system_info(
             "archives_failed": failed_count,
             "archives_printing": printing_count,
             "printers": printer_count,
-            "filaments": filament_count,
+            "spools": spool_count,
             "projects": project_count,
             "smart_plugs": smart_plug_count,
             "total_print_time_seconds": total_print_time,

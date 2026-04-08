@@ -6,7 +6,7 @@ import { api, macrosApi } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import { formatDateOnly } from '../utils/date';
 import { getCurrencySymbol, SUPPORTED_CURRENCIES } from '../utils/currency';
-import type { AppSettings, AppSettingsUpdate, SmartPlug, SmartPlugStatus, NotificationProvider, NotificationTemplate, UpdateStatus, GitHubBackupStatus, CloudAuthStatus, UserCreate, UserUpdate, UserResponse, StorageUsageResponse, Macro, MacroCreate, MacroUpdate } from '../api/client';
+import type { AppSettings, AppSettingsUpdate, SmartPlug, SmartPlugStatus, NotificationProvider, NotificationTemplate, UpdateStatus, GitBackupStatus, CloudAuthStatus, UserCreate, UserUpdate, UserResponse, StorageUsageResponse, Macro, MacroCreate, MacroUpdate } from '../api/client';
 import { Card, CardContent, CardHeader } from '../components/Card';
 import { Button } from '../components/Button';
 import { SmartPlugCard } from '../components/SmartPlugCard';
@@ -23,7 +23,7 @@ import { SpoolCatalogSettings } from '../components/SpoolCatalogSettings';
 import { ColorCatalogSettings } from '../components/ColorCatalogSettings';
 import { ExternalLinksSettings } from '../components/ExternalLinksSettings';
 import { VirtualPrinterList } from '../components/VirtualPrinterList';
-import { GitHubBackupSettings } from '../components/GitHubBackupSettings';
+import { GitBackupSettings } from '../components/GitBackupSettings';
 import { EmailSettings } from '../components/EmailSettings';
 import { APIBrowser } from '../components/APIBrowser';
 import { Toggle } from '../components/Toggle';
@@ -489,10 +489,10 @@ export function SettingsPage() {
     refetchInterval: activeTab === 'network' ? 5000 : false, // Poll every 5s when on Network tab
   });
 
-  // GitHub backup status for Backup tab indicator
-  const { data: githubBackupStatus } = useQuery<GitHubBackupStatus>({
-    queryKey: ['github-backup-status'],
-    queryFn: api.getGitHubBackupStatus,
+  // Git backup status for Backup tab indicator
+  const { data: gitBackupStatus } = useQuery<GitBackupStatus>({
+    queryKey: ['git-backup-status'],
+    queryFn: api.getGitBackupStatus,
   });
 
   // Cloud auth status for Backup tab indicator
@@ -1177,7 +1177,7 @@ export function SettingsPage() {
         >
           <Database className="w-4 h-4" />
           {t('settings.tabs.backup')}
-          <span className={`w-2 h-2 rounded-full ${cloudAuthStatus?.is_authenticated && githubBackupStatus?.configured && githubBackupStatus?.enabled ? 'bg-green-400' : 'bg-gray-500'}`} />
+          <span className={`w-2 h-2 rounded-full ${cloudAuthStatus?.is_authenticated && gitBackupStatus?.configured && gitBackupStatus?.enabled ? 'bg-green-400' : 'bg-gray-500'}`} />
         </button>
       </div>
       {/* ══════ GENERAL TAB ══════ */}
@@ -4908,7 +4908,7 @@ export function SettingsPage() {
 
       {/* ══════ BACKUP TAB ══════ */}
       {activeTab === 'backup' && (
-        <GitHubBackupSettings />
+        <GitBackupSettings />
       )}
       {/* ══════ /BACKUP TAB ══════ */}
 

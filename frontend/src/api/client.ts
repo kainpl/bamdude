@@ -456,27 +456,6 @@ export interface ArchiveListParams {
   sort_by?: string;
 }
 
-export interface PrintLogEntry {
-  id: number;
-  print_name: string | null;
-  printer_name: string | null;
-  printer_id: number | null;
-  status: string;
-  started_at: string | null;
-  completed_at: string | null;
-  duration_seconds: number | null;
-  filament_type: string | null;
-  filament_color: string | null;
-  filament_used_grams: number | null;
-  thumbnail_path: string | null;
-  created_by_username: string | null;
-  created_at: string;
-}
-
-export interface PrintLogResponse {
-  items: PrintLogEntry[];
-  total: number;
-}
 
 export interface ArchiveStats {
   total_prints: number;
@@ -1497,25 +1476,6 @@ export interface SlotPresetMapping {
   preset_name: string;
 }
 
-// Filament types
-export interface Filament {
-  id: number;
-  name: string;
-  type: string;  // PLA, PETG, ABS, etc.
-  brand: string | null;
-  color: string | null;
-  color_hex: string | null;
-  cost_per_kg: number;
-  spool_weight_g: number;
-  currency: string;
-  density: number | null;
-  print_temp_min: number | null;
-  print_temp_max: number | null;
-  bed_temp_min: number | null;
-  bed_temp_max: number | null;
-  created_at: string;
-  updated_at: string;
-}
 
 // Notification Provider types
 export type ProviderType = 'callmebot' | 'ntfy' | 'pushover' | 'telegram' | 'email' | 'discord' | 'webhook' | 'homeassistant';
@@ -1671,10 +1631,10 @@ export interface NotificationProviderUpdate {
   printer_id?: number | null;
 }
 
-// GitHub Backup types
+// Git Backup types
 export type ScheduleType = 'hourly' | 'daily' | 'weekly';
 
-export interface GitHubBackupConfig {
+export interface GitBackupConfig {
   id: number;
   repository_url: string;
   has_token: boolean;
@@ -1685,6 +1645,8 @@ export interface GitHubBackupConfig {
   backup_cloud_profiles: boolean;
   backup_settings: boolean;
   enabled: boolean;
+  provider: string;
+  api_base_url: string | null;
   last_backup_at: string | null;
   last_backup_status: string | null;
   last_backup_message: string | null;
@@ -1694,7 +1656,7 @@ export interface GitHubBackupConfig {
   updated_at: string;
 }
 
-export interface GitHubBackupConfigCreate {
+export interface GitBackupConfigCreate {
   repository_url: string;
   access_token: string;
   branch?: string;
@@ -1704,9 +1666,11 @@ export interface GitHubBackupConfigCreate {
   backup_cloud_profiles?: boolean;
   backup_settings?: boolean;
   enabled?: boolean;
+  provider?: string;
+  api_base_url?: string | null;
 }
 
-export interface GitHubBackupLog {
+export interface GitBackupLog {
   id: number;
   config_id: number;
   started_at: string;
@@ -1718,7 +1682,7 @@ export interface GitHubBackupLog {
   error_message: string | null;
 }
 
-export interface GitHubBackupStatus {
+export interface GitBackupStatus {
   configured: boolean;
   enabled: boolean;
   is_running: boolean;
@@ -1728,14 +1692,14 @@ export interface GitHubBackupStatus {
   next_scheduled_run: string | null;
 }
 
-export interface GitHubTestConnectionResponse {
+export interface GitTestConnectionResponse {
   success: boolean;
   message: string;
   repo_name: string | null;
   permissions: Record<string, boolean> | null;
 }
 
-export interface GitHubBackupTriggerResponse {
+export interface GitBackupTriggerResponse {
   success: boolean;
   message: string;
   log_id: number | null;
@@ -2156,7 +2120,7 @@ export type Permission =
   | 'stats:read'
   | 'system:read'
   | 'settings:read' | 'settings:update' | 'settings:backup' | 'settings:restore'
-  | 'github:backup' | 'github:restore'
+  | 'git:backup' | 'git:restore'
   | 'cloud:auth'
   | 'api_keys:read' | 'api_keys:create' | 'api_keys:update' | 'api_keys:delete'
   | 'users:read' | 'users:create' | 'users:update' | 'users:delete'
@@ -3244,31 +3208,6 @@ export const api = {
     return response.json();
   },
 
-  // Print Log
-  getPrintLog: (params?: {
-    search?: string;
-    printerId?: number;
-    username?: string;
-    status?: string;
-    dateFrom?: string;
-    dateTo?: string;
-    limit?: number;
-    offset?: number;
-  }) => {
-    const searchParams = new URLSearchParams();
-    if (params?.search) searchParams.set('search', params.search);
-    if (params?.printerId) searchParams.set('printer_id', String(params.printerId));
-    if (params?.username) searchParams.set('created_by_username', params.username);
-    if (params?.status) searchParams.set('status', params.status);
-    if (params?.dateFrom) searchParams.set('date_from', params.dateFrom);
-    if (params?.dateTo) searchParams.set('date_to', params.dateTo);
-    if (params?.limit) searchParams.set('limit', String(params.limit));
-    if (params?.offset !== undefined) searchParams.set('offset', String(params.offset));
-    return request<PrintLogResponse>(`/print-log/?${searchParams}`);
-  },
-  getPrintLogThumbnail: (id: number) => `${API_BASE}/print-log/${id}/thumbnail`,
-  clearPrintLog: () =>
-    request<{ deleted: number }>('/print-log/', { method: 'DELETE' }),
 
   // Settings
   getSettings: () => request<AppSettings>('/settings/'),
@@ -3598,10 +3537,6 @@ export const api = {
       { method: 'POST' }
     ),
 
-  // Filament Catalog (material types with cost/temp data)
-  listFilaments: () => request<Filament[]>('/filament-catalog/'),
-  getFilament: (id: number) => request<Filament>(`/filament-catalog/${id}`),
-  getFilamentsByType: (type: string) => request<Filament[]>(`/filament-catalog/by-type/${type}`),
 
   // Notification Providers
   getNotificationProviders: () => request<NotificationProvider[]>('/notifications/'),
@@ -4369,45 +4304,49 @@ export const api = {
       }>;
     }>(`/library/files/${fileId}/filament-requirements${plateId !== undefined ? `?plate_id=${plateId}` : ''}`),
 
-  // GitHub Backup
-  getGitHubBackupConfig: () =>
-    request<GitHubBackupConfig | null>('/github-backup/config'),
+  // Git Backup
+  getGitBackupConfig: () =>
+    request<GitBackupConfig | null>('/git-backup/config'),
 
-  saveGitHubBackupConfig: (config: GitHubBackupConfigCreate) =>
-    request<GitHubBackupConfig>('/github-backup/config', {
+  saveGitBackupConfig: (config: GitBackupConfigCreate) =>
+    request<GitBackupConfig>('/git-backup/config', {
       method: 'POST',
       body: JSON.stringify(config),
     }),
 
-  updateGitHubBackupConfig: (config: Partial<GitHubBackupConfigCreate>) =>
-    request<GitHubBackupConfig>('/github-backup/config', {
+  updateGitBackupConfig: (config: Partial<GitBackupConfigCreate>) =>
+    request<GitBackupConfig>('/git-backup/config', {
       method: 'PATCH',
       body: JSON.stringify(config),
     }),
 
-  deleteGitHubBackupConfig: () =>
-    request<{ message: string }>('/github-backup/config', { method: 'DELETE' }),
+  deleteGitBackupConfig: () =>
+    request<{ message: string }>('/git-backup/config', { method: 'DELETE' }),
 
-  testGitHubConnection: (repoUrl: string, token: string) =>
-    request<GitHubTestConnectionResponse>(
-      `/github-backup/test?repo_url=${encodeURIComponent(repoUrl)}&token=${encodeURIComponent(token)}`,
+  testGitConnection: (repoUrl: string, token: string, provider?: string, apiBaseUrl?: string) => {
+    const params = new URLSearchParams({ repo_url: repoUrl, token });
+    if (provider) params.set('provider', provider);
+    if (apiBaseUrl) params.set('api_base_url', apiBaseUrl);
+    return request<GitTestConnectionResponse>(
+      `/git-backup/test?${params.toString()}`,
       { method: 'POST' }
-    ),
+    );
+  },
 
-  testGitHubStoredConnection: () =>
-    request<GitHubTestConnectionResponse>('/github-backup/test-stored', { method: 'POST' }),
+  testStoredGitConnection: () =>
+    request<GitTestConnectionResponse>('/git-backup/test-stored', { method: 'POST' }),
 
-  triggerGitHubBackup: () =>
-    request<GitHubBackupTriggerResponse>('/github-backup/run', { method: 'POST' }),
+  triggerGitBackup: () =>
+    request<GitBackupTriggerResponse>('/git-backup/run', { method: 'POST' }),
 
-  getGitHubBackupStatus: () =>
-    request<GitHubBackupStatus>('/github-backup/status'),
+  getGitBackupStatus: () =>
+    request<GitBackupStatus>('/git-backup/status'),
 
-  getGitHubBackupLogs: (limit: number = 50) =>
-    request<GitHubBackupLog[]>(`/github-backup/logs?limit=${limit}`),
+  getGitBackupLogs: (limit: number = 50) =>
+    request<GitBackupLog[]>(`/git-backup/logs?limit=${limit}`),
 
-  clearGitHubBackupLogs: (keepLast: number = 10) =>
-    request<{ deleted: number; message: string }>(`/github-backup/logs?keep_last=${keepLast}`, { method: 'DELETE' }),
+  clearGitBackupLogs: (keepLast: number = 10) =>
+    request<{ deleted: number; message: string }>(`/git-backup/logs?keep_last=${keepLast}`, { method: 'DELETE' }),
 
   // Local Presets (OrcaSlicer imports)
   getLocalPresets: () =>

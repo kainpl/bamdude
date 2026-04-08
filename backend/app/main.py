@@ -20,9 +20,8 @@ from backend.app.api.routes import (
     cloud,
     discovery,
     external_links,
-    filaments,
     firmware,
-    github_backup,
+    git_backup,
     groups,
     inventory,
     kprofiles,
@@ -34,7 +33,6 @@ from backend.app.api.routes import (
     notification_templates,
     notifications,
     pending_uploads,
-    print_log,
     print_queue,
     printer_queues,
     printers,
@@ -63,7 +61,7 @@ from backend.app.services.archive import ArchiveService
 from backend.app.services.background_dispatch import background_dispatch
 from backend.app.services.bambu_ftp import download_file_async, get_ftp_retry_settings, with_ftp_retry
 from backend.app.services.bambu_mqtt import PrinterState
-from backend.app.services.github_backup import github_backup_service
+from backend.app.services.git_backup import git_backup_service
 from backend.app.services.homeassistant import homeassistant_service
 from backend.app.services.mqtt_relay import mqtt_relay
 from backend.app.services.mqtt_smart_plug import mqtt_smart_plug_service
@@ -210,9 +208,8 @@ check_dependencies()
 
 # Import settings first for logging configuration
 
-# Configure logging based on settings
-# DEBUG=true -> DEBUG level, else use LOG_LEVEL setting
-log_level_str = "DEBUG" if app_settings.debug else app_settings.log_level.upper()
+# Configure logging — LOG_LEVEL env var controls the level directly
+log_level_str = app_settings.log_level.upper()
 log_level = getattr(logging, log_level_str, logging.INFO)
 log_format = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
 
@@ -2909,35 +2906,6 @@ async def on_print_complete(printer_id: int, data: dict):
 
     log_timing("Archive status update")
 
-    # Write independent print log entry (separate table, never touches archives)
-    try:
-        async with async_session() as db:
-            from backend.app.models.archive import PrintArchive
-            from backend.app.services.print_log import write_log_entry
-
-            archive = await db.get(PrintArchive, archive_id)
-            if archive:
-                p_info = printer_manager.get_printer(printer_id)
-                await write_log_entry(
-                    db,
-                    status=data.get("status", "completed"),
-                    print_name=archive.print_name,
-                    printer_name=p_info.name if p_info else None,
-                    printer_id=printer_id,
-                    started_at=archive.started_at,
-                    completed_at=archive.completed_at,
-                    filament_type=archive.filament_type,
-                    filament_color=archive.filament_color,
-                    filament_used_grams=archive.filament_used_grams,
-                    thumbnail_path=archive.thumbnail_path,
-                    created_by_username=_print_user_info.get("username") if _print_user_info else None,
-                )
-                await db.commit()
-                logger.info("[PRINT_LOG] Log entry written for archive %s", archive_id)
-    except Exception as e:
-        logger.warning("[PRINT_LOG] Failed to write log entry for archive %s: %s", archive_id, e)
-
-    log_timing("Print log entry")
 
     # Track filament consumption from AMS remain% deltas (skip if Spoolman handles usage)
     usage_results: list[dict] = []
@@ -3961,8 +3929,8 @@ async def lifespan(app: FastAPI):
     # Start the notification digest scheduler
     notification_service.start_digest_scheduler()
 
-    # Start the GitHub backup scheduler
-    await github_backup_service.start_scheduler()
+    # Start the Git backup scheduler
+    await git_backup_service.start_scheduler()
 
     # Start AMS history recording
     start_ams_history_recording()
@@ -4017,7 +3985,7 @@ async def lifespan(app: FastAPI):
     await background_dispatch.stop()
     smart_plug_manager.stop_scheduler()
     notification_service.stop_digest_scheduler()
-    github_backup_service.stop_scheduler()
+    git_backup_service.stop_scheduler()
     stop_ams_history_recording()
     stop_runtime_tracking()
     stop_spoolbuddy_watchdog()
@@ -4205,13 +4173,11 @@ app.include_router(users.router, prefix=app_settings.api_prefix)
 app.include_router(groups.router, prefix=app_settings.api_prefix)
 app.include_router(printers.router, prefix=app_settings.api_prefix)
 app.include_router(archives.router, prefix=app_settings.api_prefix)
-app.include_router(filaments.router, prefix=app_settings.api_prefix)
 app.include_router(inventory.router, prefix=app_settings.api_prefix)
 app.include_router(settings_routes.router, prefix=app_settings.api_prefix)
 app.include_router(cloud.router, prefix=app_settings.api_prefix)
 app.include_router(local_presets.router, prefix=app_settings.api_prefix)
 app.include_router(smart_plugs.router, prefix=app_settings.api_prefix)
-app.include_router(print_log.router, prefix=app_settings.api_prefix)
 app.include_router(print_queue.router, prefix=app_settings.api_prefix)
 app.include_router(background_dispatch_routes.router, prefix=app_settings.api_prefix)
 app.include_router(kprofiles.router, prefix=app_settings.api_prefix)
@@ -4235,7 +4201,7 @@ app.include_router(websocket.router, prefix=app_settings.api_prefix)
 app.include_router(discovery.router, prefix=app_settings.api_prefix)
 app.include_router(pending_uploads.router, prefix=app_settings.api_prefix)
 app.include_router(firmware.router, prefix=app_settings.api_prefix)
-app.include_router(github_backup.router, prefix=app_settings.api_prefix)
+app.include_router(git_backup.router, prefix=app_settings.api_prefix)
 app.include_router(metrics.router, prefix=app_settings.api_prefix)
 app.include_router(virtual_printers.router, prefix=app_settings.api_prefix)
 app.include_router(spoolbuddy.router, prefix=app_settings.api_prefix)

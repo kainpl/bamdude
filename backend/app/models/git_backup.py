@@ -1,4 +1,7 @@
-"""GitHub backup configuration and log models."""
+"""Git backup configuration and log models.
+
+Supports GitHub and GitLab as backup providers.
+"""
 
 from datetime import datetime
 
@@ -8,15 +11,17 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from backend.app.core.database import Base
 
 
-class GitHubBackupConfig(Base):
-    """Configuration for GitHub profile backup."""
+class GitBackupConfig(Base):
+    """Configuration for Git profile backup (GitHub or GitLab)."""
 
-    __tablename__ = "github_backup_config"
+    __tablename__ = "git_backup_config"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    repository_url: Mapped[str] = mapped_column(String(500))  # Full GitHub URL
+    provider: Mapped[str] = mapped_column(String(20), default="github")  # "github" or "gitlab"
+    repository_url: Mapped[str] = mapped_column(String(500))  # Full repository URL
     access_token: Mapped[str] = mapped_column(Text)  # Personal Access Token
     branch: Mapped[str] = mapped_column(String(100), default="main")
+    api_base_url: Mapped[str | None] = mapped_column(String(500), nullable=True)  # For self-hosted GitLab
 
     # Schedule configuration
     schedule_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -41,16 +46,16 @@ class GitHubBackupConfig(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
     # Relationships
-    logs: Mapped[list["GitHubBackupLog"]] = relationship(back_populates="config", cascade="all, delete-orphan")
+    logs: Mapped[list["GitBackupLog"]] = relationship(back_populates="config", cascade="all, delete-orphan")
 
 
-class GitHubBackupLog(Base):
-    """Log entry for GitHub backup runs."""
+class GitBackupLog(Base):
+    """Log entry for Git backup runs."""
 
-    __tablename__ = "github_backup_logs"
+    __tablename__ = "git_backup_logs"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    config_id: Mapped[int] = mapped_column(ForeignKey("github_backup_config.id", ondelete="CASCADE"))
+    config_id: Mapped[int] = mapped_column(ForeignKey("git_backup_config.id", ondelete="CASCADE"))
 
     started_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -62,4 +67,4 @@ class GitHubBackupLog(Base):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Relationships
-    config: Mapped["GitHubBackupConfig"] = relationship(back_populates="logs")
+    config: Mapped["GitBackupConfig"] = relationship(back_populates="logs")

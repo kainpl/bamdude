@@ -25,12 +25,12 @@ from backend.app.core.database import async_session
 from backend.app.core.permissions import Permission
 from backend.app.core.websocket import ws_manager
 from backend.app.models.archive import PrintArchive
-from backend.app.models.filament import Filament
 from backend.app.models.notification import NotificationProvider
 from backend.app.models.printer import Printer
 from backend.app.models.project import Project
 from backend.app.models.settings import Settings
 from backend.app.models.smart_plug import SmartPlug
+from backend.app.models.spool import Spool
 from backend.app.models.user import User
 from backend.app.services.discovery import is_running_in_docker
 from backend.app.services.network_utils import get_network_interfaces
@@ -470,8 +470,8 @@ async def _collect_support_info() -> dict:
         result = await db.execute(select(func.count(Printer.id)))
         info["database"]["printers_total"] = result.scalar() or 0
 
-        result = await db.execute(select(func.count(Filament.id)))
-        info["database"]["filaments_total"] = result.scalar() or 0
+        result = await db.execute(select(func.count(Spool.id)))
+        info["database"]["spools_total"] = result.scalar() or 0
 
         result = await db.execute(select(func.count(Project.id)))
         info["database"]["projects_total"] = result.scalar() or 0

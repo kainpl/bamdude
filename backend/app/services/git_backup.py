@@ -1,6 +1,7 @@
-"""GitHub backup service for printer profiles.
+"""Git backup service for printer profiles.
 
-Handles scheduled and on-demand backups of K-profiles and cloud profiles to GitHub.
+Handles scheduled and on-demand backups of K-profiles and cloud profiles
+to GitHub or GitLab repositories.
 """
 
 import asyncio
@@ -9,6 +10,7 @@ import hashlib
 import json
 import logging
 import re
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -16,7 +18,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.database import async_session
-from backend.app.models.github_backup import GitHubBackupConfig, GitHubBackupLog
+from backend.app.models.git_backup import GitBackupConfig, GitBackupLog
 from backend.app.models.printer import Printer
 from backend.app.models.settings import Settings
 from backend.app.services.bambu_cloud import get_cloud_service
@@ -32,8 +34,8 @@ SCHEDULE_INTERVALS = {
 }
 
 
-class GitHubBackupService:
-    """Service for backing up profiles to GitHub."""
+class GitBackupService:
+    """Service for backing up profiles to GitHub or GitLab."""
 
     def __init__(self):
         self._scheduler_task: asyncio.Task | None = None
@@ -52,7 +54,7 @@ class GitHubBackupService:
         """Start the background scheduler loop."""
         if self._scheduler_task is not None:
             return
-        logger.info("Starting GitHub backup scheduler")
+        logger.info("Starting Git backup scheduler")
         self._scheduler_task = asyncio.create_task(self._scheduler_loop())
 
     def stop_scheduler(self):
@@ -60,7 +62,7 @@ class GitHubBackupService:
         if self._scheduler_task:
             self._scheduler_task.cancel()
             self._scheduler_task = None
-            logger.info("Stopped GitHub backup scheduler")
+            logger.info("Stopped Git backup scheduler")
 
     async def _scheduler_loop(self):
         """Main scheduler loop - checks for due backups."""
@@ -71,16 +73,16 @@ class GitHubBackupService:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error("Error in GitHub backup scheduler: %s", e)
+                logger.error("Error in Git backup scheduler: %s", e)
                 await asyncio.sleep(60)
 
     async def _check_scheduled_backups(self):
         """Check if any scheduled backups are due."""
         async with async_session() as db:
             result = await db.execute(
-                select(GitHubBackupConfig).where(
-                    GitHubBackupConfig.enabled == True,  # noqa: E712
-                    GitHubBackupConfig.schedule_enabled == True,  # noqa: E712
+                select(GitBackupConfig).where(
+                    GitBackupConfig.enabled == True,  # noqa: E712
+                    GitBackupConfig.schedule_enabled == True,  # noqa: E712
                 )
             )
             configs = result.scalars().all()
@@ -101,71 +103,26 @@ class GitHubBackupService:
         interval = SCHEDULE_INTERVALS.get(schedule_type, SCHEDULE_INTERVALS["daily"])
         return now + timedelta(seconds=interval)
 
-    async def test_connection(self, repo_url: str, token: str) -> dict:
-        """Test GitHub connection and permissions.
+    async def test_connection(
+        self, repo_url: str, token: str, provider: str = "github", api_base_url: str | None = None
+    ) -> dict:
+        """Test Git provider connection and permissions.
 
         Args:
-            repo_url: GitHub repository URL
+            repo_url: Repository URL
             token: Personal Access Token
+            provider: "github" or "gitlab"
+            api_base_url: API base URL for self-hosted GitLab
 
         Returns:
             dict with success, message, repo_name, permissions
         """
         try:
-            owner, repo = self._parse_repo_url(repo_url)
-            client = await self._get_client()
-
-            # Test API access
-            response = await client.get(
-                f"https://api.github.com/repos/{owner}/{repo}",
-                headers={
-                    "Authorization": f"token {token}",
-                    "Accept": "application/vnd.github.v3+json",
-                    "User-Agent": "Bambuddy-Backup",
-                },
-            )
-
-            if response.status_code == 401:
-                return {"success": False, "message": "Invalid access token", "repo_name": None, "permissions": None}
-
-            if response.status_code == 404:
-                return {
-                    "success": False,
-                    "message": "Repository not found. Check URL and token permissions.",
-                    "repo_name": None,
-                    "permissions": None,
-                }
-
-            if response.status_code != 200:
-                return {
-                    "success": False,
-                    "message": f"GitHub API error: {response.status_code}",
-                    "repo_name": None,
-                    "permissions": None,
-                }
-
-            data = response.json()
-            permissions = data.get("permissions", {})
-
-            # Check for push permission
-            if not permissions.get("push", False):
-                return {
-                    "success": False,
-                    "message": "Token does not have push permission to this repository",
-                    "repo_name": data.get("full_name"),
-                    "permissions": permissions,
-                }
-
-            return {
-                "success": True,
-                "message": "Connection successful",
-                "repo_name": data.get("full_name"),
-                "permissions": permissions,
-            }
-
+            if provider == "gitlab":
+                return await self._test_connection_gitlab(repo_url, token, api_base_url)
+            return await self._test_connection_github(repo_url, token)
         except Exception as e:
-            logger.error("GitHub connection test failed: %s", e)
-            # Sanitize error - don't expose internal details
+            logger.error("Git connection test failed: %s", e)
             error_type = type(e).__name__
             return {
                 "success": False,
@@ -174,25 +131,162 @@ class GitHubBackupService:
                 "permissions": None,
             }
 
-    def _parse_repo_url(self, url: str) -> tuple[str, str]:
-        """Parse owner and repo from GitHub URL."""
-        # Limit URL length to prevent ReDoS attacks
+    async def _test_connection_github(self, repo_url: str, token: str) -> dict:
+        """Test GitHub connection and permissions."""
+        owner, repo = self._parse_repo_url(repo_url, provider="github")
+        client = await self._get_client()
+
+        response = await client.get(
+            f"https://api.github.com/repos/{owner}/{repo}",
+            headers={
+                "Authorization": f"token {token}",
+                "Accept": "application/vnd.github.v3+json",
+                "User-Agent": "BamDude-Backup",
+            },
+        )
+
+        if response.status_code == 401:
+            return {"success": False, "message": "Invalid access token", "repo_name": None, "permissions": None}
+
+        if response.status_code == 404:
+            return {
+                "success": False,
+                "message": "Repository not found. Check URL and token permissions.",
+                "repo_name": None,
+                "permissions": None,
+            }
+
+        if response.status_code != 200:
+            return {
+                "success": False,
+                "message": f"GitHub API error: {response.status_code}",
+                "repo_name": None,
+                "permissions": None,
+            }
+
+        data = response.json()
+        permissions = data.get("permissions", {})
+
+        if not permissions.get("push", False):
+            return {
+                "success": False,
+                "message": "Token does not have push permission to this repository",
+                "repo_name": data.get("full_name"),
+                "permissions": permissions,
+            }
+
+        return {
+            "success": True,
+            "message": "Connection successful",
+            "repo_name": data.get("full_name"),
+            "permissions": permissions,
+        }
+
+    async def _test_connection_gitlab(self, repo_url: str, token: str, api_base_url: str | None = None) -> dict:
+        """Test GitLab connection and permissions."""
+        group, project = self._parse_repo_url(repo_url, provider="gitlab")
+        api_base = api_base_url or "https://gitlab.com/api/v4"
+        api_base = api_base.rstrip("/")
+        encoded_path = urllib.parse.quote(f"{group}/{project}", safe="")
+        client = await self._get_client()
+
+        response = await client.get(
+            f"{api_base}/projects/{encoded_path}",
+            headers={"PRIVATE-TOKEN": token},
+        )
+
+        if response.status_code == 401:
+            return {"success": False, "message": "Invalid access token", "repo_name": None, "permissions": None}
+
+        if response.status_code == 404:
+            return {
+                "success": False,
+                "message": "Project not found. Check URL and token permissions.",
+                "repo_name": None,
+                "permissions": None,
+            }
+
+        if response.status_code != 200:
+            return {
+                "success": False,
+                "message": f"GitLab API error: {response.status_code}",
+                "repo_name": None,
+                "permissions": None,
+            }
+
+        data = response.json()
+        access_level = 0
+        if "permissions" in data:
+            project_access = data["permissions"].get("project_access") or {}
+            group_access = data["permissions"].get("group_access") or {}
+            access_level = max(project_access.get("access_level", 0), group_access.get("access_level", 0))
+
+        # Developer+ (access_level >= 30) can push
+        if access_level < 30:
+            return {
+                "success": False,
+                "message": "Token does not have push permission (Developer+ required)",
+                "repo_name": data.get("path_with_namespace"),
+                "permissions": {"access_level": access_level},
+            }
+
+        return {
+            "success": True,
+            "message": "Connection successful",
+            "repo_name": data.get("path_with_namespace"),
+            "permissions": {"access_level": access_level},
+        }
+
+    def _parse_repo_url(self, url: str, provider: str = "github") -> tuple[str, str]:
+        """Parse owner/group and repo/project from repository URL.
+
+        Args:
+            url: Repository URL
+            provider: "github" or "gitlab"
+
+        Returns:
+            Tuple of (owner/group, repo/project)
+        """
         if not url or len(url) > 500:
-            raise ValueError("Invalid GitHub URL: URL too long or empty")
+            raise ValueError("Invalid repository URL: URL too long or empty")
 
-        # Handle HTTPS URLs - use atomic groups via limited character classes
-        # GitHub usernames: 1-39 chars, alphanumeric and hyphens
-        # Repo names: 1-100 chars, alphanumeric, hyphens, underscores, dots
-        match = re.match(r"https://github\.com/([\w-]{1,39})/([\w.\-]{1,100})(?:\.git)?/?$", url)
-        if match:
-            return match.group(1), match.group(2)
+        if provider == "github":
+            # Handle HTTPS URLs
+            match = re.match(r"https://github\.com/([\w-]{1,39})/([\w.\-]{1,100})(?:\.git)?/?$", url)
+            if match:
+                return match.group(1), match.group(2)
 
-        # Handle SSH URLs
-        match = re.match(r"git@github\.com:([\w-]{1,39})/([\w.\-]{1,100})(?:\.git)?$", url)
-        if match:
-            return match.group(1), match.group(2)
+            # Handle SSH URLs
+            match = re.match(r"git@github\.com:([\w-]{1,39})/([\w.\-]{1,100})(?:\.git)?$", url)
+            if match:
+                return match.group(1), match.group(2)
 
-        raise ValueError(f"Invalid GitHub URL: {url}")
+            raise ValueError(f"Invalid GitHub URL: {url}")
+
+        elif provider == "gitlab":
+            # Handle gitlab.com HTTPS URLs
+            match = re.match(r"https://gitlab\.com/([\w.-]{1,100})/([\w.\-]{1,100})(?:\.git)?/?$", url)
+            if match:
+                return match.group(1), match.group(2)
+
+            # Handle gitlab.com SSH URLs
+            match = re.match(r"git@gitlab\.com:([\w.-]{1,100})/([\w.\-]{1,100})(?:\.git)?$", url)
+            if match:
+                return match.group(1), match.group(2)
+
+            # Handle self-hosted HTTPS URLs: https://{host}/{group}/{project}
+            match = re.match(r"https://[\w.-]+/([\w.-]{1,100})/([\w.\-]{1,100})(?:\.git)?/?$", url)
+            if match:
+                return match.group(1), match.group(2)
+
+            # Handle self-hosted SSH URLs: git@{host}:{group}/{project}
+            match = re.match(r"git@[\w.-]+:([\w.-]{1,100})/([\w.\-]{1,100})(?:\.git)?$", url)
+            if match:
+                return match.group(1), match.group(2)
+
+            raise ValueError(f"Invalid GitLab URL: {url}")
+
+        raise ValueError(f"Unknown provider: {provider}")
 
     async def run_backup(self, config_id: int, trigger: str = "manual") -> dict:
         """Run a backup operation.
@@ -213,7 +307,7 @@ class GitHubBackupService:
         try:
             async with async_session() as db:
                 # Get config
-                result = await db.execute(select(GitHubBackupConfig).where(GitHubBackupConfig.id == config_id))
+                result = await db.execute(select(GitBackupConfig).where(GitBackupConfig.id == config_id))
                 config = result.scalar_one_or_none()
 
                 if not config:
@@ -223,7 +317,7 @@ class GitHubBackupService:
                     return {"success": False, "message": "Backup is disabled", "log_id": None}
 
                 # Create log entry
-                log = GitHubBackupLog(config_id=config_id, status="running", trigger=trigger)
+                log = GitBackupLog(config_id=config_id, status="running", trigger=trigger)
                 db.add(log)
                 await db.commit()
                 await db.refresh(log)
@@ -253,9 +347,10 @@ class GitHubBackupService:
                             "files_changed": 0,
                         }
 
-                    # Push to GitHub
-                    self._backup_progress = "Pushing to GitHub..."
-                    push_result = await self._push_to_github(config, backup_data)
+                    # Push to provider
+                    provider_name = (config.provider or "github").title()
+                    self._backup_progress = f"Pushing to {provider_name}..."
+                    push_result = await self._push_to_provider(config, backup_data)
 
                     # Update log and config
                     log.status = push_result["status"]
@@ -308,7 +403,7 @@ class GitHubBackupService:
             self._running_backup = False
             self._backup_progress = None
 
-    async def _collect_backup_data(self, db: AsyncSession, config: GitHubBackupConfig) -> dict:
+    async def _collect_backup_data(self, db: AsyncSession, config: GitBackupConfig) -> dict:
         """Collect data to backup based on config settings.
 
         Returns dict with structure:
@@ -326,7 +421,7 @@ class GitHubBackupService:
         # Metadata file (no timestamps - git tracks file history)
         metadata = {
             "version": "1.0",
-            "backup_type": "bambuddy_profiles",
+            "backup_type": "bamdude_profiles",
             "contents": {
                 "kprofiles": config.backup_kprofiles,
                 "cloud_profiles": config.backup_cloud_profiles,
@@ -475,7 +570,20 @@ class GitHubBackupService:
             "settings": settings_data,
         }
 
-    async def _push_to_github(self, config: GitHubBackupConfig, files: dict) -> dict:
+    async def _push_to_provider(self, config: GitBackupConfig, files: dict) -> dict:
+        """Push files to the configured Git provider.
+
+        Dispatches to GitHub or GitLab implementation.
+
+        Returns:
+            dict with status, message, commit_sha, files_changed
+        """
+        provider = config.provider or "github"
+        if provider == "gitlab":
+            return await self._push_gitlab(config, files)
+        return await self._push_github(config, files)
+
+    async def _push_github(self, config: GitBackupConfig, files: dict) -> dict:
         """Push files to GitHub using the GitHub API.
 
         Uses the Git Data API to create blobs, tree, and commit.
@@ -484,13 +592,13 @@ class GitHubBackupService:
             dict with status, message, commit_sha, files_changed
         """
         try:
-            owner, repo = self._parse_repo_url(config.repository_url)
+            owner, repo = self._parse_repo_url(config.repository_url, provider="github")
             branch = config.branch
             client = await self._get_client()
             headers = {
                 "Authorization": f"token {config.access_token}",
                 "Accept": "application/vnd.github.v3+json",
-                "User-Agent": "Bambuddy-Backup",
+                "User-Agent": "BamDude-Backup",
             }
 
             # Get current branch reference
@@ -500,7 +608,7 @@ class GitHubBackupService:
 
             if ref_response.status_code == 404:
                 # Branch doesn't exist, need to create it from default branch
-                return await self._create_branch_and_push(client, headers, owner, repo, branch, files)
+                return await self._create_branch_and_push_github(client, headers, owner, repo, branch, files)
 
             if ref_response.status_code != 200:
                 return {
@@ -577,7 +685,7 @@ class GitHubBackupService:
             new_tree_sha = tree_response.json()["sha"]
 
             # Create commit
-            commit_message = f"Bambuddy backup - {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
+            commit_message = f"BamDude backup - {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
             commit_response = await client.post(
                 f"https://api.github.com/repos/{owner}/{repo}/git/commits",
                 headers=headers,
@@ -610,10 +718,201 @@ class GitHubBackupService:
             logger.error("Push to GitHub failed: %s", e)
             return {"status": "failed", "message": str(e), "error": str(e)}
 
-    async def _create_branch_and_push(
+    async def _push_gitlab(self, config: GitBackupConfig, files: dict) -> dict:
+        """Push files to GitLab using the GitLab Commits API.
+
+        Uses a single commit endpoint with multiple file actions.
+
+        Returns:
+            dict with status, message, commit_sha, files_changed
+        """
+        try:
+            group, project = self._parse_repo_url(config.repository_url, provider="gitlab")
+            api_base = (config.api_base_url or "https://gitlab.com/api/v4").rstrip("/")
+            encoded_path = urllib.parse.quote(f"{group}/{project}", safe="")
+            branch = config.branch
+            client = await self._get_client()
+            headers = {"PRIVATE-TOKEN": config.access_token}
+
+            # Step 1: Get project info (numeric ID)
+            project_response = await client.get(
+                f"{api_base}/projects/{encoded_path}",
+                headers=headers,
+            )
+
+            if project_response.status_code != 200:
+                return {
+                    "status": "failed",
+                    "message": f"Failed to get project info: {project_response.status_code}",
+                    "error": project_response.text,
+                }
+
+            project_id = project_response.json()["id"]
+
+            # Step 2: Get existing files in the repository tree
+            existing_paths: set[str] = set()
+            page = 1
+            while True:
+                tree_response = await client.get(
+                    f"{api_base}/projects/{project_id}/repository/tree",
+                    headers=headers,
+                    params={"recursive": "true", "per_page": 100, "page": page, "ref": branch},
+                )
+                if tree_response.status_code == 404:
+                    # Branch doesn't exist yet, all files will be "create"
+                    break
+                if tree_response.status_code != 200:
+                    # Non-fatal: treat as empty repo
+                    break
+                items = tree_response.json()
+                if not items:
+                    break
+                for item in items:
+                    if item.get("type") == "blob":
+                        existing_paths.add(item["path"])
+                page += 1
+
+            # Step 3: Build commit actions
+            actions = []
+            for path, content in files.items():
+                content_str = json.dumps(content, indent=2, default=str)
+                content_b64 = base64.b64encode(content_str.encode("utf-8")).decode()
+                action = "update" if path in existing_paths else "create"
+                actions.append({
+                    "action": action,
+                    "file_path": path,
+                    "content": content_b64,
+                    "encoding": "base64",
+                })
+
+            if not actions:
+                return {"status": "skipped", "message": "No changes to commit", "commit_sha": None, "files_changed": 0}
+
+            # Step 4: Create commit with all actions
+            commit_message = f"BamDude backup - {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
+            commit_payload = {
+                "branch": branch,
+                "commit_message": commit_message,
+                "actions": actions,
+            }
+
+            # If branch doesn't exist, use start_branch to create from default
+            if not existing_paths:
+                # Check if the branch exists by trying to get it
+                branch_check = await client.get(
+                    f"{api_base}/projects/{project_id}/repository/branches/{urllib.parse.quote(branch, safe='')}",
+                    headers=headers,
+                )
+                if branch_check.status_code == 404:
+                    # Get default branch to use as start_branch
+                    default_branch = project_response.json().get("default_branch")
+                    if default_branch and default_branch != branch:
+                        commit_payload["start_branch"] = default_branch
+                    elif not default_branch:
+                        # Empty repo: create the branch via branches API first
+                        # GitLab cannot commit to a non-existent branch in an empty repo via commits API
+                        # We need to create an initial commit using the files API
+                        return await self._create_initial_commit_gitlab(
+                            client, headers, api_base, project_id, branch, files
+                        )
+
+            commit_response = await client.post(
+                f"{api_base}/projects/{project_id}/repository/commits",
+                headers=headers,
+                json=commit_payload,
+            )
+
+            if commit_response.status_code not in (200, 201):
+                return {
+                    "status": "failed",
+                    "message": f"Failed to create commit: {commit_response.text}",
+                    "error": commit_response.text,
+                }
+
+            commit_data = commit_response.json()
+            commit_sha = commit_data.get("id", commit_data.get("sha"))
+
+            return {
+                "status": "success",
+                "message": f"Backup successful - {len(actions)} files updated",
+                "commit_sha": commit_sha,
+                "files_changed": len(actions),
+            }
+
+        except Exception as e:
+            logger.error("Push to GitLab failed: %s", e)
+            return {"status": "failed", "message": str(e), "error": str(e)}
+
+    async def _create_initial_commit_gitlab(
+        self,
+        client: httpx.AsyncClient,
+        headers: dict,
+        api_base: str,
+        project_id: int,
+        branch: str,
+        files: dict,
+    ) -> dict:
+        """Create initial commit in an empty GitLab repository.
+
+        For empty repos, we create the first file via the files API to initialize
+        the branch, then use the commits API for the remaining files.
+        """
+        try:
+            all_files = list(files.items())
+            if not all_files:
+                return {"status": "skipped", "message": "No files to commit", "commit_sha": None, "files_changed": 0}
+
+            # Use the commits API with force to create a new branch
+            actions = []
+            for path, content in all_files:
+                content_str = json.dumps(content, indent=2, default=str)
+                content_b64 = base64.b64encode(content_str.encode("utf-8")).decode()
+                actions.append({
+                    "action": "create",
+                    "file_path": path,
+                    "content": content_b64,
+                    "encoding": "base64",
+                })
+
+            commit_message = (
+                f"Initial BamDude backup - {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
+            )
+
+            # For an empty repo, just commit to the branch directly - GitLab handles this
+            commit_response = await client.post(
+                f"{api_base}/projects/{project_id}/repository/commits",
+                headers=headers,
+                json={
+                    "branch": branch,
+                    "commit_message": commit_message,
+                    "actions": actions,
+                },
+            )
+
+            if commit_response.status_code not in (200, 201):
+                return {
+                    "status": "failed",
+                    "message": f"Failed to create initial commit: {commit_response.text}",
+                    "error": commit_response.text,
+                }
+
+            commit_data = commit_response.json()
+            commit_sha = commit_data.get("id", commit_data.get("sha"))
+
+            return {
+                "status": "success",
+                "message": f"Initial backup created - {len(all_files)} files",
+                "commit_sha": commit_sha,
+                "files_changed": len(all_files),
+            }
+
+        except Exception as e:
+            return {"status": "failed", "message": str(e), "error": str(e)}
+
+    async def _create_branch_and_push_github(
         self, client: httpx.AsyncClient, headers: dict, owner: str, repo: str, branch: str, files: dict
     ) -> dict:
-        """Create a new branch and push files when branch doesn't exist."""
+        """Create a new branch and push files when branch doesn't exist (GitHub)."""
         try:
             # Get default branch
             repo_response = await client.get(f"https://api.github.com/repos/{owner}/{repo}", headers=headers)
@@ -628,7 +927,7 @@ class GitHubBackupService:
             )
             if ref_response.status_code != 200:
                 # Empty repo - create initial commit
-                return await self._create_initial_commit(client, headers, owner, repo, branch, files)
+                return await self._create_initial_commit_github(client, headers, owner, repo, branch, files)
 
             base_sha = ref_response.json()["object"]["sha"]
 
@@ -643,7 +942,7 @@ class GitHubBackupService:
                 return {"status": "failed", "message": f"Failed to create branch: {create_ref.text}"}
 
             # Now push to the new branch (recursive call will find the branch)
-            return await self._push_to_github(
+            return await self._push_github(
                 type(
                     "Config",
                     (),
@@ -651,6 +950,7 @@ class GitHubBackupService:
                         "repository_url": f"https://github.com/{owner}/{repo}",
                         "access_token": headers["Authorization"].replace("token ", ""),
                         "branch": branch,
+                        "provider": "github",
                     },
                 )(),
                 files,
@@ -659,10 +959,10 @@ class GitHubBackupService:
         except Exception as e:
             return {"status": "failed", "message": str(e)}
 
-    async def _create_initial_commit(
+    async def _create_initial_commit_github(
         self, client: httpx.AsyncClient, headers: dict, owner: str, repo: str, branch: str, files: dict
     ) -> dict:
-        """Create initial commit in an empty repository."""
+        """Create initial commit in an empty GitHub repository."""
         try:
             # Create blobs
             tree_items = []
@@ -694,7 +994,7 @@ class GitHubBackupService:
                 f"https://api.github.com/repos/{owner}/{repo}/git/commits",
                 headers=headers,
                 json={
-                    "message": f"Initial Bambuddy backup - {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}",
+                    "message": f"Initial BamDude backup - {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}",
                     "tree": tree_sha,
                 },
             )
@@ -732,13 +1032,13 @@ class GitHubBackupService:
         """Get current backup progress message."""
         return self._backup_progress
 
-    async def get_logs(self, config_id: int, limit: int = 50, offset: int = 0) -> list[GitHubBackupLog]:
+    async def get_logs(self, config_id: int, limit: int = 50, offset: int = 0) -> list[GitBackupLog]:
         """Get backup logs for a configuration."""
         async with async_session() as db:
             result = await db.execute(
-                select(GitHubBackupLog)
-                .where(GitHubBackupLog.config_id == config_id)
-                .order_by(desc(GitHubBackupLog.started_at))
+                select(GitBackupLog)
+                .where(GitBackupLog.config_id == config_id)
+                .order_by(desc(GitBackupLog.started_at))
                 .offset(offset)
                 .limit(limit)
             )
@@ -746,4 +1046,4 @@ class GitHubBackupService:
 
 
 # Singleton instance
-github_backup_service = GitHubBackupService()
+git_backup_service = GitBackupService()

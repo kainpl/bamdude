@@ -353,7 +353,7 @@ async def get_setting_detail(
 async def get_filament_presets(
     version: str = "02.04.00.70",
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.FILAMENTS_READ),
+    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_READ),
 ):
     """
     Get just filament presets (convenience endpoint).
@@ -543,7 +543,7 @@ _filament_id_to_setting_id = filament_id_to_setting_id
 async def get_filament_info(
     setting_ids: list[str] = Body(...),
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.FILAMENTS_READ),
+    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_READ),
 ):
     """
     Get filament preset info (name and K value) for multiple setting IDs.
@@ -885,7 +885,7 @@ def _load_fields(preset_type: str) -> dict:
 
 @router.get("/builtin-filaments")
 async def get_builtin_filaments(
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.FILAMENTS_READ),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_READ),
 ):
     """
     Get built-in filament names as a fallback source.
@@ -905,7 +905,7 @@ _filament_id_name_cache_time: float = 0
 @router.get("/filament-id-map")
 async def get_filament_id_map(
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.FILAMENTS_READ),
+    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_READ),
 ):
     """
     Get filament_id → name mapping for user cloud presets.

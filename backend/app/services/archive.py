@@ -13,7 +13,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import settings
 from backend.app.models.archive import PrintArchive
-from backend.app.models.filament import Filament
 from backend.app.models.printer import Printer
 
 logger = logging.getLogger(__name__)
@@ -864,21 +863,35 @@ class ArchiveService:
             if not printer:
                 return None
 
-        # Create archive directory structure
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        display_stem = Path(original_filename).stem if original_filename else source_file.stem
-        archive_name = f"{timestamp}_{display_stem}"
-        # Use "unassigned" folder for archives without a printer
+        # Compute content hash from source file (before copying)
+        content_hash = self.compute_file_hash(source_file)
+
+        # Check if we already have this file for this printer (dedup within printer)
         printer_folder = str(printer_id) if printer_id is not None else "unassigned"
-        archive_dir = settings.archive_dir / printer_folder / archive_name
-        archive_dir.mkdir(parents=True, exist_ok=True)
+        existing = await self.db.execute(
+            select(PrintArchive).where(
+                PrintArchive.content_hash == content_hash,
+                PrintArchive.printer_id == printer_id,
+                PrintArchive.file_path.isnot(None),
+            ).limit(1)
+        )
+        existing_archive = existing.scalar_one_or_none()
 
-        # Copy 3MF file
-        dest_file = archive_dir / source_file.name
-        shutil.copy2(source_file, dest_file)
-
-        # Compute content hash for duplicate detection
-        content_hash = self.compute_file_hash(dest_file)
+        if existing_archive and existing_archive.file_path:
+            # Reuse existing file on disk
+            dest_file = settings.base_dir / existing_archive.file_path
+            archive_dir = dest_file.parent
+            thumbnail_reuse = existing_archive.thumbnail_path
+        else:
+            # Create new archive directory and copy file
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            display_stem = Path(original_filename).stem if original_filename else source_file.stem
+            archive_name = f"{timestamp}_{display_stem}"
+            archive_dir = settings.archive_dir / printer_folder / archive_name
+            archive_dir.mkdir(parents=True, exist_ok=True)
+            dest_file = archive_dir / source_file.name
+            shutil.copy2(source_file, dest_file)
+            thumbnail_reuse = None
 
         # Extract plate number from filename (e.g., "plate_5" from "/data/Metadata/plate_5.gcode")
         plate_number = None
@@ -892,12 +905,13 @@ class ArchiveService:
         parser = ThreeMFParser(dest_file, plate_number=plate_number)
         metadata = parser.parse()
 
-        # Save thumbnail if present
-        thumbnail_path = None
+        # Save thumbnail if present (reuse existing if file was deduped)
+        thumbnail_path = thumbnail_reuse
         if "_thumbnail_data" in metadata:
-            thumb_file = archive_dir / f"thumbnail{metadata['_thumbnail_ext']}"
-            thumb_file.write_bytes(metadata["_thumbnail_data"])
-            thumbnail_path = str(thumb_file.relative_to(settings.base_dir))
+            if not thumbnail_reuse:
+                thumb_file = archive_dir / f"thumbnail{metadata['_thumbnail_ext']}"
+                thumb_file.write_bytes(metadata["_thumbnail_data"])
+                thumbnail_path = str(thumb_file.relative_to(settings.base_dir))
             del metadata["_thumbnail_data"]
             del metadata["_thumbnail_ext"]
 
@@ -910,25 +924,17 @@ class ArchiveService:
         started_at = datetime.now(timezone.utc) if status == "printing" else None
         completed_at = datetime.now(timezone.utc) if status in ("completed", "failed", "archived") else None
 
-        # Calculate cost based on filament usage and type
+        # Calculate initial cost estimate from default setting.
+        # This is a placeholder — usage_tracker.on_print_complete() will overwrite
+        # archive.cost with the actual cost from spool.cost_per_kg later.
         cost = None
         filament_grams = metadata.get("filament_used_grams")
-        filament_type = metadata.get("filament_type")
-        if filament_grams and filament_type:
-            # For multi-material prints, use the first filament type for cost calculation
-            primary_type = filament_type.split(",")[0].strip()
-            # Look up filament cost_per_kg from database
-            filament_result = await self.db.execute(select(Filament).where(Filament.type == primary_type).limit(1))
-            filament = filament_result.scalar_one_or_none()
-            if filament:
-                cost = round((filament_grams / 1000) * filament.cost_per_kg, 2)
-            else:
-                # Use default filament cost from settings
-                from backend.app.api.routes.settings import get_setting
+        if filament_grams:
+            from backend.app.api.routes.settings import get_setting
 
-                default_cost_setting = await get_setting(self.db, "default_filament_cost")
-                default_cost_per_kg = float(default_cost_setting) if default_cost_setting else 25.0
-                cost = round((filament_grams / 1000) * default_cost_per_kg, 2)
+            default_cost_setting = await get_setting(self.db, "default_filament_cost")
+            default_cost_per_kg = float(default_cost_setting) if default_cost_setting else 25.0
+            cost = round((filament_grams / 1000) * default_cost_per_kg, 2)
 
         # Calculate quantity from printable objects count
         # printable_objects is a dict of {identify_id: name} for non-skipped objects
@@ -1249,13 +1255,24 @@ class ArchiveService:
                 f"file_path is empty or invalid: '{archive.file_path}'"
             )
 
+        # Check if other archives share the same file (deduplication)
+        shared = False
+        if archive.file_path:
+            shared_result = await self.db.execute(
+                select(func.count(PrintArchive.id)).where(
+                    PrintArchive.file_path == archive.file_path,
+                    PrintArchive.id != archive_id,
+                )
+            )
+            shared = (shared_result.scalar() or 0) > 0
+
         # Delete database record FIRST — if the commit fails (e.g. database locked
         # during concurrent bulk deletes), the files stay on disk and nothing is lost.
         await self.db.delete(archive)
         await self.db.commit()
 
-        # Only delete files AFTER the DB commit succeeds to avoid orphaned records
-        if dir_to_delete:
+        # Only delete files AFTER the DB commit succeeds and no other archives reference them
+        if dir_to_delete and not shared:
             shutil.rmtree(dir_to_delete, ignore_errors=True)
 
         return True
