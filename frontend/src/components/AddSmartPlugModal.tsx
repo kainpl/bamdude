@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
-import { X, Save, Loader2, Wifi, WifiOff, CheckCircle, Bell, Clock, LayoutGrid, Search, Plug, Power, Home, Radio, Eye } from 'lucide-react';
+import { X, Save, Loader2, Wifi, WifiOff, CheckCircle, Bell, Clock, LayoutGrid, Search, Plug, Power, Home, Radio, Eye, Globe } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api/client';
 import type { SmartPlug, SmartPlugCreate, SmartPlugUpdate, DiscoveredTasmotaDevice } from '../api/client';
@@ -17,7 +17,7 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
   const isEditing = !!plug;
 
   // Plug type selection
-  const [plugType, setPlugType] = useState<'tasmota' | 'homeassistant' | 'mqtt'>(plug?.plug_type || 'tasmota');
+  const [plugType, setPlugType] = useState<'tasmota' | 'homeassistant' | 'mqtt' | 'rest'>(plug?.plug_type || 'tasmota');
 
   const [name, setName] = useState(plug?.name || '');
   // Tasmota fields
@@ -42,6 +42,22 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
   const [mqttStateTopic, setMqttStateTopic] = useState(plug?.mqtt_state_topic || '');
   const [mqttStatePath, setMqttStatePath] = useState(plug?.mqtt_state_path || '');
   const [mqttStateOnValue, setMqttStateOnValue] = useState(plug?.mqtt_state_on_value || '');
+  // REST fields
+  const [restOnUrl, setRestOnUrl] = useState(plug?.rest_on_url || '');
+  const [restOnBody, setRestOnBody] = useState(plug?.rest_on_body || '');
+  const [restOffUrl, setRestOffUrl] = useState(plug?.rest_off_url || '');
+  const [restOffBody, setRestOffBody] = useState(plug?.rest_off_body || '');
+  const [restMethod, setRestMethod] = useState(plug?.rest_method || 'POST');
+  const [restHeaders, setRestHeaders] = useState(plug?.rest_headers || '');
+  const [restStatusUrl, setRestStatusUrl] = useState(plug?.rest_status_url || '');
+  const [restStatusPath, setRestStatusPath] = useState(plug?.rest_status_path || '');
+  const [restStatusOnValue, setRestStatusOnValue] = useState(plug?.rest_status_on_value || '');
+  const [restPowerUrl, setRestPowerUrl] = useState(plug?.rest_power_url || '');
+  const [restPowerPath, setRestPowerPath] = useState(plug?.rest_power_path || '');
+  const [restPowerMultiplier, setRestPowerMultiplier] = useState<string>((plug?.rest_power_multiplier ?? 1).toString());
+  const [restEnergyUrl, setRestEnergyUrl] = useState(plug?.rest_energy_url || '');
+  const [restEnergyPath, setRestEnergyPath] = useState(plug?.rest_energy_path || '');
+  const [restEnergyMultiplier, setRestEnergyMultiplier] = useState<string>((plug?.rest_energy_multiplier ?? 1).toString());
   // HA energy sensor entities (optional)
   const [haPowerEntity, setHaPowerEntity] = useState(plug?.ha_power_entity || '');
   const [haEnergyTodayEntity, setHaEnergyTodayEntity] = useState(plug?.ha_energy_today_entity || '');
@@ -321,6 +337,13 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
       }
     }
 
+    if (plugType === 'rest') {
+      if (!restOnUrl.trim() && !restOffUrl.trim()) {
+        setError(t('smartPlugs.restUrlRequired'));
+        return;
+      }
+    }
+
     const data = {
       name: name.trim(),
       plug_type: plugType,
@@ -342,6 +365,22 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
       mqtt_state_topic: plugType === 'mqtt' ? (mqttStateTopic.trim() || null) : null,
       mqtt_state_path: plugType === 'mqtt' ? (mqttStatePath.trim() || null) : null,
       mqtt_state_on_value: plugType === 'mqtt' ? (mqttStateOnValue.trim() || null) : null,
+      // REST fields
+      rest_on_url: plugType === 'rest' ? (restOnUrl.trim() || null) : null,
+      rest_on_body: plugType === 'rest' ? (restOnBody.trim() || null) : null,
+      rest_off_url: plugType === 'rest' ? (restOffUrl.trim() || null) : null,
+      rest_off_body: plugType === 'rest' ? (restOffBody.trim() || null) : null,
+      rest_method: plugType === 'rest' ? restMethod : null,
+      rest_headers: plugType === 'rest' ? (restHeaders.trim() || null) : null,
+      rest_status_url: plugType === 'rest' ? (restStatusUrl.trim() || null) : null,
+      rest_status_path: plugType === 'rest' ? (restStatusPath.trim() || null) : null,
+      rest_status_on_value: plugType === 'rest' ? (restStatusOnValue.trim() || null) : null,
+      rest_power_url: plugType === 'rest' ? (restPowerUrl.trim() || null) : null,
+      rest_power_path: plugType === 'rest' ? (restPowerPath.trim() || null) : null,
+      rest_power_multiplier: plugType === 'rest' ? (parseFloat(restPowerMultiplier) || 1) : 1,
+      rest_energy_url: plugType === 'rest' ? (restEnergyUrl.trim() || null) : null,
+      rest_energy_path: plugType === 'rest' ? (restEnergyPath.trim() || null) : null,
+      rest_energy_multiplier: plugType === 'rest' ? (parseFloat(restEnergyMultiplier) || 1) : 1,
       username: plugType === 'tasmota' ? (username.trim() || null) : null,
       password: plugType === 'tasmota' ? (password.trim() || null) : null,
       printer_id: printerId,
@@ -447,6 +486,22 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
               >
                 <Radio className="w-4 h-4" />
                 MQTT
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setPlugType('rest');
+                  setTestResult(null);
+                  setError(null);
+                }}
+                className={`flex-1 flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg font-medium transition-colors ${
+                  plugType === 'rest'
+                    ? 'bg-bambu-green text-white'
+                    : 'bg-bambu-dark text-bambu-gray hover:text-white border border-bambu-dark-tertiary'
+                }`}
+              >
+                <Globe className="w-4 h-4" />
+                REST
               </button>
             </div>
           )}
@@ -1070,6 +1125,231 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
                     </p>
                   </div>
                 </>
+              )}
+            </div>
+          )}
+
+          {/* REST API Section */}
+          {plugType === 'rest' && (
+            <div className="space-y-3">
+              {/* Control Section */}
+              <div className="space-y-3 p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
+                <p className="text-white font-medium text-sm">{t('smartPlugs.restControl')}</p>
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restMethod')}</label>
+                  <select
+                    value={restMethod}
+                    onChange={(e) => setRestMethod(e.target.value)}
+                    className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                  >
+                    <option value="GET">GET</option>
+                    <option value="POST">POST</option>
+                    <option value="PUT">PUT</option>
+                    <option value="PATCH">PATCH</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restOnUrl')}</label>
+                  <input
+                    type="text"
+                    value={restOnUrl}
+                    onChange={(e) => { setRestOnUrl(e.target.value); setTestResult(null); }}
+                    placeholder="http://openhab:8080/rest/items/MyPlug"
+                    className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restOnBody')} <span className="text-bambu-gray font-normal">({t('smartPlugs.optional')})</span></label>
+                  <input
+                    type="text"
+                    value={restOnBody}
+                    onChange={(e) => setRestOnBody(e.target.value)}
+                    placeholder={t('smartPlugs.restBodyHint')}
+                    className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restOffUrl')}</label>
+                  <input
+                    type="text"
+                    value={restOffUrl}
+                    onChange={(e) => { setRestOffUrl(e.target.value); setTestResult(null); }}
+                    placeholder="http://openhab:8080/rest/items/MyPlug"
+                    className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restOffBody')} <span className="text-bambu-gray font-normal">({t('smartPlugs.optional')})</span></label>
+                  <input
+                    type="text"
+                    value={restOffBody}
+                    onChange={(e) => setRestOffBody(e.target.value)}
+                    placeholder={t('smartPlugs.restBodyHint')}
+                    className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              {/* Headers Section */}
+              <div className="space-y-3 p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
+                <p className="text-white font-medium text-sm">{t('smartPlugs.restHeaders')} <span className="text-bambu-gray font-normal">({t('smartPlugs.optional')})</span></p>
+                <div>
+                  <textarea
+                    value={restHeaders}
+                    onChange={(e) => setRestHeaders(e.target.value)}
+                    placeholder={t('smartPlugs.restHeadersHint')}
+                    rows={2}
+                    className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none font-mono text-sm"
+                  />
+                </div>
+              </div>
+
+              {/* Status Polling Section (optional) */}
+              <div className="space-y-3 p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
+                <p className="text-white font-medium text-sm">{t('smartPlugs.stateMonitoring')} <span className="text-bambu-gray font-normal">({t('smartPlugs.optional')})</span></p>
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restStatusUrl')}</label>
+                  <input
+                    type="text"
+                    value={restStatusUrl}
+                    onChange={(e) => setRestStatusUrl(e.target.value)}
+                    placeholder={t('smartPlugs.restStatusHint')}
+                    className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restStatusPath')}</label>
+                    <input
+                      type="text"
+                      value={restStatusPath}
+                      onChange={(e) => setRestStatusPath(e.target.value)}
+                      placeholder={t('smartPlugs.restPathHint')}
+                      className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restStatusOnValue')}</label>
+                    <input
+                      type="text"
+                      value={restStatusOnValue}
+                      onChange={(e) => setRestStatusOnValue(e.target.value)}
+                      placeholder="ON"
+                      className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Energy Monitoring (optional) */}
+              <div className="space-y-3 p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
+                <p className="text-white font-medium text-sm">{t('smartPlugs.energyMonitoring')} <span className="text-bambu-gray font-normal">({t('smartPlugs.optional')})</span></p>
+
+                {/* Power */}
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restPowerUrl')} <span className="text-bambu-gray font-normal">({t('smartPlugs.optional')})</span></label>
+                  <input
+                    type="text"
+                    value={restPowerUrl}
+                    onChange={(e) => setRestPowerUrl(e.target.value)}
+                    placeholder={t('smartPlugs.restPowerUrlHint')}
+                    className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restPowerPath')}</label>
+                    <input
+                      type="text"
+                      value={restPowerPath}
+                      onChange={(e) => setRestPowerPath(e.target.value)}
+                      placeholder={t('smartPlugs.restPathHint')}
+                      className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restPowerMultiplier')}</label>
+                    <input
+                      type="text"
+                      value={restPowerMultiplier}
+                      onChange={(e) => setRestPowerMultiplier(e.target.value)}
+                      placeholder="1"
+                      className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                {/* Energy */}
+                <div>
+                  <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restEnergyUrl')} <span className="text-bambu-gray font-normal">({t('smartPlugs.optional')})</span></label>
+                  <input
+                    type="text"
+                    value={restEnergyUrl}
+                    onChange={(e) => setRestEnergyUrl(e.target.value)}
+                    placeholder={t('smartPlugs.restEnergyUrlHint')}
+                    className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restEnergyPath')}</label>
+                    <input
+                      type="text"
+                      value={restEnergyPath}
+                      onChange={(e) => setRestEnergyPath(e.target.value)}
+                      placeholder={t('smartPlugs.restPathHint')}
+                      className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm text-bambu-gray mb-1">{t('smartPlugs.restEnergyMultiplier')}</label>
+                    <input
+                      type="text"
+                      value={restEnergyMultiplier}
+                      onChange={(e) => setRestEnergyMultiplier(e.target.value)}
+                      placeholder="1"
+                      className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                <p className="text-xs text-bambu-gray">
+                  {t('smartPlugs.restEnergyHint')}
+                </p>
+              </div>
+
+              {/* Test Connection */}
+              {(restOnUrl.trim() || restOffUrl.trim()) && (
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={async () => {
+                      setTestResult(null);
+                      try {
+                        const url = restOnUrl.trim() || restOffUrl.trim();
+                        const result = await api.testRESTConnection(url, restMethod, restHeaders.trim() || null);
+                        setTestResult({ success: result.success });
+                        if (!result.success) {
+                          setError(result.error || t('smartPlugs.addSmartPlug.connectionFailed'));
+                        }
+                      } catch {
+                        setTestResult({ success: false });
+                        setError(t('smartPlugs.addSmartPlug.connectionFailed'));
+                      }
+                    }}
+                    className="w-full"
+                  >
+                    <Wifi className="w-4 h-4" />
+                    {t('smartPlugs.testConnection')}
+                  </Button>
+                </div>
+              )}
+              {testResult && (
+                <div className={`flex items-center gap-2 text-sm ${testResult.success ? 'text-green-400' : 'text-red-400'}`}>
+                  {testResult.success ? <CheckCircle className="w-4 h-4" /> : <WifiOff className="w-4 h-4" />}
+                  {testResult.success ? t('smartPlugs.connectionSuccess') : t('smartPlugs.addSmartPlug.connectionFailed')}
+                </div>
               )}
             </div>
           )}

@@ -307,10 +307,11 @@ _expected_prints_cleanup_task: asyncio.Task | None = None
 
 
 async def _get_plug_energy(plug, db) -> dict | None:
-    """Get energy from plug regardless of type (Tasmota, Home Assistant, or MQTT).
+    """Get energy from plug regardless of type (Tasmota, Home Assistant, MQTT, or REST).
 
     For HA plugs, configures the service with current settings from DB.
     For MQTT plugs, returns data from the subscription service.
+    For REST plugs, polls the status URL with JSON path extraction.
     """
     if plug.plug_type == "homeassistant":
         from backend.app.api.routes.settings import get_homeassistant_settings
@@ -329,6 +330,10 @@ async def _get_plug_energy(plug, db) -> dict | None:
                 "total": mqtt_data.energy,  # Use today as total for per-print calculations
             }
         return None
+    elif plug.plug_type == "rest":
+        from backend.app.services.rest_smart_plug import rest_smart_plug_service
+
+        return await rest_smart_plug_service.get_energy(plug)
     else:
         return await tasmota_service.get_energy(plug)
 

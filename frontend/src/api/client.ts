@@ -1082,7 +1082,7 @@ export interface CloudDevice {
 export interface SmartPlug {
   id: number;
   name: string;
-  plug_type: 'tasmota' | 'homeassistant' | 'mqtt';
+  plug_type: 'tasmota' | 'homeassistant' | 'mqtt' | 'rest';
   ip_address: string | null;  // Required for Tasmota
   ha_entity_id: string | null;  // Required for Home Assistant (e.g., "switch.printer_plug", "script.turn_on_printer")
   // Home Assistant energy sensor entities (optional)
@@ -1105,6 +1105,22 @@ export interface SmartPlug {
   mqtt_state_topic: string | null;  // Topic for state data
   mqtt_state_path: string | null;  // e.g., "state_l1" for ON/OFF
   mqtt_state_on_value: string | null;  // What value means "ON" (e.g., "ON", "true", "1")
+  // REST/Webhook fields (required when plug_type="rest")
+  rest_on_url: string | null;
+  rest_on_body: string | null;
+  rest_off_url: string | null;
+  rest_off_body: string | null;
+  rest_method: string | null;
+  rest_headers: string | null;
+  rest_status_url: string | null;
+  rest_status_path: string | null;
+  rest_status_on_value: string | null;
+  rest_power_url: string | null;
+  rest_power_path: string | null;
+  rest_power_multiplier: number;
+  rest_energy_url: string | null;
+  rest_energy_path: string | null;
+  rest_energy_multiplier: number;
   printer_id: number | null;
   enabled: boolean;
   auto_on: boolean;
@@ -1137,7 +1153,7 @@ export interface SmartPlug {
 
 export interface SmartPlugCreate {
   name: string;
-  plug_type?: 'tasmota' | 'homeassistant' | 'mqtt';
+  plug_type?: 'tasmota' | 'homeassistant' | 'mqtt' | 'rest';
   ip_address?: string | null;  // Required for Tasmota
   ha_entity_id?: string | null;  // Required for Home Assistant
   // Home Assistant energy sensor entities (optional)
@@ -1160,6 +1176,22 @@ export interface SmartPlugCreate {
   mqtt_state_topic?: string | null;
   mqtt_state_path?: string | null;
   mqtt_state_on_value?: string | null;
+  // REST fields
+  rest_on_url?: string | null;
+  rest_on_body?: string | null;
+  rest_off_url?: string | null;
+  rest_off_body?: string | null;
+  rest_method?: string | null;
+  rest_headers?: string | null;
+  rest_status_url?: string | null;
+  rest_status_path?: string | null;
+  rest_status_on_value?: string | null;
+  rest_power_url?: string | null;
+  rest_power_path?: string | null;
+  rest_power_multiplier?: number;
+  rest_energy_url?: string | null;
+  rest_energy_path?: string | null;
+  rest_energy_multiplier?: number;
   printer_id?: number | null;
   enabled?: boolean;
   auto_on?: boolean;
@@ -1185,7 +1217,7 @@ export interface SmartPlugCreate {
 
 export interface SmartPlugUpdate {
   name?: string;
-  plug_type?: 'tasmota' | 'homeassistant' | 'mqtt';
+  plug_type?: 'tasmota' | 'homeassistant' | 'mqtt' | 'rest';
   ip_address?: string | null;
   ha_entity_id?: string | null;
   // Home Assistant energy sensor entities (optional)
@@ -1207,6 +1239,22 @@ export interface SmartPlugUpdate {
   mqtt_state_topic?: string | null;
   mqtt_state_path?: string | null;
   mqtt_state_on_value?: string | null;
+  // REST fields
+  rest_on_url?: string | null;
+  rest_on_body?: string | null;
+  rest_off_url?: string | null;
+  rest_off_body?: string | null;
+  rest_method?: string | null;
+  rest_headers?: string | null;
+  rest_status_url?: string | null;
+  rest_status_path?: string | null;
+  rest_status_on_value?: string | null;
+  rest_power_url?: string | null;
+  rest_power_path?: string | null;
+  rest_power_multiplier?: number;
+  rest_energy_url?: string | null;
+  rest_energy_path?: string | null;
+  rest_energy_multiplier?: number;
   printer_id?: number | null;
   enabled?: boolean;
   auto_on?: boolean;
@@ -3382,6 +3430,13 @@ export const api = {
   },
   getHASensorEntities: () =>
     request<HASensorEntity[]>('/smart-plugs/ha/sensors'),
+
+  // REST smart plug
+  testRESTConnection: (url: string, method: string = 'GET', headers?: string | null) =>
+    request<{ success: boolean; error: string | null }>('/smart-plugs/rest/test-connection', {
+      method: 'POST',
+      body: JSON.stringify({ url, method, headers }),
+    }),
 
   // Print Queue
   getQueue: (queueId?: number, status?: string) => {

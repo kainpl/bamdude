@@ -20,6 +20,8 @@ from backend.app.schemas.smart_plug import (
     HASensorEntity,
     HATestConnectionRequest,
     HATestConnectionResponse,
+    RESTTestConnectionRequest,
+    RESTTestConnectionResponse,
     SmartPlugControl,
     SmartPlugCreate,
     SmartPlugEnergy,
@@ -33,6 +35,7 @@ from backend.app.services.homeassistant import homeassistant_service
 from backend.app.services.mqtt_relay import mqtt_relay
 from backend.app.services.notification_service import notification_service
 from backend.app.services.printer_manager import printer_manager
+from backend.app.services.rest_smart_plug import rest_smart_plug_service
 from backend.app.services.tasmota import tasmota_service
 
 logger = logging.getLogger(__name__)
@@ -341,6 +344,16 @@ async def test_ha_connection(
     return HATestConnectionResponse(**result)
 
 
+@router.post("/rest/test-connection", response_model=RESTTestConnectionResponse)
+async def test_rest_connection(
+    request: RESTTestConnectionRequest,
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.SMART_PLUGS_CONTROL),
+):
+    """Test connection to a REST/HTTP endpoint."""
+    result = await rest_smart_plug_service.test_connection(request.url, request.method, request.headers)
+    return RESTTestConnectionResponse(**result)
+
+
 @router.get("/ha/entities", response_model=list[HAEntity])
 async def list_ha_entities(
     db: AsyncSession = Depends(get_db),
@@ -557,6 +570,8 @@ async def _get_service_for_plug(plug: SmartPlug, db: AsyncSession):
         ha_settings = await get_homeassistant_settings(db)
         homeassistant_service.configure(ha_settings["ha_url"], ha_settings["ha_token"])
         return homeassistant_service
+    if plug.plug_type == "rest":
+        return rest_smart_plug_service
     return tasmota_service
 
 

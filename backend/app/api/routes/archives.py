@@ -837,6 +837,12 @@ async def get_archive_stats(
                 mqtt_data = mqtt_relay.smart_plug_service.get_plug_data(plug.id)
                 if mqtt_data and mqtt_data.energy is not None:
                     total_energy_kwh += mqtt_data.energy
+            elif plug.plug_type == "rest":
+                from backend.app.services.rest_smart_plug import rest_smart_plug_service
+
+                energy = await rest_smart_plug_service.get_energy(plug)
+                if energy and energy.get("today") is not None:
+                    total_energy_kwh += energy["today"]
 
         total_energy_kwh = round(total_energy_kwh, 3)
         total_energy_cost = round(total_energy_kwh * energy_cost_per_kwh, 3)

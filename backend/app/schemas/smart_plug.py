@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field, model_validator
 
 class SmartPlugBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
-    plug_type: Literal["tasmota", "homeassistant", "mqtt"] = "tasmota"
+    plug_type: Literal["tasmota", "homeassistant", "mqtt", "rest"] = "tasmota"
 
     # Tasmota fields (required when plug_type="tasmota")
     ip_address: str | None = Field(default=None, pattern=r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$")
@@ -43,6 +43,23 @@ class SmartPlugBase(BaseModel):
 
     # Legacy multiplier - kept for backward compatibility
     mqtt_multiplier: float = Field(default=1.0, ge=0.0001, le=10000)  # Deprecated, use mqtt_power_multiplier
+
+    # REST/Webhook fields (required when plug_type="rest")
+    rest_on_url: str | None = Field(default=None, max_length=500)
+    rest_on_body: str | None = None
+    rest_off_url: str | None = Field(default=None, max_length=500)
+    rest_off_body: str | None = None
+    rest_method: Literal["GET", "POST", "PUT", "PATCH"] | None = None
+    rest_headers: str | None = None  # JSON string of custom headers
+    rest_status_url: str | None = Field(default=None, max_length=500)
+    rest_status_path: str | None = Field(default=None, max_length=200)
+    rest_status_on_value: str | None = Field(default=None, max_length=50)
+    rest_power_url: str | None = Field(default=None, max_length=500)
+    rest_power_path: str | None = Field(default=None, max_length=200)
+    rest_power_multiplier: float = Field(default=1.0, ge=0.0001, le=10000)
+    rest_energy_url: str | None = Field(default=None, max_length=500)
+    rest_energy_path: str | None = Field(default=None, max_length=200)
+    rest_energy_multiplier: float = Field(default=1.0, ge=0.0001, le=10000)
 
     printer_id: int | None = None
     enabled: bool = True
@@ -81,6 +98,9 @@ class SmartPlugBase(BaseModel):
             # At least one data source must be configured (path is optional)
             if not has_power and not has_energy and not has_state:
                 raise ValueError("At least one MQTT topic must be configured for power, energy, or state monitoring")
+        if self.plug_type == "rest":
+            if not self.rest_on_url and not self.rest_off_url:
+                raise ValueError("At least one of ON URL or OFF URL is required for REST plugs")
         return self
 
 
@@ -90,7 +110,7 @@ class SmartPlugCreate(SmartPlugBase):
 
 class SmartPlugUpdate(BaseModel):
     name: str | None = None
-    plug_type: Literal["tasmota", "homeassistant", "mqtt"] | None = None
+    plug_type: Literal["tasmota", "homeassistant", "mqtt", "rest"] | None = None
     ip_address: str | None = None
     ha_entity_id: str | None = None
     # Home Assistant energy sensor entities (optional)
@@ -112,6 +132,22 @@ class SmartPlugUpdate(BaseModel):
     mqtt_state_topic: str | None = None
     mqtt_state_path: str | None = None
     mqtt_state_on_value: str | None = None
+    # REST fields
+    rest_on_url: str | None = None
+    rest_on_body: str | None = None
+    rest_off_url: str | None = None
+    rest_off_body: str | None = None
+    rest_method: Literal["GET", "POST", "PUT", "PATCH"] | None = None
+    rest_headers: str | None = None
+    rest_status_url: str | None = None
+    rest_status_path: str | None = None
+    rest_status_on_value: str | None = None
+    rest_power_url: str | None = None
+    rest_power_path: str | None = None
+    rest_power_multiplier: float | None = Field(default=None, ge=0.0001, le=10000)
+    rest_energy_url: str | None = None
+    rest_energy_path: str | None = None
+    rest_energy_multiplier: float | None = Field(default=None, ge=0.0001, le=10000)
     printer_id: int | None = None
     enabled: bool | None = None
     auto_on: bool | None = None
@@ -211,3 +247,18 @@ class HASensorEntity(BaseModel):
     friendly_name: str
     state: str | None = None
     unit_of_measurement: str | None = None  # "W", "kW", "kWh", "Wh"
+
+
+class RESTTestConnectionRequest(BaseModel):
+    """Request to test a REST smart plug connection."""
+
+    url: str = Field(..., min_length=1)
+    method: str = Field(default="GET")
+    headers: str | None = None  # JSON string of custom headers
+
+
+class RESTTestConnectionResponse(BaseModel):
+    """Response from REST connection test."""
+
+    success: bool
+    error: str | None = None

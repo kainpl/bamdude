@@ -16,6 +16,23 @@ async def upgrade(conn):
 
     from backend.app.migrations.helpers import add_column, column_exists, recreate_table, table_exists
 
+    # ── REST/Webhook smart plug fields ──
+    await add_column(conn, "smart_plugs", "rest_on_url VARCHAR(500)")
+    await add_column(conn, "smart_plugs", "rest_on_body TEXT")
+    await add_column(conn, "smart_plugs", "rest_off_url VARCHAR(500)")
+    await add_column(conn, "smart_plugs", "rest_off_body TEXT")
+    await add_column(conn, "smart_plugs", "rest_method VARCHAR(10)")
+    await add_column(conn, "smart_plugs", "rest_headers TEXT")
+    await add_column(conn, "smart_plugs", "rest_status_url VARCHAR(500)")
+    await add_column(conn, "smart_plugs", "rest_status_path VARCHAR(200)")
+    await add_column(conn, "smart_plugs", "rest_status_on_value VARCHAR(50)")
+    await add_column(conn, "smart_plugs", "rest_power_url VARCHAR(500)")
+    await add_column(conn, "smart_plugs", "rest_power_path VARCHAR(200)")
+    await add_column(conn, "smart_plugs", "rest_power_multiplier REAL DEFAULT 1.0")
+    await add_column(conn, "smart_plugs", "rest_energy_url VARCHAR(500)")
+    await add_column(conn, "smart_plugs", "rest_energy_path VARCHAR(200)")
+    await add_column(conn, "smart_plugs", "rest_energy_multiplier REAL DEFAULT 1.0")
+
     # ── Printer enhancements ──
     await add_column(conn, "printers", "stagger_interval_minutes INTEGER NOT NULL DEFAULT 0")
     await add_column(conn, "printers", "swap_mode_enabled BOOLEAN NOT NULL DEFAULT 0")

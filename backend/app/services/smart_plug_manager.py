@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.services.homeassistant import homeassistant_service
 from backend.app.services.printer_manager import printer_manager
+from backend.app.services.rest_smart_plug import rest_smart_plug_service
 from backend.app.services.tasmota import tasmota_service
 
 if TYPE_CHECKING:
@@ -36,6 +37,8 @@ class SmartPlugManager:
             # Configure HA service with current settings
             await self._configure_ha_service(db)
             return homeassistant_service
+        if plug.plug_type == "rest":
+            return rest_smart_plug_service
         return tasmota_service
 
     async def _configure_ha_service(self, db: AsyncSession | None = None):
@@ -248,6 +251,10 @@ class SmartPlugManager:
                 plug.password,
                 printer_id,
                 delay_seconds,
+                rest_off_url=plug.rest_off_url if plug.plug_type == "rest" else None,
+                rest_off_body=plug.rest_off_body if plug.plug_type == "rest" else None,
+                rest_method=plug.rest_method if plug.plug_type == "rest" else None,
+                rest_headers=plug.rest_headers if plug.plug_type == "rest" else None,
             )
         )
         self._pending_off[plug.id] = task
@@ -262,6 +269,11 @@ class SmartPlugManager:
         password: str | None,
         printer_id: int,
         delay_seconds: int,
+        *,
+        rest_off_url: str | None = None,
+        rest_off_body: str | None = None,
+        rest_method: str | None = None,
+        rest_headers: str | None = None,
     ):
         """Wait and turn off."""
         try:
@@ -276,6 +288,11 @@ class SmartPlugManager:
                     self.username = username
                     self.password = password
                     self.name = f"plug_{plug_id}"
+                    # REST fields
+                    self.rest_off_url = rest_off_url
+                    self.rest_off_body = rest_off_body
+                    self.rest_method = rest_method
+                    self.rest_headers = rest_headers
 
             plug_info = PlugInfo()
             service = await self.get_service_for_plug(plug_info)
@@ -313,6 +330,10 @@ class SmartPlugManager:
                 plug.password,
                 printer_id,
                 temp_threshold,
+                rest_off_url=plug.rest_off_url if plug.plug_type == "rest" else None,
+                rest_off_body=plug.rest_off_body if plug.plug_type == "rest" else None,
+                rest_method=plug.rest_method if plug.plug_type == "rest" else None,
+                rest_headers=plug.rest_headers if plug.plug_type == "rest" else None,
             )
         )
         self._pending_off[plug.id] = task
@@ -327,6 +348,11 @@ class SmartPlugManager:
         password: str | None,
         printer_id: int,
         temp_threshold: int,
+        *,
+        rest_off_url: str | None = None,
+        rest_off_body: str | None = None,
+        rest_method: str | None = None,
+        rest_headers: str | None = None,
     ):
         """Poll temperature until below threshold, then turn off.
 
@@ -370,6 +396,11 @@ class SmartPlugManager:
                                 self.username = username
                                 self.password = password
                                 self.name = f"plug_{plug_id}"
+                                # REST fields
+                                self.rest_off_url = rest_off_url
+                                self.rest_off_body = rest_off_body
+                                self.rest_method = rest_method
+                                self.rest_headers = rest_headers
 
                         plug_info = PlugInfo()
                         service = await self.get_service_for_plug(plug_info)
