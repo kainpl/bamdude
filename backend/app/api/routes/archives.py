@@ -404,22 +404,35 @@ async def search_archives(
     from sqlalchemy import text
     from sqlalchemy.orm import selectinload
 
-    # Prepare search query - add wildcard for partial matches
-    search_term = q.strip()
-    if not search_term.endswith("*"):
-        search_term = f"{search_term}*"
+    from backend.app.core.db_dialect import is_postgres
 
-    # Build the FTS query
-    # Using MATCH for FTS5 full-text search
-    fts_query = text("""
-        SELECT rowid FROM archive_fts
-        WHERE archive_fts MATCH :search_term
-        ORDER BY rank
-        LIMIT :limit OFFSET :offset
-    """)
+    search_term = q.strip()
+
+    # Build dialect-specific FTS query
+    if is_postgres():
+        # PostgreSQL: tsvector + ts_query with prefix matching
+        pg_term = " & ".join(f"{w}:*" for w in search_term.split() if w)
+        fts_query = text("""
+            SELECT id FROM print_archives
+            WHERE search_vector @@ to_tsquery('simple', :search_term)
+            ORDER BY ts_rank(search_vector, to_tsquery('simple', :search_term)) DESC
+            LIMIT :limit OFFSET :offset
+        """)
+        fts_params = {"search_term": pg_term, "limit": limit + 100, "offset": 0}
+    else:
+        # SQLite: FTS5 MATCH
+        if not search_term.endswith("*"):
+            search_term = f"{search_term}*"
+        fts_query = text("""
+            SELECT rowid FROM archive_fts
+            WHERE archive_fts MATCH :search_term
+            ORDER BY rank
+            LIMIT :limit OFFSET :offset
+        """)
+        fts_params = {"search_term": search_term, "limit": limit + 100, "offset": 0}
 
     try:
-        result = await db.execute(fts_query, {"search_term": search_term, "limit": limit + 100, "offset": 0})
+        result = await db.execute(fts_query, fts_params)
         matched_ids = [row[0] for row in result.fetchall()]
     except Exception as e:
         logger.warning("FTS search failed, falling back to LIKE search: %s", e)
@@ -486,25 +499,28 @@ async def rebuild_search_index(
     """
     from sqlalchemy import text
 
+    from backend.app.core.db_dialect import is_postgres
+
     try:
-        # Clear and rebuild the FTS index
-        await db.execute(text("DELETE FROM archive_fts"))
+        if is_postgres():
+            # PostgreSQL: re-trigger tsvector update for all rows
+            await db.execute(text("UPDATE print_archives SET print_name = print_name"))
+            await db.commit()
+            result = await db.execute(text("SELECT COUNT(*) FROM print_archives WHERE search_vector IS NOT NULL"))
+        else:
+            # SQLite: clear and rebuild FTS5 index
+            await db.execute(text("DELETE FROM archive_fts"))
+            await db.execute(
+                text("""
+                INSERT INTO archive_fts(rowid, print_name, filename, tags, notes, designer, filament_type)
+                SELECT id, print_name, filename, tags, notes, designer, filament_type
+                FROM print_archives
+            """)
+            )
+            await db.commit()
+            result = await db.execute(text("SELECT COUNT(*) FROM archive_fts"))
 
-        # Repopulate from print_archives
-        await db.execute(
-            text("""
-            INSERT INTO archive_fts(rowid, print_name, filename, tags, notes, designer, filament_type)
-            SELECT id, print_name, filename, tags, notes, designer, filament_type
-            FROM print_archives
-        """)
-        )
-
-        await db.commit()
-
-        # Count entries
-        result = await db.execute(text("SELECT COUNT(*) FROM archive_fts"))
         count = result.scalar() or 0
-
         return {"message": f"Search index rebuilt with {count} entries"}
     except Exception as e:
         logger.error("Failed to rebuild search index: %s", e)

@@ -3,28 +3,62 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.orm import DeclarativeBase
 
 from backend.app.core.config import settings
+from backend.app.core.db_dialect import is_sqlite
 
 
 def _set_sqlite_pragmas(dbapi_conn, connection_record):
     """Set SQLite pragmas on each new connection for concurrency and performance."""
     cursor = dbapi_conn.cursor()
-    # WAL mode allows concurrent readers + one writer (vs default DELETE mode which locks entirely)
     cursor.execute("PRAGMA journal_mode = WAL")
-    # Wait up to 5 seconds when the database is locked instead of failing immediately
     cursor.execute("PRAGMA busy_timeout = 15000")
     cursor.execute("PRAGMA synchronous = NORMAL")
     cursor.close()
 
 
-engine = create_async_engine(
-    settings.database_url,
-    echo=settings.debug,
-    pool_size=20,
-    max_overflow=200,
-)
+def _strip_tz_from_params(conn, cursor, statement, parameters, context, executemany):
+    """Strip timezone info from aware datetimes before they reach asyncpg.
 
-# Register the pragma listener on the underlying sync engine
-event.listen(engine.sync_engine, "connect", _set_sqlite_pragmas)
+    asyncpg rejects timezone-aware values for TIMESTAMP WITHOUT TIME ZONE columns.
+    The codebase uses datetime.now(timezone.utc) in many places — this makes
+    Postgres behave like SQLite which ignores timezone info entirely.
+    """
+    import datetime
+
+    if parameters is None:
+        return statement, parameters
+
+    def _strip(val):
+        if isinstance(val, datetime.datetime) and val.tzinfo is not None:
+            return val.replace(tzinfo=None)
+        return val
+
+    if isinstance(parameters, dict):
+        parameters = {k: _strip(v) for k, v in parameters.items()}
+    elif isinstance(parameters, (list, tuple)):
+        parameters = type(parameters)(_strip(v) if not isinstance(v, (dict, list, tuple)) else v for v in parameters)
+
+    return statement, parameters
+
+
+def _create_engine():
+    """Create the async engine with dialect-appropriate settings."""
+    if is_sqlite():
+        kwargs = {"pool_size": 20, "max_overflow": 200}
+    else:
+        kwargs = {"pool_size": 10, "max_overflow": 20}
+    eng = create_async_engine(
+        settings.database_url,
+        echo=settings.debug,
+        **kwargs,
+    )
+    if is_sqlite():
+        event.listen(eng.sync_engine, "connect", _set_sqlite_pragmas)
+    else:
+        event.listen(eng.sync_engine, "before_cursor_execute", _strip_tz_from_params, retval=True)
+    return eng
+
+
+engine = _create_engine()
 
 async_session = async_sessionmaker(
     engine,
@@ -42,13 +76,7 @@ async def close_all_connections():
 async def reinitialize_database():
     """Reinitialize database connection after restore."""
     global engine, async_session
-    engine = create_async_engine(
-        settings.database_url,
-        echo=settings.debug,
-        pool_size=20,
-        max_overflow=200,
-    )
-    event.listen(engine.sync_engine, "connect", _set_sqlite_pragmas)
+    engine = _create_engine()
     async_session = async_sessionmaker(
         engine,
         class_=AsyncSession,
@@ -108,7 +136,6 @@ async def init_db():
         spool_catalog,
         spool_k_profile,
         spool_usage_history,
-        spoolbuddy_device,
         telegram_chat,
         user,
         user_email_pref,

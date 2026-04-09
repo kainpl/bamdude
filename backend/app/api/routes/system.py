@@ -471,6 +471,7 @@ async def get_system_info(
             "archive_dir": str(archive_dir),
         },
         "database": {
+            "engine": "PostgreSQL" if settings.database_url.startswith("postgresql") else "SQLite",
             "archives": archive_count,
             "archives_completed": completed_count,
             "archives_failed": failed_count,

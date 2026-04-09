@@ -4,7 +4,7 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -54,14 +54,10 @@ async def get_external_login_url(db: AsyncSession) -> str:
 
 
 async def set_setting(db: AsyncSession, key: str, value: str) -> None:
-    """Set a single setting value."""
-    from sqlalchemy import func
-    from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+    """Set a single setting value (dialect-aware upsert)."""
+    from backend.app.core.db_dialect import upsert_setting
 
-    # Use upsert (INSERT ... ON CONFLICT UPDATE) for reliability
-    stmt = sqlite_insert(Settings).values(key=key, value=value)
-    stmt = stmt.on_conflict_do_update(index_elements=["key"], set_={"value": value, "updated_at": func.now()})
-    await db.execute(stmt)
+    await upsert_setting(db, Settings, key, value)
 
 
 @router.get("", response_model=AppSettings)
@@ -368,29 +364,24 @@ async def create_backup(
 ):
     """Create a complete backup (database + all files) as a ZIP.
 
-    This is a simplified backup that includes the entire SQLite database
-    and all data directories. It is complete by definition and cannot miss data.
+    Includes the database and all data directories as a ZIP.
+    Backup is always in portable SQLite format regardless of database backend.
     """
     import shutil
     import tempfile
 
-    from sqlalchemy import text
-
-    from backend.app.core.database import engine
+    from backend.app.core.database import Base, engine
 
     try:
         base_dir = app_settings.base_dir
-        db_path = Path(app_settings.database_url.replace("sqlite+aiosqlite:///", ""))
 
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
 
-            # 1. Checkpoint WAL to ensure all data is in main db file
-            async with engine.begin() as conn:
-                await conn.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
+            # 1. Export database to portable SQLite format
+            from backend.app.core.db_portable import dump_to_sqlite
 
-            # 2. Copy database file
-            shutil.copy2(db_path, temp_path / "bambuddy.db")
+            await dump_to_sqlite(engine, Base.metadata, temp_path / "bambuddy.db")
 
             # 3. Copy data directories (if they exist)
             dirs_to_backup = [
@@ -444,19 +435,17 @@ async def restore_backup(
 ):
     """Restore from a complete backup ZIP.
 
-    This is a simplified restore that replaces the database and all data directories
-    from the backup ZIP. Requires a restart after restore.
+    Replaces the database and all data directories from the backup ZIP.
+    Backup format is always portable SQLite — works for both SQLite and PostgreSQL.
     """
     import shutil
     import tempfile
 
-    from fastapi import HTTPException
-
-    from backend.app.core.database import close_all_connections, init_db, reinitialize_database
+    from backend.app.core.database import Base, close_all_connections, init_db, reinitialize_database
+    from backend.app.core.db_dialect import is_sqlite
     from backend.app.services.virtual_printer import virtual_printer_manager
 
     base_dir = app_settings.base_dir
-    db_path = Path(app_settings.database_url.replace("sqlite+aiosqlite:///", ""))
 
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
@@ -498,7 +487,15 @@ async def restore_backup(
 
             # 5. Replace database
             logger.info("Restoring database from backup...")
-            shutil.copy2(backup_db, db_path)
+            if is_sqlite():
+                db_path = Path(app_settings.database_url.replace("sqlite+aiosqlite:///", ""))
+                shutil.copy2(backup_db, db_path)
+            else:
+                # Import SQLite backup into PostgreSQL
+                from backend.app.core.database import engine as current_engine
+                from backend.app.core.db_portable import import_sqlite_to_postgres
+
+                await import_sqlite_to_postgres(current_engine, Base.metadata, backup_db)
 
             # 6. Replace data directories
             # For Docker compatibility: clear contents then copy (don't delete mount points)

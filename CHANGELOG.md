@@ -84,6 +84,18 @@ Electrical load management for large print farms — spread printer startups ove
 - **Migration**: existing configs auto-tagged as `provider = 'github'`; tables renamed `github_backup_config` → `git_backup_config`, `github_backup_logs` → `git_backup_logs`
 - **API path**: `/api/v1/github-backup/` → `/api/v1/git-backup/`
 
+### PostgreSQL Support
+
+- **Optional PostgreSQL backend** — set `DATABASE_URL=postgresql+asyncpg://user:pass@host/db` to use PostgreSQL instead of SQLite
+- **SQLite remains default** — zero-config, no changes needed for existing users
+- **Dialect-aware engine** — automatic pool sizing, PG timezone handling, PRAGMA guards
+- **Full-text search**: FTS5 (SQLite) vs tsvector + GIN index (PostgreSQL) — transparent to API
+- **Migration helpers**: `table_exists`, `column_exists`, `recreate_table` work on both dialects
+- **Portable backup**: backup always creates SQLite ZIP regardless of backend
+- **Cross-database restore**: import SQLite backup into PostgreSQL with automatic type conversion (boolean, datetime, JSON)
+- **Auto-migration**: switch from SQLite to PG → data transfers automatically on first start
+- **System info**: shows current database engine (SQLite/PostgreSQL)
+
 ### REST/Webhook Smart Plugs
 
 - **New plug type**: `rest` — control any device via HTTP API (openHAB, ioBroker, Node-RED, FHEM, etc.)
@@ -129,6 +141,12 @@ Electrical load management for large print farms — spread printer startups ove
 - AssignSpoolModal "Show all spools" toggle to bypass profile filtering
 - Spool inventory and archive metadata backup in git backup
 - Auto light off setting for P1S/P1P (turn off chamber light after print starts)
+
+### Removed SpoolBuddy
+
+- **SpoolBuddy hardware integration removed** — the RPi-based filament station (NFC reader, scale, kiosk display) was a hardware-specific feature from upstream Bambuddy. Removed: backend API (routes, model, schema, SSH service), frontend (6 pages, 12 components, hooks), standalone daemon package, 18,700+ lines total.
+- **Table dropped**: `spoolbuddy_devices` (migration handles existing DBs)
+- **Spool inventory page** retained — scale weight display kept, sync-to-device button removed
 
 ### Configuration
 

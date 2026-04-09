@@ -7,7 +7,7 @@ import {
   TrendingDown, Layers, Printer, AlertTriangle, X, Clock, LayoutGrid, TableProperties, Columns,
   ArrowUp, ArrowDown, ArrowUpDown, Group, ChevronDown, Check, RefreshCw,
 } from 'lucide-react';
-import { api, spoolbuddyApi } from '../api/client';
+import { api } from '../api/client';
 import type { InventorySpool, SpoolAssignment, SpoolCatalogEntry } from '../api/client';
 import { Button } from '../components/Button';
 import { SpoolFormModal } from '../components/SpoolFormModal';
@@ -132,7 +132,7 @@ type CellCtx = {
   onSyncWeight?: (spool: InventorySpool) => void;
 };
 
-// Column header labels (25 columns — matching SpoolBuddy exactly)
+// Column header labels (25 columns)
 const columnHeaders: Record<string, (t: TFn) => string> = {
   id: (t) => t('inventory.columns.id'),
   added_time: (t) => t('inventory.columns.added_time'),
@@ -164,7 +164,7 @@ const columnHeaders: Record<string, (t: TFn) => string> = {
   weight_check: (t) => t('inventory.columns.weight_check'),
 };
 
-// Column cell renderers (25 columns — matching SpoolBuddy exactly)
+// Column cell renderers (25 columns)
 const columnCells: Record<string, (ctx: CellCtx) => ReactNode> = {
   id: ({ spool }) => (
     <span className="text-sm font-medium text-white">{spool.id}</span>
@@ -515,18 +515,6 @@ function InventoryPage() {
       showToast(t('inventory.spoolRestored'), 'success');
     },
   });
-
-  const handleSyncWeight = async (spool: InventorySpool) => {
-    if (spool.last_scale_weight == null) return;
-    try {
-      await spoolbuddyApi.updateSpoolWeight(spool.id, spool.last_scale_weight);
-      queryClient.invalidateQueries({ queryKey: ['inventory-spools'] });
-      const spoolName = [spool.brand, spool.material, spool.color_name].filter(Boolean).join(' ');
-      showToast(`Synced "${spoolName}" to scale weight`, 'success');
-    } catch {
-      showToast('Failed to sync weight', 'error');
-    }
-  };
 
   // Low stock threshold from backend settings
   const lowStockThreshold = settings?.low_stock_threshold ?? 20;
@@ -1360,7 +1348,6 @@ function InventoryPage() {
                           currencySymbol={currencySymbol}
                           dateFormat={dateFormat}
                           t={t}
-                          onSyncWeight={handleSyncWeight}
                         />
                       );
                     }
@@ -1383,7 +1370,6 @@ function InventoryPage() {
                         currencySymbol={currencySymbol}
                         dateFormat={dateFormat}
                         t={t}
-                        onSyncWeight={handleSyncWeight}
                       />
                     );
                   })}
@@ -1792,7 +1778,7 @@ function SpoolTableGroup({
   );
 }
 
-/* Empty state matching SpoolBuddy's design */
+/* Empty state */
 function EmptyFilterState({
   hasFilters,
   onAddSpool,

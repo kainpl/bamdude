@@ -46,6 +46,7 @@ _COPY_WITH_DEFAULTS: dict[str, dict[str, Any]] = {
     "printers": {
         "stagger_interval_minutes": 0,
         "swap_mode_enabled": 0,
+        "auto_light_off": 0,
         "plate_detection_enabled": 0,
         "cleanup_after_print": 1,
         "mqtt_connection_timeout": 300,
@@ -108,10 +109,6 @@ _COPY_WITH_DEFAULTS: dict[str, dict[str, Any]] = {
         "cost": None,
         "archive_id": None,
     },
-    "spoolbuddy_devices": {
-        "nfc_reader_type": None,
-        "display_brightness": 100,
-    },
     "telegram_chats": {
         "daily_digest": 0,
         "quiet_hours_enabled": 0,
@@ -148,21 +145,23 @@ async def _import_table(
     defaults: dict[str, Any] | None = None,
     transform: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
     rename: dict[str, str] | None = None,
+    source_table: str | None = None,
 ) -> int:
-    """Copy rows from *old_db* ``table`` into *new_conn* ``table``.
+    """Copy rows from *old_db* ``source_table`` (or ``table``) into *new_conn* ``table``.
 
     Returns the number of rows inserted.
     """
+    src = source_table or table
     # 1. Check source table exists
     async with old_db.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
-        (table,),
+        (src,),
     ) as cur:
         if not await cur.fetchone():
             return 0
 
     # 2. Source columns
-    async with old_db.execute(f"PRAGMA table_info({table})") as cur:  # noqa: S608
+    async with old_db.execute(f"PRAGMA table_info({src})") as cur:  # noqa: S608
         src_cols = [row[1] for row in await cur.fetchall()]
     if not src_cols:
         return 0
@@ -189,7 +188,7 @@ async def _import_table(
 
     # 6. Read all source rows
     col_list = ", ".join(select_cols)
-    async with old_db.execute(f"SELECT {col_list} FROM {table}") as cur:  # noqa: S608
+    async with old_db.execute(f"SELECT {col_list} FROM {src}") as cur:  # noqa: S608
         rows = await cur.fetchall()
     if not rows:
         return 0
@@ -335,8 +334,19 @@ async def import_bambuddy_data(engine, legacy_db_path: Path) -> None:
             # ---------------------------------------------------------------
             # Phase 3: Independent tables — direct copy
             # ---------------------------------------------------------------
+            # Tables renamed since Bambuddy — map new name -> old source name
+            _table_renames = {
+                "git_backup_config": "github_backup_config",
+                "git_backup_logs": "github_backup_logs",
+            }
+            # Defaults for columns that exist in new tables but not in old
+            _import_defaults = {
+                "git_backup_config": {"provider": "github", "backup_spools": 0, "backup_archives": 0},
+            }
             for tbl in _DIRECT_COPY:
-                n = await _import_table(conn, old_db, tbl)
+                src = _table_renames.get(tbl)
+                defs = _import_defaults.get(tbl)
+                n = await _import_table(conn, old_db, tbl, source_table=src, defaults=defs)
                 if n:
                     summary[tbl] = n
                     logger.info("Imported %d rows into %s", n, tbl)
@@ -415,8 +425,11 @@ async def import_bambuddy_data(engine, legacy_db_path: Path) -> None:
             # ---------------------------------------------------------------
             # Phase 6: Conditional tables (may not exist in old DB)
             # ---------------------------------------------------------------
+            _conditional_defaults = {
+                "users": {"auth_source": "local"},
+            }
             for tbl in _CONDITIONAL_TABLES:
-                n = await _import_table(conn, old_db, tbl)
+                n = await _import_table(conn, old_db, tbl, defaults=_conditional_defaults.get(tbl))
                 if n:
                     summary[tbl] = n
                     logger.info("Imported %d rows into %s", n, tbl)

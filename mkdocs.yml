@@ -94,6 +94,7 @@ plugins:
             Prometheus: Prometheus
             Settings: Налаштування
             Authentication: Автентифікація
+            PostgreSQL: PostgreSQL
             "Backup & Restore": "Резервне копіювання"
             Reference: Довідка
             Supported Printers: Підтримувані принтери
@@ -190,6 +191,7 @@ nav:
       - Prometheus: features/prometheus.md
     - Settings:
       - Authentication: features/authentication.md
+      - PostgreSQL: features/postgresql.md
       - Backup & Restore: features/backup.md
 
   - Reference:

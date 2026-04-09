@@ -1,6 +1,7 @@
 # Claude
 .claude/
 CLAUDE.md
+.mcp.json
 
 # IDEA
 .idea/
@@ -73,14 +74,8 @@ node_modules/
 # JWT secret file (should be in data dir, but protect project root too)
 .jwt_secret
 
-# SpoolBuddy SSH keys (generated at runtime for remote updates)
-spoolbuddy/ssh/
-
 # Security scan output
 *.sarif
 
 debug_logs/
-
-# SSH keys Spoolbuddy
-spoolbuddy/ssh/
 site/

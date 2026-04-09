@@ -197,13 +197,23 @@ class PrintScheduler:
                     item.waiting_reason = new_reason
                     await db.commit()
 
-                # If printer not connected, try to power on via smart plug
+                # If printer not connected, try to power on via smart plug(s)
                 if not printer_connected:
-                    plug = await self._get_smart_plug(db, printer_id)
-                    if plug and plug.auto_on and plug.enabled:
-                        logger.info("Printer %s offline, attempting to power on via smart plug", printer_id)
-                        powered_on = await self._power_on_and_wait(plug, printer_id, db)
+                    plugs = await self._get_smart_plugs(db, printer_id)
+                    auto_on_plugs = [p for p in plugs if p.auto_on and p.enabled]
+                    if auto_on_plugs:
+                        logger.info("Printer %s offline, attempting to power on via smart plug(s)", printer_id)
+                        # Power on primary plug and wait for printer to connect
+                        powered_on = await self._power_on_and_wait(auto_on_plugs[0], printer_id, db)
                         if powered_on:
+                            # Also turn on remaining auto_on plugs (filter, secondary power, etc.)
+                            for extra_plug in auto_on_plugs[1:]:
+                                try:
+                                    service = await smart_plug_manager.get_service_for_plug(extra_plug, db)
+                                    await service.turn_on(extra_plug)
+                                    logger.info("Also powered on plug '%s' for printer %s", extra_plug.name, printer_id)
+                                except Exception as e:
+                                    logger.warning("Failed to power on extra plug '%s': %s", extra_plug.name, e)
                             printer_connected = True
                             printer_idle = self._is_printer_idle(printer_id)
                         else:

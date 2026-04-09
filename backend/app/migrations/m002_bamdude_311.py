@@ -14,7 +14,13 @@ async def upgrade(conn):
 
     from sqlalchemy import text
 
-    from backend.app.migrations.helpers import add_column, column_exists, recreate_table, table_exists
+    from backend.app.migrations.helpers import (
+        add_column,
+        column_exists,
+        get_table_columns,
+        recreate_table,
+        table_exists,
+    )
 
     # ── REST/Webhook smart plug fields ──
     await add_column(conn, "smart_plugs", "rest_on_url VARCHAR(500)")
@@ -110,7 +116,7 @@ async def upgrade(conn):
 
         # Create printer_queues for existing printers
         await conn.execute(text(
-            "INSERT OR IGNORE INTO printer_queues "
+            "INSERT INTO printer_queues "
             "(id, printer_id, status, pending_count, completed_count, failed_count, "
             "cancelled_count, skipped_count, total_count) "
             "SELECT id, id, 'idle', 0, 0, 0, 0, 0, 0 FROM printers "
@@ -296,40 +302,44 @@ async def upgrade(conn):
     await add_column(conn, "users", "auth_source VARCHAR(20) NOT NULL DEFAULT 'local'")
 
     # ── Drop dead tables ──
-    for dead_table in ("filaments", "print_log_entries"):
+    for dead_table in ("filaments", "print_log_entries", "spoolbuddy_devices"):
         if await table_exists(conn, dead_table):
             await conn.execute(text(f"DROP TABLE {dead_table}"))  # noqa: S608
 
     # ── Force auto_archive on all printers ──
     await conn.execute(text("UPDATE printers SET auto_archive = 1 WHERE auto_archive = 0"))
 
-    # ── Rename github_backup → git_backup, add provider support ──
-    if await table_exists(conn, "github_backup_config") and not await table_exists(conn, "git_backup_config"):
-        await conn.execute(text("ALTER TABLE github_backup_config RENAME TO git_backup_config"))
-        await add_column(conn, "git_backup_config", "provider VARCHAR(20) NOT NULL DEFAULT 'github'")
-        await add_column(conn, "git_backup_config", "api_base_url VARCHAR(500)")
-    # ── Git backup: spool + archive backup flags ──
+    # ── Migrate github_backup → git_backup (copy data + drop old) ──
+    # create_all() already created git_backup_config/logs from models,
+    # so we copy data from old tables into new ones, then drop old.
+    await add_column(conn, "git_backup_config", "provider VARCHAR(20) NOT NULL DEFAULT 'github'")
+    await add_column(conn, "git_backup_config", "api_base_url VARCHAR(500)")
     await add_column(conn, "git_backup_config", "backup_spools BOOLEAN NOT NULL DEFAULT 0")
     await add_column(conn, "git_backup_config", "backup_archives BOOLEAN NOT NULL DEFAULT 0")
 
-    if await table_exists(conn, "github_backup_logs") and not await table_exists(conn, "git_backup_logs"):
-        # Recreate logs with FK pointing to new table name
-        await recreate_table(
-            conn,
-            "github_backup_logs",
-            """CREATE TABLE git_backup_logs (
-                id INTEGER PRIMARY KEY,
-                config_id INTEGER REFERENCES git_backup_config(id) ON DELETE CASCADE,
-                started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                completed_at DATETIME,
-                status VARCHAR(20) NOT NULL,
-                trigger VARCHAR(20) NOT NULL,
-                commit_sha VARCHAR(40),
-                files_changed INTEGER NOT NULL DEFAULT 0,
-                error_message TEXT
-            )""",
-            "id, config_id, started_at, completed_at, status, trigger, commit_sha, files_changed, error_message",
-        )
+    if await table_exists(conn, "github_backup_config"):
+        # Copy config data (only if git_backup_config is empty)
+        result = await conn.execute(text("SELECT COUNT(*) FROM git_backup_config"))
+        if (result.scalar() or 0) == 0:
+            # Get columns that exist in both old and new tables
+            old_cols = await get_table_columns(conn, "github_backup_config")
+            new_cols = await get_table_columns(conn, "git_backup_config")
+            shared = [c for c in old_cols if c in new_cols]
+            if shared:
+                cols = ", ".join(shared)
+                await conn.execute(text(f"INSERT INTO git_backup_config ({cols}) SELECT {cols} FROM github_backup_config"))  # noqa: S608
+        await conn.execute(text("DROP TABLE github_backup_config"))
+
+    if await table_exists(conn, "github_backup_logs"):
+        result = await conn.execute(text("SELECT COUNT(*) FROM git_backup_logs"))
+        if (result.scalar() or 0) == 0:
+            old_cols = await get_table_columns(conn, "github_backup_logs")
+            new_cols = await get_table_columns(conn, "git_backup_logs")
+            shared = [c for c in old_cols if c in new_cols]
+            if shared:
+                cols = ", ".join(shared)
+                await conn.execute(text(f"INSERT INTO git_backup_logs ({cols}) SELECT {cols} FROM github_backup_logs"))  # noqa: S608
+        await conn.execute(text("DROP TABLE github_backup_logs"))
 
     # ── Migrate legacy VP modes to file_manager ──
     if await table_exists(conn, "virtual_printers"):

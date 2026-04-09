@@ -30,8 +30,11 @@ def _get_database_path() -> Path:
     return _data_dir / "bamdude.db"
 
 
-# Determine database path
-_db_path = _get_database_path()
+# External DATABASE_URL takes priority (PostgreSQL support)
+_external_db_url = os.environ.get("DATABASE_URL")
+
+# Determine database path — only used for SQLite
+_db_path = _get_database_path() if not _external_db_url else None
 
 
 class Settings(BaseSettings):
@@ -45,7 +48,7 @@ class Settings(BaseSettings):
     archive_dir: Path = _data_dir / "archive"
     plate_calibration_dir: Path = _plate_cal_dir  # Plate detection references
     static_dir: Path = _app_dir / "static"  # Static files are part of app, not data
-    database_url: str = f"sqlite+aiosqlite:///{_db_path}"
+    database_url: str = _external_db_url or f"sqlite+aiosqlite:///{_db_path}"
 
     # Logging
     log_level: str = "INFO"  # Override with LOG_LEVEL env var (DEBUG, INFO, WARNING, ERROR)
@@ -69,9 +72,10 @@ class Settings(BaseSettings):
         # Recalculate paths derived from data_dir
         object.__setattr__(self, "base_dir", self.data_dir)
         object.__setattr__(self, "archive_dir", self.data_dir / "archive")
-        # Recalculate database_url if data_dir was overridden from env
-        db_path = self.data_dir / "bamdude.db"
-        object.__setattr__(self, "database_url", f"sqlite+aiosqlite:///{db_path}")
+        # Recalculate database_url only for SQLite (don't overwrite external DATABASE_URL)
+        if not _external_db_url:
+            db_path = self.data_dir / "bamdude.db"
+            object.__setattr__(self, "database_url", f"sqlite+aiosqlite:///{db_path}")
 
 
 settings = Settings()

@@ -43,6 +43,9 @@ services:
       # Port BamDude runs on (default: 8000)
       # Usage: PORT=8080 docker compose up -d
       - PORT=${PORT:-8000}
+      # PostgreSQL: uncomment to use external PostgreSQL instead of SQLite
+      # Requires: PostgreSQL 14+ with the target database already created
+      #- DATABASE_URL=postgresql+asyncpg://bamdude:password@postgres:5432/bamdude
       # Virtual printer: Set to the Docker host's IP when using bridge mode (ports:).
       # Required for FTP passive mode to work behind NAT.
       # Example: VIRTUAL_PRINTER_PASV_ADDRESS=192.168.1.100

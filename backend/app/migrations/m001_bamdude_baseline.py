@@ -1,22 +1,30 @@
-"""Baseline migration — FTS5 search index + seed data."""
+"""Baseline migration — full-text search index + seed data."""
 
 from sqlalchemy import text
 
 version = 1
 name = "bamdude_baseline"
 
+# FTS columns used for archive search
+_FTS_COLS = "print_name, filename, tags, notes, designer, filament_type"
+
 
 async def upgrade(conn):
-    """Create FTS5 virtual table and triggers for archive full-text search."""
+    """Create full-text search index: FTS5 (SQLite) or tsvector+GIN (PostgreSQL)."""
+    from backend.app.core.db_dialect import is_postgres
+
+    if is_postgres():
+        await _setup_postgres_fts(conn)
+    else:
+        await _setup_sqlite_fts(conn)
+
+
+async def _setup_sqlite_fts(conn):
+    """SQLite: FTS5 virtual table + sync triggers."""
     await conn.execute(
-        text("""
+        text(f"""
             CREATE VIRTUAL TABLE IF NOT EXISTS archive_fts USING fts5(
-                print_name,
-                filename,
-                tags,
-                notes,
-                designer,
-                filament_type,
+                {_FTS_COLS},
                 content='print_archives',
                 content_rowid='id'
             )
@@ -24,29 +32,29 @@ async def upgrade(conn):
     )
 
     await conn.execute(
-        text("""
+        text(f"""
             CREATE TRIGGER IF NOT EXISTS archive_fts_insert AFTER INSERT ON print_archives BEGIN
-                INSERT INTO archive_fts(rowid, print_name, filename, tags, notes, designer, filament_type)
+                INSERT INTO archive_fts(rowid, {_FTS_COLS})
                 VALUES (new.id, new.print_name, new.filename, new.tags, new.notes, new.designer, new.filament_type);
             END
         """)
     )
 
     await conn.execute(
-        text("""
+        text(f"""
             CREATE TRIGGER IF NOT EXISTS archive_fts_delete AFTER DELETE ON print_archives BEGIN
-                INSERT INTO archive_fts(archive_fts, rowid, print_name, filename, tags, notes, designer, filament_type)
+                INSERT INTO archive_fts(archive_fts, rowid, {_FTS_COLS})
                 VALUES ('delete', old.id, old.print_name, old.filename, old.tags, old.notes, old.designer, old.filament_type);
             END
         """)
     )
 
     await conn.execute(
-        text("""
+        text(f"""
             CREATE TRIGGER IF NOT EXISTS archive_fts_update AFTER UPDATE ON print_archives BEGIN
-                INSERT INTO archive_fts(archive_fts, rowid, print_name, filename, tags, notes, designer, filament_type)
+                INSERT INTO archive_fts(archive_fts, rowid, {_FTS_COLS})
                 VALUES ('delete', old.id, old.print_name, old.filename, old.tags, old.notes, old.designer, old.filament_type);
-                INSERT INTO archive_fts(rowid, print_name, filename, tags, notes, designer, filament_type)
+                INSERT INTO archive_fts(rowid, {_FTS_COLS})
                 VALUES (new.id, new.print_name, new.filename, new.tags, new.notes, new.designer, new.filament_type);
             END
         """)
@@ -56,12 +64,64 @@ async def upgrade(conn):
     try:
         await conn.execute(
             text(
-                "INSERT OR IGNORE INTO archive_fts(rowid, print_name, filename, tags, notes, designer, filament_type) "
-                "SELECT id, print_name, filename, tags, notes, designer, filament_type FROM print_archives"
+                f"INSERT OR IGNORE INTO archive_fts(rowid, {_FTS_COLS}) "
+                f"SELECT id, {_FTS_COLS} FROM print_archives"
             )
         )
     except Exception:
-        pass  # Table may be empty on fresh install
+        pass
+
+
+async def _setup_postgres_fts(conn):
+    """PostgreSQL: tsvector column + GIN index + sync trigger function."""
+    # Add tsvector column if not exists
+    await conn.execute(text("""
+        DO $$ BEGIN
+            ALTER TABLE print_archives ADD COLUMN search_vector tsvector;
+        EXCEPTION WHEN duplicate_column THEN NULL;
+        END $$
+    """))
+
+    # Create GIN index
+    await conn.execute(text("""
+        CREATE INDEX IF NOT EXISTS idx_archives_search_vector
+        ON print_archives USING GIN (search_vector)
+    """))
+
+    # Create trigger function to update tsvector on insert/update
+    await conn.execute(text("""
+        CREATE OR REPLACE FUNCTION archive_search_vector_update() RETURNS trigger AS $$
+        BEGIN
+            NEW.search_vector :=
+                setweight(to_tsvector('simple', coalesce(NEW.print_name, '')), 'A') ||
+                setweight(to_tsvector('simple', coalesce(NEW.filename, '')), 'B') ||
+                setweight(to_tsvector('simple', coalesce(NEW.tags, '')), 'B') ||
+                setweight(to_tsvector('simple', coalesce(NEW.designer, '')), 'C') ||
+                setweight(to_tsvector('simple', coalesce(NEW.filament_type, '')), 'C') ||
+                setweight(to_tsvector('simple', coalesce(NEW.notes, '')), 'D');
+            RETURN NEW;
+        END
+        $$ LANGUAGE plpgsql
+    """))
+
+    await conn.execute(text("""
+        DROP TRIGGER IF EXISTS archive_search_vector_trigger ON print_archives
+    """))
+    await conn.execute(text("""
+        CREATE TRIGGER archive_search_vector_trigger
+        BEFORE INSERT OR UPDATE ON print_archives
+        FOR EACH ROW EXECUTE FUNCTION archive_search_vector_update()
+    """))
+
+    # Populate search_vector for existing rows
+    try:
+        await conn.execute(text("UPDATE print_archives SET search_vector = NULL WHERE search_vector IS NULL"))
+        # Trigger fires on UPDATE, so touching the column populates it
+        await conn.execute(text("""
+            UPDATE print_archives SET print_name = print_name WHERE search_vector IS NULL
+        """))
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------

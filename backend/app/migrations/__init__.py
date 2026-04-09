@@ -39,15 +39,27 @@ def _discover_migrations() -> list[dict]:
 
 async def _ensure_migrations_table(engine) -> None:
     """Create _migrations table if it doesn't exist."""
+    from backend.app.core.db_dialect import is_postgres
+
     async with engine.begin() as conn:
-        await conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS _migrations (
-                id INTEGER PRIMARY KEY,
-                version INTEGER NOT NULL UNIQUE,
-                name VARCHAR(100) NOT NULL,
-                applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        """))
+        if is_postgres():
+            await conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS _migrations (
+                    id SERIAL PRIMARY KEY,
+                    version INTEGER NOT NULL UNIQUE,
+                    name VARCHAR(100) NOT NULL,
+                    applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+        else:
+            await conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS _migrations (
+                    id INTEGER PRIMARY KEY,
+                    version INTEGER NOT NULL UNIQUE,
+                    name VARCHAR(100) NOT NULL,
+                    applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
 
 
 async def _get_applied_versions(engine) -> set[int]:
@@ -110,12 +122,16 @@ async def _run_pending(engine, session_factory) -> None:
 
         logger.info("Applying migration %d: %s ...", version, name)
 
-        # DDL phase (schema changes) — FK off for safety
+        # DDL phase (schema changes) — FK off for safety (SQLite only)
         if hasattr(mod, "upgrade"):
             async with engine.begin() as conn:
-                await conn.execute(text("PRAGMA foreign_keys = OFF"))
+                from backend.app.core.db_dialect import is_sqlite
+
+                if is_sqlite():
+                    await conn.execute(text("PRAGMA foreign_keys = OFF"))
                 await mod.upgrade(conn)
-                await conn.execute(text("PRAGMA foreign_keys = ON"))
+                if is_sqlite():
+                    await conn.execute(text("PRAGMA foreign_keys = ON"))
 
         # Seed phase (data, uses ORM session)
         if hasattr(mod, "seed"):
@@ -137,28 +153,35 @@ async def run_all_migrations(engine, session_factory) -> None:
     """
     from backend.app.core.config import settings
     from backend.app.core.database import Base
+    from backend.app.core.db_dialect import is_sqlite
 
-    legacy_path = _find_legacy_database(settings.data_dir)
+    legacy_path = None
+    if is_sqlite():
+        legacy_path = _find_legacy_database(settings.data_dir)
 
-    # BamDude 3.0.1 upgrade: rename bambuddy.db → bamdude.db
-    # Must check BEFORE create_all (engine may create empty bamdude.db on connect)
-    if legacy_path and await _is_bamdude_301(legacy_path):
-        db_path = Path(settings.data_dir) / "bamdude.db"
-        logger.info("Found BamDude 3.0.1 database: %s — renaming to bamdude.db", legacy_path)
-        # Close engine connections so we can replace the file
-        await engine.dispose()
-        # Remove empty bamdude.db if engine created it
-        if db_path.exists():
-            db_path.unlink()
-        legacy_path.rename(db_path)
-        for suffix in ("-wal", "-shm"):
-            wal = legacy_path.parent / (legacy_path.name + suffix)
-            if wal.exists():
-                wal.rename(db_path.parent / (db_path.name + suffix))
+        # BamDude 3.0.1 upgrade: rename bambuddy.db → bamdude.db
+        # Must check BEFORE create_all (engine may create empty bamdude.db on connect)
+        if legacy_path and await _is_bamdude_301(legacy_path):
+            db_path = Path(settings.data_dir) / "bamdude.db"
+            logger.info("Found BamDude 3.0.1 database: %s — renaming to bamdude.db", legacy_path)
+            await engine.dispose()
+            if db_path.exists():
+                db_path.unlink()
+            legacy_path.rename(db_path)
+            for suffix in ("-wal", "-shm"):
+                wal = legacy_path.parent / (legacy_path.name + suffix)
+                if wal.exists():
+                    wal.rename(db_path.parent / (db_path.name + suffix))
 
     # Create/update all tables from models
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    # Auto-migrate SQLite → PostgreSQL if PG is empty and local SQLite exists
+    if not is_sqlite():
+        from backend.app.core.db_portable import auto_migrate_sqlite_to_pg
+
+        await auto_migrate_sqlite_to_pg(engine, Base.metadata)
 
     # Ensure _migrations table
     await _ensure_migrations_table(engine)
@@ -172,6 +195,7 @@ async def run_all_migrations(engine, session_factory) -> None:
     await _run_pending(engine, session_factory)
 
     # Rename legacy DB to .bak after successful migration (prevent re-import on next start)
+    # Only applicable for SQLite — PostgreSQL doesn't have local DB files
     if legacy_path and legacy_path.exists():
         bak_path = legacy_path.with_suffix(".db.bak")
         try:

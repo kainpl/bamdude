@@ -740,6 +740,13 @@ class BambuMQTTClient:
                 logger.debug("[%s] Received command response: %s", self.serial_number, cmd)
                 if cmd in ("extrusion_cali_sel", "extrusion_cali_set", "extrusion_cali_del", "ams_filament_setting"):
                     logger.debug("[%s] %s response: %s", self.serial_number, cmd, print_data)
+                # Check for developer mode probe response
+                if (
+                    cmd == "ams_filament_setting"
+                    and self._dev_mode_probe_seq is not None
+                    and print_data.get("sequence_id") == self._dev_mode_probe_seq
+                ):
+                    self._handle_dev_mode_probe_response(print_data)
             if "command" in print_data and print_data.get("command") == "extrusion_cali_get":
                 self._handle_kprofile_response(print_data)
 
@@ -2426,7 +2433,7 @@ class BambuMQTTClient:
                 self.state.developer_mode = (fun_int & 0x20000000) == 0
             except (ValueError, TypeError):
                 pass
-        elif self.state.developer_mode is None:
+        elif self.state.developer_mode is None and not self._dev_mode_probed:
             # Two-phase developer mode probe:
             # 1) Wait for a "large" status push (len > 30) confirming printer is streaming
             # 2) Wait at least 5s after connect so the printer has time to send "fun" naturally
@@ -2440,6 +2447,34 @@ class BambuMQTTClient:
                     self.serial_number,
                     time.monotonic() - self._connect_time,
                 )
+        elif self._dev_mode_probed and self._dev_mode_probe_seq is not None:
+            # Probe sent but no response yet — check for timeout
+            elapsed = time.monotonic() - self._dev_mode_probe_time
+            if elapsed > 10.0:
+                self._dev_mode_probe_failures += 1
+                logger.warning(
+                    "[%s] Developer mode probe timed out after %.0fs (attempt %d)",
+                    self.serial_number, elapsed, self._dev_mode_probe_failures,
+                )
+                self._dev_mode_probe_seq = None
+                if self._dev_mode_probe_failures >= 2:
+                    logger.warning(
+                        "[%s] MQTT session appears broken (commands ignored), forcing reconnect",
+                        self.serial_number,
+                    )
+                    self._stale_reconnecting = True
+                    self.state.connected = False
+                    if self.on_state_change:
+                        self.on_state_change(self.state)
+                    if self._client:
+                        try:
+                            sock = self._client.socket()
+                            if sock:
+                                sock.close()
+                        except Exception:
+                            pass
+                else:
+                    self._dev_mode_probed = False  # Allow retry
 
         # Log mapping data when received (for usage tracking debugging)
         if "mapping" in data:
@@ -2608,20 +2643,66 @@ class BambuMQTTClient:
             self.on_state_change(self.state)
 
     def _probe_developer_mode(self):
-        """Send a pushall to coerce the printer into returning the 'fun' field.
+        """Probe developer mode by sending an ams_filament_setting for the external slot.
 
-        Called once after connecting when developer_mode is still unknown and the
-        printer has been streaming status for at least 5 seconds without sending
-        'fun' on its own.
+        Some printers (A1/P1 series) never send the "fun" field in MQTT status.
+        We detect developer mode by sending a harmless command and checking the response:
+        - result="success" → developer mode ON (commands accepted)
+        - result="failed", reason="mqtt message verify failed" → developer mode OFF
+
+        The probe re-sends the current external slot config so it's a no-op on success.
         """
+        if not self._client or not self.state.connected:
+            return
         self._dev_mode_probed = True
         self._dev_mode_needs_probe = False
-        logger.info(
-            "[%s] Developer mode still unknown after %.1fs — sending pushall probe",
-            self.serial_number,
-            time.monotonic() - self._connect_time,
-        )
-        self._request_push_all()
+        self._dev_mode_probe_time = time.monotonic()
+        self._sequence_id += 1
+        seq = str(self._sequence_id)
+        self._dev_mode_probe_seq = seq
+
+        # Build probe command: re-send current external slot config (no-op on success)
+        vt_tray = self.state.raw_data.get("vt_tray", []) if self.state.raw_data else []
+        current = vt_tray[0] if vt_tray else {}
+
+        command = {
+            "print": {
+                "command": "ams_filament_setting",
+                "ams_id": 255,
+                "tray_id": 0,
+                "slot_id": 0,
+                "tray_info_idx": current.get("tray_info_idx", ""),
+                "tray_type": current.get("tray_type", ""),
+                "tray_sub_brands": current.get("tray_sub_brands", ""),
+                "tray_color": current.get("tray_color", "00000000"),
+                "nozzle_temp_min": current.get("nozzle_temp_min", 0),
+                "nozzle_temp_max": current.get("nozzle_temp_max", 0),
+                "sequence_id": seq,
+            }
+        }
+        setting_id = current.get("setting_id")
+        if setting_id:
+            command["print"]["setting_id"] = setting_id
+
+        logger.info("[%s] Probing developer mode via ams_filament_setting (seq=%s)", self.serial_number, seq)
+        self._client.publish(self.topic_publish, json.dumps(command), qos=1)
+
+    def _handle_dev_mode_probe_response(self, data: dict):
+        """Handle response to the developer mode probe command."""
+        self._dev_mode_probe_seq = None
+        self._dev_mode_probe_failures = 0
+        result = data.get("result", "")
+        reason = data.get("reason", "")
+
+        if result == "failed" and "verify failed" in reason:
+            self.state.developer_mode = False
+            logger.info("[%s] Developer mode probe: DISABLED (reason=%r)", self.serial_number, reason)
+        else:
+            self.state.developer_mode = True
+            logger.info("[%s] Developer mode probe: ENABLED (result=%r)", self.serial_number, result)
+
+        if self.on_state_change:
+            self.on_state_change(self.state)
 
     def _request_push_all(self):
         """Request full status update from printer."""
