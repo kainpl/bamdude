@@ -2343,7 +2343,7 @@ export function ArchivesPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
-  const { hasPermission, hasAnyPermission } = useAuth();
+  const { hasAnyPermission } = useAuth();
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState(search);
@@ -2496,11 +2496,6 @@ export function ArchivesPage() {
   const { data: settings } = useQuery({
     queryKey: ['settings'],
     queryFn: api.getSettings,
-  });
-
-  const { data: users } = useQuery({
-    queryKey: ['users'],
-    queryFn: api.getUsers,
   });
 
   const timeFormat: TimeFormat = settings?.time_format || 'system';

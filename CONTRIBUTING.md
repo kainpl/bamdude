@@ -39,7 +39,7 @@ Thank you for your interest in contributing! This document provides guidelines f
 ### Backend
 
 ```bash
-python3 -m venv venv
+python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 pip install -r requirements-dev.txt
