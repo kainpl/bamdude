@@ -33,6 +33,7 @@ class MaintenanceTypeUpdate(BaseModel):
 
 class MaintenanceTypeResponse(MaintenanceTypeBase):
     id: int
+    type_code: str | None = None
     is_system: bool
     created_at: datetime
 
@@ -42,6 +43,7 @@ class MaintenanceTypeResponse(MaintenanceTypeBase):
         if isinstance(v, str):
             try:
                 import json
+
                 return json.loads(v)
             except (json.JSONDecodeError, TypeError):
                 return [v] if v else ["*"]
@@ -119,6 +121,7 @@ class MaintenanceStatus(BaseModel):
     printer_model: str | None  # For model-specific documentation links
     maintenance_type_id: int
     maintenance_type_name: str
+    maintenance_type_code: str | None = None
     maintenance_type_icon: str | None
     maintenance_type_wiki_url: str | None  # Custom wiki URL for the type
     enabled: bool

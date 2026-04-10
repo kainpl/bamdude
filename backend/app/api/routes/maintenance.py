@@ -37,6 +37,7 @@ router = APIRouter(prefix="/maintenance", tags=["maintenance"])
 DEFAULT_MAINTENANCE_TYPES = [
     # Carbon rod models only (X1/P1)
     {
+        "type_code": "clean_carbon_rods",
         "name": "Clean Carbon Rods",
         "description": "Wipe carbon rods with a dry cloth",
         "default_interval_hours": 100.0,
@@ -45,6 +46,7 @@ DEFAULT_MAINTENANCE_TYPES = [
     },
     # Steel rod models only (P2S)
     {
+        "type_code": "lubricate_steel_rods",
         "name": "Lubricate Steel Rods",
         "description": "Apply lubricant to steel rods for smooth motion",
         "default_interval_hours": 50.0,
@@ -52,6 +54,7 @@ DEFAULT_MAINTENANCE_TYPES = [
         "printer_models": '["P2S"]',
     },
     {
+        "type_code": "clean_steel_rods",
         "name": "Clean Steel Rods",
         "description": "Wipe steel rods with a dry cloth",
         "default_interval_hours": 100.0,
@@ -60,6 +63,7 @@ DEFAULT_MAINTENANCE_TYPES = [
     },
     # Linear rail models only (A1/H2)
     {
+        "type_code": "lubricate_linear_rails",
         "name": "Lubricate Linear Rails",
         "description": "Apply lubricant to linear rails for smooth motion",
         "default_interval_hours": 50.0,
@@ -67,6 +71,7 @@ DEFAULT_MAINTENANCE_TYPES = [
         "printer_models": '["A1", "A1 Mini", "H2D", "H2D Pro", "H2C", "H2S"]',
     },
     {
+        "type_code": "clean_linear_rails",
         "name": "Clean Linear Rails",
         "description": "Wipe linear rails with a dry cloth to remove dust and debris",
         "default_interval_hours": 100.0,
@@ -75,6 +80,7 @@ DEFAULT_MAINTENANCE_TYPES = [
     },
     # Universal (all models)
     {
+        "type_code": "clean_nozzle",
         "name": "Clean Nozzle/Hotend",
         "description": "Clean nozzle exterior and perform cold pull if needed",
         "default_interval_hours": 100.0,
@@ -82,6 +88,7 @@ DEFAULT_MAINTENANCE_TYPES = [
         "printer_models": '["*"]',
     },
     {
+        "type_code": "check_belt_tension",
         "name": "Check Belt Tension",
         "description": "Verify and adjust belt tension for X/Y axes",
         "default_interval_hours": 200.0,
@@ -89,6 +96,7 @@ DEFAULT_MAINTENANCE_TYPES = [
         "printer_models": '["*"]',
     },
     {
+        "type_code": "clean_build_plate",
         "name": "Clean Build Plate",
         "description": "Deep clean build plate with IPA or soap",
         "default_interval_hours": 25.0,
@@ -96,6 +104,7 @@ DEFAULT_MAINTENANCE_TYPES = [
         "printer_models": '["*"]',
     },
     {
+        "type_code": "check_ptfe_tube",
         "name": "Check PTFE Tube",
         "description": "Inspect PTFE tube for wear or discoloration",
         "default_interval_hours": 500.0,
@@ -105,57 +114,21 @@ DEFAULT_MAINTENANCE_TYPES = [
 ]
 
 # System types that only apply to printers with a specific rod/rail type.
-# "carbon" = X1/P1 series (carbon rods), "steel_rod" = P2S (steel rods),
-# "linear_rail" = A1/H2 series. Types not listed here apply to all printers.
+# Keyed by type_code. Types not listed here apply to all printers.
 _ROD_TYPE_REQUIREMENTS: dict[str, str] = {
-    "Clean Carbon Rods": "carbon",
-    "Lubricate Steel Rods": "steel_rod",
-    "Clean Steel Rods": "steel_rod",
-    "Lubricate Linear Rails": "linear_rail",
-    "Clean Linear Rails": "linear_rail",
+    "clean_carbon_rods": "carbon",
+    "lubricate_steel_rods": "steel_rod",
+    "clean_steel_rods": "steel_rod",
+    "lubricate_linear_rails": "linear_rail",
+    "clean_linear_rails": "linear_rail",
 }
 
 
-_locale_name_to_english: dict[str, str] | None = None
-
-
-def _get_locale_name_map() -> dict[str, str]:
-    """Build and cache mapping from any locale name to English key."""
-    global _locale_name_to_english
-    if _locale_name_to_english is not None:
-        return _locale_name_to_english
-
-    import json
-    from pathlib import Path
-
-    result: dict[str, str] = {}
-    # Add English names as identity mapping
-    for t in DEFAULT_MAINTENANCE_TYPES:
-        result[t["name"]] = t["name"]
-
-    data_dir = Path(__file__).parent.parent.parent / "data"
-    for locale_file in data_dir.glob("maintenance_types_*.json"):
-        try:
-            with open(locale_file, encoding="utf-8") as f:
-                locale_data = json.load(f)
-                for eng_key, val in locale_data.items():
-                    result[val["name"]] = eng_key
-        except Exception:
-            pass
-
-    _locale_name_to_english = result
-    return result
-
-
-def _resolve_english_name(type_name: str) -> str:
-    """Resolve any locale name back to the original English key."""
-    return _get_locale_name_map().get(type_name, type_name)
-
-
-def _should_apply_to_printer(type_name: str, printer_model: str | None) -> bool:
+def _should_apply_to_printer(type_code: str | None, printer_model: str | None) -> bool:
     """Check if a system maintenance type should apply to a given printer model."""
-    eng_name = _resolve_english_name(type_name)
-    rod_requirement = _ROD_TYPE_REQUIREMENTS.get(eng_name)
+    if not type_code:
+        return True
+    rod_requirement = _ROD_TYPE_REQUIREMENTS.get(type_code)
     if rod_requirement is None:
         return True  # Not model-specific, applies to all
 
@@ -190,37 +163,16 @@ async def get_printer_total_hours(db: AsyncSession, printer_id: int) -> float:
 
 async def ensure_default_types(db: AsyncSession) -> None:
     """Ensure default maintenance types exist. Never deletes — only adds missing ones."""
-    import json
-    from pathlib import Path
-
     result = await db.execute(select(MaintenanceType).where(MaintenanceType.is_system.is_(True)))
     existing = result.scalars().all()
+    existing_codes = {t.type_code for t in existing if t.type_code}
 
-    if len(existing) >= len(DEFAULT_MAINTENANCE_TYPES):
-        return  # All types present, nothing to do
-
-    # Build set of all known names (all locales) to check if type already exists under translation
-    data_dir = Path(__file__).parent.parent.parent / "data"
-    all_locale_names: dict[str, set[str]] = {}  # english_key -> {en_name, uk_name, ...}
+    added = False
     for type_def in DEFAULT_MAINTENANCE_TYPES:
-        names = {type_def["name"]}
-        for locale_file in data_dir.glob("maintenance_types_*.json"):
-            try:
-                with open(locale_file, encoding="utf-8") as f:
-                    locale_data = json.load(f)
-                    if type_def["name"] in locale_data:
-                        names.add(locale_data[type_def["name"]]["name"])
-            except Exception:
-                pass
-        all_locale_names[type_def["name"]] = names
-
-    existing_names = {t.name for t in existing}
-
-    for type_def in DEFAULT_MAINTENANCE_TYPES:
-        # Check if already exists under any locale name
-        if all_locale_names[type_def["name"]] & existing_names:
+        if type_def["type_code"] in existing_codes:
             continue
         new_type = MaintenanceType(
+            type_code=type_def["type_code"],
             name=type_def["name"],
             description=type_def["description"],
             default_interval_hours=type_def["default_interval_hours"],
@@ -229,8 +181,10 @@ async def ensure_default_types(db: AsyncSession) -> None:
             is_system=True,
         )
         db.add(new_type)
+        added = True
 
-    await db.commit()
+    if added:
+        await db.commit()
 
 
 # ============== Maintenance Types ==============
@@ -270,6 +224,11 @@ async def create_maintenance_type(
         is_system=False,
     )
     db.add(new_type)
+    await db.commit()
+    await db.refresh(new_type)
+
+    # Set type_code for custom types after id is assigned
+    new_type.type_code = f"custom_{new_type.id}"
     await db.commit()
     await db.refresh(new_type)
     return new_type
@@ -381,7 +340,7 @@ async def _get_printer_maintenance_internal(
     for maint_type in all_types:
         # Skip system types that don't apply to this printer model
         # (e.g., "Clean Carbon Rods" for H2D which has steel rods)
-        if maint_type.is_system and not _should_apply_to_printer(maint_type.name, printer.model):
+        if maint_type.is_system and not _should_apply_to_printer(maint_type.type_code, printer.model):
             continue
 
         item = existing_items.get(maint_type.id)
@@ -403,8 +362,13 @@ async def _get_printer_maintenance_internal(
 
             # Check if this type applies to this printer's model
             import json as _json
+
             try:
-                type_models = _json.loads(maint_type.printer_models) if isinstance(maint_type.printer_models, str) else (maint_type.printer_models or ["*"])
+                type_models = (
+                    _json.loads(maint_type.printer_models)
+                    if isinstance(maint_type.printer_models, str)
+                    else (maint_type.printer_models or ["*"])
+                )
             except (ValueError, TypeError):
                 type_models = ["*"]
             if "*" not in type_models:
@@ -479,6 +443,7 @@ async def _get_printer_maintenance_internal(
                 printer_model=printer.model,
                 maintenance_type_id=maint_type.id,
                 maintenance_type_name=maint_type.name,
+                maintenance_type_code=maint_type.type_code,
                 maintenance_type_icon=maint_type.icon,
                 maintenance_type_wiki_url=getattr(maint_type, "wiki_url", None),
                 enabled=enabled,
@@ -712,6 +677,7 @@ async def perform_maintenance(
         printer_model=printer.model,
         maintenance_type_id=item.maintenance_type_id,
         maintenance_type_name=item.maintenance_type.name,
+        maintenance_type_code=item.maintenance_type.type_code,
         maintenance_type_icon=item.maintenance_type.icon,
         maintenance_type_wiki_url=getattr(item.maintenance_type, "wiki_url", None),
         enabled=item.enabled,
@@ -754,9 +720,9 @@ async def export_maintenance_history(
         .order_by(MaintenanceHistory.performed_at.desc())
     )
     if printer_id is not None:
-        query = query.join(PrinterMaintenance, MaintenanceHistory.printer_maintenance_id == PrinterMaintenance.id).where(
-            PrinterMaintenance.printer_id == printer_id
-        )
+        query = query.join(
+            PrinterMaintenance, MaintenanceHistory.printer_maintenance_id == PrinterMaintenance.id
+        ).where(PrinterMaintenance.printer_id == printer_id)
     result = await db.execute(query)
     items = result.scalars().all()
 
@@ -775,9 +741,19 @@ async def export_maintenance_history(
         cell.fill = header_fill
 
     for row_idx, h in enumerate(items, 2):
-        printer_name = h.printer_maintenance.printer.name if h.printer_maintenance and h.printer_maintenance.printer else ""
-        type_name = h.printer_maintenance.maintenance_type.name if h.printer_maintenance and h.printer_maintenance.maintenance_type else ""
-        performed_by = h.performed_by_user.username if h.performed_by_user else (h.performed_by_chat.label if h.performed_by_chat else "")
+        printer_name = (
+            h.printer_maintenance.printer.name if h.printer_maintenance and h.printer_maintenance.printer else ""
+        )
+        type_name = (
+            h.printer_maintenance.maintenance_type.name
+            if h.printer_maintenance and h.printer_maintenance.maintenance_type
+            else ""
+        )
+        performed_by = (
+            h.performed_by_user.username
+            if h.performed_by_user
+            else (h.performed_by_chat.label if h.performed_by_chat else "")
+        )
 
         ws.cell(row=row_idx, column=1, value=h.performed_at)
         ws.cell(row=row_idx, column=2, value=printer_name)
@@ -831,10 +807,7 @@ async def get_all_maintenance_history(
     # Build order clause
     if sort_by == "user":
         order_col = UserModel.username
-        query = (
-            select(MaintenanceHistory)
-            .outerjoin(UserModel, MaintenanceHistory.performed_by_user_id == UserModel.id)
-        )
+        query = select(MaintenanceHistory).outerjoin(UserModel, MaintenanceHistory.performed_by_user_id == UserModel.id)
     else:
         order_col = MaintenanceHistory.performed_at
         query = select(MaintenanceHistory)
@@ -850,8 +823,7 @@ async def get_all_maintenance_history(
         query = query.where(PrinterMaintenance.printer_id == printer_id)
 
     result = await db.execute(
-        query
-        .options(
+        query.options(
             selectinload(MaintenanceHistory.performed_by_user),
             selectinload(MaintenanceHistory.performed_by_chat),
             selectinload(MaintenanceHistory.printer_maintenance).selectinload(PrinterMaintenance.maintenance_type),
@@ -870,8 +842,12 @@ async def get_all_maintenance_history(
                 "performed_at": h.performed_at.isoformat() if h.performed_at else None,
                 "hours_at_maintenance": h.hours_at_maintenance,
                 "notes": h.notes,
-                "printer_name": h.printer_maintenance.printer.name if h.printer_maintenance and h.printer_maintenance.printer else None,
-                "maintenance_type_name": h.printer_maintenance.maintenance_type.name if h.printer_maintenance and h.printer_maintenance.maintenance_type else None,
+                "printer_name": h.printer_maintenance.printer.name
+                if h.printer_maintenance and h.printer_maintenance.printer
+                else None,
+                "maintenance_type_name": h.printer_maintenance.maintenance_type.name
+                if h.printer_maintenance and h.printer_maintenance.maintenance_type
+                else None,
                 "performed_by_user_id": h.performed_by_user_id,
                 "performed_by_username": h.performed_by_user.username if h.performed_by_user else None,
                 "performed_by_chat_id": h.performed_by_chat_id,

@@ -2038,6 +2038,7 @@ export interface UpdateStatus {
 export interface MaintenanceType {
   id: number;
   name: string;
+  type_code: string | null;
   description: string | null;
   default_interval_hours: number;
   interval_type: 'hours' | 'days';  // "hours" = print hours, "days" = calendar days
@@ -2065,6 +2066,7 @@ export interface MaintenanceStatus {
   printer_model: string | null;
   maintenance_type_id: number;
   maintenance_type_name: string;
+  maintenance_type_code: string | null;
   maintenance_type_icon: string | null;
   maintenance_type_wiki_url: string | null;  // Custom wiki URL from type
   enabled: boolean;
@@ -5251,4 +5253,3 @@ export const macrosApi = {
   updateMacro: (id: number, data: MacroUpdate) => request<Macro>('/macros/' + id, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteMacro: (id: number) => request<{ message: string }>('/macros/' + id, { method: 'DELETE' }),
 };
-

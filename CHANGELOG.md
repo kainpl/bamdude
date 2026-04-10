@@ -31,6 +31,13 @@ All notable changes to BamDude will be documented in this file.
 - **Delete button on provider card** — notification provider delete button added to card header alongside edit and toggle
 - **Printer defaults** — `cleanup_after_print` default changed to `false` (files moved to cache by default), `mqtt_connection_timeout` default changed to 900s
 
+### Maintenance Type Codes
+
+- **`type_code` column** — stable, locale-independent identifier for maintenance types (e.g. `clean_carbon_rods`, `check_belt_tension`)
+- **System types** get predefined codes, custom types get `custom_{id}`
+- **Simplified matching** — rod/rail filtering, wiki URL lookup, and default type seeding now use `type_code` instead of reverse-mapping translated names
+- **Migration** — backfills codes for existing types (EN + UK name matching)
+
 ### Tooling
 
 - **`scripts/set_version.js`** — sets version across `backend/app/core/config.py`, `frontend/package.json`, and `pyproject.toml` in one command

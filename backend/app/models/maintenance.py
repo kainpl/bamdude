@@ -23,6 +23,9 @@ class MaintenanceType(Base):
     wiki_url: Mapped[str | None] = mapped_column(String(500))  # Documentation link
     # Which printer models this type applies to — JSON array, e.g. '["*"]' or '["X1C", "P1S"]'
     printer_models: Mapped[str] = mapped_column(Text, default='["*"]')
+    type_code: Mapped[str | None] = mapped_column(
+        String(50), unique=True, nullable=True, index=True
+    )  # Stable identifier
     is_system: Mapped[bool] = mapped_column(Boolean, default=False)  # Pre-defined vs custom
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)  # Hidden/removed type
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -75,9 +78,7 @@ class MaintenanceHistory(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Who performed this action
-    performed_by_user_id: Mapped[int | None] = mapped_column(
-        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
-    )
+    performed_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     performed_by_chat_id: Mapped[int | None] = mapped_column(
         ForeignKey("telegram_chats.id", ondelete="SET NULL"), nullable=True
     )

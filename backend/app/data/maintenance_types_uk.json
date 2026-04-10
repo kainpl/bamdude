@@ -1,37 +1,37 @@
 {
-  "Clean Carbon Rods": {
+  "clean_carbon_rods": {
     "name": "Очистити карбонові штанги",
     "description": "Протріть карбонові штанги сухою тканиною"
   },
-  "Lubricate Steel Rods": {
+  "lubricate_steel_rods": {
     "name": "Змастити сталеві штанги",
     "description": "Нанесіть мастило на сталеві штанги для плавного руху"
   },
-  "Clean Steel Rods": {
+  "clean_steel_rods": {
     "name": "Очистити сталеві штанги",
     "description": "Протріть сталеві штанги сухою тканиною"
   },
-  "Lubricate Linear Rails": {
+  "lubricate_linear_rails": {
     "name": "Змастити лінійні рейки",
     "description": "Нанесіть мастило на лінійні рейки для плавного руху"
   },
-  "Clean Linear Rails": {
+  "clean_linear_rails": {
     "name": "Очистити лінійні рейки",
     "description": "Протріть лінійні рейки для видалення пилу та сміття"
   },
-  "Clean Nozzle/Hotend": {
+  "clean_nozzle": {
     "name": "Очистити сопло/хотенд",
     "description": "Очистіть зовнішню частину сопла та виконайте cold pull за потреби"
   },
-  "Check Belt Tension": {
+  "check_belt_tension": {
     "name": "Перевірити натяг ременів",
     "description": "Перевірте та відрегулюйте натяг ременів осей X/Y"
   },
-  "Clean Build Plate": {
+  "clean_build_plate": {
     "name": "Очистити робочий стіл",
     "description": "Глибоке очищення робочого столу ІПС або милом"
   },
-  "Check PTFE Tube": {
+  "check_ptfe_tube": {
     "name": "Перевірити PTFE-трубку",
     "description": "Огляньте PTFE-трубку на знос або зміну кольору"
   }
