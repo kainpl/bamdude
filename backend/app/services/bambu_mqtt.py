@@ -646,7 +646,11 @@ class BambuMQTTClient:
             try:
                 fun_val = payload["fun"]
                 fun_int = fun_val if isinstance(fun_val, int) else int(fun_val, 16)
-                self.state.developer_mode = (fun_int & 0x20000000) == 0
+                new_dev_mode = (fun_int & 0x20000000) == 0
+                if new_dev_mode != self.state.developer_mode:
+                    self.state.developer_mode = new_dev_mode
+                    if self.on_state_change:
+                        self.on_state_change(self.state)
             except (ValueError, TypeError):
                 pass
 
@@ -2430,7 +2434,11 @@ class BambuMQTTClient:
             try:
                 fun_val = data["fun"]
                 fun_int = fun_val if isinstance(fun_val, int) else int(fun_val, 16)
-                self.state.developer_mode = (fun_int & 0x20000000) == 0
+                new_dev_mode = (fun_int & 0x20000000) == 0
+                if new_dev_mode != self.state.developer_mode:
+                    self.state.developer_mode = new_dev_mode
+                    if self.on_state_change:
+                        self.on_state_change(self.state)
             except (ValueError, TypeError):
                 pass
         elif self.state.developer_mode is None and not self._dev_mode_probed:
@@ -2454,7 +2462,9 @@ class BambuMQTTClient:
                 self._dev_mode_probe_failures += 1
                 logger.warning(
                     "[%s] Developer mode probe timed out after %.0fs (attempt %d)",
-                    self.serial_number, elapsed, self._dev_mode_probe_failures,
+                    self.serial_number,
+                    elapsed,
+                    self._dev_mode_probe_failures,
                 )
                 self._dev_mode_probe_seq = None
                 if self._dev_mode_probe_failures >= 2:
@@ -2867,7 +2877,13 @@ class BambuMQTTClient:
                         # Single-nozzle printers (P1S, A1, X1C) always need ams_id=255.
                         # Only H2D series uses the actual tray_id (254 for deputy nozzle).
                         # Flat mapping must use -1 (firmware doesn't accept raw 254/255).
-                        _is_h2d = self.model and self.model.upper().strip() in ("H2D", "H2D PRO", "H2DPRO", "H2C", "H2S")
+                        _is_h2d = self.model and self.model.upper().strip() in (
+                            "H2D",
+                            "H2D PRO",
+                            "H2DPRO",
+                            "H2C",
+                            "H2S",
+                        )
                         ext_ams_id = tray_id if _is_h2d else 255
                         flat_ams_mapping.append(-1)
                         ams_mapping2.append({"ams_id": ext_ams_id, "slot_id": 0})

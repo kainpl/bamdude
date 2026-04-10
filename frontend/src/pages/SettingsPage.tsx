@@ -1229,11 +1229,13 @@ export function SettingsPage() {
                     onChange={(e) => handleDefaultViewChange(e.target.value)}
                     className="w-full px-3 py-2 pr-10 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none appearance-none cursor-pointer"
                   >
-                    {defaultNavItems.map((item) => (
-                      <option key={item.id} value={item.to}>
-                        {t(item.labelKey)}
-                      </option>
-                    ))}
+                    {defaultNavItems
+                      .filter((item) => ['printers', 'archives', 'queue', 'stats', 'maintenance', 'projects', 'inventory', 'files'].includes(item.id))
+                      .map((item) => (
+                        <option key={item.id} value={item.to}>
+                          {t(item.labelKey)}
+                        </option>
+                      ))}
                   </select>
                   <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
                 </div>

@@ -19,9 +19,9 @@ class Printer(Base):
     nozzle_count: Mapped[int] = mapped_column(default=1)  # 1 or 2, auto-detected from MQTT
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     auto_archive: Mapped[bool] = mapped_column(Boolean, default=True)
-    cleanup_after_print: Mapped[bool] = mapped_column(Boolean, default=True)  # Delete files from SD after print
+    cleanup_after_print: Mapped[bool] = mapped_column(Boolean, default=False)  # Delete files from SD after print
     mqtt_connection_timeout: Mapped[int] = mapped_column(
-        default=300
+        default=900
     )  # How long MQTT connection is considered valid (seconds); 0 = disabled
     print_hours_offset: Mapped[float] = mapped_column(Float, default=0.0)  # Baseline hours to add
     runtime_seconds: Mapped[int] = mapped_column(default=0)  # Accumulated active runtime (RUNNING/PAUSE states)

@@ -362,7 +362,7 @@ export default {
       locationPlaceholder: 'e.g., Workshop, Office, Basement',
       autoArchiveLabel: 'Auto-archive completed prints',
       autoArchiveWarning: 'Without auto-archive, print history, statistics, cost tracking, and activity calendar will not work for this printer.',
-      cleanupAfterPrintLabel: 'Delete print files from SD card after print (uncheck to move to cache instead)',
+      cleanupAfterPrintLabel: 'Delete print files from SD card after print (by default files are moved to cache)',
       mqttConnectionTimeoutLabel: 'MQTT Connection Timeout',
       mqttConnectionTimeoutHint: 'seconds (0 = disabled)',
       staggerInterval: 'Stagger interval (minutes)',

@@ -134,17 +134,15 @@ async def cb_maintenance_done(callback: CallbackQuery, tg_chat: TelegramChat | N
 
     from backend.app.api.routes.maintenance import get_printer_total_hours
     from backend.app.core.database import async_session
+    from backend.app.models import telegram_chat as tc_mod
     from backend.app.models.maintenance import MaintenanceHistory, PrinterMaintenance
-    from backend.app.models.telegram_chat import TelegramChat
 
     async with async_session() as db:
         # Find TelegramChat for this callback
         tg_chat_id = callback.message.chat.id if callback.message else None
         db_chat = None
         if tg_chat_id:
-            chat_result = await db.execute(
-                select(TelegramChat).where(TelegramChat.chat_id == tg_chat_id)
-            )
+            chat_result = await db.execute(select(tc_mod.TelegramChat).where(tc_mod.TelegramChat.chat_id == tg_chat_id))
             db_chat = chat_result.scalar_one_or_none()
         result = await db.execute(
             select(PrinterMaintenance)

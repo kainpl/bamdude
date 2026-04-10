@@ -48,6 +48,8 @@ import {
   Flame,
   Gauge,
   ArrowLeftRight,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 
 import { useNavigate } from 'react-router-dom';
@@ -4954,12 +4956,14 @@ function AddPrinterModal({
     model: '',
     location: '',
     auto_archive: true,
-    cleanup_after_print: true,
-    mqtt_connection_timeout: 300,
+    cleanup_after_print: false,
+    mqtt_connection_timeout: 900,
     stagger_interval_minutes: 0,
     swap_mode_enabled: false,
     auto_light_off: false,
   });
+
+  const [showAccessCode, setShowAccessCode] = useState(false);
 
   // Discovery state
   const [discovering, setDiscovering] = useState(false);
@@ -5249,14 +5253,24 @@ function AddPrinterModal({
                 </div>
                 <div>
                   <label className="block text-sm text-bambu-gray mb-1">{t('printers.accessCode')}</label>
-                  <input
-                    type="password"
-                    required
-                    className="w-full px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                    value={form.access_code}
-                    onChange={(e) => setForm({ ...form, access_code: e.target.value })}
-                    placeholder={t('printers.modal.fromPrinterSettings')}
-                  />
+                  <div className="relative">
+                    <input
+                      type={showAccessCode ? 'text' : 'password'}
+                      required
+                      className="w-full px-3 py-1.5 pr-10 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                      value={form.access_code}
+                      onChange={(e) => setForm({ ...form, access_code: e.target.value })}
+                      placeholder={t('printers.modal.fromPrinterSettings')}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowAccessCode(!showAccessCode)}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-bambu-gray hover:text-white transition-colors"
+                      tabIndex={-1}
+                    >
+                      {showAccessCode ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
                 </div>
                 <div>
                   <label className="block text-sm text-bambu-gray mb-1">{t('printers.modal.modelOptional')}</label>
@@ -5621,12 +5635,13 @@ function EditPrinterModal({
     model: printer.model || '',
     location: printer.location || '',
     auto_archive: printer.auto_archive,
-    cleanup_after_print: printer.cleanup_after_print ?? true,
-    mqtt_connection_timeout: printer.mqtt_connection_timeout ?? 300,
+    cleanup_after_print: printer.cleanup_after_print ?? false,
+    mqtt_connection_timeout: printer.mqtt_connection_timeout ?? 900,
     stagger_interval_minutes: printer.stagger_interval_minutes ?? 0,
     swap_mode_enabled: printer.swap_mode_enabled ?? false,
     auto_light_off: printer.auto_light_off ?? false,
   });
+  const [showAccessCode, setShowAccessCode] = useState(false);
 
   const updateMutation = useMutation({
     mutationFn: (data: Partial<PrinterCreate>) => api.updatePrinter(printer.id, data),
@@ -5716,13 +5731,23 @@ function EditPrinterModal({
                 </div>
                 <div>
                   <label className="block text-sm text-bambu-gray mb-1">{t('printers.accessCode')}</label>
-                  <input
-                    type="password"
-                    className="w-full px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                    value={form.access_code}
-                    onChange={(e) => setForm({ ...form, access_code: e.target.value })}
-                    placeholder={t('printers.accessCodePlaceholder')}
-                  />
+                  <div className="relative">
+                    <input
+                      type={showAccessCode ? 'text' : 'password'}
+                      className="w-full px-3 py-1.5 pr-10 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                      value={form.access_code}
+                      onChange={(e) => setForm({ ...form, access_code: e.target.value })}
+                      placeholder={t('printers.accessCodePlaceholder')}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowAccessCode(!showAccessCode)}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-bambu-gray hover:text-white transition-colors"
+                      tabIndex={-1}
+                    >
+                      {showAccessCode ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
                 </div>
                 <div>
                   <label className="block text-sm text-bambu-gray mb-1">{t('printers.model')}</label>

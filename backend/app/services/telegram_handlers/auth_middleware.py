@@ -124,7 +124,23 @@ class TelegramAuthMiddleware(BaseMiddleware):
         )
         db.add(tg_chat)
         await db.commit()
+        await db.refresh(tg_chat)
         logger.info("Auto-registered Telegram chat %s (label=%s)", chat_id, label)
+
+        # Notify frontend via WebSocket
+        from backend.app.core.websocket import ws_manager
+
+        await ws_manager.broadcast(
+            {
+                "type": "telegram_chat_registered",
+                "data": {
+                    "id": tg_chat.id,
+                    "chat_id": tg_chat.chat_id,
+                    "label": tg_chat.label,
+                },
+            }
+        )
+
         return tg_chat
 
     @staticmethod

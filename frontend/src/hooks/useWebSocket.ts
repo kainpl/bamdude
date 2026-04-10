@@ -306,6 +306,10 @@ export function useWebSocket() {
         }));
         break;
 
+      case 'telegram_chat_registered':
+        queryClient.invalidateQueries({ queryKey: ['telegram-chats'] });
+        break;
+
       case 'background_dispatch':
         window.dispatchEvent(
           new CustomEvent('background-dispatch', {

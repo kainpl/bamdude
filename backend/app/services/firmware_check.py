@@ -199,30 +199,28 @@ class FirmwareCheckService:
         return None
 
     async def _fetch_firmware_versions(self, api_key: str) -> FirmwareVersion | None:
-        """Fetch firmware version info, using wiki as primary source and download page as fallback."""
-        # Try wiki first (always has the latest version)
-        wiki_version = await self._fetch_version_from_wiki(api_key)
+        """Fetch firmware version info, using download page as primary source.
 
-        # Try download page (has download URLs, may lag behind wiki)
+        Only reports versions that have a download URL available, so users
+        are never shown an update they cannot actually install.
+        Wiki is used as a fallback only when the download page is unreachable.
+        """
+        # Try download page first (has download URLs — only show what's downloadable)
         download_info = await self._fetch_from_download_page(api_key)
 
-        if wiki_version:
-            # Wiki has the latest version — use it, attach download URL if available
-            download_url = ""
-            release_notes = None
-            if download_info and download_info.version == wiki_version:
-                download_url = download_info.download_url
-                release_notes = download_info.release_notes
-            return FirmwareVersion(
-                version=wiki_version,
-                download_url=download_url,
-                release_notes=release_notes,
-            )
-
-        if download_info:
+        if download_info and download_info.download_url:
             return download_info
 
-        logger.warning("Could not fetch firmware info for %s from wiki or download page", api_key)
+        # Fallback: wiki (no download URL, but at least shows the version)
+        wiki_version = await self._fetch_version_from_wiki(api_key)
+        if wiki_version:
+            return FirmwareVersion(
+                version=wiki_version,
+                download_url="",
+                release_notes=None,
+            )
+
+        logger.warning("Could not fetch firmware info for %s from download page or wiki", api_key)
         return None
 
     async def get_latest_version(self, model: str) -> FirmwareVersion | None:

@@ -164,6 +164,13 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                             >
                                 <Edit2 className="w-4 h-4"/>
                             </button>
+                            <button
+                                onClick={() => setShowDeleteConfirm(true)}
+                                className="p-1.5 text-bambu-gray hover:text-red-400 hover:bg-bambu-dark-tertiary rounded transition-colors"
+                                title={t('notifications.delete')}
+                            >
+                                <Trash2 className="w-4 h-4"/>
+                            </button>
                         </div>
                     </div>
 
@@ -266,26 +273,28 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                         )}
                     </div>
 
-                    {/* Test Button */}
-                    <div className="mb-3">
-                        <Button
-                            size="sm"
-                            variant="secondary"
-                            disabled={testMutation.isPending}
-                            onClick={() => {
-                                setTestResult(null);
-                                testMutation.mutate();
-                            }}
-                            className="w-full"
-                        >
-                            {testMutation.isPending ? (
-                                <Loader2 className="w-4 h-4 animate-spin"/>
-                            ) : (
-                                <Send className="w-4 h-4"/>
-                            )}
-                            {t('notifications.sendTestNotification')}
-                        </Button>
-                    </div>
+                    {/* Test Button (not for Telegram) */}
+                    {!isTelegram && (
+                        <div className="mb-3">
+                            <Button
+                                size="sm"
+                                variant="secondary"
+                                disabled={testMutation.isPending}
+                                onClick={() => {
+                                    setTestResult(null);
+                                    testMutation.mutate();
+                                }}
+                                className="w-full"
+                            >
+                                {testMutation.isPending ? (
+                                    <Loader2 className="w-4 h-4 animate-spin"/>
+                                ) : (
+                                    <Send className="w-4 h-4"/>
+                                )}
+                                {t('notifications.sendTestNotification')}
+                            </Button>
+                        </div>
+                    )}
 
                     {/* Test Result */}
                     {testResult && (

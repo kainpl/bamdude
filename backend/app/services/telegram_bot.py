@@ -174,6 +174,13 @@ async def stop_telegram_bot() -> None:
     logger.info("Telegram bot stopped")
 
 
+async def restart_telegram_bot() -> None:
+    """Restart the Telegram bot (stop if running, then start with fresh config)."""
+    logger.info("Restarting Telegram bot...")
+    await stop_telegram_bot()
+    await start_telegram_bot()
+
+
 async def send_message(chat_id: str | int, text: str, **kwargs) -> bool:
     """Send a text message via the bot."""
     if not _bot:

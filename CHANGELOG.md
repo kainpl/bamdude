@@ -6,6 +6,38 @@ All notable changes to BamDude will be documented in this file.
 
 ---
 
+## [0.3.2] - 2026-04-10
+
+### Telegram Bot Hot-Reload
+
+- **Auto-restart on provider changes** — creating, updating, or deleting a Telegram notification provider automatically restarts the bot (no app restart needed)
+- **Per-chat notification routing** — notifications are now sent to all active `telegram_chats` subscribed to the event type, instead of requiring `chat_id` in provider config
+- **WebSocket chat registration** — new Telegram chat auto-registration broadcasts `telegram_chat_registered` via WebSocket, frontend refreshes chat list in real-time
+- **Removed test buttons** — "Test Configuration" and "Send Test Notification" buttons hidden for Telegram providers (bot manages its own lifecycle)
+
+### Firmware Update Source Fix
+
+- **Download page as primary source** — firmware version check now uses bambulab.com download page instead of wiki, preventing "update available" when no download URL exists
+- **Download URL validation** — firmware upload preparation now checks for download URL availability before allowing update
+
+### Developer Mode WebSocket
+
+- **Real-time developer mode status** — `developer_mode` changes from MQTT `fun` field and probe responses now trigger `on_state_change`, pushing updates to frontend via WebSocket immediately
+
+### UI Improvements
+
+- **Password visibility toggle** — added eye/eye-off toggle on Setup page (admin password + confirm), Login page, and printer Add/Edit modals (access code)
+- **Default view filter** — removed Profiles, Notifications, and Settings from "Default View" dropdown (kept: Printers, Archives, Queue, Stats, Maintenance, Projects, Inventory, Files)
+- **Delete button on provider card** — notification provider delete button added to card header alongside edit and toggle
+- **Printer defaults** — `cleanup_after_print` default changed to `false` (files moved to cache by default), `mqtt_connection_timeout` default changed to 900s
+
+### Tooling
+
+- **`scripts/set_version.js`** — sets version across `backend/app/core/config.py`, `frontend/package.json`, and `pyproject.toml` in one command
+- **MCP config fix** — `.mcp.json` updated with `cmd /c` wrapper for Windows compatibility
+
+---
+
 ## [0.3.1.1] - 2026-04-07
 
 ### Per-Printer Queue Architecture

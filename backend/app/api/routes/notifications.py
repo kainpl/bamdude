@@ -164,6 +164,11 @@ async def create_notification_provider(
 
     logger.info("Created notification provider: %s (%s)", provider.name, provider.provider_type)
 
+    if provider.provider_type == "telegram":
+        from backend.app.services.telegram_bot import restart_telegram_bot
+
+        await restart_telegram_bot()
+
     return _provider_to_dict(provider)
 
 
@@ -417,6 +422,11 @@ async def update_notification_provider(
 
     logger.info("Updated notification provider: %s", provider.name)
 
+    if provider.provider_type == "telegram":
+        from backend.app.services.telegram_bot import restart_telegram_bot
+
+        await restart_telegram_bot()
+
     return _provider_to_dict(provider)
 
 
@@ -434,10 +444,16 @@ async def delete_notification_provider(
         raise HTTPException(status_code=404, detail="Notification provider not found")
 
     name = provider.name
+    provider_type = provider.provider_type
     await db.delete(provider)
     await db.commit()
 
     logger.info("Deleted notification provider: %s", name)
+
+    if provider_type == "telegram":
+        from backend.app.services.telegram_bot import restart_telegram_bot
+
+        await restart_telegram_bot()
 
     return {"message": f"Notification provider '{name}' deleted"}
 
