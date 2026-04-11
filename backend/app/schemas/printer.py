@@ -21,6 +21,9 @@ class PrinterBase(BaseModel):
     external_camera_type: str | None = None  # "mjpeg", "rtsp", "snapshot", "usb"
     external_camera_enabled: bool = False
     camera_rotation: int = 0  # 0, 90, 180, 270 degrees
+    stagger_interval_minutes: int = 0
+    swap_mode_enabled: bool = False
+    auto_light_off: bool = False
 
 
 class PrinterCreate(PrinterBase):
@@ -279,6 +282,8 @@ class PrinterStatus(BaseModel):
     firmware_version: str | None = None
     # Developer LAN mode: True = enabled, False = disabled (MQTT encryption), None = unknown
     developer_mode: bool | None = None
+    # Currently executing macro name (None = no macro running)
+    macro_executing: str | None = None
     # Queue: user has acknowledged plate is cleared for next queued print
     plate_cleared: bool = False
     # AMS drying support

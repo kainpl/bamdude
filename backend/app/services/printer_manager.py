@@ -258,6 +258,9 @@ class PrinterManager:
             if self._on_layer_change:
                 self._schedule_async(self._on_layer_change(printer_id, layer_num))
 
+        def on_macro_complete(macro_name: str, status: str):
+            self._schedule_async(self._broadcast_macro_complete(printer_id, macro_name, status))
+
         client = BambuMQTTClient(
             ip_address=printer.ip_address,
             serial_number=printer.serial_number,
@@ -268,6 +271,7 @@ class PrinterManager:
             on_print_complete=on_print_complete,
             on_ams_change=on_ams_change,
             on_layer_change=on_layer_change,
+            on_macro_complete=on_macro_complete,
         )
 
         client.connect()
@@ -561,6 +565,25 @@ class PrinterManager:
 
         return result
 
+    async def _broadcast_macro_complete(self, printer_id: int, macro_name: str, status: str):
+        """Broadcast macro completion via WebSocket."""
+        from backend.app.core.websocket import ws_manager
+
+        printer_name = self._printer_info.get(printer_id)
+        await ws_manager.broadcast(
+            {
+                "type": "macro_executed",
+                "data": {
+                    "printer_id": printer_id,
+                    "printer_name": printer_name.name if printer_name else str(printer_id),
+                    "macro_name": macro_name,
+                    "status": status,
+                    "success": status == "completed",
+                    "message": f"Macro '{macro_name}' {status}",
+                },
+            }
+        )
+
 
 def get_derived_status_name(state: PrinterState, model: str | None = None) -> str | None:
     """
@@ -573,6 +596,10 @@ def get_derived_status_name(state: PrinterState, model: str | None = None) -> st
         state: The printer state to analyze
         model: Optional printer model for model-specific workarounds
     """
+    # Macro executing — show macro name instead of default "Printing" text
+    if state.macro_executing and state.stg_cur == 0:
+        return f"Executing: {state.macro_executing}"
+
     # A1/A1 Mini firmware bug: some versions report stg_cur=0 when idle
     # Only correct this specific case (IDLE + stg_cur=0) for affected models
     if state.state == "IDLE" and state.stg_cur == 0 and has_stg_cur_idle_bug(model):

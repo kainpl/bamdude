@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { Printer, Archive, Calendar, BarChart3, Cloud, Settings, Sun, Moon, ChevronLeft, ChevronRight, Keyboard, Github, GripVertical, ArrowUpCircle, Wrench, FolderKanban, FolderOpen, X, Menu, Info, Plug, Bug, LogOut, Key, Loader2, Disc3, ShieldAlert, Bell, type LucideIcon } from 'lucide-react';
+import { Printer, Archive, Calendar, BarChart3, Cloud, Settings, Sun, Moon, ChevronLeft, ChevronRight, Keyboard, GripVertical, ArrowUpCircle, Wrench, FolderKanban, FolderOpen, X, Menu, Info, Plug, Bug, LogOut, Key, Loader2, Disc3, ShieldAlert, Bell, type LucideIcon } from 'lucide-react';
+import { GitHubIcon } from './BrandIcons';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '../contexts/ThemeContext';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
@@ -725,9 +726,9 @@ export function Layout() {
                   target="_blank"
                   rel="noopener noreferrer"
                   className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white"
-                  title={t('nav.viewOnGithub')}
+                  title={t('nav.viewOnGitHubIcon')}
                 >
-                  <Github className="w-5 h-5" />
+                  <GitHubIcon className="w-5 h-5" />
                 </a>
                 <button
                   onClick={() => setShowShortcuts(true)}
@@ -829,9 +830,9 @@ export function Layout() {
                 target="_blank"
                 rel="noopener noreferrer"
                 className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white"
-                title={t('nav.viewOnGithub')}
+                title={t('nav.viewOnGitHubIcon')}
               >
-                <Github className="w-5 h-5" />
+                <GitHubIcon className="w-5 h-5" />
               </a>
               <button
                 onClick={() => setShowShortcuts(true)}

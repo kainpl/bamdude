@@ -180,6 +180,8 @@ class PrinterState:
     # Developer LAN mode: parsed from MQTT "fun" field bit 0x20000000
     # True = dev mode ON (no encryption), False = dev mode OFF (encryption required), None = unknown
     developer_mode: bool | None = None
+    # Currently executing macro name (set by macro execute endpoint, cleared on stg_cur 11→0)
+    macro_executing: str | None = None
 
 
 # Stage name mapping from BambuStudio DeviceManager.cpp
@@ -283,6 +285,7 @@ class BambuMQTTClient:
         on_print_complete: Callable[[dict], None] | None = None,
         on_ams_change: Callable[[list], None] | None = None,
         on_layer_change: Callable[[int], None] | None = None,
+        on_macro_complete: Callable[[str, str], None] | None = None,
     ):
         self.ip_address = ip_address
         self.serial_number = serial_number
@@ -293,6 +296,7 @@ class BambuMQTTClient:
         self.on_print_complete = on_print_complete
         self.on_ams_change = on_ams_change
         self.on_layer_change = on_layer_change
+        self.on_macro_complete = on_macro_complete
 
         self.state = PrinterState()
         self._client: mqtt.Client | None = None
@@ -323,6 +327,10 @@ class BambuMQTTClient:
         self._sequence_id: int = 0
         self._pending_kprofile_response: asyncio.Event | None = None
         self._kprofile_response_data: list | None = None
+
+        # GCode ACK listeners: sequence_id -> (threading.Event, result_dict)
+        # Used by macro execute to wait for printer ACK before returning HTTP response
+        self._ack_listeners: dict[str, tuple[threading.Event, dict]] = {}
 
         # Xcam hold timers - OrcaSlicer pattern: ignore incoming data for 3 seconds after command
         # Key: module_name, Value: timestamp when command was sent
@@ -656,6 +664,33 @@ class BambuMQTTClient:
 
         if "print" in payload:
             print_data = payload["print"]
+            # Handle gcode_line ACK — resolve ACK listener for HTTP wait
+            if isinstance(print_data, dict) and print_data.get("command") == "gcode_line" and "result" in print_data:
+                seq_id = print_data.get("sequence_id")
+                result = print_data.get("result", "")
+                reason = print_data.get("reason", "")
+                logger.info(
+                    "[%s][MACRO] gcode_line ACK: seq=%s, result=%s, reason=%s, macro=%s",
+                    self.serial_number,
+                    seq_id,
+                    result,
+                    reason,
+                    self.state.macro_executing,
+                )
+                if seq_id and seq_id in self._ack_listeners:
+                    event, result_dict = self._ack_listeners.pop(seq_id)
+                    result_dict["success"] = result == "success"
+                    result_dict["reason"] = reason
+                    event.set()
+                    # If ACK failed, clear macro state immediately
+                    if result != "success" and self.state.macro_executing:
+                        macro_name = self.state.macro_executing
+                        self.state.macro_executing = None
+                        logger.warning(
+                            "[%s][MACRO] Printer rejected GCode, macro '%s' failed", self.serial_number, macro_name
+                        )
+                        if self.on_macro_complete:
+                            self.on_macro_complete(macro_name, "failed")
 
             # Check if xcam is nested inside print data
             if "xcam" in print_data:
@@ -1735,12 +1770,51 @@ class BambuMQTTClient:
         # Calibration stage tracking
         if "stg_cur" in data:
             new_stg = data["stg_cur"]
-            # Always log ANY stg_cur change for debugging filament operations
             if new_stg != self.state.stg_cur:
                 logger.debug(
-                    f"[{self.serial_number}] stg_cur changed: {self.state.stg_cur} -> {new_stg} ({get_stage_name(new_stg)})"
+                    "[%s] stg_cur: %s (%s) -> %s (%s)",
+                    self.serial_number,
+                    self.state.stg_cur,
+                    get_stage_name(self.state.stg_cur),
+                    new_stg,
+                    get_stage_name(new_stg),
                 )
-            self.state.stg_cur = new_stg
+
+            # Macro execution tracking via stg_cur transitions
+            # Start marker: stg_cur becomes 0 ("Printing") via claim_action:0
+            # End marker: stg_cur becomes -1 or 255 (idle) via claim_action:{idle_stg}
+            if self.state.macro_executing:
+                if self.state.stg_cur != 0 and new_stg == 0:
+                    # Macro started executing — push state to frontend
+                    logger.info(
+                        "[%s][MACRO] Execution started — stg_cur %s->0, macro='%s'",
+                        self.serial_number,
+                        self.state.stg_cur,
+                        self.state.macro_executing,
+                    )
+                    self.state.stg_cur = new_stg
+                    if self.on_state_change:
+                        self.on_state_change(self.state)
+                elif self.state.stg_cur == 0 and new_stg != 0:
+                    # Macro completed — stg_cur left 0 (goes to -1 or 255 = idle)
+                    macro_name = self.state.macro_executing
+                    self.state.macro_executing = None
+                    self.state.stg_cur = new_stg
+                    logger.info(
+                        "[%s][MACRO] Execution completed — stg_cur 0->%s, macro='%s'",
+                        self.serial_number,
+                        new_stg,
+                        macro_name,
+                    )
+                    if self.on_macro_complete:
+                        self.on_macro_complete(macro_name, "completed")
+                    if self.on_state_change:
+                        self.on_state_change(self.state)
+                    # Skip normal stg_cur assignment below — already set
+                    new_stg = None
+
+            if new_stg is not None:
+                self.state.stg_cur = new_stg
         if "stg" in data:
             self.state.stg = data["stg"] if isinstance(data["stg"], list) else []
 
@@ -2491,7 +2565,7 @@ class BambuMQTTClient:
             logger.debug("[%s] MQTT mapping field: %s", self.serial_number, data["mapping"])
 
         # Log state transitions for debugging
-        if "gcode_state" in data:
+        if "gcode_state" in data and self.state.state != self._previous_gcode_state:
             logger.debug(
                 f"[{self.serial_number}] gcode_state: {self._previous_gcode_state} -> {self.state.state}, "
                 f"file: {self.state.gcode_file}, subtask: {self.state.subtask_name}"
@@ -2915,6 +2989,20 @@ class BambuMQTTClient:
                         self.serial_number,
                     )
 
+            # No-AMS external spool fix (PR #2 by latsss):
+            # On printers without a physical AMS, firmware rejects -1 (unmapped)
+            # and 254 (virtual tray) in ams_mapping with 0700_8012 "Failed to get
+            # AMS mapping table". Fix: remap -1→0 and omit ams_mapping2 entirely.
+            # H2D excluded — use_ams controls nozzle routing on those.
+            no_ams_printer = not use_ams and not is_h2d and not self.state.raw_data.get("ams")
+            if no_ams_printer and flat_ams_mapping:
+                flat_ams_mapping = [0 if v == -1 else v for v in flat_ams_mapping]
+                logger.info(
+                    "[%s] No AMS detected — remapped external spool: ams_mapping=%s, omitting ams_mapping2",
+                    self.serial_number,
+                    flat_ams_mapping,
+                )
+
             command = {
                 "print": {
                     "sequence_id": "20000",
@@ -2958,7 +3046,8 @@ class BambuMQTTClient:
             # Add AMS mapping if provided
             if ams_mapping is not None:
                 command["print"]["ams_mapping"] = flat_ams_mapping
-                command["print"]["ams_mapping2"] = ams_mapping2
+                if not no_ams_printer:
+                    command["print"]["ams_mapping2"] = ams_mapping2
 
             logger.info("[%s] Sending print command: %s", self.serial_number, json.dumps(command))
             self._client.publish(self.topic_publish, json.dumps(command), qos=1)
@@ -3759,10 +3848,17 @@ class BambuMQTTClient:
 
         self._sequence_id += 1
         command = {"print": {"command": "gcode_line", "param": gcode, "sequence_id": str(self._sequence_id)}}
-        # Use QoS 1 for reliable delivery (at least once)
-        self._client.publish(self.topic_publish, json.dumps(command), qos=1)
-        logger.debug("[%s] Sent G-code: %s...", self.serial_number, gcode[:50])
+        self.send_command(command)
+        logger.debug("[%s] Sent G-code (seq=%d): %s...", self.serial_number, self._sequence_id, gcode[:50])
         return True
+
+    def register_ack_listener(self, seq_id: str, event: threading.Event, result: dict):
+        """Register a one-shot ACK listener for a gcode_line command.
+
+        When the printer responds with result for this sequence_id,
+        result["success"] and result["reason"] are set and event is signaled.
+        """
+        self._ack_listeners[seq_id] = (event, result)
 
     def set_bed_temperature(self, target: int) -> bool:
         """Set the bed target temperature.

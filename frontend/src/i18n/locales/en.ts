@@ -229,6 +229,10 @@ export default {
     reconnect: 'Reconnect',
     mqttDebug: 'MQTT Debug',
     maintenanceHistory: 'Maintenance History',
+    macros: 'Macros',
+    macroLines: 'lines',
+    macroAwaitingResponse: 'Executing...',
+    noMacros: 'No macros available for this printer',
     calibration: {
       menuItem: 'Calibration',
       title: 'Printer Calibration',
@@ -1769,6 +1773,9 @@ export default {
     macroBuiltIn: 'Built-in',
     macroCustom: 'Custom',
     macroDeleteConfirm: 'Delete this custom macro?',
+    macroLines: 'lines',
+    macroAwaitingResponse: 'Awaiting printer response...',
+    noMacros: 'No macros available for this printer',
     macroEvents: {
       swap_mode_start: 'Swap Mode. Start',
       swap_mode_change_table: 'Swap Mode. Change Table',

@@ -53,9 +53,9 @@ import {
 } from 'lucide-react';
 
 import { useNavigate } from 'react-router-dom';
-import { api, discoveryApi, firmwareApi } from '../api/client';
+import { api, discoveryApi, firmwareApi, macrosApi } from '../api/client';
 import { formatDateOnly, formatETA, formatDuration, parseUTCDate } from '../utils/date';
-import type { Printer, PrinterCreate, AMSUnit, DiscoveredPrinter, FirmwareUpdateInfo, FirmwareUploadStatus, LinkedSpoolInfo, SpoolAssignment, HMSError } from '../api/client';
+import type { Printer, PrinterCreate, AMSUnit, DiscoveredPrinter, FirmwareUpdateInfo, FirmwareUploadStatus, LinkedSpoolInfo, SpoolAssignment, HMSError, Macro } from '../api/client';
 import { Card, CardContent } from '../components/Card';
 import { Button } from '../components/Button';
 import { ConfirmModal } from '../components/ConfirmModal';
@@ -1585,6 +1585,7 @@ function PrinterCard({
   const [showSkipObjectsModal, setShowSkipObjectsModal] = useState(false);
   const [showUploadForPrint, setShowUploadForPrint] = useState(false);
   const [showPrinterInfo, setShowPrinterInfo] = useState(false);
+  const [showMacrosMenu, setShowMacrosMenu] = useState(false);
   const closePrinterInfo = useCallback(() => setShowPrinterInfo(false), []);
   const [printAfterUpload, setPrintAfterUpload] = useState<{ id: number; filename: string } | null>(null);
   // AMS drying popover state: which AMS unit has the popover open
@@ -1651,6 +1652,19 @@ function PrinterCard({
     queryKey: ['printerStatus', printer.id],
     queryFn: () => api.getPrinterStatus(printer.id),
     refetchInterval: 30000, // Fallback polling, WebSocket handles real-time
+  });
+
+  // Check if any macros match this printer (for showing/hiding Macros menu item)
+  const { data: allMacros } = useQuery({
+    queryKey: ['macros'],
+    queryFn: macrosApi.getMacros,
+    staleTime: 60000,
+  });
+  const hasMatchingMacros = (allMacros || []).some((m: Macro) => {
+    if (!m.enabled || !m.gcode?.trim()) return false;
+    if (!m.printer_models.includes('*') && (!printer.model || !m.printer_models.includes(printer.model))) return false;
+    if (m.swap_mode_only && !printer.swap_mode_enabled) return false;
+    return true;
   });
 
   // Check for firmware updates (cached for 5 minutes, can be disabled in settings)
@@ -2446,27 +2460,26 @@ function PrinterCard({
                     );
                   })()}
                 </div>
-                <p className="text-sm text-bambu-gray">
+                <p className="text-sm text-bambu-gray flex items-center gap-1.5 flex-wrap">
+                  {printer.swap_mode_enabled && (
+                    <span className="text-[10px] px-1 py-0.5 bg-amber-500/20 text-amber-400 rounded inline-flex items-center gap-0.5" title={t('printers.swapMode')}>
+                      <ArrowLeftRight className="w-2.5 h-2.5" />
+                      SWAP
+                    </span>
+                  )}
                   {printer.model || 'Unknown Model'}
-                  {/* Nozzle Info - only in expanded */}
                   {viewMode === 'expanded' && status?.nozzles && status.nozzles[0]?.nozzle_diameter && (
-                    <span className="ml-1.5 text-bambu-gray" title={status.nozzles[0].nozzle_type || 'Nozzle'}>
+                    <span className="text-bambu-gray" title={status.nozzles[0].nozzle_type || 'Nozzle'}>
                       • {status.nozzles[0].nozzle_diameter}mm
                     </span>
                   )}
                   {viewMode === 'expanded' && maintenanceInfo && maintenanceInfo.total_print_hours > 0 && (
-                    <span className="ml-2 text-bambu-gray">
+                    <span className="text-bambu-gray">
                       <Clock className="w-3 h-3 inline-block mr-1" />
                       {Math.round(maintenanceInfo.total_print_hours)}h
                     </span>
                   )}
                 </p>
-                {printer.swap_mode_enabled && cardSize >= 2 && (
-                  <span className="text-xs px-1.5 py-0.5 bg-amber-500/20 text-amber-400 rounded flex items-center gap-1 w-fit" title={t('printers.swapMode')}>
-                    <ArrowLeftRight className="w-3 h-3" />
-                    SWAP
-                  </span>
-                )}
               </div>
             </div>
             {/* Menu button */}
@@ -2479,23 +2492,10 @@ function PrinterCard({
                 <MoreVertical className="w-4 h-4" />
               </Button>
               {showMenu && (
+                <>
+                <div className="fixed inset-0 z-10" onClick={() => setShowMenu(false)} />
                 <div className="absolute right-0 mt-2 max-w-58 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-lg z-20 whitespace-nowrap">
-                  <button
-                    className={`w-full px-4 py-2 text-left text-sm flex items-center gap-2 ${
-                      hasPermission('printers:update')
-                        ? 'hover:bg-bambu-dark-tertiary'
-                        : 'opacity-50 cursor-not-allowed'
-                    }`}
-                    onClick={() => {
-                      if (!hasPermission('printers:update')) return;
-                      setShowEditModal(true);
-                      setShowMenu(false);
-                    }}
-                    title={!hasPermission('printers:update') ? t('printers.permission.noEdit') : undefined}
-                  >
-                    <Pencil className="w-4 h-4" />
-                    {t('common.edit')}
-                  </button>
+                  {/* Info & Maintenance */}
                   <button
                     className="w-full px-4 py-2 text-left text-sm hover:bg-bambu-dark-tertiary flex items-center gap-2"
                     onClick={() => {
@@ -2506,6 +2506,48 @@ function PrinterCard({
                     <Info className="w-4 h-4" />
                     {t('printers.printerInformation')}
                   </button>
+                  <button
+                    className="w-full px-4 py-2 text-left text-sm hover:bg-bambu-dark-tertiary flex items-center gap-2"
+                    onClick={() => {
+                      navigate(`/maintenance?printer=${printer.id}`);
+                      setShowMenu(false);
+                    }}
+                  >
+                    <Wrench className="w-4 h-4" />
+                    {t('printers.maintenanceHistory')}
+                  </button>
+                  <div className="mx-3 my-1 border-t border-bambu-dark-tertiary" />
+                  {/* Calibration & Macros */}
+                  <button
+                    className={`w-full px-4 py-2 text-left text-sm hover:bg-bambu-dark-tertiary flex items-center gap-2 ${
+                      !hasPermission('printers:control') ? 'opacity-50 cursor-not-allowed' : ''
+                    }`}
+                    onClick={() => {
+                      if (!hasPermission('printers:control')) return;
+                      setShowCalibration(true);
+                      setShowMenu(false);
+                    }}
+                  >
+                    <Wrench className="w-4 h-4" />
+                    {t('printers.calibration.menuItem')}
+                  </button>
+                  {hasMatchingMacros && (
+                    <button
+                      className={`w-full px-4 py-2 text-left text-sm hover:bg-bambu-dark-tertiary flex items-center gap-2 ${
+                        !hasPermission('printers:control') ? 'opacity-50 cursor-not-allowed' : ''
+                      }`}
+                      onClick={() => {
+                        if (!hasPermission('printers:control')) return;
+                        setShowMacrosMenu(true);
+                        setShowMenu(false);
+                      }}
+                    >
+                      <Play className="w-4 h-4" />
+                      {t('printers.macros')}
+                    </button>
+                  )}
+                  <div className="mx-3 my-1 border-t border-bambu-dark-tertiary" />
+                  {/* Connection & Debug */}
                   <button
                     className="w-full px-4 py-2 text-left text-sm hover:bg-bambu-dark-tertiary flex items-center gap-2"
                     onClick={() => {
@@ -2526,28 +2568,23 @@ function PrinterCard({
                     <Terminal className="w-4 h-4" />
                     {t('printers.mqttDebug')}
                   </button>
+                  <div className="mx-3 my-1 border-t border-bambu-dark-tertiary" />
+                  {/* Edit & Delete */}
                   <button
-                    className={`w-full px-4 py-2 text-left text-sm hover:bg-bambu-dark-tertiary flex items-center gap-2 ${
-                      !hasPermission('printers:control') ? 'opacity-50 cursor-not-allowed' : ''
+                    className={`w-full px-4 py-2 text-left text-sm flex items-center gap-2 ${
+                      hasPermission('printers:update')
+                        ? 'hover:bg-bambu-dark-tertiary'
+                        : 'opacity-50 cursor-not-allowed'
                     }`}
                     onClick={() => {
-                      if (!hasPermission('printers:control')) return;
-                      setShowCalibration(true);
+                      if (!hasPermission('printers:update')) return;
+                      setShowEditModal(true);
                       setShowMenu(false);
                     }}
+                    title={!hasPermission('printers:update') ? t('printers.permission.noEdit') : undefined}
                   >
-                    <Wrench className="w-4 h-4" />
-                    {t('printers.calibration.menuItem')}
-                  </button>
-                  <button
-                    className="w-full px-4 py-2 text-left text-sm hover:bg-bambu-dark-tertiary flex items-center gap-2"
-                    onClick={() => {
-                      navigate(`/maintenance?printer=${printer.id}`);
-                      setShowMenu(false);
-                    }}
-                  >
-                    <Wrench className="w-4 h-4" />
-                    {t('printers.maintenanceHistory')}
+                    <Pencil className="w-4 h-4" />
+                    {t('common.edit')}
                   </button>
                   <button
                     className={`w-full px-4 py-2 text-left text-sm flex items-center gap-2 ${
@@ -2566,6 +2603,7 @@ function PrinterCard({
                     {t('common.delete')}
                   </button>
                 </div>
+                </>
               )}
             </div>
           </div>
@@ -4350,6 +4388,14 @@ function PrinterCard({
         />
       )}
 
+      {showMacrosMenu && (
+        <MacrosPanel
+          printer={printer}
+          macroExecuting={status?.macro_executing ?? null}
+          onClose={() => setShowMacrosMenu(false)}
+        />
+      )}
+
       {showPrinterInfo && (
         <PrinterInfoModal
           printer={printer}
@@ -4937,6 +4983,98 @@ function PrinterCard({
     </Card>
   );
 }
+
+function MacrosPanel({
+  printer,
+  macroExecuting,
+  onClose,
+}: {
+  printer: Printer;
+  macroExecuting: string | null;
+  onClose: () => void;
+}) {
+  const { t } = useTranslation();
+  const { showToast } = useToast();
+
+  const { data: macros, isLoading } = useQuery({
+    queryKey: ['macros'],
+    queryFn: macrosApi.getMacros,
+  });
+
+  const executeMutation = useMutation({
+    mutationFn: (macroId: number) => macrosApi.executeMacro(macroId, printer.id),
+    onError: (error: Error) => {
+      showToast(error.message, 'error');
+    },
+  });
+
+  // Filter macros: match printer model + swap_mode requirement
+  const filteredMacros = (macros || []).filter((macro: Macro) => {
+    if (!macro.enabled) return false;
+    if (!macro.gcode || !macro.gcode.trim()) return false;
+    const models = macro.printer_models;
+    if (!models.includes('*') && (!printer.model || !models.includes(printer.model))) return false;
+    if (macro.swap_mode_only && !printer.swap_mode_enabled) return false;
+    return true;
+  });
+
+  const isBusy = executeMutation.isPending || !!macroExecuting;
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div
+        className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl w-full max-w-sm shadow-lg"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-4 py-3 border-b border-bambu-dark-tertiary">
+          <h3 className="text-sm font-semibold text-white">{t('printers.macros')} — {printer.name}</h3>
+          <button onClick={onClose} className="text-bambu-gray hover:text-white">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <div className="p-3 max-h-64 overflow-y-auto">
+          {isLoading ? (
+            <div className="flex justify-center py-4">
+              <Loader2 className="w-5 h-5 animate-spin text-bambu-gray" />
+            </div>
+          ) : filteredMacros.length === 0 ? (
+            <p className="text-sm text-bambu-gray text-center py-4">{t('printers.noMacros')}</p>
+          ) : (
+            <div className="space-y-1">
+              {filteredMacros.map((macro: Macro) => {
+                const isSending = executeMutation.isPending && executeMutation.variables === macro.id;
+                const isRunning = macroExecuting === macro.name;
+                return (
+                  <button
+                    key={macro.id}
+                    className="w-full px-3 py-2 text-left text-sm text-white hover:bg-bambu-dark-tertiary rounded-lg flex items-center justify-between gap-2 disabled:opacity-50"
+                    onClick={() => executeMutation.mutate(macro.id)}
+                    disabled={isBusy}
+                  >
+                    <div>
+                      <div className="font-medium">{macro.name}</div>
+                      <div className="text-xs text-bambu-gray">
+                        {isRunning
+                          ? t('printers.macroAwaitingResponse')
+                          : `${macro.gcode.split('\n').length} ${t('printers.macroLines')}`}
+                      </div>
+                    </div>
+                    {isSending || isRunning ? (
+                      <Loader2 className="w-4 h-4 animate-spin text-bambu-green flex-shrink-0" />
+                    ) : (
+                      <Play className="w-4 h-4 text-bambu-gray flex-shrink-0" />
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 function AddPrinterModal({
   onClose,
@@ -6394,7 +6532,7 @@ export function PrintersPage() {
                 {location}
                 <span className="text-sm font-normal text-bambu-gray">({locationPrinters.length})</span>
               </h2>
-              <div className={`grid gap-4 ${cardSize >= 3 ? 'gap-6' : ''} ${getGridClasses()}`}>
+              <div className={`grid gap-4 items-start ${cardSize >= 3 ? 'gap-6' : ''} ${getGridClasses()}`}>
                 {locationPrinters.map((printer) => (
                   <PrinterCard
                     key={printer.id}
@@ -6429,7 +6567,7 @@ export function PrintersPage() {
         </div>
       ) : (
         /* Regular grid view */
-        <div className={`grid gap-4 ${cardSize >= 3 ? 'gap-6' : ''} ${getGridClasses()}`}>
+        <div className={`grid gap-4 items-start ${cardSize >= 3 ? 'gap-6' : ''} ${getGridClasses()}`}>
           {sortedPrinters.map((printer) => (
             <PrinterCard
               key={printer.id}

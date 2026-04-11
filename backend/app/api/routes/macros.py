@@ -4,6 +4,7 @@ import json
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,8 +12,10 @@ from backend.app.core.auth import RequirePermissionIfAuthEnabled
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.macro import Macro
+from backend.app.models.printer import Printer
 from backend.app.models.user import User
 from backend.app.schemas.macro import MacroCreate, MacroResponse, MacroUpdate
+from backend.app.services.printer_manager import printer_manager
 
 logger = logging.getLogger(__name__)
 
@@ -59,8 +62,7 @@ async def list_macros(
     # Filter by printer_model in Python (JSON array in SQLite)
     if printer_model:
         macros = [
-            m for m in macros
-            if "*" in json.loads(m.printer_models) or printer_model in json.loads(m.printer_models)
+            m for m in macros if "*" in json.loads(m.printer_models) or printer_model in json.loads(m.printer_models)
         ]
 
     return macros
@@ -150,3 +152,134 @@ async def delete_macro(
     await db.commit()
     logger.info("Deleted custom macro %s (%s)", macro_id, macro.name)
     return {"message": "Macro deleted"}
+
+
+class MacroExecuteResponse(BaseModel):
+    success: bool
+    message: str
+    sequence_id: int | None = None
+
+
+@router.post("/{macro_id}/execute", response_model=MacroExecuteResponse)
+async def execute_macro(
+    macro_id: int,
+    printer_id: int = Query(..., description="Printer to execute macro on"),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+):
+    """Execute a macro on a specific printer by sending its GCode via MQTT."""
+    # Get macro
+    result = await db.execute(select(Macro).where(Macro.id == macro_id))
+    macro = result.scalar_one_or_none()
+    if not macro:
+        raise HTTPException(404, "Macro not found")
+
+    if not macro.enabled:
+        raise HTTPException(400, "Macro is disabled")
+
+    if not macro.gcode or not macro.gcode.strip():
+        raise HTTPException(400, "Macro has no GCode content")
+
+    # Get printer
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    # Check model compatibility
+    models = json.loads(macro.printer_models)
+    if "*" not in models and printer.model not in models:
+        raise HTTPException(400, f"Macro not compatible with printer model '{printer.model}'")
+
+    # Check swap_mode requirement
+    if macro.swap_mode_only and not printer.swap_mode_enabled:
+        raise HTTPException(400, "Macro requires swap mode enabled on printer")
+
+    # Ensure MQTT connection is fresh (reconnect if stale)
+    if not await printer_manager.ensure_fresh_connection_for_printer(printer):
+        raise HTTPException(400, "Printer MQTT connection failed")
+
+    # Get MQTT client
+    client = printer_manager.get_client(printer_id)
+    if not client or not client.state or not client.state.connected:
+        raise HTTPException(400, "Printer is not connected")
+
+    # Wrap macro GCode with claim_action markers:
+    # - Start: M1002 gcode_claim_action:11 sets stg_cur=11 (signals "macro executing")
+    # - M400 S5 gives MQTT time to propagate the stage change
+    # - End: M400 waits for moves, then claim_action:0 clears stg_cur back to 0
+    import asyncio
+    import threading
+
+    raw_gcode = macro.gcode.strip()
+    # stg_cur=0 ("Printing") signals macro executing; idle value depends on model
+    # X1/X1C/X1E use stg_cur=-1 for idle, other models use 255
+    model_upper = (printer.model or "").upper().replace("-", "").replace(" ", "")
+    idle_stg = -1 if model_upper in ("X1", "X1C", "X1E") else 255
+    gcode = f"M1002 gcode_claim_action : 0;\nM400 S5;\n{raw_gcode}\nM400;\nM1002 gcode_claim_action : {idle_stg};"
+
+    # Set macro executing state before sending
+    client.state.macro_executing = macro.name
+
+    logger.info(
+        "[MACRO] Sending macro '%s' to printer '%s' (id=%d): "
+        "gcode_lines=%d, swap_mode=%s, event=%s, printer_state=%s, stg_cur=%s",
+        macro.name,
+        printer.name,
+        printer.id,
+        raw_gcode.count("\n") + 1,
+        macro.swap_mode_only,
+        macro.event,
+        client.state.state,
+        client.state.stg_cur,
+    )
+
+    # Send GCode and wait for ACK from printer
+    sent = client.send_gcode(gcode)
+    if not sent:
+        client.state.macro_executing = None
+        logger.warning("[MACRO] Failed to send macro '%s' — MQTT not connected", macro.name)
+        return MacroExecuteResponse(success=False, message="Failed to send GCode to printer")
+
+    seq_id = str(client._sequence_id)
+
+    # Wait for printer ACK (result: success/failed) — typically <200ms
+    ack_event = threading.Event()
+    ack_result: dict = {"success": False, "reason": ""}
+    client.register_ack_listener(seq_id, ack_event, ack_result)
+
+    try:
+        await asyncio.to_thread(ack_event.wait, 5.0)
+    except Exception:
+        pass
+
+    if not ack_event.is_set():
+        client._ack_listeners.pop(seq_id, None)
+        client.state.macro_executing = None
+        logger.warning("[MACRO] Timeout — no ACK for macro '%s' (seq=%s)", macro.name, seq_id)
+        raise HTTPException(408, "Printer did not acknowledge command in time")
+
+    if not ack_result["success"]:
+        client.state.macro_executing = None
+        logger.warning(
+            "[MACRO] Printer rejected macro '%s' (seq=%s): %s",
+            macro.name,
+            seq_id,
+            ack_result.get("reason", "unknown"),
+        )
+        raise HTTPException(400, f"Printer rejected macro: {ack_result.get('reason', 'unknown')}")
+
+    logger.info(
+        "[MACRO] ACK received — macro '%s' accepted by printer '%s' (seq=%s, result=%s, reason=%s)",
+        macro.name,
+        printer.name,
+        seq_id,
+        ack_result.get("success"),
+        ack_result.get("reason", ""),
+    )
+
+    return MacroExecuteResponse(
+        success=True,
+        message=f"Macro '{macro.name}' executing",
+        sequence_id=int(seq_id),
+    )

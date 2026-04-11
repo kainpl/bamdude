@@ -2,8 +2,6 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
-  Github,
-  Gitlab,
   Play,
   Clock,
   CheckCircle,
@@ -20,6 +18,7 @@ import {
   Trash2,
   RotateCcw,
 } from 'lucide-react';
+import { GitHubIcon, GitLabIcon } from './BrandIcons';
 import { api } from '../api/client';
 import type {
   GitBackupConfig,
@@ -131,7 +130,7 @@ export function GitBackupSettings() {
 
   // Provider display name
   const providerName = provider === 'github' ? 'GitHub' : 'GitLab';
-  const ProviderIcon = provider === 'github' ? Github : Gitlab;
+  const ProviderIcon = provider === 'github' ? GitHubIcon : GitLabIcon;
 
   // Queries
   const { data: config, isLoading: configLoading } = useQuery<GitBackupConfig | null>({
@@ -442,7 +441,7 @@ export function GitBackupSettings() {
                         onChange={() => { setProvider('github'); setTestResult(null); }}
                         className="w-4 h-4 text-bambu-green focus:ring-bambu-green bg-bambu-dark border-bambu-dark-tertiary"
                       />
-                      <Github className="w-4 h-4 text-white" />
+                      <GitHubIcon className="w-4 h-4 text-white" />
                       <span className="text-sm text-white">{t('backup.providerGitHub')}</span>
                     </label>
                     <label className="flex items-center gap-2 cursor-pointer">
@@ -454,7 +453,7 @@ export function GitBackupSettings() {
                         onChange={() => { setProvider('gitlab'); setTestResult(null); }}
                         className="w-4 h-4 text-bambu-green focus:ring-bambu-green bg-bambu-dark border-bambu-dark-tertiary"
                       />
-                      <Gitlab className="w-4 h-4 text-white" />
+                      <GitLabIcon className="w-4 h-4 text-white" />
                       <span className="text-sm text-white">{t('backup.providerGitLab')}</span>
                     </label>
                   </div>

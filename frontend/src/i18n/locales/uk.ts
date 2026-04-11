@@ -229,6 +229,10 @@ export default {
     reconnect: 'Перепідключити',
     mqttDebug: 'Налагодження MQTT',
     maintenanceHistory: 'Історія обслуговування',
+    macros: 'Макроси',
+    macroLines: 'рядків',
+    macroAwaitingResponse: 'Виконується...',
+    noMacros: 'Немає макросів для цього принтера',
     calibration: {
       menuItem: 'Калібрування',
       title: 'Калібрування принтера',
@@ -1765,6 +1769,9 @@ export default {
     macroBuiltIn: 'Вбудований',
     macroCustom: 'Користувацький',
     macroDeleteConfirm: 'Видалити цей користувацький макрос?',
+    macroLines: 'рядків',
+    macroAwaitingResponse: 'Очікуємо відповідь принтера...',
+    noMacros: 'Немає макросів для цього принтера',
     macroEvents: {
       swap_mode_start: 'Swap Mode. Старт',
       swap_mode_change_table: 'Swap Mode. Зміна столу',

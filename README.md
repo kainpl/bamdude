@@ -83,10 +83,10 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 - Auto error-pause on print failure (queue stops, user decides next step)
 - Staggered start for farms (limit concurrent heating, bed temp monitoring)
 - Swap Mode support (A1 Mini plate swapper, auto-detect swap files)
-- G-code macros system with syntax-highlighted editor
+- **G-code macros** — execute from printer menu, ACK-based MQTT confirmation, `stg_cur` completion tracking, real-time status on printer card
 - Model-aware maintenance types with history tracking and Excel export
 - Clear plate confirmation between prints
-- Smart plug integration (Tasmota, HA, MQTT)
+- Smart plug integration (Tasmota, HA, MQTT, REST/webhook)
 - Energy consumption tracking
 - Auto power-on/off
 - Background print dispatch with WebSocket progress
@@ -125,7 +125,7 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 - 13 handler modules, 171 i18n keys (EN/UK), MarkdownV2 formatting
 
 ### Notifications
-- Telegram, WhatsApp, Discord, Email, Pushover, ntfy
+- Telegram (auto-restart bot on config change), Discord, Email, Pushover, ntfy, CallMeBot
 - Home Assistant, custom webhooks
 - Customizable message templates (MarkdownV2 editor)
 - Per-chat quiet hours & daily digest (Telegram)
@@ -148,8 +148,9 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 - Prometheus metrics for Grafana
 - Local OrcaSlicer preset import
 - K-profiles (pressure advance)
-- GitHub backup
+- Git backup (GitHub + GitLab)
 - API keys & webhooks
+- LDAP/Active Directory authentication
 
 ### Virtual Printer & Remote Printing
 - Proxy Mode for remote printing via TLS relay
@@ -160,6 +161,7 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 ### Authentication
 - Group-based permissions (80+ granular)
 - JWT tokens, API key support
+- LDAP/Active Directory with group mapping
 - Per-user Bambu Cloud accounts
 - Advanced Auth via Email (SMTP)
 - Per-user email notifications
@@ -168,7 +170,7 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 </tr>
 </table>
 
-**Plus:** Customizable themes, mobile responsive, multi-language (EN/UK/DE/JA/IT), auto updates, database backup/restore
+**Plus:** Customizable themes, mobile responsive, multi-language (EN/UK), auto updates, database backup/restore, PostgreSQL support
 
 ---
 
@@ -245,7 +247,7 @@ uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
 |-----------|------------|
 | Backend | Python, FastAPI, SQLAlchemy, aiogram 3.x |
 | Frontend | React 19, TypeScript, Tailwind CSS 4 |
-| Database | SQLite (async) |
+| Database | SQLite (default) or PostgreSQL |
 | 3D Viewer | Three.js |
 | Communication | MQTT (TLS), FTPS |
 | Telegram | aiogram 3.x, MarkdownV2, FSM |

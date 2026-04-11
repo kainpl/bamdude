@@ -293,6 +293,21 @@ export function useWebSocket() {
         debouncedInvalidate('inventory-spools');
         break;
 
+      case 'macro_executed': {
+        // Macro execution result — show toast globally + dispatch for UI state
+        const macroData = message.data as Record<string, unknown> | undefined;
+        if (macroData) {
+          showToast(
+            String(macroData.message || 'Macro executed'),
+            macroData.success ? 'success' : 'error',
+          );
+          window.dispatchEvent(new CustomEvent('macro-executed', {
+            detail: macroData,
+          }));
+        }
+        break;
+      }
+
       case 'unknown_tag':
         // Unknown RFID tag detected - dispatch event for UI
         window.dispatchEvent(new CustomEvent('unknown-tag', {

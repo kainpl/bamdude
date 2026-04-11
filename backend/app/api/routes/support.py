@@ -200,7 +200,7 @@ def _read_log_entries(
     search: str | None = None,
 ) -> tuple[list[LogEntry], int]:
     """Read and parse log entries from file with optional filtering."""
-    log_file = settings.log_dir / "bambuddy.log"
+    log_file = settings.log_dir / "bamdude.log"
     if not log_file.exists():
         return [], 0
 
@@ -300,7 +300,7 @@ async def clear_logs(
     _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
 ):
     """Clear the application log file."""
-    log_file = settings.log_dir / "bambuddy.log"
+    log_file = settings.log_dir / "bamdude.log"
 
     if log_file.exists():
         try:
@@ -690,7 +690,7 @@ async def _collect_support_info() -> dict:
 
     # Log file info
     try:
-        log_file = settings.log_dir / "bambuddy.log"
+        log_file = settings.log_dir / "bamdude.log"
         if log_file.exists():
             size = log_file.stat().st_size
             info["log_file"] = {
@@ -761,7 +761,7 @@ def _sanitize_log_content(content: str, sensitive_strings: dict[str, str] | None
 
 def _get_log_content(max_bytes: int = 10 * 1024 * 1024, sensitive_strings: dict[str, str] | None = None) -> bytes:
     """Get log file content, limited to max_bytes from the end."""
-    log_file = settings.log_dir / "bambuddy.log"
+    log_file = settings.log_dir / "bamdude.log"
     if not log_file.exists():
         return b"Log file not found"
 
@@ -807,7 +807,7 @@ async def _get_recent_sanitized_logs(max_lines: int = 200) -> str:
         if cloud_email:
             sensitive_strings[cloud_email] = "[EMAIL]"
 
-    log_file = settings.log_dir / "bambuddy.log"
+    log_file = settings.log_dir / "bamdude.log"
     if not log_file.exists():
         return ""
 
@@ -878,7 +878,7 @@ async def generate_support_bundle(
 
         # Add log file
         log_content = _get_log_content(sensitive_strings=sensitive_strings)
-        zf.writestr("bambuddy.log", log_content)
+        zf.writestr("bamdude.log", log_content)
 
     zip_buffer.seek(0)
 

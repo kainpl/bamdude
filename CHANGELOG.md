@@ -31,12 +31,43 @@ All notable changes to BamDude will be documented in this file.
 - **Delete button on provider card** — notification provider delete button added to card header alongside edit and toggle
 - **Printer defaults** — `cleanup_after_print` default changed to `false` (files moved to cache by default), `mqtt_connection_timeout` default changed to 900s
 
+### Macro Execution System
+
+- **Execute macros from printer menu** — new "Macros" sub-menu in printer card context menu, filtered by printer model and swap mode
+- **GCode execution with ACK** — sends wrapped GCode via MQTT, waits for printer ACK (~100ms) before returning HTTP response; rejects if printer declines
+- **Claim action markers** — macros auto-wrapped with `M1002 gcode_claim_action:11/0` for `stg_cur`-based execution tracking
+- **Real-time status on card** — printer card shows "Executing: {macro name}" during macro execution via `stg_cur=11` detection
+- **Completion via WebSocket** — `stg_cur` transition 11→0 triggers `macro_executed` WebSocket event with global toast notification
+- **`macro_executing` state** — tracked per-printer in `PrinterState`, exposed in status API and WebSocket updates
+- **`on_macro_complete` callback** — new MQTT client callback wired through `PrinterManager` for WebSocket broadcast
+- **`ensure_fresh_connection`** — MQTT connection freshness check before macro execution
+- **`POST /macros/{id}/execute`** — new API endpoint with model/swap_mode validation
+- **Printer create schema** — `swap_mode_enabled`, `stagger_interval_minutes`, `auto_light_off` now properly saved on printer creation
+
 ### Maintenance Type Codes
 
 - **`type_code` column** — stable, locale-independent identifier for maintenance types (e.g. `clean_carbon_rods`, `check_belt_tension`)
 - **System types** get predefined codes, custom types get `custom_{id}`
 - **Simplified matching** — rod/rail filtering, wiki URL lookup, and default type seeding now use `type_code` instead of reverse-mapping translated names
 - **Migration** — backfills codes for existing types (EN + UK name matching)
+
+### Bug Fixes
+
+- **System logs empty** — fixed `bambuddy.log` → `bamdude.log` filename in support routes (missed during rebrand), application log viewer on `/system` now works
+- **No-AMS print failure** — fix `0700_8012` "Failed to get AMS mapping table" on printers without physical AMS (P2S, A1 without AMS) by remapping external spool entries and omitting `ams_mapping2` (PR #2 by @latsss)
+- **Printer create missing fields** — `swap_mode_enabled`, `stagger_interval_minutes`, `auto_light_off` were silently ignored when creating a printer (missing from `PrinterCreate` schema)
+
+### UI Polish
+
+- **Printer card menu** — reorganized menu items with separators (Info/Maintenance | Calibration/Macros | Reconnect/MQTT Debug | Edit/Delete), click outside to close
+- **Macros button visibility** — "Macros" menu item only shown when matching macros exist for the printer
+- **SWAP badge** — moved to model line (before model name), visible at all card sizes
+- **Card height** — printer cards no longer stretch to match tallest card in row (`items-start`)
+
+### Dependencies
+
+- **lucide-react** `0.555.0` → `1.8.0` (major version, ~32% bundle size reduction)
+- **tailwindcss** + **@tailwindcss/postcss** → `4.2.2`
 
 ### Tooling
 

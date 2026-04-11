@@ -269,6 +269,8 @@ export interface PrinterStatus {
   firmware_version: string | null;   // Firmware version from MQTT
   // Developer LAN mode: true = enabled, false = disabled, null = unknown
   developer_mode: boolean | null;
+  // Currently executing macro name (null = no macro running)
+  macro_executing: string | null;
   // Queue: user has acknowledged plate is cleared for next queued print
   plate_cleared: boolean;
   // AMS drying support
@@ -5245,6 +5247,12 @@ export interface MacroMeta {
   printer_models: Record<string, string>;
 }
 
+export interface MacroExecuteResponse {
+  success: boolean;
+  message: string;
+  sequence_id: number | null;
+}
+
 // Macros API
 export const macrosApi = {
   getMacros: () => request<Macro[]>('/macros/'),
@@ -5252,4 +5260,6 @@ export const macrosApi = {
   createMacro: (data: MacroCreate) => request<Macro>('/macros/', { method: 'POST', body: JSON.stringify(data) }),
   updateMacro: (id: number, data: MacroUpdate) => request<Macro>('/macros/' + id, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteMacro: (id: number) => request<{ message: string }>('/macros/' + id, { method: 'DELETE' }),
+  executeMacro: (macroId: number, printerId: number) =>
+    request<MacroExecuteResponse>(`/macros/${macroId}/execute?printer_id=${printerId}`, { method: 'POST' }),
 };
