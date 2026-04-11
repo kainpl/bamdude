@@ -2760,6 +2760,32 @@ class BambuMQTTClient:
                         self.serial_number,
                     )
 
+            # --- No-AMS external spool fix ---
+            # On printers without a physical AMS (P2S, A1, P1S without AMS, etc.)
+            # the external spool is the only filament source.  The firmware
+            # rejects -1 (unmapped) and 254 (virtual tray ID) in ams_mapping
+            # with 0700_8012 "Failed to get AMS mapping table".
+            #
+            # The fix: remap all -1 entries to 0 in the flat ams_mapping so the
+            # firmware's mapping table validation passes, and omit ams_mapping2
+            # entirely — including it with virtual tray IDs (254/255) re-triggers
+            # the error, and including it with ams_id 0 causes the firmware to
+            # attempt an AMS filament load from a non-existent unit.
+            #
+            # With ams_mapping=[0] + use_ams=false + no ams_mapping2, the
+            # firmware uses the already-loaded external spool without any AMS
+            # interaction.
+            #
+            # H2D series is excluded — use_ams controls nozzle routing on those.
+            no_ams_printer = not use_ams and not is_h2d and not self.state.raw_data.get("ams")
+            if no_ams_printer and flat_ams_mapping:
+                flat_ams_mapping = [0 if v == -1 else v for v in flat_ams_mapping]
+                logger.info(
+                    "[%s] No AMS detected — remapped external spool: ams_mapping=%s, omitting ams_mapping2",
+                    self.serial_number,
+                    flat_ams_mapping,
+                )
+
             command = {
                 "print": {
                     "sequence_id": "20000",
@@ -2803,7 +2829,8 @@ class BambuMQTTClient:
             # Add AMS mapping if provided
             if ams_mapping is not None:
                 command["print"]["ams_mapping"] = flat_ams_mapping
-                command["print"]["ams_mapping2"] = ams_mapping2
+                if not no_ams_printer:
+                    command["print"]["ams_mapping2"] = ams_mapping2
 
             logger.info("[%s] Sending print command: %s", self.serial_number, json.dumps(command))
             self._client.publish(self.topic_publish, json.dumps(command), qos=1)
