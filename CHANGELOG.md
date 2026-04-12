@@ -8,6 +8,26 @@ All notable changes to BamDude will be documented in this file.
 
 ## [0.3.2] - 2026-04-10
 
+### Print Batches & Quantity
+
+- **Quantity field in Print Modal** — stepper (1–50) unified across "Print Now" and "Add to Queue"
+- **Batch grouping** — N>1 items share a UUID `batch_id` for coordinated cancel/tracking
+- **Direct print + extras** — "Print Now" dispatches the first copy immediately and enqueues remaining N−1 copies with the same `batch_id` (new `enqueue_batch_copies` helper)
+- **`batch_id` column** on `print_queue` (indexed) + migration m002
+- **API**: `quantity` on `FilePrintRequest`, `ReprintRequest`, `PrintQueueItemCreate`; `batch_id`, `queued_copies` in direct-print responses
+
+### Queue Page Redesign
+
+- **Stats bar** — sticky tiles at top: printing / pending / estimated remaining time / errors
+- **Timeline view mode** — swim-lane Gantt across all printer queues (new `/queue?view=timeline`)
+  - Range selector: 12h / 24h / 72h (persisted to localStorage)
+  - Active prints anchored at `started_at`; scheduled jobs pinned to `scheduled_time`; stagger interval respected between jobs
+  - Filament color stripe, estimated/manual/waiting icons, batch "1/N" label, active-print progress stripe
+  - Click slot → edit in Print Modal; right-click → cancel item / cancel batch / edit
+  - Vertical "Now" marker that advances every minute
+- **URL-synced view mode** — `?view=compact|expanded|all|timeline` survives reload and is shareable
+- **Removed inline stats `<p>`** — superseded by new stats bar
+
 ### Telegram Bot Hot-Reload
 
 - **Auto-restart on provider changes** — creating, updating, or deleting a Telegram notification provider automatically restarts the bot (no app restart needed)
@@ -56,6 +76,17 @@ All notable changes to BamDude will be documented in this file.
 - **System logs empty** — fixed `bambuddy.log` → `bamdude.log` filename in support routes (missed during rebrand), application log viewer on `/system` now works
 - **No-AMS print failure** — fix `0700_8012` "Failed to get AMS mapping table" on printers without physical AMS (P2S, A1 without AMS) by remapping external spool entries and omitting `ams_mapping2` (PR #2 by @latsss)
 - **Printer create missing fields** — `swap_mode_enabled`, `stagger_interval_minutes`, `auto_light_off` were silently ignored when creating a printer (missing from `PrinterCreate` schema)
+- **Docker detection false positive** — Proxmox LXC containers were misdetected as Docker; now reads `/run/systemd/container` instead of checking `.git` presence
+- **Error boundary** — React ErrorBoundary wraps the app; crashes show error message with stack trace and reload button instead of white screen
+- **3MF metadata serialization crash** — bytes objects in 3MF metadata (thumbnail data) caused JSON crash on external library add and ZIP extraction; extracted shared `_clean_3mf_metadata()` helper
+- **3MF single-active-extruder mapping** — dual-nozzle 3MF with only one nozzle installed now maps all filaments to the active extruder directly instead of failing complex mapping
+- **Calendar picker position** — native date picker now opens near the date field instead of off-screen
+- **Spool gradient/multi-color detection** — RFID auto-provisioning now correctly identifies Gradient, Dual Color, and Tri Color filament subtypes from `tray_id_name` code
+- **Stats filter by user** — `GET /archives/stats` now accepts `created_by_id` query param for per-user statistics; gated by new `stats:filter_by_user` permission
+- **Per-printer plate-clear requirement** — new `require_plate_clear` setting per printer (default true); auto-disabled when swap mode enabled; queue scheduler respects per-printer setting
+- **Prefer lowest filament** — new `prefer_lowest_filament` setting; when multiple AMS trays match, scheduler picks the one with lowest remaining filament to reduce waste
+- **Bulk printer actions** — select multiple printers, stop/pause/resume/clear plate/clear HMS in bulk; floating toolbar with select by state/location; i18n EN+UK
+- **Print quantity / batch** — `quantity` field (1..50) in Print Modal works for both direct print and add-to-queue. Add-to-queue with N creates N pending items sharing a `batch_id`; direct print with N dispatches the first copy and queues the remaining N−1 on the printer's queue with a `batch_id` for grouping
 
 ### UI Polish
 

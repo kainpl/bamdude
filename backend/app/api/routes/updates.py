@@ -33,7 +33,7 @@ _update_status = {
 
 
 def _is_docker_environment() -> bool:
-    """Detect if running inside a Docker container."""
+    """Detect if running inside a Docker/Podman/OCI container."""
     if os.path.exists("/.dockerenv"):
         return True
     try:
@@ -42,8 +42,14 @@ def _is_docker_environment() -> bool:
                 return True
     except (FileNotFoundError, PermissionError):
         pass  # cgroup file unavailable; continue with other detection methods
-    git_dir = settings.base_dir / ".git"
-    return not git_dir.exists()
+    # Check systemd container type (avoids false positive on Proxmox LXC)
+    try:
+        with open("/run/systemd/container") as f:
+            container_type = f.read().strip()
+            return container_type in ("docker", "podman", "oci")
+    except (FileNotFoundError, PermissionError):
+        pass
+    return False
 
 
 def _find_executable(name: str) -> str | None:

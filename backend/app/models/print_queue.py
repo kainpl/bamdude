@@ -53,6 +53,10 @@ class PrintQueueItem(Base):
     # Status: pending, printing, completed, failed, skipped, cancelled
     status: Mapped[str] = mapped_column(String(20), default="pending")
 
+    # Batch grouping — UUID string shared by all items created together via quantity>1.
+    # Nullable: single-copy adds (quantity=1) leave this unset.
+    batch_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+
     # Tracking
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

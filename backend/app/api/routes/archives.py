@@ -45,6 +45,25 @@ def _safe_filename(name: str) -> str:
     return Path(name.replace("\\", "/")).name
 
 
+def _validate_user_filter_permission(current_user: User | None, created_by_id: int | None):
+    """Raise 403 if created_by_id filter is used without stats:filter_by_user permission."""
+    if created_by_id is None or current_user is None:
+        return
+    if current_user.is_admin:
+        return
+    if not current_user.has_permission(Permission.STATS_FILTER_BY_USER.value):
+        raise HTTPException(status_code=403, detail="Permission stats:filter_by_user required")
+
+
+def _apply_user_filter(conditions: list, created_by_id: int | None):
+    """Append created_by_id filter to conditions list if specified."""
+    if created_by_id is not None:
+        if created_by_id == -1:
+            conditions.append(PrintArchive.created_by_id.is_(None))
+        else:
+            conditions.append(PrintArchive.created_by_id == created_by_id)
+
+
 def compute_time_accuracy(archive: PrintArchive) -> dict:
     """Compute actual print time and accuracy for an archive.
 
@@ -698,14 +717,18 @@ async def export_stats(
 async def get_archive_stats(
     date_from: date | None = Query(None, description="Start date (inclusive), YYYY-MM-DD"),
     date_to: date | None = Query(None, description="End date (inclusive), YYYY-MM-DD"),
+    created_by_id: int | None = Query(None, description="Filter by user who created the print (-1 for no user)"),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.STATS_READ),
+    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.STATS_READ),
 ):
     """Get statistics across all archives."""
+    _validate_user_filter_permission(current_user, created_by_id)
+
     # Build date filter conditions
     # Exclude "archived" status — these are files uploaded via virtual printer
     # or manual upload that were never actually printed
     base_conditions = [PrintArchive.status != "archived"]
+    _apply_user_filter(base_conditions, created_by_id)
     if date_from:
         dt_from = datetime.combine(date_from, time.min, tzinfo=timezone.utc)
         base_conditions.append(PrintArchive.created_at >= dt_from)
@@ -3183,6 +3206,27 @@ async def reprint_archive(
         dispatch_result["dispatch_position"],
     )
 
+    batch_id: str | None = None
+    extra = max(0, (body.quantity or 1) - 1)
+    if extra > 0:
+        from backend.app.services.queue_batch import enqueue_batch_copies
+
+        _items, batch_id = await enqueue_batch_copies(
+            db,
+            printer_id=printer_id,
+            count=extra,
+            archive_id=archive_id,
+            plate_id=body.plate_id,
+            ams_mapping=body.ams_mapping,
+            bed_levelling=body.bed_levelling,
+            flow_cali=body.flow_cali,
+            vibration_cali=body.vibration_cali,
+            layer_inspect=body.layer_inspect,
+            timelapse=body.timelapse,
+            use_ams=body.use_ams,
+            created_by_id=user.id if user else None,
+        )
+
     return {
         "status": "dispatched",
         "printer_id": printer_id,
@@ -3190,6 +3234,8 @@ async def reprint_archive(
         "filename": archive.filename,
         "dispatch_job_id": dispatch_result["dispatch_job_id"],
         "dispatch_position": dispatch_result["dispatch_position"],
+        "batch_id": batch_id,
+        "queued_copies": extra,
     }
 
 

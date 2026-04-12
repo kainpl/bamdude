@@ -137,9 +137,21 @@ class PrintScheduler:
             # Track busy printers to avoid assigning multiple items to same printer
             busy_printers: set[int] = set()
 
+            # Cache per-printer require_plate_clear setting
+            _plate_clear_cache: dict[int, bool] = {}
+
+            async def _get_require_plate_clear(pid: int) -> bool:
+                if pid not in _plate_clear_cache:
+                    from backend.app.models.printer import Printer
+
+                    result = await db.execute(select(Printer.require_plate_clear).where(Printer.id == pid))
+                    val = result.scalar_one_or_none()
+                    _plate_clear_cache[pid] = val if val is not None else True
+                return _plate_clear_cache[pid]
+
             # Staggered start: update temps and clean expired slots
-            stagger_enabled, stagger_concurrent, stagger_interval, stagger_wait_bed = (
-                await self._get_stagger_settings(db)
+            stagger_enabled, stagger_concurrent, stagger_interval, stagger_wait_bed = await self._get_stagger_settings(
+                db
             )
             if stagger_enabled:
                 self._update_stagger_temps()
@@ -178,7 +190,8 @@ class PrintScheduler:
                     continue
 
                 # Check if printer is idle
-                printer_idle = self._is_printer_idle(printer_id)
+                rpc = await _get_require_plate_clear(printer_id)
+                printer_idle = self._is_printer_idle(printer_id, require_plate_clear=rpc)
                 printer_connected = printer_manager.is_connected(printer_id)
 
                 # Update waiting_reason based on current state
@@ -188,7 +201,7 @@ class PrintScheduler:
                 elif not printer_idle:
                     if self._drying_in_progress.get(printer_id):
                         new_reason = "Drying in progress"
-                    elif not printer_manager.is_plate_cleared(printer_id):
+                    elif rpc and not printer_manager.is_plate_cleared(printer_id):
                         status = printer_manager.get_status(printer_id)
                         if status and status.state in ("FINISH", "FAILED"):
                             new_reason = "Plate not cleared"
@@ -215,7 +228,7 @@ class PrintScheduler:
                                 except Exception as e:
                                     logger.warning("Failed to power on extra plug '%s': %s", extra_plug.name, e)
                             printer_connected = True
-                            printer_idle = self._is_printer_idle(printer_id)
+                            printer_idle = self._is_printer_idle(printer_id, require_plate_clear=rpc)
                         else:
                             logger.warning("Could not power on printer %s via smart plug", printer_id)
                             busy_printers.add(printer_id)
@@ -233,7 +246,7 @@ class PrintScheduler:
                             continue
                         else:
                             await self._stop_drying(printer_id)
-                            printer_idle = self._is_printer_idle(printer_id)
+                            printer_idle = self._is_printer_idle(printer_id, require_plate_clear=rpc)
                             if not printer_idle:
                                 busy_printers.add(printer_id)
                                 continue
@@ -273,7 +286,11 @@ class PrintScheduler:
                 if stagger_enabled:
                     # Per-printer interval override (0 = use system default)
                     printer_obj = await self._get_printer(db, printer_id)
-                    per_printer_iv = (printer_obj.stagger_interval_minutes * 60) if printer_obj and printer_obj.stagger_interval_minutes else 0
+                    per_printer_iv = (
+                        (printer_obj.stagger_interval_minutes * 60)
+                        if printer_obj and printer_obj.stagger_interval_minutes
+                        else 0
+                    )
                     self._register_stagger_start(printer_id, per_printer_iv or stagger_interval)
 
             # Log summary of skip reasons (helps diagnose why queue items aren't starting)
@@ -354,8 +371,11 @@ class PrintScheduler:
             logger.debug("No filaments loaded on printer %s", printer_id)
             return None
 
+        # Check if user prefers lowest remaining filament when multiple spools match
+        prefer_lowest = await self._get_bool_setting(db, "prefer_lowest_filament")
+
         # Compute mapping: match required filaments to available slots
-        return self._match_filaments_to_slots(filament_reqs, loaded_filaments)
+        return self._match_filaments_to_slots(filament_reqs, loaded_filaments, prefer_lowest)
 
     async def _get_filament_requirements(self, db: AsyncSession, item: PrintQueueItem) -> list[dict] | None:
         """Extract filament requirements from the source 3MF file.
@@ -507,6 +527,7 @@ class PrintScheduler:
                             "is_external": False,
                             "global_tray_id": global_tray_id,
                             "extruder_id": ams_extruder_map.get(str(ams_id)),
+                            "remain": tray.get("remain", -1),
                         }
                     )
 
@@ -526,6 +547,7 @@ class PrintScheduler:
                         "is_external": True,
                         "global_tray_id": tray_id,
                         "extruder_id": (255 - tray_id) if ams_extruder_map else None,
+                        "remain": vt.get("remain", -1),
                     }
                 )
 
@@ -562,7 +584,9 @@ class PrintScheduler:
         except ValueError:
             return False
 
-    def _match_filaments_to_slots(self, required: list[dict], loaded: list[dict]) -> list[int] | None:
+    def _match_filaments_to_slots(
+        self, required: list[dict], loaded: list[dict], prefer_lowest: bool = False
+    ) -> list[int] | None:
         """Match required filaments to loaded filaments and build AMS mapping.
 
         Priority: unique tray_info_idx match > exact color match > similar color match > type-only match
@@ -607,6 +631,10 @@ class PrintScheduler:
             req_nozzle_id = req.get("nozzle_id")
             if req_nozzle_id is not None:
                 available = [f for f in available if f.get("extruder_id") == req_nozzle_id]
+
+            # Sort by remaining filament (ascending) so lowest-remain spool wins
+            if prefer_lowest:
+                available.sort(key=lambda f: f.get("remain", -1) if f.get("remain", -1) >= 0 else 101)
 
             # Check if tray_info_idx is unique among available trays
             if req_tray_info_idx:
@@ -703,7 +731,9 @@ class PrintScheduler:
                 slot.temp_reached_at = time.monotonic()
                 logger.info(
                     "Stagger: printer %d bed reached %.1f°C (target %.1f°C), slot freed",
-                    slot.printer_id, bed, target,
+                    slot.printer_id,
+                    bed,
+                    target,
                 )
 
     def _cleanup_stagger_slots(self, wait_for_bed: bool) -> None:
@@ -742,7 +772,12 @@ class PrintScheduler:
         # Remove any old slot for same printer
         self._stagger_slots = [s for s in self._stagger_slots if s.printer_id != printer_id]
         self._stagger_slots.append(_StaggerSlot(printer_id, interval_seconds))
-        logger.info("Stagger: printer %d started (interval=%ds), %d slots occupied", printer_id, interval_seconds, len(self._stagger_slots))
+        logger.info(
+            "Stagger: printer %d started (interval=%ds), %d slots occupied",
+            printer_id,
+            interval_seconds,
+            len(self._stagger_slots),
+        )
 
     def _stagger_reason(self, wait_for_bed: bool) -> str:
         """Get waiting reason for stagger-blocked items."""
@@ -757,7 +792,7 @@ class PrintScheduler:
                 return f"Staggered start: waiting for {', '.join(heating)} to heat up"
         return "Staggered start: waiting for interval"
 
-    def _is_printer_idle(self, printer_id: int) -> bool:
+    def _is_printer_idle(self, printer_id: int, require_plate_clear: bool = True) -> bool:
         """Check if a printer is connected and idle."""
         if not printer_manager.is_connected(printer_id):
             logger.debug("Printer %d: not connected", printer_id)
@@ -769,9 +804,10 @@ class PrintScheduler:
             return False
 
         # IDLE = ready for next print
-        # FINISH/FAILED = ready only if user confirmed plate is cleared
+        # FINISH/FAILED = ready if plate-clear not required, or user confirmed plate is cleared
         idle = state.state == "IDLE" or (
-            state.state in ("FINISH", "FAILED") and printer_manager.is_plate_cleared(printer_id)
+            state.state in ("FINISH", "FAILED")
+            and (not require_plate_clear or printer_manager.is_plate_cleared(printer_id))
         )
         if not idle:
             logger.debug(

@@ -54,6 +54,7 @@ import {
 
 import { useNavigate } from 'react-router-dom';
 import { api, discoveryApi, firmwareApi, macrosApi } from '../api/client';
+import { BulkPrinterToolbar } from '../components/BulkPrinterToolbar';
 import { formatDateOnly, formatETA, formatDuration, parseUTCDate } from '../utils/date';
 import type { Printer, PrinterCreate, AMSUnit, DiscoveredPrinter, FirmwareUpdateInfo, FirmwareUploadStatus, LinkedSpoolInfo, SpoolAssignment, HMSError, Macro } from '../api/client';
 import { Card, CardContent } from '../components/Card';
@@ -1537,6 +1538,8 @@ function PrinterCard({
   onOpenEmbeddedCamera,
   checkPrinterFirmware = true,
   dryingPresets = DRYING_PRESETS,
+  isSelected = false,
+  onToggleSelect,
 }: {
   printer: Printer;
   hideIfDisconnected?: boolean;
@@ -1562,6 +1565,8 @@ function PrinterCard({
   onOpenEmbeddedCamera?: (printerId: number, printerName: string) => void;
   checkPrinterFirmware?: boolean;
   dryingPresets?: Record<string, { n3f: number; n3s: number; n3f_hours: number; n3s_hours: number }>;
+  isSelected?: boolean;
+  onToggleSelect?: (id: number) => void;
 }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -2375,12 +2380,22 @@ function PrinterCard({
 
   return (
     <Card
-      className="relative"
+      className={`relative ${isSelected ? 'ring-2 ring-bambu-green' : ''}`}
       onDragEnter={handleCardDragEnter}
       onDragOver={handleCardDragOver}
       onDragLeave={handleCardDragLeave}
       onDrop={handleCardDrop}
     >
+      {/* Selection checkbox */}
+      {onToggleSelect && (
+        <button
+          className="absolute top-2 left-2 z-10 w-5 h-5 rounded border border-bambu-dark-tertiary bg-bambu-dark flex items-center justify-center hover:border-bambu-green transition-colors"
+          onClick={(e) => { e.stopPropagation(); onToggleSelect(printer.id); }}
+        >
+          {isSelected && <div className="w-3 h-3 rounded-sm bg-bambu-green" />}
+        </button>
+      )}
+
       {/* Drop zone overlay */}
       {(isDraggingFile || isDropUploading) && (
         <div
@@ -5098,6 +5113,7 @@ function AddPrinterModal({
     mqtt_connection_timeout: 900,
     stagger_interval_minutes: 0,
     swap_mode_enabled: false,
+    require_plate_clear: true,
     auto_light_off: false,
   });
 
@@ -5503,12 +5519,26 @@ function AddPrinterModal({
                     <input
                       type="checkbox"
                       checked={form.swap_mode_enabled ?? false}
-                      onChange={(e) => setForm({ ...form, swap_mode_enabled: e.target.checked })}
+                      onChange={(e) => setForm({ ...form, swap_mode_enabled: e.target.checked, ...e.target.checked ? { require_plate_clear: false } : {} })}
                       className="w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
                     />
                     <span className="text-sm text-white">{t('printers.modal.swapMode')}</span>
                   </label>
                   <p className="text-xs text-bambu-gray mt-1 ml-6">{t('printers.modal.swapModeHint')}</p>
+                </div>
+                )}
+                {!form.swap_mode_enabled && (
+                <div>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={form.require_plate_clear ?? true}
+                      onChange={(e) => setForm({ ...form, require_plate_clear: e.target.checked })}
+                      className="w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                    />
+                    <span className="text-sm text-white">{t('printers.modal.requirePlateClear')}</span>
+                  </label>
+                  <p className="text-xs text-bambu-gray mt-1 ml-6">{t('printers.modal.requirePlateClearHint')}</p>
                 </div>
                 )}
                 {form.model && /p1s|p1p/i.test(form.model) && (
@@ -5777,6 +5807,7 @@ function EditPrinterModal({
     mqtt_connection_timeout: printer.mqtt_connection_timeout ?? 900,
     stagger_interval_minutes: printer.stagger_interval_minutes ?? 0,
     swap_mode_enabled: printer.swap_mode_enabled ?? false,
+    require_plate_clear: printer.require_plate_clear ?? true,
     auto_light_off: printer.auto_light_off ?? false,
   });
   const [showAccessCode, setShowAccessCode] = useState(false);
@@ -5812,6 +5843,7 @@ function EditPrinterModal({
       mqtt_connection_timeout: form.mqtt_connection_timeout,
       stagger_interval_minutes: form.stagger_interval_minutes,
       swap_mode_enabled: form.swap_mode_enabled,
+      require_plate_clear: form.swap_mode_enabled ? false : form.require_plate_clear,
       auto_light_off: form.auto_light_off,
     };
     // Only include access_code if it was changed
@@ -5980,12 +6012,26 @@ function EditPrinterModal({
                     <input
                       type="checkbox"
                       checked={form.swap_mode_enabled ?? false}
-                      onChange={(e) => setForm({ ...form, swap_mode_enabled: e.target.checked })}
+                      onChange={(e) => setForm({ ...form, swap_mode_enabled: e.target.checked, ...e.target.checked ? { require_plate_clear: false } : {} })}
                       className="w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
                     />
                     <span className="text-sm text-white">{t('printers.modal.swapMode')}</span>
                   </label>
                   <p className="text-xs text-bambu-gray mt-1 ml-6">{t('printers.modal.swapModeHint')}</p>
+                </div>
+                )}
+                {!form.swap_mode_enabled && (
+                <div>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={form.require_plate_clear ?? true}
+                      onChange={(e) => setForm({ ...form, require_plate_clear: e.target.checked })}
+                      className="w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                    />
+                    <span className="text-sm text-white">{t('printers.modal.requirePlateClear')}</span>
+                  </label>
+                  <p className="text-xs text-bambu-gray mt-1 ml-6">{t('printers.modal.requirePlateClearHint')}</p>
                 </div>
                 )}
                 {form.model && /p1s|p1p/i.test(form.model) && (
@@ -6113,6 +6159,13 @@ export function PrintersPage() {
   const queryClient = useQueryClient();
   const { showToast } = useToast();
   const { hasPermission } = useAuth();
+
+  // Bulk printer selection
+  const [selectedPrinterIds, setSelectedPrinterIds] = useState<Set<number>>(new Set());
+  const [bulkConfirmAction, setBulkConfirmAction] = useState<'stop' | 'pause' | 'clearPlate' | null>(null);
+  const [bulkActionPending, setBulkActionPending] = useState(false);
+  const selectionMode = selectedPrinterIds.size > 0;
+
   // Embedded camera viewer state - supports multiple simultaneous viewers
   // Persisted to localStorage so cameras reopen after navigation
   const [embeddedCameraPrinters, setEmbeddedCameraPrinters] = useState<Map<number, { id: number; name: string }>>(() => {
@@ -6317,6 +6370,72 @@ export function PrintersPage() {
   const cardSizeLabels = ['S', 'M', 'L', 'XL'];
 
   // Sort printers based on selected option
+  // Bulk selection helpers
+  const toggleSelect = useCallback((id: number) => {
+    setSelectedPrinterIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const clearSelection = useCallback(() => setSelectedPrinterIds(new Set()), []);
+
+  const selectAll = useCallback(() => {
+    if (!printers) return;
+    setSelectedPrinterIds(new Set(printers.map(p => p.id)));
+  }, [printers]);
+
+  const selectByLocation = useCallback((location: string) => {
+    if (!printers) return;
+    setSelectedPrinterIds(new Set(printers.filter(p => p.location === location).map(p => p.id)));
+  }, [printers]);
+
+  const selectByState = useCallback((state: string) => {
+    if (!printers) return;
+    const ids = printers.filter(p => {
+      const st = queryClient.getQueryData<{ connected: boolean; state: string | null }>(['printerStatus', p.id]);
+      if (!st?.connected) return state === 'offline';
+      switch (state) {
+        case 'printing': return st.state === 'RUNNING';
+        case 'paused': return st.state === 'PAUSE';
+        case 'finished': return st.state === 'FINISH';
+        case 'error': return st.state === 'FAILED';
+        case 'idle': return st.state === 'IDLE';
+        default: return false;
+      }
+    }).map(p => p.id);
+    setSelectedPrinterIds(new Set(ids));
+  }, [printers, queryClient]);
+
+  const executeBulkAction = useCallback(async (action: string) => {
+    const ids = Array.from(selectedPrinterIds);
+    setBulkActionPending(true);
+    setBulkConfirmAction(null);
+    let successCount = 0;
+    for (const id of ids) {
+      try {
+        if (action === 'stop') await api.stopPrint(id);
+        else if (action === 'pause') await api.pausePrint(id);
+        else if (action === 'resume') await api.resumePrint(id);
+        else if (action === 'clearPlate') await api.clearPlate(id);
+        else if (action === 'clearHMS') await api.clearHMSErrors(id);
+        successCount++;
+      } catch { /* skip failed */ }
+    }
+    setBulkActionPending(false);
+    showToast(t('printers.bulk.actionComplete', { count: successCount }), 'success');
+    clearSelection();
+  }, [selectedPrinterIds, showToast, t, clearSelection]);
+
+  const handleBulkAction = useCallback((action: string) => {
+    if (action === 'stop' || action === 'pause' || action === 'clearPlate') {
+      setBulkConfirmAction(action as 'stop' | 'pause' | 'clearPlate');
+    } else {
+      executeBulkAction(action);
+    }
+  }, [executeBulkAction]);
+
   const sortedPrinters = useMemo(() => {
     if (!printers) return [];
     const sorted = [...printers];
@@ -6451,6 +6570,23 @@ export function PrintersPage() {
             />
             {t('printers.hideOffline')}
           </label>
+          {/* Bulk select toggle */}
+          {printers && printers.length > 1 && (
+            <button
+              onClick={() => {
+                if (selectionMode) clearSelection();
+                else if (printers) setSelectedPrinterIds(new Set(printers.map(p => p.id)));
+              }}
+              className={`px-3 py-1.5 text-sm rounded-lg border transition-colors ${
+                selectionMode
+                  ? 'bg-bambu-green/20 border-bambu-green/50 text-bambu-green'
+                  : 'bg-bambu-dark-secondary border-bambu-dark-tertiary text-bambu-gray hover:text-white'
+              }`}
+            >
+              {selectionMode ? t('printers.bulk.selected', { count: selectedPrinterIds.size }) : t('printers.bulk.selectAll')}
+            </button>
+          )}
+
           {/* Power dropdown for offline printers with smart plugs */}
           {hideDisconnected && Object.keys(smartPlugByPrinter).length > 0 && (
             <div className="relative">
@@ -6559,6 +6695,8 @@ export function PrintersPage() {
                     onOpenEmbeddedCamera={(id, name) => setEmbeddedCameraPrinters(prev => new Map(prev).set(id, { id, name }))}
                     checkPrinterFirmware={settings?.check_printer_firmware !== false}
                     dryingPresets={effectiveDryingPresets}
+                    isSelected={selectedPrinterIds.has(printer.id)}
+                    onToggleSelect={selectionMode ? toggleSelect : undefined}
                   />
                 ))}
               </div>
@@ -6594,6 +6732,8 @@ export function PrintersPage() {
               onOpenEmbeddedCamera={(id, name) => setEmbeddedCameraPrinters(prev => new Map(prev).set(id, { id, name }))}
               checkPrinterFirmware={settings?.check_printer_firmware !== false}
               dryingPresets={effectiveDryingPresets}
+              isSelected={selectedPrinterIds.has(printer.id)}
+              onToggleSelect={selectionMode ? toggleSelect : undefined}
             />
           ))}
         </div>
@@ -6621,6 +6761,48 @@ export function PrintersPage() {
           })}
         />
       ))}
+
+      {/* Bulk confirm modals */}
+      {bulkConfirmAction === 'stop' && (
+        <ConfirmModal
+          title={t('printers.bulk.actions.stop')}
+          message={t('printers.bulk.selected', { count: selectedPrinterIds.size })}
+          confirmText={t('printers.bulk.actions.stop')}
+          variant="danger"
+          onConfirm={() => executeBulkAction('stop')}
+          onCancel={() => setBulkConfirmAction(null)}
+        />
+      )}
+      {bulkConfirmAction === 'pause' && (
+        <ConfirmModal
+          title={t('printers.bulk.actions.pause')}
+          message={t('printers.bulk.selected', { count: selectedPrinterIds.size })}
+          onConfirm={() => executeBulkAction('pause')}
+          onCancel={() => setBulkConfirmAction(null)}
+        />
+      )}
+      {bulkConfirmAction === 'clearPlate' && (
+        <ConfirmModal
+          title={t('printers.bulk.actions.clearPlate')}
+          message={t('printers.bulk.selected', { count: selectedPrinterIds.size })}
+          onConfirm={() => executeBulkAction('clearPlate')}
+          onCancel={() => setBulkConfirmAction(null)}
+        />
+      )}
+
+      {/* Bulk Printer Toolbar */}
+      {selectionMode && printers && (
+        <BulkPrinterToolbar
+          selectedIds={selectedPrinterIds}
+          printers={printers}
+          onClose={clearSelection}
+          onSelectAll={selectAll}
+          onSelectByLocation={selectByLocation}
+          onSelectByState={selectByState}
+          onAction={handleBulkAction}
+          actionPending={bulkActionPending}
+        />
+      )}
     </div>
   );
 }

@@ -64,6 +64,21 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/library", tags=["library"])
 
 
+def _clean_3mf_metadata(obj):
+    """Remove non-JSON-serializable data (bytes, internal keys) from 3MF metadata."""
+    if isinstance(obj, dict):
+        return {
+            k: _clean_3mf_metadata(v)
+            for k, v in obj.items()
+            if not isinstance(v, bytes) and k not in ("_thumbnail_data", "_thumbnail_ext")
+        }
+    elif isinstance(obj, list):
+        return [_clean_3mf_metadata(i) for i in obj if not isinstance(i, bytes)]
+    elif isinstance(obj, bytes):
+        return None
+    return obj
+
+
 def get_library_dir() -> Path:
     """Get the library storage directory."""
     base_dir = Path(app_settings.archive_dir)
@@ -785,9 +800,7 @@ async def scan_external_folder(
     queue = [folder_id]
     while queue:
         parent = queue.pop()
-        children_result = await db.execute(
-            select(LibraryFolder.id).where(LibraryFolder.parent_id == parent)
-        )
+        children_result = await db.execute(select(LibraryFolder.id).where(LibraryFolder.parent_id == parent))
         for (child_id,) in children_result.all():
             all_folder_ids.add(child_id)
             queue.append(child_id)
@@ -890,7 +903,7 @@ async def scan_external_folder(
                     parser = ThreeMFParser(str(filepath))
                     meta = parser.parse()
                     if meta:
-                        file_metadata = meta
+                        file_metadata = _clean_3mf_metadata(meta)
                     thumb_data = parser.extract_thumbnail()
                     if thumb_data:
                         thumb_dir = get_library_thumbnails_dir()
@@ -971,9 +984,7 @@ async def scan_external_folder(
     for sub in all_subfolders:
         if sub.external_path and not Path(sub.external_path).exists():
             # Delete only if folder has no files and no child folders remaining
-            file_count = await db.execute(
-                select(func.count(LibraryFile.id)).where(LibraryFile.folder_id == sub.id)
-            )
+            file_count = await db.execute(select(func.count(LibraryFile.id)).where(LibraryFile.folder_id == sub.id))
             if (file_count.scalar() or 0) > 0:
                 continue
             child_count = await db.execute(
@@ -1136,21 +1147,7 @@ async def upload_file(
                         f.write(thumbnail_data)
                     thumbnail_path = str(thumb_path)
 
-                # Clean metadata - remove non-JSON-serializable data (bytes, etc.)
-                def clean_metadata(obj):
-                    if isinstance(obj, dict):
-                        return {
-                            k: clean_metadata(v)
-                            for k, v in obj.items()
-                            if not isinstance(v, bytes) and k not in ("_thumbnail_data", "_thumbnail_ext")
-                        }
-                    elif isinstance(obj, list):
-                        return [clean_metadata(i) for i in obj if not isinstance(i, bytes)]
-                    elif isinstance(obj, bytes):
-                        return None
-                    return obj
-
-                metadata = clean_metadata(raw_metadata)
+                metadata = _clean_3mf_metadata(raw_metadata)
             except Exception as e:
                 logger.warning("Failed to parse 3MF: %s", e)
 
@@ -1384,20 +1381,7 @@ async def extract_zip_file(
                                     f.write(thumbnail_data)
                                 thumbnail_path = str(thumb_path)
 
-                            def clean_metadata(obj):
-                                if isinstance(obj, dict):
-                                    return {
-                                        k: clean_metadata(v)
-                                        for k, v in obj.items()
-                                        if not isinstance(v, bytes) and k not in ("_thumbnail_data", "_thumbnail_ext")
-                                    }
-                                elif isinstance(obj, list):
-                                    return [clean_metadata(i) for i in obj if not isinstance(i, bytes)]
-                                elif isinstance(obj, bytes):
-                                    return None
-                                return obj
-
-                            metadata = clean_metadata(raw_metadata)
+                            metadata = _clean_3mf_metadata(raw_metadata)
                         except Exception as e:
                             logger.warning("Failed to parse 3MF from ZIP: %s", e)
 
@@ -2187,6 +2171,26 @@ async def print_library_file(
     except DispatchEnqueueRejected as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
 
+    batch_id: str | None = None
+    extra = max(0, (body.quantity or 1) - 1)
+    if extra > 0:
+        from backend.app.services.queue_batch import enqueue_batch_copies
+
+        _items, batch_id = await enqueue_batch_copies(
+            db,
+            printer_id=printer_id,
+            count=extra,
+            library_file_id=file_id,
+            plate_id=body.plate_id,
+            ams_mapping=body.ams_mapping,
+            bed_levelling=body.bed_levelling,
+            flow_cali=body.flow_cali,
+            vibration_cali=body.vibration_cali,
+            layer_inspect=body.layer_inspect,
+            timelapse=body.timelapse,
+            use_ams=body.use_ams,
+        )
+
     return {
         "status": "dispatched",
         "printer_id": printer_id,
@@ -2194,6 +2198,8 @@ async def print_library_file(
         "filename": lib_file.filename,
         "dispatch_job_id": dispatch_result["dispatch_job_id"],
         "dispatch_position": dispatch_result["dispatch_position"],
+        "batch_id": batch_id,
+        "queued_copies": extra,
     }
 
 

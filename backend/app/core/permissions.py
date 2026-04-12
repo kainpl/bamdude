@@ -57,7 +57,6 @@ class Permission(StrEnum):
     PROJECTS_UPDATE = "projects:update"
     PROJECTS_DELETE = "projects:delete"
 
-
     # Inventory (Spool Inventory, Spool Catalog, Color Catalog)
     INVENTORY_READ = "inventory:read"
     INVENTORY_CREATE = "inventory:create"
@@ -115,6 +114,7 @@ class Permission(StrEnum):
 
     # Stats/Metrics
     STATS_READ = "stats:read"
+    STATS_FILTER_BY_USER = "stats:filter_by_user"
 
     # System Info
     SYSTEM_READ = "system:read"
@@ -253,6 +253,7 @@ PERMISSION_CATEGORIES = {
     "Stats & History": [
         Permission.AMS_HISTORY_READ,
         Permission.STATS_READ,
+        Permission.STATS_FILTER_BY_USER,
     ],
     "System": [
         Permission.SYSTEM_READ,
@@ -381,6 +382,7 @@ DEFAULT_GROUPS = {
             # Stats & History
             Permission.AMS_HISTORY_READ.value,
             Permission.STATS_READ.value,
+            Permission.STATS_FILTER_BY_USER.value,
             Permission.SYSTEM_READ.value,
             # Settings - read only
             Permission.SETTINGS_READ.value,

@@ -44,6 +44,8 @@ class Printer(Base):
     stagger_interval_minutes: Mapped[int] = mapped_column(default=0)
     # Swap mode: A1 Mini plate swapper (swap-systems.com)
     swap_mode_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Require user to confirm plate is cleared before next queued print starts
+    require_plate_clear: Mapped[bool] = mapped_column(Boolean, default=True)
     # Auto turn off chamber light after print starts (P1S/P1P turn it on automatically)
     auto_light_off: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

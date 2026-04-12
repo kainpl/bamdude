@@ -208,6 +208,8 @@ class FilePrintRequest(BaseModel):
     layer_inspect: bool = False
     timelapse: bool = False
     use_ams: bool = True
+    # Batch: first copy dispatches now, remaining (quantity-1) queue up
+    quantity: int = 1
 
 
 class FileUploadResponse(BaseModel):

@@ -147,6 +147,9 @@ export function PrintModal({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitProgress, setSubmitProgress] = useState({ current: 0, total: 0 });
 
+  // Quantity (batch). Only exposed for reprint + add-to-queue modes.
+  const [quantity, setQuantity] = useState<number>(1);
+
   const [filamentWarningItems, setFilamentWarningItems] = useState<FilamentWarningItem[] | null>(null);
 
   // Track which printers have had the "Expand custom mapping by default" setting applied
@@ -501,6 +504,7 @@ export function PrintModal({
         ? new Date(scheduleOptions.scheduledTime).toISOString()
         : undefined,
       ...printOptions,
+      quantity: mode === 'edit-queue-item' ? 1 : quantity,
     });
 
     // Loop through plates × printers
@@ -523,6 +527,7 @@ export function PrintModal({
                 plate_name: selectedPlateName,
                 ams_mapping: printerMapping,
                 ...printOptions,
+                quantity,
               });
             } else {
               await api.reprintArchive(archiveId!, printerId, {
@@ -530,6 +535,7 @@ export function PrintModal({
                 plate_name: selectedPlateName,
                 ams_mapping: printerMapping,
                 ...printOptions,
+                quantity,
               });
             }
           } else if (mode === 'edit-queue-item' && progressCounter === 1) {
@@ -788,6 +794,41 @@ export function PrintModal({
             {/* Print options */}
             {(mode === 'reprint' || effectivePrinterCount > 0) && (
               <PrintOptionsPanel options={printOptions} onChange={setPrintOptions} defaultExpanded={!!initialSelectedPrinterIds?.length} />
+            )}
+
+            {/* Quantity (batch) — not for edit mode */}
+            {mode !== 'edit-queue-item' && effectivePrinterCount > 0 && (
+              <div className="mb-4 flex items-center justify-between bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg p-3">
+                <div>
+                  <div className="text-sm text-white font-medium">{t('printModal.quantity')}</div>
+                  <div className="text-xs text-bambu-gray">{t('printModal.quantityHint')}</div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setQuantity(q => Math.max(1, q - 1))}
+                    disabled={quantity <= 1}
+                    className="w-8 h-8 rounded bg-bambu-dark border border-bambu-dark-tertiary text-white hover:border-bambu-green disabled:opacity-40"
+                  >−</button>
+                  <input
+                    type="number"
+                    min={1}
+                    max={50}
+                    value={quantity}
+                    onChange={(e) => {
+                      const v = parseInt(e.target.value, 10);
+                      if (Number.isFinite(v)) setQuantity(Math.min(50, Math.max(1, v)));
+                    }}
+                    className="w-14 text-center bg-bambu-dark border border-bambu-dark-tertiary rounded text-white py-1"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setQuantity(q => Math.min(50, q + 1))}
+                    disabled={quantity >= 50}
+                    className="w-8 h-8 rounded bg-bambu-dark border border-bambu-dark-tertiary text-white hover:border-bambu-green disabled:opacity-40"
+                  >+</button>
+                </div>
+              </div>
             )}
 
             {/* Schedule options - only for queue modes */}

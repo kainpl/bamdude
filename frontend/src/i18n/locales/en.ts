@@ -124,6 +124,21 @@ export default {
   printers: {
     title: 'Printers',
     addPrinter: 'Add Printer',
+    bulk: {
+      selected: '{{count}} selected',
+      selectAll: 'Select All',
+      selectByState: 'By State',
+      selectByLocation: 'By Location',
+      noneApplicable: 'No applicable printers',
+      actionComplete: '{{count}} printer(s) updated',
+      actions: {
+        stop: 'Stop',
+        pause: 'Pause',
+        resume: 'Resume',
+        clearHMS: 'Clear HMS',
+        clearPlate: 'Clear Plate',
+      },
+    },
     editPrinter: 'Edit Printer',
     deletePrinter: 'Delete Printer',
     printerName: 'Printer Name',
@@ -373,6 +388,8 @@ export default {
       staggerIntervalHint: '0 = use system default',
       swapMode: 'Swap Mode',
       swapModeHint: 'A1 Mini plate swapper (swap-systems.com)',
+      requirePlateClear: 'Require plate-clear confirmation',
+      requirePlateClearHint: 'Queue waits for user to confirm plate is cleared before starting next print',
       autoLightOff: 'Turn off light after print starts',
       autoLightOffHint: 'Automatically turn off chamber light when a print begins (P1S/P1P turn it on at start)',
       fromPrinterSettings: 'From printer settings',
@@ -930,6 +947,33 @@ export default {
       totalTime: 'Total Queue Time',
       totalWeight: 'Total Queue Weight',
       history: 'History',
+    },
+    // Stats bar (top of queue page)
+    stats: {
+      printing: 'Printing',
+      pending: 'Pending',
+      estimatedRemaining: 'Est. remaining',
+      errors: 'Errors',
+    },
+    // Timeline view
+    timeline: {
+      viewTimeline: 'Timeline view',
+      rangeLabel: 'Range',
+      range12h: '12h',
+      range24h: '24h',
+      range3d: '3d',
+      now: 'Now',
+      emptyQueue: 'No pending prints',
+      estimatedDuration: 'Estimated',
+      noDuration: 'estimated',
+      batchGroupOf: 'Batch of {{count}}',
+      editItem: 'Edit item',
+      cancelItem: 'Cancel item',
+      cancelBatch: 'Cancel batch ({{count}})',
+      cancelItemSuccess: 'Item cancelled',
+      cancelItemFailed: 'Failed to cancel item',
+      cancelBatchSuccess: 'Cancelled {{count}} items',
+      cancelBatchFailed: 'Failed to cancel batch',
     },
     // Filters
     filter: {
@@ -3463,6 +3507,8 @@ export default {
     layerInspectionDesc: 'AI inspection of first layer',
     timelapseDesc: 'Record timelapse video',
     printOptions: 'Print Options',
+    quantity: 'Quantity',
+    quantityHint: 'Print multiple copies. Extras are queued after the first.',
 
     // ScheduleOptions
     whenToPrint: 'When to print',

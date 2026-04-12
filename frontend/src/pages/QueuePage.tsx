@@ -1,27 +1,40 @@
-import { useState, useMemo } from 'react';
+import { useEffect, useState, useMemo } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
-import { LayoutGrid, List, Loader2, ArrowUp, ArrowDown } from 'lucide-react';
+import { Activity, LayoutGrid, List, Loader2, ArrowUp, ArrowDown } from 'lucide-react';
 import { api } from '../api/client';
-import type { PrinterQueue } from '../api/client';
+import type { PrinterQueue, PrintQueueItem } from '../api/client';
 import { QueueCard } from '../components/QueueCard';
+import { QueueStatsBar } from '../components/Queue/QueueStatsBar';
+import { QueueTimelineView } from '../components/Queue/QueueTimelineView';
+import { PrintModal } from '../components/PrintModal';
 
-type ViewMode = 'compact' | 'expanded' | 'all';
+type ViewMode = 'compact' | 'expanded' | 'all' | 'timeline';
 type SortOption = 'name' | 'status' | 'model' | 'location';
 
-const VIEW_LABELS: { mode: ViewMode; label: string }[] = [
+const VIEW_LABELS: { mode: ViewMode; label: string; icon?: typeof List }[] = [
   { mode: 'compact', label: 'S' },
   { mode: 'expanded', label: 'M' },
-  { mode: 'all', label: 'All' },
+  { mode: 'all', label: 'All', icon: List },
+  { mode: 'timeline', label: '', icon: Activity },
 ];
+
+const VALID_VIEW_MODES: ViewMode[] = ['compact', 'expanded', 'all', 'timeline'];
 
 export function QueuePage() {
   const { t } = useTranslation();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
+    const fromUrl = searchParams.get('view');
+    if (fromUrl && VALID_VIEW_MODES.includes(fromUrl as ViewMode)) return fromUrl as ViewMode;
     const saved = localStorage.getItem('queueViewMode');
-    return (saved as ViewMode) || 'expanded';
+    if (saved && VALID_VIEW_MODES.includes(saved as ViewMode)) return saved as ViewMode;
+    return 'expanded';
   });
+
+  const [editingItem, setEditingItem] = useState<PrintQueueItem | null>(null);
 
   const [sortBy, setSortBy] = useState<SortOption>(() => {
     return (localStorage.getItem('queueSortBy') as SortOption) || 'name';
@@ -38,13 +51,22 @@ export function QueuePage() {
     refetchInterval: 15000,
   });
 
-  // Fetch all pending items for "All" view
+  // Fetch all pending items — used by stats bar + "All" view + Timeline.
   const { data: allPendingItems } = useQuery({
     queryKey: ['queue', 'all', 'pending'],
     queryFn: () => api.getQueue(undefined, 'pending'),
     refetchInterval: 30000,
-    enabled: viewMode === 'all',
   });
+
+  // Sync URL query param with viewMode so it survives reload + can be shared.
+  useEffect(() => {
+    const current = searchParams.get('view');
+    if (current !== viewMode) {
+      const next = new URLSearchParams(searchParams);
+      next.set('view', viewMode);
+      setSearchParams(next, { replace: true });
+    }
+  }, [viewMode, searchParams, setSearchParams]);
 
   const handleViewChange = (mode: ViewMode) => {
     setViewMode(mode);
@@ -114,11 +136,6 @@ export function QueuePage() {
     return groups;
   }, [sortBy, sortedQueues, t]);
 
-  // Total stats
-  const totalPending = queues?.reduce((sum, q) => sum + q.pending_count, 0) || 0;
-  const totalPrinting = queues?.filter(q => q.status === 'printing').length || 0;
-  const totalError = queues?.filter(q => q.status === 'error').length || 0;
-
   const renderGrid = (items: PrinterQueue[]) => (
     <div className={`grid gap-4 ${getGridClasses()}`}>
       {items.map((queue) => (
@@ -135,17 +152,6 @@ export function QueuePage() {
           <h1 className="text-2xl font-bold text-white">
             {t('queue.title')}
           </h1>
-          {queues && (
-            <p className="text-sm text-bambu-gray mt-1">
-              {totalPrinting > 0 && <span className="text-blue-400">{t('queueCard.statusPrinting')} {totalPrinting}</span>}
-              {totalPrinting > 0 && totalPending > 0 && <span className="mx-1.5">·</span>}
-              {totalPending > 0 && <span>{totalPending} {t('queueCard.pending')}</span>}
-              {totalError > 0 && <span className="ml-1.5">· <span className="text-red-400">{totalError} {t('queueCard.statusError')}</span></span>}
-              {totalPrinting === 0 && totalPending === 0 && totalError === 0 && (
-                <span>{t('queueCard.noPending')}</span>
-              )}
-            </p>
-          )}
         </div>
 
         <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
@@ -174,8 +180,13 @@ export function QueuePage() {
 
           {/* View mode selector */}
           <div className="flex items-center bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
-            {VIEW_LABELS.map(({ mode, label }, index) => {
+            {VIEW_LABELS.map(({ mode, label, icon: Icon }, index) => {
               const isSelected = viewMode === mode;
+              const titleText =
+                mode === 'compact' ? t('queueCard.viewCompact') :
+                mode === 'expanded' ? t('queueCard.viewExpanded') :
+                mode === 'all' ? t('queueCard.viewAll') :
+                t('queue.timeline.viewTimeline');
               return (
                 <button
                   key={mode}
@@ -189,11 +200,12 @@ export function QueuePage() {
                       ? 'bg-bambu-green text-white'
                       : 'text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-white'
                   }`}
-                  title={mode === 'compact' ? t('queueCard.viewCompact') : mode === 'expanded' ? t('queueCard.viewExpanded') : t('queueCard.viewAll')}
+                  title={titleText}
+                  aria-label={titleText}
                 >
-                  {mode === 'all' ? (
+                  {Icon ? (
                     <span className="flex items-center gap-1">
-                      <List className="w-3.5 h-3.5" />
+                      <Icon className="w-3.5 h-3.5" />
                       {label}
                     </span>
                   ) : label}
@@ -203,6 +215,11 @@ export function QueuePage() {
           </div>
         </div>
       </div>
+
+      {/* Stats bar */}
+      {!isLoading && queues && queues.length > 0 && (
+        <QueueStatsBar queues={queues} pendingItems={allPendingItems} />
+      )}
 
       {/* Loading */}
       {isLoading && (
@@ -221,7 +238,7 @@ export function QueuePage() {
       )}
 
       {/* Card grid (S and M modes) */}
-      {!isLoading && queues && queues.length > 0 && viewMode !== 'all' && (
+      {!isLoading && queues && queues.length > 0 && viewMode !== 'all' && viewMode !== 'timeline' && (
         groupedQueues ? (
           // Grouped by location
           <div className="space-y-6">
@@ -239,6 +256,15 @@ export function QueuePage() {
         ) : (
           renderGrid(sortedQueues)
         )
+      )}
+
+      {/* Timeline view */}
+      {!isLoading && queues && queues.length > 0 && viewMode === 'timeline' && (
+        <QueueTimelineView
+          queues={queues}
+          items={allPendingItems}
+          onEditItem={setEditingItem}
+        />
       )}
 
       {/* All view — flat list of all pending items */}
@@ -278,6 +304,17 @@ export function QueuePage() {
             })
           )}
         </div>
+      )}
+
+      {editingItem && (
+        <PrintModal
+          mode="edit-queue-item"
+          archiveId={editingItem.archive_id ?? undefined}
+          libraryFileId={editingItem.library_file_id ?? undefined}
+          archiveName={editingItem.archive_name || editingItem.library_file_name || `#${editingItem.id}`}
+          queueItem={editingItem}
+          onClose={() => setEditingItem(null)}
+        />
       )}
     </div>
   );

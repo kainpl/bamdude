@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, PlainSerializer
+from pydantic import BaseModel, Field, PlainSerializer
 
 
 # Custom serializer to ensure UTC datetimes have Z suffix
@@ -31,6 +31,8 @@ class PrintQueueItemCreate(BaseModel):
     layer_inspect: bool = False
     timelapse: bool = False
     use_ams: bool = True
+    # Batch: create N identical items sharing a batch_id (1..50)
+    quantity: int = Field(default=1, ge=1, le=50)
 
 
 class PrintQueueItemUpdate(BaseModel):
@@ -75,6 +77,7 @@ class PrintQueueItemResponse(BaseModel):
     completed_at: UTCDatetime
     error_message: str | None
     created_at: UTCDatetime
+    batch_id: str | None = None
 
     # Nested info for UI
     archive_name: str | None = None

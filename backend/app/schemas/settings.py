@@ -70,6 +70,10 @@ class AppSettings(BaseModel):
     queue_drying_enabled: bool = Field(
         default=False, description="Automatically dry AMS filament between queued prints"
     )
+    prefer_lowest_filament: bool = Field(
+        default=False,
+        description="When multiple AMS trays match, prefer the one with lowest remaining filament",
+    )
     queue_drying_block: bool = Field(
         default=False,
         description="Block queue until drying completes (when disabled, prints take priority over drying)",
@@ -84,11 +88,16 @@ class AppSettings(BaseModel):
     )
 
     # Staggered start settings (electrical load management for farms)
-    stagger_enabled: bool = Field(default=False, description="Enable staggered start to limit concurrent printer heating")
+    stagger_enabled: bool = Field(
+        default=False, description="Enable staggered start to limit concurrent printer heating"
+    )
     stagger_concurrent: int = Field(default=2, description="Max printers that can be heating simultaneously")
-    stagger_interval_minutes: int = Field(default=5, description="Wait time (minutes) after a slot frees before next start")
+    stagger_interval_minutes: int = Field(
+        default=5, description="Wait time (minutes) after a slot frees before next start"
+    )
     stagger_wait_for_bed: bool = Field(
-        default=True, description="Slot frees when bed reaches target temp (±1°C). When off, frees immediately after start."
+        default=True,
+        description="Slot frees when bed reaches target temp (±1°C). When off, frees immediately after start.",
     )
 
     # Print modal settings
@@ -245,6 +254,7 @@ class AppSettingsUpdate(BaseModel):
     ams_temp_good: float | None = None
     ams_temp_fair: float | None = None
     ams_history_retention_days: int | None = None
+    prefer_lowest_filament: bool | None = None
     queue_drying_enabled: bool | None = None
     queue_drying_block: bool | None = None
     ambient_drying_enabled: bool | None = None

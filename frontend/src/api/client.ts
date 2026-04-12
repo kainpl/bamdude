@@ -106,6 +106,7 @@ export interface Printer {
   plate_detection_roi?: PlateDetectionROI;  // ROI for plate detection
   stagger_interval_minutes: number;  // Per-printer stagger interval override (0 = system default)
   swap_mode_enabled: boolean;  // A1 Mini plate swapper
+  require_plate_clear: boolean;  // Require plate-clear confirmation before next queued print
   auto_light_off: boolean;  // Turn off chamber light after print starts
   created_at: string;
   updated_at: string;
@@ -295,6 +296,7 @@ export interface PrinterCreate {
   plate_detection_roi?: PlateDetectionROI;
   stagger_interval_minutes?: number;
   swap_mode_enabled?: boolean;
+  require_plate_clear?: boolean;
   auto_light_off?: boolean;
 }
 
@@ -1378,6 +1380,7 @@ export interface PrintQueueItem {
   completed_at: string | null;
   error_message: string | null;
   created_at: string;
+  batch_id?: string | null;
   archive_name?: string | null;
   archive_thumbnail?: string | null;
   library_file_name?: string | null;
@@ -1407,6 +1410,7 @@ export interface PrintQueueItemCreate {
   layer_inspect?: boolean;
   timelapse?: boolean;
   use_ams?: boolean;
+  quantity?: number;
 }
 
 export interface PrintQueueItemUpdate {
@@ -3240,6 +3244,7 @@ export const api = {
       vibration_cali?: boolean;
       layer_inspect?: boolean;
       use_ams?: boolean;
+      quantity?: number;
     }
   ) =>
     request<BackgroundDispatchResponse>(
@@ -4362,6 +4367,7 @@ export const api = {
       layer_inspect?: boolean;
       timelapse?: boolean;
       use_ams?: boolean;
+      quantity?: number;
     }
   ) =>
     request<BackgroundDispatchResponse>(

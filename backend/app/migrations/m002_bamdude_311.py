@@ -79,7 +79,8 @@ async def upgrade(conn):
 
     # ── Macros table ──
     if not await table_exists(conn, "macros"):
-        await conn.execute(text("""
+        await conn.execute(
+            text("""
             CREATE TABLE macros (
                 id INTEGER PRIMARY KEY,
                 name VARCHAR(100) NOT NULL,
@@ -92,11 +93,13 @@ async def upgrade(conn):
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
-        """))
+        """)
+        )
 
     # ── Printer queues ──
     if not await table_exists(conn, "printer_queues"):
-        await conn.execute(text("""
+        await conn.execute(
+            text("""
             CREATE TABLE printer_queues (
                 id INTEGER PRIMARY KEY,
                 printer_id INTEGER NOT NULL UNIQUE REFERENCES printers(id) ON DELETE CASCADE,
@@ -112,55 +115,59 @@ async def upgrade(conn):
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
-        """))
+        """)
+        )
 
         # Create printer_queues for existing printers
-        await conn.execute(text(
-            "INSERT INTO printer_queues "
-            "(id, printer_id, status, pending_count, completed_count, failed_count, "
-            "cancelled_count, skipped_count, total_count) "
-            "SELECT id, id, 'idle', 0, 0, 0, 0, 0, 0 FROM printers "
-            "WHERE id NOT IN (SELECT printer_id FROM printer_queues)"
-        ))
+        await conn.execute(
+            text(
+                "INSERT INTO printer_queues "
+                "(id, printer_id, status, pending_count, completed_count, failed_count, "
+                "cancelled_count, skipped_count, total_count) "
+                "SELECT id, id, 'idle', 0, 0, 0, 0, 0, 0 FROM printers "
+                "WHERE id NOT IN (SELECT printer_id FROM printer_queues)"
+            )
+        )
 
     # ── Queue rework: add queue_id to print_queue ──
     await add_column(conn, "print_queue", "queue_id INTEGER REFERENCES printer_queues(id)")
 
     # Migrate existing print_queue items: set queue_id = printer_id (only if old schema)
     if await column_exists(conn, "print_queue", "printer_id"):
-        await conn.execute(text(
-            "UPDATE print_queue SET queue_id = printer_id "
-            "WHERE queue_id IS NULL AND printer_id IS NOT NULL"
-        ))
+        await conn.execute(
+            text("UPDATE print_queue SET queue_id = printer_id WHERE queue_id IS NULL AND printer_id IS NOT NULL")
+        )
 
         # Delete orphaned items (model-based items without printer)
-        await conn.execute(text(
-            "DELETE FROM print_queue WHERE queue_id IS NULL AND printer_id IS NULL"
-        ))
+        await conn.execute(text("DELETE FROM print_queue WHERE queue_id IS NULL AND printer_id IS NULL"))
 
         # Fix queue_id where printer_queues.id != printer_id
         try:
-            await conn.execute(text(
-                "UPDATE print_queue SET queue_id = ("
-                "  SELECT pq.id FROM printer_queues pq WHERE pq.printer_id = print_queue.printer_id"
-                ") WHERE printer_id IS NOT NULL AND EXISTS ("
-                "  SELECT 1 FROM printer_queues pq2 "
-                "  WHERE pq2.printer_id = print_queue.printer_id AND pq2.id != print_queue.queue_id"
-                ")"
-            ))
+            await conn.execute(
+                text(
+                    "UPDATE print_queue SET queue_id = ("
+                    "  SELECT pq.id FROM printer_queues pq WHERE pq.printer_id = print_queue.printer_id"
+                    ") WHERE printer_id IS NOT NULL AND EXISTS ("
+                    "  SELECT 1 FROM printer_queues pq2 "
+                    "  WHERE pq2.printer_id = print_queue.printer_id AND pq2.id != print_queue.queue_id"
+                    ")"
+                )
+            )
         except Exception:
             pass
 
     # Recount queue counters
-    await conn.execute(text(
-        "UPDATE printer_queues SET "
-        "pending_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id AND print_queue.status = 'pending'), "
-        "completed_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id AND print_queue.status = 'completed'), "
-        "failed_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id AND print_queue.status = 'failed'), "
-        "cancelled_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id AND print_queue.status = 'cancelled'), "
-        "skipped_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id AND print_queue.status = 'skipped'), "
-        "total_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id)"
-    ))
+    await conn.execute(
+        text(
+            "UPDATE printer_queues SET "
+            "pending_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id AND print_queue.status = 'pending'), "
+            "completed_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id AND print_queue.status = 'completed'), "
+            "failed_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id AND print_queue.status = 'failed'), "
+            "cancelled_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id AND print_queue.status = 'cancelled'), "
+            "skipped_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id AND print_queue.status = 'skipped'), "
+            "total_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id)"
+        )
+    )
 
     # ── Clean up print_queue: drop legacy columns ──
     # Remove: printer_id, require_previous_success, target_model, target_location,
@@ -283,20 +290,28 @@ async def upgrade(conn):
     for models, names in _type_models:
         for name in names:
             await conn.execute(
-                text("UPDATE maintenance_types SET printer_models = :models WHERE name = :name AND printer_models = '[\"*\"]'"),
+                text(
+                    "UPDATE maintenance_types SET printer_models = :models WHERE name = :name AND printer_models = '[\"*\"]'"
+                ),
                 {"models": models, "name": name},
             )
 
     # ── Maintenance history: who performed ──
-    await add_column(conn, "maintenance_history", "performed_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL")
-    await add_column(conn, "maintenance_history", "performed_by_chat_id INTEGER REFERENCES telegram_chats(id) ON DELETE SET NULL")
+    await add_column(
+        conn, "maintenance_history", "performed_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL"
+    )
+    await add_column(
+        conn, "maintenance_history", "performed_by_chat_id INTEGER REFERENCES telegram_chats(id) ON DELETE SET NULL"
+    )
 
     # Backfill performed_by_user_id from first user
-    await conn.execute(text(
-        "UPDATE maintenance_history SET performed_by_user_id = ("
-        "  SELECT id FROM users ORDER BY id LIMIT 1"
-        ") WHERE performed_by_user_id IS NULL AND performed_by_chat_id IS NULL"
-    ))
+    await conn.execute(
+        text(
+            "UPDATE maintenance_history SET performed_by_user_id = ("
+            "  SELECT id FROM users ORDER BY id LIMIT 1"
+            ") WHERE performed_by_user_id IS NULL AND performed_by_chat_id IS NULL"
+        )
+    )
 
     # ── Users: LDAP auth_source ──
     await add_column(conn, "users", "auth_source VARCHAR(20) NOT NULL DEFAULT 'local'")
@@ -327,7 +342,9 @@ async def upgrade(conn):
             shared = [c for c in old_cols if c in new_cols]
             if shared:
                 cols = ", ".join(shared)
-                await conn.execute(text(f"INSERT INTO git_backup_config ({cols}) SELECT {cols} FROM github_backup_config"))  # noqa: S608
+                await conn.execute(
+                    text(f"INSERT INTO git_backup_config ({cols}) SELECT {cols} FROM github_backup_config")
+                )  # noqa: S608
         await conn.execute(text("DROP TABLE github_backup_config"))
 
     if await table_exists(conn, "github_backup_logs"):
@@ -343,14 +360,56 @@ async def upgrade(conn):
 
     # ── Migrate legacy VP modes to file_manager ──
     if await table_exists(conn, "virtual_printers"):
-        await conn.execute(text(
-            "UPDATE virtual_printers SET mode = 'file_manager' "
-            "WHERE mode IN ('immediate', 'review')"
-        ))
-        await conn.execute(text(
-            "UPDATE virtual_printers SET mode = 'print_queue' "
-            "WHERE mode = 'queue'"
-        ))
+        await conn.execute(
+            text("UPDATE virtual_printers SET mode = 'file_manager' WHERE mode IN ('immediate', 'review')")
+        )
+        await conn.execute(text("UPDATE virtual_printers SET mode = 'print_queue' WHERE mode = 'queue'"))
+
+    # ── Maintenance type codes (stable, locale-independent identifiers) ──
+    _name_to_code = {
+        "Clean Carbon Rods": "clean_carbon_rods",
+        "Lubricate Steel Rods": "lubricate_steel_rods",
+        "Clean Steel Rods": "clean_steel_rods",
+        "Lubricate Linear Rails": "lubricate_linear_rails",
+        "Clean Linear Rails": "clean_linear_rails",
+        "Clean Nozzle/Hotend": "clean_nozzle",
+        "Check Belt Tension": "check_belt_tension",
+        "Clean Build Plate": "clean_build_plate",
+        "Check PTFE Tube": "check_ptfe_tube",
+        # Ukrainian
+        "Очистити карбонові штанги": "clean_carbon_rods",
+        "Змастити сталеві штанги": "lubricate_steel_rods",
+        "Очистити сталеві штанги": "clean_steel_rods",
+        "Змастити лінійні рейки": "lubricate_linear_rails",
+        "Очистити лінійні рейки": "clean_linear_rails",
+        "Очистити сопло/хотенд": "clean_nozzle",
+        "Перевірити натяг ременів": "check_belt_tension",
+        "Очистити робочий стіл": "clean_build_plate",
+        "Перевірити PTFE-трубку": "check_ptfe_tube",
+    }
+    if await add_column(conn, "maintenance_types", "type_code VARCHAR(50)"):
+        for _name, _code in _name_to_code.items():
+            await conn.execute(
+                text(
+                    "UPDATE maintenance_types SET type_code = :code WHERE name = :name AND type_code IS NULL AND is_system = 1"
+                ),
+                {"code": _code, "name": _name},
+            )
+        await conn.execute(
+            text(
+                "UPDATE maintenance_types SET type_code = 'custom_' || CAST(id AS VARCHAR) WHERE type_code IS NULL AND is_system = 0"
+            )
+        )
+        await conn.execute(
+            text("UPDATE maintenance_types SET type_code = 'system_' || CAST(id AS VARCHAR) WHERE type_code IS NULL")
+        )
+
+    # ── Per-printer plate-clear requirement ──
+    await add_column(conn, "printers", "require_plate_clear BOOLEAN NOT NULL DEFAULT 1")
+
+    # ── Batch grouping for quantity>1 queue items ──
+    if await add_column(conn, "print_queue", "batch_id VARCHAR(36)"):
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_print_queue_batch_id ON print_queue(batch_id)"))
 
 
 async def seed(session_factory):

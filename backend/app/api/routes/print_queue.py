@@ -2,6 +2,7 @@
 
 import json
 import logging
+import uuid
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -314,28 +315,39 @@ async def add_to_queue(
     )
     max_pos = result.scalar() or 0
 
-    item = PrintQueueItem(
-        queue_id=data.queue_id,
-        archive_id=data.archive_id,
-        library_file_id=data.library_file_id,
-        scheduled_time=data.scheduled_time,
-        auto_off_after=data.auto_off_after,
-        manual_start=data.manual_start,
-        ams_mapping=json.dumps(data.ams_mapping) if data.ams_mapping else None,
-        plate_id=data.plate_id,
-        bed_levelling=data.bed_levelling,
-        flow_cali=data.flow_cali,
-        vibration_cali=data.vibration_cali,
-        layer_inspect=data.layer_inspect,
-        timelapse=data.timelapse,
-        use_ams=data.use_ams,
-        position=max_pos + 1,
-        status="pending",
-        created_by_id=current_user.id if current_user else None,
-    )
-    db.add(item)
+    # For quantity > 1, group copies under a shared batch_id
+    batch_id = str(uuid.uuid4()) if data.quantity > 1 else None
+    ams_mapping_json = json.dumps(data.ams_mapping) if data.ams_mapping else None
+
+    items: list[PrintQueueItem] = []
+    for i in range(data.quantity):
+        items.append(
+            PrintQueueItem(
+                queue_id=data.queue_id,
+                archive_id=data.archive_id,
+                library_file_id=data.library_file_id,
+                scheduled_time=data.scheduled_time,
+                auto_off_after=data.auto_off_after,
+                manual_start=data.manual_start,
+                ams_mapping=ams_mapping_json,
+                plate_id=data.plate_id,
+                bed_levelling=data.bed_levelling,
+                flow_cali=data.flow_cali,
+                vibration_cali=data.vibration_cali,
+                layer_inspect=data.layer_inspect,
+                timelapse=data.timelapse,
+                use_ams=data.use_ams,
+                position=max_pos + 1 + i,
+                status="pending",
+                batch_id=batch_id,
+                created_by_id=current_user.id if current_user else None,
+            )
+        )
+    db.add_all(items)
     await db.commit()
-    await db.refresh(item)
+    for it in items:
+        await db.refresh(it)
+    item = items[0]
 
     # Update queue counters (full recount for accuracy)
     from backend.app.services.queue_counters import update_queue_counters

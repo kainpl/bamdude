@@ -124,6 +124,21 @@ export default {
   printers: {
     title: 'Принтери',
     addPrinter: 'Додати принтер',
+    bulk: {
+      selected: '{{count}} обрано',
+      selectAll: 'Обрати всі',
+      selectByState: 'За статусом',
+      selectByLocation: 'За локацією',
+      noneApplicable: 'Немає відповідних принтерів',
+      actionComplete: '{{count}} принтер(ів) оновлено',
+      actions: {
+        stop: 'Зупинити',
+        pause: 'Пауза',
+        resume: 'Продовжити',
+        clearHMS: 'Очистити HMS',
+        clearPlate: 'Очистити стіл',
+      },
+    },
     editPrinter: 'Редагувати принтер',
     deletePrinter: 'Видалити принтер',
     printerName: 'Назва принтера',
@@ -373,6 +388,8 @@ export default {
       staggerIntervalHint: '0 = системне значення',
       swapMode: 'Swap Mode',
       swapModeHint: 'Зміна столів для A1 Mini (swap-systems.com)',
+      requirePlateClear: 'Підтвердження очищення столу',
+      requirePlateClearHint: 'Черга чекатиме підтвердження що стіл очищено перед наступним друком',
       autoLightOff: 'Вимикати світло після початку друку',
       autoLightOffHint: 'Автоматично вимикає підсвітку камери при старті друку (P1S/P1P вмикають її автоматично)',
       fromPrinterSettings: 'З налаштувань принтера',
@@ -926,6 +943,33 @@ export default {
       totalTime: 'Загальний час черги',
       totalWeight: 'Загальна вага черги',
       history: 'Історія',
+    },
+    // Stats bar (top of queue page)
+    stats: {
+      printing: 'Друкується',
+      pending: 'У черзі',
+      estimatedRemaining: 'Залишилось',
+      errors: 'Помилок',
+    },
+    // Timeline view
+    timeline: {
+      viewTimeline: 'Таймлайн',
+      rangeLabel: 'Діапазон',
+      range12h: '12г',
+      range24h: '24г',
+      range3d: '3д',
+      now: 'Зараз',
+      emptyQueue: 'Немає завдань',
+      estimatedDuration: 'Тривалість',
+      noDuration: 'приблизно',
+      batchGroupOf: 'Партія з {{count}}',
+      editItem: 'Редагувати',
+      cancelItem: 'Скасувати завдання',
+      cancelBatch: 'Скасувати партію ({{count}})',
+      cancelItemSuccess: 'Завдання скасовано',
+      cancelItemFailed: 'Не вдалося скасувати завдання',
+      cancelBatchSuccess: 'Скасовано {{count}} завдань',
+      cancelBatchFailed: 'Не вдалося скасувати партію',
     },
     // Filters
     filter: {
@@ -3451,6 +3495,8 @@ export default {
     layerInspectionDesc: 'AI-інспекція першого шару',
     timelapseDesc: 'Запис таймлапс-відео',
     printOptions: 'Параметри друку',
+    quantity: 'Кількість',
+    quantityHint: 'Кілька копій. Додаткові стають у чергу після першої.',
 
     // ScheduleOptions
     whenToPrint: 'Коли друкувати',
