@@ -95,6 +95,20 @@ All notable changes to BamDude will be documented in this file.
 - **SWAP badge** — moved to model line (before model name), visible at all card sizes
 - **Card height** — printer cards no longer stretch to match tallest card in row (`items-start`)
 
+### Upstream Bambuddy v0.2.3b2 Adaptation
+
+Cycle `applied=0.2.3b1` → `next=0.2.3b2` (23 ported / 0 missing / 4 N/A). Full audit: `temp/bambuddy-changes-audit-v0.2.3b1-v0.2.3b2.md`.
+
+- **Database engine info on System page** — "Database Engine" StatCard shows active engine (SQLite / PostgreSQL) and version string (`SHOW server_version` / `SELECT sqlite_version()`), i18n EN+UK
+- **API key empty printer list semantics** — migration m002 now includes dialect-aware `UPDATE api_keys SET printer_ids = NULL WHERE ... = '[]'` cleanup. Callsites already use correct `is None` semantics; `[]` now correctly means "no access", `NULL` means "all printers"
+- **Queue widget honors `require_plate_clear`** — `PrinterQueueWidget` accepts per-printer `requirePlateClear` prop; "Clear Plate & Start Next" prompt is suppressed when the flag is disabled (and automatically disabled in swap mode). Unlike upstream (global setting), BamDude uses the per-printer flag
+- **AMS probe timeout tests** — added 4 upstream behavior tests (`test_first_timeout_allows_retry`, `test_second_timeout_forces_reconnect`, `test_successful_probe_resets_failure_counter`, `test_no_timeout_when_probe_not_sent`) covering #887 self-healing reconnect logic already in production
+- **Skipped (not applicable)**: SpoolBuddy quick menu (1F), SpoolBuddy kiosk auto-blank fix (4E), SpoolBuddy inventory broadcast (4I), thumbnail 401-retry (4D — BamDude's thumbnail endpoints are intentionally unauthenticated, no stream-token scheme to invalidate)
+
+### Security
+
+- **`cryptography>=46.0.6`** pin (CVE-2026-34073 — X.509 wildcard SAN validation bypass). Installed `cryptography==46.0.7`, `aiohttp==3.13.5`, `Pygments==2.20.0` already exceed patched thresholds
+
 ### Dependencies
 
 - **lucide-react** `0.555.0` → `1.8.0` (major version, ~32% bundle size reduction)

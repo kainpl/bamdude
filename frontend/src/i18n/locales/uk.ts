@@ -3145,6 +3145,7 @@ export default {
     diskUsage: 'Використання диска',
     free: 'вільно',
     archiveStorage: 'Сховище архівів',
+    databaseEngine: 'СУБД',
     databaseSize: 'Розмір бази даних',
     fileManagerStorage: 'Файловий менеджер',
     memoryUsage: 'Використання пам\'яті',

@@ -5,6 +5,7 @@ CLAUDE.md
 
 # IDEA
 .idea/
+.db/
 
 # Temp (patches, experiments)
 temp/

@@ -123,6 +123,17 @@ describe('PrinterQueueWidget - Clear Plate', () => {
 
       expect(screen.queryByText('Clear Plate & Start Next')).not.toBeInTheDocument();
     });
+
+    it('shows passive link when FINISH but requirePlateClear is false', async () => {
+      render(<PrinterQueueWidget printerId={1} printerState="FINISH" requirePlateClear={false} />);
+
+      await waitFor(() => {
+        const link = screen.getByRole('link');
+        expect(link).toHaveAttribute('href', '/queue');
+      });
+
+      expect(screen.queryByText('Clear Plate & Start Next')).not.toBeInTheDocument();
+    });
   });
 
   describe('clear plate button shows queue info', () => {
@@ -222,7 +233,6 @@ describe('PrinterQueueWidget - Clear Plate', () => {
         <PrinterQueueWidget
           printerId={1}
           printerState="FINISH"
-          loadedFilamentTypes={new Set(['PLA'])}
         />
       );
 
@@ -241,7 +251,6 @@ describe('PrinterQueueWidget - Clear Plate', () => {
         <PrinterQueueWidget
           printerId={1}
           printerState="FINISH"
-          loadedFilamentTypes={new Set(['PLA', 'PETG'])}
         />
       );
 
@@ -257,7 +266,6 @@ describe('PrinterQueueWidget - Clear Plate', () => {
         <PrinterQueueWidget
           printerId={1}
           printerState="FINISH"
-          loadedFilamentTypes={new Set(['PLA'])}
         />
       );
 
@@ -318,7 +326,6 @@ describe('PrinterQueueWidget - Clear Plate', () => {
         <PrinterQueueWidget
           printerId={1}
           printerState="FINISH"
-          loadedFilamentTypes={new Set(['PLA'])}
         />
       );
 
@@ -352,7 +359,6 @@ describe('PrinterQueueWidget - Clear Plate', () => {
         <PrinterQueueWidget
           printerId={1}
           printerState="FINISH"
-          loadedFilamentTypes={new Set(['PETG'])}
         />
       );
 
@@ -389,8 +395,6 @@ describe('PrinterQueueWidget - Clear Plate', () => {
         <PrinterQueueWidget
           printerId={1}
           printerState="FINISH"
-          loadedFilamentTypes={new Set(['PETG'])}
-          loadedFilaments={new Set(['PETG:0000ff'])}
         />
       );
 
@@ -409,8 +413,6 @@ describe('PrinterQueueWidget - Clear Plate', () => {
         <PrinterQueueWidget
           printerId={1}
           printerState="FINISH"
-          loadedFilamentTypes={new Set(['PETG'])}
-          loadedFilaments={new Set(['PETG:ffffff'])}
         />
       );
 
@@ -445,8 +447,6 @@ describe('PrinterQueueWidget - Clear Plate', () => {
         <PrinterQueueWidget
           printerId={1}
           printerState="FINISH"
-          loadedFilamentTypes={new Set(['PLA'])}
-          loadedFilaments={new Set(['PLA:ff0000'])}
         />
       );
 
@@ -464,7 +464,6 @@ describe('PrinterQueueWidget - Clear Plate', () => {
         <PrinterQueueWidget
           printerId={1}
           printerState="FINISH"
-          loadedFilamentTypes={new Set(['PETG'])}
         />
       );
 
@@ -479,7 +478,6 @@ describe('PrinterQueueWidget - Clear Plate', () => {
         <PrinterQueueWidget
           printerId={1}
           printerState="FINISH"
-          loadedFilaments={new Set(['PLA:000000'])}
         />
       );
 
@@ -517,8 +515,6 @@ describe('PrinterQueueWidget - Clear Plate', () => {
         <PrinterQueueWidget
           printerId={1}
           printerState="FINISH"
-          loadedFilamentTypes={new Set(['PLA'])}
-          loadedFilaments={new Set(['PLA:00ff00'])}
         />
       );
 

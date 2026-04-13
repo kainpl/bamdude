@@ -411,6 +411,24 @@ async def upgrade(conn):
     if await add_column(conn, "print_queue", "batch_id VARCHAR(36)"):
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_print_queue_batch_id ON print_queue(batch_id)"))
 
+    # ── API key printer_ids: normalize legacy empty array `[]` to NULL ──
+    # `null` = all printers (admin), `[]` = no access. Legacy rows may have `[]`
+    # when they should have `null`. BamDude code already honors the distinction;
+    # this just cleans up pre-fix data rows.
+    from backend.app.core.db_dialect import is_postgres
+
+    if is_postgres():
+        await conn.execute(
+            text(
+                "UPDATE api_keys SET printer_ids = NULL "
+                "WHERE printer_ids IS NOT NULL AND TRIM(printer_ids::text) = '[]'"
+            )
+        )
+    else:
+        await conn.execute(
+            text("UPDATE api_keys SET printer_ids = NULL WHERE printer_ids IS NOT NULL AND TRIM(printer_ids) = '[]'")
+        )
+
 
 async def seed(session_factory):
     """Seed new data for 3.1.1."""

@@ -10,12 +10,13 @@ from pathlib import Path
 
 import psutil
 from fastapi import APIRouter, Depends
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.auth import RequirePermissionIfAuthEnabled
 from backend.app.core.config import APP_VERSION, settings
 from backend.app.core.database import get_db
+from backend.app.core.db_dialect import is_postgres
 from backend.app.core.permissions import Permission
 from backend.app.models.archive import PrintArchive
 from backend.app.models.printer import Printer
@@ -464,6 +465,16 @@ async def get_system_info(
     # Python and system info
     import sys
 
+    # Database engine + version
+    if is_postgres():
+        engine_name = "PostgreSQL"
+        # SHOW server_version returns a single clean value (e.g. "17.2")
+        db_version_row = await db.execute(sa_text("SHOW server_version"))
+    else:
+        engine_name = "SQLite"
+        db_version_row = await db.execute(sa_text("SELECT sqlite_version()"))
+    db_version = db_version_row.scalar() or ""
+
     return {
         "app": {
             "version": APP_VERSION,
@@ -471,7 +482,8 @@ async def get_system_info(
             "archive_dir": str(archive_dir),
         },
         "database": {
-            "engine": "PostgreSQL" if settings.database_url.startswith("postgresql") else "SQLite",
+            "engine": engine_name,
+            "version": db_version,
             "archives": archive_count,
             "archives_completed": completed_count,
             "archives_failed": failed_count,

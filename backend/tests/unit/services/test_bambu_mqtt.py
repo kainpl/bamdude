@@ -2917,6 +2917,96 @@ class TestDeveloperModeProbeTimeout:
 
         assert mqtt_client._dev_mode_needs_probe is False
 
+    def test_first_timeout_allows_retry(self, mqtt_client):
+        """After first probe timeout, _dev_mode_probed resets to allow retry (#887)."""
+        import time
+
+        data = self._make_pushall_data()
+
+        # First pushall triggers the probe
+        mqtt_client._update_state(data)
+        assert mqtt_client._dev_mode_probed is True
+        assert mqtt_client._dev_mode_probe_seq is not None
+        assert mqtt_client.state.developer_mode is None
+
+        # Simulate 11 seconds passing with no probe response
+        mqtt_client._dev_mode_probe_time = time.monotonic() - 11.0
+
+        # Next status message detects the timeout
+        mqtt_client._update_state(data)
+        assert mqtt_client._dev_mode_probe_failures == 1
+        assert mqtt_client._dev_mode_probe_seq is None
+        # Should allow retry on next full message
+        assert mqtt_client._dev_mode_probed is False
+        # Connection should NOT be force-closed after 1 failure
+        assert mqtt_client.state.connected is True
+
+    def test_second_timeout_forces_reconnect(self, mqtt_client):
+        """After two consecutive probe timeouts, force-close the socket (#887)."""
+        import time
+
+        data = self._make_pushall_data()
+        state_change_called = []
+        mqtt_client.on_state_change = lambda s: state_change_called.append(True)
+
+        # First probe + timeout
+        mqtt_client._update_state(data)
+        mqtt_client._dev_mode_probe_time = time.monotonic() - 11.0
+        mqtt_client._update_state(data)
+        assert mqtt_client._dev_mode_probe_failures == 1
+
+        # Second probe (retry) + timeout
+        mqtt_client._update_state(data)  # triggers new probe
+        assert mqtt_client._dev_mode_probed is True
+        mqtt_client._dev_mode_probe_time = time.monotonic() - 11.0
+        mqtt_client._update_state(data)  # detects second timeout
+
+        assert mqtt_client._dev_mode_probe_failures == 2
+        assert mqtt_client.state.connected is False
+        assert mqtt_client._stale_reconnecting is True
+        # Socket should have been closed
+        mqtt_client._client.socket().close.assert_called()
+        # on_state_change should have been called
+        assert len(state_change_called) > 0
+
+    def test_successful_probe_resets_failure_counter(self, mqtt_client):
+        """A probe response after a previous failure resets the counter (#887)."""
+        import time
+
+        data = self._make_pushall_data()
+
+        # First probe + timeout → failure=1
+        mqtt_client._update_state(data)
+        seq = mqtt_client._dev_mode_probe_seq
+        mqtt_client._dev_mode_probe_time = time.monotonic() - 11.0
+        mqtt_client._update_state(data)
+        assert mqtt_client._dev_mode_probe_failures == 1
+
+        # Retry probe
+        mqtt_client._update_state(data)
+        new_seq = mqtt_client._dev_mode_probe_seq
+        assert new_seq is not None
+        assert new_seq != seq
+
+        # Simulate successful response
+        mqtt_client._handle_dev_mode_probe_response(
+            {
+                "command": "ams_filament_setting",
+                "sequence_id": new_seq,
+                "result": "success",
+            }
+        )
+        assert mqtt_client._dev_mode_probe_failures == 0
+        assert mqtt_client.state.developer_mode is True
+        assert mqtt_client._dev_mode_probe_seq is None
+
+    def test_no_timeout_when_probe_not_sent(self, mqtt_client):
+        """The timeout branch is only entered when a probe is pending (#887)."""
+        # No probe sent — _dev_mode_probed is False, _dev_mode_probe_seq is None
+        data = {"gcode_state": "IDLE", "mc_percent": 0}  # < 30 keys
+        mqtt_client._update_state(data)
+        assert mqtt_client._dev_mode_probe_failures == 0
+
 
 class TestVtTrayNormalization:
     """Tests for vt_tray dict->list normalization in _update_state.

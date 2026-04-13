@@ -3153,6 +3153,7 @@ export default {
     diskUsage: 'Disk Usage',
     free: 'free',
     archiveStorage: 'Archive Storage',
+    databaseEngine: 'Database Engine',
     databaseSize: 'Database Size',
     fileManagerStorage: 'File Manager',
     // Memory

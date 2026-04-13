@@ -23,18 +23,3 @@ export function getWifiStrength(rssi: number): { labelKey: string; color: string
   if (rssi >= -80) return { labelKey: 'printers.wifiSignal.weak', color: 'text-orange-400', bars: 1 };
   return { labelKey: 'printers.wifiSignal.veryWeak', color: 'text-red-400', bars: 1 };
 }
-
-import type { PrintQueueItem } from '../api/client';
-
-/**
- * Filters queue items for display on a specific printer.
- * With per-printer queues, all items in a queue belong to that printer.
- * This function is kept for API compatibility but simply returns all items.
- */
-export function filterCompatibleQueueItems(
-  items: PrintQueueItem[],
-  _loadedFilamentTypes?: Set<string>,
-  _loadedFilaments?: Set<string>
-): PrintQueueItem[] {
-  return items;
-}

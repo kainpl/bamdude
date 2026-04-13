@@ -4570,6 +4570,8 @@ export interface SystemInfo {
     archive_dir: string;
   };
   database: {
+    engine: 'SQLite' | 'PostgreSQL';
+    version: string;
     archives: number;
     archives_completed: number;
     archives_failed: number;
