@@ -923,6 +923,12 @@ export interface AppSettings {
   ldap_group_mapping: string;
   ldap_auto_provision: boolean;
   ldap_default_group: string;
+  // Scheduled local backup (#884)
+  local_backup_enabled: boolean;
+  local_backup_schedule: string;
+  local_backup_time: string;
+  local_backup_retention: number;
+  local_backup_path: string;
 }
 
 export type AppSettingsUpdate = Partial<AppSettings>;
