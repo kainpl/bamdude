@@ -775,7 +775,7 @@ export function ProjectsPage() {
   }, {} as Record<string, number>) || {};
 
   return (
-    <div className="p-4 md:p-8 space-y-8">
+    <div className="p-4 md:p-6 space-y-4">
       {/* Hidden file input for import */}
       <input
         ref={fileInputRef}
@@ -787,16 +787,12 @@ export function ProjectsPage() {
 
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-3">
-            <div className="p-2.5 bg-bambu-green/10 rounded-xl">
-              <FolderKanban className="w-6 h-6 text-bambu-green" />
-            </div>
-            {t('projects.title')}
-          </h1>
-          <p className="text-sm text-bambu-gray mt-2 ml-14">
-            {t('projects.subtitle')}
-          </p>
+        <div className="flex items-center gap-3">
+          {/*<FolderKanban className="w-6 h-6 text-bambu-green" />*/}
+          <div>
+            <h1 className="text-2xl font-bold text-white flex items-center gap-3">{t('projects.title')}</h1>
+            <p className="text-sm text-bambu-gray">{t('projects.subtitle')}</p>
+          </div>
         </div>
         <div className="flex gap-2">
           <Button

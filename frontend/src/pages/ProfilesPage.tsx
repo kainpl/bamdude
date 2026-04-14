@@ -2855,15 +2855,18 @@ export function ProfilesPage() {
   }
 
   return (
-    <div className="p-6 lg:p-8">
+    <div className="p-4 md:p-6">
       {/* Page Header */}
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-white">{t('profiles.title')}</h1>
-        <p className="text-bambu-gray">{t('profiles.subtitle')}</p>
+      <div>
+        <div className="flex items-center gap-3">
+          {/*<Disc3 className="w-6 h-6 text-bambu-green" />*/}
+          <h1 className="text-2xl font-bold text-white">{t('profiles.title')}</h1>
+        </div>
+        <p className="text-sm text-bambu-gray">{t('profiles.subtitle')}</p>
       </div>
 
       {/* Tab Navigation */}
-      <div className="flex border-b border-bambu-dark-tertiary mb-6">
+      <div className="flex border-b border-bambu-dark-tertiary mb-4">
         <button
           onClick={() => setActiveTab('cloud')}
           className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px ${

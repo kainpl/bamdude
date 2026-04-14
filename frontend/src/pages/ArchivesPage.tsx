@@ -51,6 +51,8 @@ import {
   User,
   Play,
   Zap,
+  ArrowUpNarrowWide,
+  ArrowDownWideNarrow,
 } from 'lucide-react';
 import { api } from '../api/client';
 import { openInSlicer, type SlicerType } from '../utils/slicer';
@@ -2395,6 +2397,20 @@ export function ArchivesPage() {
   const [sortBy, setSortBy] = useState<SortOption>(() =>
     (localStorage.getItem('archiveSortBy') as SortOption) || 'date-desc'
   );
+  // Derived field+direction split for the two-control sort UI (select + toggle).
+  // Keeps `sortBy` as the single source-of-truth so localStorage and the
+  // backend query param stay backward-compatible.
+  const sortField = sortBy.split('-')[0] as 'date' | 'name' | 'size';
+  const sortDir = sortBy.split('-')[1] as 'asc' | 'desc';
+  const setSortField = (field: 'date' | 'name' | 'size') => {
+    setSortBy(`${field}-${sortDir}` as SortOption);
+    setPage(1);
+  };
+  const toggleSortDir = () => {
+    const next = sortDir === 'asc' ? 'desc' : 'asc';
+    setSortBy(`${sortField}-${next}` as SortOption);
+    setPage(1);
+  };
   const [collection, setCollection] = useState<Collection>(() =>
     (localStorage.getItem('archiveCollection') as Collection) || 'all'
   );
@@ -2721,7 +2737,7 @@ export function ArchivesPage() {
 
   return (
     <div
-      className="p-4 md:p-8 relative"
+      className="p-4 md:p-6 relative"
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
@@ -2806,14 +2822,14 @@ export function ArchivesPage() {
         </div>
       )}
 
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
         <div>
           <h1 className="text-2xl font-bold text-white">{t('archives.page.title')}</h1>
           {viewMode === 'calendar' && (
-            <p className="text-bambu-gray">{t('archives.calendarView')}</p>
+            <p className="text-bambu-gray text-sm">{t('archives.calendarView')}</p>
           )}
           {(viewMode === 'grid' || viewMode === 'list') && paginationMeta && (
-            <p className="text-bambu-gray">
+            <p className="text-bambu-gray text-sm">
               {t('common.showingRange', {
                 from: ((paginationMeta.current_page - 1) * paginationMeta.per_page) + 1,
                 to: Math.min(paginationMeta.current_page * paginationMeta.per_page, paginationMeta.total),
@@ -2823,17 +2839,57 @@ export function ArchivesPage() {
           )}
         </div>
         <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
+          {/* View mode toggle — matches PrintersPage card-size selector style */}
+          <div className="flex items-center bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
+            <button
+              onClick={() => setViewMode('grid')}
+              className={`px-2 py-1.5 transition-colors rounded-l-lg ${
+                viewMode === 'grid'
+                  ? 'bg-bambu-green text-white'
+                  : 'text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-white'
+              }`}
+              title={t('archives.gridView')}
+            >
+              <LayoutGrid className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => setViewMode('list')}
+              className={`px-2 py-1.5 transition-colors ${
+                viewMode === 'list'
+                  ? 'bg-bambu-green text-white'
+                  : 'text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-white'
+              }`}
+              title={t('archives.listView')}
+            >
+              <List className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => setViewMode('calendar')}
+              className={`px-2 py-1.5 transition-colors rounded-r-lg ${
+                viewMode === 'calendar'
+                  ? 'bg-bambu-green text-white'
+                  : 'text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-white'
+              }`}
+              title={t('archives.calendarView')}
+            >
+              <CalendarDays className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div className="w-px h-6 bg-bambu-dark-tertiary" />
+
           {/* Export dropdown */}
           <div className="relative">
             <Button
-              variant="secondary"
+              variant="outline"
+              size="sm"
               onClick={() => setShowExportMenu(!showExportMenu)}
               disabled={isExporting}
             >
               {isExporting ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
               ) : (
-                <FileSpreadsheet className="w-4 h-4" />
+                <FileSpreadsheet className="w-4 h-4 mr-2" />
               )}
               {t('common.export')}
             </Button>
@@ -2903,110 +2959,59 @@ export function ArchivesPage() {
           {/* Compare button (only when 2-5 items selected) */}
           {selectedIds.size >= 2 && selectedIds.size <= 5 && (
             <Button
-              variant="secondary"
+              variant="outline"
+              size="sm"
               onClick={() => setShowCompareModal(true)}
             >
-              <GitCompare className="w-4 h-4" />
+              <GitCompare className="w-4 h-4 mr-2" />
               {t('archives.page.compare', { count: selectedIds.size })}
             </Button>
           )}
           {!selectionMode && (
-            <Button variant="secondary" onClick={() => setIsSelectionMode(true)}>
-              <CheckSquare className="w-4 h-4" />
+            <Button variant="outline" size="sm" onClick={() => setIsSelectionMode(true)}>
+              <CheckSquare className="w-4 h-4 mr-2" />
               {t('archives.page.select')}
             </Button>
           )}
         </div>
       </div>
 
-      {/* View mode toggle + pagination + per page selector */}
-      <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
-        <div className="flex items-center border border-bambu-dark-tertiary rounded-lg overflow-hidden flex-shrink-0 w-fit">
-          <button
-            className={`p-2 ${viewMode === 'grid' ? 'bg-bambu-green text-white' : 'bg-bambu-dark text-bambu-gray hover:text-white'}`}
-            onClick={() => setViewMode('grid')}
-            title={t('archives.gridView')}
-          >
-            <LayoutGrid className="w-4 h-4" />
+      {/* Pagination row — only rendered when there are multiple pages */}
+      {(viewMode === 'grid' || viewMode === 'list') && paginationMeta && paginationMeta.last_page > 1 && (
+        <div className="flex items-center justify-end gap-2 mb-4">
+          <button onClick={() => setPage(1)} disabled={page <= 1} className="p-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white disabled:opacity-50 hover:bg-bambu-dark-secondary">
+            <ChevronsLeft className="w-4 h-4" />
           </button>
-          <button
-            className={`p-2 ${viewMode === 'list' ? 'bg-bambu-green text-white' : 'bg-bambu-dark text-bambu-gray hover:text-white'}`}
-            onClick={() => setViewMode('list')}
-            title={t('archives.listView')}
-          >
-            <List className="w-4 h-4" />
+          <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1} className="p-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white disabled:opacity-50 hover:bg-bambu-dark-secondary">
+            <ChevronLeft className="w-4 h-4" />
           </button>
-          <button
-            className={`p-2 ${viewMode === 'calendar' ? 'bg-bambu-green text-white' : 'bg-bambu-dark text-bambu-gray hover:text-white'}`}
-            onClick={() => setViewMode('calendar')}
-            title={t('archives.calendarView')}
-          >
-            <CalendarDays className="w-4 h-4" />
+          <span className="text-sm text-bambu-gray">{paginationMeta.current_page} / {paginationMeta.last_page}</span>
+          <button onClick={() => setPage(p => Math.min(paginationMeta.last_page, p + 1))} disabled={page >= paginationMeta.last_page} className="p-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white disabled:opacity-50 hover:bg-bambu-dark-secondary">
+            <ChevronRight className="w-4 h-4" />
+          </button>
+          <button onClick={() => setPage(paginationMeta.last_page)} disabled={page >= paginationMeta.last_page} className="p-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white disabled:opacity-50 hover:bg-bambu-dark-secondary">
+            <ChevronsRight className="w-4 h-4" />
           </button>
         </div>
-        {(viewMode === 'grid' || viewMode === 'list') && paginationMeta && paginationMeta.last_page > 1 && (
-          <div className="flex items-center gap-2">
-            <button onClick={() => setPage(1)} disabled={page <= 1} className="p-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white disabled:opacity-50 hover:bg-bambu-dark-secondary">
-              <ChevronsLeft className="w-4 h-4" />
-            </button>
-            <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1} className="p-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white disabled:opacity-50 hover:bg-bambu-dark-secondary">
-              <ChevronLeft className="w-4 h-4" />
-            </button>
-            <span className="text-sm text-bambu-gray">{paginationMeta.current_page} / {paginationMeta.last_page}</span>
-            <button onClick={() => setPage(p => Math.min(paginationMeta.last_page, p + 1))} disabled={page >= paginationMeta.last_page} className="p-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white disabled:opacity-50 hover:bg-bambu-dark-secondary">
-              <ChevronRight className="w-4 h-4" />
-            </button>
-            <button onClick={() => setPage(paginationMeta.last_page)} disabled={page >= paginationMeta.last_page} className="p-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white disabled:opacity-50 hover:bg-bambu-dark-secondary">
-              <ChevronsRight className="w-4 h-4" />
-            </button>
-          </div>
-        )}
-        {(viewMode === 'grid' || viewMode === 'list') && (
-          <div className="flex items-center gap-1.5 sm:gap-2">
-            <span className="text-xs text-bambu-gray hidden sm:inline">{t('common.show')}</span>
-            <select
-              className="w-14 sm:w-16 px-1.5 sm:px-2 py-1.5 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-bambu-gray focus:border-bambu-green focus:outline-none text-center"
-              value={perPage}
-              onChange={(e) => { setPerPage(Number(e.target.value)); setPage(1); }}
-            >
-              {[12, 24, 48, 96].map((n) => (
-                <option key={n} value={n}>{n}</option>
-              ))}
-            </select>
-            <select
-              className="px-1.5 sm:px-2 py-1.5 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-bambu-gray focus:border-bambu-green focus:outline-none max-w-[140px] sm:max-w-none"
-              value={sortBy}
-              onChange={(e) => { setSortBy(e.target.value as SortOption); setPage(1); }}
-            >
-              <option value="date-desc">{t('archives.sortNewest')}</option>
-              <option value="date-asc">{t('archives.sortOldest')}</option>
-              <option value="name-asc">{t('archives.sortName')} A-Z</option>
-              <option value="name-desc">{t('archives.sortName')} Z-A</option>
-              <option value="size-desc">{t('archives.sortLargest')}</option>
-              <option value="size-asc">{t('archives.sortSmallest')}</option>
-            </select>
-          </div>
-        )}
-      </div>
+      )}
 
       {/* Filters (hidden in log/calendar views) */}
-      {(viewMode === 'grid' || viewMode === 'list') && <Card className="mb-6">
-        <CardContent className="py-4">
-          <div className="flex flex-col gap-3">
-            {/* Search - full width */}
-            <div className="w-full relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray" />
-              <input
-                ref={searchInputRef}
-                type="text"
-                placeholder={t('archives.searchPlaceholder')}
-                className="w-full pl-10 pr-4 py-3 md:py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
-            </div>
-            {/* Filters - horizontal scroll on mobile */}
-            <div className="flex gap-2 md:gap-3 overflow-x-auto pb-1 md:pb-0 -mx-4 px-4 md:mx-0 md:px-0 md:flex-wrap scrollbar-hide w-full">
+      {(viewMode === 'grid' || viewMode === 'list') && (
+        <div className="flex flex-col gap-2 mb-4 p-3 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary">
+          {/* Search - full width */}
+          <div className="w-full relative h-9">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray/50" />
+            <input
+              ref={searchInputRef}
+              type="text"
+              placeholder={t('archives.searchPlaceholder')}
+              className="w-full h-9 pl-10 pr-4 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm placeholder:text-bambu-gray/50 focus:border-bambu-green focus:outline-none"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+          {/* Filters - horizontal scroll on mobile */}
+          <div className="flex gap-2 md:gap-3 overflow-x-auto pb-1 md:pb-0 -mx-3 px-3 md:mx-0 md:px-0 md:flex-wrap scrollbar-hide w-full">
             {/* Collection filter */}
             <div className="flex items-center gap-2 flex-shrink-0 md:flex-shrink md:flex-1 md:min-w-0">
               <select
@@ -3133,7 +3138,6 @@ export function ArchivesPage() {
                 </button>
               </div>
             )}
-            </div>
             {hasTopFilters && (
               <Button
                 variant="ghost"
@@ -3145,7 +3149,45 @@ export function ArchivesPage() {
                 {t('archives.page.reset')}
               </Button>
             )}
-          </div>
+            </div>
+
+            {/* Third row: per-page on the left, sort (field + direction) on the right */}
+            <div className="flex items-center justify-between gap-2 mt-3">
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs text-bambu-gray">{t('common.show')}</span>
+                <select
+                  className="h-9 px-3 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-bambu-gray focus:border-bambu-green focus:outline-none"
+                  value={perPage}
+                  onChange={(e) => { setPerPage(Number(e.target.value)); setPage(1); }}
+                >
+                  {[12, 24, 48, 96].map((n) => (
+                    <option key={n} value={n}>{n}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex items-center gap-1">
+                <select
+                  className="h-9 min-w-[7rem] px-3 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                  value={sortField}
+                  onChange={(e) => setSortField(e.target.value as 'date' | 'name' | 'size')}
+                >
+                  <option value="date">{t('common.date')}</option>
+                  <option value="name">{t('common.name')}</option>
+                  <option value="size">{t('fileManager.size')}</option>
+                </select>
+                <button
+                  onClick={toggleSortDir}
+                  className="h-9 w-9 flex items-center justify-center bg-bambu-dark border border-bambu-dark-tertiary rounded-lg hover:border-bambu-green transition-colors"
+                  title={sortDir === 'asc' ? t('fileManager.ascending') : t('fileManager.descending')}
+                >
+                  {sortDir === 'asc' ? (
+                    <ArrowUpNarrowWide className="w-4 h-4 text-bambu-gray" />
+                  ) : (
+                    <ArrowDownWideNarrow className="w-4 h-4 text-bambu-gray" />
+                  )}
+                </button>
+              </div>
+            </div>
           {/* Color Filter */}
           {uniqueColors.length > 0 && (
             <div className="flex items-center gap-3 mt-4 pt-4 border-t border-bambu-dark-tertiary">
@@ -3189,8 +3231,8 @@ export function ArchivesPage() {
               )}
             </div>
           )}
-        </CardContent>
-      </Card>}
+        </div>
+      )}
 
       {/* Pending Uploads Panel (visible when in queue mode with pending files) */}
       <PendingUploadsPanel />

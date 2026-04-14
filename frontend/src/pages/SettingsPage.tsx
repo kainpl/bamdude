@@ -1047,14 +1047,17 @@ export function SettingsPage() {
   }
 
   return (
-    <div className="p-4 md:p-8">
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold text-white">{t('settings.title')}</h1>
-        <p className="text-bambu-gray">{t('settings.configureBamdude')}</p>
+    <div className="p-4 md:p-6">
+      <div className="mb-4">
+        <div className="flex items-center gap-3">
+          {/*<Disc3 className="w-6 h-6 text-bambu-green" />*/}
+          <h1 className="text-2xl font-bold text-white">{t('settings.title')}</h1>
+        </div>
+        <p className="text-sm text-bambu-gray">{t('settings.configureBamdude')}</p>
       </div>
 
       {/* Tab Navigation */}
-      <div className="flex flex-wrap gap-1 mb-6 border-b border-bambu-dark-tertiary">
+      <div className="flex flex-wrap gap-1 mb-4 border-b border-bambu-dark-tertiary">
         <button
           onClick={() => handleTabChange('general')}
           className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px ${

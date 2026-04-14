@@ -162,6 +162,19 @@ export default {
       finished: 'Finished',
       unknown: 'Unknown',
     },
+    // Pluralised labels used in the StatusSummaryBar. English has just
+    // `_one` / `_other`; the words don't inflect for count but the key
+    // shape stays parallel to UK so the call site is identical.
+    summary: {
+      available_one: 'available',
+      available_other: 'available',
+      printing_one: 'printing',
+      printing_other: 'printing',
+      offline_one: 'offline',
+      offline_other: 'offline',
+      problem_one: 'problem',
+      problem_other: 'problems',
+    },
     temperatures: {
       nozzle: 'Nozzle',
       bed: 'Bed',

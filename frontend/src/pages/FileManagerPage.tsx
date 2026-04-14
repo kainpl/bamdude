@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -22,10 +23,9 @@ import {
   LayoutGrid,
   List,
   Search,
-  SortAsc,
-  SortDesc,
+  ArrowUpNarrowWide,
+  ArrowDownWideNarrow,
   AlertTriangle,
-  Filter,
   X,
   Link2,
   Unlink,
@@ -40,6 +40,7 @@ import {
   RefreshCw,
   Lock,
   FolderSymlink,
+  WrapText,
 } from 'lucide-react';
 import { api } from '../api/client';
 import type {
@@ -717,17 +718,56 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   onDelete: (id: number) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  // Portal-rendered dropdown escapes the list container's `overflow-hidden`,
+  // so the menu isn't clipped inside the row. Coords are computed from the
+  // trigger button and recalculated on scroll/resize.
+  const [coords, setCoords] = useState<{ top: number; right: number } | null>(null);
+  const MENU_WIDTH = 240;
+
+  useEffect(() => {
+    if (!open) return;
+    const update = () => {
+      const btn = triggerRef.current;
+      if (!btn) return;
+      const rect = btn.getBoundingClientRect();
+      // Align menu's right edge to the trigger's right edge, hang below.
+      const right = Math.max(8, window.innerWidth - rect.right);
+      let top = rect.bottom + 4;
+      // Flip above when there isn't enough room below.
+      const estimatedHeight = 280;
+      if (top + estimatedHeight > window.innerHeight - 8 && rect.top > estimatedHeight) {
+        top = rect.top - estimatedHeight - 4;
+      }
+      setCoords({ top, right });
+    };
+    update();
+    window.addEventListener('resize', update);
+    window.addEventListener('scroll', update, true);
+    return () => {
+      window.removeEventListener('resize', update);
+      window.removeEventListener('scroll', update, true);
+    };
+  }, [open]);
+
   return (
-    <div className="relative flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-      {/* Notes (gh#3) */}
-      <LibraryFileNotesButton fileId={file.id} initialCount={file.notes_count} variant="inline" />
-      <button onClick={() => setOpen(!open)} className="p-1.5 rounded hover:bg-bambu-dark transition-colors">
+    <div onClick={(e) => e.stopPropagation()}>
+      <button ref={triggerRef} onClick={() => setOpen(!open)} className="p-1.5 rounded hover:bg-bambu-dark transition-colors">
         <MoreVertical className="w-4 h-4 text-bambu-gray" />
       </button>
-      {open && (
+      {open && createPortal(
         <>
-          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 top-full mt-1 z-20 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl py-1 w-fit max-w-[240px] whitespace-nowrap">
+          <div className="fixed inset-0 z-[55]" onClick={() => setOpen(false)} />
+          <div
+            style={{
+              position: 'fixed',
+              top: coords?.top ?? 0,
+              right: coords?.right ?? 0,
+              width: MENU_WIDTH,
+              visibility: coords ? 'visible' : 'hidden',
+            }}
+            className="z-[60] bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl py-1 whitespace-nowrap"
+          >
             {isSlicedFilename(file.filename) && (
               <>
                 <button
@@ -793,7 +833,8 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
               {t('common.delete')}
             </button>
           </div>
-        </>
+        </>,
+        document.body
       )}
     </div>
   );
@@ -812,7 +853,7 @@ function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, 
       onClick={() => onSelect(file.id)}
     >
       {/* Thumbnail */}
-      <div className="aspect-square bg-bambu-dark flex items-center justify-center overflow-hidden">
+      <div className="relative aspect-square bg-bambu-dark flex items-center justify-center overflow-hidden">
         {file.thumbnail_path ? (
           <img
             src={`${api.getLibraryFileThumbnailUrl(file.id)}${thumbnailVersion ? `?v=${thumbnailVersion}` : ''}`}
@@ -836,8 +877,8 @@ function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, 
             {file.file_type.toUpperCase()}
           </span>
         </div>
-        {/* Notes overlay (gh#3) */}
-        <div className="absolute top-2 left-2" onClick={(e) => e.stopPropagation()}>
+        {/* Notes overlay (gh#3) — bottom-left corner of the thumbnail */}
+        <div className="absolute bottom-0 left-2" onClick={(e) => e.stopPropagation()}>
           <LibraryFileNotesButton fileId={file.id} initialCount={file.notes_count} variant="overlay" />
         </div>
       </div>
@@ -1458,27 +1499,25 @@ export function FileManagerPage() {
   }, [selectedFolderId, folders]);
 
   return (
-    <div className="p-4 md:p-8 min-h-[calc(100vh-64px)] lg:h-[calc(100vh-64px)] flex flex-col">
+    <div className="p-4 md:p-6 min-h-[calc(100vh-64px)] lg:h-[calc(100vh-64px)] flex flex-col">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
-        <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-3">
-            <div className="p-2.5 bg-bambu-green/10 rounded-xl">
-              <FolderOpen className="w-6 h-6 text-bambu-green" />
-            </div>
-            {t('fileManager.title')}
-          </h1>
-          <p className="text-sm text-bambu-gray mt-2 ml-14">
-            {t('fileManager.subtitle')}
-          </p>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
+        <div className="flex items-center gap-3">
+          {/*<FolderOpen className="w-6 h-6 text-bambu-green" />*/}
+          <div>
+            <h1 className="text-2xl font-bold text-white">{t('fileManager.title')}</h1>
+            <p className="text-sm text-bambu-gray">{t('fileManager.subtitle')}</p>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          {/* View mode toggle */}
-          <div className="flex items-center bg-bambu-dark rounded-lg p-1">
+        <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
+          {/* View mode toggle — style matches PrintersPage card-size selector */}
+          <div className="flex items-center bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
             <button
               onClick={() => handleViewModeChange('grid')}
-              className={`p-1.5 rounded transition-colors ${
-                viewMode === 'grid' ? 'bg-bambu-dark-secondary text-white' : 'text-bambu-gray hover:text-white'
+              className={`px-2 py-1.5 transition-colors rounded-l-lg ${
+                viewMode === 'grid'
+                  ? 'bg-bambu-green text-white'
+                  : 'text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-white'
               }`}
               title={t('fileManager.gridView')}
             >
@@ -1486,16 +1525,22 @@ export function FileManagerPage() {
             </button>
             <button
               onClick={() => handleViewModeChange('list')}
-              className={`p-1.5 rounded transition-colors ${
-                viewMode === 'list' ? 'bg-bambu-dark-secondary text-white' : 'text-bambu-gray hover:text-white'
+              className={`px-2 py-1.5 transition-colors rounded-r-lg ${
+                viewMode === 'list'
+                  ? 'bg-bambu-green text-white'
+                  : 'text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-white'
               }`}
               title={t('fileManager.listView')}
             >
               <List className="w-4 h-4" />
             </button>
           </div>
+
+          <div className="w-px h-6 bg-bambu-dark-tertiary" />
+
           <Button
-            variant="secondary"
+            variant="outline"
+            size="sm"
             onClick={() => batchThumbnailMutation.mutate()}
             disabled={batchThumbnailMutation.isPending || !hasAnyPermission('library:update_own', 'library:update_all')}
             title={!hasAnyPermission('library:update_own', 'library:update_all') ? t('fileManager.noPermissionGenerateThumbnail') : t('fileManager.generateThumbnailsForMissing')}
@@ -1508,7 +1553,8 @@ export function FileManagerPage() {
             {t('fileManager.generateThumbnails')}
           </Button>
           <Button
-            variant="secondary"
+            variant="outline"
+            size="sm"
             onClick={() => setShowExternalFolderModal(true)}
             disabled={!hasPermission('library:upload')}
             title={!hasPermission('library:upload') ? t('fileManager.noPermissionCreateFolder') : t('fileManager.linkExternalFolder')}
@@ -1517,7 +1563,8 @@ export function FileManagerPage() {
             {t('fileManager.linkExternal')}
           </Button>
           <Button
-            variant="secondary"
+            variant="outline"
+            size="sm"
             onClick={() => setShowNewFolderModal(true)}
             disabled={!hasPermission('library:upload')}
             title={!hasPermission('library:upload') ? t('fileManager.noPermissionCreateFolder') : undefined}
@@ -1551,7 +1598,7 @@ export function FileManagerPage() {
 
       {/* Stats bar */}
       {stats && (
-        <div className="flex flex-wrap items-center gap-3 sm:gap-6 mb-6 p-3 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary">
+        <div className="flex flex-wrap items-center gap-3 sm:gap-6 mb-4 p-3 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary">
           <div className="flex items-center gap-2 text-sm">
             <File className="w-4 h-4 text-bambu-green" />
             <span className="text-bambu-gray">{t('fileManager.files')}:</span>
@@ -1643,14 +1690,15 @@ export function FileManagerPage() {
                 setWrapFolderNames(newValue);
                 localStorage.setItem('library-wrap-folders', String(newValue));
               }}
-              className={`text-xs px-1.5 py-0.5 rounded transition-colors ${
+              className={`p-1.5 rounded transition-colors ${
                 wrapFolderNames
                   ? 'bg-bambu-green/20 text-bambu-green'
                   : 'text-bambu-gray hover:text-white hover:bg-bambu-dark'
               }`}
               title={wrapFolderNames ? t('fileManager.disableTextWrapping') : t('fileManager.enableTextWrapping')}
+              aria-label={wrapFolderNames ? t('fileManager.disableTextWrapping') : t('fileManager.enableTextWrapping')}
             >
-              {t('fileManager.wrap')}
+              <WrapText className="w-4 h-4" />
             </button>
           </div>
           <div className="flex-1 overflow-y-auto p-2">
@@ -1721,48 +1769,46 @@ export function FileManagerPage() {
               </Button>
             </div>
           )}
-          {/* Search, Filter, Sort toolbar - sticky on mobile for easier access */}
+          {/* Combined toolbar: search/filters/sort (row 1) + selection actions (row 2) */}
           {files && files.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2 sm:gap-3 mb-4 p-2 sm:p-3 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary sticky top-0 z-10 lg:static">
+            <div className="flex flex-col gap-2 mb-4 p-3 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary sticky top-0 z-10 lg:static">
+            <div className="flex flex-wrap items-stretch gap-2">
               {/* Search */}
-              <div className="relative w-full sm:w-auto sm:flex-1 sm:max-w-xs">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray" />
+              <div className="relative w-full sm:w-[28rem] h-9">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray/50" />
                 <input
                   type="text"
                   placeholder={t('fileManager.searchFiles')}
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full pl-9 pr-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded text-sm text-white placeholder-bambu-gray focus:outline-none focus:border-bambu-green"
+                  className="w-full h-9 pl-10 pr-3 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-sm text-white placeholder:text-bambu-gray/50 focus:outline-none focus:border-bambu-green"
                 />
               </div>
 
               {/* Type filter */}
-              <div className="flex items-center gap-2">
-                <Filter className="w-4 h-4 text-bambu-gray hidden sm:block" />
-                <select
-                  value={filterType}
-                  onChange={(e) => setFilterType(e.target.value)}
-                  className="bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-sm text-white focus:outline-none focus:border-bambu-green"
-                >
-                  <option value="all">{t('fileManager.allTypes')}</option>
-                  {fileTypes.map((type) => (
-                    <option key={type} value={type}>
-                      {type.toUpperCase()}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              <select
+                value={filterType}
+                onChange={(e) => setFilterType(e.target.value)}
+                className="h-9 min-w-[9rem] text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg px-3 text-white focus:border-bambu-green focus:outline-none"
+              >
+                <option value="all">{t('fileManager.allTypes')}</option>
+                {fileTypes.map((type) => (
+                  <option key={type} value={type}>
+                    {type.toUpperCase()}
+                  </option>
+                ))}
+              </select>
 
-              {/* Username filter with autocomplete - only show when auth is enabled */}
+              {/* Username filter with autocomplete — only when auth is enabled */}
               {authEnabled && (
-                <div className="relative">
+                <div className="relative h-9">
                   <input
                     type="text"
                     placeholder={t('fileManager.filterByUser', { defaultValue: 'Filter by user' })}
                     value={filterUsername}
                     onChange={(e) => setFilterUsername(e.target.value)}
                     list="usernames-list"
-                    className={`w-32 sm:w-40 px-2 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded text-sm text-white placeholder-bambu-gray focus:outline-none focus:border-bambu-green ${filterUsername ? 'pr-7' : ''}`}
+                    className={`w-40 h-9 px-3 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-sm text-white placeholder:text-bambu-gray/50 focus:outline-none focus:border-bambu-green ${filterUsername ? 'pr-8' : ''}`}
                     style={filterUsername ? { WebkitAppearance: 'none', MozAppearance: 'textfield' } : undefined}
                   />
                   {filterUsername && (
@@ -1781,8 +1827,15 @@ export function FileManagerPage() {
                 </div>
               )}
 
-              {/* Sort */}
-              <div className="flex items-center gap-2">
+              {/* Results count */}
+              {(searchQuery || filterType !== 'all' || filterUsername) && (
+                <span className="h-9 flex items-center text-sm text-bambu-gray hidden sm:inline-flex">
+                  {t('fileManager.resultsCount', { showing: filteredAndSortedFiles.length, total: files.length })}
+                </span>
+              )}
+
+              {/* Sort — pushed to far right via ml-auto */}
+              <div className="flex items-center gap-1 ml-auto">
                 <select
                   value={sortField}
                   onChange={(e) => {
@@ -1790,7 +1843,7 @@ export function FileManagerPage() {
                     setSortField(newField);
                     localStorage.setItem('library-sort-field', newField);
                   }}
-                  className="bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-sm text-white focus:outline-none focus:border-bambu-green"
+                  className="h-9 min-w-[9rem] text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg px-3 text-white focus:border-bambu-green focus:outline-none"
                 >
                   <option value="name">{t('common.name')}</option>
                   <option value="date">{t('common.date')}</option>
@@ -1803,29 +1856,21 @@ export function FileManagerPage() {
                     localStorage.setItem('library-sort-direction', newDir);
                     return newDir;
                   })}
-                  className="p-1.5 rounded bg-bambu-dark border border-bambu-dark-tertiary hover:border-bambu-green transition-colors"
+                  className="h-9 w-9 flex items-center justify-center bg-bambu-dark border border-bambu-dark-tertiary rounded-lg hover:border-bambu-green transition-colors"
                   title={sortDirection === 'asc' ? t('fileManager.ascending') : t('fileManager.descending')}
                 >
                   {sortDirection === 'asc' ? (
-                    <SortAsc className="w-4 h-4 text-white" />
+                    <ArrowUpNarrowWide className="w-4 h-4 text-bambu-gray" />
                   ) : (
-                    <SortDesc className="w-4 h-4 text-white" />
+                    <ArrowDownWideNarrow className="w-4 h-4 text-bambu-gray" />
                   )}
                 </button>
               </div>
-
-              {/* Results count */}
-              {(searchQuery || filterType !== 'all' || filterUsername) && (
-                <span className="text-sm text-bambu-gray hidden sm:inline">
-                  {t('fileManager.resultsCount', { showing: filteredAndSortedFiles.length, total: files.length })}
-                </span>
-              )}
             </div>
-          )}
 
-          {/* Selection toolbar - sticky on mobile below search bar */}
-          {filteredAndSortedFiles.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2 mb-4 p-2 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary sticky top-[52px] z-10 lg:static">
+            {/* Selection row — rendered inside the same panel as a second row. */}
+            {filteredAndSortedFiles.length > 0 && (
+              <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-bambu-dark-tertiary">
               {/* Select all / Deselect all */}
               {selectedFiles.length === filteredAndSortedFiles.length && selectedFiles.length > 0 ? (
                 <Button
@@ -1918,6 +1963,8 @@ export function FileManagerPage() {
                   </div>
                 </>
               )}
+              </div>
+            )}
             </div>
           )}
 
@@ -1999,7 +2046,7 @@ export function FileManagerPage() {
             <div className="flex-1 lg:overflow-y-auto">
               <div className="bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary overflow-hidden">
                 {/* List header - hidden on mobile, show simplified on small screens */}
-                <div className={`hidden sm:grid ${authEnabled ? 'grid-cols-[auto_1fr_120px_100px_100px_140px_140px]' : 'grid-cols-[auto_1fr_100px_100px_140px_140px]'} gap-4 px-4 py-2 bg-bambu-dark-secondary border-b border-bambu-dark-tertiary text-xs text-bambu-gray font-medium`}>
+                <div className={`hidden sm:grid ${authEnabled ? 'grid-cols-[auto_1fr_120px_100px_100px_140px_160px]' : 'grid-cols-[auto_1fr_100px_100px_140px_160px]'} gap-4 px-4 py-2 bg-bambu-dark-secondary border-b border-bambu-dark-tertiary text-xs text-bambu-gray font-medium`}>
                   <div className="w-6" />
                   <div>{t('common.name')}</div>
                   {authEnabled && <div>{t('fileManager.uploadedBy', { defaultValue: 'Uploaded By' })}</div>}
@@ -2012,7 +2059,7 @@ export function FileManagerPage() {
                 {filteredAndSortedFiles.map((file) => (
                   <div
                     key={file.id}
-                    className={`grid ${authEnabled ? 'grid-cols-[auto_1fr_120px_100px_100px_140px_140px]' : 'grid-cols-[auto_1fr_100px_100px_140px_140px]'} gap-4 px-4 py-3 items-center border-b border-bambu-dark-tertiary last:border-b-0 cursor-pointer hover:bg-bambu-dark/50 transition-colors ${
+                    className={`grid ${authEnabled ? 'grid-cols-[auto_1fr_120px_100px_100px_140px_160px]' : 'grid-cols-[auto_1fr_100px_100px_140px_160px]'} gap-4 px-4 py-3 items-center border-b border-bambu-dark-tertiary last:border-b-0 cursor-pointer hover:bg-bambu-dark/50 transition-colors ${
                       selectedFiles.includes(file.id) ? 'bg-bambu-green/10' : ''
                     }`}
                     onClick={() => handleFileSelect(file.id)}
@@ -2093,6 +2140,8 @@ export function FileManagerPage() {
                     <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
                       {isSlicedFilename(file.filename) && (
                         <>
+                          {/* Notes (gh#3) — bare inline button, matches Print/Clock/Box styling */}
+                          <LibraryFileNotesButton fileId={file.id} initialCount={file.notes_count} variant="inline" />
                           <button
                             onClick={() => hasPermission('printers:control') && setPrintFile(file)}
                             className={`p-1.5 rounded transition-colors ${

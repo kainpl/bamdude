@@ -1127,12 +1127,16 @@ export function StatsPage() {
   ];
 
   return (
-    <div className="p-4 md:p-8">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
+    <div className="p-4 md:p-6">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
         <div>
-          <h1 className="text-2xl font-bold text-white">{t('stats.title')}</h1>
-          <p className="text-bambu-gray">{t('stats.subtitle')}</p>
+          <div className="flex items-center gap-3">
+            {/*<Disc3 className="w-6 h-6 text-bambu-green" />*/}
+            <h1 className="text-2xl font-bold text-white">{t('stats.title')}</h1>
+          </div>
+          <p className="text-sm text-bambu-gray mt-1 ml-9">{t('stats.subtitle')}</p>
         </div>
+
         <div className="flex items-center gap-2 flex-wrap">
           {/* Hidden widgets button - toggles panel in Dashboard */}
           {hiddenCount > 0 && (

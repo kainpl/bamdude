@@ -162,6 +162,27 @@ export default {
       finished: 'Завершено',
       unknown: 'Невідомо',
     },
+    // Pluralised labels used in the StatusSummaryBar. i18next resolves the
+    // right plural form from the `count` option; the {{count}} isn't injected
+    // into the translation (the number is rendered separately with styling).
+    summary: {
+      available_one: 'доступний',
+      available_few: 'доступних',
+      available_many: 'доступних',
+      available_other: 'доступних',
+      printing_one: 'друкує',
+      printing_few: 'друкують',
+      printing_many: 'друкують',
+      printing_other: 'друкують',
+      offline_one: 'офлайн',
+      offline_few: 'офлайн',
+      offline_many: 'офлайн',
+      offline_other: 'офлайн',
+      problem_one: 'проблема',
+      problem_few: 'проблеми',
+      problem_many: 'проблем',
+      problem_other: 'проблем',
+    },
     temperatures: {
       nozzle: 'Сопло',
       bed: 'Стіл',

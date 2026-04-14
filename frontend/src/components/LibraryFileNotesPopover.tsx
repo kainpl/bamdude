@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
@@ -27,9 +28,17 @@ interface Props {
   onClose: () => void;
   /** Called whenever the notes count for this file changes. */
   onCountChange?: (newCount: number) => void;
+  /**
+   * Horizontal alignment of the popover relative to the anchor:
+   * - `'right'` (default) — popover's right edge aligns with anchor's right
+   *   edge; popover extends to the left. Good for inline row actions (list view).
+   * - `'left'`  — popover's left edge aligns with anchor's left edge; popover
+   *   extends to the right. Good for icons anchored at a card's bottom-left.
+   */
+  align?: 'left' | 'right';
 }
 
-export function LibraryFileNotesPopover({ fileId, open, anchorRef, onClose, onCountChange }: Props) {
+export function LibraryFileNotesPopover({ fileId, open, anchorRef, onClose, onCountChange, align = 'right' }: Props) {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const { authEnabled } = useAuth();
@@ -40,6 +49,14 @@ export function LibraryFileNotesPopover({ fileId, open, anchorRef, onClose, onCo
   const [currentIndex, setCurrentIndex] = useState(0);
   const [draft, setDraft] = useState('');
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
+  // Viewport-relative coords for the portal-rendered popover (so it escapes
+  // the card's overflow:hidden clip). Either `left` or `right` is set depending
+  // on `align`; the other stays undefined so CSS doesn't stretch the popover.
+  // Recomputed on resize/scroll.
+  const [coords, setCoords] = useState<{ top: number; left?: number; right?: number } | null>(null);
+
+  const POPOVER_WIDTH = 320; // matches the w-80 utility below
+  const POPOVER_GAP = 8;     // 8 px gap between anchor and popover
 
   const queryKey = ['library-file-notes', fileId];
 
@@ -49,17 +66,25 @@ export function LibraryFileNotesPopover({ fileId, open, anchorRef, onClose, onCo
     enabled: open,
   });
 
-  // Switch into create mode automatically when opening with no notes.
+  // On open with an empty file, jump straight to the create form. We do this
+  // once per (open, isLoading, notes) transition; manual mode switches via
+  // handleStartCreate / handleStartEdit are NOT reverted by this effect
+  // (which used to auto-flip 'create' back to 'view' the moment notes were
+  // non-empty — clashing with the user clicking the "+" button).
+  const didAutoOpenRef = useRef(false);
   useEffect(() => {
-    if (open && !isLoading && (notes?.length ?? 0) === 0) {
+    if (!open) {
+      didAutoOpenRef.current = false;
+      return;
+    }
+    if (isLoading) return;
+    if (didAutoOpenRef.current) return;
+    if ((notes?.length ?? 0) === 0) {
       setMode('create');
       setDraft('');
-    } else if (open && (notes?.length ?? 0) > 0 && mode === 'create') {
-      // Notes appeared (e.g. after a new one was just saved) — go to view.
-      setMode('view');
-      setCurrentIndex(0);
     }
-  }, [open, isLoading, notes, mode]);
+    didAutoOpenRef.current = true;
+  }, [open, isLoading, notes]);
 
   // Reset state when closed so the next open starts fresh.
   useEffect(() => {
@@ -90,6 +115,57 @@ export function LibraryFileNotesPopover({ fileId, open, anchorRef, onClose, onCo
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, [open, onClose, anchorRef]);
+
+  // Position the portal-rendered popover relative to the viewport, anchored
+  // to the button. `align='right'` mirrors the FileListActions dropdown (right
+  // edges aligned, extends left — used in list view rows). `align='left'` is
+  // used for card-view overlays anchored at the thumbnail's bottom-left so
+  // the popover extends into the card grid's whitespace on the right.
+  // Flips above when there isn't enough room below; clamps to viewport.
+  useEffect(() => {
+    if (!open) return;
+    const updatePosition = () => {
+      const anchor = anchorRef.current;
+      if (!anchor) return;
+      const rect = anchor.getBoundingClientRect();
+      const viewportW = window.innerWidth;
+      const viewportH = window.innerHeight;
+      const margin = 8;
+
+      let top = rect.bottom + POPOVER_GAP;
+
+      // Flip above when not enough room below.
+      const estimatedPopoverHeight = 260;
+      if (top + estimatedPopoverHeight > viewportH - margin && rect.top > estimatedPopoverHeight) {
+        top = rect.top - estimatedPopoverHeight - POPOVER_GAP;
+      }
+
+      if (align === 'left') {
+        // Align popover's left edge with the trigger's left edge.
+        let left = rect.left;
+        if (left + POPOVER_WIDTH > viewportW - margin) {
+          left = Math.max(margin, viewportW - POPOVER_WIDTH - margin);
+        }
+        if (left < margin) left = margin;
+        setCoords({ top, left });
+      } else {
+        // Align popover's right edge with the trigger's right edge.
+        let right = Math.max(margin, viewportW - rect.right);
+        if (viewportW - right - POPOVER_WIDTH < margin) {
+          right = viewportW - POPOVER_WIDTH - margin;
+        }
+        setCoords({ top, right });
+      }
+    };
+
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true); // capture: true catches scrolls in nested containers
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [open, anchorRef, align]);
 
   const invalidateLibraryLists = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ['library-files'] });
@@ -186,14 +262,21 @@ export function LibraryFileNotesPopover({ fileId, open, anchorRef, onClose, onCo
     return `${author} · ${datePart}`;
   };
 
-  return (
-    <>
-      <div
-        ref={popoverRef}
-        role="dialog"
-        aria-label={t('libraryNotes.title')}
-        className="absolute z-50 mt-2 right-0 w-80 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl"
-      >
+  const popoverNode = (
+    <div
+      ref={popoverRef}
+      role="dialog"
+      aria-label={t('libraryNotes.title')}
+      style={{
+        position: 'fixed',
+        top: coords?.top ?? 0,
+        left: coords?.left,   // undefined unless align='left'
+        right: coords?.right, // undefined unless align='right'
+        width: POPOVER_WIDTH,
+        visibility: coords ? 'visible' : 'hidden',
+      }}
+      className="z-[60] bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl"
+    >
         {/* Header: pagination + add + close */}
         <div className="flex items-center justify-between p-2 border-b border-bambu-dark-tertiary">
           <div className="flex items-center gap-1 text-sm text-bambu-gray">
@@ -326,8 +409,12 @@ export function LibraryFileNotesPopover({ fileId, open, anchorRef, onClose, onCo
             </>
           ) : null}
         </div>
-      </div>
+    </div>
+  );
 
+  return (
+    <>
+      {createPortal(popoverNode, document.body)}
       {confirmDeleteId !== null && (
         <ConfirmModal
           title={t('libraryNotes.deleteConfirmTitle')}

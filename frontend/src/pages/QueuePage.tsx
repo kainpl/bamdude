@@ -145,13 +145,15 @@ export function QueuePage() {
   );
 
   return (
-    <div className="p-4 md:p-6 max-w-[1600px] mx-auto">
+    <div className="p-4 md:p-6">
       {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
         <div>
-          <h1 className="text-2xl font-bold text-white">
-            {t('queue.title')}
-          </h1>
+          <div className="flex items-center gap-3">
+            {/*<Disc3 className="w-6 h-6 text-bambu-green" />*/}
+            <h1 className="text-2xl font-bold text-white">{t('queue.title')}</h1>
+          </div>
+          {/*<p className="text-sm text-bambu-gray mt-1 ml-9">{t('inventory.noSpools').split('.')[0] ? '' : ''}</p>*/}
         </div>
 
         <div className="flex items-center gap-2 sm:gap-3 flex-wrap">

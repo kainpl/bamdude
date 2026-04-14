@@ -713,7 +713,7 @@ function SettingsSection({
         <div className="flex items-center justify-between mb-4">
           <div>
             <h2 className="text-lg font-semibold text-white">{t('maintenance.maintenanceTypes')}</h2>
-            <p className="text-sm text-bambu-gray mt-1">{t('maintenance.maintenanceTypesDescription')}</p>
+            <p className="text-sm text-bambu-gray">{t('maintenance.maintenanceTypesDescription')}</p>
           </div>
           <div className="flex items-center gap-2">
             <Button
@@ -1616,7 +1616,7 @@ export function MaintenancePage() {
 
   if (isLoading) {
     return (
-      <div className="p-4 md:p-8 flex justify-center">
+      <div className="p-4 md:p-6 flex justify-center">
         <Loader2 className="w-8 h-8 text-bambu-green animate-spin" />
       </div>
     );
@@ -1626,26 +1626,29 @@ export function MaintenancePage() {
   const totalWarning = overview?.reduce((sum, p) => sum + p.warning_count, 0) || 0;
 
   return (
-    <div className="p-4 md:p-8">
+    <div className="p-4 md:p-6 space-y-4">
       {/* Header */}
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-white">{t('maintenance.title')}</h1>
-        <p className="text-bambu-gray text-sm mt-1">
+      <div>
+        <div className="flex items-center gap-3">
+          {/*<Disc3 className="w-6 h-6 text-bambu-green" />*/}
+          <h1 className="text-2xl font-bold text-white">{t('maintenance.title')}</h1>
+        </div>
+        <p className="text-sm text-bambu-gray">
           {activeTab === 'status' ? (
-            <>
-              {totalDue > 0 && <span className="text-red-400">{t('maintenance.dueCount', { count: totalDue })}</span>}
-              {totalDue > 0 && totalWarning > 0 && ' · '}
-              {totalWarning > 0 && <span className="text-amber-400">{t('maintenance.warningCount', { count: totalWarning })}</span>}
-              {totalDue === 0 && totalWarning === 0 && <span className="text-bambu-green">{t('maintenance.allOk')}</span>}
-            </>
+              <>
+                {totalDue > 0 && <span className="text-red-400">{t('maintenance.dueCount', { count: totalDue })}</span>}
+                {totalDue > 0 && totalWarning > 0 && ' · '}
+                {totalWarning > 0 && <span className="text-amber-400">{t('maintenance.warningCount', { count: totalWarning })}</span>}
+                {totalDue === 0 && totalWarning === 0 && <span className="text-bambu-green">{t('maintenance.allOk')}</span>}
+              </>
           ) : (
-            t('maintenance.configureSettings')
+              t('maintenance.configureSettings')
           )}
         </p>
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-1 mb-6 border-b border-bambu-dark-tertiary">
+      <div className="flex gap-1 mb-4 border-b border-bambu-dark-tertiary">
         <button
           onClick={() => setActiveTab('status')}
           className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${

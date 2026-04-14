@@ -180,15 +180,17 @@ export function SystemInfoPage() {
       : 'bg-bambu-green';
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-4 md:p-6 space-y-4">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-white">{t('system.title', 'System Information')}</h1>
-          <p className="text-bambu-gray mt-1">
-            {t('system.subtitle', 'Monitor system resources and database statistics')}
-          </p>
+          <div className="flex items-center gap-3">
+            {/*<Disc3 className="w-6 h-6 text-bambu-green" />*/}
+            <h1 className="text-2xl font-bold text-white">{t('system.title', 'System Information')}</h1>
+          </div>
+          <p className="text-sm text-bambu-gray">{t('system.subtitle', 'Monitor system resources and database statistics')}</p>
         </div>
+
         <button
           onClick={() => refetch()}
           disabled={isFetching}

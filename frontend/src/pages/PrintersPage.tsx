@@ -23,8 +23,8 @@ import {
   Wrench,
   ChevronDown,
   Pencil,
-  ArrowUp,
-  ArrowDown,
+  ArrowUpNarrowWide,
+  ArrowDownWideNarrow,
   Layers,
   Video,
   Search,
@@ -937,14 +937,16 @@ function StatusSummaryBar({ printers }: { printers: Printer[] | undefined }) {
       <div className="flex items-center gap-1.5">
         <div className={`w-2 h-2 rounded-full ${counts.idle > 0 ? 'bg-bambu-green' : 'bg-gray-500'}`} />
         <span className="text-bambu-gray">
-          <span className="text-white font-medium">{counts.idle}</span> {t('printers.status.available').toLowerCase()}
+          <span className="text-white font-medium">{counts.idle}</span>{' '}
+          {t('printers.summary.available', { count: counts.idle })}
         </span>
       </div>
       {counts.printing > 0 && (
         <div className="flex items-center gap-1.5">
           <div className="w-2 h-2 rounded-full bg-bambu-green animate-pulse" />
           <span className="text-bambu-gray">
-            <span className="text-white font-medium">{counts.printing}</span> {t('printers.status.printing').toLowerCase()}
+            <span className="text-white font-medium">{counts.printing}</span>{' '}
+            {t('printers.summary.printing', { count: counts.printing })}
           </span>
         </div>
       )}
@@ -952,7 +954,8 @@ function StatusSummaryBar({ printers }: { printers: Printer[] | undefined }) {
         <div className="flex items-center gap-1.5">
           <div className="w-2 h-2 rounded-full bg-gray-400" />
           <span className="text-bambu-gray">
-            <span className="text-white font-medium">{counts.offline}</span> {t('printers.status.offline').toLowerCase()}
+            <span className="text-white font-medium">{counts.offline}</span>{' '}
+            {t('printers.summary.offline', { count: counts.offline })}
           </span>
         </div>
       )}
@@ -960,7 +963,8 @@ function StatusSummaryBar({ printers }: { printers: Printer[] | undefined }) {
         <div className="flex items-center gap-1.5">
           <div className="w-2 h-2 rounded-full bg-status-error" />
           <span className="text-bambu-gray">
-            <span className="text-white font-medium">{counts.problem}</span> {t('printers.status.problem').toLowerCase()}
+            <span className="text-white font-medium">{counts.problem}</span>{' '}
+            {t('printers.summary.problem', { count: counts.problem })}
           </span>
         </div>
       )}
@@ -6265,93 +6269,16 @@ export function PrintersPage() {
   }, [sortBy, sortedPrinters]);
 
   return (
-    <div className="p-4 md:p-8">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
-        <div>
-          <h1 className="text-2xl font-bold text-white">{t('printers.title')}</h1>
-          <StatusSummaryBar printers={printers} />
-          {/* Search bar — only when printers exist (#852) */}
-          {printers && printers.length > 0 && (
-            <div className="relative w-full sm:max-w-sm mt-3">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray/50" />
-              <input
-                type="text"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder={t('printers.search')}
-                aria-label={t('printers.search')}
-                className="w-full pl-10 pr-8 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm placeholder:text-bambu-gray/50 focus:outline-none focus:border-bambu-green"
-              />
-              {search && (
-                <button
-                  type="button"
-                  aria-label={t('common.clear')}
-                  onClick={() => setSearch('')}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-bambu-gray hover:text-white"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              )}
-            </div>
-          )}
+    <div className="p-4 md:p-6">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
+        <div className="flex items-center gap-3">
+          {/*<PrinterIcon className="w-6 h-6 text-bambu-green" />*/}
+          <div>
+            <h1 className="text-2xl font-bold text-white">{t('printers.title')}</h1>
+            <StatusSummaryBar printers={printers} />
+          </div>
         </div>
         <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
-          {/* Sort dropdown */}
-          <div className="flex items-center gap-1">
-            <select
-              value={sortBy}
-              onChange={(e) => handleSortChange(e.target.value as SortOption)}
-              className="text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg px-2 py-1.5 text-white focus:border-bambu-green focus:outline-none"
-            >
-              <option value="name">{t('printers.sort.name')}</option>
-              <option value="status">{t('printers.sort.status')}</option>
-              <option value="model">{t('printers.sort.model')}</option>
-              <option value="location">{t('printers.sort.location')}</option>
-            </select>
-            <button
-              onClick={toggleSortDirection}
-              className="p-1.5 rounded-lg hover:bg-bambu-dark-tertiary transition-colors"
-              title={sortAsc ? t('printers.sort.descending') : t('printers.sort.ascending')}
-            >
-              {sortAsc ? (
-                <ArrowUp className="w-4 h-4 text-bambu-gray" />
-              ) : (
-                <ArrowDown className="w-4 h-4 text-bambu-gray" />
-              )}
-            </button>
-          </div>
-
-          {/* Status filter (#852) */}
-          {printers && printers.length > 0 && (
-            <select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-              className="text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg px-2 py-1.5 text-white focus:border-bambu-green focus:outline-none"
-            >
-              <option value="all">{t('printers.filter.allStatuses')}</option>
-              <option value="printing">{t('printers.status.printing')}</option>
-              <option value="paused">{t('printers.status.paused')}</option>
-              <option value="idle">{t('printers.status.idle')}</option>
-              <option value="finished">{t('printers.status.finished')}</option>
-              <option value="error">{t('printers.status.error')}</option>
-              <option value="offline">{t('printers.status.offline')}</option>
-            </select>
-          )}
-
-          {/* Location filter — only shown when at least one printer has a location (#852) */}
-          {printers && printers.length > 0 && availableLocations.length > 0 && (
-            <select
-              value={locationFilter}
-              onChange={(e) => setLocationFilter(e.target.value)}
-              className="text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg px-2 py-1.5 text-white focus:border-bambu-green focus:outline-none"
-            >
-              <option value="all">{t('printers.filter.allLocations')}</option>
-              {availableLocations.map(loc => (
-                <option key={loc} value={loc}>{loc}</option>
-              ))}
-            </select>
-          )}
-
           {/* Card size selector */}
           <div className="flex items-center bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
             {cardSizeLabels.map((label, index) => {
@@ -6383,43 +6310,40 @@ export function PrintersPage() {
 
           <div className="w-px h-6 bg-bambu-dark-tertiary" />
 
-          <label className="flex items-center gap-2 text-sm text-bambu-gray cursor-pointer">
-            <input
-              type="checkbox"
-              checked={hideDisconnected}
-              onChange={toggleHideDisconnected}
-              className="rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
-            />
-            {t('printers.hideOffline')}
-          </label>
-          {/* Bulk select toggle */}
+          {/* Bulk select toggle — outline Button, with an active-state override when selection is engaged */}
           {printers && printers.length > 1 && (
-            <button
-              onClick={() => {
-                if (selectionMode) clearSelection();
-                else if (printers) setSelectedPrinterIds(new Set(printers.map(p => p.id)));
-              }}
-              className={`px-3 py-1.5 text-sm rounded-lg border transition-colors ${
-                selectionMode
-                  ? 'bg-bambu-green/20 border-bambu-green/50 text-bambu-green'
-                  : 'bg-bambu-dark-secondary border-bambu-dark-tertiary text-bambu-gray hover:text-white'
-              }`}
-            >
-              {selectionMode ? t('printers.bulk.selected', { count: selectedPrinterIds.size }) : t('printers.bulk.selectAll')}
-            </button>
+            selectionMode ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={clearSelection}
+                className="!bg-bambu-green/20 !border-bambu-green/50 !text-bambu-green"
+              >
+                {t('printers.bulk.selected', { count: selectedPrinterIds.size })}
+              </Button>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => { if (printers) setSelectedPrinterIds(new Set(printers.map(p => p.id))); }}
+              >
+                {t('printers.bulk.selectAll')}
+              </Button>
+            )
           )}
 
           {/* Power dropdown for offline printers with smart plugs */}
           {hideDisconnected && Object.keys(smartPlugByPrinter).length > 0 && (
             <div className="relative">
-              <button
+              <Button
+                variant="outline"
+                size="sm"
                 onClick={() => setShowPowerDropdown(!showPowerDropdown)}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-white dark:bg-bambu-dark-secondary border border-gray-200 dark:border-bambu-dark-tertiary rounded-lg text-gray-600 dark:text-bambu-gray hover:text-gray-900 dark:hover:text-white hover:border-bambu-green transition-colors"
               >
                 <Power className="w-4 h-4" />
                 {t('printers.powerOn')}
                 <ChevronDown className={`w-3 h-3 transition-transform ${showPowerDropdown ? 'rotate-180' : ''}`} />
-              </button>
+              </Button>
               {showPowerDropdown && (
                 <>
                   {/* Backdrop to close dropdown */}
@@ -6463,6 +6387,99 @@ export function PrintersPage() {
           </Button>
         </div>
       </div>
+
+      {/* Search + filters + sort panel (#852) — standalone row below header */}
+      {printers && printers.length > 0 && (
+        <div className="flex flex-wrap items-stretch gap-2 mb-4 p-3 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg">
+          {/* Search bar */}
+          <div className="relative w-full sm:w-[28rem] h-9">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray/50" />
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder={t('printers.search')}
+              aria-label={t('printers.search')}
+              className="w-full h-9 pl-10 pr-8 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm placeholder:text-bambu-gray/50 focus:outline-none focus:border-bambu-green"
+            />
+            {search && (
+              <button
+                type="button"
+                aria-label={t('common.clear')}
+                onClick={() => setSearch('')}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-bambu-gray hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+
+          {/* Status filter */}
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            className="h-9 min-w-[9rem] text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg px-3 text-white focus:border-bambu-green focus:outline-none"
+          >
+            <option value="all">{t('printers.filter.allStatuses')}</option>
+            <option value="printing">{t('printers.status.printing')}</option>
+            <option value="paused">{t('printers.status.paused')}</option>
+            <option value="idle">{t('printers.status.idle')}</option>
+            <option value="finished">{t('printers.status.finished')}</option>
+            <option value="error">{t('printers.status.error')}</option>
+            <option value="offline">{t('printers.status.offline')}</option>
+          </select>
+
+          {/* Location filter — only when at least one printer has a location */}
+          {availableLocations.length > 0 && (
+            <select
+              value={locationFilter}
+              onChange={(e) => setLocationFilter(e.target.value)}
+              className="h-9 min-w-[9rem] text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg px-3 text-white focus:border-bambu-green focus:outline-none"
+            >
+              <option value="all">{t('printers.filter.allLocations')}</option>
+              {availableLocations.map(loc => (
+                <option key={loc} value={loc}>{loc}</option>
+              ))}
+            </select>
+          )}
+
+          {/* Hide offline toggle — moved from the header actions row */}
+          <label className="h-9 flex items-center gap-2 px-3 rounded-lg bg-bambu-dark border border-bambu-dark-tertiary text-sm text-bambu-gray cursor-pointer hover:text-white transition-colors">
+            <input
+              type="checkbox"
+              checked={hideDisconnected}
+              onChange={toggleHideDisconnected}
+              className="rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+            />
+            {t('printers.hideOffline')}
+          </label>
+
+          {/* Sort dropdown — pushed to far right via ml-auto */}
+          <div className="flex items-center gap-1 ml-auto">
+            <select
+              value={sortBy}
+              onChange={(e) => handleSortChange(e.target.value as SortOption)}
+              className="h-9 min-w-[9rem] text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg px-3 text-white focus:border-bambu-green focus:outline-none"
+            >
+              <option value="name">{t('printers.sort.name')}</option>
+              <option value="status">{t('printers.sort.status')}</option>
+              <option value="model">{t('printers.sort.model')}</option>
+              <option value="location">{t('printers.sort.location')}</option>
+            </select>
+            <button
+              onClick={toggleSortDirection}
+              className="h-9 w-9 flex items-center justify-center bg-bambu-dark border border-bambu-dark-tertiary rounded-lg hover:border-bambu-green transition-colors"
+              title={sortAsc ? t('printers.sort.descending') : t('printers.sort.ascending')}
+            >
+              {sortAsc ? (
+                <ArrowUpNarrowWide className="w-4 h-4 text-bambu-gray" />
+              ) : (
+                <ArrowDownWideNarrow className="w-4 h-4 text-bambu-gray" />
+              )}
+            </button>
+          </div>
+        </div>
+      )}
 
       {isLoading ? (
         <div className="text-center py-12 text-bambu-gray">{t('common.loading')}</div>

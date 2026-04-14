@@ -44,11 +44,12 @@ describe('LibraryFileNotesButton', () => {
     expect(btn).toHaveTextContent('5');
   });
 
-  it('does not show count badge on inline variant', () => {
+  it('shows count badge on inline variant too', () => {
+    // As of the list-mode parity update, inline variant mirrors overlay:
+    // plus-icon when empty, plain icon + count when populated.
     render(<LibraryFileNotesButton fileId={1} initialCount={5} variant="inline" />);
     const btn = screen.getByTestId('library-file-notes-button-1');
-    // Inline variant omits the count badge to save table-row space
-    expect(btn).not.toHaveTextContent('5');
+    expect(btn).toHaveTextContent('5');
   });
 
   it('opens popover on click', async () => {
