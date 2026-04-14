@@ -3702,6 +3702,32 @@ export default {
     processing: 'Processing...',
     doNotClosePage: 'Please do not close this page or navigate away. This operation may take several minutes for large backups.',
 
+    // Scheduled local backup (#884)
+    scheduledLocalBackup: {
+      title: 'Scheduled Local Backups',
+      description: 'Automatically create complete backup snapshots (database + all data directories) on a schedule. Backups are stored as ZIP files in the configured directory and pruned to the retention count.',
+      enabled: 'Enable scheduled backups',
+      schedule: 'Frequency',
+      hourly: 'Hourly',
+      daily: 'Daily',
+      weekly: 'Weekly',
+      time: 'Time of day',
+      retention: 'Keep last N backups',
+      path: 'Output directory',
+      pathHint: 'Leave empty to use the default location. Docker users can mount a volume here for off-host storage.',
+      lastRun: 'Last backup',
+      nextRun: 'Next scheduled run',
+      runNow: 'Run backup now',
+      runSuccess: 'Backup created: {{filename}}',
+      backups: 'Existing backups',
+      noBackups: 'No backups yet.',
+      download: 'Download',
+      restore: 'Restore from this backup',
+      delete: 'Delete this backup',
+      deleteConfirmTitle: 'Delete Backup',
+      deleteConfirmMessage: 'Delete "{{filename}}"? This cannot be undone.',
+    },
+
     // RestoreModal
     restoring: 'Restoring...',
     restoreComplete: 'Restore Complete',

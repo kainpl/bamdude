@@ -29,6 +29,8 @@ import type {
   ScheduleType,
   CloudAuthStatus,
   Printer,
+  LocalBackupStatus,
+  LocalBackupFile,
 } from '../api/client';
 import { Card, CardContent, CardHeader } from './Card';
 import { Button } from './Button';
@@ -95,9 +97,29 @@ export function GitBackupSettings() {
   const [backupArchives, setBackupArchives] = useState(false);
   const [enabled, setEnabled] = useState(true);
 
-  // Local backup state
+  // Local backup (manual download) state
   const [isExporting, setIsExporting] = useState(false);
   const [isRestoring, setIsRestoring] = useState(false);
+
+  // Scheduled local backup state (#884)
+  const [localBackupPath, setLocalBackupPath] = useState('');
+  const [scheduledRestoreFile, setScheduledRestoreFile] = useState<string | null>(null);
+  const [scheduledDeleteFile, setScheduledDeleteFile] = useState<string | null>(null);
+  const { data: localBackupStatus, refetch: refetchLocalStatus } = useQuery<LocalBackupStatus>({
+    queryKey: ['local-backup-status'],
+    queryFn: () => api.getLocalBackupStatus(),
+    refetchInterval: 30000,
+  });
+  const { data: localBackups, refetch: refetchLocalBackups } = useQuery<LocalBackupFile[]>({
+    queryKey: ['local-backup-files'],
+    queryFn: () => api.listLocalBackups(),
+    refetchInterval: 30000,
+  });
+  useEffect(() => {
+    if (localBackupStatus?.path !== undefined) {
+      setLocalBackupPath(localBackupStatus.path);
+    }
+  }, [localBackupStatus?.path]);
   const [operationStatus, setOperationStatus] = useState<string>('');
   const [showRestoreConfirm, setShowRestoreConfirm] = useState(false);
   const [restoreFile, setRestoreFile] = useState<File | null>(null);
@@ -913,7 +935,272 @@ export function GitBackupSettings() {
             </div>
           </CardContent>
         </Card>
+
+        {/* Scheduled Local Backups (#884) */}
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <Clock className="w-5 h-5 text-bambu-green" />
+              <h2 className="text-lg font-semibold text-white">{t('backup.scheduledLocalBackup.title')}</h2>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-bambu-gray">{t('backup.scheduledLocalBackup.description')}</p>
+
+            {/* Enable toggle */}
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-white">{t('backup.scheduledLocalBackup.enabled')}</span>
+              <Toggle
+                checked={localBackupStatus?.enabled ?? false}
+                onChange={async (checked) => {
+                  try {
+                    await api.updateSettings({ local_backup_enabled: checked });
+                    refetchLocalStatus();
+                    showToast(t('common.saved'), 'success');
+                  } catch (e) {
+                    showToast(e instanceof Error ? e.message : 'Failed', 'error');
+                  }
+                }}
+              />
+            </div>
+
+            {localBackupStatus?.enabled && (
+              <>
+                {/* Schedule + time + retention + path */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <label className="text-sm">
+                    <span className="block text-bambu-gray mb-1">{t('backup.scheduledLocalBackup.schedule')}</span>
+                    <select
+                      value={localBackupStatus?.schedule ?? 'daily'}
+                      onChange={async (e) => {
+                        try {
+                          await api.updateSettings({ local_backup_schedule: e.target.value });
+                          refetchLocalStatus();
+                        } catch (err) {
+                          showToast(err instanceof Error ? err.message : 'Failed', 'error');
+                        }
+                      }}
+                      className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
+                    >
+                      <option value="hourly">{t('backup.scheduledLocalBackup.hourly')}</option>
+                      <option value="daily">{t('backup.scheduledLocalBackup.daily')}</option>
+                      <option value="weekly">{t('backup.scheduledLocalBackup.weekly')}</option>
+                    </select>
+                  </label>
+
+                  {(localBackupStatus?.schedule ?? 'daily') !== 'hourly' && (
+                    <label className="text-sm">
+                      <span className="block text-bambu-gray mb-1">{t('backup.scheduledLocalBackup.time')}</span>
+                      <input
+                        type="time"
+                        value={localBackupStatus?.time ?? '03:00'}
+                        onChange={async (e) => {
+                          try {
+                            await api.updateSettings({ local_backup_time: e.target.value });
+                            refetchLocalStatus();
+                          } catch (err) {
+                            showToast(err instanceof Error ? err.message : 'Failed', 'error');
+                          }
+                        }}
+                        className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
+                      />
+                    </label>
+                  )}
+
+                  <label className="text-sm">
+                    <span className="block text-bambu-gray mb-1">{t('backup.scheduledLocalBackup.retention')}</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={100}
+                      value={localBackupStatus?.retention ?? 5}
+                      onChange={async (e) => {
+                        const v = Math.max(1, Math.min(100, parseInt(e.target.value, 10) || 1));
+                        try {
+                          await api.updateSettings({ local_backup_retention: v });
+                          refetchLocalStatus();
+                        } catch (err) {
+                          showToast(err instanceof Error ? err.message : 'Failed', 'error');
+                        }
+                      }}
+                      className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
+                    />
+                  </label>
+
+                  <label className="text-sm sm:col-span-2">
+                    <span className="block text-bambu-gray mb-1">{t('backup.scheduledLocalBackup.path')}</span>
+                    <input
+                      type="text"
+                      value={localBackupPath}
+                      placeholder={localBackupStatus?.default_path ?? ''}
+                      onChange={(e) => setLocalBackupPath(e.target.value)}
+                      onBlur={async () => {
+                        if (localBackupPath === (localBackupStatus?.path ?? '')) return;
+                        try {
+                          await api.updateSettings({ local_backup_path: localBackupPath });
+                          refetchLocalStatus();
+                          refetchLocalBackups();
+                        } catch (err) {
+                          showToast(err instanceof Error ? err.message : 'Failed', 'error');
+                        }
+                      }}
+                      className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
+                    />
+                    <p className="text-xs text-bambu-gray/70 mt-1">{t('backup.scheduledLocalBackup.pathHint')}</p>
+                  </label>
+                </div>
+
+                {/* Status row */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm bg-bambu-dark/50 rounded-lg p-3">
+                  <div>
+                    <div className="text-bambu-gray text-xs">{t('backup.scheduledLocalBackup.lastRun')}</div>
+                    <div className="text-white">
+                      {formatDateTime(localBackupStatus?.last_backup_at ?? null)}
+                      {localBackupStatus?.last_status && (
+                        <span className={`ml-2 text-xs ${localBackupStatus.last_status === 'success' ? 'text-status-ok' : 'text-status-error'}`}>
+                          ({localBackupStatus.last_status})
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-bambu-gray text-xs">{t('backup.scheduledLocalBackup.nextRun')}</div>
+                    <div className="text-white">{formatDateTime(localBackupStatus?.next_run ?? null)}</div>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* Run-now button */}
+            <Button
+              variant="secondary"
+              disabled={localBackupStatus?.is_running}
+              onClick={async () => {
+                try {
+                  const result = await api.triggerLocalBackup();
+                  if (result.success) {
+                    showToast(t('backup.scheduledLocalBackup.runSuccess', { filename: result.filename ?? '' }), 'success');
+                  } else {
+                    showToast(result.message, 'error');
+                  }
+                  refetchLocalStatus();
+                  refetchLocalBackups();
+                } catch (e) {
+                  showToast(e instanceof Error ? e.message : 'Failed', 'error');
+                }
+              }}
+            >
+              {localBackupStatus?.is_running ? (
+                <Loader2 className="w-4 h-4 animate-spin mr-2" />
+              ) : (
+                <Play className="w-4 h-4 mr-2" />
+              )}
+              {t('backup.scheduledLocalBackup.runNow')}
+            </Button>
+
+            {/* Backups list */}
+            <div>
+              <h3 className="text-sm text-bambu-gray mb-2">{t('backup.scheduledLocalBackup.backups')}</h3>
+              {!localBackups || localBackups.length === 0 ? (
+                <p className="text-bambu-gray/60 text-sm italic">{t('backup.scheduledLocalBackup.noBackups')}</p>
+              ) : (
+                <div className="space-y-1">
+                  {localBackups.map((b) => (
+                    <div key={b.filename} className="flex items-center gap-3 p-2 bg-bambu-dark/50 rounded-lg">
+                      <Database className="w-4 h-4 text-bambu-gray shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm text-white truncate">{b.filename}</p>
+                        <p className="text-xs text-bambu-gray">
+                          {(b.size / (1024 * 1024)).toFixed(1)} MB · {formatDateTime(b.created_at)}
+                        </p>
+                      </div>
+                      <a
+                        href={api.getLocalBackupDownloadUrl(b.filename)}
+                        title={t('backup.scheduledLocalBackup.download')}
+                        className="p-1.5 rounded hover:bg-bambu-green/20 text-bambu-green transition-colors"
+                      >
+                        <Download className="w-4 h-4" />
+                      </a>
+                      <button
+                        type="button"
+                        onClick={() => setScheduledRestoreFile(b.filename)}
+                        title={t('backup.scheduledLocalBackup.restore')}
+                        className="p-1.5 rounded hover:bg-yellow-500/20 text-yellow-400 transition-colors"
+                      >
+                        <RotateCcw className="w-4 h-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setScheduledDeleteFile(b.filename)}
+                        title={t('backup.scheduledLocalBackup.delete')}
+                        className="p-1.5 rounded hover:bg-red-500/20 text-red-400 transition-colors"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
       </div>
+
+      {/* Scheduled-backup restore confirmation */}
+      {scheduledRestoreFile && (
+        <ConfirmModal
+          title={t('backup.restoreConfirmTitle')}
+          message={t('backup.restoreConfirmMessage', { filename: scheduledRestoreFile })}
+          confirmText={t('backup.restoreConfirmButton')}
+          variant="danger"
+          onConfirm={async () => {
+            const filename = scheduledRestoreFile;
+            setScheduledRestoreFile(null);
+            setIsRestoring(true);
+            setOperationStatus(t('backup.restoringBackup'));
+            try {
+              const result = await api.restoreLocalBackup(filename);
+              if (result.success !== false) {
+                showToast(t('backup.backupRestoredRestart'), 'success');
+              } else {
+                showToast(result.message ?? t('backup.failedToRestore'), 'error');
+              }
+            } catch (e) {
+              showToast(e instanceof Error ? e.message : t('backup.failedToRestore'), 'error');
+            } finally {
+              setIsRestoring(false);
+              setOperationStatus('');
+            }
+          }}
+          onCancel={() => setScheduledRestoreFile(null)}
+        />
+      )}
+
+      {/* Scheduled-backup delete confirmation */}
+      {scheduledDeleteFile && (
+        <ConfirmModal
+          title={t('backup.scheduledLocalBackup.deleteConfirmTitle')}
+          message={t('backup.scheduledLocalBackup.deleteConfirmMessage', { filename: scheduledDeleteFile })}
+          confirmText={t('common.delete')}
+          variant="danger"
+          onConfirm={async () => {
+            const filename = scheduledDeleteFile;
+            setScheduledDeleteFile(null);
+            try {
+              const result = await api.deleteLocalBackup(filename);
+              if (result.success) {
+                showToast(result.message, 'success');
+                refetchLocalBackups();
+              } else {
+                showToast(result.message, 'error');
+              }
+            } catch (e) {
+              showToast(e instanceof Error ? e.message : 'Failed', 'error');
+            }
+          }}
+          onCancel={() => setScheduledDeleteFile(null)}
+        />
+      )}
 
       {/* Restore Confirmation Modal */}
       {showRestoreConfirm && restoreFile && (

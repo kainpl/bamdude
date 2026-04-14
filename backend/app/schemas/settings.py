@@ -87,6 +87,13 @@ class AppSettings(BaseModel):
         description="JSON blob of drying presets per filament type (empty = use built-in defaults)",
     )
 
+    # Scheduled local backup (upstream #884)
+    local_backup_enabled: bool = Field(default=False, description="Enable scheduled local backups")
+    local_backup_schedule: str = Field(default="daily", description="Backup frequency: hourly, daily, weekly")
+    local_backup_time: str = Field(default="03:00", description="Time of day for daily/weekly backups (HH:MM, 24h)")
+    local_backup_retention: int = Field(default=5, description="Number of backup files to keep (1-100)")
+    local_backup_path: str = Field(default="", description="Backup output directory (empty = DATA_DIR/backups)")
+
     # Staggered start settings (electrical load management for farms)
     stagger_enabled: bool = Field(
         default=False, description="Enable staggered start to limit concurrent printer heating"
@@ -313,6 +320,11 @@ class AppSettingsUpdate(BaseModel):
     ldap_group_mapping: str | None = None
     ldap_auto_provision: bool | None = None
     ldap_default_group: str | None = None
+    local_backup_enabled: bool | None = None
+    local_backup_schedule: str | None = None
+    local_backup_time: str | None = None
+    local_backup_retention: int | None = None
+    local_backup_path: str | None = None
     default_sidebar_order: str | None = None
 
     @field_validator("ldap_group_mapping")

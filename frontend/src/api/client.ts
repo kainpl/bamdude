@@ -1784,6 +1784,38 @@ export interface GitBackupTriggerResponse {
   files_changed: number;
 }
 
+// Scheduled local backup (#884)
+export interface LocalBackupStatus {
+  enabled: boolean;
+  schedule: 'hourly' | 'daily' | 'weekly';
+  time: string;            // "HH:MM"
+  retention: number;
+  path: string;            // empty string = use default_path
+  default_path: string;
+  is_running: boolean;
+  last_backup_at: string | null;
+  last_status: 'success' | 'failed' | null;
+  last_message: string | null;
+  next_run: string | null;
+}
+
+export interface LocalBackupFile {
+  filename: string;
+  size: number;            // bytes
+  created_at: string;
+}
+
+export interface LocalBackupRunResponse {
+  success: boolean;
+  message: string;
+  filename?: string;
+}
+
+export interface LocalBackupDeleteResponse {
+  success: boolean;
+  message: string;
+}
+
 export interface NotificationTestRequest {
   provider_type: ProviderType;
   config: Record<string, unknown>;
@@ -4458,6 +4490,26 @@ export const api = {
 
   clearGitBackupLogs: (keepLast: number = 10) =>
     request<{ deleted: number; message: string }>(`/git-backup/logs?keep_last=${keepLast}`, { method: 'DELETE' }),
+
+  // Scheduled Local Backup (#884)
+  getLocalBackupStatus: () =>
+    request<LocalBackupStatus>('/local-backup/status'),
+  triggerLocalBackup: () =>
+    request<LocalBackupRunResponse>('/local-backup/run', { method: 'POST' }),
+  listLocalBackups: () =>
+    request<LocalBackupFile[]>('/local-backup/backups'),
+  getLocalBackupDownloadUrl: (filename: string) =>
+    `${API_BASE}/local-backup/backups/${encodeURIComponent(filename)}/download`,
+  restoreLocalBackup: (filename: string) =>
+    request<{ success?: boolean; message?: string }>(
+      `/local-backup/backups/${encodeURIComponent(filename)}/restore`,
+      { method: 'POST' }
+    ),
+  deleteLocalBackup: (filename: string) =>
+    request<LocalBackupDeleteResponse>(
+      `/local-backup/backups/${encodeURIComponent(filename)}`,
+      { method: 'DELETE' }
+    ),
 
   // Local Presets (OrcaSlicer imports)
   getLocalPresets: () =>

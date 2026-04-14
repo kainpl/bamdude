@@ -1,11 +1,12 @@
 import io
 import logging
+import os
 import zipfile
 from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -358,6 +359,66 @@ async def get_homeassistant_settings(db: AsyncSession) -> dict:
     }
 
 
+async def create_backup_zip(output_path: Path | None = None) -> tuple[Path, str]:
+    """Create a complete backup ZIP (database + all data directories).
+
+    If output_path is given, the ZIP is written there.
+    Otherwise a temporary file is created (caller must clean up).
+    Backup is always in portable SQLite format regardless of database backend.
+    Returns (zip_path, filename).
+    """
+    import shutil
+    import tempfile
+
+    from backend.app.core.database import Base, engine
+    from backend.app.core.db_portable import dump_to_sqlite
+
+    base_dir = app_settings.base_dir
+    filename = f"bamdude-backup-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+
+        # 1. Export database to portable SQLite format
+        await dump_to_sqlite(engine, Base.metadata, temp_path / "bamdude.db")
+
+        # 2. Copy data directories (if they exist)
+        dirs_to_backup = [
+            ("archive", base_dir / "archive"),
+            ("virtual_printer", base_dir / "virtual_printer"),
+            ("plate_calibration", app_settings.plate_calibration_dir),
+            ("icons", base_dir / "icons"),
+            ("projects", base_dir / "projects"),
+        ]
+
+        for name, src_dir in dirs_to_backup:
+            if src_dir.exists() and any(src_dir.iterdir()):
+                try:
+                    shutil.copytree(src_dir, temp_path / name)
+                except shutil.Error as e:
+                    # Some files may have restricted permissions (e.g., SSL keys)
+                    logger.warning("Some files in %s could not be copied: %s", name, e)
+                except PermissionError as e:
+                    logger.warning("Permission denied copying %s: %s", name, e)
+
+        # 3. Create ZIP
+        if output_path is not None:
+            zip_file = output_path / filename
+        else:
+            # mkstemp gives us a unique path that survives the TemporaryDirectory cleanup
+            fd, tmp_path_str = tempfile.mkstemp(suffix=".zip")
+            os.close(fd)
+            zip_file = Path(tmp_path_str)
+
+        with zipfile.ZipFile(zip_file, "w", zipfile.ZIP_DEFLATED) as zf:
+            for file_path in temp_path.rglob("*"):
+                if file_path.is_file():
+                    arcname = file_path.relative_to(temp_path)
+                    zf.write(file_path, arcname)
+
+    return zip_file, filename
+
+
 @router.get("/backup")
 async def create_backup(
     db: AsyncSession = Depends(get_db),
@@ -365,61 +426,26 @@ async def create_backup(
 ):
     """Create a complete backup (database + all files) as a ZIP.
 
-    Includes the database and all data directories as a ZIP.
-    Backup is always in portable SQLite format regardless of database backend.
+    Streams from a temp file rather than loading the whole ZIP into memory,
+    so multi-gigabyte backups don't OOM the process.
     """
-    import shutil
-    import tempfile
+    import os as _os
 
-    from backend.app.core.database import Base, engine
+    from fastapi import BackgroundTasks
 
     try:
-        base_dir = app_settings.base_dir
+        zip_file, filename = await create_backup_zip()
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+        # Schedule cleanup once the response has been sent
+        bg = BackgroundTasks()
+        bg.add_task(lambda p=zip_file: _os.unlink(p) if p.exists() else None)
 
-            # 1. Export database to portable SQLite format
-            from backend.app.core.db_portable import dump_to_sqlite
-
-            await dump_to_sqlite(engine, Base.metadata, temp_path / "bambuddy.db")
-
-            # 3. Copy data directories (if they exist)
-            dirs_to_backup = [
-                ("archive", base_dir / "archive"),
-                ("virtual_printer", base_dir / "virtual_printer"),
-                ("plate_calibration", app_settings.plate_calibration_dir),
-                ("icons", base_dir / "icons"),
-                ("projects", base_dir / "projects"),
-            ]
-
-            for name, src_dir in dirs_to_backup:
-                if src_dir.exists() and any(src_dir.iterdir()):
-                    try:
-                        shutil.copytree(src_dir, temp_path / name)
-                    except shutil.Error as e:
-                        # Some files may have restricted permissions (e.g., SSL keys)
-                        # Log the error but continue with partial backup
-                        logger.warning("Some files in %s could not be copied: %s", name, e)
-                    except PermissionError as e:
-                        logger.warning("Permission denied copying %s: %s", name, e)
-
-            # 4. Create ZIP
-            zip_buffer = io.BytesIO()
-            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-                for file_path in temp_path.rglob("*"):
-                    if file_path.is_file():
-                        arcname = file_path.relative_to(temp_path)
-                        zf.write(file_path, arcname)
-
-            zip_buffer.seek(0)
-            filename = f"bambuddy-backup-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
-
-            return StreamingResponse(
-                zip_buffer,
-                media_type="application/zip",
-                headers={"Content-Disposition": f"attachment; filename={filename}"},
-            )
+        return FileResponse(
+            path=str(zip_file),
+            media_type="application/zip",
+            filename=filename,
+            background=bg,
+        )
     except Exception as e:
         logger.error("Backup failed: %s", e, exc_info=True)
         return JSONResponse(
@@ -464,10 +490,12 @@ async def restore_backup(
         except zipfile.BadZipFile:
             raise HTTPException(400, "Invalid backup file: not a valid ZIP")
 
-        # 2. Validate backup (must have database)
-        backup_db = temp_path / "bambuddy.db"
+        # 2. Validate backup (must have database) — accept both new and legacy names
+        backup_db = temp_path / "bamdude.db"
         if not backup_db.exists():
-            raise HTTPException(400, "Invalid backup: missing bambuddy.db")
+            backup_db = temp_path / "bambuddy.db"
+        if not backup_db.exists():
+            raise HTTPException(400, "Invalid backup: missing database file (bamdude.db or bambuddy.db)")
 
         try:
             import asyncio
