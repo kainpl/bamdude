@@ -221,6 +221,10 @@ class AppSettings(BaseModel):
         default=False,
         description="Auto-create BamDude user on first successful LDAP login",
     )
+    ldap_default_group: str = Field(
+        default="",
+        description="Fallback BamDude group name assigned when an LDAP user authenticates but has no mapped groups. Empty = no fallback.",
+    )
 
     # Default sidebar order (admin-set for all users)
     default_sidebar_order: str = Field(
@@ -308,6 +312,7 @@ class AppSettingsUpdate(BaseModel):
     ldap_security: str | None = None
     ldap_group_mapping: str | None = None
     ldap_auto_provision: bool | None = None
+    ldap_default_group: str | None = None
     default_sidebar_order: str | None = None
 
     @field_validator("ldap_group_mapping")

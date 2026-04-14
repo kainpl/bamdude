@@ -918,6 +918,7 @@ export interface AppSettings {
   ldap_security: string;
   ldap_group_mapping: string;
   ldap_auto_provision: boolean;
+  ldap_default_group: string;
 }
 
 export type AppSettingsUpdate = Partial<AppSettings>;

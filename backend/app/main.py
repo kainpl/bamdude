@@ -999,8 +999,10 @@ async def on_ams_change(printer_id: int, ams_data: list):
             except Exception as e:
                 logger.debug("Could not load inventory weights for printer %s: %s", printer_id, e)
 
-            # Sync each AMS tray
+            # Sync each AMS tray, tracking UUIDs and spool IDs for stale-location cleanup (upstream #921)
             synced = 0
+            current_tray_uuids: set[str] = set()
+            synced_spool_ids: set[int] = set()
             for ams_unit in ams_data:
                 ams_id = int(ams_unit.get("id", 0))
                 trays = ams_unit.get("tray", [])
@@ -1009,6 +1011,16 @@ async def on_ams_change(printer_id: int, ams_data: list):
                     tray = client.parse_ams_tray(ams_id, tray_data)
                     if not tray:
                         continue  # Empty tray
+
+                    # Track this spool's UUID as currently present in the AMS so that
+                    # clear_location_for_removed_spools doesn't clear it below.
+                    spool_tag = (
+                        tray.tray_uuid
+                        if tray.tray_uuid and tray.tray_uuid != "00000000000000000000000000000000"
+                        else tray.tag_uid
+                    )
+                    if spool_tag:
+                        current_tray_uuids.add(spool_tag.upper())
 
                     try:
                         inv_remaining = inventory_weights.get((ams_id, tray.tray_id))
@@ -1021,10 +1033,10 @@ async def on_ams_change(printer_id: int, ams_data: list):
                         )
                         if result:
                             synced += 1
-                            # If a new spool was created, add it to the cache
-                            # so subsequent trays can find it if they reference the same tag
                             if result.get("id"):
-                                # Check if this spool already exists in cache
+                                synced_spool_ids.add(result["id"])
+                                # If a new spool was created, add it to the cache
+                                # so subsequent trays can find it if they reference the same tag
                                 spool_exists = any(s.get("id") == result["id"] for s in cached_spools)
                                 if not spool_exists:
                                     cached_spools.append(result)
@@ -1038,6 +1050,25 @@ async def on_ams_change(printer_id: int, ams_data: list):
 
             if synced > 0:
                 logger.info("Auto-synced %s AMS trays to Spoolman for printer %s", synced, printer_id)
+
+            # Clear location for spools no longer in this printer's AMS (upstream #921).
+            # Without this, removing a spool from the AMS leaves its Spoolman location pointing
+            # at the printer — causing double-booked slots if the spool is later inserted elsewhere.
+            try:
+                cleared = await client.clear_location_for_removed_spools(
+                    printer_name,
+                    current_tray_uuids,
+                    cached_spools=cached_spools,
+                    synced_spool_ids=synced_spool_ids,
+                )
+                if cleared > 0:
+                    logger.info(
+                        "Auto-cleared location for %s spools removed from printer %s",
+                        cleared,
+                        printer_id,
+                    )
+            except Exception as e:
+                logger.error("Error clearing locations for removed spools on printer %s: %s", printer_id, e)
 
     except Exception as e:
         logging.getLogger(__name__).warning(f"Spoolman AMS sync failed: {e}")
@@ -2682,7 +2713,9 @@ async def on_print_complete(printer_id: int, data: dict):
                                         if success:
                                             logger.info("Powered off printer %s via smart plug '%s'", pid, p.name)
                                         else:
-                                            logger.warning("Failed to power off printer %s via smart plug '%s'", pid, p.name)
+                                            logger.warning(
+                                                "Failed to power off printer %s via smart plug '%s'", pid, p.name
+                                            )
 
                         asyncio.create_task(cooldown_and_poweroff(printer_id, [p.id for p in enabled_plugs]))
     except Exception as e:
@@ -2932,7 +2965,6 @@ async def on_print_complete(printer_id: int, data: dict):
         # Continue with other operations even if archive update fails
 
     log_timing("Archive status update")
-
 
     # Track filament consumption from AMS remain% deltas (skip if Spoolman handles usage)
     usage_results: list[dict] = []

@@ -95,6 +95,22 @@ All notable changes to BamDude will be documented in this file.
 - **SWAP badge** — moved to model line (before model name), visible at all card sizes
 - **Card height** — printer cards no longer stretch to match tallest card in row (`items-start`)
 
+### Upstream Bambuddy v0.2.3b3 Adaptation
+
+Cycle `applied=0.2.3b2` → `next=0.2.3b3` (9 ported / 0 missing / 6 deferred / 7 N/A). Full audit: `temp/bambuddy-changes-audit-v0.2.3b2-v0.2.3b3.md`.
+
+- **P2S/N7 AMS Drying** — P2S printers with firmware 01.02.00.00+ now support remote AMS drying (moved from `_DRYING_UNSUPPORTED_MODELS` to `_DRYING_MIN_FIRMWARE`). N7 added (P2S internal model code)
+- **LDAP Default Fallback Group** — Settings → Authentication → LDAP → Advanced now has a "Default group" selector. Authenticated LDAP users with no mapped groups are auto-assigned to this fallback group instead of landing without permissions. New `ldap_default_group` setting + dropdown UI; logged warning each time fallback is applied. EN+UK i18n
+- **LDAP POSIX Primary Group** — LDAP authenticator now resolves the user's primary `gidNumber` against `posixGroup` entries (not just `memberUid`-based supplementary groups). DN deduplication is case-insensitive (LDAP DNs are case-insensitive by spec)
+- **LDAP SQLite NOT NULL fix (#794)** — m002 migration now drops `NOT NULL` on `users.password_hash` for upgraded SQLite installs (pre-LDAP). Patches `sqlite_master` via `writable_schema` + `PRAGMA schema_version` bump. PostgreSQL path uses `ALTER COLUMN ... DROP NOT NULL`. Idempotent
+- **H2C Nozzle Rack Slot Numbering (#943)** — `NozzleRackCard` now uses fixed `RACK_BASE_ID = 16` instead of `min(present_ids)`. When the lowest-ID rack slot is mounted in the hotend (firmware omits its ID from `device.nozzle.info`), the empty placeholder no longer shifts every remaining nozzle one slot left
+- **Plate-Clear Button Reset (#912)** — `PrinterQueueWidget` now resets `clearPlateMutation` state on `printerState` transition out of FINISH/FAILED. Without this, the React Query `isSuccess` flag persisted from the first plate clear and rendered the static "Plate Ready" confirmation instead of a clickable button on the next print cycle
+- **Spoolman Stale Location Cleanup (#921)** — Spoolman auto-sync (`on_ams_change`) now calls `clear_location_for_removed_spools` after each sync cycle. Without this, removing a spool from the AMS left its Spoolman location pointing at the printer (causing double-booked slots if reinserted elsewhere). Manual `sync_printer_ams` route now passes `synced_spool_ids` so just-synced spools aren't accidentally cleared
+- **Virtual Printer serial-adaptive parity** — minor `client_serial and ...` truthy-guard alignment with upstream `mqtt_server.py::_handle_publish`. Functional logic for serial-adaptive PUBLISH/SUBSCRIBE handling (#927) was already in place
+- **Support bundle: filter `_ip` keys** — added `"_ip"` to `support.py::sensitive_keys` (security; closes potential leak if `*_ip` settings ever land in the `Settings` table; current `bind_ip`/`remote_interface_ip` live on `virtual_printer` table and aren't affected by this filter)
+- **Skipped (deferred to 0.3.3)**: Scheduled Local Backups (2A), Print-from-project (2C), Printers search/filter (2D), `color_catalog` refactor (4C), per-print energy persistence (4E), camera ffmpeg log summarizer (4J)
+- **Skipped (not applicable)**: SpoolBuddy device management tab (2B), SpoolBuddy auto-wake (3A), SpoolBuddy LCD off-on-idle (3B), Energy snapshot Postgres tz fix (4B — depends on 4E), External link icon stream-token (4G — BamDude icons are intentionally unauthenticated), SJF toggle disappearing (4H — SJF not ported), SpoolBuddy Docker fix (4I)
+
 ### Upstream Bambuddy v0.2.3b2 Adaptation
 
 Cycle `applied=0.2.3b1` → `next=0.2.3b2` (23 ported / 0 missing / 4 N/A). Full audit: `temp/bambuddy-changes-audit-v0.2.3b1-v0.2.3b2.md`.

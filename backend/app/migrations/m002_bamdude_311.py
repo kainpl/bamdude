@@ -316,6 +316,43 @@ async def upgrade(conn):
     # ── Users: LDAP auth_source ──
     await add_column(conn, "users", "auth_source VARCHAR(20) NOT NULL DEFAULT 'local'")
 
+    # ── Users: drop NOT NULL on password_hash (LDAP users have no local password, #794) ──
+    # Fresh installs go through Base.metadata.create_all() which already uses the current
+    # nullable model. This branch handles existing BamDude installs created before the LDAP
+    # commit (models/user.py: password_hash Mapped[str] → Mapped[str | None]) — those DBs
+    # still have the NOT NULL constraint and would hit IntegrityError on LDAP auto-provision.
+    from backend.app.core.db_dialect import is_postgres as _is_pg_pwd
+
+    if _is_pg_pwd():
+        # PostgreSQL supports ALTER COLUMN ... DROP NOT NULL directly.
+        try:
+            await conn.execute(text("ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL"))
+        except Exception:
+            # Already nullable — ignore.
+            pass
+    else:
+        # SQLite can't ALTER COLUMN; patch sqlite_master directly via writable_schema.
+        # Bump schema_version so SQLite reloads the table definition from disk — otherwise
+        # the current connection keeps enforcing the old NOT NULL from its cached schema.
+        try:
+            result = await conn.execute(text("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'"))
+            users_sql = result.scalar()
+            if users_sql and "password_hash VARCHAR(255) NOT NULL" in users_sql:
+                version_result = await conn.execute(text("PRAGMA schema_version"))
+                schema_version = version_result.scalar() or 0
+                await conn.execute(text("PRAGMA writable_schema = ON"))
+                await conn.execute(
+                    text(
+                        "UPDATE sqlite_master "
+                        "SET sql = replace(sql, 'password_hash VARCHAR(255) NOT NULL', 'password_hash VARCHAR(255)') "
+                        "WHERE type = 'table' AND name = 'users'"
+                    )
+                )
+                await conn.execute(text(f"PRAGMA schema_version = {schema_version + 1}"))
+                await conn.execute(text("PRAGMA writable_schema = OFF"))
+        except Exception:
+            pass
+
     # ── Drop dead tables ──
     for dead_table in ("filaments", "print_log_entries", "spoolbuddy_devices"):
         if await table_exists(conn, dead_table):

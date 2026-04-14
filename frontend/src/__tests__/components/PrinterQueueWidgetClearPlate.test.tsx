@@ -172,6 +172,32 @@ describe('PrinterQueueWidget - Clear Plate', () => {
       });
     });
 
+    // Regression test for upstream #912: mutation state must reset between print cycles
+    it('resets mutation state when printer leaves FINISH so the next cycle is clickable', async () => {
+      const { rerender } = render(<PrinterQueueWidget printerId={1} printerState="FINISH" />);
+      const user = userEvent.setup();
+
+      // First cycle: click button → confirmation rendered
+      await waitFor(() => {
+        expect(screen.getByText('Clear Plate & Start Next')).toBeInTheDocument();
+      });
+      await user.click(screen.getByText('Clear Plate & Start Next'));
+      await waitFor(() => {
+        const confirmations = screen.getAllByText('Plate cleared — ready for next print');
+        expect(confirmations.length).toBeGreaterThanOrEqual(1);
+      });
+
+      // Printer transitions to RUNNING (next print starts) — then back to FINISH.
+      // The useEffect must have called mutation.reset(), so the button is rendered
+      // again instead of the sticky "Plate Ready" confirmation.
+      rerender(<PrinterQueueWidget printerId={1} printerState="RUNNING" />);
+      rerender(<PrinterQueueWidget printerId={1} printerState="FINISH" />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Clear Plate & Start Next')).toBeInTheDocument();
+      });
+    });
+
     it('shows error toast on API failure', async () => {
       server.use(
         http.post('/api/v1/printers/:id/clear-plate', () => {

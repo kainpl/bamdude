@@ -55,6 +55,7 @@ class TestParseConfig:
         assert config.group_mapping == {}
         assert config.auto_provision is False
         assert config.ca_cert_path == ""
+        assert config.default_group == ""
 
     def test_parses_full_config(self):
         settings = {
@@ -68,6 +69,7 @@ class TestParseConfig:
             "ldap_group_mapping": '{"cn=admins,dc=example,dc=com": "Administrators"}',
             "ldap_auto_provision": "true",
             "ldap_ca_cert_path": "/path/to/ca.pem",
+            "ldap_default_group": "Viewers",
         }
         config = parse_ldap_config(settings)
         assert config is not None
@@ -79,6 +81,17 @@ class TestParseConfig:
         assert config.group_mapping == {"cn=admins,dc=example,dc=com": "Administrators"}
         assert config.auto_provision is True
         assert config.ca_cert_path == "/path/to/ca.pem"
+        assert config.default_group == "Viewers"
+
+    def test_default_group_stripped(self):
+        settings = {
+            "ldap_enabled": "true",
+            "ldap_server_url": "ldaps://ldap.example.com",
+            "ldap_default_group": "  Operators  ",
+        }
+        config = parse_ldap_config(settings)
+        assert config is not None
+        assert config.default_group == "Operators"
 
     def test_handles_invalid_group_mapping_json(self):
         settings = {
@@ -225,6 +238,8 @@ class TestDataclasses:
             group_mapping={"cn=admins": "Administrators"},
             auto_provision=True,
             ca_cert_path="",
+            default_group="Viewers",
         )
         assert config.server_url == "ldaps://ldap.example.com:636"
         assert config.auto_provision is True
+        assert config.default_group == "Viewers"

@@ -811,7 +811,7 @@ class SimpleMQTTServer:
 
             # Learn the serial the slicer is actually using
             client_serial = self._extract_serial_from_topic(topic) or self.serial
-            if client_serial != self._client_serials.get(client_id):
+            if client_serial and client_serial != self._client_serials.get(client_id):
                 if client_serial != self.serial:
                     logger.info(
                         "%sMQTT client publishing with serial %s (VP serial is %s) — adapting responses",

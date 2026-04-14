@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Clock, Calendar, ChevronRight, Loader2, CircleCheck } from 'lucide-react';
 import { Link } from 'react-router-dom';
@@ -37,6 +38,15 @@ export function PrinterQueueWidget({ printerId, printerState, plateCleared, requ
       showToast(err.message, 'error');
     },
   });
+
+  // Reset mutation state when printer starts a new print cycle so the button
+  // is clickable again when the next print finishes (fixes upstream #912)
+  useEffect(() => {
+    if (printerState !== 'FINISH' && printerState !== 'FAILED') {
+      clearPlateMutation.reset();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [printerState]);
 
   // Split into auto-dispatchable vs staged (manual_start) items
   const autoDispatchQueue = queue?.filter(item => !item.manual_start) ?? [];
