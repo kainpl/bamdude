@@ -253,9 +253,6 @@ _active_prints: dict[tuple[int, str], int] = {}
 # {(printer_id, filename): archive_id}
 _expected_prints: dict[tuple[int, str], int] = {}
 
-# Track starting energy for prints: {archive_id: starting_kwh}
-_print_energy_start: dict[int, float] = {}
-
 # Track AMS mapping for prints: {archive_id: [global_tray_id_per_slot]}
 # Used by usage tracker to map 3MF slots to physical AMS trays
 _print_ams_mappings: dict[int, list[int]] = {}
@@ -335,6 +332,39 @@ async def _get_plug_energy(plug, db) -> dict | None:
         return await rest_smart_plug_service.get_energy(plug)
     else:
         return await tasmota_service.get_energy(plug)
+
+
+async def _record_energy_start(archive, printer_id: int, db, *, context: str = "") -> bool:
+    """Capture the smart plug lifetime counter on the archive at print start.
+
+    Persists `energy_start_kwh` on the archive row (upstream #941) so per-print
+    energy tracking survives a backend restart mid-print. The print-end handler
+    reads this value back from the DB and computes the delta against the current
+    plug counter.
+    """
+    _logger = logging.getLogger(__name__)
+    try:
+        plug_result = await db.execute(select(SmartPlug).where(SmartPlug.printer_id == printer_id))
+        plug = plug_result.scalar_one_or_none()
+        if not plug:
+            _logger.info("[ENERGY] No smart plug for printer %s (archive %s)", printer_id, archive.id)
+            return False
+        energy = await _get_plug_energy(plug, db)
+        if not energy or energy.get("total") is None:
+            _logger.warning("[ENERGY] No 'total' in energy response for archive %s", archive.id)
+            return False
+        archive.energy_start_kwh = float(energy["total"])
+        await db.commit()
+        _logger.info(
+            "[ENERGY] Recorded starting energy%s for archive %s: %s kWh",
+            f" ({context})" if context else "",
+            archive.id,
+            energy["total"],
+        )
+        return True
+    except Exception as e:
+        _logger.warning("[ENERGY] Failed to record starting energy for archive %s: %s", archive.id, e)
+        return False
 
 
 def register_expected_print(
@@ -1524,27 +1554,8 @@ async def on_print_start(printer_id: int, data: dict):
                 if subtask_name:
                     _active_prints[(printer_id, f"{subtask_name}.3mf")] = archive.id
 
-                # Set up energy tracking
-                try:
-                    plug_result = await db.execute(select(SmartPlug).where(SmartPlug.printer_id == printer_id))
-                    plug = plug_result.scalar_one_or_none()
-                    logger.info(
-                        f"[ENERGY] Print start - archive {archive.id}, printer {printer_id}, plug found: {plug is not None}"
-                    )
-                    if plug:
-                        energy = await _get_plug_energy(plug, db)
-                        logger.info("[ENERGY] Energy response from plug: %s", energy)
-                        if energy and energy.get("total") is not None:
-                            _print_energy_start[archive.id] = energy["total"]
-                            logger.info(
-                                f"[ENERGY] Recorded starting energy for archive {archive.id}: {energy['total']} kWh"
-                            )
-                        else:
-                            logger.warning("[ENERGY] No 'total' in energy response for archive %s", archive.id)
-                    else:
-                        logger.info("[ENERGY] No smart plug found for printer %s", printer_id)
-                except Exception as e:
-                    logger.warning("Failed to record starting energy: %s", e)
+                # Set up energy tracking (#941: persist start on archive row)
+                await _record_energy_start(archive, printer_id, db, context="expected-print")
 
                 await ws_manager.send_archive_updated(
                     {
@@ -1632,20 +1643,9 @@ async def on_print_start(printer_id: int, data: dict):
                 )
                 # Track this as the active print
                 _active_prints[(printer_id, existing_archive.filename)] = existing_archive.id
-                # Also set up energy tracking if not already tracked
-                if existing_archive.id not in _print_energy_start:
-                    try:
-                        plug_result = await db.execute(select(SmartPlug).where(SmartPlug.printer_id == printer_id))
-                        plug = plug_result.scalar_one_or_none()
-                        if plug:
-                            energy = await _get_plug_energy(plug, db)
-                            if energy and energy.get("total") is not None:
-                                _print_energy_start[existing_archive.id] = energy["total"]
-                                logger.info(
-                                    f"Recorded starting energy for existing archive {existing_archive.id}: {energy['total']} kWh"
-                                )
-                    except Exception as e:
-                        logger.warning("Failed to record starting energy for existing archive: %s", e)
+                # Also set up energy tracking if not already tracked (#941: persisted column)
+                if existing_archive.energy_start_kwh is None:
+                    await _record_energy_start(existing_archive, printer_id, db, context="existing-printing")
                 # Send notification with archive data (existing archive)
                 if not notification_sent:
                     archive_data = {
@@ -1863,19 +1863,8 @@ async def on_print_start(printer_id: int, data: dict):
                     _active_prints[(printer_id, f"{subtask_name}.3mf")] = fallback_archive.id
                     _active_prints[(printer_id, subtask_name)] = fallback_archive.id
 
-                # Record starting energy if smart plug available
-                try:
-                    plug_result = await db.execute(select(SmartPlug).where(SmartPlug.printer_id == printer_id))
-                    plug = plug_result.scalar_one_or_none()
-                    if plug:
-                        energy = await _get_plug_energy(plug, db)
-                        if energy and energy.get("total") is not None:
-                            _print_energy_start[fallback_archive.id] = energy["total"]
-                            logger.info(
-                                f"[ENERGY] Recorded starting energy for fallback archive {fallback_archive.id}: {energy['total']} kWh"
-                            )
-                except Exception as e:
-                    logger.warning("Failed to record starting energy for fallback: %s", e)
+                # Record starting energy if smart plug available (#941: persisted column)
+                await _record_energy_start(fallback_archive, printer_id, db, context="fallback")
 
                 # Send WebSocket notification
                 await ws_manager.send_archive_created(
@@ -1960,27 +1949,8 @@ async def on_print_start(printer_id: int, data: dict):
                     )
                     logger.info("Started layer timelapse for printer %s, archive %s", printer_id, archive.id)
 
-                # Record starting energy from smart plug if available
-                try:
-                    plug_result = await db.execute(select(SmartPlug).where(SmartPlug.printer_id == printer_id))
-                    plug = plug_result.scalar_one_or_none()
-                    logger.info(
-                        f"[ENERGY] Auto-archive print start - archive {archive.id}, printer {printer_id}, plug found: {plug is not None}"
-                    )
-                    if plug:
-                        energy = await _get_plug_energy(plug, db)
-                        logger.info("[ENERGY] Auto-archive energy response: %s", energy)
-                        if energy and energy.get("total") is not None:
-                            _print_energy_start[archive.id] = energy["total"]
-                            logger.info(
-                                f"[ENERGY] Recorded starting energy for archive {archive.id}: {energy['total']} kWh"
-                            )
-                        else:
-                            logger.warning("[ENERGY] No 'total' in energy response for archive %s", archive.id)
-                    else:
-                        logger.info("[ENERGY] No smart plug found for printer %s", printer_id)
-                except Exception as e:
-                    logger.warning("Failed to record starting energy: %s", e)
+                # Record starting energy from smart plug if available (#941: persisted column)
+                await _record_energy_start(archive, printer_id, db, context="auto-archive")
 
                 await ws_manager.send_archive_created(
                     {
@@ -3026,44 +2996,58 @@ async def on_print_complete(printer_id: int, data: dict):
 
     # Run slow operations as background tasks to avoid blocking the event loop
     # These operations can take 5-10+ seconds and would freeze the UI if awaited
-    starting_kwh = _print_energy_start.pop(archive_id, None)
 
     async def _background_energy_calculation():
-        """Calculate and save energy usage in background."""
+        """Calculate and save energy usage in background.
+
+        Reads the starting kWh from the archive row (#941: persisted so a mid-print
+        backend restart no longer loses per-print energy data).
+        """
         try:
             logger.info("[ENERGY-BG] Starting energy calculation for archive %s", archive_id)
             async with async_session() as db:
+                from backend.app.models.archive import PrintArchive
+
+                archive = await db.get(PrintArchive, archive_id)
+                if archive is None:
+                    logger.warning("[ENERGY-BG] Archive %s no longer exists", archive_id)
+                    return
+                starting_kwh = archive.energy_start_kwh
+                if starting_kwh is None:
+                    logger.info("[ENERGY-BG] No start kWh recorded for archive %s", archive_id)
+                    return
+
                 plug_result = await db.execute(select(SmartPlug).where(SmartPlug.printer_id == printer_id))
                 plug = plug_result.scalar_one_or_none()
-
-                if plug:
-                    energy = await _get_plug_energy(plug, db)
-                    logger.info("[ENERGY-BG] Energy response: %s", energy)
-
-                    energy_used = None
-                    if starting_kwh is not None and energy and energy.get("total") is not None:
-                        ending_kwh = energy["total"]
-                        energy_used = round(ending_kwh - starting_kwh, 4)
-                        logger.info("[ENERGY-BG] Per-print energy: %s kWh", energy_used)
-
-                    if energy_used is not None and energy_used >= 0:
-                        from backend.app.api.routes.settings import get_setting
-
-                        energy_cost_per_kwh = await get_setting(db, "energy_cost_per_kwh")
-                        cost_per_kwh = float(energy_cost_per_kwh) if energy_cost_per_kwh else 0.15
-                        energy_cost = round(energy_used * cost_per_kwh, 3)
-
-                        from backend.app.models.archive import PrintArchive
-
-                        result = await db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))
-                        archive = result.scalar_one_or_none()
-                        if archive:
-                            archive.energy_kwh = energy_used
-                            archive.energy_cost = energy_cost
-                            await db.commit()
-                            logger.info("[ENERGY-BG] Saved: %s kWh, cost=%s", energy_used, energy_cost)
-                else:
+                if plug is None:
                     logger.info("[ENERGY-BG] No smart plug for printer %s", printer_id)
+                    return
+
+                energy = await _get_plug_energy(plug, db)
+                logger.info("[ENERGY-BG] Energy response: %s", energy)
+                if not energy or energy.get("total") is None:
+                    logger.warning("[ENERGY-BG] No 'total' in energy response")
+                    return
+
+                energy_used = round(energy["total"] - starting_kwh, 4)
+                logger.info("[ENERGY-BG] Per-print energy: %s kWh", energy_used)
+                if energy_used < 0:
+                    logger.warning(
+                        "[ENERGY-BG] Negative energy delta for archive %s (start=%s, end=%s) — counter reset?",
+                        archive_id,
+                        starting_kwh,
+                        energy["total"],
+                    )
+                    return
+
+                from backend.app.api.routes.settings import get_setting
+
+                energy_cost_per_kwh = await get_setting(db, "energy_cost_per_kwh")
+                cost_per_kwh = float(energy_cost_per_kwh) if energy_cost_per_kwh else 0.15
+                archive.energy_kwh = energy_used
+                archive.energy_cost = round(energy_used * cost_per_kwh, 3)
+                await db.commit()
+                logger.info("[ENERGY-BG] Saved: %s kWh, cost=%s", energy_used, archive.energy_cost)
         except Exception as e:
             logger.warning("[ENERGY-BG] Failed: %s", e)
 

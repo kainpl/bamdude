@@ -110,6 +110,53 @@ async def test_create_spool_from_tray_relationships_loaded(db_session):
     assert spool.assignments == []
 
 
+# -- color resolution (upstream #857 refactor) ------------------------------
+
+
+@pytest.mark.asyncio
+async def test_color_resolved_via_catalog_hex(db_session):
+    """Color name is looked up by hex against color_catalog (Bambu Lab manufacturer)."""
+    from backend.app.models.color_catalog import ColorCatalogEntry
+
+    db_session.add(
+        ColorCatalogEntry(
+            manufacturer="Bambu Lab",
+            color_name="Translucent Cherry Pink",
+            hex_color="#FF66AA",
+            material="PLA",
+            is_default=True,
+        )
+    )
+    await db_session.commit()
+
+    tray = {**SAMPLE_TRAY, "tray_color": "FF66AAFF", "tray_id_name": "A17-R1"}
+    spool = await create_spool_from_tray(db_session, tray)
+    # Even though tray_id_name=A17-R1, lookup goes by hex → Cherry Pink (not Scarlet Red).
+    # This is the structural fix from #857: suffix-based fallbacks would have returned
+    # "Scarlet Red" because R1 maps to that in PLA Matte (A01) — but A17-R1 is actually Pink.
+    assert spool.color_name == "Translucent Cherry Pink"
+
+
+@pytest.mark.asyncio
+async def test_color_unknown_hex_falls_back_to_human_readable_tray_id_name(db_session):
+    """When hex isn't in catalog, but tray_id_name is a readable name (no '-'), use it."""
+    tray = {**SAMPLE_TRAY, "tray_color": "ABCDEFFF", "tray_id_name": "Custom Sparkle"}
+    spool = await create_spool_from_tray(db_session, tray)
+    assert spool.color_name == "Custom Sparkle"
+
+
+@pytest.mark.asyncio
+async def test_color_unknown_hex_with_code_style_tray_id_name_yields_none(db_session):
+    """Unknown hex + Bambu code-style tray_id_name (e.g. A99-X9) → color_name None.
+
+    Previously a hardcoded suffix-fallback would invent a wrong name like 'Scarlet Red'
+    for any *-R1 code. After the refactor we'd rather show no name than a wrong one.
+    """
+    tray = {**SAMPLE_TRAY, "tray_color": "AABBCCFF", "tray_id_name": "A99-X9"}
+    spool = await create_spool_from_tray(db_session, tray)
+    assert spool.color_name is None
+
+
 # -- get_spool_by_tag -------------------------------------------------------
 
 

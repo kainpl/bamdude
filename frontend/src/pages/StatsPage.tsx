@@ -128,29 +128,57 @@ function QuickStatsWidget({
     total_cost: number;
     total_energy_kwh: number;
     total_energy_cost: number;
+    energy_data_warming_up?: boolean;
   } | undefined;
   currency: string;
 }) {
   const { t } = useTranslation();
 
-  const items = [
+  const warmingUp = stats?.energy_data_warming_up === true;
+  const warmingUpTooltip = warmingUp ? t('stats.energyWarmingUpTooltip') : undefined;
+
+  const items: Array<{
+    icon: typeof Package;
+    color: string;
+    label: string;
+    value: string;
+    warning?: boolean;
+    tooltip?: string;
+  }> = [
     { icon: Package, color: 'text-bambu-green', label: t('stats.totalPrints'), value: `${stats?.total_prints || 0}` },
     { icon: Clock, color: 'text-blue-400', label: t('stats.printTime'), value: `${stats?.total_print_time_hours?.toFixed(1) ?? '0'}h` },
     { icon: Package, color: 'text-orange-400', label: t('stats.filamentUsed'), value: formatWeight(stats?.total_filament_grams || 0) },
     { icon: DollarSign, color: 'text-green-400', label: t('stats.filamentCost'), value: `${currency} ${stats?.total_cost?.toFixed(2) ?? '0.00'}` },
-    { icon: Zap, color: 'text-yellow-400', label: t('stats.energyUsed'), value: `${stats?.total_energy_kwh?.toFixed(3) ?? '0.000'} kWh` },
-    { icon: DollarSign, color: 'text-yellow-500', label: t('stats.energyCost'), value: `${currency} ${stats?.total_energy_cost?.toFixed(2) ?? '0.00'}` },
+    {
+      icon: Zap,
+      color: 'text-yellow-400',
+      label: t('stats.energyUsed'),
+      value: `${stats?.total_energy_kwh?.toFixed(3) ?? '0.000'} kWh`,
+      warning: warmingUp,
+      tooltip: warmingUpTooltip,
+    },
+    {
+      icon: DollarSign,
+      color: 'text-yellow-500',
+      label: t('stats.energyCost'),
+      value: `${currency} ${stats?.total_energy_cost?.toFixed(2) ?? '0.00'}`,
+      warning: warmingUp,
+      tooltip: warmingUpTooltip,
+    },
   ];
 
   return (
     <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
       {items.map((item) => (
-        <div key={item.label} className="flex items-start gap-3">
+        <div key={item.label} className="flex items-start gap-3" title={item.tooltip}>
           <div className={`p-2 rounded-lg bg-bambu-dark ${item.color}`}>
             <item.icon className="w-5 h-5" />
           </div>
           <div>
-            <p className="text-xs text-bambu-gray">{item.label}</p>
+            <p className="text-xs text-bambu-gray flex items-center gap-1">
+              {item.label}
+              {item.warning && <AlertTriangle className="w-3 h-3 text-yellow-400" aria-label={item.tooltip} />}
+            </p>
             <p className="text-xl font-bold text-white">{item.value}</p>
           </div>
         </div>

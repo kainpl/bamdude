@@ -844,49 +844,27 @@ async def get_archive_stats(
     energy_cost_per_kwh_str = await get_setting(db, "energy_cost_per_kwh")
     energy_cost_per_kwh = float(energy_cost_per_kwh_str) if energy_cost_per_kwh_str else 0.15
 
-    # When date filters are active, smart plug lifetime totals can't be
-    # filtered by date range — fall back to per-print archive data instead.
+    total_energy_kwh: float = 0.0
+    total_energy_cost: float = 0.0
+    energy_data_warming_up = False
+
     if energy_tracking_mode == "total" and not date_from and not date_to:
-        # Total mode: sum up 'total' counter from all smart plugs (lifetime consumption)
-        from backend.app.models.smart_plug import SmartPlug
-        from backend.app.services.homeassistant import homeassistant_service
-        from backend.app.services.mqtt_relay import mqtt_relay
-        from backend.app.services.tasmota import tasmota_service
+        # All-time total consumption — read live lifetime counters.
+        total_energy_kwh = await _sum_live_plug_totals(db)
+        total_energy_cost = total_energy_kwh * energy_cost_per_kwh
+    elif energy_tracking_mode == "total":
+        # Total consumption mode with a date filter (#941): use hourly snapshots
+        # to compute per-plug (endpoint - baseline) deltas.
+        from datetime import time as _time
 
-        plugs_result = await db.execute(select(SmartPlug))
-        plugs = list(plugs_result.scalars().all())
-
-        # Configure HA service once (needed for homeassistant-type plugs)
-        ha_url = await get_setting(db, "ha_url") or ""
-        ha_token = await get_setting(db, "ha_token") or ""
-        homeassistant_service.configure(ha_url, ha_token)
-
-        total_energy_kwh = 0.0
-        for plug in plugs:
-            if plug.plug_type == "tasmota":
-                energy = await tasmota_service.get_energy(plug)
-                if energy and energy.get("total") is not None:
-                    total_energy_kwh += energy["total"]
-            elif plug.plug_type == "homeassistant":
-                energy = await homeassistant_service.get_energy(plug)
-                if energy and energy.get("total") is not None:
-                    total_energy_kwh += energy["total"]
-            elif plug.plug_type == "mqtt":
-                # MQTT plugs report "today" energy, not lifetime total
-                mqtt_data = mqtt_relay.smart_plug_service.get_plug_data(plug.id)
-                if mqtt_data and mqtt_data.energy is not None:
-                    total_energy_kwh += mqtt_data.energy
-            elif plug.plug_type == "rest":
-                from backend.app.services.rest_smart_plug import rest_smart_plug_service
-
-                energy = await rest_smart_plug_service.get_energy(plug)
-                if energy and energy.get("today") is not None:
-                    total_energy_kwh += energy["today"]
-
-        total_energy_kwh = round(total_energy_kwh, 3)
-        total_energy_cost = round(total_energy_kwh * energy_cost_per_kwh, 3)
+        total_energy_kwh, energy_data_warming_up = await _sum_snapshot_deltas(
+            db,
+            dt_from=(datetime.combine(date_from, _time.min, tzinfo=timezone.utc) if date_from else None),
+            dt_to=(datetime.combine(date_to, _time.max, tzinfo=timezone.utc) if date_to else None),
+        )
+        total_energy_cost = total_energy_kwh * energy_cost_per_kwh
     else:
-        # Print mode: sum up per-print energy from archives
+        # Per-print mode: sum the per-print energy column directly.
         energy_kwh_result = await db.execute(select(func.sum(PrintArchive.energy_kwh)).where(*base_conditions))
         total_energy_kwh = energy_kwh_result.scalar() or 0
 
@@ -906,7 +884,128 @@ async def get_archive_stats(
         time_accuracy_by_printer=accuracy_by_printer if accuracy_by_printer else None,
         total_energy_kwh=round(total_energy_kwh, 3),
         total_energy_cost=round(total_energy_cost, 3),
+        energy_data_warming_up=energy_data_warming_up,
     )
+
+
+async def _sum_live_plug_totals(db: AsyncSession) -> float:
+    """Sum the live lifetime counter from every smart plug.
+
+    Used for all-time "total consumption" mode. Only the current value is
+    available so this can't be date-filtered — use `_sum_snapshot_deltas` for
+    that case.
+    """
+    from backend.app.api.routes.settings import get_setting
+    from backend.app.models.smart_plug import SmartPlug
+    from backend.app.services.homeassistant import homeassistant_service
+    from backend.app.services.mqtt_relay import mqtt_relay
+    from backend.app.services.rest_smart_plug import rest_smart_plug_service
+    from backend.app.services.tasmota import tasmota_service
+
+    plugs_result = await db.execute(select(SmartPlug))
+    plugs = list(plugs_result.scalars().all())
+
+    ha_url = await get_setting(db, "ha_url") or ""
+    ha_token = await get_setting(db, "ha_token") or ""
+    homeassistant_service.configure(ha_url, ha_token)
+
+    total = 0.0
+    for plug in plugs:
+        if plug.plug_type == "tasmota":
+            energy = await tasmota_service.get_energy(plug)
+            if energy and energy.get("total") is not None:
+                total += energy["total"]
+        elif plug.plug_type == "homeassistant":
+            energy = await homeassistant_service.get_energy(plug)
+            if energy and energy.get("total") is not None:
+                total += energy["total"]
+        elif plug.plug_type == "mqtt":
+            # MQTT plugs only expose today's counter, not lifetime.
+            mqtt_data = mqtt_relay.smart_plug_service.get_plug_data(plug.id)
+            if mqtt_data and mqtt_data.energy is not None:
+                total += mqtt_data.energy
+        elif plug.plug_type == "rest":
+            energy = await rest_smart_plug_service.get_energy(plug)
+            if energy and energy.get("today") is not None:
+                total += energy["today"]
+    return total
+
+
+async def _sum_snapshot_deltas(
+    db: AsyncSession,
+    *,
+    dt_from: datetime | None,
+    dt_to: datetime | None,
+) -> tuple[float, bool]:
+    """Sum per-plug energy consumption over a date range using hourly snapshots.
+
+    For each plug:
+      * baseline  = last snapshot at or before `dt_from` (ideal)
+                    — if missing, fall back to the earliest snapshot ever
+                      recorded for the plug and flag the result as warming up.
+      * endpoint  = last snapshot at or before `dt_to` (or most recent overall)
+      * delta     = max(0, endpoint - baseline)  — clamp counter resets to 0.
+
+    Returns (total_kwh, warming_up). `warming_up = True` means at least one plug
+    had no baseline before `dt_from` (fresh install or fresh upgrade), so the
+    result undercounts the beginning of the range.
+    """
+    from backend.app.models.smart_plug import SmartPlug
+    from backend.app.models.smart_plug_energy_snapshot import SmartPlugEnergySnapshot
+
+    plug_ids_result = await db.execute(select(SmartPlug.id))
+    plug_ids = [row[0] for row in plug_ids_result.all()]
+    if not plug_ids:
+        return 0.0, False
+
+    total = 0.0
+    warming_up = False
+    for plug_id in plug_ids:
+        baseline: float | None = None
+        if dt_from is not None:
+            baseline_q = await db.execute(
+                select(SmartPlugEnergySnapshot.lifetime_kwh)
+                .where(
+                    SmartPlugEnergySnapshot.plug_id == plug_id,
+                    SmartPlugEnergySnapshot.recorded_at <= dt_from,
+                )
+                .order_by(SmartPlugEnergySnapshot.recorded_at.desc())
+                .limit(1)
+            )
+            baseline = baseline_q.scalar()
+        if baseline is None:
+            # No snapshot before range start — fall back to the earliest
+            # snapshot ever recorded. Result undercounts the pre-first-snapshot
+            # portion of the range; signal that to the frontend.
+            earliest_q = await db.execute(
+                select(SmartPlugEnergySnapshot.lifetime_kwh)
+                .where(SmartPlugEnergySnapshot.plug_id == plug_id)
+                .order_by(SmartPlugEnergySnapshot.recorded_at.asc())
+                .limit(1)
+            )
+            baseline = earliest_q.scalar()
+            if baseline is None:
+                # No snapshots at all for this plug yet.
+                warming_up = True
+                continue
+            warming_up = True
+
+        endpoint_conditions = [SmartPlugEnergySnapshot.plug_id == plug_id]
+        if dt_to is not None:
+            endpoint_conditions.append(SmartPlugEnergySnapshot.recorded_at <= dt_to)
+        endpoint_q = await db.execute(
+            select(SmartPlugEnergySnapshot.lifetime_kwh)
+            .where(*endpoint_conditions)
+            .order_by(SmartPlugEnergySnapshot.recorded_at.desc())
+            .limit(1)
+        )
+        endpoint = endpoint_q.scalar()
+        if endpoint is None:
+            continue
+
+        total += max(0.0, endpoint - baseline)
+
+    return total, warming_up
 
 
 @router.get("/tags")

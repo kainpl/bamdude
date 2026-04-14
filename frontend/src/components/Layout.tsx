@@ -10,6 +10,7 @@ import { useQuery, useQueries } from '@tanstack/react-query';
 import { api, supportApi, pendingUploadsApi, type Permission } from '../api/client';
 import { getIconByName } from './IconPicker';
 import { useIsSidebarCompact } from '../hooks/useIsSidebarCompact';
+import { useColorCatalogVersion } from '../hooks/useColorCatalogVersion';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { Card, CardHeader, CardContent } from './Card';
@@ -79,6 +80,9 @@ export function Layout() {
   const { mode, toggleMode } = useTheme();
   const { t } = useTranslation();
   const isSidebarCompact = useIsSidebarCompact();
+  // Re-render Layout (and downstream pages) when the color catalog finishes loading
+  // so cached getColorName() results refresh from HSL fallback to catalog names.
+  useColorCatalogVersion();
   const { user, authEnabled, logout, hasPermission } = useAuth();
   const { showToast } = useToast();
   const [showChangePasswordModal, setShowChangePasswordModal] = useState(false);

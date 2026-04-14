@@ -466,6 +466,49 @@ async def upgrade(conn):
             text("UPDATE api_keys SET printer_ids = NULL WHERE printer_ids IS NOT NULL AND TRIM(printer_ids) = '[]'")
         )
 
+    # ── Persistent per-print energy start (#941) ──
+    # `_print_energy_start` in-memory dict was lost on backend restart mid-print,
+    # silently zeroing per-print energy_kwh. Persisting on the archive row makes
+    # tracking restart-resilient regardless of energy mode.
+    await add_column(conn, "print_archives", "energy_start_kwh REAL")
+
+    # ── Hourly smart plug energy snapshots (#941) ──
+    # Powers date-range "total consumption" queries via per-plug
+    # (last_in_range - last_before_range) deltas. Without this the date-filtered
+    # totals were always zero in total mode.
+    if is_postgres():
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS smart_plug_energy_snapshots (
+                    id SERIAL PRIMARY KEY,
+                    plug_id INTEGER NOT NULL REFERENCES smart_plugs(id) ON DELETE CASCADE,
+                    recorded_at TIMESTAMP NOT NULL,
+                    lifetime_kwh REAL NOT NULL
+                )
+                """
+            )
+        )
+    else:
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS smart_plug_energy_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    plug_id INTEGER NOT NULL REFERENCES smart_plugs(id) ON DELETE CASCADE,
+                    recorded_at DATETIME NOT NULL,
+                    lifetime_kwh REAL NOT NULL
+                )
+                """
+            )
+        )
+    await conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_plug_energy_snapshots_plug_time "
+            "ON smart_plug_energy_snapshots(plug_id, recorded_at)"
+        )
+    )
+
 
 async def seed(session_factory):
     """Seed new data for 3.1.1."""

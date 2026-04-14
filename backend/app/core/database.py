@@ -21,6 +21,11 @@ def _strip_tz_from_params(conn, cursor, statement, parameters, context, executem
     asyncpg rejects timezone-aware values for TIMESTAMP WITHOUT TIME ZONE columns.
     The codebase uses datetime.now(timezone.utc) in many places — this makes
     Postgres behave like SQLite which ignores timezone info entirely.
+
+    Recursive: SQLAlchemy passes parameters in several shapes depending on the
+    path — a dict for named binds, a tuple for positional, a list of dicts/tuples
+    for executemany, and for insertmanyvalues sometimes a list of tuples inside
+    an outer list. Strip datetimes at any depth (upstream #941 follow-up).
     """
     import datetime
 
@@ -30,14 +35,15 @@ def _strip_tz_from_params(conn, cursor, statement, parameters, context, executem
     def _strip(val):
         if isinstance(val, datetime.datetime) and val.tzinfo is not None:
             return val.replace(tzinfo=None)
+        if isinstance(val, dict):
+            return {k: _strip(v) for k, v in val.items()}
+        if isinstance(val, list):
+            return [_strip(v) for v in val]
+        if isinstance(val, tuple):
+            return tuple(_strip(v) for v in val)
         return val
 
-    if isinstance(parameters, dict):
-        parameters = {k: _strip(v) for k, v in parameters.items()}
-    elif isinstance(parameters, (list, tuple)):
-        parameters = type(parameters)(_strip(v) if not isinstance(v, (dict, list, tuple)) else v for v in parameters)
-
-    return statement, parameters
+    return statement, _strip(parameters)
 
 
 def _create_engine():
@@ -131,6 +137,7 @@ async def init_db():
         settings,
         slot_preset,
         smart_plug,
+        smart_plug_energy_snapshot,
         spool,
         spool_assignment,
         spool_catalog,
@@ -143,4 +150,3 @@ async def init_db():
     )
 
     await run_all_migrations(engine, async_session)
-

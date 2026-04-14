@@ -65,6 +65,9 @@ class PrintArchive(Base):
     # Energy tracking
     energy_kwh: Mapped[float | None] = mapped_column(Float)  # Energy consumed in kWh
     energy_cost: Mapped[float | None] = mapped_column(Float)  # Cost of energy consumed
+    # Plug lifetime counter captured at print start; delta at print end becomes energy_kwh.
+    # Persisted so per-print tracking survives backend restarts mid-print (upstream #941).
+    energy_start_kwh: Mapped[float | None] = mapped_column(Float)
 
     # Swap mode compatibility (processed for plate swapper)
     swap_compatible: Mapped[bool] = mapped_column(Boolean, default=False)

@@ -82,24 +82,15 @@ async def create_spool_from_tray(db: AsyncSession, tray_data: dict) -> Spool:
         elif color_code and color_code[0] == "T":
             subtype = "Tri Color"
 
-    # Resolve color name from tray_id_name code, hex catalog, or raw tray_id_name
-    from backend.app.core.bambu_colors import resolve_bambu_color_name
-
+    # Resolve color name from the color catalog by hex. The catalog is the single
+    # source of truth — tray_id_name codes (e.g. "A17-R1") are NOT globally unique
+    # across material families (A17-R1 is PLA Translucent Cherry Pink; A01-R1 is
+    # PLA Matte Scarlet Red), so a suffix-based fallback would pick the wrong name
+    # (upstream #857).
     rgba = tray_color if tray_color else None
     color_name = None
 
-    # 1. Try Bambu color code mapping (e.g. "A06-D0" → "Titan Gray")
-    if tray_id_name:
-        color_name = resolve_bambu_color_name(tray_id_name)
-        logger.info("Color resolve: tray_id_name=%r → resolved=%r", tray_id_name, color_name)
-        # If not a known code, use tray_id_name directly (it may be a readable name)
-        if not color_name and "-" not in tray_id_name:
-            color_name = tray_id_name
-    else:
-        logger.info("Color resolve: tray_id_name is empty, rgba=%r", rgba)
-
-    # 2. Try color catalog lookup by hex color
-    if not color_name and rgba and len(rgba) >= 6:
+    if rgba and len(rgba) >= 6:
         hex_prefix = f"#{rgba[:6].upper()}"
         cat_result = await db.execute(
             select(ColorCatalogEntry)
@@ -110,6 +101,17 @@ async def create_spool_from_tray(db: AsyncSession, tray_data: dict) -> Spool:
         entry = cat_result.scalar_one_or_none()
         if entry:
             color_name = entry.color_name
+
+    # If tray_id_name is a human-readable name (no "-" code), fall back to it.
+    if not color_name and tray_id_name and "-" not in tray_id_name:
+        color_name = tray_id_name
+
+    logger.info(
+        "Color resolve: tray_id_name=%r rgba=%r → resolved=%r",
+        tray_id_name,
+        rgba,
+        color_name,
+    )
 
     # Look up core weight from spool catalog
     core_weight = 250  # Default for Bambu Lab plastic spools

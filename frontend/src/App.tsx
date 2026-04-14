@@ -25,6 +25,7 @@ import { useWebSocket } from './hooks/useWebSocket';
 import { ThemeProvider } from './contexts/ThemeContext';
 import { ToastProvider } from './contexts/ToastContext';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { ColorCatalogProvider } from './contexts/ColorCatalogContext';
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -145,6 +146,7 @@ function App() {
       <ToastProvider>
         <QueryClientProvider client={queryClient}>
           <AuthProvider>
+            <ColorCatalogProvider>
             <BrowserRouter>
               <Routes>
                 {/* Setup page - only accessible if auth not enabled */}
@@ -182,6 +184,7 @@ function App() {
                 </Route>
               </Routes>
             </BrowserRouter>
+            </ColorCatalogProvider>
           </AuthProvider>
         </QueryClientProvider>
       </ToastProvider>

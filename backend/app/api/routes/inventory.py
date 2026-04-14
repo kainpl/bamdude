@@ -234,6 +234,44 @@ async def get_color_catalog(
     return list(result.scalars().all())
 
 
+@router.get("/colors/map")
+async def get_color_name_map(
+    db: AsyncSession = Depends(get_db),
+):
+    """Compact {hex: name} map for frontend color-name resolution.
+
+    Not gated on INVENTORY_READ — every page that renders a spool color needs
+    this, including read-only views available to users without inventory access.
+    Normalized to lowercase 6-char hex without '#'. When multiple catalog entries
+    share the same hex (different materials or manufacturers), Bambu Lab wins,
+    then default entries, then the first encountered.
+    """
+    result = await db.execute(
+        select(
+            ColorCatalogEntry.hex_color,
+            ColorCatalogEntry.color_name,
+            ColorCatalogEntry.manufacturer,
+            ColorCatalogEntry.is_default,
+        )
+    )
+    mapping: dict[str, tuple[str, int]] = {}  # hex → (name, priority); higher priority wins
+    for hex_color, color_name, manufacturer, is_default in result.all():
+        if not hex_color or not color_name:
+            continue
+        key = hex_color.lstrip("#").lower()[:6]
+        if len(key) != 6:
+            continue
+        priority = 0
+        if manufacturer and manufacturer.strip().lower() == "bambu lab":
+            priority += 2
+        if is_default:
+            priority += 1
+        existing = mapping.get(key)
+        if existing is None or priority > existing[1]:
+            mapping[key] = (color_name, priority)
+    return {"colors": {k: v[0] for k, v in mapping.items()}}
+
+
 @router.post("/colors", response_model=ColorEntryResponse)
 async def add_color_entry(
     entry: ColorEntryCreate,

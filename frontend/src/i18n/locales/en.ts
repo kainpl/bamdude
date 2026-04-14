@@ -1171,6 +1171,7 @@ export default {
     totalCost: 'Total Cost',
     energyUsed: 'Energy Used',
     energyCost: 'Energy Cost',
+    energyWarmingUpTooltip: 'Energy tracking is still collecting hourly snapshots. Date-range totals will become accurate once at least one snapshot exists before the selected range. Early values may undercount.',
     averagePrintTime: 'Average Print Time',
     printsPerDay: 'Prints per Day',
     byPrinter: 'By Printer',

@@ -155,6 +155,10 @@ class ArchiveStats(BaseModel):
     # Energy stats
     total_energy_kwh: float = 0.0
     total_energy_cost: float = 0.0
+    # Set when the date-range query in "total consumption" mode is running on
+    # incomplete snapshot history — e.g. right after a fresh upgrade before the
+    # hourly snapshot loop has built up a baseline. Frontend shows a tooltip.
+    energy_data_warming_up: bool = False
 
 
 class PaginationMeta(BaseModel):

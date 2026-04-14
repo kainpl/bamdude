@@ -476,6 +476,10 @@ export interface ArchiveStats {
   time_accuracy_by_printer: Record<string, number> | null;
   total_energy_kwh: number;
   total_energy_cost: number;
+  // True when a date-filtered total-consumption query is running on incomplete
+  // snapshot history (e.g. right after upgrade, before hourly snapshots have
+  // a baseline). UI should explain why the number may undercount.
+  energy_data_warming_up?: boolean;
 }
 
 export interface TagInfo {
@@ -3828,6 +3832,8 @@ export const api = {
     request<{ status: string }>('/inventory/catalog/reset', { method: 'POST' }),
   getColorCatalog: () =>
     request<ColorCatalogEntry[]>('/inventory/colors'),
+  getColorNameMap: () =>
+    request<{ colors: Record<string, string> }>('/inventory/colors/map'),
   addColorEntry: (data: { manufacturer: string; color_name: string; hex_color: string; material: string | null }) =>
     request<ColorCatalogEntry>('/inventory/colors', { method: 'POST', body: JSON.stringify(data) }),
   updateColorEntry: (id: number, data: { manufacturer: string; color_name: string; hex_color: string; material: string | null }) =>
