@@ -845,6 +845,7 @@ class ArchiveService:
         print_data: dict | None = None,
         created_by_id: int | None = None,
         original_filename: str | None = None,
+        project_id: int | None = None,
     ) -> PrintArchive | None:
         """Archive a 3MF file with metadata.
 
@@ -869,11 +870,13 @@ class ArchiveService:
         # Check if we already have this file for this printer (dedup within printer)
         printer_folder = str(printer_id) if printer_id is not None else "unassigned"
         existing = await self.db.execute(
-            select(PrintArchive).where(
+            select(PrintArchive)
+            .where(
                 PrintArchive.content_hash == content_hash,
                 PrintArchive.printer_id == printer_id,
                 PrintArchive.file_path.isnot(None),
-            ).limit(1)
+            )
+            .limit(1)
         )
         existing_archive = existing.scalar_one_or_none()
 
@@ -972,6 +975,7 @@ class ArchiveService:
             quantity=quantity,
             extra_data=metadata,
             created_by_id=created_by_id,
+            project_id=project_id,
         )
 
         self.db.add(archive)

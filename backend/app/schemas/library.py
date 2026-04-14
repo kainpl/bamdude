@@ -210,6 +210,8 @@ class FilePrintRequest(BaseModel):
     use_ams: bool = True
     # Batch: first copy dispatches now, remaining (quantity-1) queue up
     quantity: int = 1
+    # Project to associate the resulting archive with (when triggered from project view)
+    project_id: int | None = None
 
 
 class FileUploadResponse(BaseModel):

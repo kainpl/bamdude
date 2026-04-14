@@ -55,6 +55,7 @@ class PrintDispatchJob:
     options: dict[str, Any] = field(default_factory=dict)
     requested_by_user_id: int | None = None
     requested_by_username: str | None = None
+    project_id: int | None = None
 
 
 @dataclass(slots=True)
@@ -161,6 +162,7 @@ class BackgroundDispatchService:
         options: dict[str, Any],
         requested_by_user_id: int | None,
         requested_by_username: str | None,
+        project_id: int | None = None,
     ) -> dict[str, Any]:
         return await self._dispatch(
             kind="print_library_file",
@@ -171,6 +173,7 @@ class BackgroundDispatchService:
             options=options,
             requested_by_user_id=requested_by_user_id,
             requested_by_username=requested_by_username,
+            project_id=project_id,
         )
 
     async def cancel_job(self, job_id: int) -> dict[str, Any]:
@@ -258,6 +261,7 @@ class BackgroundDispatchService:
         options: dict[str, Any],
         requested_by_user_id: int | None,
         requested_by_username: str | None,
+        project_id: int | None = None,
     ) -> dict[str, Any]:
         async with self._lock:
             has_pending_for_printer = any(job.printer_id == printer_id for job in self._queued_jobs)
@@ -280,6 +284,7 @@ class BackgroundDispatchService:
                 options=options,
                 requested_by_user_id=requested_by_user_id,
                 requested_by_username=requested_by_username,
+                project_id=project_id,
             )
             self._next_job_id += 1
             self._batch_total += 1
@@ -760,6 +765,7 @@ class BackgroundDispatchService:
                 printer_id=job.printer_id,
                 source_file=file_path,
                 original_filename=lib_file.filename,
+                project_id=job.project_id,
             )
             if not archive:
                 raise RuntimeError("Failed to create archive")

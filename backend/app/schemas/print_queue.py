@@ -33,6 +33,8 @@ class PrintQueueItemCreate(BaseModel):
     use_ams: bool = True
     # Batch: create N identical items sharing a batch_id (1..50)
     quantity: int = Field(default=1, ge=1, le=50)
+    # Project to associate the resulting archive with (when triggered from project view)
+    project_id: int | None = None
 
 
 class PrintQueueItemUpdate(BaseModel):

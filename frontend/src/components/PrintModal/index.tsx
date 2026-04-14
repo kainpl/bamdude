@@ -45,6 +45,7 @@ export function PrintModal({
   initialSelectedPrinterIds,
   onClose,
   onSuccess,
+  projectId,
 }: PrintModalProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -505,6 +506,7 @@ export function PrintModal({
         : undefined,
       ...printOptions,
       quantity: mode === 'edit-queue-item' ? 1 : quantity,
+      project_id: projectId,
     });
 
     // Loop through plates × printers
@@ -528,8 +530,11 @@ export function PrintModal({
                 ams_mapping: printerMapping,
                 ...printOptions,
                 quantity,
+                project_id: projectId,
               });
             } else {
+              // project_id is intentionally omitted here: reprintArchive targets an existing
+              // archive that already carries its own project association from the original print.
               await api.reprintArchive(archiveId!, printerId, {
                 plate_id: selectedPlate ?? undefined,
                 plate_name: selectedPlateName,

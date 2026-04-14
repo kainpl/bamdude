@@ -1416,6 +1416,8 @@ export interface PrintQueueItemCreate {
   timelapse?: boolean;
   use_ams?: boolean;
   quantity?: number;
+  // Project to associate the resulting archive with
+  project_id?: number;
 }
 
 export interface PrintQueueItemUpdate {
@@ -4235,10 +4237,13 @@ export const api = {
   getLibraryFoldersByArchive: (archiveId: number) =>
     request<LibraryFolder[]>(`/library/folders/by-archive/${archiveId}`),
 
-  getLibraryFiles: (folderId?: number | null, includeRoot = true) => {
+  getLibraryFiles: (folderId?: number | null, includeRoot = true, projectId?: number) => {
     const params = new URLSearchParams();
     if (folderId !== undefined && folderId !== null) {
       params.set('folder_id', String(folderId));
+    }
+    if (projectId !== undefined) {
+      params.set('project_id', String(projectId));
     }
     params.set('include_root', String(includeRoot));
     return request<LibraryFileListItem[]>(`/library/files?${params}`);
@@ -4375,6 +4380,7 @@ export const api = {
       timelapse?: boolean;
       use_ams?: boolean;
       quantity?: number;
+      project_id?: number;
     }
   ) =>
     request<BackgroundDispatchResponse>(

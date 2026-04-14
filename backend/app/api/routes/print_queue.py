@@ -21,6 +21,7 @@ from backend.app.models.archive import PrintArchive
 from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer_queue import PrinterQueue
+from backend.app.models.project import Project
 from backend.app.models.user import User
 from backend.app.schemas.print_queue import (
     PrintQueueBulkUpdate,
@@ -315,6 +316,12 @@ async def add_to_queue(
     )
     max_pos = result.scalar() or 0
 
+    # Validate project exists before insert so a bogus ID yields 404, not an FK-constraint 500
+    if data.project_id is not None:
+        project_result = await db.execute(select(Project).where(Project.id == data.project_id))
+        if not project_result.scalar_one_or_none():
+            raise HTTPException(status_code=404, detail="Project not found")
+
     # For quantity > 1, group copies under a shared batch_id
     batch_id = str(uuid.uuid4()) if data.quantity > 1 else None
     ams_mapping_json = json.dumps(data.ams_mapping) if data.ams_mapping else None
@@ -337,6 +344,7 @@ async def add_to_queue(
                 layer_inspect=data.layer_inspect,
                 timelapse=data.timelapse,
                 use_ams=data.use_ams,
+                project_id=data.project_id,
                 position=max_pos + 1 + i,
                 status="pending",
                 batch_id=batch_id,

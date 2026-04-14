@@ -197,6 +197,12 @@ export default {
     powerOn: 'Power On',
     offlinePrintersWithPlugs: 'Offline printers with smart plugs',
     noPrintersConfigured: 'No printers configured yet',
+    search: 'Search printers...',
+    noSearchResults: 'No printers match your search or filters',
+    filter: {
+      allStatuses: 'All statuses',
+      allLocations: 'All locations',
+    },
     // Printer card
     readyToPrint: 'Ready to print',
     external: 'External',
@@ -3074,6 +3080,9 @@ export default {
       forQuickAccess: 'to this project for quick access.',
       fileCount: '{{count}} file(s)',
       empty: 'No folders linked. Go to File Manager and link a folder to this project.',
+      noFiles: 'No files in this folder.',
+      print: 'Print Now',
+      addToQueue: 'Add to Queue',
     },
     bom: {
       title: 'Bill of Materials',

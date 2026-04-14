@@ -197,6 +197,12 @@ export default {
     powerOn: 'Увімкнути',
     offlinePrintersWithPlugs: 'Офлайн-принтери з розумними розетками',
     noPrintersConfigured: 'Принтери ще не налаштовані',
+    search: 'Пошук принтерів...',
+    noSearchResults: 'Жоден принтер не відповідає пошуку чи фільтрам',
+    filter: {
+      allStatuses: 'Усі статуси',
+      allLocations: 'Усі локації',
+    },
     // Printer card
     readyToPrint: 'Готовий до друку',
     external: 'Ext',
@@ -3069,6 +3075,9 @@ export default {
       linkFolders: "Прив'яжіть папки з Файлового менеджера",
       forQuickAccess: 'до цього проєкту для швидкого доступу.',
       fileCount: '{{count}} файлів',
+      noFiles: 'У цій папці немає файлів.',
+      print: 'Друкувати',
+      addToQueue: 'У чергу',
       empty: "Папки не прив'язані. Перейдіть до Файлового менеджера та прив'яжіть папку до цього проєкту.",
     },
     bom: {
