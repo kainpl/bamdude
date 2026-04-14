@@ -4348,6 +4348,23 @@ export const api = {
     }),
   deleteLibraryFile: (id: number) =>
     request<{ status: string; message: string }>(`/library/files/${id}`, { method: 'DELETE' }),
+
+  // Library file notes (gh#3)
+  getLibraryFileNotes: (fileId: number) =>
+    request<LibraryFileNote[]>(`/library/files/${fileId}/notes`),
+  createLibraryFileNote: (fileId: number, body: string) =>
+    request<LibraryFileNote>(`/library/files/${fileId}/notes`, {
+      method: 'POST',
+      body: JSON.stringify({ body }),
+    }),
+  updateLibraryFileNote: (noteId: number, body: string) =>
+    request<LibraryFileNote>(`/library/notes/${noteId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ body }),
+    }),
+  deleteLibraryFileNote: (noteId: number) =>
+    request<{ success: boolean }>(`/library/notes/${noteId}`, { method: 'DELETE' }),
+
   getLibraryFileDownloadUrl: (id: number) => `${API_BASE}/library/files/${id}/download`,
   createLibrarySlicerToken: (fileId: number) =>
     request<{ token: string }>(`/library/files/${fileId}/slicer-token`, { method: 'POST' }),
@@ -4851,7 +4868,22 @@ export interface LibraryFileListItem {
   filament_used_grams: number | null;
   sliced_for_model: string | null;
   swap_compatible: boolean;
+  notes_count: number;
 }
+
+// gh#3 — User-authored notes attached to library files
+export interface LibraryFileNote {
+  id: number;
+  library_file_id: number;
+  user_id: number | null;
+  user_username: string | null;
+  body: string;
+  created_at: string;
+  updated_at: string;
+  can_edit: boolean;
+}
+
+export const LIBRARY_FILE_NOTE_MAX_LENGTH = 1000;
 
 export interface LibraryFileUpdate {
   filename?: string;

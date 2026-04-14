@@ -1047,6 +1047,18 @@ async def list_files(
             )
             hash_counts = {h: c - 1 for h, c in dup_result.all()}  # -1 to exclude self
 
+    # Notes counts (gh#3) — single grouped query, no N+1.
+    notes_counts: dict[int, int] = {}
+    if files:
+        from backend.app.models.library_file_note import LibraryFileNote
+
+        note_result = await db.execute(
+            select(LibraryFileNote.library_file_id, func.count(LibraryFileNote.id))
+            .where(LibraryFileNote.library_file_id.in_([f.id for f in files]))
+            .group_by(LibraryFileNote.library_file_id)
+        )
+        notes_counts = dict(note_result.all())
+
     # Prevent browser caching of file list
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
 
@@ -1081,6 +1093,7 @@ async def list_files(
                 filament_used_grams=filament_grams,
                 sliced_for_model=sliced_for_model,
                 swap_compatible=f.swap_compatible,
+                notes_count=notes_counts.get(f.id, 0),
             )
         )
 

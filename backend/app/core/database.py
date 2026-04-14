@@ -122,6 +122,7 @@ async def init_db():
         group,
         kprofile_note,
         library,
+        library_file_note,
         local_preset,
         macro,
         maintenance,

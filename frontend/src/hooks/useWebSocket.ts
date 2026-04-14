@@ -260,6 +260,17 @@ export function useWebSocket() {
         debouncedInvalidate('library-stats');
         break;
 
+      case 'library_file_notes_changed': {
+        // gh#3 — notes count changed somewhere; refresh file lists (which
+        // carry notes_count) and any open per-file notes query.
+        const fileId = (message as unknown as { data?: { file_id?: number } }).data?.file_id;
+        debouncedInvalidate('library-files');
+        if (typeof fileId === 'number') {
+          queryClient.invalidateQueries({ queryKey: ['library-file-notes', fileId] });
+        }
+        break;
+      }
+
       case 'pong':
         // Keepalive response, ignore
         break;

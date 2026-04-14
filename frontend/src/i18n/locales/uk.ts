@@ -2793,6 +2793,27 @@ export default {
   },
 
   // File manager
+  // Library file notes (gh#3)
+  libraryNotes: {
+    title: 'Нотатки файла',
+    add: 'Додати нотатку',
+    addFirstNote: 'Додати нотатку',
+    viewNotes: '{{count}} нотаток(ів)',
+    edit: 'Редагувати',
+    delete: 'Видалити',
+    previous: 'Попередня',
+    next: 'Наступна',
+    placeholder: 'Введіть нотатку…',
+    charsLeft: 'Залишилось {{count}} символів',
+    created: 'Нотатку додано',
+    updated: 'Нотатку оновлено',
+    deleted: 'Нотатку видалено',
+    deleteConfirmTitle: 'Видалити нотатку',
+    deleteConfirmMessage: 'Видалити цю нотатку? Дію не можна скасувати.',
+    unknownAuthor: 'Невідомий',
+    anonymous: 'Анонімно',
+  },
+
   fileManager: {
     title: 'Файловий менеджер',
     subtitle: 'Організуйте та керуйте файлами для друку',

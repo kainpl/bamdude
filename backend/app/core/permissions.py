@@ -50,6 +50,9 @@ class Permission(StrEnum):
     LIBRARY_UPDATE_ALL = "library:update_all"
     LIBRARY_DELETE_OWN = "library:delete_own"
     LIBRARY_DELETE_ALL = "library:delete_all"
+    # Notes (gh#3): viewers can post their own notes without library:update.
+    # Edit/delete of someone else's note is enforced at route level.
+    LIBRARY_NOTES_WRITE = "library:notes_write"
 
     # Projects
     PROJECTS_READ = "projects:read"
@@ -192,6 +195,7 @@ PERMISSION_CATEGORIES = {
         Permission.LIBRARY_UPDATE_ALL,
         Permission.LIBRARY_DELETE_OWN,
         Permission.LIBRARY_DELETE_ALL,
+        Permission.LIBRARY_NOTES_WRITE,
     ],
     "Projects": [
         Permission.PROJECTS_READ,
@@ -333,6 +337,7 @@ DEFAULT_GROUPS = {
             Permission.LIBRARY_UPLOAD.value,
             Permission.LIBRARY_UPDATE_OWN.value,
             Permission.LIBRARY_DELETE_OWN.value,
+            Permission.LIBRARY_NOTES_WRITE.value,
             # Projects - full access
             Permission.PROJECTS_READ.value,
             Permission.PROJECTS_CREATE.value,
@@ -399,6 +404,7 @@ DEFAULT_GROUPS = {
             Permission.ARCHIVES_READ.value,
             Permission.QUEUE_READ.value,
             Permission.LIBRARY_READ.value,
+            Permission.LIBRARY_NOTES_WRITE.value,
             Permission.PROJECTS_READ.value,
             Permission.INVENTORY_READ.value,
             Permission.INVENTORY_VIEW_ASSIGNMENTS.value,

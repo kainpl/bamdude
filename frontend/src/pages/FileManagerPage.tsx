@@ -57,6 +57,7 @@ import { ConfirmModal } from '../components/ConfirmModal';
 import { PrintModal } from '../components/PrintModal';
 import { ModelViewerModal } from '../components/ModelViewerModal';
 import { FileUploadModal } from '../components/FileUploadModal';
+import { LibraryFileNotesButton } from '../components/LibraryFileNotesButton';
 import { useToast } from '../contexts/ToastContext';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { useAuth } from '../contexts/AuthContext';
@@ -717,7 +718,9 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
 }) {
   const [open, setOpen] = useState(false);
   return (
-    <div className="relative" onClick={(e) => e.stopPropagation()}>
+    <div className="relative flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+      {/* Notes (gh#3) */}
+      <LibraryFileNotesButton fileId={file.id} initialCount={file.notes_count} variant="inline" />
       <button onClick={() => setOpen(!open)} className="p-1.5 rounded hover:bg-bambu-dark transition-colors">
         <MoreVertical className="w-4 h-4 text-bambu-gray" />
       </button>
@@ -832,6 +835,10 @@ function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, 
           }`}>
             {file.file_type.toUpperCase()}
           </span>
+        </div>
+        {/* Notes overlay (gh#3) */}
+        <div className="absolute top-2 left-2" onClick={(e) => e.stopPropagation()}>
+          <LibraryFileNotesButton fileId={file.id} initialCount={file.notes_count} variant="overlay" />
         </div>
       </div>
 

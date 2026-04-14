@@ -95,6 +95,20 @@ class ConnectionManager:
         """Notify clients that a file was added to the library."""
         await self.broadcast({"type": "library_file_added", "data": file_data})
 
+    async def send_library_file_notes_changed(self, file_id: int, notes_count: int):
+        """Notify clients that a library file's notes changed (gh#3).
+
+        Carries the new total count so the file-card icon switches between
+        MessageSquarePlus / MessageSquare without an extra fetch. Frontend
+        also invalidates the per-file notes query so any open popover refreshes.
+        """
+        await self.broadcast(
+            {
+                "type": "library_file_notes_changed",
+                "data": {"file_id": file_id, "notes_count": notes_count},
+            }
+        )
+
     async def send_missing_spool_assignment(
         self,
         printer_id: int,

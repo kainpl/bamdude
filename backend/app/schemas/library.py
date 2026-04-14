@@ -180,6 +180,9 @@ class FileListResponse(BaseModel):
     filament_used_grams: float | None = None
     sliced_for_model: str | None = None
     swap_compatible: bool = False
+    # Number of notes attached (gh#3) — drives the card icon variant
+    # (MessageSquarePlus when 0, MessageSquare when >0).
+    notes_count: int = 0
 
     class Config:
         from_attributes = True

@@ -8,6 +8,21 @@ All notable changes to BamDude will be documented in this file.
 
 ## [0.3.2] - 2026-04-10
 
+### Library File Notes ([#3](https://github.com/kainpl/bamdude/issues/3))
+
+Users can now attach multiple free-form notes to any library file, with per-note author tracking and live sync across tabs.
+
+- **Multiple notes per file** — no fixed limit on count; each note up to 1000 characters.
+- **Author tracking** — notes record who created/edited them (`user_id`) and when (`created_at`, `updated_at`). Only the original author can edit or delete their own note; other users see the text and meta but no edit/delete controls. When authentication is disabled, the install is single-user-trusted so all controls are open.
+- **Cascade delete** — deleting a library file deletes its notes at both the ORM (`cascade="all, delete-orphan"`) and DB (`ON DELETE CASCADE`) levels. Deleting a user keeps their notes but anonymises them (`ON DELETE SET NULL`).
+- **Card view UX** — thumbnail carries a message-square overlay icon: `MessageSquarePlus` when the file has no notes (click → opens create form immediately), `MessageSquare` + count badge when notes exist (click → popover with the newest note, prev/next pagination, edit, delete, add-new).
+- **List view UX** — same icon button in the actions column, inline variant (no count badge to save row space).
+- **WebSocket sync** — the backend broadcasts a `library_file_notes_changed` event with the new total count whenever a note is created/updated/deleted, so open tabs update their icon/count and any open popover refreshes without a manual reload.
+- **Performance** — the file-list endpoint returns `notes_count` via a single grouped COUNT query (no N+1) so the card icon decision is zero-fetch on mount.
+- **New permission** `library:notes_write` — granted to all three default groups including Viewers, so viewer-role users can post their own observations without being elevated to `library:update`.
+- **Migration** — folded into m002 (`library_file_notes` table with indexed `library_file_id`, dialect-aware: SQLite `INTEGER AUTOINCREMENT` vs PostgreSQL `SERIAL`) since we're still in the 0.3.2 cycle.
+- **Tests** — 15 pytest integration tests (CRUD, 1000-char validation, cascade, `notes_count` reflection) + 13 vitest (popover pagination, char counter, own-only edit/delete gating, save round-trip, icon variant switching).
+
 ### Print Batches & Quantity
 
 - **Quantity field in Print Modal** — stepper (1–50) unified across "Print Now" and "Add to Queue"

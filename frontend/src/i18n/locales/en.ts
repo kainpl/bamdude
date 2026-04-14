@@ -2797,6 +2797,27 @@ export default {
   },
 
   // File manager
+  // Library file notes (gh#3)
+  libraryNotes: {
+    title: 'File notes',
+    add: 'Add note',
+    addFirstNote: 'Add a note',
+    viewNotes: '{{count}} note(s)',
+    edit: 'Edit note',
+    delete: 'Delete note',
+    previous: 'Previous note',
+    next: 'Next note',
+    placeholder: 'Type your note…',
+    charsLeft: '{{count}} chars left',
+    created: 'Note added',
+    updated: 'Note updated',
+    deleted: 'Note deleted',
+    deleteConfirmTitle: 'Delete note',
+    deleteConfirmMessage: 'Delete this note? This cannot be undone.',
+    unknownAuthor: 'Unknown',
+    anonymous: 'Anonymous',
+  },
+
   fileManager: {
     title: 'File Manager',
     subtitle: 'Organize and manage your print files',

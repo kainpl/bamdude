@@ -7,6 +7,7 @@ from backend.app.models.git_backup import GitBackupConfig, GitBackupLog
 from backend.app.models.group import Group, user_groups
 from backend.app.models.kprofile_note import KProfileNote
 from backend.app.models.library import LibraryFile, LibraryFolder
+from backend.app.models.library_file_note import LibraryFileNote
 from backend.app.models.local_preset import LocalPreset
 from backend.app.models.macro import Macro
 from backend.app.models.maintenance import MaintenanceHistory, MaintenanceType, PrinterMaintenance
@@ -48,6 +49,7 @@ __all__ = [
     "AmsLabel",
     "PendingUpload",
     "LibraryFolder",
+    "LibraryFileNote",
     "LibraryFile",
     "User",
     "Group",

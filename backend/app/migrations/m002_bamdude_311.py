@@ -509,6 +509,44 @@ async def upgrade(conn):
         )
     )
 
+    # ── Library file notes (gh#3) ──
+    # User-authored notes attached to library files. ON DELETE CASCADE on the
+    # file FK — note dies with its file. ON DELETE SET NULL on user_id — note
+    # survives the author's account deletion (anonymised).
+    if is_postgres():
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS library_file_notes (
+                    id SERIAL PRIMARY KEY,
+                    library_file_id INTEGER NOT NULL REFERENCES library_files(id) ON DELETE CASCADE,
+                    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                    body VARCHAR(1000) NOT NULL,
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+        )
+    else:
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS library_file_notes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    library_file_id INTEGER NOT NULL REFERENCES library_files(id) ON DELETE CASCADE,
+                    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                    body VARCHAR(1000) NOT NULL,
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+        )
+    await conn.execute(
+        text("CREATE INDEX IF NOT EXISTS ix_library_file_notes_file ON library_file_notes(library_file_id)")
+    )
+
 
 async def seed(session_factory):
     """Seed new data for 3.1.1."""
