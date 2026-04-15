@@ -796,7 +796,7 @@ export function ProjectsPage() {
         </div>
         <div className="flex gap-2">
           <Button
-            variant="secondary"
+            variant="outline"
             onClick={handleImportClick}
             disabled={!hasPermission('projects:create')}
             title={!hasPermission('projects:create') ? t('projects.noImportPermission') : t('projects.importProject')}
@@ -805,7 +805,7 @@ export function ProjectsPage() {
             {t('projects.import')}
           </Button>
           <Button
-            variant="secondary"
+            variant="outline"
             onClick={handleExportAll}
             disabled={!hasPermission('projects:read')}
             title={!hasPermission('projects:read') ? t('projects.noExportPermission') : t('projects.exportAll')}

@@ -1141,7 +1141,7 @@ export function StatsPage() {
           {/* Hidden widgets button - toggles panel in Dashboard */}
           {hiddenCount > 0 && (
             <Button
-              variant="secondary"
+              variant="outline"
               onClick={() => {
                 // Toggle the hidden panel in Dashboard by triggering a custom event
                 window.dispatchEvent(new CustomEvent('toggle-hidden-panel'));
@@ -1153,7 +1153,7 @@ export function StatsPage() {
           )}
           {/* Reset Layout */}
           <Button
-            variant="secondary"
+            variant="outline"
             onClick={() => {
               localStorage.removeItem('bambusy-dashboard-layout-v2');
               setDashboardKey(prev => prev + 1);
@@ -1167,7 +1167,7 @@ export function StatsPage() {
           </Button>
           {/* Recalculate Costs */}
           <Button
-            variant="secondary"
+            variant="outline"
             onClick={handleRecalculateCosts}
             disabled={isRecalculating || !hasPermission('archives:update_all')}
             title={!hasPermission('archives:update_all') ? t('stats.noPermissionRecalculate') : t('stats.recalculateCostsHint')}
@@ -1182,7 +1182,7 @@ export function StatsPage() {
           {/* Export dropdown */}
           <div className="relative">
             <Button
-              variant="secondary"
+              variant="outline"
               onClick={() => setShowExportMenu(!showExportMenu)}
               disabled={isExporting}
             >
@@ -1215,7 +1215,7 @@ export function StatsPage() {
           {/* Timeframe Selector */}
           <div className="relative">
             <Button
-              variant="secondary"
+              variant="outline"
               onClick={() => setShowTimeframePicker(!showTimeframePicker)}
             >
               <Calendar className="w-4 h-4" />

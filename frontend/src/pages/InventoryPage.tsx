@@ -818,7 +818,7 @@ function InventoryPage() {
       {stats && !isLoading && (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
           {/* Total Inventory */}
-          <div className="bg-bambu-dark-secondary rounded-lg p-4">
+          <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg p-4">
             <div className="flex items-center gap-2 mb-1">
               <Package className="w-4 h-4 text-bambu-green" />
               <span className="text-xs text-bambu-gray font-medium uppercase tracking-wide">{t('inventory.totalInventory')}</span>
@@ -828,7 +828,7 @@ function InventoryPage() {
           </div>
 
           {/* Total Consumed */}
-          <div className="bg-bambu-dark-secondary rounded-lg p-4">
+          <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg p-4">
             <div className="flex items-center gap-2 mb-1">
               <TrendingDown className="w-4 h-4 text-blue-400" />
               <span className="text-xs text-bambu-gray font-medium uppercase tracking-wide">{t('inventory.totalConsumed')}</span>
@@ -838,7 +838,7 @@ function InventoryPage() {
           </div>
 
           {/* By Material */}
-          <div className="bg-bambu-dark-secondary rounded-lg p-4">
+          <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg p-4">
             <div className="flex items-center gap-2 mb-1">
               <Layers className="w-4 h-4 text-green-400" />
               <span className="text-xs text-bambu-gray font-medium uppercase tracking-wide">{t('inventory.byMaterial')}</span>
@@ -856,7 +856,7 @@ function InventoryPage() {
           </div>
 
           {/* In Printer */}
-          <div className="bg-bambu-dark-secondary rounded-lg p-4">
+          <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg p-4">
             <div className="flex items-center gap-2 mb-1">
               <Printer className="w-4 h-4 text-purple-400" />
               <span className="text-xs text-bambu-gray font-medium uppercase tracking-wide">{t('inventory.inPrinter')}</span>
@@ -866,7 +866,7 @@ function InventoryPage() {
           </div>
 
           {/* Low Stock */}
-          <div className="bg-bambu-dark-secondary rounded-lg p-4">
+          <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg p-4">
             <div className="flex items-center gap-2 mb-1">
               <AlertTriangle className="w-4 h-4 text-yellow-400" />
               <span className="text-xs text-bambu-gray font-medium uppercase tracking-wide">{t('inventory.lowStock')}</span>

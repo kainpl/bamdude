@@ -232,6 +232,17 @@ export function SettingsPage() {
     queryFn: api.getSettings,
   });
 
+  // Only used to hide SQLite-specific actions (VACUUM) when the deployment
+  // runs on PostgreSQL. Cached for the session — the engine doesn't change
+  // at runtime.
+  const { data: systemInfo } = useQuery({
+    queryKey: ['system-info'],
+    queryFn: api.getSystemInfo,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+  });
+  const dbIsSqlite = systemInfo?.database.engine !== 'PostgreSQL';
+
   const {
     data: storageUsage,
     isLoading: storageUsageLoading,
@@ -1702,32 +1713,34 @@ export function SettingsPage() {
                   {t('settings.reset')}
                 </Button>
               </div>
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-white">{t('settings.optimizeDatabase')}</p>
-                  <p className="text-sm text-bambu-gray">
-                    {t('settings.optimizeDatabaseDescription')}
-                  </p>
-                </div>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={async () => {
-                    try {
-                      const result = await api.optimizeDatabase();
-                      if (result.success) {
-                        const sizeMb = (result.db_size / 1024 / 1024).toFixed(1);
-                        showToast(t('settings.toast.databaseOptimized', { size: sizeMb }));
+              {dbIsSqlite && (
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-white">{t('settings.optimizeDatabase')}</p>
+                    <p className="text-sm text-bambu-gray">
+                      {t('settings.optimizeDatabaseDescription')}
+                    </p>
+                  </div>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={async () => {
+                      try {
+                        const result = await api.optimizeDatabase();
+                        if (result.success) {
+                          const sizeMb = (result.db_size / 1024 / 1024).toFixed(1);
+                          showToast(t('settings.toast.databaseOptimized', { size: sizeMb }));
+                        }
+                      } catch {
+                        showToast(t('settings.toast.databaseOptimizeFailed'), 'error');
                       }
-                    } catch {
-                      showToast(t('settings.toast.databaseOptimizeFailed'), 'error');
-                    }
-                  }}
-                >
-                  <Database className="w-4 h-4" />
-                  {t('settings.optimize')}
-                </Button>
-              </div>
+                    }}
+                  >
+                    <Database className="w-4 h-4" />
+                    {t('settings.optimize')}
+                  </Button>
+                </div>
+              )}
               <div className="pt-4 border-t border-bambu-dark-tertiary">
                 <div className="flex items-center justify-between">
                   <div>
