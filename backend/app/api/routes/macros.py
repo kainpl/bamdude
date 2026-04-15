@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermissionIfAuthEnabled
+from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.macro import Macro
@@ -45,7 +45,7 @@ async def list_macros(
     swap_mode: bool | None = Query(None, description="Filter by swap_mode_only"),
     event: str | None = Query(None, description="Filter by event"),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_READ),
+    _: User | None = RequirePermission(Permission.SETTINGS_READ),
 ):
     """List all macros with optional filters."""
     query = select(Macro).order_by(Macro.event, Macro.name)
@@ -72,7 +72,7 @@ async def list_macros(
 async def get_macro(
     macro_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_READ),
+    _: User | None = RequirePermission(Permission.SETTINGS_READ),
 ):
     """Get a single macro."""
     result = await db.execute(select(Macro).where(Macro.id == macro_id))
@@ -86,7 +86,7 @@ async def get_macro(
 async def create_macro(
     data: MacroCreate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+    _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
     """Create a custom macro."""
     macro = Macro(
@@ -110,7 +110,7 @@ async def update_macro(
     macro_id: int,
     data: MacroUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+    _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
     """Update a macro (both custom and built-in can be edited)."""
     result = await db.execute(select(Macro).where(Macro.id == macro_id))
@@ -137,7 +137,7 @@ async def update_macro(
 async def delete_macro(
     macro_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+    _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
     """Delete a custom macro. Built-in macros cannot be deleted."""
     result = await db.execute(select(Macro).where(Macro.id == macro_id))
@@ -165,7 +165,7 @@ async def execute_macro(
     macro_id: int,
     printer_id: int = Query(..., description="Printer to execute macro on"),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+    _: User | None = RequirePermission(Permission.PRINTERS_CONTROL),
 ):
     """Execute a macro on a specific printer by sending its GCode via MQTT."""
     # Get macro

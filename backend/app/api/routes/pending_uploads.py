@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermissionIfAuthEnabled
+from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.pending_upload import PendingUpload
@@ -46,7 +46,7 @@ class PendingUploadResponse(BaseModel):
 @router.get("/", response_model=list[PendingUploadResponse])
 async def list_pending_uploads(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.QUEUE_READ),
+    _: User | None = RequirePermission(Permission.QUEUE_READ),
 ):
     """List all pending uploads."""
     result = await db.execute(
@@ -59,7 +59,7 @@ async def list_pending_uploads(
 @router.get("/count")
 async def get_pending_count(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.QUEUE_READ),
+    _: User | None = RequirePermission(Permission.QUEUE_READ),
 ):
     """Get count of pending uploads."""
     result = await db.execute(select(PendingUpload).where(PendingUpload.status == "pending"))
@@ -75,7 +75,7 @@ async def get_pending_count(
 @router.post("/archive-all")
 async def archive_all_pending(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.QUEUE_CREATE),
+    _: User | None = RequirePermission(Permission.QUEUE_CREATE),
 ):
     """Archive all pending uploads."""
     result = await db.execute(select(PendingUpload).where(PendingUpload.status == "pending"))
@@ -131,7 +131,7 @@ async def archive_all_pending(
 @router.delete("/discard-all")
 async def discard_all_pending(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.QUEUE_DELETE_ALL),
+    _: User | None = RequirePermission(Permission.QUEUE_DELETE_ALL),
 ):
     """Discard all pending uploads."""
     result = await db.execute(select(PendingUpload).where(PendingUpload.status == "pending"))
@@ -159,7 +159,7 @@ async def discard_all_pending(
 async def get_pending_upload(
     upload_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.QUEUE_READ),
+    _: User | None = RequirePermission(Permission.QUEUE_READ),
 ):
     """Get a specific pending upload."""
     result = await db.execute(select(PendingUpload).where(PendingUpload.id == upload_id))
@@ -176,7 +176,7 @@ async def archive_pending_upload(
     upload_id: int,
     request: ArchiveRequest = None,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.QUEUE_CREATE),
+    _: User | None = RequirePermission(Permission.QUEUE_CREATE),
 ):
     """Archive a pending upload."""
     result = await db.execute(select(PendingUpload).where(PendingUpload.id == upload_id))
@@ -244,7 +244,7 @@ async def archive_pending_upload(
 async def discard_pending_upload(
     upload_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.QUEUE_DELETE_ALL),
+    _: User | None = RequirePermission(Permission.QUEUE_DELETE_ALL),
 ):
     """Discard a pending upload without archiving."""
     result = await db.execute(select(PendingUpload).where(PendingUpload.id == upload_id))

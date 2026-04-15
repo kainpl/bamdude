@@ -5,7 +5,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.app.api.routes.settings import get_external_login_url
 from backend.app.core.auth import (
-    RequirePermissionIfAuthEnabled,
+    RequirePermission,
     get_current_user_optional,
     get_password_hash,
     verify_password,
@@ -48,7 +48,7 @@ def _user_to_response(user: User) -> UserResponse:
 @router.get("", response_model=list[UserResponse])
 @router.get("/", response_model=list[UserResponse])
 async def list_users(
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.USERS_READ),
+    _: User | None = RequirePermission(Permission.USERS_READ),
     db: AsyncSession = Depends(get_db),
 ):
     """List all users."""
@@ -61,7 +61,7 @@ async def list_users(
 @router.post("/", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 async def create_user(
     user_data: UserCreate,
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.USERS_CREATE),
+    _: User | None = RequirePermission(Permission.USERS_CREATE),
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new user.
@@ -167,7 +167,7 @@ async def create_user(
 @router.get("/{user_id}", response_model=UserResponse)
 async def get_user(
     user_id: int,
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.USERS_READ),
+    _: User | None = RequirePermission(Permission.USERS_READ),
     db: AsyncSession = Depends(get_db),
 ):
     """Get a user by ID."""
@@ -186,7 +186,7 @@ async def get_user(
 async def update_user(
     user_id: int,
     user_data: UserUpdate,
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.USERS_UPDATE),
+    _: User | None = RequirePermission(Permission.USERS_UPDATE),
     db: AsyncSession = Depends(get_db),
 ):
     """Update a user."""
@@ -293,7 +293,7 @@ async def update_user(
 @router.get("/{user_id}/items-count")
 async def get_user_items_count(
     user_id: int,
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.USERS_READ),
+    _: User | None = RequirePermission(Permission.USERS_READ),
     db: AsyncSession = Depends(get_db),
 ):
     """Get count of items created by this user."""
@@ -330,7 +330,7 @@ async def get_user_items_count(
 async def delete_user(
     user_id: int,
     delete_items: bool = Query(False, description="Delete all items created by this user"),
-    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.USERS_DELETE),
+    current_user: User | None = RequirePermission(Permission.USERS_DELETE),
     db: AsyncSession = Depends(get_db),
 ):
     """Delete a user.

@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermissionIfAuthEnabled
+from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.user import User
@@ -86,7 +86,7 @@ def _vp_to_dict(vp, status: dict | None = None) -> dict:
 @router.get("")
 async def list_virtual_printers(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_READ),
+    _: User | None = RequirePermission(Permission.SETTINGS_READ),
 ):
     """List all virtual printers with status."""
     from backend.app.models.virtual_printer import VirtualPrinter
@@ -111,7 +111,7 @@ async def list_virtual_printers(
 async def create_virtual_printer(
     body: VirtualPrinterCreate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+    _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
     """Create a new virtual printer."""
     from backend.app.models.virtual_printer import VirtualPrinter
@@ -219,7 +219,7 @@ async def create_virtual_printer(
 async def get_virtual_printer(
     vp_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_READ),
+    _: User | None = RequirePermission(Permission.SETTINGS_READ),
 ):
     """Get a single virtual printer with status."""
     from backend.app.models.virtual_printer import VirtualPrinter
@@ -241,7 +241,7 @@ async def update_virtual_printer(
     vp_id: int,
     body: VirtualPrinterUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+    _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
     """Update a virtual printer."""
     from backend.app.models.virtual_printer import VirtualPrinter
@@ -387,7 +387,7 @@ async def update_virtual_printer(
 async def delete_virtual_printer(
     vp_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+    _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
     """Delete a virtual printer."""
     from sqlalchemy import delete as sql_delete

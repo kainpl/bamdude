@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import get_current_user_optional, require_permission_if_auth_enabled
+from backend.app.core.auth import get_current_user_optional, require_permission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.core.websocket import ws_manager
@@ -58,7 +58,7 @@ async def list_file_notes(
     file_id: int,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = Depends(get_current_user_optional),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_READ)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_READ)),
 ):
     """List notes for a library file (newest first)."""
     file_result = await db.execute(select(LibraryFile.id).where(LibraryFile.id == file_id))
@@ -80,7 +80,7 @@ async def create_file_note(
     body: LibraryFileNoteCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = Depends(get_current_user_optional),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_NOTES_WRITE)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_NOTES_WRITE)),
 ):
     """Create a note on a library file."""
     file_result = await db.execute(select(LibraryFile.id).where(LibraryFile.id == file_id))
@@ -121,7 +121,7 @@ async def update_file_note(
     body: LibraryFileNoteUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = Depends(get_current_user_optional),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_NOTES_WRITE)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_NOTES_WRITE)),
 ):
     """Update a note. Only the original author can edit it.
 
@@ -151,7 +151,7 @@ async def delete_file_note(
     note_id: int,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = Depends(get_current_user_optional),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_NOTES_WRITE)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_NOTES_WRITE)),
 ):
     """Delete a note. Only the original author can delete it."""
     loaded = await _load_note_with_username(db, note_id)

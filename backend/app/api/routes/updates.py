@@ -12,7 +12,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermissionIfAuthEnabled
+from backend.app.core.auth import RequirePermission
 from backend.app.core.config import APP_VERSION, GITHUB_REPO, settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -182,7 +182,7 @@ async def get_version():
 @router.get("/check")
 async def check_for_updates(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SYSTEM_READ),
+    _: User | None = RequirePermission(Permission.SYSTEM_READ),
 ):
     """Check GitHub for available updates."""
     global _update_status
@@ -501,7 +501,7 @@ async def _perform_update():
 @router.post("/apply")
 async def apply_update(
     background_tasks: BackgroundTasks,
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+    _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
     """Apply available update (git pull + rebuild)."""
     global _update_status
@@ -544,7 +544,7 @@ async def apply_update(
 
 @router.get("/status")
 async def get_update_status(
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SYSTEM_READ),
+    _: User | None = RequirePermission(Permission.SYSTEM_READ),
 ):
     """Get current update status."""
     return _update_status

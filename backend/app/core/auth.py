@@ -19,7 +19,7 @@ from sqlalchemy.orm import selectinload
 from backend.app.core.database import async_session, get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.api_key import APIKey
-from backend.app.models.settings import Settings
+from backend.app.models.group import Group, user_groups
 from backend.app.models.user import User
 
 logger = logging.getLogger(__name__)
@@ -214,16 +214,39 @@ async def authenticate_user_by_email(db: AsyncSession, email: str, password: str
     return user
 
 
-async def is_auth_enabled(db: AsyncSession) -> bool:
-    """Check if authentication is enabled."""
+async def has_any_admin(db: AsyncSession) -> bool:
+    """Check whether at least one active admin user exists.
+
+    An "admin" is any active user who either:
+      - has ``role == 'admin'`` (legacy flag), or
+      - is a member of the "Administrators" group.
+
+    Used by the bootstrap / setup flow: if ``has_any_admin()`` is ``False``,
+    the system is considered "unconfigured" and the setup middleware will
+    block every non-whitelisted endpoint until ``/auth/setup`` creates the
+    first admin.
+    """
     try:
-        result = await db.execute(select(Settings).where(Settings.key == "auth_enabled"))
-        setting = result.scalar_one_or_none()
-        if setting is None:
-            return False
-        return setting.value.lower() == "true"
-    except Exception:
-        # If settings table doesn't exist or query fails, assume auth is disabled
+        # Legacy admin role
+        legacy_q = select(func.count()).select_from(User).where(User.is_active.is_(True), User.role == "admin")
+        legacy_count = (await db.execute(legacy_q)).scalar_one() or 0
+        if legacy_count > 0:
+            return True
+
+        # Membership in the "Administrators" group
+        group_q = (
+            select(func.count())
+            .select_from(User)
+            .join(user_groups, user_groups.c.user_id == User.id)
+            .join(Group, Group.id == user_groups.c.group_id)
+            .where(User.is_active.is_(True), Group.name == "Administrators")
+        )
+        group_count = (await db.execute(group_q)).scalar_one() or 0
+        return group_count > 0
+    except Exception as e:
+        # If the query fails (e.g. tables not yet created on fresh install),
+        # treat it as "no admin" so the setup flow is reachable.
+        logger.debug("has_any_admin() query failed: %s", e)
         return False
 
 
@@ -314,74 +337,6 @@ async def get_current_active_user(current_user: Annotated[User, Depends(get_curr
     return current_user
 
 
-async def require_auth_if_enabled(
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)] = None,
-    x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
-) -> User | None:
-    """Require authentication if auth is enabled, otherwise return None.
-
-    Accepts both JWT tokens (via Authorization: Bearer header) and API keys
-    (via X-API-Key header or Authorization: Bearer bb_xxx).
-    """
-    async with async_session() as db:
-        auth_enabled = await is_auth_enabled(db)
-        if not auth_enabled:
-            return None
-
-        # Check for API key first (X-API-Key header)
-        if x_api_key:
-            api_key = await _validate_api_key(db, x_api_key)
-            if api_key:
-                return None  # API key valid, allow access
-
-        # Check for Bearer token (could be JWT or API key)
-        if credentials is not None:
-            token = credentials.credentials
-            # Check if it's an API key (starts with bb_)
-            if token.startswith("bb_"):
-                api_key = await _validate_api_key(db, token)
-                if api_key:
-                    return None  # API key valid, allow access
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Invalid API key",
-                    headers={"WWW-Authenticate": "Bearer"},
-                )
-
-            # Otherwise treat as JWT
-            try:
-                payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-                username: str = payload.get("sub")
-                if username is None:
-                    raise HTTPException(
-                        status_code=status.HTTP_401_UNAUTHORIZED,
-                        detail="Could not validate credentials",
-                        headers={"WWW-Authenticate": "Bearer"},
-                    )
-            except JWTError:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Could not validate credentials",
-                    headers={"WWW-Authenticate": "Bearer"},
-                )
-
-            user = await get_user_by_username(db, username)
-            if user is None or not user.is_active:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Could not validate credentials",
-                    headers={"WWW-Authenticate": "Bearer"},
-                )
-            return user
-
-        # No credentials provided
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-
 def require_role(required_role: str):
     """Dependency factory for role-based access control."""
 
@@ -394,24 +349,6 @@ def require_role(required_role: str):
         return current_user
 
     return role_checker
-
-
-def require_admin_if_auth_enabled():
-    """Dependency factory that requires admin role if auth is enabled."""
-
-    async def admin_checker(
-        current_user: Annotated[User | None, Depends(require_auth_if_enabled)] = None,
-    ) -> User | None:
-        if current_user is None:
-            return None  # Auth not enabled, allow access
-        if current_user.role != "admin":
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Requires admin role",
-            )
-        return current_user
-
-    return admin_checker
 
 
 def generate_api_key() -> tuple[str, str, str]:
@@ -537,22 +474,22 @@ def RequireAdmin():
     return Depends(require_role("admin"))
 
 
-def RequireAdminIfAuthEnabled():
-    """Dependency that requires admin role if auth is enabled."""
-    return Depends(require_admin_if_auth_enabled())
-
-
 def require_permission(*permissions: str | Permission):
     """Dependency factory that requires user to have ALL specified permissions.
 
     Accepts both JWT tokens (via Authorization: Bearer header) and API keys
     (via X-API-Key header or Authorization: Bearer bb_xxx).
 
+    API keys bypass the per-resource permission check (legacy behavior); their
+    access is instead narrowed through the API-key-specific ``can_queue`` /
+    ``can_control_printer`` / ``can_read_status`` flags elsewhere.
+
     Args:
         *permissions: Permission strings or Permission enum values to require
 
     Returns:
-        A dependency function that validates permissions
+        A dependency function that validates permissions. Returns ``User`` for
+        JWT-authenticated requests or ``None`` for API-key requests.
     """
     # Convert Permission enums to strings
     perm_strings = [p.value if isinstance(p, Permission) else p for p in permissions]
@@ -612,101 +549,9 @@ def require_permission(*permissions: str | Permission):
     return permission_checker
 
 
-def require_permission_if_auth_enabled(*permissions: str | Permission):
-    """Dependency factory that checks permissions only if auth is enabled.
-
-    This provides backward compatibility - when auth is disabled, all access is allowed.
-    Accepts both JWT tokens (via Authorization: Bearer header) and API keys
-    (via X-API-Key header or Authorization: Bearer bb_xxx).
-
-    Args:
-        *permissions: Permission strings or Permission enum values to require
-
-    Returns:
-        A dependency function that validates permissions if auth is enabled
-    """
-    # Convert Permission enums to strings
-    perm_strings = [p.value if isinstance(p, Permission) else p for p in permissions]
-
-    async def permission_checker(
-        credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)] = None,
-        x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
-    ) -> User | None:
-        async with async_session() as db:
-            auth_enabled = await is_auth_enabled(db)
-            if not auth_enabled:
-                return None  # Auth disabled, allow access
-
-            # Check for API key first (X-API-Key header)
-            if x_api_key:
-                api_key = await _validate_api_key(db, x_api_key)
-                if api_key:
-                    return None  # API key valid, allow access
-
-            # Check for Bearer token (could be JWT or API key)
-            if credentials is not None:
-                token = credentials.credentials
-                # Check if it's an API key (starts with bb_)
-                if token.startswith("bb_"):
-                    api_key = await _validate_api_key(db, token)
-                    if api_key:
-                        return None  # API key valid, allow access
-                    raise HTTPException(
-                        status_code=status.HTTP_401_UNAUTHORIZED,
-                        detail="Invalid API key",
-                        headers={"WWW-Authenticate": "Bearer"},
-                    )
-
-                # Otherwise treat as JWT
-                try:
-                    payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-                    username: str = payload.get("sub")
-                    if username is None:
-                        raise HTTPException(
-                            status_code=status.HTTP_401_UNAUTHORIZED,
-                            detail="Could not validate credentials",
-                            headers={"WWW-Authenticate": "Bearer"},
-                        )
-                except JWTError:
-                    raise HTTPException(
-                        status_code=status.HTTP_401_UNAUTHORIZED,
-                        detail="Could not validate credentials",
-                        headers={"WWW-Authenticate": "Bearer"},
-                    )
-
-                user = await get_user_by_username(db, username)
-                if user is None or not user.is_active:
-                    raise HTTPException(
-                        status_code=status.HTTP_401_UNAUTHORIZED,
-                        detail="Could not validate credentials",
-                        headers={"WWW-Authenticate": "Bearer"},
-                    )
-
-                if not user.has_all_permissions(*perm_strings):
-                    raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail=f"Missing required permissions: {', '.join(perm_strings)}",
-                    )
-                return user
-
-            # No credentials provided
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Authentication required",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-
-    return permission_checker
-
-
 def RequirePermission(*permissions: str | Permission):
     """Convenience dependency that requires ALL specified permissions."""
     return Depends(require_permission(*permissions))
-
-
-def RequirePermissionIfAuthEnabled(*permissions: str | Permission):
-    """Convenience dependency that requires permissions if auth is enabled."""
-    return Depends(require_permission_if_auth_enabled(*permissions))
 
 
 def require_ownership_permission(
@@ -715,9 +560,9 @@ def require_ownership_permission(
 ):
     """Dependency factory for ownership-based permission checks.
 
-    - User with `all_permission` can modify any item
-    - User with `own_permission` can only modify items where created_by_id == user.id
-    - Ownerless items (created_by_id = null) require `all_permission`
+    - User with ``all_permission`` can modify any item
+    - User with ``own_permission`` can only modify items where created_by_id == user.id
+    - Ownerless items (created_by_id = null) require ``all_permission``
     - API keys (via X-API-Key header or Bearer bb_xxx) get full access (can_modify_all=True)
 
     Returns:
@@ -732,16 +577,8 @@ def require_ownership_permission(
         credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)] = None,
         x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
     ) -> tuple[User | None, bool]:
-        """Returns (user, can_modify_all).
-
-        - can_modify_all=True: user can modify any item
-        - can_modify_all=False: user can only modify their own items
-        """
+        """Returns (user, can_modify_all)."""
         async with async_session() as db:
-            auth_enabled = await is_auth_enabled(db)
-            if not auth_enabled:
-                return None, True  # Auth disabled, allow all
-
             # Check for API key first (X-API-Key header)
             if x_api_key:
                 api_key = await _validate_api_key(db, x_api_key)

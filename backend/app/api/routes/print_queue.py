@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.app.core.auth import RequirePermissionIfAuthEnabled, require_ownership_permission
+from backend.app.core.auth import RequirePermission, require_ownership_permission
 from backend.app.core.config import settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -249,7 +249,7 @@ async def list_queue(
     queue_id: int | None = Query(None, description="Filter by printer queue"),
     status: str | None = Query(None, description="Filter by status"),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.QUEUE_READ),
+    _: User | None = RequirePermission(Permission.QUEUE_READ),
 ):
     """List all queue items, optionally filtered by queue or status."""
     query = (
@@ -277,7 +277,7 @@ async def list_queue(
 async def add_to_queue(
     data: PrintQueueItemCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.QUEUE_CREATE),
+    current_user: User | None = RequirePermission(Permission.QUEUE_CREATE),
 ):
     """Add an item to the print queue."""
     # Validate that either archive_id or library_file_id is provided
@@ -485,7 +485,7 @@ async def bulk_update_queue_items(
 async def get_queue_item(
     item_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.QUEUE_READ),
+    _: User | None = RequirePermission(Permission.QUEUE_READ),
 ):
     """Get a specific queue item."""
     result = await db.execute(
@@ -609,7 +609,7 @@ async def delete_queue_item(
 async def reorder_queue(
     data: PrintQueueReorder,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.QUEUE_UPDATE_ALL),
+    _: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
 ):
     """Bulk update positions for queue items."""
     for reorder_item in data.items:
@@ -666,7 +666,7 @@ async def cancel_queue_item(
 async def stop_queue_item(
     item_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.QUEUE_UPDATE_ALL),
+    _: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
 ):
     """Stop an actively printing queue item."""
     import asyncio
@@ -759,7 +759,7 @@ async def stop_queue_item(
 async def start_queue_item(
     item_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.QUEUE_UPDATE_OWN),
+    _: User | None = RequirePermission(Permission.QUEUE_UPDATE_OWN),
 ):
     """Manually start a staged (manual_start) queue item.
 

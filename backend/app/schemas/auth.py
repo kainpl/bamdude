@@ -61,14 +61,16 @@ class ChangePasswordRequest(BaseModel):
 
 
 class SetupRequest(BaseModel):
-    auth_enabled: bool
-    admin_username: str | None = None
-    admin_password: str | None = None
+    admin_username: str
+    admin_password: str
+    admin_email: str | None = None
 
 
 class SetupResponse(BaseModel):
-    auth_enabled: bool
-    admin_created: bool | None = None
+    admin_created: bool = True
+    access_token: str
+    token_type: str = "bearer"
+    user: UserResponse
 
 
 class ForgotPasswordRequest(BaseModel):

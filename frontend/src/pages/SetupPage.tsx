@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useMutation } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { api } from '../api/client';
+import { api, setAuthToken } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
 import { useTheme } from '../contexts/ThemeContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -14,8 +14,8 @@ export function SetupPage() {
   const { showToast } = useToast();
   const { mode } = useTheme();
   const { refreshAuth } = useAuth();
-  const [authEnabled, setAuthEnabled] = useState(false);
   const [adminUsername, setAdminUsername] = useState('');
+  const [adminEmail, setAdminEmail] = useState('');
   const [adminPassword, setAdminPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -23,26 +23,17 @@ export function SetupPage() {
   const setupMutation = useMutation({
     mutationFn: () =>
       api.setupAuth({
-        auth_enabled: authEnabled,
-        admin_username: authEnabled ? adminUsername : undefined,
-        admin_password: authEnabled ? adminPassword : undefined,
+        admin_username: adminUsername.trim(),
+        admin_password: adminPassword,
+        admin_email: adminEmail.trim() || undefined,
       }),
     onSuccess: async (data) => {
-      // Refresh auth status after setup
+      // Backend creates the admin and returns a JWT — store it and land the
+      // user straight on the home page without a detour through /login.
+      setAuthToken(data.access_token);
       await refreshAuth();
-
-      if (data.auth_enabled) {
-        if (data.admin_created) {
-          showToast(t('setup.toast.authEnabledAdminCreated'));
-          navigate('/login');
-        } else {
-          showToast(t('setup.toast.authEnabledExistingAdmins'));
-          navigate('/login');
-        }
-      } else {
-        showToast(t('setup.toast.setupCompleted'));
-        navigate('/');
-      }
+      showToast(t('setup.toast.authEnabledAdminCreated'));
+      navigate('/');
     },
     onError: (error: Error) => {
       showToast(error.message, 'error');
@@ -52,23 +43,17 @@ export function SetupPage() {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (authEnabled) {
-      // Only validate if credentials are provided
-      // If no credentials provided, backend will use existing admin users if they exist
-      if (adminUsername || adminPassword) {
-        if (!adminUsername || !adminPassword) {
-          showToast(t('setup.toast.enterBothCredentials'), 'error');
-          return;
-        }
-        if (adminPassword !== confirmPassword) {
-          showToast(t('setup.toast.passwordsDoNotMatch'), 'error');
-          return;
-        }
-        if (adminPassword.length < 6) {
-          showToast(t('setup.toast.passwordTooShort'), 'error');
-          return;
-        }
-      }
+    if (!adminUsername.trim() || !adminPassword) {
+      showToast(t('setup.toast.enterBothCredentials'), 'error');
+      return;
+    }
+    if (adminPassword !== confirmPassword) {
+      showToast(t('setup.toast.passwordsDoNotMatch'), 'error');
+      return;
+    }
+    if (adminPassword.length < 6) {
+      showToast(t('setup.toast.passwordTooShort'), 'error');
+      return;
     }
 
     setupMutation.mutate();
@@ -95,103 +80,102 @@ export function SetupPage() {
 
         <form className="mt-8 space-y-6" onSubmit={handleSubmit}>
           <div className="space-y-4">
-            <div className="flex items-center p-4 bg-bambu-dark-secondary/50 rounded-lg border border-bambu-dark-tertiary">
-              <input
-                id="auth-enabled"
-                type="checkbox"
-                checked={authEnabled}
-                onChange={(e) => setAuthEnabled(e.target.checked)}
-                className="h-4 w-4 text-bambu-green focus:ring-bambu-green border-bambu-dark-tertiary rounded bg-bambu-dark-secondary"
-              />
-              <label htmlFor="auth-enabled" className="ml-3 block text-sm font-medium text-white">
-                {t('setup.enableAuth')}
-              </label>
+            <div className="p-3 bg-bambu-dark-secondary/50 border border-bambu-dark-tertiary rounded-lg">
+              <div className="flex items-start gap-2">
+                <Info className="w-4 h-4 text-bambu-green mt-0.5 flex-shrink-0" />
+                <div className="text-sm text-bambu-gray">
+                  <p className="text-white font-medium mb-1">{t('setup.adminAccount')}</p>
+                  <p>
+                    {t('setup.adminAccountDesc')}
+                  </p>
+                </div>
+              </div>
             </div>
 
-            {authEnabled && (
-              <div className="space-y-4 mt-4">
-                <div className="p-3 bg-bambu-dark-secondary/50 border border-bambu-dark-tertiary rounded-lg">
-                  <div className="flex items-start gap-2">
-                    <Info className="w-4 h-4 text-bambu-green mt-0.5 flex-shrink-0" />
-                    <div className="text-sm text-bambu-gray">
-                      <p className="text-white font-medium mb-1">{t('setup.adminAccount')}</p>
-                      <p>
-                        {t('setup.adminAccountDesc')}
-                      </p>
-                    </div>
-                  </div>
-                </div>
+            <div>
+              <label htmlFor="admin-username" className="block text-sm font-medium text-white mb-2">
+                {t('setup.adminUsername')}
+              </label>
+              <input
+                id="admin-username"
+                type="text"
+                value={adminUsername}
+                onChange={(e) => setAdminUsername(e.target.value)}
+                className="block w-full px-4 py-3 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:outline-none focus:ring-2 focus:ring-bambu-green/50 focus:border-bambu-green transition-colors"
+                placeholder={t('setup.adminUsernamePlaceholder')}
+                autoComplete="username"
+                required
+              />
+            </div>
 
-                <div>
-                  <label htmlFor="admin-username" className="block text-sm font-medium text-white mb-2">
-                    {t('setup.adminUsername')} <span className="text-bambu-gray text-xs">{t('setup.optionalIfAdminExists')}</span>
-                  </label>
-                  <input
-                    id="admin-username"
-                    type="text"
-                    value={adminUsername}
-                    onChange={(e) => setAdminUsername(e.target.value)}
-                    className="block w-full px-4 py-3 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:outline-none focus:ring-2 focus:ring-bambu-green/50 focus:border-bambu-green transition-colors"
-                    placeholder={t('setup.adminUsernamePlaceholder')}
-                    autoComplete="username"
-                  />
-                </div>
+            <div>
+              <label htmlFor="admin-email" className="block text-sm font-medium text-white mb-2">
+                {t('setup.adminEmail')} <span className="text-bambu-gray text-xs">{t('setup.optional')}</span>
+              </label>
+              <input
+                id="admin-email"
+                type="email"
+                value={adminEmail}
+                onChange={(e) => setAdminEmail(e.target.value)}
+                className="block w-full px-4 py-3 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:outline-none focus:ring-2 focus:ring-bambu-green/50 focus:border-bambu-green transition-colors"
+                placeholder={t('setup.adminEmailPlaceholder')}
+                autoComplete="email"
+              />
+            </div>
 
-                <div>
-                  <label htmlFor="admin-password" className="block text-sm font-medium text-white mb-2">
-                    {t('setup.adminPassword')} <span className="text-bambu-gray text-xs">{t('setup.optionalIfAdminExists')}</span>
-                  </label>
-                  <div className="relative">
-                    <input
-                      id="admin-password"
-                      type={showPassword ? 'text' : 'password'}
-                      value={adminPassword}
-                      onChange={(e) => setAdminPassword(e.target.value)}
-                      className="block w-full px-4 py-3 pr-12 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:outline-none focus:ring-2 focus:ring-bambu-green/50 focus:border-bambu-green transition-colors"
-                      placeholder={t('setup.adminPasswordPlaceholder')}
-                      minLength={6}
-                      autoComplete="new-password"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowPassword(!showPassword)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-bambu-gray hover:text-white transition-colors"
-                      tabIndex={-1}
-                    >
-                      {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
-                    </button>
-                  </div>
-                </div>
-
-                {adminPassword && (
-                  <div>
-                    <label htmlFor="confirm-password" className="block text-sm font-medium text-white mb-2">
-                      {t('setup.confirmPassword')}
-                    </label>
-                    <div className="relative">
-                      <input
-                        id="confirm-password"
-                        type={showPassword ? 'text' : 'password'}
-                        value={confirmPassword}
-                        onChange={(e) => setConfirmPassword(e.target.value)}
-                        className="block w-full px-4 py-3 pr-12 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:outline-none focus:ring-2 focus:ring-bambu-green/50 focus:border-bambu-green transition-colors"
-                        placeholder={t('setup.confirmPasswordPlaceholder')}
-                        minLength={6}
-                        autoComplete="new-password"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowPassword(!showPassword)}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-bambu-gray hover:text-white transition-colors"
-                        tabIndex={-1}
-                      >
-                        {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
-                      </button>
-                    </div>
-                  </div>
-                )}
+            <div>
+              <label htmlFor="admin-password" className="block text-sm font-medium text-white mb-2">
+                {t('setup.adminPassword')}
+              </label>
+              <div className="relative">
+                <input
+                  id="admin-password"
+                  type={showPassword ? 'text' : 'password'}
+                  value={adminPassword}
+                  onChange={(e) => setAdminPassword(e.target.value)}
+                  className="block w-full px-4 py-3 pr-12 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:outline-none focus:ring-2 focus:ring-bambu-green/50 focus:border-bambu-green transition-colors"
+                  placeholder={t('setup.adminPasswordPlaceholder')}
+                  minLength={6}
+                  autoComplete="new-password"
+                  required
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-bambu-gray hover:text-white transition-colors"
+                  tabIndex={-1}
+                >
+                  {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                </button>
               </div>
-            )}
+            </div>
+
+            <div>
+              <label htmlFor="confirm-password" className="block text-sm font-medium text-white mb-2">
+                {t('setup.confirmPassword')}
+              </label>
+              <div className="relative">
+                <input
+                  id="confirm-password"
+                  type={showPassword ? 'text' : 'password'}
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  className="block w-full px-4 py-3 pr-12 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:outline-none focus:ring-2 focus:ring-bambu-green/50 focus:border-bambu-green transition-colors"
+                  placeholder={t('setup.confirmPasswordPlaceholder')}
+                  minLength={6}
+                  autoComplete="new-password"
+                  required
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-bambu-gray hover:text-white transition-colors"
+                  tabIndex={-1}
+                >
+                  {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                </button>
+              </div>
+            </div>
           </div>
 
           <div>

@@ -19,7 +19,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermissionIfAuthEnabled
+from backend.app.core.auth import RequirePermission
 from backend.app.core.config import APP_VERSION, settings
 from backend.app.core.database import async_session
 from backend.app.core.permissions import Permission
@@ -121,7 +121,7 @@ def _apply_log_level(debug: bool):
 
 @router.get("/debug-logging", response_model=DebugLoggingState)
 async def get_debug_logging_state(
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_READ),
+    _: User | None = RequirePermission(Permission.SETTINGS_READ),
 ):
     """Get current debug logging state."""
     async with async_session() as db:
@@ -141,7 +141,7 @@ async def get_debug_logging_state(
 @router.post("/debug-logging", response_model=DebugLoggingState)
 async def toggle_debug_logging(
     toggle: DebugLoggingToggle,
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+    _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
     """Enable or disable debug logging."""
     async with async_session() as db:
@@ -283,7 +283,7 @@ async def get_logs(
     limit: int = Query(200, ge=1, le=1000, description="Maximum number of entries to return"),
     level: str | None = Query(None, description="Filter by log level (DEBUG, INFO, WARNING, ERROR)"),
     search: str | None = Query(None, description="Search in message or logger name"),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_READ),
+    _: User | None = RequirePermission(Permission.SETTINGS_READ),
 ):
     """Get recent application log entries with optional filtering."""
     entries, total_lines = _read_log_entries(limit=limit, level_filter=level, search=search)
@@ -297,7 +297,7 @@ async def get_logs(
 
 @router.delete("/logs")
 async def clear_logs(
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+    _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
     """Clear the application log file."""
     log_file = settings.log_dir / "bamdude.log"
@@ -825,7 +825,7 @@ async def _get_recent_sanitized_logs(max_lines: int = 200) -> str:
 
 @router.get("/bundle")
 async def generate_support_bundle(
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_READ),
+    _: User | None = RequirePermission(Permission.SETTINGS_READ),
 ):
     """Generate a support bundle ZIP file for issue reporting."""
     # Check if debug logging is enabled and collect sensitive values for redaction

@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, Unlock, ChevronDown, Save, Mail, Flame, Code, Pencil } from 'lucide-react';
+import { Loader2, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, ChevronDown, Save, Mail, Flame, Code, Pencil } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, macrosApi } from '../api/client';
@@ -79,7 +79,7 @@ export function SettingsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { t, i18n } = useTranslation();
   const { showToast } = useToast();
-  const { authEnabled, user, refreshAuth, hasPermission } = useAuth();
+  const { authEnabled, user, hasPermission } = useAuth();
   const {
     mode,
     darkStyle, darkBackground, darkAccent,
@@ -133,7 +133,6 @@ export function SettingsPage() {
   const [showClearStorageConfirm, setShowClearStorageConfirm] = useState(false);
   const [showBulkPlugConfirm, setShowBulkPlugConfirm] = useState<'on' | 'off' | null>(null);
   const [showReleaseNotes, setShowReleaseNotes] = useState(false);
-  const [showDisableAuthConfirm, setShowDisableAuthConfirm] = useState(false);
   const [showChangePasswordModal, setShowChangePasswordModal] = useState(false);
   const [changePasswordData, setChangePasswordData] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' });
   const [changePasswordLoading, setChangePasswordLoading] = useState(false);
@@ -4160,38 +4159,19 @@ export function SettingsPage() {
           {/* Users Sub-tab */}
           {usersSubTab === 'users' && (
           <>
-          {/* Auth Toggle Header */}
+          {/* Auth status header — auth is always on since the opt-in mode was removed. */}
           <Card>
             <CardContent className="py-4">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className={`w-10 h-10 rounded-full flex items-center justify-center ${authEnabled ? 'bg-green-500/20' : 'bg-gray-500/20'}`}>
-                    {authEnabled ? (
-                      <Lock className="w-5 h-5 text-green-400" />
-                    ) : (
-                      <Unlock className="w-5 h-5 text-gray-400" />
-                    )}
-                  </div>
-                  <div>
-                    <h3 className="text-white font-medium">{t('settings.authentication')}</h3>
-                    <p className="text-sm text-bambu-gray">
-                      {authEnabled
-                        ? t('settings.authEnabledDescription')
-                        : t('settings.authDisabledDescription')}
-                    </p>
-                  </div>
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full flex items-center justify-center bg-green-500/20">
+                  <Lock className="w-5 h-5 text-green-400" />
                 </div>
-                {!authEnabled ? (
-                  <Button onClick={() => navigate('/setup')}>
-                    <Lock className="w-4 h-4" />
-                    {t('common.enable')}
-                  </Button>
-                ) : user?.is_admin && (
-                  <Button variant="secondary" onClick={() => setShowDisableAuthConfirm(true)}>
-                    <Unlock className="w-4 h-4" />
-                    {t('common.disable')}
-                  </Button>
-                )}
+                <div>
+                  <h3 className="text-white font-medium">{t('settings.authentication')}</h3>
+                  <p className="text-sm text-bambu-gray">
+                    {t('settings.authEnabledDescription')}
+                  </p>
+                </div>
               </div>
             </CardContent>
           </Card>
@@ -4434,38 +4414,6 @@ export function SettingsPage() {
             </div>
           )}
 
-          {/* Auth Disabled Info */}
-          {!authEnabled && (
-            <Card>
-              <CardContent className="py-6">
-                <div className="text-center">
-                  <Unlock className="w-12 h-12 text-bambu-gray mx-auto mb-4" />
-                  <h3 className="text-lg font-medium text-white mb-2">{t('settings.authDisabledTitle')}</h3>
-                  <p className="text-sm text-bambu-gray mb-4 max-w-md mx-auto">
-                    {t('settings.authDisabledMessage')}
-                  </p>
-                  <ul className="space-y-2 text-sm text-bambu-gray mb-6 text-left max-w-xs mx-auto">
-                    <li className="flex items-start gap-2">
-                      <CheckCircle className="w-4 h-4 text-bambu-green mt-0.5 flex-shrink-0" />
-                      <span>{t('settings.authDisabledFeature1')}</span>
-                    </li>
-                    <li className="flex items-start gap-2">
-                      <CheckCircle className="w-4 h-4 text-bambu-green mt-0.5 flex-shrink-0" />
-                      <span>{t('settings.authDisabledFeature2')}</span>
-                    </li>
-                    <li className="flex items-start gap-2">
-                      <CheckCircle className="w-4 h-4 text-bambu-green mt-0.5 flex-shrink-0" />
-                      <span>{t('settings.authDisabledFeature3')}</span>
-                    </li>
-                  </ul>
-                  <Button onClick={() => navigate('/setup')}>
-                    <Lock className="w-4 h-4" />
-                    {t('settings.enableAuthentication')}
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-          )}
           </>
           )}
 
@@ -4949,30 +4897,6 @@ export function SettingsPage() {
         <GitBackupSettings />
       )}
       {/* ══════ /BACKUP TAB ══════ */}
-
-      {/* Disable Authentication Confirmation Modal */}
-      {showDisableAuthConfirm && (
-        <ConfirmModal
-          title={t('settings.disableAuthenticationTitle')}
-          message={t('settings.disableAuthenticationMessage')}
-          confirmText={t('settings.disableAuthentication')}
-          variant="danger"
-          onConfirm={async () => {
-            try {
-              await api.disableAuth();
-              showToast(t('settings.toast.authDisabled'), 'success');
-              await refreshAuth();
-              setShowDisableAuthConfirm(false);
-              // Refresh the page to ensure all protected routes are accessible
-              window.location.href = '/';
-            } catch (error: unknown) {
-              const message = error instanceof Error ? error.message : t('settings.toast.authDisableFailed');
-              showToast(message, 'error');
-            }
-          }}
-          onCancel={() => setShowDisableAuthConfirm(false)}
-        />
-      )}
 
       {/* Change Password Modal */}
       {/* Macro Add/Edit Modal */}

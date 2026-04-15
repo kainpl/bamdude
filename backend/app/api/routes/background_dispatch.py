@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 
-from backend.app.core.auth import RequirePermissionIfAuthEnabled
+from backend.app.core.auth import RequirePermission
 from backend.app.core.permissions import Permission
 from backend.app.models.user import User
 from backend.app.services.background_dispatch import background_dispatch
@@ -11,7 +11,7 @@ router = APIRouter(prefix="/background-dispatch", tags=["background-dispatch"])
 @router.delete("/{job_id}")
 async def cancel_dispatch_job(
     job_id: int,
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+    _: User | None = RequirePermission(Permission.PRINTERS_CONTROL),
 ):
     """Cancel a background-dispatch job.
 

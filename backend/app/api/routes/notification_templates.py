@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermissionIfAuthEnabled
+from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.notification_template import DEFAULT_TEMPLATES, NotificationTemplate
@@ -57,7 +57,7 @@ EVENT_NAMES = {
 @router.get("/", response_model=list[NotificationTemplateResponse])
 async def get_templates(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.NOTIFICATION_TEMPLATES_READ),
+    _: User | None = RequirePermission(Permission.NOTIFICATION_TEMPLATES_READ),
 ):
     """Get all notification templates."""
     result = await db.execute(select(NotificationTemplate).order_by(NotificationTemplate.id))
@@ -66,7 +66,7 @@ async def get_templates(
 
 @router.get("/variables", response_model=list[EventVariablesResponse])
 async def get_variables(
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.NOTIFICATION_TEMPLATES_READ),
+    _: User | None = RequirePermission(Permission.NOTIFICATION_TEMPLATES_READ),
 ):
     """Get available variables for each event type."""
     return [
@@ -83,7 +83,7 @@ async def get_variables(
 async def get_template(
     template_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.NOTIFICATION_TEMPLATES_READ),
+    _: User | None = RequirePermission(Permission.NOTIFICATION_TEMPLATES_READ),
 ):
     """Get a single notification template."""
     result = await db.execute(select(NotificationTemplate).where(NotificationTemplate.id == template_id))
@@ -98,7 +98,7 @@ async def update_template(
     template_id: int,
     update: NotificationTemplateUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.NOTIFICATION_TEMPLATES_UPDATE),
+    _: User | None = RequirePermission(Permission.NOTIFICATION_TEMPLATES_UPDATE),
 ):
     """Update a notification template."""
     result = await db.execute(select(NotificationTemplate).where(NotificationTemplate.id == template_id))
@@ -124,7 +124,7 @@ async def update_template(
 async def reset_template(
     template_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.NOTIFICATION_TEMPLATES_UPDATE),
+    _: User | None = RequirePermission(Permission.NOTIFICATION_TEMPLATES_UPDATE),
 ):
     """Reset a notification template to its default values."""
     result = await db.execute(select(NotificationTemplate).where(NotificationTemplate.id == template_id))
@@ -155,7 +155,7 @@ async def reset_template(
 @router.post("/preview", response_model=TemplatePreviewResponse)
 async def preview_template(
     request: TemplatePreviewRequest,
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.NOTIFICATION_TEMPLATES_READ),
+    _: User | None = RequirePermission(Permission.NOTIFICATION_TEMPLATES_READ),
 ):
     """Preview a template with sample data."""
     sample = SAMPLE_DATA.get(request.event_type, {})

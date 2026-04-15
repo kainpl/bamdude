@@ -2343,9 +2343,9 @@ export interface UserUpdate {
 }
 
 export interface SetupRequest {
-  auth_enabled: boolean;
-  admin_username?: string;
-  admin_password?: string;
+  admin_username: string;
+  admin_password: string;
+  admin_email?: string;
 }
 
 export interface ForgotPasswordRequest {
@@ -2400,11 +2400,17 @@ export interface LDAPTestResponse {
 }
 
 export interface SetupResponse {
-  auth_enabled: boolean;
-  admin_created?: boolean;
+  admin_created: boolean;
+  access_token: string;
+  token_type: string;
+  user: UserResponse;
 }
 
 export interface AuthStatus {
+  /**
+   * Legacy field. Kept for backward compatibility with older clients; the
+   * opt-in auth mode has been removed and the backend always returns ``true``.
+   */
   auth_enabled: boolean;
   requires_setup: boolean;
 }
@@ -2428,10 +2434,6 @@ export const api = {
       method: 'POST',
     }),
   getCurrentUser: () => request<UserResponse>('/auth/me'),
-  disableAuth: () =>
-    request<{ message: string; auth_enabled: boolean }>('/auth/disable', {
-      method: 'POST',
-    }),
 
   // Advanced Authentication
   testSMTP: (data: TestSMTPRequest) =>

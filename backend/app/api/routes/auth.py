@@ -13,7 +13,7 @@ from backend.app.core.auth import (
     ALGORITHM,
     SECRET_KEY,
     Permission,
-    RequirePermissionIfAuthEnabled,
+    RequirePermission,
     _validate_api_key,
     authenticate_user,
     authenticate_user_by_email,
@@ -22,10 +22,11 @@ from backend.app.core.auth import (
     get_password_hash,
     get_user_by_email,
     get_user_by_username,
+    has_any_admin,
     security,
 )
 from backend.app.core.database import get_db
-from backend.app.core.permissions import ALL_PERMISSIONS
+from backend.app.core.permissions import ALL_PERMISSIONS, DEFAULT_GROUPS
 from backend.app.models.group import Group
 from backend.app.models.settings import Settings
 from backend.app.models.user import User
@@ -87,15 +88,6 @@ def _api_key_to_user_response(api_key) -> UserResponse:
 router = APIRouter(prefix="/auth", tags=["authentication"])
 
 
-async def is_auth_enabled(db: AsyncSession) -> bool:
-    """Check if authentication is enabled."""
-    result = await db.execute(select(Settings).where(Settings.key == "auth_enabled"))
-    setting = result.scalar_one_or_none()
-    if setting is None:
-        return False
-    return setting.value.lower() == "true"
-
-
 async def is_advanced_auth_enabled(db: AsyncSession) -> bool:
     """Check if advanced authentication is enabled."""
     result = await db.execute(select(Settings).where(Settings.key == "advanced_auth_enabled"))
@@ -115,19 +107,6 @@ async def set_advanced_auth_enabled(db: AsyncSession, enabled: bool) -> None:
         index_elements=["key"], set_={"value": "true" if enabled else "false", "updated_at": func.now()}
     )
     await db.execute(stmt)
-
-
-async def set_auth_enabled(db: AsyncSession, enabled: bool) -> None:
-    """Set authentication enabled status."""
-    from sqlalchemy import func
-    from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-
-    stmt = sqlite_insert(Settings).values(key="auth_enabled", value="true" if enabled else "false")
-    stmt = stmt.on_conflict_do_update(
-        index_elements=["key"], set_={"value": "true" if enabled else "false", "updated_at": func.now()}
-    )
-    await db.execute(stmt)
-    # Note: Don't commit here - let get_db handle it or commit explicitly in the route
 
 
 async def is_setup_completed(db: AsyncSession) -> bool:
@@ -152,89 +131,101 @@ async def set_setup_completed(db: AsyncSession, completed: bool) -> None:
 
 @router.post("/setup", response_model=SetupResponse)
 async def setup_auth(request: SetupRequest, db: AsyncSession = Depends(get_db)):
-    """First-time setup: enable/disable authentication and create admin user."""
+    """First-time setup: create the initial admin user and auto-login.
+
+    Public endpoint — intentionally unauthenticated, because the system has no
+    admin yet. Once any admin exists, subsequent requests are rejected with 403.
+    """
     import logging
 
     logger = logging.getLogger(__name__)
 
     try:
-        # If auth is currently enabled, block unauthenticated setup changes.
-        # Use the admin panel (/disable endpoint) to modify auth when it's already on.
-        if await is_auth_enabled(db):
+        # Block re-runs once an admin exists. This is the sole gate — we don't
+        # read any "setup_completed" flag, because the admin-count is the real
+        # source of truth (a stale flag with zero admins would otherwise lock
+        # the system out).
+        if await has_any_admin(db):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Authentication is already configured. Use the admin panel to modify auth settings.",
+                detail="Setup has already been completed. An admin user already exists.",
             )
 
-        admin_created = False
+        if not request.admin_username.strip() or not request.admin_password:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Admin username and password are required",
+            )
 
-        if request.auth_enabled:
-            # Check if admin users already exist
-            admin_users_result = await db.execute(select(User).where(User.role == "admin"))
-            existing_admin_users = list(admin_users_result.scalars().all())
-            has_admin_users = len(existing_admin_users) > 0
+        # Username collision guard — safe to run even before setup completes.
+        existing_user = await get_user_by_username(db, request.admin_username)
+        if existing_user:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="User with this username already exists",
+            )
 
-            if has_admin_users:
-                # Admin users already exist, just enable auth (don't create new admin)
-                logger.info(
-                    f"Admin users already exist ({len(existing_admin_users)} found), enabling authentication without creating new admin"
-                )
-                admin_created = False
-            else:
-                # No admin users exist, require admin credentials to create first admin
-                if not request.admin_username or not request.admin_password:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="Admin username and password are required when enabling authentication (no admin users exist)",
-                    )
+        # Ensure the "Administrators" system group exists. It is normally seeded
+        # by migration m001, but a rescue path (CLI reset_admin + fresh DB) may
+        # reach setup before seeds run, so we create it on demand.
+        admin_group_result = await db.execute(select(Group).where(Group.name == "Administrators"))
+        admin_group = admin_group_result.scalar_one_or_none()
+        if admin_group is None:
+            admin_group_def = DEFAULT_GROUPS["Administrators"]
+            admin_group = Group(
+                name="Administrators",
+                description=admin_group_def["description"],
+                permissions=list(admin_group_def["permissions"]),
+                is_system=admin_group_def["is_system"],
+            )
+            db.add(admin_group)
+            await db.flush()
+            logger.info("Seeded missing 'Administrators' system group during setup")
 
-                # Check if username already exists (shouldn't happen if no admin users exist, but check anyway)
-                existing_user = await get_user_by_username(db, request.admin_username)
-                if existing_user:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="User with this username already exists",
-                    )
+        admin_user = User(
+            username=request.admin_username.strip(),
+            email=request.admin_email.strip() if request.admin_email else None,
+            password_hash=get_password_hash(request.admin_password),
+            role="admin",
+            is_active=True,
+        )
+        admin_user.groups.append(admin_group)
+        db.add(admin_user)
 
-                # Create admin user FIRST (before enabling auth)
-                try:
-                    logger.info("Creating admin user: %s", request.admin_username)
-                    admin_user = User(
-                        username=request.admin_username,
-                        password_hash=get_password_hash(request.admin_password),
-                        role="admin",
-                        is_active=True,
-                    )
-
-                    # Try to add user to Administrators group if it exists
-                    admin_group_result = await db.execute(select(Group).where(Group.name == "Administrators"))
-                    admin_group = admin_group_result.scalar_one_or_none()
-                    if admin_group:
-                        admin_user.groups.append(admin_group)
-                        logger.info("Added new admin user to Administrators group")
-
-                    db.add(admin_user)
-                    logger.info("Admin user added to session: %s", request.admin_username)
-                    admin_created = True
-                except Exception as e:
-                    await db.rollback()
-                    logger.error("Failed to create admin user: %s", e, exc_info=True)
-                    raise HTTPException(
-                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        detail=f"Failed to create admin user: {str(e)}",
-                    )
-
-        # Set auth enabled and mark setup as completed
-        await set_auth_enabled(db, request.auth_enabled)
+        # Mark setup as completed for UI fast-path. The authoritative check is
+        # still has_any_admin(), so this flag is advisory only.
         await set_setup_completed(db, True)
         await db.commit()
+        await db.refresh(admin_user)
 
-        if admin_created:
-            await db.refresh(admin_user)
-            logger.info("Admin user created successfully: %s", admin_user.id)
+        # Invalidate the setup-gate cache so subsequent requests are unblocked
+        # without a restart.
+        try:
+            from backend.app.main import invalidate_setup_gate_cache  # local import to avoid cycle
 
-        logger.info("Setup completed: auth_enabled=%s, admin_created=%s", request.auth_enabled, admin_created)
-        return SetupResponse(auth_enabled=request.auth_enabled, admin_created=admin_created)
+            invalidate_setup_gate_cache()
+        except Exception:
+            # main.py cache is nice-to-have; tolerate its absence (e.g. during
+            # test imports).
+            pass
+
+        # Reload with groups populated for the response.
+        result = await db.execute(select(User).where(User.id == admin_user.id).options(selectinload(User.groups)))
+        admin_user = result.scalar_one()
+
+        access_token = create_access_token(
+            data={"sub": admin_user.username},
+            expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
+        )
+
+        logger.info("Initial admin user created during setup: %s", admin_user.username)
+
+        return SetupResponse(
+            admin_created=True,
+            access_token=access_token,
+            token_type="bearer",
+            user=_user_to_response(admin_user),
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -248,47 +239,14 @@ async def setup_auth(request: SetupRequest, db: AsyncSession = Depends(get_db)):
 
 @router.get("/status")
 async def get_auth_status(db: AsyncSession = Depends(get_db)):
-    """Get authentication status (public endpoint)."""
-    auth_enabled = await is_auth_enabled(db)
-    setup_completed = await is_setup_completed(db)
-    # Only require setup if it hasn't been completed yet
-    requires_setup = not setup_completed
-    return {"auth_enabled": auth_enabled, "requires_setup": requires_setup}
+    """Get authentication status (public endpoint).
 
-
-@router.post("/disable", response_model=dict)
-async def disable_auth(
-    current_user: User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Disable authentication (admin only)."""
-    import logging
-
-    logger = logging.getLogger(__name__)
-
-    # Reload user with groups for proper is_admin check
-    result = await db.execute(select(User).where(User.id == current_user.id).options(selectinload(User.groups)))
-    user = result.scalar_one()
-
-    # Only admins can disable authentication
-    if not user.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only admins can disable authentication",
-        )
-
-    try:
-        await set_auth_enabled(db, False)
-        await db.commit()
-        logger.info("Authentication disabled by admin user: %s", user.username)
-        return {"message": "Authentication disabled successfully", "auth_enabled": False}
-    except Exception as e:
-        await db.rollback()
-        logger.error("Failed to disable authentication: %s", e, exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to disable authentication: {str(e)}",
-        )
+    ``requires_setup`` is ``True`` iff no active admin user exists. Auth itself
+    is always on — the legacy ``auth_enabled`` field is kept as ``True`` for
+    backward compatibility with older frontends.
+    """
+    requires_setup = not await has_any_admin(db)
+    return {"auth_enabled": True, "requires_setup": requires_setup}
 
 
 @router.post("/login", response_model=LoginResponse)
@@ -297,14 +255,6 @@ async def login(request: LoginRequest, db: AsyncSession = Depends(get_db)):
 
     Supports username or email-based login. Username lookup is case-insensitive.
     """
-    # Check if auth is enabled
-    auth_enabled = await is_auth_enabled(db)
-    if not auth_enabled:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Authentication is not enabled",
-        )
-
     # Check if LDAP is enabled
     ldap_user = None
     ldap_settings = await _get_ldap_settings(db)
@@ -457,7 +407,7 @@ async def logout():
 @router.post("/smtp/test", response_model=TestSMTPResponse)
 async def test_smtp_connection(
     test_request: TestSMTPRequest,
-    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
     db: AsyncSession = Depends(get_db),
 ):
     """Test SMTP connection using saved settings (admin only when auth enabled)."""
@@ -488,7 +438,7 @@ async def test_smtp_connection(
 
 @router.get("/smtp", response_model=SMTPSettings | None)
 async def get_smtp_config(
-    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_READ),
+    current_user: User | None = RequirePermission(Permission.SETTINGS_READ),
     db: AsyncSession = Depends(get_db),
 ):
     """Get SMTP settings (admin only when auth enabled). Password is not returned."""
@@ -502,7 +452,7 @@ async def get_smtp_config(
 @router.post("/smtp", response_model=dict)
 async def save_smtp_config(
     smtp_settings: SMTPSettings,
-    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
     db: AsyncSession = Depends(get_db),
 ):
     """Save SMTP settings (admin only when auth enabled)."""
@@ -857,7 +807,7 @@ async def _sync_ldap_user(db: AsyncSession, user: User, ldap_user, ldap_config) 
 
 @router.post("/ldap/test")
 async def test_ldap(
-    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
     db: AsyncSession = Depends(get_db),
 ):
     """Test LDAP connection using saved settings (admin only when auth enabled)."""

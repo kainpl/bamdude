@@ -4089,12 +4089,45 @@ async def security_headers_middleware(request, call_next):
     return response
 
 
+# Setup-gate cache — True once we've confirmed at least one admin exists.
+# Kept process-local because /auth/setup invalidates it via
+# invalidate_setup_gate_cache() and restarts reset it automatically.
+_has_admin_cache: bool | None = None
+
+
+def invalidate_setup_gate_cache() -> None:
+    """Drop the cached admin-presence flag.
+
+    Called by /auth/setup after creating the first admin, and by any endpoint
+    that deletes the last remaining admin, so the middleware re-checks the DB
+    on the next request.
+    """
+    global _has_admin_cache
+    _has_admin_cache = None
+
+
+# Routes that remain reachable while the system is unconfigured (no admin yet).
+# These MUST stay in lockstep with the frontend bootstrap so Setup can be
+# completed without an admin context.
+SETUP_WHITELIST_ROUTES = {
+    "/api/v1/auth/status",
+    "/api/v1/auth/setup",
+    "/api/v1/system/health",
+}
+
+
 @app.middleware("http")
 async def auth_middleware(request, call_next):
-    """Enforce authentication on all API routes when auth is enabled.
+    """Enforce authentication at the API gateway.
 
-    This middleware provides defense-in-depth by checking auth at the API gateway level,
-    regardless of whether individual routes have auth dependencies.
+    Two-stage gate:
+
+    1. **Setup gate** — if no admin user exists, reject every API request with
+       503 except those in ``SETUP_WHITELIST_ROUTES``. This forces the user
+       through the initial admin creation flow.
+
+    2. **Auth gate** — once at least one admin exists, every non-public API
+       route requires either a valid JWT or an API key.
     """
     from starlette.responses import JSONResponse
 
@@ -4103,6 +4136,34 @@ async def auth_middleware(request, call_next):
     # Only apply to API routes
     if not path.startswith("/api/"):
         return await call_next(request)
+
+    # --- Setup gate --------------------------------------------------------
+    # Runs ahead of the public-route allowlist so that even "/api/v1/auth/login"
+    # is blocked until setup completes — a login attempt before setup is a bug,
+    # not a legitimate request.
+    global _has_admin_cache
+    if _has_admin_cache is not True:
+        try:
+            async with async_session() as db:
+                from backend.app.core.auth import has_any_admin
+
+                has_admin = await has_any_admin(db)
+            _has_admin_cache = has_admin
+        except Exception:
+            # If we can't determine admin presence (e.g. DB not yet ready),
+            # fail closed only for the setup gate's sake by assuming "no admin"
+            # — that routes the user to /setup where the error will surface
+            # clearly rather than masquerading as a 401 elsewhere.
+            has_admin = False
+            _has_admin_cache = None  # don't poison the cache on transient errors
+
+        if not has_admin:
+            if path in SETUP_WHITELIST_ROUTES:
+                return await call_next(request)
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "setup_required"},
+            )
 
     # Allow public routes
     if path in PUBLIC_API_ROUTES:
@@ -4118,21 +4179,7 @@ async def auth_middleware(request, call_next):
         if pattern in path:
             return await call_next(request)
 
-    # Check if auth is enabled
-    try:
-        async with async_session() as db:
-            from backend.app.core.auth import is_auth_enabled
-
-            auth_enabled = await is_auth_enabled(db)
-
-        if not auth_enabled:
-            # Auth disabled, allow all requests
-            return await call_next(request)
-    except Exception:
-        # If we can't check auth status, allow request (fail open for DB issues)
-        return await call_next(request)
-
-    # Auth is enabled - require valid token
+    # --- Auth gate ---------------------------------------------------------
     auth_header = request.headers.get("Authorization")
     x_api_key = request.headers.get("X-API-Key")
 

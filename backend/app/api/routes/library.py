@@ -19,7 +19,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.app.core.auth import (
     require_ownership_permission,
-    require_permission_if_auth_enabled,
+    require_permission,
 )
 from backend.app.core.config import settings as app_settings
 from backend.app.core.database import get_db
@@ -258,7 +258,7 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", "
 async def list_folders(
     response: Response,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_READ)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_READ)),
 ):
     """Get all folders as a tree structure."""
     # Prevent browser caching of folder list
@@ -317,7 +317,7 @@ async def list_folders(
 async def get_folders_by_project(
     project_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_READ)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_READ)),
 ):
     """Get all folders linked to a specific project."""
     result = await db.execute(
@@ -362,7 +362,7 @@ async def get_folders_by_project(
 async def get_folders_by_archive(
     archive_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_READ)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_READ)),
 ):
     """Get all folders linked to a specific archive."""
     result = await db.execute(
@@ -408,7 +408,7 @@ async def get_folders_by_archive(
 async def create_folder(
     data: FolderCreate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_UPLOAD)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD)),
 ):
     """Create a new folder."""
     # Verify parent exists if specified
@@ -467,7 +467,7 @@ async def create_folder(
 async def get_folder(
     folder_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_READ)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_READ)),
 ):
     """Get a folder by ID."""
     result = await db.execute(
@@ -510,7 +510,7 @@ async def update_folder(
     folder_id: int,
     data: FolderUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_UPDATE_ALL)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_UPDATE_ALL)),
 ):
     """Update a folder.
 
@@ -605,7 +605,7 @@ async def update_folder(
 async def delete_folder(
     folder_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_DELETE_ALL)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_DELETE_ALL)),
 ):
     """Delete a folder and all its contents (cascade).
 
@@ -723,7 +723,7 @@ def _validate_external_path(path_str: str) -> Path:
 async def create_external_folder(
     data: ExternalFolderCreate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_UPLOAD)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD)),
 ):
     """Create an external folder that points to a host directory."""
     resolved = _validate_external_path(data.external_path)
@@ -776,7 +776,7 @@ async def create_external_folder(
 async def scan_external_folder(
     folder_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_UPLOAD)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD)),
 ):
     """Scan an external folder and sync files to the database.
 
@@ -1010,7 +1010,7 @@ async def list_files(
     project_id: int | None = None,
     include_root: bool = True,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_READ)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_READ)),
 ):
     """List files, optionally filtered by folder or project.
 
@@ -1107,7 +1107,7 @@ async def upload_file(
     folder_id: int | None = None,
     generate_stl_thumbnails: bool = Query(default=True),
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_UPLOAD)),
+    current_user: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD)),
 ):
     """Upload a file to the library."""
     try:
@@ -1237,7 +1237,7 @@ async def extract_zip_file(
     create_folder_from_zip: bool = Query(default=False),
     generate_stl_thumbnails: bool = Query(default=True),
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_UPLOAD)),
+    current_user: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD)),
 ):
     """Upload and extract a ZIP file to the library.
 
@@ -1485,7 +1485,7 @@ async def extract_zip_file(
 async def batch_generate_stl_thumbnails(
     request: BatchThumbnailRequest,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_UPDATE_ALL)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_UPDATE_ALL)),
 ):
     """Generate thumbnails for STL files in batch.
 
@@ -1613,7 +1613,7 @@ def is_sliced_file(filename: str) -> bool:
 async def add_files_to_queue(
     request: AddToQueueRequest,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.QUEUE_CREATE)),
+    _: User | None = Depends(require_permission(Permission.QUEUE_CREATE)),
 ):
     """Add library files to the print queue.
 
@@ -1692,7 +1692,7 @@ async def add_files_to_queue(
 async def get_library_file_plates(
     file_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_READ)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_READ)),
 ):
     """Get available plates from a multi-plate 3MF library file.
 
@@ -1988,7 +1988,7 @@ async def get_library_file_filament_requirements(
     file_id: int,
     plate_id: int | None = None,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_READ)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_READ)),
 ):
     """Get filament requirements from a library file.
 
@@ -2122,7 +2122,7 @@ async def print_library_file(
     printer_id: int,
     body: FilePrintRequest | None = None,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.PRINTERS_CONTROL)),
+    _: User | None = Depends(require_permission(Permission.PRINTERS_CONTROL)),
 ):
     """Dispatch a library file for send/start on a printer.
 
@@ -2236,7 +2236,7 @@ async def print_library_file(
 async def get_file(
     file_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_READ)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_READ)),
 ):
     """Get a file by ID with full details."""
     result = await db.execute(
@@ -2436,7 +2436,7 @@ async def delete_file(
 async def download_file(
     file_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_READ)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_READ)),
 ):
     """Download a file."""
     result = await db.execute(select(LibraryFile).where(LibraryFile.id == file_id))
@@ -2460,7 +2460,7 @@ async def download_file(
 async def create_library_slicer_token(
     file_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_READ)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_READ)),
 ):
     """Create a short-lived download token for opening files in slicer applications.
 
@@ -2543,7 +2543,7 @@ async def get_thumbnail(file_id: int, db: AsyncSession = Depends(get_db)):
 async def get_gcode(
     file_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_READ)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_READ)),
 ):
     """Get gcode for a file (for preview)."""
     result = await db.execute(select(LibraryFile).where(LibraryFile.id == file_id))
@@ -2698,7 +2698,7 @@ async def bulk_delete(
 @router.get("/stats")
 async def get_library_stats(
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_READ)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_READ)),
 ):
     """Get library statistics."""
     # Total files

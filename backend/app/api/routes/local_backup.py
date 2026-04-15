@@ -5,7 +5,7 @@ import logging
 from fastapi import APIRouter, Path
 from fastapi.responses import FileResponse, JSONResponse
 
-from backend.app.core.auth import RequirePermissionIfAuthEnabled
+from backend.app.core.auth import RequirePermission
 from backend.app.core.permissions import Permission
 from backend.app.models.user import User
 from backend.app.services.local_backup import local_backup_service
@@ -17,7 +17,7 @@ router = APIRouter(prefix="/local-backup", tags=["local-backup"])
 
 @router.get("/status")
 async def get_status(
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_BACKUP),
+    _: User | None = RequirePermission(Permission.SETTINGS_BACKUP),
 ):
     """Get local backup scheduler status and configuration."""
     settings = await local_backup_service._load_settings()
@@ -35,7 +35,7 @@ async def get_status(
 
 @router.post("/run")
 async def trigger_backup(
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_BACKUP),
+    _: User | None = RequirePermission(Permission.SETTINGS_BACKUP),
 ):
     """Trigger a local backup immediately."""
     return await local_backup_service.run_backup()
@@ -43,7 +43,7 @@ async def trigger_backup(
 
 @router.get("/backups")
 async def list_backups(
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_BACKUP),
+    _: User | None = RequirePermission(Permission.SETTINGS_BACKUP),
 ):
     """List existing backup files."""
     settings = await local_backup_service._load_settings()
@@ -53,7 +53,7 @@ async def list_backups(
 @router.get("/backups/{filename}/download")
 async def download_backup(
     filename: str = Path(..., description="Backup filename to download"),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_BACKUP),
+    _: User | None = RequirePermission(Permission.SETTINGS_BACKUP),
 ):
     """Download a specific backup file."""
     settings = await local_backup_service._load_settings()
@@ -70,7 +70,7 @@ async def download_backup(
 @router.post("/backups/{filename}/restore")
 async def restore_backup(
     filename: str = Path(..., description="Backup filename to restore"),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_RESTORE),
+    _: User | None = RequirePermission(Permission.SETTINGS_RESTORE),
 ):
     """Restore from a scheduled backup file on the server."""
     import io
@@ -95,7 +95,7 @@ async def restore_backup(
 @router.delete("/backups/{filename}")
 async def delete_backup(
     filename: str = Path(..., description="Backup filename to delete"),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_BACKUP),
+    _: User | None = RequirePermission(Permission.SETTINGS_BACKUP),
 ):
     """Delete a specific backup file."""
     settings = await local_backup_service._load_settings()

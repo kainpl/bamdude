@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.app.core.auth import RequirePermissionIfAuthEnabled
+from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import (
     ALL_PERMISSIONS,
@@ -42,7 +42,7 @@ def _permission_label(perm: Permission) -> str:
 
 @router.get("/permissions", response_model=PermissionsListResponse)
 async def list_permissions(
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.GROUPS_READ),
+    _: User | None = RequirePermission(Permission.GROUPS_READ),
 ):
     """List all available permissions organized by category."""
     categories = []
@@ -62,7 +62,7 @@ async def list_permissions(
 @router.get("", response_model=list[GroupResponse])
 @router.get("/", response_model=list[GroupResponse])
 async def list_groups(
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.GROUPS_READ),
+    _: User | None = RequirePermission(Permission.GROUPS_READ),
     db: AsyncSession = Depends(get_db),
 ):
     """List all groups."""
@@ -87,7 +87,7 @@ async def list_groups(
 @router.post("/", response_model=GroupResponse, status_code=status.HTTP_201_CREATED)
 async def create_group(
     group_data: GroupCreate,
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.GROUPS_CREATE),
+    _: User | None = RequirePermission(Permission.GROUPS_CREATE),
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new group."""
@@ -132,7 +132,7 @@ async def create_group(
 @router.get("/{group_id}", response_model=GroupDetailResponse)
 async def get_group(
     group_id: int,
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.GROUPS_READ),
+    _: User | None = RequirePermission(Permission.GROUPS_READ),
     db: AsyncSession = Depends(get_db),
 ):
     """Get a group by ID with user list."""
@@ -161,7 +161,7 @@ async def get_group(
 async def update_group(
     group_id: int,
     group_data: GroupUpdate,
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.GROUPS_UPDATE),
+    _: User | None = RequirePermission(Permission.GROUPS_UPDATE),
     db: AsyncSession = Depends(get_db),
 ):
     """Update a group."""
@@ -220,7 +220,7 @@ async def update_group(
 @router.delete("/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_group(
     group_id: int,
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.GROUPS_DELETE),
+    _: User | None = RequirePermission(Permission.GROUPS_DELETE),
     db: AsyncSession = Depends(get_db),
 ):
     """Delete a group (non-system groups only)."""
@@ -246,7 +246,7 @@ async def delete_group(
 async def add_user_to_group(
     group_id: int,
     user_id: int,
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.GROUPS_UPDATE),
+    _: User | None = RequirePermission(Permission.GROUPS_UPDATE),
     db: AsyncSession = Depends(get_db),
 ):
     """Add a user to a group."""
@@ -283,7 +283,7 @@ async def add_user_to_group(
 async def remove_user_from_group(
     group_id: int,
     user_id: int,
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.GROUPS_UPDATE),
+    _: User | None = RequirePermission(Permission.GROUPS_UPDATE),
     db: AsyncSession = Depends(get_db),
 ):
     """Remove a user from a group."""

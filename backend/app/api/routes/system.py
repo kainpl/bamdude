@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func, select, text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermissionIfAuthEnabled
+from backend.app.core.auth import RequirePermission
 from backend.app.core.config import APP_VERSION, settings
 from backend.app.core.database import get_db
 from backend.app.core.db_dialect import is_postgres
@@ -395,7 +395,7 @@ async def _get_storage_usage_cached(refresh: bool, max_age_seconds: int) -> dict
 @router.get("/info")
 async def get_system_info(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SYSTEM_READ),
+    _: User | None = RequirePermission(Permission.SYSTEM_READ),
 ):
     """Get comprehensive system information."""
 
@@ -555,7 +555,7 @@ async def get_printer_models():
 async def get_storage_usage(
     refresh: bool = False,
     max_age_seconds: int = STORAGE_USAGE_CACHE_SECONDS,
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SYSTEM_READ),
+    _: User | None = RequirePermission(Permission.SYSTEM_READ),
 ):
     """Get storage usage breakdown for Bambuddy data directories."""
     max_age_seconds = max(0, min(max_age_seconds, 3600))

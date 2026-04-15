@@ -11,7 +11,7 @@ from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermissionIfAuthEnabled
+from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.printer import Printer
@@ -684,7 +684,7 @@ async def camera_stream(
 @router.api_route("/{printer_id}/camera/stop", methods=["GET", "POST"])
 async def stop_camera_stream(
     printer_id: int,
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.CAMERA_VIEW),
+    _: User | None = RequirePermission(Permission.CAMERA_VIEW),
 ):
     """Stop all active camera streams for a printer.
 
@@ -829,7 +829,7 @@ async def camera_snapshot(
 async def test_camera(
     printer_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.CAMERA_VIEW),
+    _: User | None = RequirePermission(Permission.CAMERA_VIEW),
 ):
     """Test camera connection for a printer.
 
@@ -849,7 +849,7 @@ async def test_camera(
 @router.get("/{printer_id}/camera/status")
 async def camera_status(
     printer_id: int,
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.CAMERA_VIEW),
+    _: User | None = RequirePermission(Permission.CAMERA_VIEW),
 ):
     """Get the status of an active camera stream.
 
@@ -917,7 +917,7 @@ async def test_external_camera(
     url: str,
     camera_type: str,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.CAMERA_VIEW),
+    _: User | None = RequirePermission(Permission.CAMERA_VIEW),
 ):
     """Test external camera connection.
 
@@ -944,7 +944,7 @@ async def check_plate_empty(
     use_external: bool = False,
     include_debug_image: bool = False,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.CAMERA_VIEW),
+    _: User | None = RequirePermission(Permission.CAMERA_VIEW),
 ):
     """Check if the build plate is empty using camera vision.
 
@@ -1052,7 +1052,7 @@ async def calibrate_plate_detection(
     label: str | None = None,
     use_external: bool = False,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.CAMERA_VIEW),
+    _: User | None = RequirePermission(Permission.CAMERA_VIEW),
 ):
     """Calibrate plate detection by capturing a reference image of the empty plate.
 
@@ -1116,7 +1116,7 @@ async def delete_plate_calibration(
     printer_id: int,
     plate_type: str | None = None,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.CAMERA_VIEW),
+    _: User | None = RequirePermission(Permission.CAMERA_VIEW),
 ):
     """Delete the plate detection calibration for a printer and plate type.
 
@@ -1157,7 +1157,7 @@ async def get_plate_detection_status(
     printer_id: int,
     plate_type: str | None = None,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.CAMERA_VIEW),
+    _: User | None = RequirePermission(Permission.CAMERA_VIEW),
 ):
     """Check plate detection status for a printer and plate type.
 
@@ -1201,7 +1201,7 @@ async def get_plate_detection_status(
 async def get_plate_references(
     printer_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.CAMERA_VIEW),
+    _: User | None = RequirePermission(Permission.CAMERA_VIEW),
 ):
     """Get all calibration references for a printer with metadata.
 
@@ -1265,7 +1265,7 @@ async def update_reference_label(
     index: int,
     label: str,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.CAMERA_VIEW),
+    _: User | None = RequirePermission(Permission.CAMERA_VIEW),
 ):
     """Update the label for a calibration reference."""
     from backend.app.services.plate_detection import PlateDetector, is_plate_detection_available
@@ -1290,7 +1290,7 @@ async def delete_reference(
     printer_id: int,
     index: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.CAMERA_VIEW),
+    _: User | None = RequirePermission(Permission.CAMERA_VIEW),
 ):
     """Delete a specific calibration reference."""
     from backend.app.services.plate_detection import PlateDetector, is_plate_detection_available

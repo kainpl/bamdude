@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermissionIfAuthEnabled
+from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.printer_queue import PrinterQueue
@@ -43,7 +43,7 @@ def _to_response(queue: PrinterQueue) -> PrinterQueueResponse:
 @router.get("/", response_model=list[PrinterQueueResponse])
 async def list_queues(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.QUEUE_READ),
+    _: User | None = RequirePermission(Permission.QUEUE_READ),
 ):
     """List all printer queues with status and counters."""
     from sqlalchemy.orm import selectinload
@@ -59,7 +59,7 @@ async def list_queues(
 async def get_queue(
     queue_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.QUEUE_READ),
+    _: User | None = RequirePermission(Permission.QUEUE_READ),
 ):
     """Get a specific printer queue."""
     from sqlalchemy.orm import selectinload
@@ -78,7 +78,7 @@ async def update_queue(
     queue_id: int,
     data: PrinterQueueUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.QUEUE_UPDATE_ALL),
+    _: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
 ):
     """Update queue status (pause/resume/clear error)."""
     from sqlalchemy.orm import selectinload

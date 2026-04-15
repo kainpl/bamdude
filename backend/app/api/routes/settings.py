@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermissionIfAuthEnabled
+from backend.app.core.auth import RequirePermission
 from backend.app.core.config import settings as app_settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -65,7 +65,7 @@ async def set_setting(db: AsyncSession, key: str, value: str) -> None:
 @router.get("/", response_model=AppSettings)
 async def get_settings(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_READ),
+    _: User | None = RequirePermission(Permission.SETTINGS_READ),
 ):
     """Get all application settings."""
     settings_dict = DEFAULT_SETTINGS.model_dump()
@@ -146,7 +146,7 @@ async def get_settings(
 async def update_settings(
     settings_update: AppSettingsUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+    _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
     """Update application settings."""
     update_data = settings_update.model_dump(exclude_unset=True)
@@ -218,7 +218,7 @@ async def update_settings(
 async def patch_settings(
     settings_update: AppSettingsUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+    _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
     """Partially update application settings (same as PUT, for REST compatibility)."""
     return await update_settings(settings_update, db, _)
@@ -227,7 +227,7 @@ async def patch_settings(
 @router.post("/reset", response_model=AppSettings)
 async def reset_settings(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+    _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
     """Reset all settings to defaults."""
     # Delete all settings
@@ -270,7 +270,7 @@ async def check_ffmpeg():
 @router.get("/spoolman")
 async def get_spoolman_settings(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_READ),
+    _: User | None = RequirePermission(Permission.SETTINGS_READ),
 ):
     """Get Spoolman integration settings."""
     spoolman_enabled = await get_setting(db, "spoolman_enabled") or "false"
@@ -292,7 +292,7 @@ async def get_spoolman_settings(
 async def update_spoolman_settings(
     settings: dict,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+    _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
     """Update Spoolman integration settings."""
     if "spoolman_enabled" in settings:
@@ -422,7 +422,7 @@ async def create_backup_zip(output_path: Path | None = None) -> tuple[Path, str]
 @router.get("/backup")
 async def create_backup(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_BACKUP),
+    _: User | None = RequirePermission(Permission.SETTINGS_BACKUP),
 ):
     """Create a complete backup (database + all files) as a ZIP.
 
@@ -458,7 +458,7 @@ async def create_backup(
 async def restore_backup(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_RESTORE),
+    _: User | None = RequirePermission(Permission.SETTINGS_RESTORE),
 ):
     """Restore from a complete backup ZIP.
 
@@ -590,7 +590,7 @@ async def restore_backup(
 
 @router.post("/optimize-db")
 async def optimize_database(
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_BACKUP),
+    _: User | None = RequirePermission(Permission.SETTINGS_BACKUP),
 ):
     """Optimize the SQLite database: ANALYZE + WAL checkpoint + VACUUM."""
     from sqlalchemy import text
@@ -629,7 +629,7 @@ async def optimize_database(
 
 @router.get("/network-interfaces")
 async def get_network_interfaces(
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_READ),
+    _: User | None = RequirePermission(Permission.SETTINGS_READ),
 ):
     """Get available network interfaces with all IPs (primary + aliases)."""
     from backend.app.services.network_utils import get_all_interface_ips
@@ -640,7 +640,7 @@ async def get_network_interfaces(
 
 @router.get("/virtual-printer/models")
 async def get_virtual_printer_models(
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_READ),
+    _: User | None = RequirePermission(Permission.SETTINGS_READ),
 ):
     """Get available virtual printer models."""
     from backend.app.services.virtual_printer import (
@@ -657,7 +657,7 @@ async def get_virtual_printer_models(
 @router.get("/virtual-printer")
 async def get_virtual_printer_settings(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_READ),
+    _: User | None = RequirePermission(Permission.SETTINGS_READ),
 ):
     """Get virtual printer settings and status."""
     from backend.app.services.virtual_printer import (
@@ -692,7 +692,7 @@ async def update_virtual_printer_settings(
     target_printer_id: int = None,
     remote_interface_ip: str = None,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+    _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
     """Update virtual printer settings and restart services if needed.
 
@@ -840,7 +840,7 @@ async def update_virtual_printer_settings(
 
 @router.get("/mqtt/status")
 async def get_mqtt_status(
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_READ),
+    _: User | None = RequirePermission(Permission.SETTINGS_READ),
 ):
     """Get MQTT relay connection status."""
     from backend.app.services.mqtt_relay import mqtt_relay

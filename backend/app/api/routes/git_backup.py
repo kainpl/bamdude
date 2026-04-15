@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import delete, desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermissionIfAuthEnabled
+from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.git_backup import GitBackupConfig, GitBackupLog
@@ -55,7 +55,7 @@ def _config_to_response(config: GitBackupConfig) -> dict:
 @router.get("/config", response_model=GitBackupConfigResponse | None)
 async def get_config(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.GIT_BACKUP),
+    _: User | None = RequirePermission(Permission.GIT_BACKUP),
 ):
     """Get the current Git backup configuration."""
     result = await db.execute(select(GitBackupConfig).limit(1))
@@ -71,7 +71,7 @@ async def get_config(
 async def save_config(
     config_data: GitBackupConfigCreate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.GIT_BACKUP),
+    _: User | None = RequirePermission(Permission.GIT_BACKUP),
 ):
     """Create or update Git backup configuration.
 
@@ -134,7 +134,7 @@ async def save_config(
 async def update_config(
     update_data: GitBackupConfigUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.GIT_BACKUP),
+    _: User | None = RequirePermission(Permission.GIT_BACKUP),
 ):
     """Partially update Git backup configuration."""
     result = await db.execute(select(GitBackupConfig).limit(1))
@@ -169,7 +169,7 @@ async def update_config(
 @router.delete("/config")
 async def delete_config(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.GIT_BACKUP),
+    _: User | None = RequirePermission(Permission.GIT_BACKUP),
 ):
     """Delete the Git backup configuration and all logs."""
     result = await db.execute(select(GitBackupConfig).limit(1))
@@ -192,7 +192,7 @@ async def test_connection(
     token: str = Query(..., description="Personal Access Token"),
     provider: str = Query(default="github", description="Git provider: github or gitlab"),
     api_base_url: str | None = Query(default=None, description="API base URL for self-hosted GitLab"),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.GIT_BACKUP),
+    _: User | None = RequirePermission(Permission.GIT_BACKUP),
 ):
     """Test Git provider connection with provided credentials."""
     result = await git_backup_service.test_connection(repo_url, token, provider=provider, api_base_url=api_base_url)
@@ -202,7 +202,7 @@ async def test_connection(
 @router.post("/test-stored", response_model=GitTestConnectionResponse)
 async def test_stored_connection(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.GIT_BACKUP),
+    _: User | None = RequirePermission(Permission.GIT_BACKUP),
 ):
     """Test Git provider connection using stored configuration."""
     result = await db.execute(select(GitBackupConfig).limit(1))
@@ -223,7 +223,7 @@ async def test_stored_connection(
 @router.post("/run", response_model=GitBackupTriggerResponse)
 async def trigger_backup(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.GIT_BACKUP),
+    _: User | None = RequirePermission(Permission.GIT_BACKUP),
 ):
     """Manually trigger a backup."""
     result = await db.execute(select(GitBackupConfig).limit(1))
@@ -243,7 +243,7 @@ async def trigger_backup(
 @router.get("/status", response_model=GitBackupStatus)
 async def get_status(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.GIT_BACKUP),
+    _: User | None = RequirePermission(Permission.GIT_BACKUP),
 ):
     """Get current backup status."""
     result = await db.execute(select(GitBackupConfig).limit(1))
@@ -276,7 +276,7 @@ async def get_logs(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.GIT_BACKUP),
+    _: User | None = RequirePermission(Permission.GIT_BACKUP),
 ):
     """Get backup logs."""
     result = await db.execute(select(GitBackupConfig).limit(1))
@@ -314,7 +314,7 @@ async def get_logs(
 async def clear_logs(
     keep_last: int = Query(default=10, ge=0, le=100, description="Number of recent logs to keep"),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.GIT_BACKUP),
+    _: User | None = RequirePermission(Permission.GIT_BACKUP),
 ):
     """Clear backup logs, optionally keeping the most recent entries."""
     result = await db.execute(select(GitBackupConfig).limit(1))
@@ -335,9 +335,7 @@ async def clear_logs(
 
         if keep_ids:
             delete_result = await db.execute(
-                delete(GitBackupLog).where(
-                    GitBackupLog.config_id == config.id, GitBackupLog.id.not_in(keep_ids)
-                )
+                delete(GitBackupLog).where(GitBackupLog.config_id == config.id, GitBackupLog.id.not_in(keep_ids))
             )
         else:
             delete_result = await db.execute(delete(GitBackupLog).where(GitBackupLog.config_id == config.id))
