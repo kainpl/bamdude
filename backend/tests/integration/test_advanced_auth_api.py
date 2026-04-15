@@ -109,7 +109,14 @@ class TestSMTPConfigAPI:
     @pytest.mark.integration
     async def test_save_smtp_settings_no_auth(self, async_client: AsyncClient, admin_token: str):
         """No token on SMTP save returns 401."""
-        response = await async_client.post("/api/v1/auth/smtp", json=SMTP_DATA)
+        # async_client carries a default admin bearer token (see conftest.py);
+        # explicitly send an empty Authorization header to exercise the
+        # no-token code path.
+        response = await async_client.post(
+            "/api/v1/auth/smtp",
+            json=SMTP_DATA,
+            headers={"Authorization": ""},
+        )
         assert response.status_code == 401
 
     @pytest.mark.asyncio

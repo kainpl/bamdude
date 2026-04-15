@@ -106,7 +106,14 @@ class TestLibraryNotesAPI:
 
     @pytest.mark.asyncio
     async def test_update_note_happy_path(self, async_client: AsyncClient, library_file, db_session):
-        note = LibraryFileNote(library_file_id=library_file.id, body="original", user_id=None)
+        # With always-on auth the request is authenticated as test_admin; notes
+        # can only be edited by their author, so stamp the note with that user id.
+        from sqlalchemy import select
+
+        from backend.app.models.user import User
+
+        admin = (await db_session.execute(select(User).where(User.username == "test_admin"))).scalar_one()
+        note = LibraryFileNote(library_file_id=library_file.id, body="original", user_id=admin.id)
         db_session.add(note)
         await db_session.commit()
         await db_session.refresh(note)
@@ -142,7 +149,14 @@ class TestLibraryNotesAPI:
 
     @pytest.mark.asyncio
     async def test_delete_note(self, async_client: AsyncClient, library_file, db_session):
-        note = LibraryFileNote(library_file_id=library_file.id, body="to delete", user_id=None)
+        # With always-on auth the request is authenticated as test_admin;
+        # stamp the note with that user id so the ownership check passes.
+        from sqlalchemy import select
+
+        from backend.app.models.user import User
+
+        admin = (await db_session.execute(select(User).where(User.username == "test_admin"))).scalar_one()
+        note = LibraryFileNote(library_file_id=library_file.id, body="to delete", user_id=admin.id)
         db_session.add(note)
         await db_session.commit()
         note_id = note.id

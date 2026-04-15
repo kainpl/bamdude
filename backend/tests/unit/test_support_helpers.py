@@ -544,7 +544,9 @@ class TestCollectSupportInfo:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             log_dir = Path(tmpdir)
-            log_file = log_dir / "bambuddy.log"
+            # Log filename was renamed from bambuddy.log -> bamdude.log
+            # on fork; _collect_support_info reads settings.log_dir / "bamdude.log".
+            log_file = log_dir / "bamdude.log"
             log_file.write_text("some log content\n" * 100)
 
             with (

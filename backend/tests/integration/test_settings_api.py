@@ -672,7 +672,8 @@ class TestSimplifiedBackupRestore:
         response = await async_client.post("/api/v1/settings/restore", files=files)
 
         assert response.status_code == 400
-        assert "missing bambuddy.db" in response.json()["detail"].lower()
+        # Product accepts both bamdude.db (current) and bambuddy.db (legacy) in backups.
+        assert "missing database" in response.json()["detail"].lower()
 
     @pytest.mark.asyncio
     @pytest.mark.integration

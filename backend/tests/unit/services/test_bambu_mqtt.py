@@ -3197,6 +3197,11 @@ class TestStartPrintAmsMapping:
         )
         client._client = MagicMock()
         client.state.connected = True
+        # Simulate a printer WITH a physical AMS attached so the "no-AMS
+        # external-spool remap" (-1 → 0 in flat ams_mapping, added for
+        # P1S/P1P printers without AMS) does not fire. Tests that want
+        # to exercise the no-AMS remap should clear this explicitly.
+        client.state.raw_data["ams"] = {"ams": [{"id": "0"}]}
         return client
 
     def _get_published_command(self, mqtt_client):

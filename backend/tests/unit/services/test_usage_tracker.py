@@ -143,12 +143,11 @@ class TestOnPrintCompleteAMSDelta:
         assignment = _make_assignment()
 
         db = AsyncMock()
-        # First 2 executes -> _find_3mf_by_filename (library + archive search, uses scalars().all()),
-        # then assignment, then spool for the AMS fallback path
+        # on_print_complete without archive_id skips the 3MF path entirely,
+        # so only the AMS-fallback path runs: one lookup for SpoolAssignment
+        # (via _resolve_spool_id_for_tray, snapshot empty) then one for Spool.
         db.execute = AsyncMock(
             side_effect=[
-                MagicMock(),  # _find_3mf_by_filename: library search
-                MagicMock(),  # _find_3mf_by_filename: archive search
                 MagicMock(scalar_one_or_none=MagicMock(return_value=assignment)),
                 MagicMock(scalar_one_or_none=MagicMock(return_value=spool)),
             ]
@@ -574,13 +573,12 @@ class TestSpoolAssignmentSnapshot:
         ams_data = [{"id": 0, "tray": [{"id": 0, "remain": 70}]}]
         pm = _make_printer_manager(_make_printer_state(ams_data))
 
-        # First 2 executes -> _find_3mf_by_filename (library + archive search),
-        # then live assignment check (returns None), then spool lookup by snapshot spool_id
+        # archive_id is None so the 3MF path is skipped entirely. Only the AMS
+        # fallback path runs: live-assignment lookup in _resolve_spool_id_for_tray
+        # (returns None -> falls through to snapshot) then spool lookup by snapshot id.
         db = AsyncMock()
         db.execute = AsyncMock(
             side_effect=[
-                MagicMock(),  # _find_3mf_by_filename: library search
-                MagicMock(),  # _find_3mf_by_filename: archive search
                 MagicMock(scalar_one_or_none=MagicMock(return_value=None)),  # live assignment
                 MagicMock(scalar_one_or_none=MagicMock(return_value=spool)),
             ]
@@ -615,13 +613,12 @@ class TestSpoolAssignmentSnapshot:
         ams_data = [{"id": 0, "tray": [{"id": 0, "remain": 70}]}]
         pm = _make_printer_manager(_make_printer_state(ams_data))
 
-        # First 2 executes -> _find_3mf_by_filename (library + archive search),
-        # then assignment and spool for the AMS fallback path
+        # archive_id is None so the 3MF path is skipped entirely. Only the AMS
+        # fallback path runs: live SpoolAssignment lookup (empty snapshot falls
+        # back to live query) then Spool lookup.
         db = AsyncMock()
         db.execute = AsyncMock(
             side_effect=[
-                MagicMock(),  # _find_3mf_by_filename: library search
-                MagicMock(),  # _find_3mf_by_filename: archive search
                 MagicMock(scalar_one_or_none=MagicMock(return_value=assignment)),
                 MagicMock(scalar_one_or_none=MagicMock(return_value=spool)),
             ]

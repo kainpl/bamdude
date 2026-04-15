@@ -214,6 +214,10 @@ class TestVirtualPrinterInstance:
             base_dir=tmp_path,
             session_factory=mock_session_factory,
         )
+        # Short-circuit the online-printer lookup so the archive path runs
+        # instead of falling through to _save_to_library (which would add a
+        # LibraryFile without manual_start to mock_db).
+        inst._find_best_queue = AsyncMock(return_value=mock_queue)
 
         # Create a temp 3mf file
         file_path = tmp_path / "test.3mf"
@@ -273,6 +277,8 @@ class TestVirtualPrinterInstance:
             base_dir=tmp_path,
             session_factory=mock_session_factory,
         )
+        # Short-circuit the online-printer lookup (see sibling test for why).
+        inst._find_best_queue = AsyncMock(return_value=mock_queue)
 
         # Create a temp 3mf file
         file_path = tmp_path / "test.3mf"

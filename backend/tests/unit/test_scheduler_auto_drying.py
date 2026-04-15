@@ -347,7 +347,7 @@ class TestMinimumDryingTime:
         await scheduler._check_auto_drying(db, [item], set())
 
         # Should have sent stop command (humidity-based stop after minimum time)
-        mock_pm.send_drying_command.assert_any_call(1, 0, temp=0, duration=0, mode=0)
+        mock_pm.send_drying_command.assert_any_call(1, 0, 0, 0, mode=0)
 
     @staticmethod
     def _make_setting(value):
@@ -838,7 +838,7 @@ class TestBlockForDryingBugFix(_DryingTestBase):
         await scheduler._check_auto_drying(db, [item], set())
 
         # Should have sent stop command — humidity dropped below threshold after 30+ min
-        mock_pm.send_drying_command.assert_any_call(1, 0, temp=0, duration=0, mode=0)
+        mock_pm.send_drying_command.assert_any_call(1, 0, 0, 0, mode=0)
 
     @pytest.mark.asyncio
     @patch("backend.app.services.print_scheduler.printer_manager")

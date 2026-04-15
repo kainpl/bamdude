@@ -1150,6 +1150,7 @@ class TestGetDerivedStatusName:
         """Verify stg_cur=0 returns 'Printing' when no model specified."""
         state = MagicMock()
         state.stg_cur = 0
+        state.macro_executing = None  # not executing a macro
 
         result = get_derived_status_name(state)
 
@@ -1160,6 +1161,7 @@ class TestGetDerivedStatusName:
         state = MagicMock()
         state.stg_cur = 0
         state.state = "IDLE"
+        state.macro_executing = None  # not executing a macro
 
         # Test various A1 model names
         for model in ["A1", "A1 Mini", "A1-Mini", "A1MINI", "N1", "N2S"]:
@@ -1171,6 +1173,7 @@ class TestGetDerivedStatusName:
         state = MagicMock()
         state.stg_cur = 0
         state.state = "RUNNING"
+        state.macro_executing = None  # not executing a macro
 
         result = get_derived_status_name(state, "A1")
 
@@ -1181,6 +1184,7 @@ class TestGetDerivedStatusName:
         state = MagicMock()
         state.stg_cur = 0
         state.state = "IDLE"
+        state.macro_executing = None  # not executing a macro
 
         # X1C should not get the workaround
         result = get_derived_status_name(state, "X1C")
