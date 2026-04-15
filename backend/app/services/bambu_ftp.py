@@ -16,6 +16,32 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
+def _graceful_close_data_conn(conn) -> None:
+    """Close an FTP data-channel socket, draining the TLS layer first.
+
+    For TLS-wrapped data channels (implicit FTPS) we must ``unwrap()`` the
+    SSL layer before closing the underlying TCP socket; otherwise the
+    kernel can send a RST in place of FIN while the local send buffer
+    still contains the last chunk, causing the server to record a 0-byte
+    upload. This matches the behavior of Python's own
+    ``ftplib.FTP.storbinary``, which also calls ``conn.unwrap()`` before
+    the transfercmd context manager closes the socket.
+    """
+    try:
+        if isinstance(conn, ssl.SSLSocket):
+            try:
+                conn.unwrap()
+            except (OSError, ssl.SSLError):
+                # Peer already closed / TLS layer already shut — fall through
+                # to the plain close below.
+                pass
+    finally:
+        try:
+            conn.close()
+        except OSError:
+            pass
+
+
 class ImplicitFTP_TLS(FTP_TLS):
     """FTP_TLS subclass for implicit FTPS (port 990) with model-specific SSL handling.
 
@@ -408,10 +434,7 @@ class BambuFTPClient:
                     logger.error("FTP connection lost during upload: %s", e)
                     raise
                 finally:
-                    try:
-                        conn.close()
-                    except OSError:
-                        pass
+                    _graceful_close_data_conn(conn)
 
             # Wait for the server's 226 "Transfer complete" response to confirm
             # the file has been flushed to the SD card. Without this, the printer
@@ -504,10 +527,7 @@ class BambuFTPClient:
                 logger.error("FTP connection lost during upload_bytes: %s", e)
                 raise
             finally:
-                try:
-                    conn.close()
-                except OSError:
-                    pass
+                _graceful_close_data_conn(conn)
             # Wait for 226 confirmation (see upload_file for rationale)
             try:
                 old_timeout = self._ftp.sock.gettimeout()
