@@ -19,7 +19,6 @@ import {
   Calendar,
   AlertTriangle,
   Save,
-  X,
   Trash2,
   Plus,
   History,
@@ -470,7 +469,7 @@ export function ProjectDetailPage() {
         <p className="text-bambu-gray">
           {projectError ? `${t('common.error')}: ${(projectError as Error).message}` : t('projectDetail.notFound')}
         </p>
-        <Button variant="secondary" className="mt-4" onClick={() => navigate('/projects')}>
+        <Button variant="outline" className="mt-4" onClick={() => navigate('/projects')}>
           {t('projectDetail.backToProjects')}
         </Button>
       </div>
@@ -484,11 +483,11 @@ export function ProjectDetailPage() {
   const partsProgressPercent = stats?.parts_progress_percent ?? 0;
 
   return (
-    <div className="p-4 md:p-8 space-y-8">
+    <div className="p-4 md:p-6 space-y-4">
       {/* Breadcrumb */}
       <div className="flex items-center gap-2 text-sm text-bambu-gray">
         <Link to="/projects" className="hover:text-white transition-colors">
-          {t('navigation.projects')}
+          {t('projects.title')}
         </Link>
         <ChevronRight className="w-4 h-4" />
         <span className="text-white">{project.name}</span>
@@ -518,8 +517,23 @@ export function ProjectDetailPage() {
           <StatusBadge status={project.status} t={t} />
         </div>
         <div className="flex gap-2">
+          {!project.is_template && (
+            <Button
+              variant="outline"
+              onClick={() => createTemplateMutation.mutate()}
+              disabled={createTemplateMutation.isPending || !hasPermission('projects:create')}
+              title={!hasPermission('projects:create') ? t('projectDetail.template.noCreatePermission') : undefined}
+            >
+              {createTemplateMutation.isPending ? (
+                <Loader2 className="w-4 h-4 animate-spin mr-2" />
+              ) : (
+                <Copy className="w-4 h-4 mr-2" />
+              )}
+              {t('projectDetail.template.saveAsTemplate')}
+            </Button>
+          )}
           <Button
-            variant="secondary"
+            variant="outline"
             onClick={handleExportProject}
             disabled={!hasPermission('projects:read')}
             title={!hasPermission('projects:read') ? t('projectDetail.noExportPermission') : t('projectDetail.exportProject')}
@@ -608,7 +622,7 @@ export function ProjectDetailPage() {
 
       {/* Stats grid */}
       {stats && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
           <Card>
             <CardContent className="p-4">
               <div className="flex items-center gap-3">
@@ -814,7 +828,7 @@ export function ProjectDetailPage() {
             </h2>
             {!editingNotes ? (
               <Button
-                variant="secondary"
+                variant="outline"
                 size="sm"
                 onClick={handleStartEditNotes}
                 disabled={!hasPermission('projects:update')}
@@ -826,12 +840,11 @@ export function ProjectDetailPage() {
             ) : (
               <div className="flex gap-2">
                 <Button
-                  variant="secondary"
+                  variant="outline"
                   size="sm"
                   onClick={handleCancelNotes}
                   disabled={updateMutation.isPending}
                 >
-                  <X className="w-4 h-4 mr-1" />
                   {t('common.cancel')}
                 </Button>
                 <Button
@@ -1020,7 +1033,7 @@ export function ProjectDetailPage() {
               )}
               {!showBomForm && (
                 <Button
-                  variant="secondary"
+                  variant="outline"
                   size="sm"
                   onClick={() => setShowBomForm(true)}
                   disabled={!hasPermission('projects:update')}
@@ -1079,15 +1092,16 @@ export function ProjectDetailPage() {
                 placeholder={t('projectDetail.bom.remarksPlaceholder')}
               />
               <div className="flex justify-end gap-2">
-                <Button type="button" variant="secondary" size="sm" onClick={() => setShowBomForm(false)}>
+                <Button type="button" variant="outline" size="sm" onClick={() => setShowBomForm(false)}>
                   {t('common.cancel')}
                 </Button>
                 <Button type="submit" size="sm" disabled={!newBomName.trim() || createBomMutation.isPending}>
                   {createBomMutation.isPending ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <Loader2 className="w-4 h-4 animate-spin mr-1" />
                   ) : (
-                    t('projectDetail.bom.addPart')
+                    <Plus className="w-4 h-4 mr-1" />
                   )}
+                  {t('projectDetail.bom.addPart')}
                 </Button>
               </div>
             </form>
@@ -1154,7 +1168,7 @@ export function ProjectDetailPage() {
                         placeholder={t('projectDetail.bom.remarksPlaceholder')}
                       />
                       <div className="flex justify-end gap-2">
-                        <Button type="button" variant="secondary" size="sm" onClick={handleCancelBomEdit}>
+                        <Button type="button" variant="outline" size="sm" onClick={handleCancelBomEdit}>
                           {t('common.cancel')}
                         </Button>
                         <Button type="submit" size="sm" disabled={!editBomName.trim() || updateBomMutation.isPending}>
@@ -1323,25 +1337,6 @@ export function ProjectDetailPage() {
         </CardContent>
       </Card>
 
-      {/* Template action */}
-      {!project.is_template && (
-        <div className="flex justify-end">
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => createTemplateMutation.mutate()}
-            disabled={createTemplateMutation.isPending || !hasPermission('projects:create')}
-            title={!hasPermission('projects:create') ? t('projectDetail.template.noCreatePermission') : undefined}
-          >
-            {createTemplateMutation.isPending ? (
-              <Loader2 className="w-4 h-4 animate-spin mr-2" />
-            ) : (
-              <Copy className="w-4 h-4 mr-2" />
-            )}
-            {t('projectDetail.template.saveAsTemplate')}
-          </Button>
-        </div>
-      )}
 
       {/* Queue section */}
       {stats && (stats.queued_prints > 0 || stats.in_progress_prints > 0) && (

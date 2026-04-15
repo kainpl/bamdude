@@ -46,6 +46,7 @@ _COPY_WITH_DEFAULTS: dict[str, dict[str, Any]] = {
     "printers": {
         "stagger_interval_minutes": 0,
         "swap_mode_enabled": 0,
+        "require_plate_clear": 1,
         "auto_light_off": 0,
         "plate_detection_enabled": 0,
         "cleanup_after_print": 1,
@@ -60,6 +61,8 @@ _COPY_WITH_DEFAULTS: dict[str, dict[str, Any]] = {
         "plug_type": "tasmota",
         "auto_off_persistent": 0,
         "show_in_switchbar": 0,
+        "rest_power_multiplier": 1.0,
+        "rest_energy_multiplier": 1.0,
     },
     "notification_providers": {
         "on_print_stopped": 1,
@@ -80,6 +83,7 @@ _COPY_WITH_DEFAULTS: dict[str, dict[str, Any]] = {
     "library_folders": {
         "is_external": 0,
         "external_readonly": 0,
+        "external_show_hidden": 0,
     },
     "library_files": {
         "is_external": 0,

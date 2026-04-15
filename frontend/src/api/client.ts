@@ -4163,7 +4163,7 @@ export const api = {
     }),
 
   // Templates
-  getTemplates: () => request<ProjectListItem[]>('/projects/templates/'),
+  getTemplates: () => request<ProjectListItem[]>('/projects/templates'),
   createTemplateFromProject: (projectId: number) =>
     request<Project>(`/projects/${projectId}/create-template`, { method: 'POST' }),
   createProjectFromTemplate: (templateId: number, name?: string) =>

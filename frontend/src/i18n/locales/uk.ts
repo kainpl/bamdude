@@ -3016,6 +3016,13 @@ export default {
     statusActive: 'Активний',
     statusCompleted: 'Завершений',
     statusArchived: 'Архівований',
+    statusTemplates: 'Шаблони',
+    templates: {
+      empty: 'Поки що немає шаблонів',
+      emptyHint: 'Збережіть проєкт як шаблон зі сторінки деталей — і повторно використовуйте його тут, щоб створювати нові проєкти з тим самим BOM, тегами та налаштуваннями.',
+      createFromTemplate: 'Створити проєкт',
+      deleteTemplate: 'Видалити шаблон',
+    },
     done: 'Готово',
     completed: 'завершено',
     failed: 'невдало',
@@ -3046,6 +3053,8 @@ export default {
       multipleImported: '{{count}} проєктів імпортовано',
       importFailed: 'Помилка імпорту',
       exported: 'Проєкти експортовано (лише метадані)',
+      createdFromTemplate: 'Проєкт створено з шаблону',
+      templateDeleted: 'Шаблон видалено',
     },
   },
 

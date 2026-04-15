@@ -161,8 +161,12 @@ async def list_projects(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.PROJECTS_READ),
 ):
-    """List all projects with basic stats."""
-    query = select(Project)
+    """List all projects with basic stats.
+
+    Always excludes templates (``is_template=True``) — templates are served by
+    the dedicated ``/templates`` endpoint.
+    """
+    query = select(Project).where(Project.is_template.is_(False))
     if status:
         query = query.where(Project.status == status)
     query = query.order_by(Project.updated_at.desc())
@@ -325,6 +329,7 @@ async def create_project(
 
 
 @router.get("/templates", response_model=list[ProjectListResponse])
+@router.get("/templates/", response_model=list[ProjectListResponse])
 async def list_templates(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.PROJECTS_READ),

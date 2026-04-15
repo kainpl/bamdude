@@ -3012,6 +3012,13 @@ export default {
     statusActive: 'Active',
     statusCompleted: 'Completed',
     statusArchived: 'Archived',
+    statusTemplates: 'Templates',
+    templates: {
+      empty: 'No templates yet',
+      emptyHint: 'Save a project as a template from its detail page and reuse it here to spin up new projects with the same BOM, tags, and settings.',
+      createFromTemplate: 'Create project',
+      deleteTemplate: 'Delete template',
+    },
     done: 'Done',
     completed: 'completed',
     failed: 'failed',
@@ -3042,6 +3049,8 @@ export default {
       multipleImported: '{{count}} projects imported',
       importFailed: 'Import failed',
       exported: 'Projects exported (metadata only)',
+      createdFromTemplate: 'Project created from template',
+      templateDeleted: 'Template deleted',
     },
   },
 
