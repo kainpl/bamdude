@@ -22,21 +22,17 @@ SMTP_DATA = {
 }
 
 
-async def _setup_admin(async_client: AsyncClient, username: str = "admin", password: str = "adminpass123"):
-    """Enable auth and create admin user, return admin token."""
-    await async_client.post(
-        "/api/v1/auth/setup",
-        json={
-            "auth_enabled": True,
-            "admin_username": username,
-            "admin_password": password,
-        },
-    )
-    login = await async_client.post(
-        "/api/v1/auth/login",
-        json={"username": username, "password": password},
-    )
-    return login.json()["access_token"]
+async def _setup_admin(async_client: AsyncClient, username: str = "admin", password: str = "adminpass123"):  # noqa: ARG001 - legacy signature kept for call sites
+    """Return a JWT for the pre-seeded admin.
+
+    Signature kept for backward compatibility with older call sites that passed
+    credentials; with the opt-in auth mode removed, ``async_client`` always
+    carries a default ``test_admin`` user and the username/password args are
+    ignored.
+    """
+    from backend.app.core.auth import create_access_token
+
+    return create_access_token(data={"sub": "test_admin"})
 
 
 async def _setup_smtp_and_advanced_auth(async_client: AsyncClient, token: str):

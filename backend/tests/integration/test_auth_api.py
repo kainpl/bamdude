@@ -1,10 +1,14 @@
 """Integration tests for Authentication API endpoints.
 
 Tests the full request/response cycle for /api/v1/auth/ and /api/v1/users/ endpoints.
+
+Note: the ``async_client`` fixture seeds a ``test_admin`` user and attaches its
+JWT by default (see ``backend/tests/conftest.py``), so every request from this
+file already carries admin credentials unless the test overrides them.
 """
 
 import pytest
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
 
 
 class TestAuthStatusAPI:
@@ -12,63 +16,125 @@ class TestAuthStatusAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_get_auth_status_disabled(self, async_client: AsyncClient):
-        """Verify auth status returns disabled when not configured."""
+    async def test_get_auth_status_after_setup(self, async_client: AsyncClient):
+        """Status reflects the pre-seeded admin: setup complete, auth on."""
         response = await async_client.get("/api/v1/auth/status")
 
         assert response.status_code == 200
         result = response.json()
-        assert "auth_enabled" in result
-        assert result["auth_enabled"] is False
-        assert result["requires_setup"] is True
+        assert result["auth_enabled"] is True  # legacy field, always true now
+        assert result["requires_setup"] is False
 
 
 class TestAuthSetupAPI:
-    """Integration tests for /api/v1/auth/setup endpoint."""
+    """Integration tests for /api/v1/auth/setup endpoint.
+
+    The setup endpoint only opens while no admin exists. Since ``async_client``
+    seeds an admin, these tests hit /setup expecting the "already set up"
+    rejection path.
+    """
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_setup_auth_disabled(self, async_client: AsyncClient):
-        """Verify auth can be set up with auth disabled (no password required)."""
-        response = await async_client.post(
-            "/api/v1/auth/setup",
-            json={"auth_enabled": False},
-        )
-
-        assert response.status_code == 200
-        result = response.json()
-        assert result["auth_enabled"] is False
-        assert result["admin_created"] is False
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_setup_auth_enabled_requires_credentials(self, async_client: AsyncClient):
-        """Verify enabling auth requires admin username and password."""
-        response = await async_client.post(
-            "/api/v1/auth/setup",
-            json={"auth_enabled": True},
-        )
-
-        assert response.status_code == 400
-        assert "Admin username and password are required" in response.json()["detail"]
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_setup_auth_enabled_with_credentials(self, async_client: AsyncClient):
-        """Verify auth can be enabled with admin credentials."""
+    async def test_setup_rejected_when_admin_exists(self, async_client: AsyncClient):
+        """Setup returns 403 once any admin user is in the database."""
         response = await async_client.post(
             "/api/v1/auth/setup",
             json={
-                "auth_enabled": True,
-                "admin_username": "testadmin",
-                "admin_password": "testpassword123",
+                "admin_username": "another_admin",
+                "admin_password": "anotherpass123",
+            },
+        )
+
+        assert response.status_code == 403
+        assert "already" in response.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_setup_requires_credentials(self, async_client: AsyncClient):
+        """Setup rejects requests missing the required fields (schema validation)."""
+        response = await async_client.post("/api/v1/auth/setup", json={})
+        # Pydantic returns 422 for schema-level validation errors before the
+        # endpoint body ever runs.
+        assert response.status_code == 422
+
+
+class TestAuthSetupBootstrap:
+    """Setup tests that require a fresh DB with no admin yet.
+
+    Uses its own AsyncClient so we can clear the ``test_admin`` user and
+    exercise the bootstrap path that the normal ``async_client`` fixture hides.
+    """
+
+    @pytest.fixture
+    async def fresh_client(self, async_client, test_engine):
+        """Wipe the pre-seeded admin and return a client with no auth header."""
+        from sqlalchemy import delete
+        from sqlalchemy.ext.asyncio import async_sessionmaker
+
+        from backend.app.main import app, invalidate_setup_gate_cache
+        from backend.app.models.group import user_groups
+        from backend.app.models.settings import Settings
+        from backend.app.models.user import User
+
+        test_session = async_sessionmaker(test_engine, expire_on_commit=False)
+        async with test_session() as db:
+            # Drop the association rows first, then the user itself — SQLite
+            # in-memory doesn't enforce FK CASCADE by default, so we do it
+            # explicitly instead of relying on ORM cascade.
+            await db.execute(delete(user_groups))
+            await db.execute(delete(User).where(User.username == "test_admin"))
+            await db.execute(delete(Settings).where(Settings.key.in_(["setup_completed", "auth_enabled"])))
+            await db.commit()
+        invalidate_setup_gate_cache()
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            yield client
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_status_requires_setup_when_no_admin(self, fresh_client: AsyncClient):
+        """/auth/status reports requires_setup=true before any admin exists."""
+        response = await fresh_client.get("/api/v1/auth/status")
+        assert response.status_code == 200
+        assert response.json()["requires_setup"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_setup_creates_admin_and_returns_token(self, fresh_client: AsyncClient):
+        """Successful setup creates the admin and returns a usable JWT."""
+        response = await fresh_client.post(
+            "/api/v1/auth/setup",
+            json={
+                "admin_username": "bootstrap_admin",
+                "admin_password": "bootstrappass123",
+                "admin_email": "admin@example.com",
             },
         )
 
         assert response.status_code == 200
-        result = response.json()
-        assert result["auth_enabled"] is True
-        assert result["admin_created"] is True
+        body = response.json()
+        assert body["admin_created"] is True
+        assert body["token_type"] == "bearer"
+        assert body["access_token"]
+        assert body["user"]["username"] == "bootstrap_admin"
+        assert body["user"]["is_admin"] is True
+
+        # The returned token must actually work against a protected endpoint.
+        me = await fresh_client.get(
+            "/api/v1/auth/me",
+            headers={"Authorization": f"Bearer {body['access_token']}"},
+        )
+        assert me.status_code == 200
+        assert me.json()["username"] == "bootstrap_admin"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_non_whitelisted_endpoint_returns_503_during_setup(self, fresh_client: AsyncClient):
+        """The setup gate blocks every non-whitelisted API route until an admin exists."""
+        response = await fresh_client.get("/api/v1/printers/")
+        assert response.status_code == 503
+        assert response.json()["detail"] == "setup_required"
 
 
 class TestAuthLoginAPI:
@@ -76,61 +142,27 @@ class TestAuthLoginAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_login_auth_disabled(self, async_client: AsyncClient):
-        """Verify login fails when auth is not enabled."""
-        response = await async_client.post(
-            "/api/v1/auth/login",
-            json={"username": "admin", "password": "password"},
-        )
-
-        assert response.status_code == 400
-        assert "Authentication is not enabled" in response.json()["detail"]
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
     async def test_login_success(self, async_client: AsyncClient):
-        """Verify login succeeds with valid credentials after setup."""
-        # First enable auth
-        await async_client.post(
-            "/api/v1/auth/setup",
-            json={
-                "auth_enabled": True,
-                "admin_username": "logintest",
-                "admin_password": "loginpassword123",
-            },
-        )
-
-        # Now login
+        """Login succeeds with valid credentials against the pre-seeded admin."""
         response = await async_client.post(
             "/api/v1/auth/login",
-            json={"username": "logintest", "password": "loginpassword123"},
+            json={"username": "test_admin", "password": "test_admin_pass"},
         )
 
         assert response.status_code == 200
         result = response.json()
         assert "access_token" in result
         assert result["token_type"] == "bearer"
-        assert result["user"]["username"] == "logintest"
+        assert result["user"]["username"] == "test_admin"
         assert result["user"]["role"] == "admin"
 
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_login_invalid_credentials(self, async_client: AsyncClient):
-        """Verify login fails with invalid credentials."""
-        # First enable auth
-        await async_client.post(
-            "/api/v1/auth/setup",
-            json={
-                "auth_enabled": True,
-                "admin_username": "invalidtest",
-                "admin_password": "correctpassword",
-            },
-        )
-
-        # Try login with wrong password
+        """Login fails with wrong password."""
         response = await async_client.post(
             "/api/v1/auth/login",
-            json={"username": "invalidtest", "password": "wrongpassword"},
+            json={"username": "test_admin", "password": "wrongpassword"},
         )
 
         assert response.status_code == 401
@@ -144,39 +176,22 @@ class TestAuthMeAPI:
     @pytest.mark.integration
     async def test_me_without_token(self, async_client: AsyncClient):
         """Verify /me fails without authentication token."""
-        response = await async_client.get("/api/v1/auth/me")
+        response = await async_client.get(
+            "/api/v1/auth/me",
+            headers={"Authorization": ""},
+        )
 
         assert response.status_code == 401
 
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_me_with_valid_token(self, async_client: AsyncClient):
-        """Verify /me returns user info with valid token."""
-        # Setup and login
-        await async_client.post(
-            "/api/v1/auth/setup",
-            json={
-                "auth_enabled": True,
-                "admin_username": "metest",
-                "admin_password": "mepassword123",
-            },
-        )
-
-        login_response = await async_client.post(
-            "/api/v1/auth/login",
-            json={"username": "metest", "password": "mepassword123"},
-        )
-        token = login_response.json()["access_token"]
-
-        # Get current user
-        response = await async_client.get(
-            "/api/v1/auth/me",
-            headers={"Authorization": f"Bearer {token}"},
-        )
+        """Verify /me returns the pre-seeded admin when the default JWT is used."""
+        response = await async_client.get("/api/v1/auth/me")
 
         assert response.status_code == 200
         result = response.json()
-        assert result["username"] == "metest"
+        assert result["username"] == "test_admin"
         assert result["role"] == "admin"
         assert result["is_active"] is True
 
@@ -248,38 +263,19 @@ class TestUsersAPI:
 
     @pytest.fixture
     async def auth_token(self, async_client: AsyncClient):
-        """Setup auth and return admin token."""
-        await async_client.post(
-            "/api/v1/auth/setup",
-            json={
-                "auth_enabled": True,
-                "admin_username": "usersadmin",
-                "admin_password": "adminpassword123",
-            },
-        )
+        """Return a JWT for the pre-seeded admin."""
+        from backend.app.core.auth import create_access_token
 
-        login_response = await async_client.post(
-            "/api/v1/auth/login",
-            json={"username": "usersadmin", "password": "adminpassword123"},
-        )
-        return login_response.json()["access_token"]
+        return create_access_token(data={"sub": "test_admin"})
 
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_list_users_requires_auth(self, async_client: AsyncClient):
-        """Verify listing users requires authentication when auth is enabled."""
-        # First enable auth
-        await async_client.post(
-            "/api/v1/auth/setup",
-            json={
-                "auth_enabled": True,
-                "admin_username": "authreqadmin",
-                "admin_password": "adminpassword123",
-            },
+        """Verify listing users requires authentication."""
+        response = await async_client.get(
+            "/api/v1/users/",
+            headers={"Authorization": ""},
         )
-
-        # Now try to list users without a token
-        response = await async_client.get("/api/v1/users/")
 
         assert response.status_code == 401
 
@@ -397,64 +393,15 @@ class TestUsersAPI:
         assert response.status_code == 204
 
 
-class TestAuthDisableAPI:
-    """Integration tests for /api/v1/auth/disable endpoint."""
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_disable_auth(self, async_client: AsyncClient):
-        """Verify admin can disable authentication."""
-        # Setup auth
-        await async_client.post(
-            "/api/v1/auth/setup",
-            json={
-                "auth_enabled": True,
-                "admin_username": "disableadmin",
-                "admin_password": "adminpassword123",
-            },
-        )
-
-        # Login to get token
-        login_response = await async_client.post(
-            "/api/v1/auth/login",
-            json={"username": "disableadmin", "password": "adminpassword123"},
-        )
-        token = login_response.json()["access_token"]
-
-        # Disable auth
-        response = await async_client.post(
-            "/api/v1/auth/disable",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-
-        assert response.status_code == 200
-        assert response.json()["auth_enabled"] is False
-
-        # Verify auth is now disabled
-        status_response = await async_client.get("/api/v1/auth/status")
-        assert status_response.json()["auth_enabled"] is False
-
-
 class TestGroupsAPI:
     """Integration tests for /api/v1/groups/ endpoints."""
 
     @pytest.fixture
     async def auth_token(self, async_client: AsyncClient):
-        """Setup auth and return admin token."""
-        await async_client.post(
-            "/api/v1/auth/setup",
-            json={
-                "auth_enabled": True,
-                "admin_username": "groupsadmin",
-                "admin_password": "adminpassword123",
-            },
-        )
+        """Return a JWT for the pre-seeded admin."""
+        from backend.app.core.auth import create_access_token
 
-        login_response = await async_client.post(
-            "/api/v1/auth/login",
-            json={"username": "groupsadmin", "password": "adminpassword123"},
-        )
-        return login_response.json()["access_token"]
+        return create_access_token(data={"sub": "test_admin"})
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -586,21 +533,10 @@ class TestUserGroupsAPI:
 
     @pytest.fixture
     async def auth_token(self, async_client: AsyncClient):
-        """Setup auth and return admin token."""
-        await async_client.post(
-            "/api/v1/auth/setup",
-            json={
-                "auth_enabled": True,
-                "admin_username": "usergroupadmin",
-                "admin_password": "adminpassword123",
-            },
-        )
+        """Return a JWT for the pre-seeded admin."""
+        from backend.app.core.auth import create_access_token
 
-        login_response = await async_client.post(
-            "/api/v1/auth/login",
-            json={"username": "usergroupadmin", "password": "adminpassword123"},
-        )
-        return login_response.json()["access_token"]
+        return create_access_token(data={"sub": "test_admin"})
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -668,36 +604,15 @@ class TestChangePasswordAPI:
 
     @pytest.fixture
     async def user_token(self, async_client: AsyncClient):
-        """Setup auth and return regular user token."""
-        # Enable auth with admin
-        await async_client.post(
-            "/api/v1/auth/setup",
-            json={
-                "auth_enabled": True,
-                "admin_username": "pwchangeadmin",
-                "admin_password": "adminpassword123",
-            },
-        )
+        """Create a regular user and return their JWT."""
+        from backend.app.core.auth import create_access_token
 
-        admin_login = await async_client.post(
-            "/api/v1/auth/login",
-            json={"username": "pwchangeadmin", "password": "adminpassword123"},
-        )
-        admin_token = admin_login.json()["access_token"]
-
-        # Create a regular user
+        # Use the pre-seeded admin's default auth to create a new regular user.
         await async_client.post(
             "/api/v1/users/",
-            headers={"Authorization": f"Bearer {admin_token}"},
             json={"username": "pwchangeuser", "password": "oldpassword123"},
         )
-
-        # Login as regular user
-        user_login = await async_client.post(
-            "/api/v1/auth/login",
-            json={"username": "pwchangeuser", "password": "oldpassword123"},
-        )
-        return user_login.json()["access_token"]
+        return create_access_token(data={"sub": "pwchangeuser"})
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -744,6 +659,7 @@ class TestChangePasswordAPI:
         """Verify changing password requires authentication."""
         response = await async_client.post(
             "/api/v1/users/me/change-password",
+            headers={"Authorization": ""},
             json={
                 "current_password": "oldpassword",
                 "new_password": "newpassword",
@@ -756,95 +672,71 @@ class TestChangePasswordAPI:
 class TestAuthMiddlewarePublicRoutes:
     """Tests for auth middleware public route configuration.
 
-    These routes must be accessible without authentication, even when auth is enabled,
-    because browser elements like <img src> and <video src> don't send Authorization headers.
+    These routes must be accessible without authentication because browser
+    elements like <img src> and <video src> don't send Authorization headers.
     """
-
-    @pytest.fixture
-    async def enabled_auth(self, async_client: AsyncClient):
-        """Enable auth for testing middleware behavior."""
-        await async_client.post(
-            "/api/v1/auth/setup",
-            json={
-                "auth_enabled": True,
-                "admin_username": "middlewareadmin",
-                "admin_password": "adminpassword123",
-            },
-        )
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_auth_status_is_public(self, async_client: AsyncClient, enabled_auth):
-        """Verify /api/v1/auth/status is accessible without auth."""
-        response = await async_client.get("/api/v1/auth/status")
+    async def test_auth_status_is_public(self, async_client: AsyncClient):
+        """/api/v1/auth/status is accessible without auth."""
+        response = await async_client.get(
+            "/api/v1/auth/status",
+            headers={"Authorization": ""},
+        )
         assert response.status_code == 200
         assert "auth_enabled" in response.json()
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_auth_login_is_public(self, async_client: AsyncClient, enabled_auth):
-        """Verify /api/v1/auth/login is accessible without auth."""
+    async def test_auth_login_is_public(self, async_client: AsyncClient):
+        """/api/v1/auth/login is accessible without auth (reaches the login handler)."""
         response = await async_client.post(
             "/api/v1/auth/login",
-            json={"username": "middlewareadmin", "password": "adminpassword123"},
+            headers={"Authorization": ""},
+            json={"username": "test_admin", "password": "test_admin_pass"},
         )
-        # Should not return 401 (unauthorized) - it should either succeed or return
-        # a different error (like 400 for wrong credentials)
-        assert response.status_code != 401 or "token" in response.json()
+        # The middleware lets the request through; the handler returns 200 with a token.
+        assert response.status_code == 200
+        assert "access_token" in response.json()
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_auth_setup_is_public(self, async_client: AsyncClient):
-        """Verify /api/v1/auth/setup is accessible without auth (needed for setup/recovery)."""
-        # Don't enable auth first - test that setup endpoint itself is accessible
-        response = await async_client.post(
-            "/api/v1/auth/setup",
-            json={"auth_enabled": False},
+    async def test_updates_version_is_public(self, async_client: AsyncClient):
+        """/api/v1/updates/version is accessible without auth."""
+        response = await async_client.get(
+            "/api/v1/updates/version",
+            headers={"Authorization": ""},
         )
-        # Should not be 401
         assert response.status_code != 401
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_updates_version_is_public(self, async_client: AsyncClient, enabled_auth):
-        """Verify /api/v1/updates/version is accessible without auth."""
-        response = await async_client.get("/api/v1/updates/version")
-        # Should not be 401
-        assert response.status_code != 401
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_protected_route_requires_auth(self, async_client: AsyncClient, enabled_auth):
-        """Verify non-public routes return 401 without token."""
-        response = await async_client.get("/api/v1/printers/")
+    async def test_protected_route_requires_auth(self, async_client: AsyncClient):
+        """Non-public routes return 401 without a token."""
+        response = await async_client.get(
+            "/api/v1/printers/",
+            headers={"Authorization": ""},
+        )
         assert response.status_code == 401
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_protected_route_works_with_token(self, async_client: AsyncClient, enabled_auth):
-        """Verify non-public routes work with valid token."""
-        # Login to get token
-        login_response = await async_client.post(
-            "/api/v1/auth/login",
-            json={"username": "middlewareadmin", "password": "adminpassword123"},
-        )
-        token = login_response.json()["access_token"]
-
-        # Access protected route
-        response = await async_client.get(
-            "/api/v1/printers/",
-            headers={"Authorization": f"Bearer {token}"},
-        )
+    async def test_protected_route_works_with_token(self, async_client: AsyncClient):
+        """Non-public routes work with the default admin token."""
+        # The default async_client header carries the pre-seeded admin JWT.
+        response = await async_client.get("/api/v1/printers/")
         assert response.status_code == 200
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_advanced_auth_status_is_public(self, async_client: AsyncClient, enabled_auth):
-        """Verify /api/v1/auth/advanced-auth/status is accessible without auth."""
-        response = await async_client.get("/api/v1/auth/advanced-auth/status")
-        # Should not be 401 (must be accessible for login page)
+    async def test_advanced_auth_status_is_public(self, async_client: AsyncClient):
+        """/api/v1/auth/advanced-auth/status is accessible without auth."""
+        response = await async_client.get(
+            "/api/v1/auth/advanced-auth/status",
+            headers={"Authorization": ""},
+        )
         assert response.status_code != 401
-        # Should return valid response (200 with auth status)
         if response.status_code == 200:
             result = response.json()
             assert "advanced_auth_enabled" in result
@@ -852,14 +744,13 @@ class TestAuthMiddlewarePublicRoutes:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_forgot_password_is_public(self, async_client: AsyncClient, enabled_auth):
-        """Verify /api/v1/auth/forgot-password is accessible without auth."""
+    async def test_forgot_password_is_public(self, async_client: AsyncClient):
+        """/api/v1/auth/forgot-password is accessible without auth."""
         response = await async_client.post(
             "/api/v1/auth/forgot-password",
+            headers={"Authorization": ""},
             json={"email": "test@example.com"},
         )
-        # Should not be 401 (must be accessible for password reset from login page)
         assert response.status_code != 401
-        # Will likely be 400 (advanced auth not enabled) but that's okay -
-        # the important thing is it's not blocked by auth middleware
+        # Likely 400 because advanced auth isn't configured — still not 401.
         assert response.status_code in [200, 400]
