@@ -1420,6 +1420,9 @@ function PrinterCard({
     if (!m.enabled || !m.gcode?.trim()) return false;
     if (!m.printer_models.includes('*') && (!printer.model || !m.printer_models.includes(printer.model))) return false;
     if (m.swap_mode_only && !printer.swap_mode_enabled) return false;
+    // A profile-bound macro only matches a printer that opted into that profile;
+    // generic (null) macros still show everywhere.
+    if (m.swap_profile && m.swap_profile !== printer.swap_profile) return false;
     return true;
   });
 
@@ -4729,13 +4732,16 @@ function MacrosPanel({
     },
   });
 
-  // Filter macros: match printer model + swap_mode requirement
+  // Filter macros: match printer model + swap_mode requirement + swap_profile binding.
   const filteredMacros = (macros || []).filter((macro: Macro) => {
     if (!macro.enabled) return false;
     if (!macro.gcode || !macro.gcode.trim()) return false;
     const models = macro.printer_models;
     if (!models.includes('*') && (!printer.model || !models.includes(printer.model))) return false;
     if (macro.swap_mode_only && !printer.swap_mode_enabled) return false;
+    // Profile-bound macro → only for printers with the same profile selected.
+    // Generic (null) macros stay visible on every printer.
+    if (macro.swap_profile && macro.swap_profile !== printer.swap_profile) return false;
     return true;
   });
 
@@ -4819,8 +4825,16 @@ function AddPrinterModal({
     mqtt_connection_timeout: 900,
     stagger_interval_minutes: 0,
     swap_mode_enabled: false,
+    swap_profile: null,
     require_plate_clear: true,
     auto_light_off: false,
+  });
+
+  // Swap profile catalog for dropdowns in the form.
+  const { data: swapProfiles } = useQuery({
+    queryKey: ['macros', 'swap-profiles'],
+    queryFn: macrosApi.getSwapProfiles,
+    staleTime: Infinity,
   });
 
   const [showAccessCode, setShowAccessCode] = useState(false);
@@ -5219,20 +5233,59 @@ function AddPrinterModal({
                     <span className="text-xs text-bambu-gray">{t('printers.modal.staggerIntervalHint')}</span>
                   </div>
                 </div>
-                {form.model && /a1.?mini|a1m|n1/i.test(form.model) && (
-                <div>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={form.swap_mode_enabled ?? false}
-                      onChange={(e) => setForm({ ...form, swap_mode_enabled: e.target.checked, ...e.target.checked ? { require_plate_clear: false } : {} })}
-                      className="w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
-                    />
-                    <span className="text-sm text-white">{t('printers.modal.swapMode')}</span>
-                  </label>
-                  <p className="text-xs text-bambu-gray mt-1 ml-6">{t('printers.modal.swapModeHint')}</p>
-                </div>
-                )}
+                {(() => {
+                  const modelProfiles = (swapProfiles ?? []).filter((p) =>
+                    form.model ? p.models.includes(form.model) : false
+                  );
+                  if (modelProfiles.length === 0) return null;
+                  return (
+                    <>
+                      <div>
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={form.swap_mode_enabled ?? false}
+                            onChange={(e) => {
+                              const enabled = e.target.checked;
+                              setForm({
+                                ...form,
+                                swap_mode_enabled: enabled,
+                                swap_profile: enabled
+                                  ? (form.swap_profile ?? modelProfiles[0]?.id ?? null)
+                                  : null,
+                                ...(enabled ? { require_plate_clear: false } : {}),
+                              });
+                            }}
+                            className="w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                          />
+                          <span className="text-sm text-white">{t('printers.modal.swapMode')}</span>
+                        </label>
+                        <p className="text-xs text-bambu-gray mt-1 ml-6">{t('printers.modal.swapModeHint')}</p>
+                      </div>
+                      {form.swap_mode_enabled && (
+                        <div className="ml-6">
+                          <label className="block text-xs text-bambu-gray mb-1">
+                            {t('printers.modal.swapProfile')}
+                          </label>
+                          <select
+                            value={form.swap_profile ?? ''}
+                            onChange={(e) => setForm({ ...form, swap_profile: e.target.value || null })}
+                            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
+                          >
+                            {modelProfiles.map((p) => (
+                              <option key={p.id} value={p.id}>{p.label}</option>
+                            ))}
+                          </select>
+                          {form.swap_profile && (
+                            <p className="text-xs text-bambu-gray mt-1">
+                              {modelProfiles.find((p) => p.id === form.swap_profile)?.description}
+                            </p>
+                          )}
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
                 {!form.swap_mode_enabled && (
                 <div>
                   <label className="flex items-center gap-2 cursor-pointer">
@@ -5513,9 +5566,18 @@ function EditPrinterModal({
     mqtt_connection_timeout: printer.mqtt_connection_timeout ?? 900,
     stagger_interval_minutes: printer.stagger_interval_minutes ?? 0,
     swap_mode_enabled: printer.swap_mode_enabled ?? false,
+    swap_profile: (printer.swap_profile ?? null) as string | null,
     require_plate_clear: printer.require_plate_clear ?? true,
     auto_light_off: printer.auto_light_off ?? false,
   });
+
+  // Swap profile catalog for the dropdown (same query as add-form).
+  const { data: swapProfiles } = useQuery({
+    queryKey: ['macros', 'swap-profiles'],
+    queryFn: macrosApi.getSwapProfiles,
+    staleTime: Infinity,
+  });
+
   const [showAccessCode, setShowAccessCode] = useState(false);
 
   const updateMutation = useMutation({
@@ -5549,6 +5611,7 @@ function EditPrinterModal({
       mqtt_connection_timeout: form.mqtt_connection_timeout,
       stagger_interval_minutes: form.stagger_interval_minutes,
       swap_mode_enabled: form.swap_mode_enabled,
+      swap_profile: form.swap_mode_enabled ? form.swap_profile : null,
       require_plate_clear: form.swap_mode_enabled ? false : form.require_plate_clear,
       auto_light_off: form.auto_light_off,
     };
@@ -5712,20 +5775,59 @@ function EditPrinterModal({
                     <span className="text-xs text-bambu-gray">{t('printers.modal.staggerIntervalHint')}</span>
                   </div>
                 </div>
-                {form.model && /a1.?mini|a1m|n1/i.test(form.model) && (
-                <div>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={form.swap_mode_enabled ?? false}
-                      onChange={(e) => setForm({ ...form, swap_mode_enabled: e.target.checked, ...e.target.checked ? { require_plate_clear: false } : {} })}
-                      className="w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
-                    />
-                    <span className="text-sm text-white">{t('printers.modal.swapMode')}</span>
-                  </label>
-                  <p className="text-xs text-bambu-gray mt-1 ml-6">{t('printers.modal.swapModeHint')}</p>
-                </div>
-                )}
+                {(() => {
+                  const modelProfiles = (swapProfiles ?? []).filter((p) =>
+                    form.model ? p.models.includes(form.model) : false
+                  );
+                  if (modelProfiles.length === 0) return null;
+                  return (
+                    <>
+                      <div>
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={form.swap_mode_enabled ?? false}
+                            onChange={(e) => {
+                              const enabled = e.target.checked;
+                              setForm({
+                                ...form,
+                                swap_mode_enabled: enabled,
+                                swap_profile: enabled
+                                  ? (form.swap_profile ?? modelProfiles[0]?.id ?? null)
+                                  : null,
+                                ...(enabled ? { require_plate_clear: false } : {}),
+                              });
+                            }}
+                            className="w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                          />
+                          <span className="text-sm text-white">{t('printers.modal.swapMode')}</span>
+                        </label>
+                        <p className="text-xs text-bambu-gray mt-1 ml-6">{t('printers.modal.swapModeHint')}</p>
+                      </div>
+                      {form.swap_mode_enabled && (
+                        <div className="ml-6">
+                          <label className="block text-xs text-bambu-gray mb-1">
+                            {t('printers.modal.swapProfile')}
+                          </label>
+                          <select
+                            value={form.swap_profile ?? ''}
+                            onChange={(e) => setForm({ ...form, swap_profile: e.target.value || null })}
+                            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
+                          >
+                            {modelProfiles.map((p) => (
+                              <option key={p.id} value={p.id}>{p.label}</option>
+                            ))}
+                          </select>
+                          {form.swap_profile && (
+                            <p className="text-xs text-bambu-gray mt-1">
+                              {modelProfiles.find((p) => p.id === form.swap_profile)?.description}
+                            </p>
+                          )}
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
                 {!form.swap_mode_enabled && (
                 <div>
                   <label className="flex items-center gap-2 cursor-pointer">

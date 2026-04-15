@@ -1925,9 +1925,15 @@ async def on_print_start(printer_id: int, data: dict):
             )
 
             if archive:
-                # Detect swap compatibility from filename
+                # Detect swap compatibility from filename. Covers both the
+                # singular ".swap." suffix (older / custom tooling) and the
+                # ".swaps." suffix that swaplist.app actually emits on export.
                 fname_lower = (filename or downloaded_filename or "").lower()
-                if fname_lower.endswith(".swap.3mf") or ".swap." in fname_lower:
+                if (
+                    fname_lower.endswith((".swap.3mf", ".swaps.3mf"))
+                    or ".swap." in fname_lower
+                    or ".swaps." in fname_lower
+                ):
                     archive.swap_compatible = True
                     await db.flush()
 

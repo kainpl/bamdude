@@ -23,6 +23,7 @@ class PrinterBase(BaseModel):
     camera_rotation: int = 0  # 0, 90, 180, 270 degrees
     stagger_interval_minutes: int = 0
     swap_mode_enabled: bool = False
+    swap_profile: str | None = None
     require_plate_clear: bool = True
     auto_light_off: bool = False
 
@@ -63,6 +64,7 @@ class PrinterUpdate(BaseModel):
     plate_detection_roi: PlateDetectionROI | None = None
     stagger_interval_minutes: int | None = None
     swap_mode_enabled: bool | None = None
+    swap_profile: str | None = None
     require_plate_clear: bool | None = None
 
 
@@ -79,6 +81,7 @@ class PrinterResponse(PrinterBase):
     plate_detection_roi: PlateDetectionROI | None = None
     stagger_interval_minutes: int = 0
     swap_mode_enabled: bool = False
+    swap_profile: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -109,6 +112,7 @@ class PrinterResponse(PrinterBase):
             "plate_detection_enabled": printer.plate_detection_enabled,
             "stagger_interval_minutes": printer.stagger_interval_minutes,
             "swap_mode_enabled": printer.swap_mode_enabled,
+            "swap_profile": printer.swap_profile,
             "require_plate_clear": printer.require_plate_clear,
             "created_at": printer.created_at,
             "updated_at": printer.updated_at,

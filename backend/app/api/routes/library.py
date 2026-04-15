@@ -1192,9 +1192,13 @@ async def upload_file(
             if generate_stl_thumbnails:
                 thumbnail_path = generate_stl_thumbnail(file_path, thumbnails_dir)
 
-        # Detect swap mode compatibility from filename
+        # Detect swap mode compatibility from filename. Covers both the
+        # singular ".swap." suffix (older / custom tooling) and the ".swaps."
+        # suffix that swaplist.app actually emits on export.
         fname_lower = filename.lower()
-        swap_compatible = fname_lower.endswith(".swap.3mf") or ".swap." in fname_lower
+        swap_compatible = (
+            fname_lower.endswith((".swap.3mf", ".swaps.3mf")) or ".swap." in fname_lower or ".swaps." in fname_lower
+        )
 
         # Create database entry (store relative paths for portability)
         library_file = LibraryFile(

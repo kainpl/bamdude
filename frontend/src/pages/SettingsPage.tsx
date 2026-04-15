@@ -177,8 +177,10 @@ export function SettingsPage() {
   const [editingMacro, setEditingMacro] = useState<Macro | null>(null);
   const [macroForm, setMacroForm] = useState<MacroCreate>({
     name: '',
+    description: null,
     printer_models: ['*'],
     swap_mode_only: false,
+    swap_profile: null,
     event: 'swap_mode_start',
     gcode: '',
     enabled: true,
@@ -415,8 +417,10 @@ export function SettingsPage() {
     setEditingMacro(null);
     setMacroForm({
       name: '',
+      description: null,
       printer_models: ['*'],
       swap_mode_only: false,
+      swap_profile: null,
       event: 'swap_mode_start',
       gcode: '',
       enabled: true,
@@ -428,8 +432,10 @@ export function SettingsPage() {
     setEditingMacro(macro);
     setMacroForm({
       name: macro.name,
+      description: macro.description,
       printer_models: macro.printer_models,
       swap_mode_only: macro.swap_mode_only,
+      swap_profile: macro.swap_profile,
       event: macro.event,
       gcode: macro.gcode,
       enabled: macro.enabled,
@@ -4959,6 +4965,16 @@ export function SettingsPage() {
                     />
                   </div>
                   <div>
+                    <label className="block text-sm text-bambu-gray mb-1">{t('settings.macroDescription')}</label>
+                    <textarea
+                      value={macroForm.description ?? ''}
+                      onChange={(e) => setMacroForm(prev => ({ ...prev, description: e.target.value || null }))}
+                      rows={3}
+                      placeholder={t('settings.macroDescriptionPlaceholder')}
+                      className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm resize-none"
+                    />
+                  </div>
+                  <div>
                     <label className="block text-sm text-bambu-gray mb-1">{t('settings.macroEvent')}</label>
                     <select
                       value={macroForm.event}
@@ -5026,6 +5042,36 @@ export function SettingsPage() {
                       onChange={(checked) => setMacroForm(prev => ({ ...prev, swap_mode_only: checked }))}
                     />
                   </div>
+                  {/* Swap profile binding — only relevant for the two swap events.
+                      Dropdown options are filtered by the printer_models already
+                      selected (a profile's "models" must intersect). Value "" = generic. */}
+                  {macroMeta?.swap_events?.includes(macroForm.event) && (
+                    <div>
+                      <label className="block text-sm text-bambu-gray mb-1">
+                        {t('settings.macroSwapProfile')}
+                      </label>
+                      <select
+                        value={macroForm.swap_profile ?? ''}
+                        onChange={(e) => setMacroForm(prev => ({ ...prev, swap_profile: e.target.value || null }))}
+                        className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
+                      >
+                        <option value="">{t('settings.macroSwapProfileGeneric')}</option>
+                        {(macroMeta?.swap_profiles ?? [])
+                          .filter((p) =>
+                            macroForm.printer_models.includes('*') ||
+                            p.models.some((m) => macroForm.printer_models.includes(m))
+                          )
+                          .map((p) => (
+                            <option key={p.id} value={p.id}>{p.label}</option>
+                          ))}
+                      </select>
+                      {macroForm.swap_profile && (
+                        <p className="text-xs text-bambu-gray mt-1">
+                          {macroMeta?.swap_profiles?.find((p) => p.id === macroForm.swap_profile)?.description}
+                        </p>
+                      )}
+                    </div>
+                  )}
                   <div className="flex items-center justify-between">
                     <label className="text-sm text-white">{t('settings.macroEnabled')}</label>
                     <Toggle

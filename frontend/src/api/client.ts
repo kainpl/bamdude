@@ -106,6 +106,7 @@ export interface Printer {
   plate_detection_roi?: PlateDetectionROI;  // ROI for plate detection
   stagger_interval_minutes: number;  // Per-printer stagger interval override (0 = system default)
   swap_mode_enabled: boolean;  // A1 Mini plate swapper
+  swap_profile: string | null;  // Active swap-mode variant (see /macros/swap-profiles)
   require_plate_clear: boolean;  // Require plate-clear confirmation before next queued print
   auto_light_off: boolean;  // Turn off chamber light after print starts
   created_at: string;
@@ -296,6 +297,7 @@ export interface PrinterCreate {
   plate_detection_roi?: PlateDetectionROI;
   stagger_interval_minutes?: number;
   swap_mode_enabled?: boolean;
+  swap_profile?: string | null;
   require_plate_clear?: boolean;
   auto_light_off?: boolean;
 }
@@ -5324,11 +5326,20 @@ export const supportApi = {
 };
 
 // Macros
+export interface SwapProfile {
+  id: string;
+  label: string;
+  description?: string | null;
+  models: string[];
+}
+
 export interface Macro {
   id: number;
   name: string;
+  description: string | null;
   printer_models: string[];
   swap_mode_only: boolean;
+  swap_profile: string | null;
   event: string;
   gcode: string;
   is_custom: boolean;
@@ -5339,8 +5350,10 @@ export interface Macro {
 
 export interface MacroCreate {
   name: string;
+  description?: string | null;
   printer_models: string[];
   swap_mode_only: boolean;
+  swap_profile?: string | null;
   event: string;
   gcode: string;
   enabled: boolean;
@@ -5348,8 +5361,10 @@ export interface MacroCreate {
 
 export interface MacroUpdate {
   name?: string;
+  description?: string | null;
   printer_models?: string[];
   swap_mode_only?: boolean;
+  swap_profile?: string | null;
   event?: string;
   gcode?: string;
   enabled?: boolean;
@@ -5357,7 +5372,10 @@ export interface MacroUpdate {
 
 export interface MacroMeta {
   events: Record<string, string>;
+  // Events for which the "Swap profile" picker is relevant.
+  swap_events: string[];
   printer_models: Record<string, string>;
+  swap_profiles: SwapProfile[];
 }
 
 export interface MacroExecuteResponse {
@@ -5370,6 +5388,7 @@ export interface MacroExecuteResponse {
 export const macrosApi = {
   getMacros: () => request<Macro[]>('/macros/'),
   getMacroMeta: () => request<MacroMeta>('/macros/meta'),
+  getSwapProfiles: () => request<SwapProfile[]>('/macros/swap-profiles'),
   createMacro: (data: MacroCreate) => request<Macro>('/macros/', { method: 'POST', body: JSON.stringify(data) }),
   updateMacro: (id: number, data: MacroUpdate) => request<Macro>('/macros/' + id, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteMacro: (id: number) => request<{ message: string }>('/macros/' + id, { method: 'DELETE' }),

@@ -30,13 +30,28 @@ MACRO_EVENTS = {
 
 @router.get("/meta")
 async def get_macro_meta():
-    """Get metadata for macro UI: available events and printer models."""
+    """Get metadata for macro UI: events, printer models, swap profiles."""
+    from backend.app.core.swap_profiles import SWAP_PROFILES
     from backend.app.utils.printer_model_names import PRINTER_MODEL_DISPLAY_NAMES
+
+    # Events that are meaningful only in swap-mode context — frontend uses
+    # this list to decide when to show the "Swap profile" picker.
+    swap_events = ["swap_mode_start", "swap_mode_change_table"]
 
     return {
         "events": MACRO_EVENTS,
+        "swap_events": swap_events,
         "printer_models": PRINTER_MODEL_DISPLAY_NAMES,
+        "swap_profiles": [{"id": pid, **profile} for pid, profile in SWAP_PROFILES.items()],
     }
+
+
+@router.get("/swap-profiles")
+async def list_swap_profiles():
+    """Return the canonical swap-profile catalog (public-ish read-only)."""
+    from backend.app.core.swap_profiles import SWAP_PROFILES
+
+    return [{"id": pid, **profile} for pid, profile in SWAP_PROFILES.items()]
 
 
 @router.get("/", response_model=list[MacroResponse])
@@ -91,8 +106,10 @@ async def create_macro(
     """Create a custom macro."""
     macro = Macro(
         name=data.name,
+        description=data.description,
         printer_models=json.dumps(data.printer_models),
         swap_mode_only=data.swap_mode_only,
+        swap_profile=(data.swap_profile or None),
         event=data.event,
         gcode=data.gcode,
         enabled=data.enabled,
@@ -123,6 +140,10 @@ async def update_macro(
     # Serialize printer_models to JSON
     if "printer_models" in update_data:
         update_data["printer_models"] = json.dumps(update_data["printer_models"])
+
+    # Treat empty-string swap_profile from the client as "clear binding".
+    if update_data.get("swap_profile") == "":
+        update_data["swap_profile"] = None
 
     for field, value in update_data.items():
         setattr(macro, field, value)
@@ -194,6 +215,15 @@ async def execute_macro(
     # Check swap_mode requirement
     if macro.swap_mode_only and not printer.swap_mode_enabled:
         raise HTTPException(400, "Macro requires swap mode enabled on printer")
+
+    # Check swap_profile binding — a profile-bound macro must not be executed
+    # on a printer using a different profile, otherwise the wrong gcode fires.
+    if macro.swap_profile and macro.swap_profile != printer.swap_profile:
+        raise HTTPException(
+            400,
+            f"Macro targets swap profile '{macro.swap_profile}' but printer is set to "
+            f"'{printer.swap_profile or 'none'}'",
+        )
 
     # Ensure MQTT connection is fresh (reconnect if stale)
     if not await printer_manager.ensure_fresh_connection_for_printer(printer):
