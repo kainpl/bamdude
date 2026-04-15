@@ -174,7 +174,7 @@ export function EmailSettings() {
   const disabledInputClasses = "w-full px-4 py-3 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white/40 placeholder-bambu-gray/40 cursor-not-allowed";
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       {/* Advanced Authentication Toggle - Always visible */}
       <Card>
         <CardHeader>

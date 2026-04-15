@@ -172,7 +172,7 @@ export function LDAPSettings() {
   const inputClasses = "w-full px-4 py-3 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:outline-none focus:ring-2 focus:ring-bambu-green/50 focus:border-bambu-green transition-colors";
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       {/* LDAP Toggle */}
       <Card>
         <CardHeader>

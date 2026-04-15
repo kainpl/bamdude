@@ -2,7 +2,7 @@ import { useEffect, useState, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
-import { Activity, LayoutGrid, List, Loader2, ArrowUp, ArrowDown } from 'lucide-react';
+import { Activity, LayoutGrid, List, Loader2, Search, X, ArrowUpNarrowWide, ArrowDownWideNarrow } from 'lucide-react';
 import { api } from '../api/client';
 import type { PrinterQueue, PrintQueueItem } from '../api/client';
 import { QueueCard } from '../components/QueueCard';
@@ -43,6 +43,14 @@ export function QueuePage() {
   const [sortAsc, setSortAsc] = useState<boolean>(() => {
     return localStorage.getItem('queueSortAsc') !== 'false';
   });
+
+  const [search, setSearch] = useState<string>(() => localStorage.getItem('queueSearch') || '');
+  const [statusFilter, setStatusFilter] = useState<string>(() => localStorage.getItem('queueStatusFilter') || 'all');
+  const [locationFilter, setLocationFilter] = useState<string>(() => localStorage.getItem('queueLocationFilter') || 'all');
+
+  useEffect(() => { localStorage.setItem('queueSearch', search); }, [search]);
+  useEffect(() => { localStorage.setItem('queueStatusFilter', statusFilter); }, [statusFilter]);
+  useEffect(() => { localStorage.setItem('queueLocationFilter', locationFilter); }, [locationFilter]);
 
   // Fetch all printer queues
   const { data: queues, isLoading } = useQuery({
@@ -92,19 +100,38 @@ export function QueuePage() {
     return 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3';
   };
 
-  // Sort queues
+  // Distinct printer locations for the filter dropdown
+  const availableLocations = useMemo(() => {
+    if (!queues) return [] as string[];
+    const set = new Set<string>();
+    queues.forEach(q => { if (q.printer_location) set.add(q.printer_location); });
+    return Array.from(set).sort();
+  }, [queues]);
+
+  // Filter + sort queues
   const sortedQueues = useMemo(() => {
     if (!queues) return [];
-    const sorted = [...queues];
+    const term = search.trim().toLowerCase();
+    const filtered = queues.filter(q => {
+      if (statusFilter !== 'all' && q.status !== statusFilter) return false;
+      if (locationFilter !== 'all' && (q.printer_location || '') !== locationFilter) return false;
+      if (term) {
+        const name = (q.printer_name || '').toLowerCase();
+        const model = (q.printer_model || '').toLowerCase();
+        const loc = (q.printer_location || '').toLowerCase();
+        if (!name.includes(term) && !model.includes(term) && !loc.includes(term)) return false;
+      }
+      return true;
+    });
 
     const statusOrder: Record<string, number> = { printing: 0, error: 1, paused: 2, idle: 3 };
 
     switch (sortBy) {
       case 'name':
-        sorted.sort((a, b) => (a.printer_name || '').localeCompare(b.printer_name || ''));
+        filtered.sort((a, b) => (a.printer_name || '').localeCompare(b.printer_name || ''));
         break;
       case 'status':
-        sorted.sort((a, b) => {
+        filtered.sort((a, b) => {
           const aO = statusOrder[a.status] ?? 4;
           const bO = statusOrder[b.status] ?? 4;
           if (aO !== bO) return aO - bO;
@@ -113,16 +140,18 @@ export function QueuePage() {
         });
         break;
       case 'model':
-        sorted.sort((a, b) => (a.printer_model || '').localeCompare(b.printer_model || ''));
+        filtered.sort((a, b) => (a.printer_model || '').localeCompare(b.printer_model || ''));
         break;
       case 'location':
-        sorted.sort((a, b) => (a.printer_location || '').localeCompare(b.printer_location || ''));
+        filtered.sort((a, b) => (a.printer_location || '').localeCompare(b.printer_location || ''));
         break;
     }
 
-    if (!sortAsc) sorted.reverse();
-    return sorted;
-  }, [queues, sortBy, sortAsc]);
+    if (!sortAsc) filtered.reverse();
+    return filtered;
+  }, [queues, search, statusFilter, locationFilter, sortBy, sortAsc]);
+
+  const hasActiveFilters = search.trim() !== '' || statusFilter !== 'all' || locationFilter !== 'all';
 
   // Group queues by location (when sorted by location)
   const groupedQueues = useMemo(() => {
@@ -157,29 +186,6 @@ export function QueuePage() {
         </div>
 
         <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
-          {/* Sort dropdown */}
-          {viewMode !== 'all' && (
-            <div className="flex items-center gap-1">
-              <select
-                value={sortBy}
-                onChange={(e) => handleSortChange(e.target.value as SortOption)}
-                className="text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg px-2 py-1.5 text-white focus:border-bambu-green focus:outline-none"
-              >
-                <option value="status">{t('printers.sort.status')}</option>
-                <option value="name">{t('printers.sort.name')}</option>
-                <option value="model">{t('printers.sort.model')}</option>
-                <option value="location">{t('printers.sort.location')}</option>
-              </select>
-              <button
-                onClick={toggleSortDirection}
-                className="p-1.5 rounded-lg hover:bg-bambu-dark-tertiary transition-colors"
-                title={sortAsc ? t('printers.sort.descending') : t('printers.sort.ascending')}
-              >
-                {sortAsc ? <ArrowUp className="w-4 h-4 text-bambu-gray" /> : <ArrowDown className="w-4 h-4 text-bambu-gray" />}
-              </button>
-            </div>
-          )}
-
           {/* View mode selector */}
           <div className="flex items-center bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
             {VIEW_LABELS.map(({ mode, label, icon: Icon }, index) => {
@@ -218,6 +224,86 @@ export function QueuePage() {
         </div>
       </div>
 
+      {/* Search + filters + sort panel — standalone row below header (hidden in All mode) */}
+      {queues && queues.length > 0 && viewMode !== 'all' && (
+        <div className="flex flex-wrap items-stretch gap-2 mb-4 p-3 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg">
+          {/* Search bar */}
+          <div className="relative w-full sm:w-[28rem] h-9">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray/50" />
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder={t('printers.search')}
+              aria-label={t('printers.search')}
+              className="w-full h-9 pl-10 pr-8 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm placeholder:text-bambu-gray/50 focus:outline-none focus:border-bambu-green"
+            />
+            {search && (
+              <button
+                type="button"
+                aria-label={t('common.clear')}
+                onClick={() => setSearch('')}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-bambu-gray hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+
+          {/* Status filter */}
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            className="h-9 min-w-[9rem] text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg px-3 text-white focus:border-bambu-green focus:outline-none"
+          >
+            <option value="all">{t('printers.filter.allStatuses')}</option>
+            <option value="printing">{t('printers.status.printing')}</option>
+            <option value="paused">{t('printers.status.paused')}</option>
+            <option value="idle">{t('printers.status.idle')}</option>
+            <option value="error">{t('printers.status.error')}</option>
+          </select>
+
+          {/* Location filter — only when at least one queue has a location */}
+          {availableLocations.length > 0 && (
+            <select
+              value={locationFilter}
+              onChange={(e) => setLocationFilter(e.target.value)}
+              className="h-9 min-w-[9rem] text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg px-3 text-white focus:border-bambu-green focus:outline-none"
+            >
+              <option value="all">{t('printers.filter.allLocations')}</option>
+              {availableLocations.map(loc => (
+                <option key={loc} value={loc}>{loc}</option>
+              ))}
+            </select>
+          )}
+
+          {/* Sort dropdown — pushed to far right via ml-auto */}
+          <div className="flex items-center gap-1 ml-auto">
+            <select
+              value={sortBy}
+              onChange={(e) => handleSortChange(e.target.value as SortOption)}
+              className="h-9 min-w-[9rem] text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg px-3 text-white focus:border-bambu-green focus:outline-none"
+            >
+              <option value="name">{t('printers.sort.name')}</option>
+              <option value="status">{t('printers.sort.status')}</option>
+              <option value="model">{t('printers.sort.model')}</option>
+              <option value="location">{t('printers.sort.location')}</option>
+            </select>
+            <button
+              onClick={toggleSortDirection}
+              className="h-9 w-9 flex items-center justify-center bg-bambu-dark border border-bambu-dark-tertiary rounded-lg hover:border-bambu-green transition-colors"
+              title={sortAsc ? t('printers.sort.descending') : t('printers.sort.ascending')}
+            >
+              {sortAsc ? (
+                <ArrowUpNarrowWide className="w-4 h-4 text-bambu-gray" />
+              ) : (
+                <ArrowDownWideNarrow className="w-4 h-4 text-bambu-gray" />
+              )}
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Stats bar */}
       {!isLoading && queues && queues.length > 0 && (
         <QueueStatsBar queues={queues} pendingItems={allPendingItems} />
@@ -239,8 +325,15 @@ export function QueuePage() {
         </div>
       )}
 
+      {/* No search/filter results (S / M / Timeline) */}
+      {!isLoading && queues && queues.length > 0 && viewMode !== 'all' && sortedQueues.length === 0 && hasActiveFilters && (
+        <div className="text-center py-12 text-bambu-gray">
+          {t('printers.noSearchResults')}
+        </div>
+      )}
+
       {/* Card grid (S and M modes) */}
-      {!isLoading && queues && queues.length > 0 && viewMode !== 'all' && viewMode !== 'timeline' && (
+      {!isLoading && queues && queues.length > 0 && viewMode !== 'all' && viewMode !== 'timeline' && sortedQueues.length > 0 && (
         groupedQueues ? (
           // Grouped by location
           <div className="space-y-6">
@@ -261,9 +354,9 @@ export function QueuePage() {
       )}
 
       {/* Timeline view */}
-      {!isLoading && queues && queues.length > 0 && viewMode === 'timeline' && (
+      {!isLoading && queues && queues.length > 0 && viewMode === 'timeline' && sortedQueues.length > 0 && (
         <QueueTimelineView
-          queues={queues}
+          queues={sortedQueues}
           items={allPendingItems}
           onEditItem={setEditingItem}
         />

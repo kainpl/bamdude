@@ -1624,7 +1624,7 @@ export function FileManagerPage() {
       )}
 
       {/* Main content */}
-      <div className="flex-1 flex flex-col lg:flex-row gap-4 lg:gap-6 min-h-0">
+      <div className="flex-1 flex flex-col lg:flex-row gap-4 min-h-0">
         {/* Mobile folder selector */}
         <div className="lg:hidden">
           <select

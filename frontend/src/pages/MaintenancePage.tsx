@@ -707,7 +707,7 @@ function SettingsSection({
   const customTypes = types.filter(t => !t.is_system);
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-4">
       {/* Maintenance Types */}
       <div>
         <div className="flex items-center justify-between mb-4">

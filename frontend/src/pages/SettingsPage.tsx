@@ -1191,9 +1191,9 @@ export function SettingsPage() {
       </div>
       {/* ══════ GENERAL TAB ══════ */}
       {activeTab === 'general' && (
-      <div className="flex flex-col lg:flex-row gap-6 lg:gap-8">
+      <div className="flex flex-col lg:flex-row gap-4">
         {/* ── Left Column ── */}
-        <div className="space-y-6 lg:w-1/2">
+        <div className="space-y-4 lg:w-1/2">
           <Card>
             <CardHeader>
               <h2 className="text-lg font-semibold text-white">{t('settings.general')}</h2>
@@ -1335,7 +1335,7 @@ export function SettingsPage() {
                 {t('settings.appearance')}
               </h2>
             </CardHeader>
-            <CardContent className="space-y-6">
+            <CardContent className="space-y-4">
               {/* Dark Mode Settings */}
               <div className={`space-y-3 p-4 rounded-lg border ${mode === 'dark' ? 'border-bambu-green bg-bambu-green/5' : 'border-bambu-dark-tertiary'}`}>
                 <h3 className="text-sm font-medium text-white flex items-center gap-2">
@@ -1489,7 +1489,7 @@ export function SettingsPage() {
         {/* ── /Left Column ── */}
 
         {/* ── Right Column ── */}
-        <div className="space-y-6 lg:w-1/2">
+        <div className="space-y-4 lg:w-1/2">
 
           <Card>
             <CardHeader>
@@ -1581,7 +1581,7 @@ export function SettingsPage() {
                           Update available: v{updateCheck.latest_version}
                         </p>
                         {updateCheck.release_name && updateCheck.release_name !== updateCheck.latest_version && (
-                          <p className="text-sm text-bambu-gray mt-1">{updateCheck.release_name}</p>
+                          <p className="text-sm text-bambu-gray">{updateCheck.release_name}</p>
                         )}
                       </div>
                       <div className="flex items-center gap-2">
@@ -1856,9 +1856,9 @@ export function SettingsPage() {
 
       {/* ══════ PRINTING TAB ══════ */}
       {activeTab === 'printing' && localSettings && (
-      <div className="flex flex-col lg:flex-row gap-6 lg:gap-8">
+      <div className="flex flex-col lg:flex-row gap-4">
         {/* ── Left Column ── */}
-        <div className="space-y-6 lg:w-1/2">
+        <div className="space-y-4 lg:w-1/2">
           {/* Camera Settings */}
           <Card>
             <CardHeader>
@@ -2069,7 +2069,7 @@ export function SettingsPage() {
         {/* ── /Left Column ── */}
 
         {/* ── Right Column ── */}
-        <div className="space-y-6 lg:w-1/2">
+        <div className="space-y-4 lg:w-1/2">
           {/* Macros */}
           <Card>
             <CardHeader>
@@ -2375,7 +2375,7 @@ export function SettingsPage() {
 
       {/* ══════ NETWORK TAB ══════ */}
       {activeTab === 'network' && localSettings && (
-      <div className="flex flex-col lg:flex-row gap-6">
+      <div className="flex flex-col lg:flex-row gap-4">
         {/* Left Column - External URL & FTP Retry */}
         <div className="flex-1 lg:max-w-xl space-y-4">
           {/* External URL */}
@@ -2917,7 +2917,7 @@ export function SettingsPage() {
                 <Plug className="w-5 h-5 text-bambu-green" />
                 {t('settings.smartPlugs')}
               </h2>
-              <p className="text-sm text-bambu-gray mt-1">
+              <p className="text-sm text-bambu-gray">
                 {t('settings.smartPlugsDescription')}
               </p>
             </div>
@@ -3287,16 +3287,16 @@ export function SettingsPage() {
 
       {/* ══════ API KEYS TAB ══════ */}
       {activeTab === 'apikeys' && (
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
           {/* Left Column - API Keys Management */}
           <div>
-            <div className="flex items-start justify-between gap-4 mb-6">
+            <div className="flex items-start justify-between gap-4 mb-4">
               <div className="flex-1">
                 <h2 className="text-lg font-semibold text-white flex items-center gap-2">
                   <Key className="w-5 h-5 text-bambu-green" />
                   {t('settings.apiKeys')}
                 </h2>
-                <p className="text-sm text-bambu-gray mt-1">
+                <p className="text-sm text-bambu-gray">
                   {t('settings.apiKeysDescription')}
                 </p>
               </div>
@@ -3516,7 +3516,7 @@ export function SettingsPage() {
             )}
 
             {/* Webhook Documentation */}
-            <Card className="mt-6">
+            <Card className="mt-4">
               <CardHeader>
                 <h3 className="text-base font-semibold text-white">{t('settings.webhookEndpoints')}</h3>
               </CardHeader>
@@ -3562,12 +3562,12 @@ export function SettingsPage() {
 
           {/* Right Column - API Browser */}
           <div>
-            <div className="mb-6">
+            <div className="mb-4">
               <h2 className="text-lg font-semibold text-white flex items-center gap-2">
                 <Globe className="w-5 h-5 text-bambu-green" />
                 {t('settings.apiBrowser')}
               </h2>
-              <p className="text-sm text-bambu-gray mt-1">
+              <p className="text-sm text-bambu-gray">
                 {t('settings.apiBrowserDescription')}
               </p>
             </div>
@@ -3604,9 +3604,9 @@ export function SettingsPage() {
       {/* ══════ FILAMENT TAB ══════ */}
       {activeTab === 'filament' && localSettings && (
         <>
-        <div className="flex flex-col lg:flex-row gap-6 lg:gap-8">
+        <div className="flex flex-col lg:flex-row gap-4">
           {/* Left Column (1/3) - Mode Selector + AMS Thresholds */}
-          <div className="lg:w-1/3 space-y-6">
+          <div className="lg:w-1/3 space-y-4">
             <SpoolmanSettings />
 
             <Card>
@@ -3944,7 +3944,7 @@ export function SettingsPage() {
           </div>
 
           {/* Right Column (2/3) - Spool Catalog + Color Catalog */}
-          <div className="lg:w-2/3 space-y-6">
+          <div className="lg:w-2/3 space-y-4">
             <SpoolCatalogSettings />
             <ColorCatalogSettings />
           </div>
@@ -4113,7 +4113,7 @@ export function SettingsPage() {
 
       {/* ══════ USERS TAB ══════ */}
       {activeTab === 'users' && (
-        <div className="space-y-6">
+        <div className="space-y-4">
           {/* Sub-tab Navigation */}
           <div className="flex gap-1 border-b border-bambu-dark-tertiary">
             <button
@@ -4206,7 +4206,7 @@ export function SettingsPage() {
                   </div>
                   <div>
                     <h3 className="text-white font-medium">{t('settings.email.advancedAuthEnabled')}</h3>
-                    <p className="text-sm text-bambu-gray mt-1">
+                    <p className="text-sm text-bambu-gray">
                       {t('settings.email.advancedAuthEnabledDesc')}
                     </p>
                   </div>
@@ -4216,9 +4216,9 @@ export function SettingsPage() {
           )}
 
           {authEnabled && (
-            <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
               {/* Left Column: Current User + User List */}
-              <div className="space-y-6">
+              <div className="space-y-4">
                 {/* Current User Card */}
                 {user && (
                   <Card>
@@ -4417,7 +4417,7 @@ export function SettingsPage() {
                                 )}
                               </div>
                             </div>
-                            <p className="text-sm text-bambu-gray mt-1 ml-6">
+                            <p className="text-sm text-bambu-gray ml-6">
                               {getGroupDescription(group.name, group.description, t) || t('settings.noDescription')}
                             </p>
                             <div className="flex items-center gap-4 mt-2 ml-6 text-xs text-bambu-gray">
