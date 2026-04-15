@@ -211,7 +211,13 @@ async def check_for_updates(
     }
 
     try:
-        async with httpx.AsyncClient() as client:
+        # follow_redirects=True so that users still installed from an older
+        # repo URL (e.g. the pre-rename kainpl/bambutrack) are transparently
+        # forwarded to the renamed repo via GitHub's 301 Moved Permanently
+        # response. Without this, the 301 is returned as-is, the JSON body
+        # is a redirect message instead of a releases array, and the update
+        # check silently breaks with an AttributeError.
+        async with httpx.AsyncClient(follow_redirects=True) as client:
             response = await client.get(
                 f"https://api.github.com/repos/{GITHUB_REPO}/releases?per_page=20",
                 headers={"Accept": "application/vnd.github.v3+json"},
