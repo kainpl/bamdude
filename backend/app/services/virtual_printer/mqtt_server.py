@@ -201,7 +201,7 @@ class SimpleMQTTServer:
         self._running = False
         self._server = None
         self._clients: dict[str, asyncio.StreamWriter] = {}
-        # Per-client serial — the serial the slicer actually uses in topics.
+        # Per-client serial - the serial the slicer actually uses in topics.
         # Populated from SUBSCRIBE/PUBLISH. Lets the VP respond on the topic
         # the slicer is listening on even when it disagrees with self.serial.
         self._client_serials: dict[str, str] = {}
@@ -543,7 +543,7 @@ class SimpleMQTTServer:
             if learned_serial and learned_serial != self._client_serials.get(client_id):
                 if learned_serial != self.serial:
                     logger.info(
-                        "%sMQTT client subscribed with serial %s (VP serial is %s) — adapting responses",
+                        "%sMQTT client subscribed with serial %s (VP serial is %s) - adapting responses",
                         self._log_prefix,
                         learned_serial,
                         self.serial,
@@ -752,7 +752,7 @@ class SimpleMQTTServer:
         try:
             await asyncio.wait_for(writer.drain(), timeout=5)
         except TimeoutError:
-            logger.debug("MQTT drain timeout for %s — client may be busy", topic)
+            logger.debug("MQTT drain timeout for %s - client may be busy", topic)
 
     async def _send_print_response(
         self, writer: asyncio.StreamWriter, sequence_id: str, filename: str, serial: str | None = None
@@ -764,7 +764,7 @@ class SimpleMQTTServer:
         self._prepare_percent = "0"
 
         try:
-            # Send command acknowledgment — slicer expects to see
+            # Send command acknowledgment - slicer expects to see
             # command: "project_file" echoed back before starting FTP upload
             subtask_name = filename.replace(".3mf", "") if filename else ""
             response = {
@@ -814,7 +814,7 @@ class SimpleMQTTServer:
             if client_serial and client_serial != self._client_serials.get(client_id):
                 if client_serial != self.serial:
                     logger.info(
-                        "%sMQTT client publishing with serial %s (VP serial is %s) — adapting responses",
+                        "%sMQTT client publishing with serial %s (VP serial is %s) - adapting responses",
                         self._log_prefix,
                         client_serial,
                         self.serial,

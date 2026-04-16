@@ -71,7 +71,6 @@ const mockPendingItems = [
     plate_id: null,
     bed_levelling: true,
     flow_cali: false,
-    vibration_cali: true,
     layer_inspect: false,
     timelapse: false,
     use_ams: true,
@@ -148,7 +147,7 @@ describe('QueuePage', () => {
         expect(screen.getByText('All')).toBeInTheDocument();
       });
       await user.click(screen.getByText('All'));
-      // 'All' view renders the flat pending list — should show pending item.
+      // 'All' view renders the flat pending list - should show pending item.
       await waitFor(() => {
         expect(screen.getByText('Pending Print')).toBeInTheDocument();
       });

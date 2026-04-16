@@ -66,7 +66,7 @@ class LocalBackupService:
             logger.info("Stopped local backup scheduler")
 
     async def _scheduler_loop(self):
-        """Main scheduler loop — checks for due backups every minute."""
+        """Main scheduler loop - checks for due backups every minute."""
         while True:
             try:
                 await asyncio.sleep(self._check_interval)

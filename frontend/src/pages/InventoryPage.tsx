@@ -302,7 +302,7 @@ const columnCells: Record<string, (ctx: CellCtx) => ReactNode> = {
     const coreWeight = spool.core_weight || 0;
     const calculatedWeight = Math.max(0, spool.label_weight - spool.weight_used) + coreWeight;
 
-    // Edge case: scale < core_weight means spool is empty or not on scale — treat as match
+    // Edge case: scale < core_weight means spool is empty or not on scale - treat as match
     let difference: number;
     let isMatch: boolean;
     if (scaleWeight < coreWeight) {
@@ -350,7 +350,7 @@ const columnCells: Record<string, (ctx: CellCtx) => ReactNode> = {
   },
 };
 
-// Sort value extractors — return a comparable value for each sortable column
+// Sort value extractors - return a comparable value for each sortable column
 const columnSortValues: Record<string, (spool: InventorySpool, assignmentMap: Record<number, SpoolAssignment>) => string | number> = {
   id: (s) => s.id,
   added_time: (s) => s.created_at || '',
@@ -754,7 +754,7 @@ function InventoryPage() {
     return items;
   }, [sortedSpools, groupSimilar, assignmentMap]);
 
-  // Pagination (after sorting) — pageSize -1 means "All"
+  // Pagination (after sorting) - pageSize -1 means "All"
   const showAll = pageSize === -1;
   const totalDisplayItems = displayItems.length;
   const effectivePageSize = showAll ? totalDisplayItems || 1 : pageSize;

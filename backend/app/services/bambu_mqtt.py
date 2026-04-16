@@ -139,7 +139,7 @@ class PrinterState:
     active_extruder: int = 0
     # Currently loaded tray (global ID): 254/255 = external spools, 255 = no filament on legacy printers
     tray_now: int = 255
-    # Last valid tray_now (0-253) — survives unload (255) for usage tracking after print completes
+    # Last valid tray_now (0-253) - survives unload (255) for usage tracking after print completes
     last_loaded_tray: int = -1
     # Pending load target - used to track what tray we're loading for H2D disambiguation
     pending_tray_target: int | None = None
@@ -368,7 +368,7 @@ class BambuMQTTClient:
         # Set when check_staleness() force-closes the socket to trigger reconnect.
         # Prevents _on_disconnect from redundantly broadcasting state (already done).
         self._stale_reconnecting: bool = False
-        # Timestamp of last stale reconnect — prevents rapid-fire socket closes
+        # Timestamp of last stale reconnect - prevents rapid-fire socket closes
         # when the frontend polls status faster than paho can reconnect.
         self._last_stale_reconnect: float = 0.0
 
@@ -391,14 +391,14 @@ class BambuMQTTClient:
         return time_since_last > self.STALE_TIMEOUT
 
     # Minimum seconds between stale reconnect attempts.  Frontend polls
-    # status every few seconds — without a cooldown, each poll would
+    # status every few seconds - without a cooldown, each poll would
     # force-close the socket before paho has time to reconnect.
     STALE_RECONNECT_COOLDOWN = 30.0
 
     def check_staleness(self) -> bool:
         """Check staleness and update connected state if stale. Returns True if connected."""
         if self.state.connected and self.is_stale():
-            # Don't force-close again if we already did recently — give paho
+            # Don't force-close again if we already did recently - give paho
             # time to reconnect and the printer time to send its first message.
             now = time.time()
             if now - self._last_stale_reconnect < self.STALE_RECONNECT_COOLDOWN:
@@ -433,7 +433,7 @@ class BambuMQTTClient:
             self._stale_reconnecting = False  # Clear stale-reconnect flag on successful connect
             # Reset per-connection warning state so warnings fire once per (re)connection
             self._ams_version_warned = set()
-            # Reset developer mode probe tracking (don't clear developer_mode itself —
+            # Reset developer mode probe tracking (don't clear developer_mode itself -
             # it may still be valid from a previous connection, avoids reprobe loop #887)
             self._dev_mode_probed = False
             self._dev_mode_needs_probe = False
@@ -498,12 +498,12 @@ class BambuMQTTClient:
     def _on_disconnect(self, client, userdata, disconnect_flags=None, rc=None, properties=None):
         # Always unblock disconnect() callers, regardless of whether we suppress
         # the state broadcast below.  disconnect() sets _disconnection_event and
-        # waits on it — every callback path must fire it.
+        # waits on it - every callback path must fire it.
         if self._disconnection_event:
             self._disconnection_event.set()
 
         # If we intentionally closed the socket for stale reconnect, don't broadcast
-        # another state change — check_staleness() already set connected=False and
+        # another state change - check_staleness() already set connected=False and
         # notified the UI.  Just log and let paho auto-reconnect.
         if self._stale_reconnecting:
             logger.info(
@@ -516,7 +516,7 @@ class BambuMQTTClient:
         # Ignore spurious disconnect callbacks if we've received a message recently
         # Paho-mqtt sometimes fires disconnect callbacks while the connection is still active.
         # BUT: never suppress error disconnects (keepalive timeout, connection lost, etc.)
-        # — only suppress when rc indicates a clean/normal disconnect.
+        # - only suppress when rc indicates a clean/normal disconnect.
         is_error_disconnect = rc is not None and hasattr(rc, "is_failure") and rc.is_failure
         time_since_last_message = time.time() - self._last_message_time
         if not is_error_disconnect and time_since_last_message < 10.0 and self._last_message_time > 0:
@@ -664,7 +664,7 @@ class BambuMQTTClient:
 
         if "print" in payload:
             print_data = payload["print"]
-            # Handle gcode_line ACK — resolve ACK listener for HTTP wait
+            # Handle gcode_line ACK - resolve ACK listener for HTTP wait
             if isinstance(print_data, dict) and print_data.get("command") == "gcode_line" and "result" in print_data:
                 seq_id = print_data.get("sequence_id")
                 result = print_data.get("result", "")
@@ -721,7 +721,7 @@ class BambuMQTTClient:
                 except Exception as e:
                     logger.error("[%s] Error handling AMS data from print: %s", self.serial_number, e)
 
-            # Handle vir_slot (H2-series external spool data) — list of external trays
+            # Handle vir_slot (H2-series external spool data) - list of external trays
             # Process vir_slot FIRST so it takes priority over vt_tray
             if "vir_slot" in print_data:
                 vir_slot = print_data["vir_slot"]
@@ -853,7 +853,7 @@ class BambuMQTTClient:
 
         # Extract AMS unit firmware versions from AMS modules.
         # See module-level _AMS_MODULE_PREFIXES for supported naming conventions.
-        # Always cache regardless of whether AMS data has arrived yet — get_version
+        # Always cache regardless of whether AMS data has arrived yet - get_version
         # often arrives before the first push_status, so caching must be unconditional.
         ams_raw = self.state.raw_data.get("ams")
         for module in modules:
@@ -1257,7 +1257,7 @@ class BambuMQTTClient:
                 # H2D dual-nozzle printers report only slot number (0-3), not global tray ID
                 # Use active_extruder + ams_extruder_map to determine which AMS the slot belongs to
                 # Single-nozzle printers with multiple AMS (e.g. P2S) also report local slot IDs (#420)
-                # — disambiguated below using MQTT mapping field
+                # - disambiguated below using MQTT mapping field
                 ams_map = self.state.ams_extruder_map
                 if self._is_dual_nozzle and 0 <= parsed_tray_now <= 3:
                     # First, check if we have a pending target that matches this slot
@@ -1392,7 +1392,7 @@ class BambuMQTTClient:
                     num_ams = bin(ams_exist).count("1")
 
                     if num_ams > 1:
-                        # Multiple AMS on single-nozzle — tray_now is likely a local slot ID.
+                        # Multiple AMS on single-nozzle - tray_now is likely a local slot ID.
                         # Cross-reference with MQTT mapping field to find the correct AMS unit.
                         mapping_raw = self.state.raw_data.get("mapping")
                         resolved = self._resolve_local_slot_from_mapping(parsed_tray_now, mapping_raw)
@@ -1404,11 +1404,11 @@ class BambuMQTTClient:
                                 )
                             self.state.tray_now = resolved
                         else:
-                            # No mapping available (not printing, or ambiguous) — use as-is.
+                            # No mapping available (not printing, or ambiguous) - use as-is.
                             # This matches the old behavior and is correct for AMS 0.
                             self.state.tray_now = parsed_tray_now
                     else:
-                        # Single AMS — local slot 0-3 equals global ID
+                        # Single AMS - local slot 0-3 equals global ID
                         self.state.tray_now = parsed_tray_now
                 else:
                     # tray_now > 3 means it's already a global ID, or 255 means unloaded
@@ -1487,14 +1487,14 @@ class BambuMQTTClient:
                                 and merged_tray.get("tray_type")
                             ):
                                 logger.info(
-                                    "[%s] AMS %s tray %s: state=%s (not loaded) — clearing stale tray data",
+                                    "[%s] AMS %s tray %s: state=%s (not loaded) - clearing stale tray data",
                                     self.serial_number,
                                     ams_id,
                                     tray_id,
                                     tray_state,
                                 )
                                 slot_clearing = True
-                                # The incremental update only has {id, state} — inject
+                                # The incremental update only has {id, state} - inject
                                 # empty values for all content fields so the merge loop
                                 # below clears the stale data from merged_tray.
                                 new_tray.update(
@@ -1614,7 +1614,7 @@ class BambuMQTTClient:
         # BambuStudio DevFilaSystem.cpp parses info as hex string:
         #   type_id    = get_flag_bits(info, 0, 4)   // bits 0-3: AMS type
         #   extruder_id = get_flag_bits(info, 8, 4)  // bits 8-11: extruder assignment
-        # where get_flag_bits uses std::stoull(str, nullptr, 16) — hex parsing.
+        # where get_flag_bits uses std::stoull(str, nullptr, 16) - hex parsing.
         # extruder_id: 0=right/main, 1=left/deputy, 0xE=uninitialized (skip)
         #
         # Use merged_ams (not ams_list) to avoid partial MQTT updates overwriting
@@ -1684,7 +1684,7 @@ class BambuMQTTClient:
             self._previous_ams_hash = ams_hash
             if self.on_ams_change:
                 logger.debug("[%s] AMS data changed, triggering sync callback", self.serial_number)
-                # Pass merged AMS data (not raw ams_list) — partial MQTT updates
+                # Pass merged AMS data (not raw ams_list) - partial MQTT updates
                 # may lack fields like 'remain' that the merged state preserves
                 self.on_ams_change(merged_ams)
 
@@ -1785,9 +1785,9 @@ class BambuMQTTClient:
             # End marker: stg_cur becomes -1 or 255 (idle) via claim_action:{idle_stg}
             if self.state.macro_executing:
                 if self.state.stg_cur != 0 and new_stg == 0:
-                    # Macro started executing — push state to frontend
+                    # Macro started executing - push state to frontend
                     logger.info(
-                        "[%s][MACRO] Execution started — stg_cur %s->0, macro='%s'",
+                        "[%s][MACRO] Execution started - stg_cur %s->0, macro='%s'",
                         self.serial_number,
                         self.state.stg_cur,
                         self.state.macro_executing,
@@ -1796,12 +1796,12 @@ class BambuMQTTClient:
                     if self.on_state_change:
                         self.on_state_change(self.state)
                 elif self.state.stg_cur == 0 and new_stg != 0:
-                    # Macro completed — stg_cur left 0 (goes to -1 or 255 = idle)
+                    # Macro completed - stg_cur left 0 (goes to -1 or 255 = idle)
                     macro_name = self.state.macro_executing
                     self.state.macro_executing = None
                     self.state.stg_cur = new_stg
                     logger.info(
-                        "[%s][MACRO] Execution completed — stg_cur 0->%s, macro='%s'",
+                        "[%s][MACRO] Execution completed - stg_cur 0->%s, macro='%s'",
                         self.serial_number,
                         new_stg,
                         macro_name,
@@ -1810,7 +1810,7 @@ class BambuMQTTClient:
                         self.on_macro_complete(macro_name, "completed")
                     if self.on_state_change:
                         self.on_state_change(self.state)
-                    # Skip normal stg_cur assignment below — already set
+                    # Skip normal stg_cur assignment below - already set
                     new_stg = None
 
             if new_stg is not None:
@@ -2245,7 +2245,7 @@ class BambuMQTTClient:
                         severity = (attr >> 8) & 0xF
                         # Module is in attr byte 3 (bits 24-31)
                         module = (attr >> 24) & 0xFF
-                        # Skip non-error status codes — all real HMS errors
+                        # Skip non-error status codes - all real HMS errors
                         # have code >= 0x4000. Lower values are status/phase
                         # indicators that some firmware sends during normal printing.
                         if code < 0x4000:
@@ -2275,7 +2275,7 @@ class BambuMQTTClient:
                 # All known HMS errors use 0x4xxx (fatal), 0x8xxx (warning), 0xCxxx (prompt).
                 # Some firmware sends low values like 0x0002 during normal printing.
                 if error < 0x4000:
-                    pass  # Skip — not a real error
+                    pass  # Skip - not a real error
                 else:
                     # Store in a format that matches the community error database
                     # attr stores the full 32-bit value for reconstruction
@@ -2530,7 +2530,7 @@ class BambuMQTTClient:
                     time.monotonic() - self._connect_time,
                 )
         elif self._dev_mode_probed and self._dev_mode_probe_seq is not None:
-            # Probe sent but no response yet — check for timeout
+            # Probe sent but no response yet - check for timeout
             elapsed = time.monotonic() - self._dev_mode_probe_time
             if elapsed > 10.0:
                 self._dev_mode_probe_failures += 1
@@ -2890,7 +2890,7 @@ class BambuMQTTClient:
         self._client.reconnect_delay_set(min_delay=1, max_delay=30)
 
         # Keepalive: paho sends PINGREQs at this interval, broker considers
-        # client dead at 1.5x.  30s is a good balance — fast enough to detect
+        # client dead at 1.5x.  30s is a good balance - fast enough to detect
         # real network loss (45s), not so aggressive that transient hiccups
         # trigger false disconnects.  Stale detection (60s no messages) handles
         # the P1S/P1P firmware bug where the broker stops publishing but the
@@ -2905,7 +2905,6 @@ class BambuMQTTClient:
         ams_mapping: list[int] | None = None,
         bed_levelling: bool = True,
         flow_cali: bool = False,
-        vibration_cali: bool = True,
         layer_inspect: bool = False,
         timelapse: bool = False,
         use_ams: bool = True,
@@ -2922,9 +2921,14 @@ class BambuMQTTClient:
             timelapse: Record timelapse video
             bed_levelling: Auto bed levelling before print
             flow_cali: Flow/pressure advance calibration
-            vibration_cali: Vibration compensation calibration
             layer_inspect: First layer AI inspection
             use_ams: Use AMS for automatic filament changes
+
+        Note: the ``vibration_cali`` field in the MQTT payload is kept for
+        firmware compatibility but hardcoded to False. Upstream Bambu Studio
+        also hardcodes it off for every model (per-print vibration calibration
+        was removed from the Studio UI); the standalone calibration wizard
+        remains the only way to run it.
         """
         if self._client and self.state.connected:
             # Bambu print command format - matches Bambu Studio's format
@@ -2973,19 +2977,19 @@ class BambuMQTTClient:
                         ams_mapping2.append({"ams_id": ams_id, "slot_id": slot_id})
 
             # H2D series requires integer values (0/1) for calibration/leveling fields
-            # but use_ams MUST remain boolean — H2D Pro firmware interprets integer
+            # but use_ams MUST remain boolean - H2D Pro firmware interprets integer
             # values as nozzle index (1 = deputy nozzle), causing wrong extruder routing
             # Other printers (X1C, P1S, A1, etc.) require actual booleans for all fields
             is_h2d = self.model and self.model.upper().strip() in ("H2D", "H2D PRO", "H2DPRO", "H2C", "H2S")
 
             # If all mapped slots are external spool (no real AMS trays), force use_ams=False.
             # P1S/P1P with no AMS rejects use_ams=True with "Failed to get AMS mapping table".
-            # Skip for H2D series — use_ams controls nozzle routing on those printers.
+            # Skip for H2D series - use_ams controls nozzle routing on those printers.
             if ams_mapping and use_ams and not is_h2d:
                 if all(t is None or int(t) < 0 or int(t) >= 254 for t in ams_mapping):
                     use_ams = False
                     logger.info(
-                        "[%s] All filament slots use external spool — setting use_ams=False",
+                        "[%s] All filament slots use external spool - setting use_ams=False",
                         self.serial_number,
                     )
 
@@ -2993,12 +2997,12 @@ class BambuMQTTClient:
             # On printers without a physical AMS, firmware rejects -1 (unmapped)
             # and 254 (virtual tray) in ams_mapping with 0700_8012 "Failed to get
             # AMS mapping table". Fix: remap -1→0 and omit ams_mapping2 entirely.
-            # H2D excluded — use_ams controls nozzle routing on those.
+            # H2D excluded - use_ams controls nozzle routing on those.
             no_ams_printer = not use_ams and not is_h2d and not self.state.raw_data.get("ams")
             if no_ams_printer and flat_ams_mapping:
                 flat_ams_mapping = [0 if v == -1 else v for v in flat_ams_mapping]
                 logger.info(
-                    "[%s] No AMS detected — remapped external spool: ams_mapping=%s, omitting ams_mapping2",
+                    "[%s] No AMS detected - remapped external spool: ams_mapping=%s, omitting ams_mapping2",
                     self.serial_number,
                     flat_ams_mapping,
                 )
@@ -3016,7 +3020,11 @@ class BambuMQTTClient:
                     "bed_leveling": (1 if bed_levelling else 0) if is_h2d else bed_levelling,
                     "auto_bed_leveling": 1 if bed_levelling else 0,
                     "flow_cali": (1 if flow_cali else 0) if is_h2d else flow_cali,
-                    "vibration_cali": (1 if vibration_cali else 0) if is_h2d else vibration_cali,
+                    # Hardcoded off — upstream Bambu Studio does the same for
+                    # every model. Kept in the payload only because older
+                    # firmware versions reject the command if the key is
+                    # missing.
+                    "vibration_cali": 0 if is_h2d else False,
                     "layer_inspect": (1 if layer_inspect else 0) if is_h2d else layer_inspect,
                     "use_ams": use_ams,
                     "cfg": "0",
@@ -3036,12 +3044,6 @@ class BambuMQTTClient:
                     "[%s] H2D series detected: using integer format for calibration fields (use_ams stays boolean)",
                     self.serial_number,
                 )
-
-            # P2S-specific parameter adjustments
-            # P2S printer doesn't support vibration calibration like X1/P1 series
-            if self.model and self.model.upper().strip() in ("P2S", "N7"):
-                command["print"]["vibration_cali"] = False
-                logger.debug("[%s] P2S detected: disabling vibration_cali", self.serial_number)
 
             # Add AMS mapping if provided
             if ams_mapping is not None:
@@ -4429,7 +4431,7 @@ class BambuMQTTClient:
         This command selects a K profile from the printer's calibration list.
         Use cali_idx=-1 to use the default K value (0.020).
 
-        Note: Do NOT send setting_id in this command — BambuStudio never includes
+        Note: Do NOT send setting_id in this command - BambuStudio never includes
         it, and adding it causes the firmware to mislink the profile on X1C/P1S.
 
         Args:

@@ -7,12 +7,12 @@ requires authentication.
 
 For existing installs we handle two scenarios in the ``seed`` phase:
 
-* **At least one admin exists** — force ``auth_enabled`` and ``setup_completed``
+* **At least one admin exists** - force ``auth_enabled`` and ``setup_completed``
   both to ``true``. Users can log in with their existing credentials on the
   next boot, nothing else changes.
 
 * **No admin exists** (``auth_enabled=false`` installs that never created a
-  user, or anything that somehow lost its last admin) — clear both
+  user, or anything that somehow lost its last admin) - clear both
   ``setup_completed`` and ``auth_enabled`` so the middleware routes the user
   through ``/setup`` on next boot. Existing non-admin users (if any) are left
   untouched and will remain in place as regular Operator/Viewer members once
@@ -69,14 +69,14 @@ async def seed(session_factory):
             await _upsert_setting(db, "auth_enabled", "true")
             await _upsert_setting(db, "setup_completed", "true")
             logger.info(
-                "m003: %d admin user(s) detected — auth_enabled/setup_completed forced to true",
+                "m003: %d admin user(s) detected - auth_enabled/setup_completed forced to true",
                 legacy_count + group_count,
             )
         else:
             # Force the setup flow on next boot. Preserve non-admin users (if any).
             await db.execute(delete(Settings).where(Settings.key.in_(["setup_completed", "auth_enabled"])))
             logger.warning(
-                "m003: no admin user found — setup_completed/auth_enabled cleared. "
+                "m003: no admin user found - setup_completed/auth_enabled cleared. "
                 "Setup will be required on next start.",
             )
 

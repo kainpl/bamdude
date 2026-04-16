@@ -1,4 +1,4 @@
-"""Queue counter management — keeps PrinterQueue cached counters in sync."""
+"""Queue counter management - keeps PrinterQueue cached counters in sync."""
 
 import logging
 from datetime import datetime, timezone

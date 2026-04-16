@@ -623,7 +623,7 @@ class TestNozzleAwareMapping:
             # Only a tray on the left nozzle, none on right
             {"type": "PLA", "color": "#FF0000", "global_tray_id": 4, "extruder_id": 1},
         ]
-        # No trays on extruder 0 — hard filter returns -1, no cross-nozzle fallback
+        # No trays on extruder 0 - hard filter returns -1, no cross-nozzle fallback
         result = scheduler._match_filaments_to_slots(required, loaded)
         assert result == [-1]
 

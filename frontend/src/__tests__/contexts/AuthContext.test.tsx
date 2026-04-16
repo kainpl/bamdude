@@ -1,7 +1,7 @@
 /**
  * Tests for the AuthContext permission helpers.
  *
- * The opt-in "auth disabled" mode was removed — the system always requires
+ * The opt-in "auth disabled" mode was removed - the system always requires
  * authentication. Tests for the old behavior (everyone is admin, all
  * permissions granted) were deleted.
  */

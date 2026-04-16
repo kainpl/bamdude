@@ -1316,7 +1316,7 @@ function HistorySection({ t, printerId }: { t: (key: string, opts?: Record<strin
   const getPerformedBy = useCallback((entry: MaintenanceHistoryEntry): string => {
     if (entry.performed_by_username) return entry.performed_by_username;
     if (entry.performed_by_chat_label) return entry.performed_by_chat_label;
-    return '—';
+    return '-';
   }, []);
 
   const toggleSort = (field: HistorySortField) => {
@@ -1452,12 +1452,12 @@ function HistorySection({ t, printerId }: { t: (key: string, opts?: Record<strin
                     <td className="px-4 py-3 text-white whitespace-nowrap">
                       {formatDateTime(entry.performed_at, settings?.time_format || 'system', settings?.date_format || 'system')}
                     </td>
-                    <td className="px-4 py-3 text-white">{entry.printer_name ?? '—'}</td>
-                    <td className="px-4 py-3 text-white">{entry.maintenance_type_name ?? '—'}</td>
+                    <td className="px-4 py-3 text-white">{entry.printer_name ?? '-'}</td>
+                    <td className="px-4 py-3 text-white">{entry.maintenance_type_name ?? '-'}</td>
                     <td className="px-4 py-3 text-bambu-gray">{entry.hours_at_maintenance.toFixed(1)}h</td>
                     <td className="px-4 py-3 text-bambu-gray">{getPerformedBy(entry)}</td>
                     <td className="px-4 py-3 text-bambu-gray max-w-[200px]">
-                      {entry.notes ? <span className="truncate block" title={entry.notes}>{entry.notes}</span> : '—'}
+                      {entry.notes ? <span className="truncate block" title={entry.notes}>{entry.notes}</span> : '-'}
                     </td>
                   </tr>
                 ))}

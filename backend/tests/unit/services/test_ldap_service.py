@@ -7,7 +7,7 @@ Tests the pure logic functions in ldap_service.py:
 - LDAPConfig/LDAPUserInfo dataclass construction
 
 Network-dependent functions (authenticate_ldap_user, test_ldap_connection)
-are not tested here — they require a live LDAP server.
+are not tested here - they require a live LDAP server.
 """
 
 import pytest

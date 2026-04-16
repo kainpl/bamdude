@@ -34,7 +34,7 @@ from backend.app.utils.threemf_tools import extract_nozzle_mapping_from_3mf
 
 logger = logging.getLogger(__name__)
 
-# Filament type equivalence groups — types within the same group are
+# Filament type equivalence groups - types within the same group are
 # interchangeable on the printer side (Bambu Lab firmware treats them as compatible).
 _FILAMENT_TYPE_GROUPS: list[list[str]] = [
     ["PA-CF", "PA12-CF", "PAHT-CF"],
@@ -124,7 +124,7 @@ class PrintScheduler:
             items = list(result.scalars().all())
 
             if not items:
-                # No pending items — still check auto-drying on idle printers
+                # No pending items - still check auto-drying on idle printers
                 await self._check_auto_drying(db, [], set())
                 return
 
@@ -263,7 +263,7 @@ class PrintScheduler:
                     skip_reasons["stagger_wait"] = skip_reasons.get("stagger_wait", 0) + 1
                     continue
 
-                # Clear waiting_reason — printer is ready
+                # Clear waiting_reason - printer is ready
                 if item.waiting_reason:
                     item.waiting_reason = None
                     await db.commit()
@@ -304,7 +304,7 @@ class PrintScheduler:
                     plate_cleared = printer_manager.is_plate_cleared(pid)
                     state_name = state.state if state else "NO_STATUS"
                     logger.info(
-                        "Queue: printer %d not available — connected=%s, state=%s, plate_cleared=%s",
+                        "Queue: printer %d not available - connected=%s, state=%s, plate_cleared=%s",
                         pid,
                         connected,
                         state_name,
@@ -319,7 +319,7 @@ class PrintScheduler:
     ) -> list[int] | None:
         """Compute AMS mapping for a printer based on filament requirements.
 
-        Called when a queue item has no ams_mapping set — either for model-based
+        Called when a queue item has no ams_mapping set - either for model-based
         items after printer assignment, or printer-specific items (e.g. from VP).
 
         Args:
@@ -626,7 +626,7 @@ class PrintScheduler:
             available = [f for f in loaded if f["global_tray_id"] not in used_tray_ids]
 
             # Nozzle-aware filtering: restrict to trays on the correct nozzle.
-            # Hard filter — cross-nozzle assignment causes print failures
+            # Hard filter - cross-nozzle assignment causes print failures
             # ("position of left hotend is abnormal"), so never fall back.
             req_nozzle_id = req.get("nozzle_id")
             if req_nozzle_id is not None:
@@ -743,10 +743,10 @@ class PrintScheduler:
         for slot in self._stagger_slots:
             iv = slot.interval_seconds
 
-            # Check if the printer is still printing — if not, slot is done
+            # Check if the printer is still printing - if not, slot is done
             state = printer_manager.get_status(slot.printer_id)
             if state and state.state not in ("RUNNING", "PREPARE", "IDLE", "PAUSE"):
-                # Printer finished/failed/offline — don't hold the slot
+                # Printer finished/failed/offline - don't hold the slot
                 if slot.temp_reached_at is not None:
                     if now - slot.temp_reached_at < iv:
                         active.append(slot)
@@ -811,7 +811,7 @@ class PrintScheduler:
         )
         if not idle:
             logger.debug(
-                "Printer %d: not idle — state=%s, plate_cleared=%s",
+                "Printer %d: not idle - state=%s, plate_cleared=%s",
                 printer_id,
                 state.state,
                 printer_manager.is_plate_cleared(printer_id),
@@ -896,7 +896,7 @@ class PrintScheduler:
             # Stop active drying on all printers if both features disabled
             if self._drying_in_progress:
                 for pid in list(self._drying_in_progress):
-                    logger.info("Auto-drying: printer %d — stopping, auto-drying disabled", pid)
+                    logger.info("Auto-drying: printer %d - stopping, auto-drying disabled", pid)
                     await self._stop_drying(pid)
             return
 
@@ -915,7 +915,7 @@ class PrintScheduler:
         # If only queue mode is on and no printers have scheduled items, stop drying
         if not ambient_drying_enabled and not printers_with_scheduled:
             for pid in list(self._drying_in_progress):
-                logger.info("Auto-drying: printer %d — stopping, no scheduled prints in queue", pid)
+                logger.info("Auto-drying: printer %d - stopping, no scheduled prints in queue", pid)
                 await self._stop_drying(pid)
             return
 
@@ -935,52 +935,52 @@ class PrintScheduler:
         for printer in all_printers.scalars():
             pid = printer.id
             if pid in busy_printers:
-                logger.debug("Auto-drying: printer %d skipped — busy", pid)
+                logger.debug("Auto-drying: printer %d skipped - busy", pid)
                 continue
             # In queue-only mode, only dry printers that have scheduled prints
             if not ambient_drying_enabled and pid not in printers_with_scheduled:
                 if self._drying_in_progress.get(pid):
-                    logger.info("Auto-drying: printer %d — stopping, no scheduled prints for this printer", pid)
+                    logger.info("Auto-drying: printer %d - stopping, no scheduled prints for this printer", pid)
                     await self._stop_drying(pid)
-                logger.debug("Auto-drying: printer %d skipped — no scheduled prints", pid)
+                logger.debug("Auto-drying: printer %d skipped - no scheduled prints", pid)
                 continue
             # When block mode is on, don't START new drying on printers with pending items.
             # But allow already-drying printers through so humidity auto-stop logic still runs.
             if block_for_drying and pid in printers_with_items and not self._drying_in_progress.get(pid):
-                logger.debug("Auto-drying: printer %d skipped — has pending items (block mode)", pid)
+                logger.debug("Auto-drying: printer %d skipped - has pending items (block mode)", pid)
                 continue
             if not printer_manager.is_connected(pid):
-                logger.debug("Auto-drying: printer %d skipped — not connected", pid)
+                logger.debug("Auto-drying: printer %d skipped - not connected", pid)
                 continue
             if not self._is_printer_idle(pid):
-                logger.debug("Auto-drying: printer %d skipped — not idle", pid)
+                logger.debug("Auto-drying: printer %d skipped - not idle", pid)
                 continue
 
             # Check if this printer supports drying
             state = printer_manager.get_status(pid)
             if not state:
-                logger.debug("Auto-drying: printer %d skipped — no state", pid)
+                logger.debug("Auto-drying: printer %d skipped - no state", pid)
                 continue
             model = printer_manager.get_model(pid)
             firmware = state.firmware_version
             if not supports_drying(model, firmware):
-                logger.debug("Auto-drying: printer %d skipped — model %s does not support drying", pid, model)
+                logger.debug("Auto-drying: printer %d skipped - model %s does not support drying", pid, model)
                 continue
 
             # Check each AMS unit from raw_data
             ams_list = state.raw_data.get("ams", [])
-            logger.debug("Auto-drying: printer %d — checking %d AMS units", pid, len(ams_list))
+            logger.debug("Auto-drying: printer %d - checking %d AMS units", pid, len(ams_list))
             for ams_data in ams_list:
                 module_type = str(ams_data.get("module_type") or "")
                 ams_id = int(ams_data.get("id", 0))
                 # Only n3f/n3s support drying
                 if module_type not in ("n3f", "n3s"):
-                    logger.debug("Auto-drying: printer %d AMS %d skipped — module_type=%s", pid, ams_id, module_type)
+                    logger.debug("Auto-drying: printer %d AMS %d skipped - module_type=%s", pid, ams_id, module_type)
                     continue
 
                 dry_time = int(ams_data.get("dry_time") or 0)
 
-                # Read humidity — prefer humidity_raw (actual %) over humidity (index 1-5)
+                # Read humidity - prefer humidity_raw (actual %) over humidity (index 1-5)
                 humidity = None
                 h_raw = ams_data.get("humidity_raw")
                 if h_raw is not None:
@@ -995,16 +995,16 @@ class PrintScheduler:
                             humidity = int(h_idx)
                         except (ValueError, TypeError):
                             pass
-                # Already drying — check if humidity dropped below threshold (with minimum drying time)
+                # Already drying - check if humidity dropped below threshold (with minimum drying time)
                 if dry_time > 0:
                     if pid not in self._drying_in_progress:
-                        # Drying we didn't start (manual or from before restart) — track but don't stop
+                        # Drying we didn't start (manual or from before restart) - track but don't stop
                         self._drying_in_progress[pid] = time.monotonic()
                     started_at = self._drying_in_progress[pid]
                     elapsed = time.monotonic() - started_at
                     if humidity is not None and humidity <= humidity_threshold and elapsed >= self._min_drying_seconds:
                         logger.info(
-                            "Auto-drying: printer %d AMS %d — humidity %d%% <= threshold %d%% after %dm, stopping drying",
+                            "Auto-drying: printer %d AMS %d - humidity %d%% <= threshold %d%% after %dm, stopping drying",
                             pid,
                             ams_id,
                             humidity,
@@ -1014,7 +1014,7 @@ class PrintScheduler:
                         printer_manager.send_drying_command(pid, ams_id, temp=0, duration=0, mode=0)
                     else:
                         logger.debug(
-                            "Auto-drying: printer %d AMS %d — drying (%dm left, humidity %s%%, elapsed %dm/%dm min)",
+                            "Auto-drying: printer %d AMS %d - drying (%dm left, humidity %s%%, elapsed %dm/%dm min)",
                             pid,
                             ams_id,
                             dry_time,
@@ -1024,10 +1024,10 @@ class PrintScheduler:
                         )
                     continue
 
-                # Humidity below threshold — no need to start drying
+                # Humidity below threshold - no need to start drying
                 if humidity is None or humidity <= humidity_threshold:
                     logger.debug(
-                        "Auto-drying: printer %d AMS %d skipped — humidity %s <= threshold %d",
+                        "Auto-drying: printer %d AMS %d skipped - humidity %s <= threshold %d",
                         pid,
                         ams_id,
                         humidity,
@@ -1039,7 +1039,7 @@ class PrintScheduler:
                 sf_reasons = ams_data.get("dry_sf_reason", [])
                 if sf_reasons:
                     logger.debug(
-                        "Auto-drying: printer %d AMS %d skipped — cannot dry reasons: %s",
+                        "Auto-drying: printer %d AMS %d skipped - cannot dry reasons: %s",
                         pid,
                         ams_id,
                         sf_reasons,
@@ -1051,7 +1051,7 @@ class PrintScheduler:
                 params = self._get_conservative_drying_params(trays, module_type, presets)
                 if not params:
                     logger.debug(
-                        "Auto-drying: printer %d AMS %d skipped — no drying-eligible filaments in trays", pid, ams_id
+                        "Auto-drying: printer %d AMS %d skipped - no drying-eligible filaments in trays", pid, ams_id
                     )
                     continue
 
@@ -1059,7 +1059,7 @@ class PrintScheduler:
 
                 # Start drying
                 logger.info(
-                    "Auto-drying: printer %d AMS %d — humidity %d%% > threshold %d%%, "
+                    "Auto-drying: printer %d AMS %d - humidity %d%% > threshold %d%%, "
                     "starting %s drying at %d°C for %dh",
                     pid,
                     ams_id,
@@ -1078,7 +1078,7 @@ class PrintScheduler:
     def _sync_drying_state(self):
         """Sync in-memory drying state with actual printer status.
 
-        Handles backend restart — if a printer is drying but we don't know about it,
+        Handles backend restart - if a printer is drying but we don't know about it,
         update our state. If we think it's drying but it's not, clear it.
         """
         to_remove = []
@@ -1108,7 +1108,7 @@ class PrintScheduler:
             if dry_time > 0:
                 ams_id = int(ams_data.get("id", 0))
                 logger.info(
-                    "Auto-drying: stopping drying on printer %d AMS %d — print takes priority",
+                    "Auto-drying: stopping drying on printer %d AMS %d - print takes priority",
                     printer_id,
                     ams_id,
                 )
@@ -1369,7 +1369,7 @@ class PrintScheduler:
         except Exception as e:
             logger.debug("Queue item %s: Delete failed (may not exist): %s", item.id, e)
 
-        # Clean up /cache/ — delete stale .3mf and .bbl files from previous prints
+        # Clean up /cache/ - delete stale .3mf and .bbl files from previous prints
         # The printer unpacks 3MF into /cache/ as {plate_id}_{base_name}.bbl
         sanitized_base = remote_filename[:-4] if remote_filename.endswith(".3mf") else remote_filename  # strip .3mf
         try:
@@ -1498,7 +1498,6 @@ class PrintScheduler:
             ams_mapping=ams_mapping,
             bed_levelling=item.bed_levelling,
             flow_cali=item.flow_cali,
-            vibration_cali=item.vibration_cali,
             layer_inspect=item.layer_inspect,
             timelapse=item.timelapse,
             use_ams=item.use_ams,
@@ -1546,7 +1545,7 @@ class PrintScheduler:
                     printer_model=printer.model,
                 )
             except Exception:
-                pass  # Best-effort — don't fail the error handler
+                pass  # Best-effort - don't fail the error handler
 
             # Print command failed - revert status
             await self._fail_item(db, item, "Failed to send print command to printer")

@@ -288,7 +288,7 @@ class TestEmailLoginAPI:
             json={"username": "noemail", "password": "noEmailPass1", "email": "noemail@test.com", "role": "user"},
         )
 
-        # Try to login with email — should fail since advanced auth is off
+        # Try to login with email - should fail since advanced auth is off
         response = await async_client.post(
             "/api/v1/auth/login",
             json={"username": "noemail@test.com", "password": "noEmailPass1"},

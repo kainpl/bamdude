@@ -19,11 +19,11 @@ def _strip_tz_from_params(conn, cursor, statement, parameters, context, executem
     """Strip timezone info from aware datetimes before they reach asyncpg.
 
     asyncpg rejects timezone-aware values for TIMESTAMP WITHOUT TIME ZONE columns.
-    The codebase uses datetime.now(timezone.utc) in many places — this makes
+    The codebase uses datetime.now(timezone.utc) in many places - this makes
     Postgres behave like SQLite which ignores timezone info entirely.
 
     Recursive: SQLAlchemy passes parameters in several shapes depending on the
-    path — a dict for named binds, a tuple for positional, a list of dicts/tuples
+    path - a dict for named binds, a tuple for positional, a list of dicts/tuples
     for executemany, and for insertmanyvalues sometimes a list of tuples inside
     an outer list. Strip datetimes at any depth (upstream #941 follow-up).
     """

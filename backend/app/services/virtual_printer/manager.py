@@ -415,7 +415,7 @@ class VirtualPrinterInstance:
 
             async with self._session_factory() as db:
                 # First check if we can find a queue before archiving
-                # We need sliced_for_model from 3MF metadata — parse it early
+                # We need sliced_for_model from 3MF metadata - parse it early
                 service = ArchiveService(db)
                 archive = await service.archive_print(
                     printer_id=None,
@@ -429,8 +429,10 @@ class VirtualPrinterInstance:
                 if archive:
                     queue = await self._find_best_queue(db, archive)
                     if not queue:
-                        # No matching queue — delete archive and save to library instead
-                        logger.info("[VP %s] No matching printer queue, saving to library: %s", self.name, archive.print_name)
+                        # No matching queue - delete archive and save to library instead
+                        logger.info(
+                            "[VP %s] No matching printer queue, saving to library: %s", self.name, archive.print_name
+                        )
                         await db.delete(archive)
                         await db.commit()
                         await self._save_to_library(file_path, source_ip)
@@ -447,8 +449,13 @@ class VirtualPrinterInstance:
                     )
                     db.add(queue_item)
                     await db.commit()
-                    logger.info("[VP %s] Added to queue %s (printer %s): %s",
-                                self.name, queue.id, queue.printer_id, queue_item.id)
+                    logger.info(
+                        "[VP %s] Added to queue %s (printer %s): %s",
+                        self.name,
+                        queue.id,
+                        queue.printer_id,
+                        queue_item.id,
+                    )
                     try:
                         file_path.unlink()
                     except OSError:
@@ -507,7 +514,9 @@ class VirtualPrinterInstance:
                 queue = result.scalar_one_or_none()
                 if queue:
                     return queue
-            logger.info("[VP %s] Target printer %s not available, searching alternatives", self.name, self.target_printer_id)
+            logger.info(
+                "[VP %s] Target printer %s not available, searching alternatives", self.name, self.target_printer_id
+            )
 
         # Must have sliced_for_model to auto-assign
         sliced_model = archive.sliced_for_model if archive else None

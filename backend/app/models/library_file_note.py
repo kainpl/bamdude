@@ -11,8 +11,8 @@ from backend.app.core.database import Base
 class LibraryFileNote(Base):
     """A free-form note attached to a library file.
 
-    Multiple notes per file. CASCADE on `library_file_id` — the note dies
-    with its file. SET NULL on `user_id` — the note survives if the
+    Multiple notes per file. CASCADE on `library_file_id` - the note dies
+    with its file. SET NULL on `user_id` - the note survives if the
     author's account is deleted (anonymised).
     """
 

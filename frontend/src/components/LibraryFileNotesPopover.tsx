@@ -30,9 +30,9 @@ interface Props {
   onCountChange?: (newCount: number) => void;
   /**
    * Horizontal alignment of the popover relative to the anchor:
-   * - `'right'` (default) — popover's right edge aligns with anchor's right
+   * - `'right'` (default) - popover's right edge aligns with anchor's right
    *   edge; popover extends to the left. Good for inline row actions (list view).
-   * - `'left'`  — popover's left edge aligns with anchor's left edge; popover
+   * - `'left'`  - popover's left edge aligns with anchor's left edge; popover
    *   extends to the right. Good for icons anchored at a card's bottom-left.
    */
   align?: 'left' | 'right';
@@ -70,7 +70,7 @@ export function LibraryFileNotesPopover({ fileId, open, anchorRef, onClose, onCo
   // once per (open, isLoading, notes) transition; manual mode switches via
   // handleStartCreate / handleStartEdit are NOT reverted by this effect
   // (which used to auto-flip 'create' back to 'view' the moment notes were
-  // non-empty — clashing with the user clicking the "+" button).
+  // non-empty - clashing with the user clicking the "+" button).
   const didAutoOpenRef = useRef(false);
   useEffect(() => {
     if (!open) {
@@ -118,7 +118,7 @@ export function LibraryFileNotesPopover({ fileId, open, anchorRef, onClose, onCo
 
   // Position the portal-rendered popover relative to the viewport, anchored
   // to the button. `align='right'` mirrors the FileListActions dropdown (right
-  // edges aligned, extends left — used in list view rows). `align='left'` is
+  // edges aligned, extends left - used in list view rows). `align='left'` is
   // used for card-view overlays anchored at the thumbnail's bottom-left so
   // the popover extends into the card grid's whitespace on the right.
   // Flips above when there isn't enough room below; clamps to viewport.

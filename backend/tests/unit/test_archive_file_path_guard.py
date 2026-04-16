@@ -23,7 +23,7 @@ class TestIsFileGuard:
         base_dir.mkdir()
 
         file_path = base_dir / ""
-        # exists() returns True (the directory exists) — this was the old broken check
+        # exists() returns True (the directory exists) - this was the old broken check
         assert file_path.exists()
         # is_file() returns False (it's a directory, not a file)
         assert not file_path.is_file()
@@ -82,7 +82,7 @@ class TestPhotoPathDerivation:
     """Verify that photo directory derivation is safe with empty file_path."""
 
     def test_empty_file_path_parent_is_dot(self):
-        """Path('').parent is '.' — would resolve to base_dir instead of archive dir."""
+        """Path('').parent is '.' - would resolve to base_dir instead of archive dir."""
         parent = Path("").parent
         assert str(parent) == "."
 

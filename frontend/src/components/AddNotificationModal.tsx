@@ -333,7 +333,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
             ))}
           </div>
 
-          {/* Test Button (not shown for Telegram — bot restarts automatically) */}
+          {/* Test Button (not shown for Telegram - bot restarts automatically) */}
           {providerType !== 'telegram' && (
             <div className="flex gap-2">
               <Button

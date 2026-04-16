@@ -5,13 +5,13 @@ import { LibraryFileNotesPopover } from './LibraryFileNotesPopover';
 
 interface Props {
   fileId: number;
-  /** Initial count from the file list response — kept in sync via onCountChange. */
+  /** Initial count from the file list response - kept in sync via onCountChange. */
   initialCount: number;
   /**
    * Visual variant:
-   * - `overlay` — pill over a thumbnail (card view). Has its own wrapper div for positioning.
-   * - `inline`  — bare button that inherits its parent's flex layout (list view rows).
-   *              No wrapper div, no opinionated styling beyond neutral padding/hover —
+   * - `overlay` - pill over a thumbnail (card view). Has its own wrapper div for positioning.
+   * - `inline`  - bare button that inherits its parent's flex layout (list view rows).
+   *              No wrapper div, no opinionated styling beyond neutral padding/hover -
    *              matches the surrounding Print/Clock/Box action buttons.
    */
   variant?: 'overlay' | 'inline';
@@ -23,7 +23,7 @@ export function LibraryFileNotesButton({ fileId, initialCount, variant = 'inline
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [count, setCount] = useState(initialCount);
-  // Button itself is the popover anchor — keeping the ref on the <button>
+  // Button itself is the popover anchor - keeping the ref on the <button>
   // means we don't need a wrapper <div>, so the inline variant drops in
   // alongside plain action buttons (Printer/Clock/Box) in a flex row.
   const buttonRef = useRef<HTMLButtonElement | null>(null);
@@ -78,7 +78,7 @@ export function LibraryFileNotesButton({ fileId, initialCount, variant = 'inline
   );
 
   if (variant === 'inline') {
-    // No wrapping div — the button drops directly into the parent flex row.
+    // No wrapping div - the button drops directly into the parent flex row.
     // Popover is portal-rendered so it doesn't need a nearby positioned ancestor.
     return (
       <>

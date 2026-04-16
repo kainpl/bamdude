@@ -163,7 +163,7 @@ async def list_projects(
 ):
     """List all projects with basic stats.
 
-    Always excludes templates (``is_template=True``) — templates are served by
+    Always excludes templates (``is_template=True``) - templates are served by
     the dedicated ``/templates`` endpoint.
     """
     query = select(Project).where(Project.is_template.is_(False))

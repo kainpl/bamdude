@@ -87,7 +87,7 @@ type TFunction = (key: string, options?: Record<string, unknown>) => string;
 /**
  * Check if an archive represents a sliced/printable file.
  * Uses filename (.gcode, .gcode.3mf) as primary check, then falls back to
- * metadata — a .3mf with total_layers or print_time is sliced (contains gcode),
+ * metadata - a .3mf with total_layers or print_time is sliced (contains gcode),
  * while a raw source .3mf (CAD export) has neither.
  */
 function isSlicedFile(archive: { filename?: string | null; total_layers?: number | null; print_time_seconds?: number | null }): boolean {
@@ -96,7 +96,7 @@ function isSlicedFile(archive: { filename?: string | null; total_layers?: number
     const lower = filename.toLowerCase();
     if (lower.endsWith('.gcode') || lower.includes('.gcode.')) return true;
   }
-  // .3mf can be either sliced or source — check for gcode metadata
+  // .3mf can be either sliced or source - check for gcode metadata
   if (archive.total_layers || archive.print_time_seconds) return true;
   return false;
 }
@@ -2839,7 +2839,7 @@ export function ArchivesPage() {
           )}
         </div>
         <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
-          {/* View mode toggle — matches PrintersPage card-size selector style */}
+          {/* View mode toggle - matches PrintersPage card-size selector style */}
           <div className="flex items-center bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
             <button
               onClick={() => setViewMode('grid')}
@@ -2976,7 +2976,7 @@ export function ArchivesPage() {
         </div>
       </div>
 
-      {/* Pagination row — only rendered when there are multiple pages */}
+      {/* Pagination row - only rendered when there are multiple pages */}
       {(viewMode === 'grid' || viewMode === 'list') && paginationMeta && paginationMeta.last_page > 1 && (
         <div className="flex items-center justify-end gap-2 mb-4">
           <button onClick={() => setPage(1)} disabled={page <= 1} className="p-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white disabled:opacity-50 hover:bg-bambu-dark-secondary">

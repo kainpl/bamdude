@@ -278,7 +278,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       }
 
       if (hasActiveWork) {
-        // New batch starting — reset dedup guard so completion toast works
+        // New batch starting - reset dedup guard so completion toast works
         lastDispatchSummaryRef.current = null;
         setToasts((prev) => {
           const existing = prev.find((toastItem) => toastItem.id === dispatchToastId);

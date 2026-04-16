@@ -1,4 +1,4 @@
-"""Portable database operations — cross-dialect backup, restore, and auto-migration.
+"""Portable database operations - cross-dialect backup, restore, and auto-migration.
 
 Backups are always in portable SQLite format regardless of database backend.
 Restore can import SQLite backups into both SQLite and PostgreSQL.
@@ -260,7 +260,7 @@ async def auto_migrate_sqlite_to_pg(engine, metadata) -> bool:
         else:
             return False  # No local SQLite to migrate
 
-    logger.info("Found local SQLite database: %s — migrating to PostgreSQL...", sqlite_path)
+    logger.info("Found local SQLite database: %s - migrating to PostgreSQL...", sqlite_path)
 
     try:
         imported = await import_sqlite_to_postgres(engine, metadata, sqlite_path)
@@ -276,7 +276,9 @@ async def auto_migrate_sqlite_to_pg(engine, metadata) -> bool:
             if wal.exists():
                 wal.unlink()
 
-        logger.info("SQLite → PostgreSQL migration complete (%d tables). Original renamed to %s", imported, migrated_path.name)
+        logger.info(
+            "SQLite → PostgreSQL migration complete (%d tables). Original renamed to %s", imported, migrated_path.name
+        )
         return True
 
     except Exception as e:

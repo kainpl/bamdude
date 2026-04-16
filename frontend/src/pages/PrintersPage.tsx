@@ -84,7 +84,7 @@ import { getColorName, parseFilamentColor, isLightColor } from '../utils/colors'
 
 // Color names resolve via getColorName() which reads the backend color_catalog
 // (loaded once at app startup by ColorCatalogProvider). Hardcoded hex/code tables
-// were removed in 0.3.2 — they were structurally guaranteed to produce wrong
+// were removed in 0.3.2 - they were structurally guaranteed to produce wrong
 // names for any color the hand-maintained list didn't cover (upstream #857).
 
 
@@ -99,7 +99,7 @@ function formatPrintName(
   // Match plate_N.gcode (e.g. "Metadata/plate_3.gcode")
   const match = gcodeFile.match(/plate_(\d+)\.gcode/i);
   if (match && match[1] !== '1') {
-    return `${printName} — ${t('printers.plateNumber', { number: match[1] })}`;
+    return `${printName} - ${t('printers.plateNumber', { number: match[1] })}`;
   }
   return printName;
 }
@@ -235,7 +235,7 @@ function NozzleSlotHoverCard({ slot, index, activeStatus, filamentName, children
           <div className="w-44 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl overflow-hidden backdrop-blur-sm">
             {isEmpty ? (
               <div className="px-3 py-2 text-xs text-bambu-gray text-center whitespace-nowrap">
-                Slot {index + 1} — Empty
+                Slot {index + 1} - Empty
               </div>
             ) : (
               <div className="p-2.5 space-y-1.5">
@@ -495,13 +495,13 @@ function DualNozzleHoverCard({ leftSlot, rightSlot, activeNozzle, filamentInfo, 
   );
 }
 
-// H2C Nozzle Rack Card — compact single row showing 6-position tool-changer dock
+// H2C Nozzle Rack Card - compact single row showing 6-position tool-changer dock
 function NozzleRackCard({ slots, filamentInfo }: { slots: import('../api/client').NozzleRackSlot[]; filamentInfo?: Record<string, { name: string; k: number | null }> }) {
   const { t } = useTranslation();
-  // Rack nozzles only (IDs >= 2) — excludes L/R hotend nozzles (IDs 0, 1).
+  // Rack nozzles only (IDs >= 2) - excludes L/R hotend nozzles (IDs 0, 1).
   // H2C rack slot IDs are fixed at 16..21. When a nozzle is picked up into the
   // hotend the firmware omits that rack ID entirely, so we must map by the fixed
-  // base — computing it from min(present IDs) shifts everything left when slot 16
+  // base - computing it from min(present IDs) shifts everything left when slot 16
   // is the one currently mounted (upstream #943).
   const rackNozzles = slots.filter(s => s.id >= 2);
   const RACK_SIZE = 6;
@@ -536,7 +536,7 @@ function NozzleRackCard({ slots, filamentInfo }: { slots: import('../api/client'
                 <span className={`text-[10px] font-semibold ${isEmpty ? 'text-bambu-gray/30' : lightBg ? 'text-black/80' : 'text-white'}`}
                       style={filamentBg && !lightBg ? { textShadow: '0 1px 3px rgba(0,0,0,0.9)' } : undefined}
                 >
-                  {isEmpty ? '—' : (slot.nozzle_diameter || '?')}
+                  {isEmpty ? '-' : (slot.nozzle_diameter || '?')}
                 </span>
               </div>
             </NozzleSlotHoverCard>
@@ -770,7 +770,7 @@ function getAmsLabel(amsId: number | string, trayCount: number): string {
 
 /**
  * Check if a tray contains a Bambu Lab spool (RFID-tagged).
- * Only checks hardware identifiers (tray_uuid, tag_uid) — NOT tray_info_idx,
+ * Only checks hardware identifiers (tray_uuid, tag_uid) - NOT tray_info_idx,
  * which is a filament profile/preset ID that third-party spools also get when
  * the user selects a generic Bambu preset (e.g. "GFA00" for Generic PLA).
  */
@@ -1188,7 +1188,7 @@ export function AmsNameHoverCard({
               <span className="text-[10px] tracking-wide text-bambu-gray font-medium shrink-0">
                 {t('printers.amsPopup.serialNumber')}
               </span>
-              <span className="text-[10px] text-white font-mono truncate">{ams.serial_number || '—'}</span>
+              <span className="text-[10px] text-white font-mono truncate">{ams.serial_number || '-'}</span>
             </div>
 
             {/* Firmware version */}
@@ -1196,7 +1196,7 @@ export function AmsNameHoverCard({
               <span className="text-[10px] tracking-wide text-bambu-gray font-medium shrink-0">
                 {t('printers.amsPopup.firmwareVersion')}
               </span>
-              <span className="text-[10px] text-white font-mono truncate">{ams.sw_ver || '—'}</span>
+              <span className="text-[10px] text-white font-mono truncate">{ams.sw_ver || '-'}</span>
             </div>
 
             {/* Divider */}
@@ -1218,7 +1218,7 @@ export function AmsNameHoverCard({
                   if (timeoutRef.current) clearTimeout(timeoutRef.current);
                     timeoutRef.current = setTimeout(() => setIsVisible(false), 200);
                 }}
-                placeholder={canEdit ? t('printers.amsPopup.friendlyNamePlaceholder') : (amsLabels?.[ams.id] || '—')}
+                placeholder={canEdit ? t('printers.amsPopup.friendlyNamePlaceholder') : (amsLabels?.[ams.id] || '-')}
                 disabled={!canEdit}
                 title={!canEdit ? t('printers.amsPopup.noEditPermission') : undefined}
                 className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1 text-xs text-white placeholder-bambu-gray/60 focus:outline-none focus:border-bambu-green disabled:opacity-50 disabled:cursor-not-allowed"
@@ -1522,7 +1522,7 @@ function PrinterCard({
 
   // Cache tray_now to prevent flickering when undefined values come in
   // Valid tray IDs: 0-253 for AMS, 254 for external spool
-  // tray_now=255 means "no tray loaded" (Bambu protocol sentinel) — never active
+  // tray_now=255 means "no tray loaded" (Bambu protocol sentinel) - never active
   const cachedTrayNow = useRef<number | undefined>(undefined);
   const currentTrayNow = status?.tray_now;
   // Update cache: 255 means "no tray" so clear cache; valid values get cached
@@ -1658,7 +1658,7 @@ function PrinterCard({
     },
   });
 
-  // Run HA entity mutation — scripts use 'on' (trigger), switches use 'toggle'
+  // Run HA entity mutation - scripts use 'on' (trigger), switches use 'toggle'
   const runScriptMutation = useMutation({
     mutationFn: ({ id, action }: { id: number; action: 'on' | 'toggle' }) => api.controlSmartPlug(id, action),
     onSuccess: () => {
@@ -2634,7 +2634,7 @@ function PrinterCard({
                             <div className="flex-1 bg-bambu-dark-tertiary rounded-full h-2 mr-3">
                               <div className="bg-bambu-dark-tertiary h-2 rounded-full" />
                             </div>
-                            <span className="text-bambu-gray">—</span>
+                            <span className="text-bambu-gray">-</span>
                           </div>
                           {lastPrint ? (
                             <p className="text-xs text-bambu-gray mt-2 truncate" title={lastPrint.print_name || lastPrint.filename}>
@@ -2743,7 +2743,7 @@ function PrinterCard({
                       </div>
                     </DualNozzleHoverCard>
                   )}
-                  {/* H2C nozzle rack (tool-changer dock) — only show when rack nozzles exist (IDs >= 2) */}
+                  {/* H2C nozzle rack (tool-changer dock) - only show when rack nozzles exist (IDs >= 2) */}
                   {status.nozzle_rack && status.nozzle_rack.some(s => s.id >= 2) && (
                     <NozzleRackCard slots={status.nozzle_rack} filamentInfo={filamentInfo} />
                   )}
@@ -2951,7 +2951,7 @@ function PrinterCard({
                             {/* Header: Label + Stats (no icon) */}
                             <div className="flex items-center justify-between mb-2">
                               <div className="flex items-center gap-1.5">
-                                {/* AMS name — hover to see serial, firmware, and edit friendly name */}
+                                {/* AMS name - hover to see serial, firmware, and edit friendly name */}
                                 <AmsNameHoverCard
                                   ams={ams}
                                   printerId={printer.id}
@@ -2996,7 +2996,7 @@ function PrinterCard({
                                       compact
                                     />
                                   )}
-                                  {/* Drying button — only for AMS 2 Pro (n3f) and AMS-HT (n3s) */}
+                                  {/* Drying button - only for AMS 2 Pro (n3f) and AMS-HT (n3s) */}
                                   {status.supports_drying && (ams.module_type === 'n3f' || ams.module_type === 'n3s') && hasPermission('printers:control') && (
                                     <button
                                       disabled={!!(ams.dry_sf_reason?.length && ams.dry_time === 0)}
@@ -3087,7 +3087,7 @@ function PrinterCard({
                                   return null;
                                 })();
                                 // If inventory says 0% but AMS reports positive remain, prefer AMS
-                                // (inventory weight_used may be stale or over-counted — #676)
+                                // (inventory weight_used may be stale or over-counted - #676)
                                 const resolvedInventoryFill = (inventoryFill === 0 && hasFillLevel && tray.remain > 0)
                                   ? null : inventoryFill;
                                 const effectiveFill = spoolmanFill ?? resolvedInventoryFill ?? (hasFillLevel ? tray.remain : null);
@@ -3126,7 +3126,7 @@ function PrinterCard({
                                       slotNumber={slotIdx + 1}
                                     />
                                     <div className="text-[9px] text-white font-bold truncate">
-                                      {tray?.tray_type || '—'}
+                                      {tray?.tray_type || '-'}
                                     </div>
                                     {/* Fill bar */}
                                     <div className="mt-1 h-1.5 bg-black/30 rounded-full overflow-hidden">
@@ -3368,7 +3368,7 @@ function PrinterCard({
                               slotNumber={1}
                             />
                             <div className="text-[9px] text-white font-bold truncate">
-                              {tray?.tray_type || '—'}
+                              {tray?.tray_type || '-'}
                             </div>
                             {/* Fill bar */}
                             <div className="mt-1 h-1.5 bg-black/30 rounded-full overflow-hidden">
@@ -3389,7 +3389,7 @@ function PrinterCard({
                           <div key={ams.id} className="p-2.5 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary/30">
                             {/* Row 1: Label + Nozzle + Drying */}
                             <div className="flex items-center gap-1 mb-2">
-                              {/* AMS name — hover to see serial, firmware, and edit friendly name */}
+                              {/* AMS name - hover to see serial, firmware, and edit friendly name */}
                               <AmsNameHoverCard
                                 ams={ams}
                                 printerId={printer.id}
@@ -3649,7 +3649,7 @@ function PrinterCard({
                             {[...status.vt_tray].sort((a, b) => (a.id ?? 254) - (b.id ?? 254)).map((extTray) => {
                               const extTrayId = extTray.id ?? 254;
                               // On dual-nozzle (H2C/H2D), tray_now=254 means "external spool"
-                              // generically — use active_extruder to determine L vs R:
+                              // generically - use active_extruder to determine L vs R:
                               // extruder 1=left → Ext-L (id=254), extruder 0=right → Ext-R (id=255)
                               const isExtActive = isDualNozzle && effectiveTrayNow === 254
                                 ? (extTrayId === 254 && status.active_extruder === 1) ||
@@ -3706,7 +3706,7 @@ function PrinterCard({
                                     slotNumber={slotTrayId + 1}
                                   />
                                   <div className={`text-[9px] font-bold truncate ${isEmpty ? 'text-white/40' : 'text-white'}`}>
-                                    {extTray.tray_type || '—'}
+                                    {extTray.tray_type || '-'}
                                   </div>
                                   <div className="mt-1 h-1.5 bg-black/30 rounded-full overflow-hidden">
                                     {extEffectiveFill !== null && extEffectiveFill >= 0 && !isEmpty && (
@@ -4573,7 +4573,7 @@ function PrinterCard({
         />
       )}
 
-      {/* AMS Drying Popover — fixed position to avoid overflow/z-index issues */}
+      {/* AMS Drying Popover - fixed position to avoid overflow/z-index issues */}
       {dryingPopoverAmsId !== null && dryingPopoverPos && (() => {
         const maxTemp = dryingPopoverModuleType === 'n3s' ? 85 : 65;
         const sliderMin = 35;
@@ -4754,7 +4754,7 @@ function MacrosPanel({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between px-4 py-3 border-b border-bambu-dark-tertiary">
-          <h3 className="text-sm font-semibold text-white">{t('printers.macros')} — {printer.name}</h3>
+          <h3 className="text-sm font-semibold text-white">{t('printers.macros')} - {printer.name}</h3>
           <button onClick={onClose} className="text-bambu-gray hover:text-white">
             <X className="w-4 h-4" />
           </button>
@@ -4978,7 +4978,7 @@ function AddPrinterModal({
         <CardContent>
           <h2 className="text-xl font-semibold mb-4">{t('printers.addPrinter')}</h2>
 
-          {/* Discovery Section — full width */}
+          {/* Discovery Section - full width */}
           <div className="mb-4 pb-4 border-b border-bambu-dark-tertiary">
             {isDocker && (
               <div className="mb-3">
@@ -5089,7 +5089,7 @@ function AddPrinterModal({
           >
             {/* Two-column grid */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {/* Left column — Connection */}
+              {/* Left column - Connection */}
               <div className="space-y-3">
                 <div>
                   <label className="block text-sm text-bambu-gray mb-1">{t('printers.name')}</label>
@@ -5189,7 +5189,7 @@ function AddPrinterModal({
                 </div>
               </div>
 
-              {/* Right column — Settings */}
+              {/* Right column - Settings */}
               <div className="space-y-3">
                 <div className="flex items-center gap-2">
                   <input
@@ -5317,7 +5317,7 @@ function AddPrinterModal({
               </div>
             </div>
 
-            {/* Buttons — full width */}
+            {/* Buttons - full width */}
             <div className="flex gap-3 pt-4">
               <Button type="button" variant="secondary" onClick={onClose} className="flex-1">
                 {t('common.cancel')}
@@ -5633,7 +5633,7 @@ function EditPrinterModal({
           <form onSubmit={handleSubmit}>
             {/* Two-column grid */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {/* Left column — Connection */}
+              {/* Left column - Connection */}
               <div className="space-y-3">
                 <div>
                   <label className="block text-sm text-bambu-gray mb-1">{t('printers.name')}</label>
@@ -5731,7 +5731,7 @@ function EditPrinterModal({
                 </div>
               </div>
 
-              {/* Right column — Settings */}
+              {/* Right column - Settings */}
               <div className="space-y-3">
                 <div className="flex items-center gap-2">
                   <input
@@ -5859,7 +5859,7 @@ function EditPrinterModal({
               </div>
             </div>
 
-            {/* Buttons — full width */}
+            {/* Buttons - full width */}
             <div className="flex gap-3 pt-4">
               <Button type="button" variant="secondary" onClick={onClose} className="flex-1">
                 {t('common.cancel')}
@@ -6412,7 +6412,7 @@ export function PrintersPage() {
 
           <div className="w-px h-6 bg-bambu-dark-tertiary" />
 
-          {/* Bulk select toggle — outline Button, with an active-state override when selection is engaged */}
+          {/* Bulk select toggle - outline Button, with an active-state override when selection is engaged */}
           {printers && printers.length > 1 && (
             selectionMode ? (
               <Button
@@ -6490,7 +6490,7 @@ export function PrintersPage() {
         </div>
       </div>
 
-      {/* Search + filters + sort panel (#852) — standalone row below header */}
+      {/* Search + filters + sort panel (#852) - standalone row below header */}
       {printers && printers.length > 0 && (
         <div className="flex flex-wrap items-stretch gap-2 mb-4 p-3 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg">
           {/* Search bar */}
@@ -6531,7 +6531,7 @@ export function PrintersPage() {
             <option value="offline">{t('printers.status.offline')}</option>
           </select>
 
-          {/* Location filter — only when at least one printer has a location */}
+          {/* Location filter - only when at least one printer has a location */}
           {availableLocations.length > 0 && (
             <select
               value={locationFilter}
@@ -6545,7 +6545,7 @@ export function PrintersPage() {
             </select>
           )}
 
-          {/* Hide offline toggle — moved from the header actions row */}
+          {/* Hide offline toggle - moved from the header actions row */}
           <label className="h-9 flex items-center gap-2 px-3 rounded-lg bg-bambu-dark border border-bambu-dark-tertiary text-sm text-bambu-gray cursor-pointer hover:text-white transition-colors">
             <input
               type="checkbox"
@@ -6556,7 +6556,7 @@ export function PrintersPage() {
             {t('printers.hideOffline')}
           </label>
 
-          {/* Sort dropdown — pushed to far right via ml-auto */}
+          {/* Sort dropdown - pushed to far right via ml-auto */}
           <div className="flex items-center gap-1 ml-auto">
             <select
               value={sortBy}

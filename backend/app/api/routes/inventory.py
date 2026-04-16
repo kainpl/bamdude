@@ -240,7 +240,7 @@ async def get_color_name_map(
 ):
     """Compact {hex: name} map for frontend color-name resolution.
 
-    Not gated on INVENTORY_READ — every page that renders a spool color needs
+    Not gated on INVENTORY_READ - every page that renders a spool color needs
     this, including read-only views available to users without inventory access.
     Normalized to lowercase 6-char hex without '#'. When multiple catalog entries
     share the same hex (different materials or manufacturers), Bambu Lab wins,
@@ -891,10 +891,10 @@ async def assign_spool(
 
             # Resolve tray_info_idx + setting_id for the MQTT command.
             # Three sources in priority order:
-            #   1. Cloud profile (if cloud connected) — resolve filament_id
+            #   1. Cloud profile (if cloud connected) - resolve filament_id
             #      from setting_id via cloud API
-            #   2. Local profile — use generic filament ID for material
-            #   3. Hard-coded fallback — generic Bambu filament IDs
+            #   2. Local profile - use generic filament ID for material
+            #   3. Hard-coded fallback - generic Bambu filament IDs
             tray_info_idx = ""
             setting_id = ""
             sf = spool.slicer_filament or ""
@@ -903,7 +903,7 @@ async def assign_spool(
                 # Check if it's a cloud preset (GFS*, PFUS*, or GF* official)
                 base_sf = sf.split("_")[0] if "_" in sf else sf
                 if base_sf.startswith("GFS") or base_sf.startswith("PFUS"):
-                    # Cloud setting_id — need to resolve real filament_id
+                    # Cloud setting_id - need to resolve real filament_id
                     # Use base_sf (version suffix stripped) for cloud API + MQTT
                     setting_id = base_sf
                     try:
@@ -939,7 +939,7 @@ async def assign_spool(
                         logger.warning("Spool assign: cloud lookup failed for %r: %s", sf, e)
 
                     if not tray_info_idx:
-                        # Cloud lookup failed — use normalize as fallback
+                        # Cloud lookup failed - use normalize as fallback
                         tray_info_idx, setting_id = normalize_slicer_filament(sf)
                 elif base_sf.startswith("GF"):
                     # Official Bambu filament_id (e.g. "GFL05")
@@ -947,7 +947,7 @@ async def assign_spool(
                     logger.info("Spool assign: using official filament_id=%r", tray_info_idx)
 
                 else:
-                    # Could be a local preset ID or material type — try local DB
+                    # Could be a local preset ID or material type - try local DB
                     try:
                         local_id = int(sf)
                         from backend.app.models.local_preset import LocalPreset as LP
@@ -969,7 +969,7 @@ async def assign_spool(
                                 tray_info_idx,
                             )
                     except (ValueError, TypeError):
-                        # Not a numeric ID — treat as material type string
+                        # Not a numeric ID - treat as material type string
                         tray_info_idx, setting_id = normalize_slicer_filament(sf)
 
             # Cross-check: the cloud API returns the base filament_id for
@@ -1090,7 +1090,7 @@ async def assign_spool(
                         preset_id_to_save = f"local_{local_id}"
                         preset_source = "local"
                     except (ValueError, TypeError):
-                        # Cloud or builtin preset — convert filament_id to setting_id
+                        # Cloud or builtin preset - convert filament_id to setting_id
                         preset_id_to_save = filament_id_to_setting_id(tray_info_idx) if tray_info_idx else setting_id
                 else:
                     preset_id_to_save = filament_id_to_setting_id(tray_info_idx) if tray_info_idx else ""
@@ -1365,7 +1365,7 @@ async def sync_weights_from_ams(
 
     Overwrites the database weight_used for every assigned spool using the
     current AMS remain% from connected printers.  This is a manual recovery
-    tool — it bypasses the normal "only increase" guard.
+    tool - it bypasses the normal "only increase" guard.
     """
     from backend.app.services.printer_manager import printer_manager
 

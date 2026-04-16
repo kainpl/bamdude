@@ -877,7 +877,7 @@ function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, 
             {file.file_type.toUpperCase()}
           </span>
         </div>
-        {/* Notes overlay (gh#3) — bottom-left corner of the thumbnail */}
+        {/* Notes overlay (gh#3) - bottom-left corner of the thumbnail */}
         <div className="absolute bottom-0 left-2" onClick={(e) => e.stopPropagation()}>
           <LibraryFileNotesButton fileId={file.id} initialCount={file.notes_count} variant="overlay" />
         </div>
@@ -1510,7 +1510,7 @@ export function FileManagerPage() {
           </div>
         </div>
         <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
-          {/* View mode toggle — style matches PrintersPage card-size selector */}
+          {/* View mode toggle - style matches PrintersPage card-size selector */}
           <div className="flex items-center bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
             <button
               onClick={() => handleViewModeChange('grid')}
@@ -1799,7 +1799,7 @@ export function FileManagerPage() {
                 ))}
               </select>
 
-              {/* Username filter with autocomplete — only when auth is enabled */}
+              {/* Username filter with autocomplete - only when auth is enabled */}
               {authEnabled && (
                 <div className="relative h-9">
                   <input
@@ -1834,7 +1834,7 @@ export function FileManagerPage() {
                 </span>
               )}
 
-              {/* Sort — pushed to far right via ml-auto */}
+              {/* Sort - pushed to far right via ml-auto */}
               <div className="flex items-center gap-1 ml-auto">
                 <select
                   value={sortField}
@@ -1868,7 +1868,7 @@ export function FileManagerPage() {
               </div>
             </div>
 
-            {/* Selection row — rendered inside the same panel as a second row. */}
+            {/* Selection row - rendered inside the same panel as a second row. */}
             {filteredAndSortedFiles.length > 0 && (
               <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-bambu-dark-tertiary">
               {/* Select all / Deselect all */}
@@ -2140,7 +2140,7 @@ export function FileManagerPage() {
                     <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
                       {isSlicedFilename(file.filename) && (
                         <>
-                          {/* Notes (gh#3) — bare inline button, matches Print/Clock/Box styling */}
+                          {/* Notes (gh#3) - bare inline button, matches Print/Clock/Box styling */}
                           <LibraryFileNotesButton fileId={file.id} initialCount={file.notes_count} variant="inline" />
                           <button
                             onClick={() => hasPermission('printers:control') && setPrintFile(file)}

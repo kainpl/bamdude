@@ -220,7 +220,7 @@ class NotificationService:
         # ntfy reads Title/Message from HTTP headers. httpx enforces ASCII
         # for str header values, but printer names and filenames can contain
         # non-ASCII characters (e.g. accented letters, CJK). Passing bytes
-        # bypasses the ASCII check — ntfy handles UTF-8 headers correctly.
+        # bypasses the ASCII check - ntfy handles UTF-8 headers correctly.
         headers: dict[str, str | bytes] = {"Title": title.encode("utf-8")}
 
         if auth_token:
@@ -237,7 +237,7 @@ class NotificationService:
             response = await client.put(url, content=image_data, headers=headers)
 
             if response.status_code == 400 and "attachments not allowed" in response.text:
-                # Server has attachments disabled — retry without the image
+                # Server has attachments disabled - retry without the image
                 headers.pop("Filename", None)
                 headers.pop("Message", None)
                 response = await client.post(url, content=message.encode("utf-8"), headers=headers)
@@ -382,10 +382,10 @@ class NotificationService:
         aiogram_bot = get_bot()
         if aiogram_bot and aiogram_bot.token == bot_token:
             try:
-                # Bot uses MarkdownV2 — escape dynamic content, keep bold markers
+                # Bot uses MarkdownV2 - escape dynamic content, keep bold markers
                 from backend.app.i18n import escape_md
 
-                # Templates use Markdown v1 bold (*text*) — convert to MarkdownV2:
+                # Templates use Markdown v1 bold (*text*) - convert to MarkdownV2:
                 # split on *, escape the parts, reassemble with *
                 parts = message.split("*")
                 md2_message = ""
@@ -692,7 +692,7 @@ class NotificationService:
         variables: dict[str, Any] | None = None,
     ) -> tuple[bool, str]:
         """Send notification to a specific provider."""
-        # Check quiet hours (skip for Telegram — handled per-chat)
+        # Check quiet hours (skip for Telegram - handled per-chat)
         if provider.provider_type != "telegram" and self._is_in_quiet_hours(provider):
             logger.info("Skipping notification to %s - quiet hours active", provider.name)
             return True, "Skipped - quiet hours"

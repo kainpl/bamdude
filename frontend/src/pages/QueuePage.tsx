@@ -59,7 +59,7 @@ export function QueuePage() {
     refetchInterval: 15000,
   });
 
-  // Fetch all pending items — used by stats bar + "All" view + Timeline.
+  // Fetch all pending items - used by stats bar + "All" view + Timeline.
   const { data: allPendingItems } = useQuery({
     queryKey: ['queue', 'all', 'pending'],
     queryFn: () => api.getQueue(undefined, 'pending'),
@@ -224,7 +224,7 @@ export function QueuePage() {
         </div>
       </div>
 
-      {/* Search + filters + sort panel — standalone row below header (hidden in All mode) */}
+      {/* Search + filters + sort panel - standalone row below header (hidden in All mode) */}
       {queues && queues.length > 0 && viewMode !== 'all' && (
         <div className="flex flex-wrap items-stretch gap-2 mb-4 p-3 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg">
           {/* Search bar */}
@@ -263,7 +263,7 @@ export function QueuePage() {
             <option value="error">{t('printers.status.error')}</option>
           </select>
 
-          {/* Location filter — only when at least one queue has a location */}
+          {/* Location filter - only when at least one queue has a location */}
           {availableLocations.length > 0 && (
             <select
               value={locationFilter}
@@ -277,7 +277,7 @@ export function QueuePage() {
             </select>
           )}
 
-          {/* Sort dropdown — pushed to far right via ml-auto */}
+          {/* Sort dropdown - pushed to far right via ml-auto */}
           <div className="flex items-center gap-1 ml-auto">
             <select
               value={sortBy}
@@ -362,7 +362,7 @@ export function QueuePage() {
         />
       )}
 
-      {/* All view — flat list of all pending items */}
+      {/* All view - flat list of all pending items */}
       {!isLoading && viewMode === 'all' && (
         <div className="space-y-2">
           {(!allPendingItems || allPendingItems.length === 0) ? (

@@ -19,13 +19,21 @@ import { PlateSelector } from './PlateSelector';
 import { PrinterSelector } from './PrinterSelector';
 import { PrintOptionsPanel } from './PrintOptions';
 import { ScheduleOptionsPanel } from './ScheduleOptions';
+import { SwapMacrosPanel } from './SwapMacros';
 import type {
   PrintModalProps,
   PrintOptions,
   ScheduleOptions,
   ScheduleType,
+  SwapMacroEvent,
+  SwapMacrosOptions,
 } from './types';
-import { DEFAULT_PRINT_OPTIONS, DEFAULT_SCHEDULE_OPTIONS } from './types';
+import {
+  DEFAULT_PRINT_OPTIONS,
+  DEFAULT_SCHEDULE_OPTIONS,
+  DEFAULT_SWAP_MACROS_OPTIONS,
+  SWAP_MACRO_EVENTS,
+} from './types';
 
 /**
  * Unified PrintModal component that handles three modes:
@@ -90,12 +98,24 @@ export function PrintModal({
       return {
         bed_levelling: queueItem.bed_levelling ?? DEFAULT_PRINT_OPTIONS.bed_levelling,
         flow_cali: queueItem.flow_cali ?? DEFAULT_PRINT_OPTIONS.flow_cali,
-        vibration_cali: queueItem.vibration_cali ?? DEFAULT_PRINT_OPTIONS.vibration_cali,
         layer_inspect: queueItem.layer_inspect ?? DEFAULT_PRINT_OPTIONS.layer_inspect,
         timelapse: queueItem.timelapse ?? DEFAULT_PRINT_OPTIONS.timelapse,
+        mesh_mode_fast_check: queueItem.mesh_mode_fast_check ?? DEFAULT_PRINT_OPTIONS.mesh_mode_fast_check,
       };
     }
     return DEFAULT_PRINT_OPTIONS;
+  });
+
+  const [swapMacros, setSwapMacros] = useState<SwapMacrosOptions>(() => {
+    if (mode === 'edit-queue-item' && queueItem) {
+      const execute = queueItem.execute_swap_macros ?? false;
+      const storedEvents = (queueItem.swap_macro_events ?? null) as SwapMacroEvent[] | null;
+      return {
+        execute,
+        events: storedEvents ?? (execute ? [...SWAP_MACRO_EVENTS] : []),
+      };
+    }
+    return DEFAULT_SWAP_MACROS_OPTIONS;
   });
 
   const [scheduleOptions, setScheduleOptions] = useState<ScheduleOptions>(() => {
@@ -491,6 +511,22 @@ export function PrintModal({
       return amsMapping;
     };
 
+    // Swap-macro payload is only meaningful on a swap-enabled printer AND
+    // when the source file doesn't already ship with swap macros baked in
+    // (swap_compatible → third-party tooling embedded them in the gcode).
+    // For anything else we emit (false, null) so stored state never implies
+    // macros will fire where they can't or would double-fire.
+    const getSwapPayloadForPrinter = (printerId: number): {
+      execute_swap_macros: boolean;
+      swap_macro_events: string[] | null;
+    } => {
+      const printer = printers?.find(p => p.id === printerId);
+      if (swapCompatible || !printer?.swap_mode_enabled || !swapMacros.execute || swapMacros.events.length === 0) {
+        return { execute_swap_macros: false, swap_macro_events: null };
+      }
+      return { execute_swap_macros: true, swap_macro_events: swapMacros.events };
+    };
+
     // Common queue data for add-to-queue and edit modes
     const getQueueData = (printerId: number, plateOverride?: number | null): PrintQueueItemCreate => ({
       queue_id: printerId,  // queue_id == printer_id (always per-printer queue)
@@ -505,6 +541,7 @@ export function PrintModal({
         ? new Date(scheduleOptions.scheduledTime).toISOString()
         : undefined,
       ...printOptions,
+      ...getSwapPayloadForPrinter(printerId),
       quantity: mode === 'edit-queue-item' ? 1 : quantity,
       project_id: projectId,
     });
@@ -523,12 +560,14 @@ export function PrintModal({
           if (mode === 'reprint') {
             // Reprint mode - start print immediately (single plate only, multi-select not available)
             const printerMapping = getMappingForPrinter(printerId);
+            const swapPayload = getSwapPayloadForPrinter(printerId);
             if (isLibraryFile) {
               await api.printLibraryFile(libraryFileId!, printerId, {
                 plate_id: selectedPlate ?? undefined,
                 plate_name: selectedPlateName,
                 ams_mapping: printerMapping,
                 ...printOptions,
+                ...swapPayload,
                 quantity,
                 project_id: projectId,
               });
@@ -540,6 +579,7 @@ export function PrintModal({
                 plate_name: selectedPlateName,
                 ams_mapping: printerMapping,
                 ...printOptions,
+                ...swapPayload,
                 quantity,
               });
             }
@@ -556,6 +596,7 @@ export function PrintModal({
                 ? new Date(scheduleOptions.scheduledTime).toISOString()
                 : null,
               ...printOptions,
+              ...getSwapPayloadForPrinter(printerId),
             };
             await updateQueueMutation.mutateAsync(updateData);
           } else {
@@ -575,7 +616,7 @@ export function PrintModal({
 
     setIsSubmitting(false);
 
-    // Show result toast (skip for reprint mode — the dispatch toast handles it)
+    // Show result toast (skip for reprint mode - the dispatch toast handles it)
     if (results.failed === 0) {
       if (mode !== 'reprint') {
         if (mode === 'edit-queue-item') {
@@ -738,7 +779,7 @@ export function PrintModal({
               multiSelect={mode === 'add-to-queue'}
             />
 
-            {/* Printer selection with per-printer mapping — hidden when printer is pre-selected via props */}
+            {/* Printer selection with per-printer mapping - hidden when printer is pre-selected via props */}
             {!initialSelectedPrinterIds?.length && (
               <PrinterSelector
                 printers={printers || []}
@@ -801,7 +842,15 @@ export function PrintModal({
               <PrintOptionsPanel options={printOptions} onChange={setPrintOptions} defaultExpanded={!!initialSelectedPrinterIds?.length} />
             )}
 
-            {/* Quantity (batch) — not for edit mode */}
+            {/* Swap-mode macros — only relevant when at least one selected
+                printer has swap mode enabled AND the source file does not
+                already carry swap macros baked in by third-party tooling
+                (swap_compatible flag). Hidden completely otherwise. */}
+            {!swapCompatible && selectedPrinters.some(id => printers?.find(p => p.id === id)?.swap_mode_enabled) && (
+              <SwapMacrosPanel options={swapMacros} onChange={setSwapMacros} />
+            )}
+
+            {/* Quantity (batch) - not for edit mode */}
             {mode !== 'edit-queue-item' && effectivePrinterCount > 0 && (
               <div className="mb-4 flex items-center justify-between bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg p-3">
                 <div>

@@ -33,7 +33,7 @@ def _get_database_path() -> Path:
 # External DATABASE_URL takes priority (PostgreSQL support)
 _external_db_url = os.environ.get("DATABASE_URL")
 
-# Determine database path — only used for SQLite
+# Determine database path - only used for SQLite
 _db_path = _get_database_path() if not _external_db_url else None
 
 
@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     app_name: str = "BamDude"
     debug: bool = False  # Default to production mode
 
-    # Paths — these accept env vars DATA_DIR, LOG_DIR etc.
+    # Paths - these accept env vars DATA_DIR, LOG_DIR etc.
     data_dir: Path = _data_dir
     log_dir: Path = _log_dir
     base_dir: Path = _data_dir  # For backwards compatibility (alias for data_dir)

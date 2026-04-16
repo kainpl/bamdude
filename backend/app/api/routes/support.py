@@ -366,7 +366,7 @@ def _anonymize_mqtt_broker(broker: str) -> str:
         ipaddress.ip_address(broker)
         return "[IP]"
     except ValueError:
-        # It's a hostname — show *.domain pattern
+        # It's a hostname - show *.domain pattern
         parts = broker.split(".")
         if len(parts) >= 2:
             return "*." + ".".join(parts[-2:])
@@ -589,7 +589,7 @@ async def _collect_support_info() -> dict:
                 continue
             info["settings"][s.key] = s.value
 
-        # Notification providers (anonymized — type/enabled/error status only)
+        # Notification providers (anonymized - type/enabled/error status only)
         try:
             result = await db.execute(select(NotificationProvider))
             providers = result.scalars().all()

@@ -156,7 +156,7 @@ class ArchiveStats(BaseModel):
     total_energy_kwh: float = 0.0
     total_energy_cost: float = 0.0
     # Set when the date-range query in "total consumption" mode is running on
-    # incomplete snapshot history — e.g. right after a fresh upgrade before the
+    # incomplete snapshot history - e.g. right after a fresh upgrade before the
     # hourly snapshot loop has built up a baseline. Frontend shows a tooltip.
     energy_data_warming_up: bool = False
 
@@ -252,9 +252,11 @@ class ReprintRequest(BaseModel):
     # Print options
     bed_levelling: bool = True
     flow_cali: bool = False
-    vibration_cali: bool = True
     layer_inspect: bool = False
     timelapse: bool = False
     use_ams: bool = True  # Not exposed in UI, but needed for API
+    mesh_mode_fast_check: bool = True
+    execute_swap_macros: bool = True
+    swap_macro_events: list[str] | None = None
     # Batch: first copy dispatches now, remaining (quantity-1) queue up
     quantity: int = 1

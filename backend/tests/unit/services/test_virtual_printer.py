@@ -1168,7 +1168,7 @@ class TestSlicerProxyManager:
             patch.object(SlicerProxyManager, "_log_activity"),
         ):
             mock_create_task.return_value = MagicMock()
-            # start() will create proxies then try to gather tasks — we just
+            # start() will create proxies then try to gather tasks - we just
             # need to verify the proxy types after creation.
             # Trigger start but let gather return immediately.
             await mgr.start()
@@ -1220,7 +1220,7 @@ class TestSlicerProxyManager:
             bind_address="10.0.0.1",
         )
 
-        # Before start, proxies are None — verify constructor stores rewrite config
+        # Before start, proxies are None - verify constructor stores rewrite config
         assert mgr.bind_address == "10.0.0.1"
         assert mgr.target_host == "192.168.1.100"
 

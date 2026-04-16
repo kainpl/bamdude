@@ -51,7 +51,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (!mountedRef.current) return;
       setRequiresSetup(status.requires_setup);
 
-      // If setup is required, don't try to load a user — even a cached token
+      // If setup is required, don't try to load a user - even a cached token
       // can't be validated against a system that has no admin yet.
       if (status.requires_setup) {
         setUser(null);
@@ -65,7 +65,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           if (!mountedRef.current) return;
           setUser(currentUser);
         } catch {
-          // Token invalid/expired — drop it and force re-login.
+          // Token invalid/expired - drop it and force re-login.
           setAuthToken(null);
           if (!mountedRef.current) return;
           setUser(null);

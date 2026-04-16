@@ -398,7 +398,7 @@ export function LDAPSettings() {
                 value={form.ldap_default_group}
                 onChange={e => setForm({ ...form, ldap_default_group: e.target.value })}
               >
-                <option value="">{t('settings.ldap.defaultGroupNone') || '— None (no fallback) —'}</option>
+                <option value="">{t('settings.ldap.defaultGroupNone') || '- None (no fallback) -'}</option>
                 {groups.map(g => (
                   <option key={g.id} value={g.name}>{g.name}</option>
                 ))}

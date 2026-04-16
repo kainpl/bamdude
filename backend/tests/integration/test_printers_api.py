@@ -602,7 +602,7 @@ class TestAMSRefreshAPI:
 
 
 class TestConfigureAMSSlotAPI:
-    """Integration tests for AMS slot configure endpoint — tray_info_idx resolution."""
+    """Integration tests for AMS slot configure endpoint - tray_info_idx resolution."""
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -787,7 +787,7 @@ class TestConfigureAMSSlotAPI:
 
             assert response.status_code == 200
             call_kwargs = mock_client.ams_set_filament_setting.call_args
-            # Provided preset wins — slot's material is irrelevant
+            # Provided preset wins - slot's material is irrelevant
             assert call_kwargs.kwargs["tray_info_idx"] == "PFUS9ac902733670a9"
 
     @pytest.mark.asyncio

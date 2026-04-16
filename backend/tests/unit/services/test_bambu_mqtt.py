@@ -642,7 +642,7 @@ class TestAMSDataMerging:
         assert ams_data[0]["tray"][0]["tray_type"] == "PLA"
         assert ams_data[1]["tray"][0]["tray_type"] == "PETG"
 
-        # Simulate printer shutdown — all-zero bits with power_on_flag=False
+        # Simulate printer shutdown - all-zero bits with power_on_flag=False
         shutdown_ams = {
             "ams_exist_bits": "0",
             "tray_exist_bits": "0",
@@ -653,7 +653,7 @@ class TestAMSDataMerging:
         }
         mqtt_client._handle_ams_data(shutdown_ams)
 
-        # AMS slot data MUST be preserved — shutdown should not clear it
+        # AMS slot data MUST be preserved - shutdown should not clear it
         ams_data = mqtt_client.state.raw_data["ams"]
         assert ams_data[0]["tray"][0]["tray_type"] == "PLA", "Shutdown must not clear AMS 0 slot 0"
         assert ams_data[0]["tray"][0]["tray_color"] == "FF0000FF", "Shutdown must not clear AMS 0 slot 0 color"
@@ -720,7 +720,7 @@ class TestAMSDataMerging:
         }
         mqtt_client._handle_ams_data(initial_ams)
 
-        # Update WITHOUT power_on_flag — should still clear when bit=0
+        # Update WITHOUT power_on_flag - should still clear when bit=0
         update_ams = {
             "ams": [{"id": 0, "tray": [{"id": 0}]}],
             "tray_exist_bits": "0",
@@ -907,7 +907,7 @@ class TestAMSTrayStateClearning:
         )
         assert mqtt_client.state.raw_data["ams"][0]["tray"][0]["tray_type"] == ""
 
-        # Reload — full tray data arrives again
+        # Reload - full tray data arrives again
         mqtt_client._handle_ams_data(
             {
                 "ams": [
@@ -1041,7 +1041,7 @@ class TestNozzleRackData:
         assert ids == [0, 1, 16, 17, 18, 19, 20, 21]
 
     def test_h2d_nozzle_rack_populated_with_2_entries(self, mqtt_client):
-        """H2D provides 2 nozzle entries: IDs 0,1 (L/R hotend) — no rack slots."""
+        """H2D provides 2 nozzle entries: IDs 0,1 (L/R hotend) - no rack slots."""
         payload = {
             "print": {
                 "device": {
@@ -1077,7 +1077,7 @@ class TestNozzleRackData:
         assert ids == [0, 1]
 
     def test_single_nozzle_h2s_populated(self, mqtt_client):
-        """H2S provides 1 nozzle entry: ID 0 only — single nozzle printer."""
+        """H2S provides 1 nozzle entry: ID 0 only - single nozzle printer."""
         payload = {
             "print": {
                 "device": {
@@ -1248,7 +1248,7 @@ class TestRequestTopicFailSafe:
         rc = ReasonCode(9, identifier=0x80)
         mqtt_client._on_subscribe(None, None, 99, [rc], None)
 
-        # Not affected — mid doesn't match
+        # Not affected - mid doesn't match
         assert mqtt_client._request_topic_supported is True
 
     def test_disconnect_after_subscription_disables_topic(self, mqtt_client):
@@ -1334,7 +1334,7 @@ class TestRequestTopicFailSafe:
         assert client2._request_topic_supported is False
 
     def test_cache_does_not_affect_different_serial(self):
-        """Cache is per-serial — different printer is unaffected."""
+        """Cache is per-serial - different printer is unaffected."""
         from backend.app.services.bambu_mqtt import BambuMQTTClient
 
         BambuMQTTClient._request_topic_cache["SERIAL_A"] = False
@@ -1664,12 +1664,12 @@ def _extruder_state_payload(state_val):
 
 
 # ---------------------------------------------------------------------------
-# 1. Single-nozzle X1E — direct passthrough
+# 1. Single-nozzle X1E - direct passthrough
 # ---------------------------------------------------------------------------
 
 
 class TestTrayNowSingleNozzleX1E:
-    """Single-nozzle, 1 AMS — tray_now is a direct passthrough."""
+    """Single-nozzle, 1 AMS - tray_now is a direct passthrough."""
 
     @pytest.fixture
     def mqtt_client(self):
@@ -1708,12 +1708,12 @@ class TestTrayNowSingleNozzleX1E:
 
 
 # ---------------------------------------------------------------------------
-# 2. Single-nozzle P2S — multiple AMS, global IDs pass through
+# 2. Single-nozzle P2S - multiple AMS, global IDs pass through
 # ---------------------------------------------------------------------------
 
 
 class TestTrayNowSingleNozzleP2S:
-    """Single-nozzle, 2 AMS — tray_now > 3 passes through as global ID."""
+    """Single-nozzle, 2 AMS - tray_now > 3 passes through as global ID."""
 
     @pytest.fixture
     def mqtt_client(self):
@@ -1741,7 +1741,7 @@ class TestTrayNowSingleNozzleP2S:
 
 
 # ---------------------------------------------------------------------------
-# 2b. Single-nozzle P2S — multi-AMS local slot disambiguation (#420)
+# 2b. Single-nozzle P2S - multi-AMS local slot disambiguation (#420)
 # ---------------------------------------------------------------------------
 
 
@@ -1806,8 +1806,8 @@ class TestTrayNowP2SMultiAmsDisambiguation:
     def test_multicolor_resolves_ams1_from_multi_entry_mapping(self, mqtt_client):
         """Multi-color print: mapping=[0, 257] → tray_now=1 resolves to AMS1-T1 (5).
 
-        Entry 0: ams_hw_id=0, slot=0 (local 0) — doesn't match tray_now=1.
-        Entry 257: ams_hw_id=1, slot=1 (local 1) — matches tray_now=1 → global 5.
+        Entry 0: ams_hw_id=0, slot=0 (local 0) - doesn't match tray_now=1.
+        Entry 257: ams_hw_id=1, slot=1 (local 1) - matches tray_now=1 → global 5.
         """
         mqtt_client.state.raw_data["mapping"] = [0, 257]
         mqtt_client._process_message(_ams_payload(1, ams_exist_bits="3"))
@@ -1930,7 +1930,7 @@ class TestResolveLocalSlotFromMapping:
 
 
 # ---------------------------------------------------------------------------
-# 3. H2D Pro — initial state detection
+# 3. H2D Pro - initial state detection
 # ---------------------------------------------------------------------------
 
 
@@ -2003,7 +2003,7 @@ class TestTrayNowDualNozzleH2DSetup:
         assert mqtt_client.state.ams_extruder_map == {"0": 0, "128": 1}
 
     def test_ams_extruder_map_skips_uninitialized(self, mqtt_client):
-        """extruder_id 0xE means uninitialized AMS — should be skipped."""
+        """extruder_id 0xE means uninitialized AMS - should be skipped."""
         ams_units = [
             {"id": 0, "info": "e03", "tray": [{"id": i} for i in range(4)]},
         ]
@@ -2268,7 +2268,7 @@ class TestTrayNowDualNozzleH2DPendingTarget(_H2DFixtureMixin):
 
         # Set pending target to AMS 1 slot 1 (global 5)
         h2d_client.state.pending_tray_target = 5
-        # tray_now="1" — matches pending (5%4=1), pending should win over snow
+        # tray_now="1" - matches pending (5%4=1), pending should win over snow
         h2d_client._process_message(_ams_payload(1))
         assert h2d_client.state.tray_now == 5
 
@@ -2293,7 +2293,7 @@ class TestTrayNowDualNozzleH2DFallback(_H2DFixtureMixin):
         """Current tray matches slot → keeps it (multi-AMS on same extruder)."""
         # Set up: two AMS units on the same extruder (right, ext 0)
         h2d_client.state.ams_extruder_map = {"0": 0, "1": 0}
-        # Pre-set tray_now=5 (AMS 1 slot 1) — current_ams=1 which is in ams_on_extruder
+        # Pre-set tray_now=5 (AMS 1 slot 1) - current_ams=1 which is in ams_on_extruder
         h2d_client.state.tray_now = 5
         # tray_now="1" → 5%4=1 matches → keep current=5
         h2d_client._process_message(_ams_payload(1))
@@ -2430,14 +2430,14 @@ class TestTrayNowDualNozzleH2DActiveExtruder(_H2DFixtureMixin):
             )
         )
 
-        # Right active (default) — tray_now="1" → snow ext[0] says global 1
+        # Right active (default) - tray_now="1" → snow ext[0] says global 1
         h2d_client._process_message(_ams_payload(1))
         assert h2d_client.state.tray_now == 1
 
         # Switch to left
         h2d_client._process_message(_extruder_state_payload(0x0100))
 
-        # Left active — tray_now="0" → snow ext[1] says AMS HT (128), slot 0 matches
+        # Left active - tray_now="0" → snow ext[1] says AMS HT (128), slot 0 matches
         h2d_client._process_message(_ams_payload(0))
         assert h2d_client.state.tray_now == 128
 
@@ -3002,7 +3002,7 @@ class TestDeveloperModeProbeTimeout:
 
     def test_no_timeout_when_probe_not_sent(self, mqtt_client):
         """The timeout branch is only entered when a probe is pending (#887)."""
-        # No probe sent — _dev_mode_probed is False, _dev_mode_probe_seq is None
+        # No probe sent - _dev_mode_probed is False, _dev_mode_probe_seq is None
         data = {"gcode_state": "IDLE", "mc_percent": 0}  # < 30 keys
         mqtt_client._update_state(data)
         assert mqtt_client._dev_mode_probe_failures == 0
@@ -3422,7 +3422,7 @@ class TestStaleReconnect:
 
         mqtt_client._on_disconnect(None, None)
 
-        # No state change broadcast — check_staleness() already did it
+        # No state change broadcast - check_staleness() already did it
         assert state_changes == []
         assert mqtt_client.state.connected is False
 

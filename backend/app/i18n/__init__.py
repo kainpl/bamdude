@@ -1,4 +1,4 @@
-"""Backend internationalization — JSON-file-based translation system.
+"""Backend internationalization - JSON-file-based translation system.
 
 Translations are stored as JSON files in ``backend/app/data/`` following the
 naming convention ``{namespace}_{lang}.json`` (e.g. ``telegram_ui_en.json``).

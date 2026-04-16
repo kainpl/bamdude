@@ -75,7 +75,7 @@ function PresetCard({
   // Resolve vendor: DB field → parse from name
   const vendor = preset.filament_vendor || parseVendorFromName(preset.name);
 
-  // Parse colour for swatch — try explicit colour, then fall back to material type
+  // Parse colour for swatch - try explicit colour, then fall back to material type
   let colourHex: string | null = null;
   let hasExplicitColour = false;
   if (preset.default_filament_colour) {
@@ -104,7 +104,7 @@ function PresetCard({
         <div className="flex items-start justify-between gap-2">
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 mb-1">
-              {/* 1) Color dot — always shown for filament presets, dimmed if no explicit colour */}
+              {/* 1) Color dot - always shown for filament presets, dimmed if no explicit colour */}
               {preset.preset_type === 'filament' && (
                 <div
                   className={`w-4 h-4 rounded-full border border-black/20 flex-shrink-0 ${
@@ -117,13 +117,13 @@ function PresetCard({
             </div>
 
             <div className="flex items-center gap-2 flex-wrap">
-              {/* 2) Material tag — fallback to name parsing */}
+              {/* 2) Material tag - fallback to name parsing */}
               {material && (
                 <span className="text-xs px-1.5 py-0.5 rounded bg-bambu-green/20 text-bambu-green">
                   {material}
                 </span>
               )}
-              {/* 3) Vendor — fallback to name parsing */}
+              {/* 3) Vendor - fallback to name parsing */}
               {vendor && (
                 <span className="text-xs text-bambu-gray">{vendor}</span>
               )}
@@ -153,7 +153,7 @@ function PresetCard({
           </div>
         </div>
 
-        {/* 5) Expanded detail — show meaningful fields, hide self-inherits */}
+        {/* 5) Expanded detail - show meaningful fields, hide self-inherits */}
         {isExpanded && (
           <div className="mt-3 pt-3 border-t border-bambu-dark-tertiary text-xs space-y-1.5">
             {material && (

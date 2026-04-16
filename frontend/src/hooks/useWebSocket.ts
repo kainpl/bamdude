@@ -261,7 +261,7 @@ export function useWebSocket() {
         break;
 
       case 'library_file_notes_changed': {
-        // gh#3 — notes count changed somewhere; refresh file lists (which
+        // gh#3 - notes count changed somewhere; refresh file lists (which
         // carry notes_count) and any open per-file notes query.
         const fileId = (message as unknown as { data?: { file_id?: number } }).data?.file_id;
         debouncedInvalidate('library-files');
@@ -305,7 +305,7 @@ export function useWebSocket() {
         break;
 
       case 'macro_executed': {
-        // Macro execution result — show toast globally + dispatch for UI state
+        // Macro execution result - show toast globally + dispatch for UI state
         const macroData = message.data as Record<string, unknown> | undefined;
         if (macroData) {
           showToast(

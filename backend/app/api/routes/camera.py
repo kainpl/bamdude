@@ -49,10 +49,10 @@ _stream_start_times: dict[int, float] = {}
 _active_external_streams: set[int] = set()
 
 # Track ALL spawned ffmpeg PIDs (persists even if _active_streams entries are removed)
-# Maps PID -> spawn timestamp — used by cleanup to find truly orphaned OS processes
+# Maps PID -> spawn timestamp - used by cleanup to find truly orphaned OS processes
 _spawned_ffmpeg_pids: dict[int, float] = {}
 
-# Track disconnect events per stream_id — allows stop endpoint and cleanup
+# Track disconnect events per stream_id - allows stop endpoint and cleanup
 # to signal generators to stop reconnecting instead of just killing the process
 _disconnect_events: dict[str, asyncio.Event] = {}
 
@@ -370,7 +370,7 @@ async def generate_rtsp_mjpeg_stream(
                 logger.error("ffmpeg failed immediately (attempt %d): %s", reconnect_count + 1, stderr_text)
                 _spawned_ffmpeg_pids.pop(process.pid, None)
                 if not got_any_frames and reconnect_count == 0:
-                    # First attempt failed immediately — camera is likely unreachable
+                    # First attempt failed immediately - camera is likely unreachable
                     yield (
                         b"--frame\r\n"
                         b"Content-Type: text/plain\r\n\r\n"
@@ -394,7 +394,7 @@ async def generate_rtsp_mjpeg_stream(
                     chunk = await asyncio.wait_for(process.stdout.read(8192), timeout=30.0)
 
                     if not chunk:
-                        # ffmpeg exited — log stderr and break to reconnect
+                        # ffmpeg exited - log stderr and break to reconnect
                         stderr_text = await _read_ffmpeg_stderr(process)
                         if stderr_text:
                             logger.warning("ffmpeg stderr (stream_id=%s): %s", stream_id, stderr_text)
@@ -1313,7 +1313,7 @@ async def delete_reference(
 def _scan_bambu_ffmpeg_pids() -> list[int]:
     """Scan /proc for ffmpeg processes with Bambu RTSP URLs.
 
-    These are definitely ours — no other software connects to rtsp(s)://bblp:.
+    These are definitely ours - no other software connects to rtsp(s)://bblp:.
     This catches orphans that survive app restarts and are not in any tracking dict.
     """
     import os
@@ -1342,11 +1342,11 @@ async def cleanup_orphaned_streams():
     Called periodically from the background task loop in main.py.
 
     Three-layer cleanup:
-    1. /proc scan — finds ALL Bambu ffmpeg processes on the system, even those
+    1. /proc scan - finds ALL Bambu ffmpeg processes on the system, even those
        from previous app sessions. This is the nuclear safety net.
-    2. _spawned_ffmpeg_pids — tracks PIDs spawned this session, catches orphans
+    2. _spawned_ffmpeg_pids - tracks PIDs spawned this session, catches orphans
        that were removed from _active_streams but not killed.
-    3. _active_streams — kills stale entries with no recent frames.
+    3. _active_streams - kills stale entries with no recent frames.
     """
     import os
     import signal
@@ -1358,7 +1358,7 @@ async def cleanup_orphaned_streams():
     # Collect PIDs that are legitimately in-use (active stream, process alive)
     active_pids = {proc.pid for proc in _active_streams.values() if proc.returncode is None}
 
-    # 1. /proc scan — catch ALL orphaned Bambu ffmpeg processes on the system.
+    # 1. /proc scan - catch ALL orphaned Bambu ffmpeg processes on the system.
     #    Any ffmpeg with rtsp(s)://bblp: that is NOT in an active stream is orphaned.
     for pid in _scan_bambu_ffmpeg_pids():
         if pid in active_pids:

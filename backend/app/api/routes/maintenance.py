@@ -134,7 +134,7 @@ def _should_apply_to_printer(type_code: str | None, printer_model: str | None) -
 
     rod_type = get_rod_type(printer_model)
     if rod_type is None:
-        # Unknown model — default to carbon rods (legacy behavior)
+        # Unknown model - default to carbon rods (legacy behavior)
         return rod_requirement == "carbon"
 
     return rod_type == rod_requirement
@@ -162,7 +162,7 @@ async def get_printer_total_hours(db: AsyncSession, printer_id: int) -> float:
 
 
 async def ensure_default_types(db: AsyncSession) -> None:
-    """Ensure default maintenance types exist. Never deletes — only adds missing ones."""
+    """Ensure default maintenance types exist. Never deletes - only adds missing ones."""
     result = await db.execute(select(MaintenanceType).where(MaintenanceType.is_system.is_(True)))
     existing = result.scalars().all()
     existing_codes = {t.type_code for t in existing if t.type_code}

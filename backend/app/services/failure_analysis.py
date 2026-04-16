@@ -36,8 +36,8 @@ class FailureAnalysisService:
         Returns:
             Dictionary with failure analysis results
         """
-        # Build base query — separate date vs non-date filters for trend reuse
-        # Exclude "archived" — uploaded but never printed
+        # Build base query - separate date vs non-date filters for trend reuse
+        # Exclude "archived" - uploaded but never printed
         base_filter = [PrintArchive.status != "archived"]
         non_date_filter = [PrintArchive.status != "archived"]
         if date_from or date_to:

@@ -38,7 +38,7 @@ class TestRewriteRtspRequestUrl:
         assert b"PLAY rtsps://192.168.1.100:322/streaming/live/1 RTSP/1.0\r\n" in result
 
     def test_preserves_authorization_header(self):
-        """Digest auth embeds the URI in a hash — rewriting it breaks auth."""
+        """Digest auth embeds the URI in a hash - rewriting it breaks auth."""
         proxy_url = b"rtsp://127.0.0.1:45221"
         real_url = b"rtsps://192.168.1.100:322"
 
@@ -112,7 +112,7 @@ class TestCreateTlsProxy:
     @pytest.mark.asyncio
     async def test_proxy_returns_port_and_server(self):
         """Verify proxy creates a listening server on an ephemeral port."""
-        # Use a non-routable target — we just test the server starts, not the TLS connection
+        # Use a non-routable target - we just test the server starts, not the TLS connection
         port, server = await create_tls_proxy("192.0.2.1", 322)
 
         assert isinstance(port, int)
@@ -128,7 +128,7 @@ class TestCreateTlsProxy:
         port, server = await create_tls_proxy("192.0.2.1", 322)
 
         try:
-            # Connect to the proxy — it should accept the connection
+            # Connect to the proxy - it should accept the connection
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection("127.0.0.1", port),
                 timeout=2.0,
@@ -138,7 +138,7 @@ class TestCreateTlsProxy:
             writer.close()
             await writer.wait_closed()
         except (ConnectionError, TimeoutError):
-            pass  # Expected — target is unreachable
+            pass  # Expected - target is unreachable
 
         server.close()
         await server.wait_closed()

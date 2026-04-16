@@ -128,7 +128,7 @@ class SmartPlugManager:
             now = datetime.now(timezone.utc)
             captured = 0
             for plug in plugs:
-                # MQTT plugs only publish a "today" counter that resets at midnight —
+                # MQTT plugs only publish a "today" counter that resets at midnight -
                 # they can never feed cumulative snapshots, so skip them outright to
                 # avoid a noisy tasmota-service fallback attempt on an IP-less plug.
                 if plug.plug_type == "mqtt":
@@ -144,7 +144,7 @@ class SmartPlugManager:
                 lifetime = energy.get("total")
                 if lifetime is None:
                     # MQTT / REST plugs that only expose "today" can't be used for
-                    # cumulative snapshots — skip them.
+                    # cumulative snapshots - skip them.
                     continue
                 db.add(
                     SmartPlugEnergySnapshot(

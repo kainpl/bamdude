@@ -76,7 +76,7 @@ def parse_ldap_config(settings: dict[str, str]) -> LDAPConfig | None:
 def _create_server(config: LDAPConfig) -> Server:
     """Create an ldap3 Server instance from config.
 
-    Always uses TLS — either LDAPS (TLS from start) or StartTLS (upgrade after connect).
+    Always uses TLS - either LDAPS (TLS from start) or StartTLS (upgrade after connect).
     Plaintext LDAP is not supported.
     """
     import ssl

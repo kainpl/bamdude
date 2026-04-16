@@ -97,7 +97,7 @@ export function FilamentOverride({
                 </span>
                 {/* Arrow */}
                 <span className="text-bambu-gray">→</span>
-                {/* Override dropdown — only compatible (same-type) filaments */}
+                {/* Override dropdown - only compatible (same-type) filaments */}
                 <select
                   value={isOverridden ? `${override.type}|${override.color}` : ''}
                   onChange={(e) => handleChange(req.slot_id, e.target.value)}
@@ -135,7 +135,7 @@ export function FilamentOverride({
                   <span className="w-3" />
                 )}
               </div>
-              {/* Force Color Match checkbox — shown below each filament row */}
+              {/* Force Color Match checkbox - shown below each filament row */}
               <label className="inline-flex items-center gap-1.5 text-xs text-bambu-gray cursor-pointer select-none pl-5">
                 <input
                   type="checkbox"

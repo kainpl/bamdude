@@ -97,7 +97,7 @@ def has_stg_cur_idle_bug(model: str | None) -> bool:
 
 
 # Minimum firmware versions for AMS drying support (confirmed via capture testing)
-# Keys are exact model names (upper-cased). Do NOT use substring matching — it would
+# Keys are exact model names (upper-cased). Do NOT use substring matching - it would
 # incorrectly gate X1E (matched by "X1") and H2D Pro (matched by "H2D").
 _DRYING_MIN_FIRMWARE: dict[str, str] = {
     "H2D": "01.02.30.00",
@@ -118,7 +118,7 @@ def supports_drying(model: str | None, firmware: str | None) -> bool:
 
     Known models with confirmed min firmware get version-gated.
     Known unsupported models are blocked.
-    All other models (H2D Pro, X1E, future models) are allowed —
+    All other models (H2D Pro, X1E, future models) are allowed -
     the command fails gracefully with result: "fail" if unsupported.
     """
     if not model:
@@ -408,7 +408,6 @@ class PrinterManager:
         ams_mapping: list[int] | None = None,
         bed_levelling: bool = True,
         flow_cali: bool = False,
-        vibration_cali: bool = True,
         layer_inspect: bool = False,
         timelapse: bool = False,
         use_ams: bool = True,
@@ -431,7 +430,6 @@ class PrinterManager:
                 timelapse=timelapse,
                 bed_levelling=bed_levelling,
                 flow_cali=flow_cali,
-                vibration_cali=vibration_cali,
                 layer_inspect=layer_inspect,
                 use_ams=use_ams,
             )
@@ -596,7 +594,7 @@ def get_derived_status_name(state: PrinterState, model: str | None = None) -> st
         state: The printer state to analyze
         model: Optional printer model for model-specific workarounds
     """
-    # Macro executing — show macro name instead of default "Printing" text
+    # Macro executing - show macro name instead of default "Printing" text
     if state.macro_executing and state.stg_cur == 0:
         return f"Executing: {state.macro_executing}"
 
@@ -751,7 +749,7 @@ def printer_state_to_dict(state: PrinterState, printer_id: int | None = None, mo
                 }
             )
 
-    # Parse virtual tray (external spool) — now a list
+    # Parse virtual tray (external spool) - now a list
     if "vt_tray" in raw_data:
         vt_tray_raw = raw_data["vt_tray"]
         if isinstance(vt_tray_raw, dict):

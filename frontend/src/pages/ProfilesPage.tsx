@@ -1062,7 +1062,7 @@ function DiffModal({
   }, [diffEntries]);
 
   const formatValue = (val: unknown): string => {
-    if (val === undefined) return '—';
+    if (val === undefined) return '-';
     if (val === null) return 'null';
     if (Array.isArray(val)) {
       // Show arrays more cleanly

@@ -316,7 +316,7 @@ async def update_virtual_printer(
     effective_mode = vp.mode
 
     if explicitly_enabling:
-        # User is explicitly toggling on — enforce all requirements
+        # User is explicitly toggling on - enforce all requirements
         if not vp.bind_ip:
             logger.warning("Update VP %d rejected: no bind_ip", vp_id)
             return JSONResponse(status_code=400, content={"detail": "Bind IP is required when enabling"})
@@ -353,7 +353,7 @@ async def update_virtual_printer(
                 )
                 return JSONResponse(status_code=400, content={"detail": "Access code is required when enabling"})
     elif new_enabled and body.enabled is None:
-        # VP is already enabled and user is changing other fields —
+        # VP is already enabled and user is changing other fields -
         # auto-disable if new state doesn't meet requirements
         if not vp.bind_ip:
             new_enabled = False

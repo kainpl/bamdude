@@ -135,7 +135,7 @@ export function LinkSpoolModal({ isOpen, onClose, tagUid, trayUuid, printerId, a
                   </div>
                 </div>
                 <span className="text-xs text-bambu-gray">
-                  {spool.remaining_weight != null ? `${Math.round(spool.remaining_weight)}g` : '—'}
+                  {spool.remaining_weight != null ? `${Math.round(spool.remaining_weight)}g` : '-'}
                 </span>
               </button>
             ))

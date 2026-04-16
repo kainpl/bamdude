@@ -1,4 +1,4 @@
-"""Macro model — reusable G-code snippets triggered by events."""
+"""Macro model - reusable G-code snippets triggered by events."""
 
 from datetime import datetime
 
@@ -23,7 +23,7 @@ class Macro(Base):
     # attribution, or usage caveats.
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # Target printer models — JSON array of model codes, e.g. '["A1 Mini"]' or '["*"]' for all
+    # Target printer models - JSON array of model codes, e.g. '["A1 Mini"]' or '["*"]' for all
     printer_models: Mapped[str] = mapped_column(Text, default='["*"]')
 
     # Requires swap mode on the printer
@@ -37,8 +37,8 @@ class Macro(Base):
     swap_profile: Mapped[str | None] = mapped_column(String(50), nullable=True)
 
     # Event/action trigger
-    # swap_mode_start — injected before first print in swap sequence
-    # swap_mode_change_table — injected between plates (table swap)
+    # swap_mode_start - injected before first print in swap sequence
+    # swap_mode_change_table - injected between plates (table swap)
     event: Mapped[str] = mapped_column(String(50))
 
     # G-code content

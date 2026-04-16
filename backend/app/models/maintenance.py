@@ -21,7 +21,7 @@ class MaintenanceType(Base):
     interval_type: Mapped[str] = mapped_column(String(20), default="hours")
     icon: Mapped[str | None] = mapped_column(String(50))  # Icon name for UI
     wiki_url: Mapped[str | None] = mapped_column(String(500))  # Documentation link
-    # Which printer models this type applies to — JSON array, e.g. '["*"]' or '["X1C", "P1S"]'
+    # Which printer models this type applies to - JSON array, e.g. '["*"]' or '["X1C", "P1S"]'
     printer_models: Mapped[str] = mapped_column(Text, default='["*"]')
     type_code: Mapped[str | None] = mapped_column(
         String(50), unique=True, nullable=True, index=True

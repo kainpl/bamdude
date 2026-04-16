@@ -18,7 +18,7 @@ function formatPrintName(
   if (!gcodeFile) return printName;
   const match = gcodeFile.match(/plate_(\d+)\.gcode/i);
   if (match && match[1] !== '1') {
-    return `${printName} — ${t('printers.plateNumber', { number: match[1] })}`;
+    return `${printName} - ${t('printers.plateNumber', { number: match[1] })}`;
   }
   return printName;
 }

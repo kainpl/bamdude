@@ -132,7 +132,7 @@ describe('autoMatchFilament', () => {
     expect(result!.globalTrayId).toBe(4); // AMS2-T1 on right nozzle
   });
 
-  it('does NOT match filament on wrong nozzle — regression #624', () => {
+  it('does NOT match filament on wrong nozzle - regression #624', () => {
     // Require PLA Black on right nozzle (extruderId=0).
     // PLA Black exists only on left nozzle (tray 0, extruderId=1).
     const req = makeReq({ type: 'PLA', color: '#000000', nozzle_id: 0 });
@@ -152,7 +152,7 @@ describe('autoMatchFilament', () => {
   });
 
   it('falls back to type-only match on correct nozzle', () => {
-    // Require PETG Green on left nozzle — no exact color match, but PETG White exists
+    // Require PETG Green on left nozzle - no exact color match, but PETG White exists
     const req = makeReq({ type: 'PETG', color: '#00FF00', nozzle_id: 1 });
     const result = autoMatchFilament(req, H2D_FILAMENTS, new Set());
     expect(result).toBeDefined();
@@ -161,7 +161,7 @@ describe('autoMatchFilament', () => {
   });
 
   it('returns undefined when no filament matches on required nozzle', () => {
-    // Require PETG on right nozzle — PETG only exists on left nozzle
+    // Require PETG on right nozzle - PETG only exists on left nozzle
     const req = makeReq({ type: 'PETG', color: '#FFFFFF', nozzle_id: 0 });
     const result = autoMatchFilament(req, H2D_FILAMENTS, new Set());
     expect(result).toBeUndefined();
@@ -176,7 +176,7 @@ describe('autoMatchFilament', () => {
     expect(result!.globalTrayId).toBe(5);
   });
 
-  it('matches PA-CF requirement to PA12-CF filament — #688', () => {
+  it('matches PA-CF requirement to PA12-CF filament - #688', () => {
     const filaments: LoadedFilament[] = [
       makeFilament({ globalTrayId: 0, type: 'PA12-CF', color: '#000000', colorName: 'Black' }),
     ];
@@ -186,7 +186,7 @@ describe('autoMatchFilament', () => {
     expect(result!.globalTrayId).toBe(0);
   });
 
-  it('matches PAHT-CF requirement to PA-CF filament — #688', () => {
+  it('matches PAHT-CF requirement to PA-CF filament - #688', () => {
     const filaments: LoadedFilament[] = [
       makeFilament({ globalTrayId: 0, type: 'PA-CF', color: '#333333', colorName: 'Dark Gray' }),
     ];

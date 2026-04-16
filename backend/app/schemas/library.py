@@ -180,7 +180,7 @@ class FileListResponse(BaseModel):
     filament_used_grams: float | None = None
     sliced_for_model: str | None = None
     swap_compatible: bool = False
-    # Number of notes attached (gh#3) — drives the card icon variant
+    # Number of notes attached (gh#3) - drives the card icon variant
     # (MessageSquarePlus when 0, MessageSquare when >0).
     notes_count: int = 0
 
@@ -207,10 +207,12 @@ class FilePrintRequest(BaseModel):
     ams_mapping: list[int] | None = None
     bed_levelling: bool = True
     flow_cali: bool = False
-    vibration_cali: bool = True
     layer_inspect: bool = False
     timelapse: bool = False
     use_ams: bool = True
+    mesh_mode_fast_check: bool = True
+    execute_swap_macros: bool = True
+    swap_macro_events: list[str] | None = None
     # Batch: first copy dispatches now, remaining (quantity-1) queue up
     quantity: int = 1
     # Project to associate the resulting archive with (when triggered from project view)

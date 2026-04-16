@@ -54,7 +54,7 @@ interface Input {
 }
 
 /**
- * Derives per-printer timeline lanes from queue data. Pure calculation — call
+ * Derives per-printer timeline lanes from queue data. Pure calculation - call
  * inside a React component with useMemo via the useQueueTimeline hook below.
  */
 export function buildQueueTimeline({
@@ -168,7 +168,7 @@ export function buildQueueTimeline({
 export function useQueueTimeline(input: Input): QueueTimelineResult {
   // `now` is the primary driver of re-computation; consumers should pass a
   // value that updates on a timer (e.g. every minute). Using granular deps
-  // on purpose — passing `input` in full would defeat memoization.
+  // on purpose - passing `input` in full would defeat memoization.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   return useMemo(() => buildQueueTimeline(input), [
     input.queues,

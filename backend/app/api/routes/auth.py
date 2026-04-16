@@ -133,7 +133,7 @@ async def set_setup_completed(db: AsyncSession, completed: bool) -> None:
 async def setup_auth(request: SetupRequest, db: AsyncSession = Depends(get_db)):
     """First-time setup: create the initial admin user and auto-login.
 
-    Public endpoint — intentionally unauthenticated, because the system has no
+    Public endpoint - intentionally unauthenticated, because the system has no
     admin yet. Once any admin exists, subsequent requests are rejected with 403.
     """
     import logging
@@ -141,7 +141,7 @@ async def setup_auth(request: SetupRequest, db: AsyncSession = Depends(get_db)):
     logger = logging.getLogger(__name__)
 
     try:
-        # Block re-runs once an admin exists. This is the sole gate — we don't
+        # Block re-runs once an admin exists. This is the sole gate - we don't
         # read any "setup_completed" flag, because the admin-count is the real
         # source of truth (a stale flag with zero admins would otherwise lock
         # the system out).
@@ -157,7 +157,7 @@ async def setup_auth(request: SetupRequest, db: AsyncSession = Depends(get_db)):
                 detail="Admin username and password are required",
             )
 
-        # Username collision guard — safe to run even before setup completes.
+        # Username collision guard - safe to run even before setup completes.
         existing_user = await get_user_by_username(db, request.admin_username)
         if existing_user:
             raise HTTPException(
@@ -242,7 +242,7 @@ async def get_auth_status(db: AsyncSession = Depends(get_db)):
     """Get authentication status (public endpoint).
 
     ``requires_setup`` is ``True`` iff no active admin user exists. Auth itself
-    is always on — the legacy ``auth_enabled`` field is kept as ``True`` for
+    is always on - the legacy ``auth_enabled`` field is kept as ``True`` for
     backward compatibility with older frontends.
     """
     requires_setup = not await has_any_admin(db)
@@ -269,10 +269,10 @@ async def login(request: LoginRequest, db: AsyncSession = Depends(get_db)):
             if ldap_config:
                 ldap_user = authenticate_ldap_user(ldap_config, request.username, request.password)
                 if ldap_user:
-                    # LDAP auth succeeded — find or create local user
+                    # LDAP auth succeeded - find or create local user
                     user = await get_user_by_username(db, ldap_user.username)
                     if user and user.auth_source != "ldap":
-                        # Username exists as local user — don't override
+                        # Username exists as local user - don't override
                         user = None
                         ldap_user = None
                     elif not user:
@@ -666,7 +666,7 @@ async def reset_user_password(
     if user.auth_source == "ldap":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot reset password for LDAP users — passwords are managed by the LDAP server",
+            detail="Cannot reset password for LDAP users - passwords are managed by the LDAP server",
         )
 
     if not user.email:
@@ -748,7 +748,7 @@ async def _provision_ldap_user(db: AsyncSession, ldap_user, ldap_config) -> User
     if not mapped_group_names and ldap_config.default_group:
         mapped_group_names = [ldap_config.default_group]
         logger.warning(
-            "LDAP user %s has no mapped groups — assigning configured default group '%s'",
+            "LDAP user %s has no mapped groups - assigning configured default group '%s'",
             ldap_user.username,
             ldap_config.default_group,
         )
@@ -778,14 +778,14 @@ async def _sync_ldap_user(db: AsyncSession, user: User, ldap_user, ldap_config) 
         user.email = ldap_user.email
         changed = True
 
-    # Sync group mappings — always update to match LDAP state (including revocation).
+    # Sync group mappings - always update to match LDAP state (including revocation).
     # Fall back to the configured default group when the user has no mapped groups,
     # so authenticated LDAP users are never left permission-less.
     mapped_group_names = resolve_group_mapping(ldap_user.groups, ldap_config.group_mapping)
     if not mapped_group_names and ldap_config.default_group:
         mapped_group_names = [ldap_config.default_group]
         logger.warning(
-            "LDAP user %s has no mapped groups — assigning configured default group '%s'",
+            "LDAP user %s has no mapped groups - assigning configured default group '%s'",
             user.username,
             ldap_config.default_group,
         )
@@ -819,7 +819,7 @@ async def test_ldap(
 
     ldap_settings = await _get_ldap_settings(db)
     if not ldap_settings:
-        # LDAP might not be enabled yet but settings might still exist — read all keys
+        # LDAP might not be enabled yet but settings might still exist - read all keys
         ldap_keys = [
             "ldap_enabled",
             "ldap_server_url",
@@ -852,7 +852,7 @@ async def test_ldap(
 @router.get("/ldap/status")
 async def get_ldap_status(db: AsyncSession = Depends(get_db)):
     """Get LDAP authentication status."""
-    # Only fetch the minimum keys needed — never load secrets
+    # Only fetch the minimum keys needed - never load secrets
     ldap_keys = ["ldap_enabled", "ldap_server_url"]
     result = await db.execute(select(Settings).where(Settings.key.in_(ldap_keys)))
     settings = {s.key: s.value for s in result.scalars().all()}

@@ -781,7 +781,7 @@ async def scan_external_folder(
     """Scan an external folder and sync files to the database.
 
     Discovers new files, removes DB entries for deleted files.
-    Does not copy files — stores the external path directly.
+    Does not copy files - stores the external path directly.
     """
     result = await db.execute(select(LibraryFolder).where(LibraryFolder.id == folder_id))
     folder = result.scalar_one_or_none()
@@ -1047,7 +1047,7 @@ async def list_files(
             )
             hash_counts = {h: c - 1 for h, c in dup_result.all()}  # -1 to exclude self
 
-    # Notes counts (gh#3) — single grouped query, no N+1.
+    # Notes counts (gh#3) - single grouped query, no N+1.
     notes_counts: dict[int, int] = {}
     if files:
         from backend.app.models.library_file_note import LibraryFileNote
@@ -2187,6 +2187,14 @@ async def print_library_file(
     if plate_name:
         dispatch_source_name = f"{lib_file.filename} • {plate_name}"
 
+    # Swap-macro execution only applies to swap-enabled printers AND files
+    # that don't already carry swap macros baked in by third-party tooling
+    # (``swap_compatible`` → double-fire risk). Mute the fields in either
+    # case before they propagate into dispatch options or queued copies.
+    if not printer.swap_mode_enabled or getattr(lib_file, "swap_compatible", False):
+        body.execute_swap_macros = False
+        body.swap_macro_events = None
+
     try:
         dispatch_result = await background_dispatch.dispatch_print_library_file(
             file_id=file_id,
@@ -2215,10 +2223,12 @@ async def print_library_file(
             ams_mapping=body.ams_mapping,
             bed_levelling=body.bed_levelling,
             flow_cali=body.flow_cali,
-            vibration_cali=body.vibration_cali,
             layer_inspect=body.layer_inspect,
             timelapse=body.timelapse,
             use_ams=body.use_ams,
+            mesh_mode_fast_check=body.mesh_mode_fast_check,
+            execute_swap_macros=body.execute_swap_macros,
+            swap_macro_events=body.swap_macro_events,
         )
 
     return {

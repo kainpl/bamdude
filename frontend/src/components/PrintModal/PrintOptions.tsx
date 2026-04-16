@@ -6,9 +6,9 @@ import type { PrintOptionsProps, PrintOptions as PrintOptionsType } from './type
 const PRINT_OPTIONS_CONFIG = [
   { key: 'bed_levelling', labelKey: 'printModal.bedLeveling', descKey: 'printModal.bedLevelingDesc' },
   { key: 'flow_cali', labelKey: 'printModal.flowCalibration', descKey: 'printModal.flowCalibrationDesc' },
-  { key: 'vibration_cali', labelKey: 'printModal.vibrationCalibration', descKey: 'printModal.vibrationCalibrationDesc' },
   { key: 'layer_inspect', labelKey: 'printModal.layerInspection', descKey: 'printModal.layerInspectionDesc' },
   { key: 'timelapse', labelKey: 'printModal.timelapse', descKey: 'printModal.timelapseDesc' },
+  { key: 'mesh_mode_fast_check', labelKey: 'printModal.meshModeFastCheck', descKey: 'printModal.meshModeFastCheckDesc' },
 ] as const;
 
 /**

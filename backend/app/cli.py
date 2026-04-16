@@ -1,10 +1,10 @@
 """BamDude administrative CLI.
 
 Invoked via ``python -m backend.app.cli <command>``. Commands are intentionally
-small and destructive operations are explicit — this is a rescue / operator
+small and destructive operations are explicit - this is a rescue / operator
 utility, not a daily-driver surface. Commands:
 
-* ``reset_admin`` — wipe the "setup_completed" flag so the next server start
+* ``reset_admin`` - wipe the "setup_completed" flag so the next server start
   sends the user back through ``/setup`` to create a fresh admin. Use this when
   all admin users have been lost (forgotten credentials, mistaken deletions,
   etc.) and you still have file-system / container access.
@@ -34,7 +34,7 @@ async def _reset_admin() -> int:
     async with async_session() as db:
         if await has_any_admin(db):
             print(
-                "Admin user(s) still exist. Refusing to reset — delete them first "
+                "Admin user(s) still exist. Refusing to reset - delete them first "
                 "via the admin panel or directly in the database, then re-run "
                 "this command.",
                 file=sys.stderr,

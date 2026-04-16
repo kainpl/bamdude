@@ -49,7 +49,7 @@ MODEL_TO_API_KEY = {
     "H2D Pro": "h2d-pro",
     "H2D-Pro": "h2d-pro",
     "H2DPRO": "h2d-pro",
-    # SSDP model codes (DevModel header) — in case raw codes are stored
+    # SSDP model codes (DevModel header) - in case raw codes are stored
     "O1D": "h2d",
     "O1E": "h2d-pro",
     "O2D": "h2d-pro",
@@ -205,7 +205,7 @@ class FirmwareCheckService:
         are never shown an update they cannot actually install.
         Wiki is used as a fallback only when the download page is unreachable.
         """
-        # Try download page first (has download URLs — only show what's downloadable)
+        # Try download page first (has download URLs - only show what's downloadable)
         download_info = await self._fetch_from_download_page(api_key)
 
         if download_info and download_info.download_url:

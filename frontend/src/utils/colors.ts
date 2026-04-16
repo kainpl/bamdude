@@ -1,6 +1,6 @@
 // Runtime color-name catalog, populated once at app startup by ColorCatalogProvider
 // from /api/inventory/colors/map. The backend color_catalog table is the single
-// source of truth — no hardcoded hex→name tables live on the frontend anymore
+// source of truth - no hardcoded hex→name tables live on the frontend anymore
 // (upstream #857: suffix-based fallbacks were structurally guaranteed to produce
 // wrong names for any color the hand-maintained list didn't happen to cover).
 //
@@ -128,7 +128,7 @@ export function resolveSpoolColorName(colorName: string | null, rgba: string | n
     const mapped = runtimeColorCatalog[hex];
     if (mapped) return mapped;
   }
-  // Return null (displayed as "-") — better than showing a code
+  // Return null (displayed as "-") - better than showing a code
   return null;
 }
 

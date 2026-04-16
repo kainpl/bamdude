@@ -1893,7 +1893,7 @@ async def configure_ams_slot(
     effective_tray_info_idx = tray_info_idx
 
     if not tray_info_idx:
-        # No preset provided — try slot reuse or generic fallback
+        # No preset provided - try slot reuse or generic fallback
         current_tray_info_idx = ""
         current_tray_type = ""
         state = printer_manager.get_status(printer_id)
@@ -1948,7 +1948,7 @@ async def configure_ams_slot(
     # Send filament setting + K-profile commands
     filament_id_for_kprofile = kprofile_filament_id if kprofile_filament_id else effective_tray_info_idx
 
-    # Always send ams_set_filament_setting — the user explicitly clicked
+    # Always send ams_set_filament_setting - the user explicitly clicked
     # "Configure Slot", so honor that.  Previous versions skipped this for
     # RFID-tagged slots to preserve the slicer eye icon, but printers cache
     # stale tag_uid/tray_uuid after a BL spool is removed, causing the check
@@ -1969,7 +1969,7 @@ async def configure_ams_slot(
         raise HTTPException(status_code=500, detail="Failed to send filament configuration command")
 
     # Method 1: Select existing calibration profile by cali_idx
-    # Do NOT include setting_id — BambuStudio never sends it in extrusion_cali_sel,
+    # Do NOT include setting_id - BambuStudio never sends it in extrusion_cali_sel,
     # and including it causes the firmware to mislink the profile on X1C/P1S.
     client.extrusion_cali_sel(
         ams_id=ams_id,
@@ -1983,7 +1983,7 @@ async def configure_ams_slot(
     # (cali_idx == -1). When cali_idx >= 0, extrusion_cali_sel already selected the
     # correct profile. Sending extrusion_cali_set with the same cali_idx would MODIFY
     # the existing profile's metadata (extruder_id, nozzle_id, name, setting_id),
-    # corrupting it — e.g., overwriting a High Flow extruder 1 profile with
+    # corrupting it - e.g., overwriting a High Flow extruder 1 profile with
     # hardcoded extruder_id=0 and nozzle_id=HS00.
     if k_value > 0 and cali_idx < 0:
         # Calculate global tray ID for extrusion_cali_set
@@ -2266,7 +2266,7 @@ async def clear_plate(
     """Acknowledge that the build plate has been cleared after a finished/failed print.
 
     Sets a plate-cleared flag so the scheduler can start the next queued print.
-    No MQTT command is sent to the printer — the scheduler's start_print command
+    No MQTT command is sent to the printer - the scheduler's start_print command
     will override the FINISH/FAILED state when it sends the next job.
     """
     result = await db.execute(select(Printer).where(Printer.id == printer_id))
@@ -2728,7 +2728,7 @@ async def _apply_pa_after_refresh(printer_id: int, ams_id: int, slot_id: int):
             )
 
             # 1. Select K-profile
-            # NOTE: Do NOT send ams_set_filament_setting here — it tells the firmware
+            # NOTE: Do NOT send ams_set_filament_setting here - it tells the firmware
             # "this is a manual config" which destroys the RFID-detected spool state
             # (changes eye icon to pen icon in slicer).
             client.extrusion_cali_sel(

@@ -684,7 +684,7 @@ export function ProjectsPage() {
     queryFn: api.getTemplates,
   });
 
-  // Client-side status filter — see allProjects above.
+  // Client-side status filter - see allProjects above.
   const projects = statusFilter === 'all' || statusFilter === 'templates'
     ? allProjects
     : allProjects?.filter((p) => p.status === statusFilter);
@@ -864,7 +864,7 @@ export function ProjectsPage() {
     }
   };
 
-  // Count projects by status for filter badges — always derived from the
+  // Count projects by status for filter badges - always derived from the
   // full unfiltered list so badges stay accurate on every tab.
   const projectCounts = allProjects?.reduce((acc, p) => {
     acc[p.status] = (acc[p.status] || 0) + 1;

@@ -59,7 +59,7 @@ export function PrinterInfoModal({ printer, status, totalPrintHours, onClose }: 
   // Model
   rows.push({
     label: t('printers.model'),
-    value: printer.model ?? '—',
+    value: printer.model ?? '-',
   });
 
   // Connection Status
@@ -142,7 +142,7 @@ export function PrinterInfoModal({ printer, status, totalPrintHours, onClose }: 
   // Firmware
   rows.push({
     label: t('printers.firmware'),
-    value: status?.firmware_version ?? '—',
+    value: status?.firmware_version ?? '-',
   });
 
   // Developer Mode

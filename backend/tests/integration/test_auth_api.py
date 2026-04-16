@@ -79,7 +79,7 @@ class TestAuthSetupBootstrap:
 
         test_session = async_sessionmaker(test_engine, expire_on_commit=False)
         async with test_session() as db:
-            # Drop the association rows first, then the user itself — SQLite
+            # Drop the association rows first, then the user itself - SQLite
             # in-memory doesn't enforce FK CASCADE by default, so we do it
             # explicitly instead of relying on ORM cascade.
             await db.execute(delete(user_groups))
@@ -752,5 +752,5 @@ class TestAuthMiddlewarePublicRoutes:
             json={"email": "test@example.com"},
         )
         assert response.status_code != 401
-        # Likely 400 because advanced auth isn't configured — still not 401.
+        # Likely 400 because advanced auth isn't configured - still not 401.
         assert response.status_code in [200, 400]

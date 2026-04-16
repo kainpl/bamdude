@@ -30,7 +30,7 @@ async def seed(session_factory):
             break
 
     if not legacy_path:
-        logger.info("No legacy Bambuddy database found — skipping import")
+        logger.info("No legacy Bambuddy database found - skipping import")
         return
 
     # Check it's actually Bambuddy (not BamDude 3.0.1 which was already renamed)
@@ -38,17 +38,15 @@ async def seed(session_factory):
 
     try:
         async with aiosqlite.connect(str(legacy_path)) as db:
-            cursor = await db.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='telegram_chats'"
-            )
+            cursor = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='telegram_chats'")
             row = await cursor.fetchone()
             if row is not None:
-                logger.info("Legacy DB has telegram_chats — BamDude 3.0.1 already handled. Skipping.")
+                logger.info("Legacy DB has telegram_chats - BamDude 3.0.1 already handled. Skipping.")
                 return
     except Exception:
         return
 
-    logger.info("Found Bambuddy 2.2.2 database: %s — importing data", legacy_path)
+    logger.info("Found Bambuddy 2.2.2 database: %s - importing data", legacy_path)
 
     from backend.app.migrations.import_bambuddy import import_bambuddy_data
 

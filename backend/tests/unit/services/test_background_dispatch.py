@@ -205,7 +205,7 @@ async def test_cancel_job_single_lock_covers_both_active_and_queued():
     with patch(
         "backend.app.services.background_dispatch.ws_manager.broadcast", new_callable=AsyncMock
     ) as mock_broadcast:
-        # Cancel the queued job — should find it in single lock acquisition
+        # Cancel the queued job - should find it in single lock acquisition
         result = await service.cancel_job(2)
 
     assert result["cancelled"] is True
@@ -269,7 +269,7 @@ async def test_mark_job_finished_no_reset_when_jobs_remain():
     with patch("backend.app.services.background_dispatch.ws_manager.broadcast", new_callable=AsyncMock):
         await service._mark_job_finished(job, failed=False, message="Complete")
 
-    # Batch counters should NOT be reset — remaining job still queued
+    # Batch counters should NOT be reset - remaining job still queued
     assert service._batch_total == 2
     assert service._batch_completed == 1
 

@@ -167,7 +167,7 @@ describe('PrinterQueueWidget - Clear Plate', () => {
 
       await waitFor(() => {
         // Both the widget confirmation and the toast show this text
-        const elements = screen.getAllByText('Plate cleared — ready for next print');
+        const elements = screen.getAllByText('Plate cleared - ready for next print');
         expect(elements.length).toBeGreaterThanOrEqual(1);
       });
     });
@@ -183,11 +183,11 @@ describe('PrinterQueueWidget - Clear Plate', () => {
       });
       await user.click(screen.getByText('Clear Plate & Start Next'));
       await waitFor(() => {
-        const confirmations = screen.getAllByText('Plate cleared — ready for next print');
+        const confirmations = screen.getAllByText('Plate cleared - ready for next print');
         expect(confirmations.length).toBeGreaterThanOrEqual(1);
       });
 
-      // Printer transitions to RUNNING (next print starts) — then back to FINISH.
+      // Printer transitions to RUNNING (next print starts) - then back to FINISH.
       // The useEffect must have called mutation.reset(), so the button is rendered
       // again instead of the sticky "Plate Ready" confirmation.
       rerender(<PrinterQueueWidget printerId={1} printerState="RUNNING" />);
@@ -536,7 +536,7 @@ describe('PrinterQueueWidget - Clear Plate', () => {
         http.get('/api/v1/queue/', () => HttpResponse.json(multiOverrideItem))
       );
 
-      // Printer has green PLA but not red — should still match (at least one override)
+      // Printer has green PLA but not red - should still match (at least one override)
       render(
         <PrinterQueueWidget
           printerId={1}

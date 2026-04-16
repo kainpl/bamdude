@@ -250,7 +250,7 @@ export function ProjectDetailPage() {
     enabled: projectId > 0,
   });
 
-  // Single bulk query — replaces the previous N+1 useQueries pattern
+  // Single bulk query - replaces the previous N+1 useQueries pattern
   const { data: allProjectFiles, isLoading: projectFilesLoading } = useQuery({
     queryKey: ['project-files', projectId],
     queryFn: () => api.getLibraryFiles(null, false, projectId),
@@ -907,7 +907,7 @@ export function ProjectDetailPage() {
 
                 return (
                   <div key={folder.id}>
-                    {/* Folder header — links to File Manager */}
+                    {/* Folder header - links to File Manager */}
                     <Link
                       to={`/files?folder=${folder.id}`}
                       className="flex items-center justify-between p-3 bg-bambu-dark rounded-lg hover:bg-bambu-dark-tertiary transition-colors mb-2"
@@ -1420,7 +1420,7 @@ export function ProjectDetailPage() {
         />
       )}
 
-      {/* Print directly from project — reprint mode (closes #930) */}
+      {/* Print directly from project - reprint mode (closes #930) */}
       {printFile && (
         <PrintModal
           mode="reprint"

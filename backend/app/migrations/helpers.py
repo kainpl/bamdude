@@ -1,4 +1,4 @@
-"""Migration helpers — idempotent DDL operations for SQLite and PostgreSQL."""
+"""Migration helpers - idempotent DDL operations for SQLite and PostgreSQL."""
 
 from sqlalchemy import text
 

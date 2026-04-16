@@ -305,7 +305,7 @@ def extract_nozzle_mapping_from_3mf(zf: zipfile.ZipFile) -> dict[int, int] | Non
             active_extruders.append(1 if any(c not in ("0", "") for c in nozzle_counts) else 0)
 
         if active_extruders and sum(active_extruders) == 1:
-            # Only one extruder has nozzles — map all filaments to it directly
+            # Only one extruder has nozzles - map all filaments to it directly
             nozzle_mapping: dict[int, int] = {}
             active_idx = active_extruders.index(1)
             target_extruder = int(physical_extruder_map[active_idx])

@@ -339,7 +339,7 @@ async def list_archives_slim(
     Returns only the fields needed for client-side aggregation,
     skipping duplicate detection, file paths, and extra_data.
     """
-    # Exclude "archived" status — uploaded but never printed
+    # Exclude "archived" status - uploaded but never printed
     filters = [PrintArchive.status != "archived"]
     if date_from:
         dt_from = datetime.combine(date_from, time.min, tzinfo=timezone.utc)
@@ -725,7 +725,7 @@ async def get_archive_stats(
     _validate_user_filter_permission(current_user, created_by_id)
 
     # Build date filter conditions
-    # Exclude "archived" status — these are files uploaded via virtual printer
+    # Exclude "archived" status - these are files uploaded via virtual printer
     # or manual upload that were never actually printed
     base_conditions = [PrintArchive.status != "archived"]
     _apply_user_filter(base_conditions, created_by_id)
@@ -849,7 +849,7 @@ async def get_archive_stats(
     energy_data_warming_up = False
 
     if energy_tracking_mode == "total" and not date_from and not date_to:
-        # All-time total consumption — read live lifetime counters.
+        # All-time total consumption - read live lifetime counters.
         total_energy_kwh = await _sum_live_plug_totals(db)
         total_energy_cost = total_energy_kwh * energy_cost_per_kwh
     elif energy_tracking_mode == "total":
@@ -892,7 +892,7 @@ async def _sum_live_plug_totals(db: AsyncSession) -> float:
     """Sum the live lifetime counter from every smart plug.
 
     Used for all-time "total consumption" mode. Only the current value is
-    available so this can't be date-filtered — use `_sum_snapshot_deltas` for
+    available so this can't be date-filtered - use `_sum_snapshot_deltas` for
     that case.
     """
     from backend.app.api.routes.settings import get_setting
@@ -941,10 +941,10 @@ async def _sum_snapshot_deltas(
 
     For each plug:
       * baseline  = last snapshot at or before `dt_from` (ideal)
-                    — if missing, fall back to the earliest snapshot ever
+                    - if missing, fall back to the earliest snapshot ever
                       recorded for the plug and flag the result as warming up.
       * endpoint  = last snapshot at or before `dt_to` (or most recent overall)
-      * delta     = max(0, endpoint - baseline)  — clamp counter resets to 0.
+      * delta     = max(0, endpoint - baseline)  - clamp counter resets to 0.
 
     Returns (total_kwh, warming_up). `warming_up = True` means at least one plug
     had no baseline before `dt_from` (fresh install or fresh upgrade), so the
@@ -974,7 +974,7 @@ async def _sum_snapshot_deltas(
             )
             baseline = baseline_q.scalar()
         if baseline is None:
-            # No snapshot before range start — fall back to the earliest
+            # No snapshot before range start - fall back to the earliest
             # snapshot ever recorded. Result undercounts the pre-first-snapshot
             # portion of the range; signal that to the frontend.
             earliest_q = await db.execute(
@@ -3284,6 +3284,14 @@ async def reprint_archive(
     if plate_name:
         dispatch_source_name = f"{archive.filename} • {plate_name}"
 
+    # Swap-macro execution only applies to swap-enabled printers AND files
+    # that don't already carry swap macros baked in by third-party tooling
+    # (``swap_compatible`` → double-fire risk). Mute the fields in either
+    # case before they propagate into dispatch options or queued copies.
+    if not printer.swap_mode_enabled or getattr(archive, "swap_compatible", False):
+        body.execute_swap_macros = False
+        body.swap_macro_events = None
+
     try:
         dispatch_result = await background_dispatch.dispatch_reprint_archive(
             archive_id=archive_id,
@@ -3319,10 +3327,12 @@ async def reprint_archive(
             ams_mapping=body.ams_mapping,
             bed_levelling=body.bed_levelling,
             flow_cali=body.flow_cali,
-            vibration_cali=body.vibration_cali,
             layer_inspect=body.layer_inspect,
             timelapse=body.timelapse,
             use_ams=body.use_ams,
+            mesh_mode_fast_check=body.mesh_mode_fast_check,
+            execute_swap_macros=body.execute_swap_macros,
+            swap_macro_events=body.swap_macro_events,
             created_by_id=user.id if user else None,
         )
 

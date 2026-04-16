@@ -55,7 +55,7 @@ describe('FilamentHoverCard', () => {
       vi.advanceTimersByTime(100);
 
       await waitFor(() => {
-        expect(screen.getByText('—')).toBeInTheDocument();
+        expect(screen.getByText('-')).toBeInTheDocument();
       });
     });
 
@@ -114,7 +114,7 @@ describe('FilamentHoverCard', () => {
       vi.advanceTimersByTime(100);
 
       await waitFor(() => {
-        expect(screen.getByText('—')).toBeInTheDocument();
+        expect(screen.getByText('-')).toBeInTheDocument();
         expect(screen.queryByText('(Spoolman)')).not.toBeInTheDocument();
       });
     });

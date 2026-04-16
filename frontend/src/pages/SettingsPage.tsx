@@ -235,7 +235,7 @@ export function SettingsPage() {
   });
 
   // Only used to hide SQLite-specific actions (VACUUM) when the deployment
-  // runs on PostgreSQL. Cached for the session — the engine doesn't change
+  // runs on PostgreSQL. Cached for the session - the engine doesn't change
   // at runtime.
   const { data: systemInfo } = useQuery({
     queryKey: ['system-info'],
@@ -807,7 +807,7 @@ export function SettingsPage() {
     mutationFn: api.updateSettings,
     onSuccess: (data) => {
       queryClient.setQueryData(['settings'], data);
-      // Don't call setLocalSettings(data) here — it would overwrite in-progress
+      // Don't call setLocalSettings(data) here - it would overwrite in-progress
       // user input (e.g. typing a hostname) with the stale saved snapshot,
       // causing the text field to reset mid-typing. Instead, let the useEffect
       // re-compare the updated `settings` with current `localSettings` and
@@ -2104,7 +2104,7 @@ export function SettingsPage() {
             </CardHeader>
             <CardContent>
               {!macros || macros.length === 0 ? (
-                <p className="text-sm text-bambu-gray">{t('settings.macros')} — none configured</p>
+                <p className="text-sm text-bambu-gray">{t('settings.macros')} - none configured</p>
               ) : (
                 <div className="space-y-2">
                   {macros.map((macro) => (
@@ -3219,7 +3219,7 @@ export function SettingsPage() {
               </Card>
             )}
 
-            {/* Provider list — full width, vertical stack */}
+            {/* Provider list - full width, vertical stack */}
             {providersLoading ? (
               <div className="flex justify-center py-12">
                 <Loader2 className="w-6 h-6 text-bambu-green animate-spin" />
@@ -3853,7 +3853,7 @@ export function SettingsPage() {
                       <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
                     </label>
                   </div>
-                  {/* Drying Presets Table — always visible since manual drying also uses these */}
+                  {/* Drying Presets Table - always visible since manual drying also uses these */}
                   <div className="space-y-2">
                     <p className="text-sm text-white font-medium">{t('settings.dryingPresets')}</p>
                     <p className="text-xs text-bambu-gray">{t('settings.dryingPresetsDescription')}</p>
@@ -4178,7 +4178,7 @@ export function SettingsPage() {
           {/* Users Sub-tab */}
           {usersSubTab === 'users' && (
           <>
-          {/* Auth status header — auth is always on since the opt-in mode was removed. */}
+          {/* Auth status header - auth is always on since the opt-in mode was removed. */}
           <Card>
             <CardContent className="py-4">
               <div className="flex items-center gap-3">
@@ -4953,7 +4953,7 @@ export function SettingsPage() {
             </CardHeader>
             <CardContent>
               <div className="flex flex-col lg:flex-row gap-4">
-                {/* Left — metadata */}
+                {/* Left - metadata */}
                 <div className="lg:w-1/4 space-y-3">
                   <div>
                     <label className="block text-sm text-bambu-gray mb-1">{t('settings.macroName')}</label>
@@ -5042,7 +5042,7 @@ export function SettingsPage() {
                       onChange={(checked) => setMacroForm(prev => ({ ...prev, swap_mode_only: checked }))}
                     />
                   </div>
-                  {/* Swap profile binding — only relevant for the two swap events.
+                  {/* Swap profile binding - only relevant for the two swap events.
                       Dropdown options are filtered by the printer_models already
                       selected (a profile's "models" must intersect). Value "" = generic. */}
                   {macroMeta?.swap_events?.includes(macroForm.event) && (
@@ -5080,7 +5080,7 @@ export function SettingsPage() {
                     />
                   </div>
                 </div>
-                {/* Right — G-code editor */}
+                {/* Right - G-code editor */}
                 <div className="lg:w-3/4 flex flex-col">
                   <label className="block text-sm text-bambu-gray mb-1">{t('settings.macroGcode')}</label>
                   <GcodeEditor

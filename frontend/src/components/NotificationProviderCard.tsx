@@ -600,7 +600,7 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                                 </div>
                             </div>
 
-                            {/* Quiet Hours — hidden for Telegram (per-chat setting) */}
+                            {/* Quiet Hours - hidden for Telegram (per-chat setting) */}
                             {!isTelegram && (
                             <div className="space-y-2">
                                 <div className="flex items-center justify-between">
@@ -680,7 +680,7 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                     )}
                 </CardContent>
 
-                {/* Telegram Chats — inside the same card */}
+                {/* Telegram Chats - inside the same card */}
                 {isTelegram && (
                     <div className="p-6 p-4 pt-0">
                         <div className="pt-3 border-t border-bambu-dark-tertiary">

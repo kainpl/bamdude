@@ -1,6 +1,6 @@
 /**
  * Brand SVG icons from Simple Icons (https://simpleicons.org/).
- * Lucide v1 removed brand icons — these fill the gap for GitHub/GitLab.
+ * Lucide v1 removed brand icons - these fill the gap for GitHub/GitLab.
  */
 
 interface IconProps {

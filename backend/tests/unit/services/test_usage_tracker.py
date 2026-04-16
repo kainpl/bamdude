@@ -61,7 +61,7 @@ def _make_printer_manager(state=None):
 
 
 class TestOnPrintStart:
-    """Tests for on_print_start — capturing AMS remain%."""
+    """Tests for on_print_start - capturing AMS remain%."""
 
     @pytest.fixture(autouse=True)
     def _clear_sessions(self):
@@ -476,7 +476,7 @@ class TestSpoolAssignmentSnapshot:
         archive = MagicMock()
         archive.file_path = "archives/test.3mf"
 
-        # db: archive, queue_item(None), spool — NO assignment query needed
+        # db: archive, queue_item(None), spool - NO assignment query needed
         db = AsyncMock()
         db.execute = AsyncMock(
             side_effect=[
@@ -667,7 +667,7 @@ class TestSpoolAssignmentSnapshot:
 
         # db: archive, queue_item(None), live assignment(None), spool,
         # then cost aggregation queries
-        # NOTE: No assignment in db — it was deleted by on_ams_change mid-print!
+        # NOTE: No assignment in db - it was deleted by on_ams_change mid-print!
         db = AsyncMock()
         db.execute = AsyncMock(
             side_effect=[

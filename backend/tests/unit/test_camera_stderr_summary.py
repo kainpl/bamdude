@@ -2,7 +2,7 @@
 
 The ffmpeg banner (version / build / configuration / lib*) dumps ~20 lines
 before any actual error. Before this fix, every failed camera retry logged
-the full banner, producing hundreds of lines per failure — see #925 where a
+the full banner, producing hundreds of lines per failure - see #925 where a
 single click produced 555 lines across 30 retries. The helper strips the
 banner so logs stay focused on the real error.
 """

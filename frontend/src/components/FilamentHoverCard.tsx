@@ -232,7 +232,7 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
                     {t('ams.fill')}
                   </span>
                   <span className="text-xs text-white font-semibold flex items-center gap-1">
-                    <span>{data.fillLevel !== null ? `${data.fillLevel}%` : '—'}</span>
+                    <span>{data.fillLevel !== null ? `${data.fillLevel}%` : '-'}</span>
                     {assignedRemainingWeight !== null && data.fillLevel !== null && (
                       <span className="text-[9px] text-bambu-gray font-normal">• {assignedRemainingWeight}g</span>
                     )}
@@ -287,7 +287,7 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
                         )}
                       </button>
                     ) : (
-                      <span className="text-[10px] text-bambu-gray">—</span>
+                      <span className="text-[10px] text-bambu-gray">-</span>
                     )}
                   </div>
 

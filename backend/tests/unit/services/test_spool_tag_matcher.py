@@ -1,4 +1,4 @@
-"""Tests for spool_tag_matcher service — RFID auto-assign and relationship loading."""
+"""Tests for spool_tag_matcher service - RFID auto-assign and relationship loading."""
 
 import pytest
 from sqlalchemy import inspect
@@ -133,7 +133,7 @@ async def test_color_resolved_via_catalog_hex(db_session):
     spool = await create_spool_from_tray(db_session, tray)
     # Even though tray_id_name=A17-R1, lookup goes by hex → Cherry Pink (not Scarlet Red).
     # This is the structural fix from #857: suffix-based fallbacks would have returned
-    # "Scarlet Red" because R1 maps to that in PLA Matte (A01) — but A17-R1 is actually Pink.
+    # "Scarlet Red" because R1 maps to that in PLA Matte (A01) - but A17-R1 is actually Pink.
     assert spool.color_name == "Translucent Cherry Pink"
 
 
@@ -217,7 +217,7 @@ async def test_get_spool_by_tag_skips_archived(db_session):
 async def test_get_spool_by_tag_relationships_loaded(db_session):
     """Both k_profiles and assignments must be eagerly loaded.
 
-    Regression test for #612 — without selectinload(Spool.assignments),
+    Regression test for #612 - without selectinload(Spool.assignments),
     accessing spool.assignments after get_spool_by_tag triggers a lazy load
     in async context → greenlet_spawn error.
     """
@@ -229,7 +229,7 @@ async def test_get_spool_by_tag_relationships_loaded(db_session):
     )
     db_session.add(spool)
     await db_session.commit()
-    # Expire to clear in-session state — forces selectinload to actually load
+    # Expire to clear in-session state - forces selectinload to actually load
     db_session.expire(spool)
 
     found = await get_spool_by_tag(db_session, "", "AABBCCDD11223344AABBCCDD11223344")
@@ -264,7 +264,7 @@ async def test_get_spool_by_tag_first_char_variance_same_length(db_session):
     db_session.add(spool)
     await db_session.commit()
 
-    # Scan with different first character — should still match
+    # Scan with different first character - should still match
     found = await get_spool_by_tag(db_session, "B4501234CCDDEE88", "")
     assert found is not None
     assert found.id == spool.id
@@ -343,7 +343,7 @@ async def test_get_spool_by_tag_no_false_positive_different_suffix(db_session):
     db_session.add(spool)
     await db_session.commit()
 
-    # Scan with different suffix (only first char is same) — should NOT match
+    # Scan with different suffix (only first char is same) - should NOT match
     found = await get_spool_by_tag(db_session, "AABBCCDD11223355", "")
     assert found is None, "Should not match when suffix differs"
 
@@ -414,7 +414,7 @@ async def test_auto_assign_replaces_existing(db_session, printer_factory):
     await auto_assign_spool(printer.id, 0, 0, spool1, mock_pm, db_session)
     await db_session.commit()
 
-    # Assign spool2 to same slot — should replace
+    # Assign spool2 to same slot - should replace
     await auto_assign_spool(printer.id, 0, 0, spool2, mock_pm, db_session)
     await db_session.commit()
 
@@ -443,7 +443,7 @@ async def test_auto_assign_no_greenlet_error_new_spool(db_session, printer_facto
 
     printer = await printer_factory()
     spool = await create_spool_from_tray(db_session, SAMPLE_TRAY)
-    # Don't commit yet — keep spool in same session state as production flow
+    # Don't commit yet - keep spool in same session state as production flow
 
     mock_pm = MagicMock()
     mock_pm.get_status.return_value = None
@@ -486,7 +486,7 @@ async def test_auto_assign_no_greenlet_error_existing_spool(db_session, printer_
     )
     db_session.add(spool)
     await db_session.commit()
-    # Expire to clear in-session state — simulates fresh query
+    # Expire to clear in-session state - simulates fresh query
     db_session.expire(spool)
 
     # Look up via get_spool_by_tag (must eagerly load relationships)

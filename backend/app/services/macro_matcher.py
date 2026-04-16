@@ -6,9 +6,9 @@ Status
 planned "macros auto-fire on events" feature. Call sites that should
 eventually hook it in (but do not today):
 
-* ``backend/app/services/bambu_mqtt.py`` — print start / print complete /
+* ``backend/app/services/bambu_mqtt.py`` - print start / print complete /
   print failed transitions.
-* ``backend/app/main.py`` queue orchestration — swap-mode start + table
+* ``backend/app/main.py`` queue orchestration - swap-mode start + table
   swap around queue item boundaries.
 * Any future "on X" event bus.
 
@@ -31,7 +31,7 @@ A macro fires when **all** of:
   generic fallback) **or** its ``swap_profile`` equals the printer's
   currently-selected ``swap_profile``.
 
-Multiple macros can match the same (event, printer) tuple — all of them
+Multiple macros can match the same (event, printer) tuple - all of them
 fire, in the order returned. If the operator wants "specific wins" semantics
 later, filter the returned list to specific-first. We explicitly do not
 collapse that at match time because a webhook-style generic macro and a

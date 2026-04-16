@@ -1,12 +1,12 @@
-"""BamDude migration system — auto-discovered versioned migrations.
+"""BamDude migration system - auto-discovered versioned migrations.
 
 Runner logic:
-1. create_all() — creates/updates tables from models
+1. create_all() - creates/updates tables from models
 2. Ensure _migrations table
 3. Run all pending migrations sequentially (m000, m001, m002...)
 
-m000 is special — handles Bambuddy 2.2.2 → BamDude import if legacy DB found.
-m001 is baseline — FTS5 + seeds for BamDude 3.0.1.
+m000 is special - handles Bambuddy 2.2.2 → BamDude import if legacy DB found.
+m001 is baseline - FTS5 + seeds for BamDude 3.0.1.
 m002+ are incremental upgrades between BamDude versions.
 """
 
@@ -28,11 +28,13 @@ def _discover_migrations() -> list[dict]:
         if modname.startswith("m") and len(modname) > 3 and modname[1:4].isdigit():
             mod = importlib.import_module(f"backend.app.migrations.{modname}")
             if hasattr(mod, "version") and hasattr(mod, "name"):
-                migrations.append({
-                    "version": mod.version,
-                    "name": mod.name,
-                    "module": mod,
-                })
+                migrations.append(
+                    {
+                        "version": mod.version,
+                        "name": mod.name,
+                        "module": mod,
+                    }
+                )
     migrations.sort(key=lambda m: m["version"])
     return migrations
 
@@ -43,23 +45,27 @@ async def _ensure_migrations_table(engine) -> None:
 
     async with engine.begin() as conn:
         if is_postgres():
-            await conn.execute(text("""
+            await conn.execute(
+                text("""
                 CREATE TABLE IF NOT EXISTS _migrations (
                     id SERIAL PRIMARY KEY,
                     version INTEGER NOT NULL UNIQUE,
                     name VARCHAR(100) NOT NULL,
                     applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
-            """))
+            """)
+            )
         else:
-            await conn.execute(text("""
+            await conn.execute(
+                text("""
                 CREATE TABLE IF NOT EXISTS _migrations (
                     id INTEGER PRIMARY KEY,
                     version INTEGER NOT NULL UNIQUE,
                     name VARCHAR(100) NOT NULL,
                     applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
-            """))
+            """)
+            )
 
 
 async def _get_applied_versions(engine) -> set[int]:
@@ -122,7 +128,7 @@ async def _run_pending(engine, session_factory) -> None:
 
         logger.info("Applying migration %d: %s ...", version, name)
 
-        # DDL phase (schema changes) — FK off for safety (SQLite only)
+        # DDL phase (schema changes) - FK off for safety (SQLite only)
         if hasattr(mod, "upgrade"):
             async with engine.begin() as conn:
                 from backend.app.core.db_dialect import is_sqlite
@@ -143,10 +149,10 @@ async def _run_pending(engine, session_factory) -> None:
 
 
 async def run_all_migrations(engine, session_factory) -> None:
-    """Main entry point — called from init_db().
+    """Main entry point - called from init_db().
 
     Simple flow:
-    1. create_all() — ensures all tables exist from models
+    1. create_all() - ensures all tables exist from models
     2. Ensure _migrations table
     3. Handle BamDude 3.0.1 upgrade (rename + bootstrap)
     4. Run all pending migrations (m000 handles legacy import if needed)
@@ -163,7 +169,7 @@ async def run_all_migrations(engine, session_factory) -> None:
         # Must check BEFORE create_all (engine may create empty bamdude.db on connect)
         if legacy_path and await _is_bamdude_301(legacy_path):
             db_path = Path(settings.data_dir) / "bamdude.db"
-            logger.info("Found BamDude 3.0.1 database: %s — renaming to bamdude.db", legacy_path)
+            logger.info("Found BamDude 3.0.1 database: %s - renaming to bamdude.db", legacy_path)
             await engine.dispose()
             if db_path.exists():
                 db_path.unlink()
@@ -195,7 +201,7 @@ async def run_all_migrations(engine, session_factory) -> None:
     await _run_pending(engine, session_factory)
 
     # Rename legacy DB to .bak after successful migration (prevent re-import on next start)
-    # Only applicable for SQLite — PostgreSQL doesn't have local DB files
+    # Only applicable for SQLite - PostgreSQL doesn't have local DB files
     if legacy_path and legacy_path.exists():
         bak_path = legacy_path.with_suffix(".db.bak")
         try:
@@ -216,7 +222,7 @@ async def _has_existing_data(engine) -> bool:
     """Check if database has existing data (not a fresh create_all)."""
     try:
         async with engine.begin() as conn:
-            # Check if printers table has any rows — if yes, this is an existing install
+            # Check if printers table has any rows - if yes, this is an existing install
             result = await conn.execute(text("SELECT COUNT(*) FROM printers"))
             count = result.scalar() or 0
             return count > 0
@@ -230,9 +236,7 @@ async def _is_bamdude_301(db_path: Path) -> bool:
 
     try:
         async with aiosqlite.connect(str(db_path)) as db:
-            cursor = await db.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='telegram_chats'"
-            )
+            cursor = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='telegram_chats'")
             row = await cursor.fetchone()
             return row is not None
     except Exception:

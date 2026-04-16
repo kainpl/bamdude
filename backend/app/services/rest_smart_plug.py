@@ -34,7 +34,7 @@ class RESTSmartPlugService:
             addr = ipaddress.ip_address(hostname)
             return not addr.is_loopback and not addr.is_link_local
         except ValueError:
-            # Hostname is not an IP (e.g., "openhab.local") — allow it
+            # Hostname is not an IP (e.g., "openhab.local") - allow it
             return True
 
     def _parse_headers(self, headers_json: str | None) -> dict[str, str]:
@@ -176,14 +176,14 @@ class RESTSmartPlugService:
                     on_value = (plug.rest_status_on_value or "ON").upper()
                     state = "ON" if str(raw_value).upper() == on_value else "OFF"
             else:
-                # No path configured — try common patterns
+                # No path configured - try common patterns
                 raw_value = str(data).upper() if not isinstance(data, dict) else None
                 if raw_value in ("ON", "TRUE", "1"):
                     state = "ON"
                 elif raw_value in ("OFF", "FALSE", "0"):
                     state = "OFF"
         except Exception:
-            # Response is not JSON — try raw text
+            # Response is not JSON - try raw text
             text = response.text.strip().upper()
             on_value = (plug.rest_status_on_value or "ON").upper()
             state = "ON" if text == on_value else "OFF"
@@ -207,7 +207,7 @@ class RESTSmartPlugService:
         power_url = plug.rest_power_url or plug.rest_status_url if plug.rest_power_path else None
         energy_url = plug.rest_energy_url or plug.rest_status_url if plug.rest_energy_path else None
 
-        # Fetch data — deduplicate when both resolve to the same URL
+        # Fetch data - deduplicate when both resolve to the same URL
         fetched: dict[str, Any] = {}
 
         for url in {power_url, energy_url} - {None}:

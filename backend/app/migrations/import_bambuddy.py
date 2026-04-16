@@ -181,7 +181,7 @@ async def _import_table(
 
     # 5. Determine which source columns to select
     if columns is not None:
-        # Explicit column list — use only those present in source
+        # Explicit column list - use only those present in source
         select_cols = [c for c in columns if c in src_cols]
     else:
         # Auto-detect: source columns whose (possibly renamed) name exists in dest
@@ -336,9 +336,9 @@ async def import_bambuddy_data(engine, legacy_db_path: Path) -> None:
             logger.info("Created %d printer queues", len(printer_queue_map))
 
             # ---------------------------------------------------------------
-            # Phase 3: Independent tables — direct copy
+            # Phase 3: Independent tables - direct copy
             # ---------------------------------------------------------------
-            # Tables renamed since Bambuddy — map new name -> old source name
+            # Tables renamed since Bambuddy - map new name -> old source name
             _table_renames = {
                 "git_backup_config": "github_backup_config",
                 "git_backup_logs": "github_backup_logs",
@@ -370,7 +370,7 @@ async def import_bambuddy_data(engine, legacy_db_path: Path) -> None:
             # Phase 5: Tables with transforms
             # ---------------------------------------------------------------
 
-            # ams_labels — schema change (printer_id, ams_id) -> ams_serial_number
+            # ams_labels - schema change (printer_id, ams_id) -> ams_serial_number
             n = await _import_table(
                 conn,
                 old_db,
@@ -381,7 +381,7 @@ async def import_bambuddy_data(engine, legacy_db_path: Path) -> None:
                 summary["ams_labels"] = n
                 logger.info("Imported %d rows into ams_labels", n)
 
-            # project_bom_items — column renames
+            # project_bom_items - column renames
             n = await _import_table(
                 conn,
                 old_db,
@@ -392,7 +392,7 @@ async def import_bambuddy_data(engine, legacy_db_path: Path) -> None:
                 summary["project_bom_items"] = n
                 logger.info("Imported %d rows into project_bom_items", n)
 
-            # virtual_printers — model code fix + auto_dispatch default
+            # virtual_printers - model code fix + auto_dispatch default
             n = await _import_table(
                 conn,
                 old_db,
@@ -404,7 +404,7 @@ async def import_bambuddy_data(engine, legacy_db_path: Path) -> None:
                 summary["virtual_printers"] = n
                 logger.info("Imported %d rows into virtual_printers", n)
 
-            # print_queue — needs queue_id from printer_queue_map
+            # print_queue - needs queue_id from printer_queue_map
             n = await _import_table(
                 conn,
                 old_db,
@@ -415,7 +415,7 @@ async def import_bambuddy_data(engine, legacy_db_path: Path) -> None:
                 summary["print_queue"] = n
                 logger.info("Imported %d rows into print_queue", n)
 
-            # macros — conditional, may not exist; printer_model -> printer_models
+            # macros - conditional, may not exist; printer_model -> printer_models
             n = await _import_table(
                 conn,
                 old_db,

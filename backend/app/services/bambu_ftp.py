@@ -32,7 +32,7 @@ def _graceful_close_data_conn(conn) -> None:
             try:
                 conn.unwrap()
             except (OSError, ssl.SSLError):
-                # Peer already closed / TLS layer already shut — fall through
+                # Peer already closed / TLS layer already shut - fall through
                 # to the plain close below.
                 pass
     finally:
@@ -109,7 +109,7 @@ class BambuFTPClient:
     # These models have varying FTP SSL behavior depending on firmware version
     A1_MODELS = ("A1", "A1 Mini")
     # Chunk size for manual upload transfer (64KB)
-    # Smaller chunks provide smoother progress reporting — at typical printer FTP
+    # Smaller chunks provide smoother progress reporting - at typical printer FTP
     # speeds (~50-100KB/s) this gives a progress update roughly every second.
     CHUNK_SIZE = 64 * 1024
 
@@ -443,7 +443,7 @@ class BambuFTPClient:
             # See: https://bugs.python.org/issue25458 (ftplib response desync)
             try:
                 old_timeout = self._ftp.sock.gettimeout()
-                # Use a generous timeout — H2D printers can take 30+ seconds
+                # Use a generous timeout - H2D printers can take 30+ seconds
                 # to send the 226 after the data channel closes.
                 self._ftp.sock.settimeout(max(self.timeout, 60))
                 try:
@@ -452,7 +452,7 @@ class BambuFTPClient:
                 finally:
                     self._ftp.sock.settimeout(old_timeout)
             except Exception as e:
-                # Timeout or error reading 226 — log but proceed, the data
+                # Timeout or error reading 226 - log but proceed, the data
                 # was fully sent so the file is likely on the SD card.
                 logger.warning(
                     "FTP STOR confirmation not received for %s (proceeding): %s (%s)",
@@ -537,7 +537,7 @@ class BambuFTPClient:
                 finally:
                     self._ftp.sock.settimeout(old_timeout)
             except Exception:
-                pass  # Best-effort — data was sent, proceed
+                pass  # Best-effort - data was sent, proceed
             return True
         except (OSError, ftplib.Error):
             return False

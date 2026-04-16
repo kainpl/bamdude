@@ -1371,7 +1371,7 @@ export interface DiscoveredTasmotaDevice {
 export interface PrintQueueItem {
   id: number;
   queue_id: number;
-  printer_id?: number | null;  // Convenience — resolved from queue
+  printer_id?: number | null;  // Convenience - resolved from queue
   waiting_reason: string | null;
   archive_id: number | null;
   library_file_id: number | null;
@@ -1384,10 +1384,12 @@ export interface PrintQueueItem {
   // Print options
   bed_levelling: boolean;
   flow_cali: boolean;
-  vibration_cali: boolean;
   layer_inspect: boolean;
   timelapse: boolean;
   use_ams: boolean;
+  mesh_mode_fast_check: boolean;
+  execute_swap_macros: boolean;
+  swap_macro_events: string[] | null;
   status: 'pending' | 'printing' | 'completed' | 'failed' | 'skipped' | 'cancelled';
   started_at: string | null;
   completed_at: string | null;
@@ -1409,7 +1411,7 @@ export interface PrintQueueItem {
 }
 
 export interface PrintQueueItemCreate {
-  queue_id: number;  // Required — which printer's queue
+  queue_id: number;  // Required - which printer's queue
   archive_id?: number | null;
   library_file_id?: number | null;
   scheduled_time?: string | null;
@@ -1419,10 +1421,12 @@ export interface PrintQueueItemCreate {
   plate_id?: number | null;
   bed_levelling?: boolean;
   flow_cali?: boolean;
-  vibration_cali?: boolean;
   layer_inspect?: boolean;
   timelapse?: boolean;
   use_ams?: boolean;
+  mesh_mode_fast_check?: boolean;
+  execute_swap_macros?: boolean;
+  swap_macro_events?: string[] | null;
   quantity?: number;
   // Project to associate the resulting archive with
   project_id?: number;
@@ -1438,10 +1442,12 @@ export interface PrintQueueItemUpdate {
   plate_id?: number | null;
   bed_levelling?: boolean;
   flow_cali?: boolean;
-  vibration_cali?: boolean;
   layer_inspect?: boolean;
   timelapse?: boolean;
   use_ams?: boolean;
+  mesh_mode_fast_check?: boolean;
+  execute_swap_macros?: boolean;
+  swap_macro_events?: string[] | null;
 }
 
 export interface PrinterQueue {
@@ -1472,10 +1478,12 @@ export interface PrintQueueBulkUpdate {
   // Print options
   bed_levelling?: boolean;
   flow_cali?: boolean;
-  vibration_cali?: boolean;
   layer_inspect?: boolean;
   timelapse?: boolean;
   use_ams?: boolean;
+  mesh_mode_fast_check?: boolean;
+  execute_swap_macros?: boolean;
+  swap_macro_events?: string[] | null;
 }
 
 export interface PrintQueueBulkUpdateResponse {
@@ -3290,9 +3298,11 @@ export const api = {
       timelapse?: boolean;
       bed_levelling?: boolean;
       flow_cali?: boolean;
-      vibration_cali?: boolean;
       layer_inspect?: boolean;
       use_ams?: boolean;
+      mesh_mode_fast_check?: boolean;
+      execute_swap_macros?: boolean;
+      swap_macro_events?: string[] | null;
       quantity?: number;
     }
   ) =>
@@ -4434,10 +4444,12 @@ export const api = {
       ams_mapping?: number[];
       bed_levelling?: boolean;
       flow_cali?: boolean;
-      vibration_cali?: boolean;
       layer_inspect?: boolean;
       timelapse?: boolean;
       use_ams?: boolean;
+      mesh_mode_fast_check?: boolean;
+      execute_swap_macros?: boolean;
+      swap_macro_events?: string[] | null;
       quantity?: number;
       project_id?: number;
     }
@@ -4875,7 +4887,7 @@ export interface LibraryFileListItem {
   notes_count: number;
 }
 
-// gh#3 — User-authored notes attached to library files
+// gh#3 - User-authored notes attached to library files
 export interface LibraryFileNote {
   id: number;
   library_file_id: number;

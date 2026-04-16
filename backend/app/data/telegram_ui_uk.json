@@ -22,9 +22,9 @@
   },
   "help": {
     "title": "Команди",
-    "cmd_start": "/start — головне меню",
-    "cmd_status": "/status — статус принтерів",
-    "cmd_help": "/help — ця довідка",
+    "cmd_start": "/start - головне меню",
+    "cmd_status": "/status - статус принтерів",
+    "cmd_help": "/help - ця довідка",
     "printers_title": "Принтери",
     "printers_desc": "Натисніть на принтер для деталей та керування.",
     "queue_title": "Черга",

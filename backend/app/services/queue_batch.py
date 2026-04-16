@@ -22,10 +22,12 @@ async def enqueue_batch_copies(
     ams_mapping: list[int] | None = None,
     bed_levelling: bool = True,
     flow_cali: bool = True,
-    vibration_cali: bool = False,
     layer_inspect: bool = False,
     timelapse: bool = False,
     use_ams: bool = True,
+    mesh_mode_fast_check: bool = True,
+    execute_swap_macros: bool = False,
+    swap_macro_events: list[str] | None = None,
     auto_off_after: bool = False,
     created_by_id: int | None = None,
     batch_id: str | None = None,
@@ -54,6 +56,7 @@ async def enqueue_batch_copies(
     if batch_id is None:
         batch_id = str(uuid.uuid4())
     ams_mapping_json = json.dumps(ams_mapping) if ams_mapping else None
+    swap_macro_events_json = json.dumps(swap_macro_events) if execute_swap_macros and swap_macro_events else None
 
     items: list[PrintQueueItem] = []
     for i in range(count):
@@ -66,10 +69,12 @@ async def enqueue_batch_copies(
                 plate_id=plate_id,
                 bed_levelling=bed_levelling,
                 flow_cali=flow_cali,
-                vibration_cali=vibration_cali,
                 layer_inspect=layer_inspect,
                 timelapse=timelapse,
                 use_ams=use_ams,
+                mesh_mode_fast_check=mesh_mode_fast_check,
+                execute_swap_macros=execute_swap_macros,
+                swap_macro_events=swap_macro_events_json,
                 auto_off_after=auto_off_after,
                 position=max_pos + 1 + i,
                 status="pending",

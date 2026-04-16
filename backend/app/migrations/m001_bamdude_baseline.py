@@ -1,4 +1,4 @@
-"""Baseline migration — full-text search index + seed data."""
+"""Baseline migration - full-text search index + seed data."""
 
 from sqlalchemy import text
 
@@ -63,10 +63,7 @@ async def _setup_sqlite_fts(conn):
     # Populate FTS from existing archives (for import scenario)
     try:
         await conn.execute(
-            text(
-                f"INSERT OR IGNORE INTO archive_fts(rowid, {_FTS_COLS}) "
-                f"SELECT id, {_FTS_COLS} FROM print_archives"
-            )
+            text(f"INSERT OR IGNORE INTO archive_fts(rowid, {_FTS_COLS}) SELECT id, {_FTS_COLS} FROM print_archives")
         )
     except Exception:
         pass
@@ -75,21 +72,26 @@ async def _setup_sqlite_fts(conn):
 async def _setup_postgres_fts(conn):
     """PostgreSQL: tsvector column + GIN index + sync trigger function."""
     # Add tsvector column if not exists
-    await conn.execute(text("""
+    await conn.execute(
+        text("""
         DO $$ BEGIN
             ALTER TABLE print_archives ADD COLUMN search_vector tsvector;
         EXCEPTION WHEN duplicate_column THEN NULL;
         END $$
-    """))
+    """)
+    )
 
     # Create GIN index
-    await conn.execute(text("""
+    await conn.execute(
+        text("""
         CREATE INDEX IF NOT EXISTS idx_archives_search_vector
         ON print_archives USING GIN (search_vector)
-    """))
+    """)
+    )
 
     # Create trigger function to update tsvector on insert/update
-    await conn.execute(text("""
+    await conn.execute(
+        text("""
         CREATE OR REPLACE FUNCTION archive_search_vector_update() RETURNS trigger AS $$
         BEGIN
             NEW.search_vector :=
@@ -102,24 +104,31 @@ async def _setup_postgres_fts(conn):
             RETURN NEW;
         END
         $$ LANGUAGE plpgsql
-    """))
+    """)
+    )
 
-    await conn.execute(text("""
+    await conn.execute(
+        text("""
         DROP TRIGGER IF EXISTS archive_search_vector_trigger ON print_archives
-    """))
-    await conn.execute(text("""
+    """)
+    )
+    await conn.execute(
+        text("""
         CREATE TRIGGER archive_search_vector_trigger
         BEFORE INSERT OR UPDATE ON print_archives
         FOR EACH ROW EXECUTE FUNCTION archive_search_vector_update()
-    """))
+    """)
+    )
 
     # Populate search_vector for existing rows
     try:
         await conn.execute(text("UPDATE print_archives SET search_vector = NULL WHERE search_vector IS NULL"))
         # Trigger fires on UPDATE, so touching the column populates it
-        await conn.execute(text("""
+        await conn.execute(
+            text("""
             UPDATE print_archives SET print_name = print_name WHERE search_vector IS NULL
-        """))
+        """)
+        )
     except Exception:
         pass
 
@@ -152,7 +161,7 @@ PERMISSION_MIGRATION_OWN = {
 
 DEFAULT_MACROS = [
     {
-        "name": "Swap Mode. Start Sequence",
+        "name": "A1 Mini. Kit Edition. Start Sequence",
         "printer_models": '["A1 Mini"]',
         "swap_mode_only": True,
         "event": "swap_mode_start",
@@ -174,11 +183,11 @@ DEFAULT_MACROS = [
             "G0 Y-5 F200; snap\n"
             "G4 P500; wait\n"
             "G0 Y10 F1000; load\n"
-            "G0 Y20 F15000; ready\n"
+            "G0 Y20 F15000; ready"
         ),
     },
     {
-        "name": "Swap Mode. Change Table",
+        "name": "A1 Mini. Kit Edition. Change Table",
         "printer_models": '["A1 Mini"]',
         "swap_mode_only": True,
         "event": "swap_mode_change_table",
@@ -206,7 +215,7 @@ DEFAULT_MACROS = [
             "G0 Y10 F1000;\n"
             "G0 Z100 Y186 F2000;\n"
             "G0 Y150;\n"
-            "G4 P1000; wait\n"
+            "G4 P1000; wait"
         ),
     },
 ]

@@ -23,8 +23,8 @@ router = APIRouter(prefix="/macros", tags=["macros"])
 
 # Available macro events
 MACRO_EVENTS = {
-    "swap_mode_start": "Swap Mode — Start Sequence",
-    "swap_mode_change_table": "Swap Mode — Change Table",
+    "swap_mode_start": "Swap Mode - Start Sequence",
+    "swap_mode_change_table": "Swap Mode - Change Table",
 }
 
 
@@ -34,7 +34,7 @@ async def get_macro_meta():
     from backend.app.core.swap_profiles import SWAP_PROFILES
     from backend.app.utils.printer_model_names import PRINTER_MODEL_DISPLAY_NAMES
 
-    # Events that are meaningful only in swap-mode context — frontend uses
+    # Events that are meaningful only in swap-mode context - frontend uses
     # this list to decide when to show the "Swap profile" picker.
     swap_events = ["swap_mode_start", "swap_mode_change_table"]
 
@@ -216,7 +216,7 @@ async def execute_macro(
     if macro.swap_mode_only and not printer.swap_mode_enabled:
         raise HTTPException(400, "Macro requires swap mode enabled on printer")
 
-    # Check swap_profile binding — a profile-bound macro must not be executed
+    # Check swap_profile binding - a profile-bound macro must not be executed
     # on a printer using a different profile, otherwise the wrong gcode fires.
     if macro.swap_profile and macro.swap_profile != printer.swap_profile:
         raise HTTPException(
@@ -268,12 +268,12 @@ async def execute_macro(
     sent = client.send_gcode(gcode)
     if not sent:
         client.state.macro_executing = None
-        logger.warning("[MACRO] Failed to send macro '%s' — MQTT not connected", macro.name)
+        logger.warning("[MACRO] Failed to send macro '%s' - MQTT not connected", macro.name)
         return MacroExecuteResponse(success=False, message="Failed to send GCode to printer")
 
     seq_id = str(client._sequence_id)
 
-    # Wait for printer ACK (result: success/failed) — typically <200ms
+    # Wait for printer ACK (result: success/failed) - typically <200ms
     ack_event = threading.Event()
     ack_result: dict = {"success": False, "reason": ""}
     client.register_ack_listener(seq_id, ack_event, ack_result)
@@ -286,7 +286,7 @@ async def execute_macro(
     if not ack_event.is_set():
         client._ack_listeners.pop(seq_id, None)
         client.state.macro_executing = None
-        logger.warning("[MACRO] Timeout — no ACK for macro '%s' (seq=%s)", macro.name, seq_id)
+        logger.warning("[MACRO] Timeout - no ACK for macro '%s' (seq=%s)", macro.name, seq_id)
         raise HTTPException(408, "Printer did not acknowledge command in time")
 
     if not ack_result["success"]:
@@ -300,7 +300,7 @@ async def execute_macro(
         raise HTTPException(400, f"Printer rejected macro: {ack_result.get('reason', 'unknown')}")
 
     logger.info(
-        "[MACRO] ACK received — macro '%s' accepted by printer '%s' (seq=%s, result=%s, reason=%s)",
+        "[MACRO] ACK received - macro '%s' accepted by printer '%s' (seq=%s, result=%s, reason=%s)",
         macro.name,
         printer.name,
         seq_id,

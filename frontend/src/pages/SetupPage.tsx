@@ -28,7 +28,7 @@ export function SetupPage() {
         admin_email: adminEmail.trim() || undefined,
       }),
     onSuccess: async (data) => {
-      // Backend creates the admin and returns a JWT — store it and land the
+      // Backend creates the admin and returns a JWT - store it and land the
       // user straight on the home page without a detour through /login.
       setAuthToken(data.access_token);
       await refreshAuth();

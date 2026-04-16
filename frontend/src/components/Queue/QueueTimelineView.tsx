@@ -67,7 +67,7 @@ export function QueueTimelineView({ queues, items, onEditItem }: Props) {
 
   const timeline = useQueueTimeline({ queues, items, printers, now, rangeHours });
 
-  // Batch counts — so items can render "1/N" labels and we can offer "Cancel batch".
+  // Batch counts - so items can render "1/N" labels and we can offer "Cancel batch".
   const batchStats = useMemo(() => {
     const counts = new Map<string, number>();
     (items ?? []).forEach(it => {

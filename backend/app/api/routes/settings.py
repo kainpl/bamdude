@@ -463,7 +463,7 @@ async def restore_backup(
     """Restore from a complete backup ZIP.
 
     Replaces the database and all data directories from the backup ZIP.
-    Backup format is always portable SQLite — works for both SQLite and PostgreSQL.
+    Backup format is always portable SQLite - works for both SQLite and PostgreSQL.
     """
     import shutil
     import tempfile
@@ -490,7 +490,7 @@ async def restore_backup(
         except zipfile.BadZipFile:
             raise HTTPException(400, "Invalid backup file: not a valid ZIP")
 
-        # 2. Validate backup (must have database) — accept both new and legacy names
+        # 2. Validate backup (must have database) - accept both new and legacy names
         backup_db = temp_path / "bamdude.db"
         if not backup_db.exists():
             backup_db = temp_path / "bambuddy.db"

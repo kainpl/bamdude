@@ -83,7 +83,7 @@ async def create_spool_from_tray(db: AsyncSession, tray_data: dict) -> Spool:
             subtype = "Tri Color"
 
     # Resolve color name from the color catalog by hex. The catalog is the single
-    # source of truth — tray_id_name codes (e.g. "A17-R1") are NOT globally unique
+    # source of truth - tray_id_name codes (e.g. "A17-R1") are NOT globally unique
     # across material families (A17-R1 is PLA Translucent Cherry Pink; A01-R1 is
     # PLA Matte Scarlet Red), so a suffix-based fallback would pick the wrong name
     # (upstream #857).
@@ -302,7 +302,7 @@ async def get_spool_by_tag(db: AsyncSession, tag_uid: str, tray_uuid: str) -> Sp
     tray_uuid_norm = _normalize_tray_uuid(tray_uuid)
     tag_uid_norm = _normalize_tag_uid(tag_uid)
 
-    # Try tray_uuid first (Bambu Lab spools — more reliable)
+    # Try tray_uuid first (Bambu Lab spools - more reliable)
     if tray_uuid_norm and tray_uuid_norm != ZERO_TRAY_UUID and tray_uuid_norm != "0" * len(tray_uuid_norm):
         result = await db.execute(
             select(Spool)

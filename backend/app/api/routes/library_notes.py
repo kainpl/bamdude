@@ -28,7 +28,7 @@ def _to_response(note: LibraryFileNote, username: str | None, current_user: User
     """Build a response with `can_edit` denormalised for the frontend.
 
     `can_edit` is True when:
-    - auth is disabled (current_user is None) — UI shows controls; backend
+    - auth is disabled (current_user is None) - UI shows controls; backend
       will still NULL-check at edit/delete time, but everything is open then.
     - the note belongs to the requesting user.
     """
@@ -125,7 +125,7 @@ async def update_file_note(
 ):
     """Update a note. Only the original author can edit it.
 
-    When auth is disabled (current_user is None), no ownership check applies —
+    When auth is disabled (current_user is None), no ownership check applies -
     the install is single-user-trusted by definition.
     """
     loaded = await _load_note_with_username(db, note_id)

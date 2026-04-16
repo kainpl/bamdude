@@ -20,7 +20,7 @@ class TestColorNameMapEndpoint:
         from backend.app.models.color_catalog import ColorCatalogEntry
 
         entries = [
-            # Same hex, different manufacturers — Bambu Lab wins
+            # Same hex, different manufacturers - Bambu Lab wins
             ColorCatalogEntry(
                 manufacturer="Bambu Lab",
                 color_name="Cherry Pink",
@@ -58,7 +58,7 @@ class TestColorNameMapEndpoint:
                 material="PLA",
                 is_default=True,
             ),
-            # Invalid hex (too short) — should be skipped
+            # Invalid hex (too short) - should be skipped
             ColorCatalogEntry(
                 manufacturer="Bambu Lab",
                 color_name="Bad",
@@ -66,7 +66,7 @@ class TestColorNameMapEndpoint:
                 material="PLA",
                 is_default=False,
             ),
-            # Empty name — should be skipped
+            # Empty name - should be skipped
             ColorCatalogEntry(
                 manufacturer="Bambu Lab",
                 color_name="",
@@ -92,14 +92,14 @@ class TestColorNameMapEndpoint:
     async def test_bambu_lab_wins_over_other_manufacturers(self, async_client: AsyncClient, color_entries):
         response = await async_client.get("/api/v1/inventory/colors/map")
         colors = response.json()["colors"]
-        # ff0066 has Bambu (Cherry Pink) + Polymaker (Pink) — Bambu wins
+        # ff0066 has Bambu (Cherry Pink) + Polymaker (Pink) - Bambu wins
         assert colors.get("ff0066") == "Cherry Pink"
 
     @pytest.mark.asyncio
     async def test_is_default_breaks_tie_among_non_bambu(self, async_client: AsyncClient, color_entries):
         response = await async_client.get("/api/v1/inventory/colors/map")
         colors = response.json()["colors"]
-        # 0000ff has Generic (default) + Other (non-default) — Generic wins
+        # 0000ff has Generic (default) + Other (non-default) - Generic wins
         assert colors.get("0000ff") == "Generic Blue"
 
     @pytest.mark.asyncio

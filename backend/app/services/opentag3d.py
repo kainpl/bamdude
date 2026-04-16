@@ -36,7 +36,7 @@ def _build_payload(spool: Spool) -> bytes:
     modifiers = (spool.subtype or "")[:5].ljust(5)
     buf[0x07:0x0C] = modifiers.encode("utf-8")[:5]
 
-    # 0x0C: Reserved (15 bytes, zero-fill) — already zero
+    # 0x0C: Reserved (15 bytes, zero-fill) - already zero
 
     # 0x1B: Manufacturer (16 bytes, UTF-8, space-padded)
     brand = (spool.brand or "")[:16].ljust(16)
@@ -54,21 +54,21 @@ def _build_payload(spool: Spool) -> bytes:
         rgba_bytes = b"\x00\x00\x00\x00"
     buf[0x4B:0x4F] = rgba_bytes[:4]
 
-    # 0x4F: Colors 2-4 (12 bytes, zero-fill) — already zero
+    # 0x4F: Colors 2-4 (12 bytes, zero-fill) - already zero
 
-    # 0x5C: Target Diameter (2 bytes, big-endian) — 1750 = 1.75mm
+    # 0x5C: Target Diameter (2 bytes, big-endian) - 1750 = 1.75mm
     struct.pack_into(">H", buf, 0x5C, 1750)
 
     # 0x5E: Target Weight (2 bytes, big-endian)
     struct.pack_into(">H", buf, 0x5E, spool.label_weight or 0)
 
-    # 0x60: Print Temp (1 byte) — nozzle_temp_min / 5
+    # 0x60: Print Temp (1 byte) - nozzle_temp_min / 5
     buf[0x60] = (spool.nozzle_temp_min or 0) // 5
 
-    # 0x61: Bed Temp (1 byte) — not tracked
-    # 0x62: Density (2 bytes) — not tracked
-    # 0x64: Transmission Distance (2 bytes) — not tracked
-    # All zero — already zero
+    # 0x61: Bed Temp (1 byte) - not tracked
+    # 0x62: Density (2 bytes) - not tracked
+    # 0x64: Transmission Distance (2 bytes) - not tracked
+    # All zero - already zero
 
     return bytes(buf)
 

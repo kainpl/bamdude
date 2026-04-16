@@ -412,7 +412,7 @@ async def change_own_password(
     if getattr(current_user, "auth_source", "local") == "ldap":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot change password for LDAP users — passwords are managed by the LDAP server",
+            detail="Cannot change password for LDAP users - passwords are managed by the LDAP server",
         )
 
     # Verify current password

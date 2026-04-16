@@ -373,7 +373,6 @@ class TestPrinterManager:
             timelapse=False,
             bed_levelling=True,
             flow_cali=False,
-            vibration_cali=True,
             layer_inspect=False,
             use_ams=True,
         )
@@ -986,7 +985,7 @@ class TestStatusKeyDryingDedup:
         state.raw_data = {"ams": [{"id": 0, "dry_time": 29, "module_type": "n3f", "tray": [{"id": 0}]}]}
         result2 = printer_state_to_dict(state)
 
-        # The dicts should differ — dry_time changed
+        # The dicts should differ - dry_time changed
         assert result1["ams"][0]["dry_time"] == 30
         assert result2["ams"][0]["dry_time"] == 29
         assert result1["ams"] != result2["ams"]

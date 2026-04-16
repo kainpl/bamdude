@@ -11,7 +11,7 @@ class TestUserNotificationsAPI:
     """Integration tests for /api/v1/user-notifications/ endpoints."""
 
     # ========================================================================
-    # GET /preferences — no auth
+    # GET /preferences - no auth
     # ========================================================================
 
     @pytest.mark.asyncio
@@ -28,7 +28,7 @@ class TestUserNotificationsAPI:
         assert data["notify_print_stopped"] is True
 
     # ========================================================================
-    # PUT /preferences — no auth
+    # PUT /preferences - no auth
     # ========================================================================
 
     @pytest.mark.asyncio
@@ -42,7 +42,7 @@ class TestUserNotificationsAPI:
             "notify_print_stopped": False,
         }
 
-        # async_client sends a default admin token — explicitly clear it to
+        # async_client sends a default admin token - explicitly clear it to
         # exercise the no-token path now that auth is always enabled.
         response = await async_client.put(
             "/api/v1/user-notifications/preferences",

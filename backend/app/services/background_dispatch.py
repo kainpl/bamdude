@@ -591,7 +591,7 @@ class BackgroundDispatchService:
                 printer_model=printer_model,
             )
 
-            # Clean up /cache/ — delete stale .3mf and .bbl files from previous prints
+            # Clean up /cache/ - delete stale .3mf and .bbl files from previous prints
             sanitized_base = remote_filename[:-4] if remote_filename.endswith(".3mf") else remote_filename
             try:
                 cache_files = await list_files_async(
@@ -699,7 +699,6 @@ class BackgroundDispatchService:
                     timelapse=job.options.get("timelapse", False),
                     bed_levelling=job.options.get("bed_levelling", True),
                     flow_cali=job.options.get("flow_cali", False),
-                    vibration_cali=job.options.get("vibration_cali", False),
                     layer_inspect=job.options.get("layer_inspect", False),
                     use_ams=job.options.get("use_ams", True),
                 )
@@ -794,7 +793,7 @@ class BackgroundDispatchService:
                 printer_model=printer_model,
             )
 
-            # Clean up /cache/ — delete stale .3mf and .bbl files from previous prints
+            # Clean up /cache/ - delete stale .3mf and .bbl files from previous prints
             sanitized_base = remote_filename[:-4] if remote_filename.endswith(".3mf") else remote_filename
             try:
                 cache_files = await list_files_async(
@@ -903,7 +902,6 @@ class BackgroundDispatchService:
                     timelapse=job.options.get("timelapse", False),
                     bed_levelling=job.options.get("bed_levelling", True),
                     flow_cali=job.options.get("flow_cali", False),
-                    vibration_cali=job.options.get("vibration_cali", False),
                     layer_inspect=job.options.get("layer_inspect", False),
                     use_ams=job.options.get("use_ams", True),
                 )
@@ -951,7 +949,7 @@ class BackgroundDispatchService:
             if state.state != pre_state:
                 return  # Printer responded
         logger.warning(
-            "Printer %s (%d) did not respond to print command within %.0fs (state still %s) — printer may need restart",
+            "Printer %s (%d) did not respond to print command within %.0fs (state still %s) - printer may need restart",
             printer_name,
             printer_id,
             timeout,
@@ -969,7 +967,7 @@ class BackgroundDispatchService:
         try:
             await delete_file_async(printer_ip, access_code, remote_path, printer_model=printer_model)
         except Exception:
-            pass  # Best-effort — don't fail the error handler
+            pass  # Best-effort - don't fail the error handler
 
     @staticmethod
     def _resolve_plate_id(file_path: Path, requested_plate_id: int | None) -> int:

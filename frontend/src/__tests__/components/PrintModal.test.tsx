@@ -34,7 +34,6 @@ const createMockQueueItem = (overrides: Partial<PrintQueueItem> = {}): PrintQueu
   plate_id: null,
   bed_levelling: true,
   flow_cali: true,
-  vibration_cali: false,
   layer_inspect: false,
   timelapse: false,
   use_ams: true,
@@ -598,7 +597,7 @@ describe('PrintModal', () => {
       const busyButton = screen.getByText('X1 Carbon').closest('button');
       expect(busyButton).toBeDisabled();
 
-      // Click the busy printer — selection should not change
+      // Click the busy printer - selection should not change
       await user.click(busyButton!);
 
       // Idle printer should still be selectable
@@ -820,7 +819,7 @@ describe('PrintModal', () => {
       // Plate 1 is auto-selected. Click Plate 3 to add it (multi-select in add-to-queue mode)
       await user.click(screen.getByText('Plate 3'));
 
-      // Submit — should queue plates 1 and 3
+      // Submit - should queue plates 1 and 3
       const submitButton = document.querySelector('button[type="submit"]') as HTMLElement;
       await user.click(submitButton);
 
@@ -865,7 +864,7 @@ describe('PrintModal', () => {
       // Click select all
       await user.click(screen.getByText('Select All 3 Plates'));
 
-      // Find the submit button (type="submit") — distinct from the toggle button (type="button")
+      // Find the submit button (type="submit") - distinct from the toggle button (type="button")
       const submitButton = document.querySelector('button[type="submit"]') as HTMLElement;
       await user.click(submitButton);
 

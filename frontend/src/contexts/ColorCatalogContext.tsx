@@ -11,14 +11,14 @@ import { useAuth } from './AuthContext';
  * threading a hook through every call site.
  *
  * Gated on authentication state because the backend endpoint can require a
- * valid session when auth is enabled — firing before login would just 401
+ * valid session when auth is enabled - firing before login would just 401
  * and retry.
  */
 export function ColorCatalogProvider({ children }: { children: ReactNode }) {
   const { authEnabled, user, loading: authLoading } = useAuth();
 
   // Fire when auth state is resolved AND we're actually allowed to hit the API.
-  // When auth is disabled, `user` is null but the endpoint accepts anyone —
+  // When auth is disabled, `user` is null but the endpoint accepts anyone -
   // only gate on `!authLoading`. When auth is enabled, we need a logged-in user
   // or the request 401s and gets retried in a loop.
   const enabled = !authLoading && (!authEnabled || user !== null);

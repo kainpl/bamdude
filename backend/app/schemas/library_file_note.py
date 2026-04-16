@@ -21,7 +21,7 @@ class LibraryFileNoteResponse(BaseModel):
     `can_edit` is a denormalised convenience for the frontend: True when the
     note belongs to the requesting user (or when authentication is disabled
     and there is no current user). The backend ALSO enforces ownership at
-    the route level — `can_edit` is purely a UI hint, not a security gate.
+    the route level - `can_edit` is purely a UI hint, not a security gate.
     """
 
     model_config = ConfigDict(from_attributes=True)

@@ -210,7 +210,7 @@ check_dependencies()
 
 # Import settings first for logging configuration
 
-# Configure logging — LOG_LEVEL env var controls the level directly
+# Configure logging - LOG_LEVEL env var controls the level directly
 log_level_str = app_settings.log_level.upper()
 log_level = getattr(logging, log_level_str, logging.INFO)
 log_format = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
@@ -271,7 +271,7 @@ _first_layer_notified: dict[int, bool] = {}
 # This prevents sending duplicate notifications for the same error
 _notified_hms_errors: dict[int, set[str]] = {}
 # Track when HMS errors were last seen: {printer_id: timestamp}
-# Used to debounce clearing — prevents flapping errors from re-triggering notifications
+# Used to debounce clearing - prevents flapping errors from re-triggering notifications
 _hms_last_seen: dict[int, float] = {}
 _HMS_CLEAR_GRACE_SECONDS = 30.0
 
@@ -608,7 +608,7 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
                         error_code_masked = error_code_int & 0xFFFF
                         short_code = f"{(error.attr >> 16) & 0xFFFF:04X}_{error_code_masked:04X}"
 
-                        # Only notify for errors with known descriptions — printers
+                        # Only notify for errors with known descriptions - printers
                         # send many undocumented/phantom codes that aren't real errors.
                         description = get_error_description(short_code)
                         if not description or short_code in _HMS_NOTIFICATION_SUPPRESS:
@@ -647,7 +647,7 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
                 logging.getLogger(__name__).warning(f"HMS error notification failed: {e}")
 
     else:
-        # No HMS errors — only clear tracking after a grace period to prevent
+        # No HMS errors - only clear tracking after a grace period to prevent
         # flapping errors (brief hms:[] gaps) from re-triggering notifications.
         # Some HMS codes (e.g. chamber temp regulation during PETG prints) toggle
         # on/off every few seconds as conditions fluctuate around thresholds.
@@ -672,7 +672,7 @@ async def on_ams_change(printer_id: int, ams_data: list):
     """Handle AMS data changes - sync to Spoolman if enabled and auto mode."""
     logger = logging.getLogger(__name__)
 
-    # Check if a print is actively running on this printer — if so, skip AMS
+    # Check if a print is actively running on this printer - if so, skip AMS
     # weight sync to avoid double-deducting spool weight (the usage tracker
     # handles weight deduction precisely during prints via 3MF/G-code data).
     from backend.app.services.usage_tracker import _active_sessions
@@ -724,20 +724,20 @@ async def on_ams_change(printer_id: int, ams_data: list):
                             current_tray = vt
                             break
                     if not current_tray:
-                        # vt_tray data may not have arrived yet — keep assignment
+                        # vt_tray data may not have arrived yet - keep assignment
                         continue
                 else:
                     current_tray = _find_tray_in_ams_data(ams_data, assignment.ams_id, assignment.tray_id)
                 if not current_tray:
                     logger.info(
-                        "Auto-unlink: spool %d AMS%d-T%d — tray not found in AMS data (slot empty?)",
+                        "Auto-unlink: spool %d AMS%d-T%d - tray not found in AMS data (slot empty?)",
                         assignment.spool_id,
                         assignment.ams_id,
                         assignment.tray_id,
                     )
                     stale.append(assignment)  # Slot empty
                 elif _is_bambu_uuid(current_tray.get("tray_uuid", "")):
-                    # A Bambu Lab spool is in this slot — check if it's the same spool
+                    # A Bambu Lab spool is in this slot - check if it's the same spool
                     # that's currently assigned. If yes, keep the assignment (avoids
                     # unnecessary unlink/re-assign/ams_filament_setting cycle that clears
                     # the printer's filament preset on every startup).
@@ -754,7 +754,7 @@ async def on_ams_change(printer_id: int, ams_data: list):
                         ):
                             spool_matches = True
                     if spool_matches:
-                        # Same BL spool still in slot — keep assignment, update fingerprint if needed
+                        # Same BL spool still in slot - keep assignment, update fingerprint if needed
                         cur_color = current_tray.get("tray_color", "")
                         cur_type = current_tray.get("tray_type", "")
                         fp_color = assignment.fingerprint_color or ""
@@ -763,15 +763,15 @@ async def on_ams_change(printer_id: int, ams_data: list):
                             assignment.fingerprint_color = cur_color
                             assignment.fingerprint_type = cur_type
                             logger.debug(
-                                "Auto-unlink: spool %d AMS%d-T%d — same BL spool, updated fingerprint",
+                                "Auto-unlink: spool %d AMS%d-T%d - same BL spool, updated fingerprint",
                                 assignment.spool_id,
                                 assignment.ams_id,
                                 assignment.tray_id,
                             )
                         continue
-                    # Different BL spool or unrecognized — unlink so auto-assign can match
+                    # Different BL spool or unrecognized - unlink so auto-assign can match
                     logger.info(
-                        "Auto-unlink: spool %d AMS%d-T%d — different Bambu Lab spool detected (uuid=%s)",
+                        "Auto-unlink: spool %d AMS%d-T%d - different Bambu Lab spool detected (uuid=%s)",
                         assignment.spool_id,
                         assignment.ams_id,
                         assignment.tray_id,
@@ -784,16 +784,16 @@ async def on_ams_change(printer_id: int, ams_data: list):
                     fp_color = assignment.fingerprint_color or ""
                     fp_type = assignment.fingerprint_type or ""
                     if not _colors_similar(cur_color, fp_color) or cur_type.upper() != fp_type.upper():
-                        # Fingerprint mismatch — but check if tray now matches the
+                        # Fingerprint mismatch - but check if tray now matches the
                         # assigned spool (e.g. auto-configure changed the tray).
                         spool = assignment.spool
                         if spool:
                             spool_color = (spool.rgba or "FFFFFFFF").upper()
                             spool_type = (spool.material or "").upper()
                             if _colors_similar(cur_color, spool_color) and cur_type.upper() == spool_type:
-                                # Tray was reconfigured to match the spool — update fingerprint
+                                # Tray was reconfigured to match the spool - update fingerprint
                                 logger.info(
-                                    "Auto-unlink: spool %d AMS%d-T%d — fingerprint mismatch but tray matches spool, updating fp",
+                                    "Auto-unlink: spool %d AMS%d-T%d - fingerprint mismatch but tray matches spool, updating fp",
                                     assignment.spool_id,
                                     assignment.ams_id,
                                     assignment.tray_id,
@@ -802,7 +802,7 @@ async def on_ams_change(printer_id: int, ams_data: list):
                                 assignment.fingerprint_type = cur_type
                                 continue
                         logger.info(
-                            "Auto-unlink: spool %d AMS%d-T%d — fingerprint mismatch (cur=%s/%s fp=%s/%s spool=%s/%s)",
+                            "Auto-unlink: spool %d AMS%d-T%d - fingerprint mismatch (cur=%s/%s fp=%s/%s spool=%s/%s)",
                             assignment.spool_id,
                             assignment.ams_id,
                             assignment.tray_id,
@@ -861,13 +861,13 @@ async def on_ams_change(printer_id: int, ams_data: list):
                         )
                         existing_assignment = existing.scalar_one_or_none()
                         if existing_assignment:
-                            # Skip AMS weight sync while a print is active — the usage
+                            # Skip AMS weight sync while a print is active - the usage
                             # tracker deducts weight precisely from 3MF/G-code data.
                             # Syncing the coarse AMS remain% at the same time would
                             # cause double-deduction of filament weight.
                             if _print_active:
                                 continue
-                            # Sync spool weight_used from AMS remain — only INCREASE, never decrease.
+                            # Sync spool weight_used from AMS remain - only INCREASE, never decrease.
                             # The AMS remain% is low-resolution (integer %, i.e. 10g steps for 1kg spool)
                             # and must not overwrite precise values from the usage tracker (3MF/G-code).
                             remain_raw = tray.get("remain")
@@ -933,7 +933,7 @@ async def on_ams_change(printer_id: int, ams_data: list):
                                 tray_id,
                             )
                         elif is_valid_tag(tag_uid, tray_uuid):
-                            # Non-BL spool with some tag — let user choose
+                            # Non-BL spool with some tag - let user choose
                             await ws_manager.broadcast(
                                 {
                                     "type": "unknown_tag",
@@ -945,7 +945,7 @@ async def on_ams_change(printer_id: int, ams_data: list):
                                 }
                             )
                         else:
-                            # No tag at all — let user choose from inventory
+                            # No tag at all - let user choose from inventory
                             await ws_manager.broadcast(
                                 {
                                     "type": "unknown_tag",
@@ -1086,7 +1086,7 @@ async def on_ams_change(printer_id: int, ams_data: list):
 
             # Clear location for spools no longer in this printer's AMS (upstream #921).
             # Without this, removing a spool from the AMS leaves its Spoolman location pointing
-            # at the printer — causing double-booked slots if the spool is later inserted elsewhere.
+            # at the printer - causing double-booked slots if the spool is later inserted elsewhere.
             try:
                 cleared = await client.clear_location_for_removed_spools(
                     printer_name,
@@ -1497,10 +1497,10 @@ async def on_print_start(printer_id: int, data: dict):
 
         logger.info("[CALLBACK] Print start detected - filename: %s, subtask: %s", filename, subtask_name)
 
-        # Skip calibration prints — internal printer files should not be archived
+        # Skip calibration prints - internal printer files should not be archived
         # Bambu calibration gcode lives under /usr/ (e.g. /usr/etc/print/auto_cali_for_user.gcode)
         if filename and filename.startswith("/usr/"):
-            logger.info("[CALLBACK] Skipping archive — internal printer file detected: %s", filename)
+            logger.info("[CALLBACK] Skipping archive - internal printer file detected: %s", filename)
             if not notification_sent:
                 await _send_print_start_notification(printer_id, data, logger=logger)
             return
@@ -2145,7 +2145,7 @@ async def _scan_for_timelapse_with_retries(archive_id: int, baseline_names: set[
         logger.warning("[TIMELAPSE] Failed to take baseline snapshot for archive %s: %s", archive_id, e)
         return
 
-    # --- Phase 2: Retry loop — look for NEW files that weren't in baseline ---
+    # --- Phase 2: Retry loop - look for NEW files that weren't in baseline ---
     retry_delays = [5, 10, 20, 30]
 
     for attempt, delay in enumerate(retry_delays, 1):
@@ -2223,7 +2223,7 @@ async def _scan_for_timelapse_with_retries(archive_id: int, baseline_names: set[
         except Exception as e:
             logger.warning("[TIMELAPSE] Attempt %s failed with error: %s", attempt, e)
 
-    # --- Phase 3: Fallback — try name matching against all files ---
+    # --- Phase 3: Fallback - try name matching against all files ---
     if base_name:
         logger.info("[TIMELAPSE] Retries exhausted, trying name-match fallback for '%s'", base_name)
         try:
@@ -2537,7 +2537,7 @@ async def on_print_complete(printer_id: int, data: dict):
                 except Exception:
                     pass  # best-effort
 
-                # Handle .3mf — delete or move to /cache/
+                # Handle .3mf - delete or move to /cache/
                 remote_3mf = f"/{subtask_name}.3mf"
                 if should_delete:
                     for attempt in range(1, 4):
@@ -2585,7 +2585,7 @@ async def on_print_complete(printer_id: int, data: dict):
 
     log_timing("SD card cleanup")
 
-    # Update queue item status early — must run before the archive_id early-return
+    # Update queue item status early - must run before the archive_id early-return
     # so queue items don't get stuck in "printing" when archive lookup fails.
     try:
         async with async_session() as db:
@@ -2625,7 +2625,7 @@ async def on_print_complete(printer_id: int, data: dict):
                 elif queue_status == "completed":
                     await set_queue_idle(db, queue_item.queue_id)
                 else:
-                    # cancelled — set idle (user intentionally stopped)
+                    # cancelled - set idle (user intentionally stopped)
                     await set_queue_idle(db, queue_item.queue_id)
                 await update_queue_counters(db, queue_item.queue_id)
                 await db.commit()
@@ -2731,7 +2731,7 @@ async def on_print_complete(printer_id: int, data: dict):
             for poll_num in range(max_polls):
                 await asyncio.sleep(15)
 
-                # Request fresh temperature data every 60s — after print completion,
+                # Request fresh temperature data every 60s - after print completion,
                 # the printer may send partial MQTT updates without bed_temper,
                 # leaving the cached value stale at the end-of-print temperature.
                 if poll_num % 4 == 0:
@@ -3042,7 +3042,7 @@ async def on_print_complete(printer_id: int, data: dict):
                 logger.info("[ENERGY-BG] Per-print energy: %s kWh", energy_used)
                 if energy_used < 0:
                     logger.warning(
-                        "[ENERGY-BG] Negative energy delta for archive %s (start=%s, end=%s) — counter reset?",
+                        "[ENERGY-BG] Negative energy delta for archive %s (start=%s, end=%s) - counter reset?",
                         archive_id,
                         starting_kwh,
                         energy["total"],
@@ -3750,7 +3750,7 @@ def _evict_stale_expected_prints() -> None:
     older than _EXPECTED_PRINT_TTL_SECONDS.
 
     This prevents unbounded growth when a print is registered (via
-    register_expected_print) but on_print_start never fires — e.g. because the
+    register_expected_print) but on_print_start never fires - e.g. because the
     printer disconnects, the app restarts, or the print is started directly from
     the printer panel without going through the queue.
     """
@@ -4078,7 +4078,7 @@ PUBLIC_API_PATTERNS = [
     # Camera (streams loaded via <img> tag)
     "/camera/stream",  # /printers/{id}/camera/stream
     "/camera/snapshot",  # /printers/{id}/camera/snapshot
-    # Slicer token-authenticated downloads — protocol handlers (bambustudioopen://,
+    # Slicer token-authenticated downloads - protocol handlers (bambustudioopen://,
     # orcaslicer://) cannot send auth headers. These endpoints validate a short-lived
     # download token in the URL path instead.
     "/dl/",  # /archives/{id}/dl/{token}/{filename}, /library/files/{id}/dl/{token}/{filename}
@@ -4095,7 +4095,7 @@ async def security_headers_middleware(request, call_next):
     return response
 
 
-# Setup-gate cache — True once we've confirmed at least one admin exists.
+# Setup-gate cache - True once we've confirmed at least one admin exists.
 # Kept process-local because /auth/setup invalidates it via
 # invalidate_setup_gate_cache() and restarts reset it automatically.
 _has_admin_cache: bool | None = None
@@ -4128,11 +4128,11 @@ async def auth_middleware(request, call_next):
 
     Two-stage gate:
 
-    1. **Setup gate** — if no admin user exists, reject every API request with
+    1. **Setup gate** - if no admin user exists, reject every API request with
        503 except those in ``SETUP_WHITELIST_ROUTES``. This forces the user
        through the initial admin creation flow.
 
-    2. **Auth gate** — once at least one admin exists, every non-public API
+    2. **Auth gate** - once at least one admin exists, every non-public API
        route requires either a valid JWT or an API key.
     """
     from starlette.responses import JSONResponse
@@ -4145,7 +4145,7 @@ async def auth_middleware(request, call_next):
 
     # --- Setup gate --------------------------------------------------------
     # Runs ahead of the public-route allowlist so that even "/api/v1/auth/login"
-    # is blocked until setup completes — a login attempt before setup is a bug,
+    # is blocked until setup completes - a login attempt before setup is a bug,
     # not a legitimate request.
     global _has_admin_cache
     if _has_admin_cache is not True:
@@ -4158,7 +4158,7 @@ async def auth_middleware(request, call_next):
         except Exception:
             # If we can't determine admin presence (e.g. DB not yet ready),
             # fail closed only for the setup gate's sake by assuming "no admin"
-            # — that routes the user to /setup where the error will surface
+            # - that routes the user to /setup where the error will surface
             # clearly rather than masquerading as a 401 elsewhere.
             has_admin = False
             _has_admin_cache = None  # don't poison the cache on transient errors

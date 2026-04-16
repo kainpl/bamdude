@@ -232,7 +232,7 @@ export function PrinterSelector({
 
   const isPrinterBusy = (printerId: number): boolean => {
     const status = printerStatusMap.get(printerId);
-    if (!status) return false; // Unknown state — don't block
+    if (!status) return false; // Unknown state - don't block
     if (!status.connected) return true;
     return !AVAILABLE_STATES.has(status.state ?? '');
   };

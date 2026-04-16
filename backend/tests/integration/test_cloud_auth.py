@@ -200,7 +200,7 @@ class TestCloudEndpointPermissions:
         assert response.status_code == 403
 
         # User with cloud:auth should be allowed (will get 401 since no cloud token,
-        # but NOT 403 — permission check passes)
+        # but NOT 403 - permission check passes)
         response = await async_client.get(
             "/api/v1/cloud/settings",
             headers={"Authorization": f"Bearer {cloud_only_setup}"},

@@ -482,7 +482,7 @@ class TestAutoOffPersistent:
         mock_db = AsyncMock()
         mock_db.commit = AsyncMock()
 
-        # Step 1: Print starts — plug turns on
+        # Step 1: Print starts - plug turns on
         with (
             patch.object(manager, "_get_plugs_for_printer", new_callable=AsyncMock) as mock_get,
             patch.object(manager, "get_service_for_plug", new_callable=AsyncMock) as mock_svc,
@@ -497,7 +497,7 @@ class TestAutoOffPersistent:
             assert mock_plug.auto_off_executed is False
             assert mock_plug.auto_off is True  # Still enabled
 
-        # Step 2: Print completes — auto-off is scheduled
+        # Step 2: Print completes - auto-off is scheduled
         with (
             patch.object(manager, "_get_plugs_for_printer", new_callable=AsyncMock) as mock_get,
             patch.object(manager, "_schedule_delayed_off") as mock_schedule,

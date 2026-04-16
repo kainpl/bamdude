@@ -2,7 +2,7 @@ import { useSyncExternalStore } from 'react';
 import { subscribeColorCatalog, getColorCatalogVersion } from '../utils/colors';
 
 /**
- * Subscribe to color-catalog updates. Returns the current catalog version —
+ * Subscribe to color-catalog updates. Returns the current catalog version -
  * the value itself is opaque; what matters is that calling components re-render
  * when the catalog is (re)populated by ColorCatalogProvider.
  *
@@ -14,7 +14,7 @@ export function useColorCatalogVersion(): number {
   return useSyncExternalStore(
     subscribeColorCatalog,
     getColorCatalogVersion,
-    // SSR snapshot — we never SSR, but useSyncExternalStore requires the param.
+    // SSR snapshot - we never SSR, but useSyncExternalStore requires the param.
     getColorCatalogVersion,
   );
 }

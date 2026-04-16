@@ -202,7 +202,7 @@ export function ScheduleOptionsPanel({
               />
             </div>
           </div>
-          {/* Hidden datetime-local for calendar picker — positioned at the
+          {/* Hidden datetime-local for calendar picker - positioned at the
               calendar button so the native picker opens nearby */}
           <input
             ref={hiddenInputRef}

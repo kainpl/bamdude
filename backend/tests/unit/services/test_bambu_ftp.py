@@ -140,7 +140,7 @@ class TestConnection:
 
 
 # ---------------------------------------------------------------------------
-# TestDisconnectServerGone — isolated class because server.stop() calls
+# TestDisconnectServerGone - isolated class because server.stop() calls
 # close_all() which nukes all asyncore sockets globally.
 # ---------------------------------------------------------------------------
 class TestDisconnectServerGone:
@@ -168,7 +168,7 @@ class TestDisconnectServerGone:
         client.connect()
 
         server.stop()
-        # Should not raise — disconnect() catches all connection errors
+        # Should not raise - disconnect() catches all connection errors
         client.disconnect()
         assert client._ftp is None
 

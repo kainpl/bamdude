@@ -319,7 +319,7 @@ async def upgrade(conn):
     # ── Users: drop NOT NULL on password_hash (LDAP users have no local password, #794) ──
     # Fresh installs go through Base.metadata.create_all() which already uses the current
     # nullable model. This branch handles existing BamDude installs created before the LDAP
-    # commit (models/user.py: password_hash Mapped[str] → Mapped[str | None]) — those DBs
+    # commit (models/user.py: password_hash Mapped[str] → Mapped[str | None]) - those DBs
     # still have the NOT NULL constraint and would hit IntegrityError on LDAP auto-provision.
     from backend.app.core.db_dialect import is_postgres as _is_pg_pwd
 
@@ -328,11 +328,11 @@ async def upgrade(conn):
         try:
             await conn.execute(text("ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL"))
         except Exception:
-            # Already nullable — ignore.
+            # Already nullable - ignore.
             pass
     else:
         # SQLite can't ALTER COLUMN; patch sqlite_master directly via writable_schema.
-        # Bump schema_version so SQLite reloads the table definition from disk — otherwise
+        # Bump schema_version so SQLite reloads the table definition from disk - otherwise
         # the current connection keeps enforcing the old NOT NULL from its cached schema.
         try:
             result = await conn.execute(text("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'"))
@@ -511,7 +511,7 @@ async def upgrade(conn):
 
     # ── Library file notes (gh#3) ──
     # User-authored notes attached to library files. ON DELETE CASCADE on the
-    # file FK — note dies with its file. ON DELETE SET NULL on user_id — note
+    # file FK - note dies with its file. ON DELETE SET NULL on user_id - note
     # survives the author's account deletion (anonymised).
     if is_postgres():
         await conn.execute(

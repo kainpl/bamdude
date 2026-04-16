@@ -178,10 +178,12 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
         "plate_id": item.plate_id,
         "bed_levelling": item.bed_levelling,
         "flow_cali": item.flow_cali,
-        "vibration_cali": item.vibration_cali,
         "layer_inspect": item.layer_inspect,
         "timelapse": item.timelapse,
         "use_ams": item.use_ams,
+        "mesh_mode_fast_check": item.mesh_mode_fast_check,
+        "execute_swap_macros": item.execute_swap_macros,
+        "swap_macro_events": json.loads(item.swap_macro_events) if item.swap_macro_events else None,
         "status": item.status,
         "started_at": item.started_at,
         "completed_at": item.completed_at,
@@ -326,6 +328,21 @@ async def add_to_queue(
     batch_id = str(uuid.uuid4()) if data.quantity > 1 else None
     ams_mapping_json = json.dumps(data.ams_mapping) if data.ams_mapping else None
 
+    # Swap-macro execution is only meaningful when (a) the target printer has
+    # swap mode on AND (b) the source file does not already carry swap macros
+    # baked in by third-party tooling (``swap_compatible``). Otherwise force
+    # the feature off so stored state never lies about what fires at dispatch
+    # and we don't double-execute macros.
+    printer_swap_on = bool(queue.printer and queue.printer.swap_mode_enabled)
+    source_has_baked_macros = bool(
+        (archive and getattr(archive, "swap_compatible", False))
+        or (library_file and getattr(library_file, "swap_compatible", False))
+    )
+    execute_swap_macros = bool(data.execute_swap_macros) and printer_swap_on and not source_has_baked_macros
+    swap_macro_events_json = (
+        json.dumps(data.swap_macro_events) if execute_swap_macros and data.swap_macro_events else None
+    )
+
     items: list[PrintQueueItem] = []
     for i in range(data.quantity):
         items.append(
@@ -340,10 +357,12 @@ async def add_to_queue(
                 plate_id=data.plate_id,
                 bed_levelling=data.bed_levelling,
                 flow_cali=data.flow_cali,
-                vibration_cali=data.vibration_cali,
                 layer_inspect=data.layer_inspect,
                 timelapse=data.timelapse,
                 use_ams=data.use_ams,
+                mesh_mode_fast_check=data.mesh_mode_fast_check,
+                execute_swap_macros=execute_swap_macros,
+                swap_macro_events=swap_macro_events_json,
                 project_id=data.project_id,
                 position=max_pos + 1 + i,
                 status="pending",
@@ -543,6 +562,11 @@ async def update_queue_item(
     # Serialize ams_mapping to JSON for TEXT column storage
     if "ams_mapping" in update_data:
         update_data["ams_mapping"] = json.dumps(update_data["ams_mapping"]) if update_data["ams_mapping"] else None
+
+    # swap_macro_events is stored as a JSON-encoded TEXT column.
+    if "swap_macro_events" in update_data:
+        events = update_data["swap_macro_events"]
+        update_data["swap_macro_events"] = json.dumps(events) if events else None
 
     for field, value in update_data.items():
         setattr(item, field, value)

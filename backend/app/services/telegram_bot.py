@@ -64,7 +64,7 @@ async def start_telegram_bot() -> None:
 
     token = await _get_bot_token()
     if not token:
-        print("[TG-BOT] No Telegram bot token configured — bot not started")
+        print("[TG-BOT] No Telegram bot token configured - bot not started")
         return
     print(f"[TG-BOT] Token found: {token[:10]}...")
 
@@ -164,7 +164,7 @@ async def stop_telegram_bot() -> None:
 
     if _dispatcher:
         # aiogram's stop_polling() raises RuntimeError("Polling is not started")
-        # when polling already stopped — which is exactly our state after the
+        # when polling already stopped - which is exactly our state after the
         # cancel above, or if an earlier TelegramNetworkError tore the poller
         # down on its own. Tolerate that case; any other RuntimeError still
         # surfaces.
@@ -173,16 +173,16 @@ async def stop_telegram_bot() -> None:
         except RuntimeError as e:
             if "not started" not in str(e).lower():
                 raise
-            logger.debug("stop_polling() reported polling already stopped — ignoring")
+            logger.debug("stop_polling() reported polling already stopped - ignoring")
 
-        # Detach all sub-routers — handler modules export module-level Router
+        # Detach all sub-routers - handler modules export module-level Router
         # singletons, and aiogram refuses to attach one to a new Dispatcher
         # while its ``parent_router`` still points at the old one. aiogram's
         # public setter rejects ``None``, so we clear the private attribute
         # directly and drop the sub_routers list. Without this the next
         # include_router() raises "Router is already attached to …".
         for sub in list(_dispatcher.sub_routers):
-            sub._parent_router = None  # noqa: SLF001 — only way to detach
+            sub._parent_router = None  # noqa: SLF001 - only way to detach
         _dispatcher.sub_routers.clear()
         _dispatcher = None
 

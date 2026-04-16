@@ -928,7 +928,7 @@ class ArchiveService:
         completed_at = datetime.now(timezone.utc) if status in ("completed", "failed", "archived") else None
 
         # Calculate initial cost estimate from default setting.
-        # This is a placeholder — usage_tracker.on_print_complete() will overwrite
+        # This is a placeholder - usage_tracker.on_print_complete() will overwrite
         # archive.cost with the actual cost from spool.cost_per_kg later.
         cost = None
         filament_grams = metadata.get("filament_used_grams")
@@ -1270,7 +1270,7 @@ class ArchiveService:
             )
             shared = (shared_result.scalar() or 0) > 0
 
-        # Delete database record FIRST — if the commit fails (e.g. database locked
+        # Delete database record FIRST - if the commit fails (e.g. database locked
         # during concurrent bulk deletes), the files stay on disk and nothing is lost.
         await self.db.delete(archive)
         await self.db.commit()
