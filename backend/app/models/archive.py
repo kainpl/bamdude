@@ -17,7 +17,14 @@ class PrintArchive(Base):
     filename: Mapped[str] = mapped_column(String(255))
     file_path: Mapped[str] = mapped_column(String(500))
     file_size: Mapped[int] = mapped_column(Integer)
-    content_hash: Mapped[str | None] = mapped_column(String(64))  # SHA256 hash for duplicate detection
+    content_hash: Mapped[str | None] = mapped_column(String(64))  # SHA256 of the bytes stored in the archive dir
+    # Chain-of-custody for BamDude-patched prints: hash of the UNPATCHED source
+    # (library file or prior archive). NULL for external prints. Dedup queries
+    # use COALESCE(source_content_hash, content_hash) so patched variants
+    # collapse against their original. JSON array of applied patch identifiers
+    # lives alongside for future reprint-reapply semantics.
+    source_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    applied_patches: Mapped[str | None] = mapped_column(Text, nullable=True)
     thumbnail_path: Mapped[str | None] = mapped_column(String(500))
     timelapse_path: Mapped[str | None] = mapped_column(String(500))
     source_3mf_path: Mapped[str | None] = mapped_column(String(500))  # Original project 3MF from slicer

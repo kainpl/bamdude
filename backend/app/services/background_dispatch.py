@@ -760,11 +760,19 @@ class BackgroundDispatchService:
 
             await self._set_active_message(job, f"Creating archive for {lib_file.filename}...")
             archive_service = ArchiveService(db)
+            # Carry the library file's hash through as the archive's
+            # source_content_hash. Once the patching pipeline lands, `file_path`
+            # will point at a temp patched file and applied_patches will be
+            # non-empty; for now they stay None/empty and effective_hash equals
+            # content_hash — behaviour is unchanged for unpatched dispatches.
+            applied_patches = job.options.get("applied_patches") if isinstance(job.options, dict) else None
             archive = await archive_service.archive_print(
                 printer_id=job.printer_id,
                 source_file=file_path,
                 original_filename=lib_file.filename,
                 project_id=job.project_id,
+                source_content_hash=lib_file.file_hash,
+                applied_patches=applied_patches or None,
             )
             if not archive:
                 raise RuntimeError("Failed to create archive")

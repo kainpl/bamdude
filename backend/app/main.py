@@ -1527,6 +1527,26 @@ async def on_print_start(printer_id: int, data: dict):
             expected_keys.append((printer_id, base))
             expected_keys.append((printer_id, f"{base}.3mf"))
 
+        # Re-trigger guard: MQTT reconnect / state flap / keep-alive can cause
+        # on_print_start to fire multiple times for the same physical print.
+        # Each repeat event, if it reached the fallback archive-create path,
+        # would add a new archive row (same file on disk, dedup'd dir — but
+        # still a new DB record). Reports in the wild: laptop sleeping →
+        # printer reconnects → several archive duplicates spaced minutes
+        # apart. If _active_prints already tracks ANY variation of this print
+        # on this printer, treat the event as a duplicate and return — no new
+        # archive, no re-notification.
+        for key in expected_keys:
+            active_archive_id = _active_prints.get(key)
+            if active_archive_id:
+                logger.info(
+                    "[CALLBACK] Duplicate print_start for printer %s (active archive %s via key %s) — skipping",
+                    printer_id,
+                    active_archive_id,
+                    key,
+                )
+                return
+
         expected_archive_id = None
         for key in expected_keys:
             expected_archive_id = _expected_prints.pop(key, None)

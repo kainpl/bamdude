@@ -91,6 +91,17 @@ def compute_time_accuracy(archive: PrintArchive) -> dict:
     return result
 
 
+def _parse_applied_patches(raw: str | None) -> list[str] | None:
+    """Decode the ``applied_patches`` TEXT column into a list for response."""
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return value if isinstance(value, list) else None
+
+
 def archive_to_response(
     archive: PrintArchive,
     duplicates: list[dict] | None = None,
@@ -108,6 +119,9 @@ def archive_to_response(
         "file_path": archive.file_path,
         "file_size": archive.file_size,
         "content_hash": archive.content_hash,
+        "source_content_hash": archive.source_content_hash,
+        "applied_patches": _parse_applied_patches(archive.applied_patches),
+        "effective_hash": archive.source_content_hash or archive.content_hash,
         "thumbnail_path": archive.thumbnail_path,
         "timelapse_path": archive.timelapse_path,
         "source_3mf_path": archive.source_3mf_path,

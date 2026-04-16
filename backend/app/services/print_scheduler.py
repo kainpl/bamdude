@@ -1302,6 +1302,11 @@ class PrintScheduler:
                     original_filename=filename,
                     created_by_id=item.created_by_id,
                     project_id=item.project_id,
+                    # Chain-of-custody: new archive shares the library file's
+                    # unpatched hash so dedup and reprint can trace back to
+                    # the source. applied_patches stays None until the
+                    # patcher pipeline lands.
+                    source_content_hash=library_file.file_hash,
                 )
                 if archive:
                     # Copy swap_compatible from library file

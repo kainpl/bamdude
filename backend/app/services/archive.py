@@ -727,30 +727,33 @@ class ArchiveService:
         return sha256.hexdigest()
 
     async def get_duplicate_hashes_and_names(self) -> tuple[set[str], set[tuple[str, str]]]:
-        """Get all content hashes and (print name, hash) pairs that appear more than once.
+        """Get all effective hashes and (print name, hash) pairs that appear more than once.
 
-        For hashes: returns all hashes with > 1 archive (true duplicates).
-        For name/hash pairs: returns only pairs that have > 1 archive
-                     (i.e., same file archived multiple times, not different files with same name).
+        Uses ``COALESCE(source_content_hash, content_hash)`` as the effective
+        hash so BamDude-patched archives collapse against their original
+        source. External prints (no source hash) fall back to raw content
+        hash — same behaviour as before m009.
 
         Returns a tuple of (duplicate_hashes, duplicate_name_hash_pairs).
         """
         from sqlalchemy import func
 
+        effective_hash = func.coalesce(PrintArchive.source_content_hash, PrintArchive.content_hash)
+
         result = await self.db.execute(
-            select(PrintArchive.content_hash)
+            select(effective_hash)
             .where(PrintArchive.content_hash.isnot(None))
-            .group_by(PrintArchive.content_hash)
+            .group_by(effective_hash)
             .having(func.count(PrintArchive.id) > 1)
         )
         duplicate_hashes = {row[0] for row in result.all()}
 
-        # Find print names that have multiple archives with the SAME hash
+        # Find print names that have multiple archives with the SAME effective hash
         # This avoids marking different files with the same name as duplicates
         result = await self.db.execute(
-            select(func.lower(PrintArchive.print_name), PrintArchive.content_hash)
+            select(func.lower(PrintArchive.print_name), effective_hash)
             .where(PrintArchive.print_name.isnot(None), PrintArchive.content_hash.isnot(None))
-            .group_by(func.lower(PrintArchive.print_name), PrintArchive.content_hash)
+            .group_by(func.lower(PrintArchive.print_name), effective_hash)
             .having(func.count(PrintArchive.id) > 1)
         )
         duplicate_name_hash_pairs = {(row[0], row[1]) for row in result.all()}
@@ -770,13 +773,16 @@ class ArchiveService:
         """
         duplicates = []
 
-        # First, find exact matches by content hash
+        # First, find exact matches by effective hash (source_content_hash or
+        # content_hash). This groups BamDude-patched archives with their
+        # library originals; external prints still dedup by raw content_hash.
         if content_hash:
+            effective_hash = func.coalesce(PrintArchive.source_content_hash, PrintArchive.content_hash)
             result = await self.db.execute(
                 select(PrintArchive)
                 .where(
                     and_(
-                        PrintArchive.content_hash == content_hash,
+                        effective_hash == content_hash,
                         PrintArchive.id != archive_id,
                     )
                 )
@@ -812,8 +818,6 @@ class ArchiveService:
             if makerworld_model_id:
                 # Match by MakerWorld model ID stored in extra_data (same design from MakerWorld)
                 # Use json_extract for SQLite compatibility (astext is PostgreSQL-only)
-                from sqlalchemy import func
-
                 name_conditions.append(
                     func.json_extract(PrintArchive.extra_data, "$.makerworld_model_id") == str(makerworld_model_id)
                 )
@@ -846,6 +850,9 @@ class ArchiveService:
         created_by_id: int | None = None,
         original_filename: str | None = None,
         project_id: int | None = None,
+        *,
+        source_content_hash: str | None = None,
+        applied_patches: list[str] | None = None,
     ) -> PrintArchive | None:
         """Archive a 3MF file with metadata.
 
@@ -856,6 +863,10 @@ class ArchiveService:
             created_by_id: User ID who created this archive (optional, for user tracking)
             original_filename: Original human-readable filename (optional, for library files
                 stored with UUID names)
+            source_content_hash: SHA256 of the UNPATCHED source file, when the
+                caller (BamDude dispatch) knows it. None for external prints.
+            applied_patches: Patch identifiers applied by the dispatch pipeline
+                before upload. None for external prints.
         """
         # Verify printer exists if specified
         if printer_id is not None:
@@ -867,18 +878,52 @@ class ArchiveService:
         # Compute content hash from source file (before copying)
         content_hash = self.compute_file_hash(source_file)
 
-        # Check if we already have this file for this printer (dedup within printer)
+        # External-print fallback: if the caller didn't provide source_content_hash
+        # (i.e. print was initiated outside BamDude), try to link this archive to
+        # an existing chain by looking for any prior archive that has either the
+        # same content_hash (exact bytes on disk) or the same source_content_hash
+        # (this file is itself the original someone patched before). The oldest
+        # match wins — it's closest to the root of the chain.
+        if source_content_hash is None:
+            chain_lookup = await self.db.execute(
+                select(func.coalesce(PrintArchive.source_content_hash, PrintArchive.content_hash))
+                .where(
+                    or_(
+                        PrintArchive.content_hash == content_hash,
+                        PrintArchive.source_content_hash == content_hash,
+                    )
+                )
+                .order_by(PrintArchive.created_at.asc())
+                .limit(1)
+            )
+            chain_hash = chain_lookup.scalar_one_or_none()
+            if chain_hash and chain_hash != content_hash:
+                # Only inherit the chain hash when it actually differs from the
+                # file we just hashed. Setting source == content is redundant
+                # (COALESCE resolves both to the same value anyway).
+                source_content_hash = chain_hash
+
+        effective_hash = source_content_hash or content_hash
+
+        # Check if we already have this file for this printer (dedup within printer).
+        # Uses COALESCE(source_content_hash, content_hash) so patched variants
+        # collapse against their original on the same printer.
         printer_folder = str(printer_id) if printer_id is not None else "unassigned"
         existing = await self.db.execute(
             select(PrintArchive)
             .where(
-                PrintArchive.content_hash == content_hash,
+                func.coalesce(PrintArchive.source_content_hash, PrintArchive.content_hash) == effective_hash,
                 PrintArchive.printer_id == printer_id,
                 PrintArchive.file_path.isnot(None),
             )
             .limit(1)
         )
         existing_archive = existing.scalar_one_or_none()
+
+        # `display_stem` is used below as a fallback for `print_name` when the
+        # 3MF has no name metadata. Hoist it out of the if/else so the reuse
+        # path (existing_archive) also has a valid value.
+        display_stem = Path(original_filename).stem if original_filename else source_file.stem
 
         if existing_archive and existing_archive.file_path:
             # Reuse existing file on disk
@@ -888,7 +933,6 @@ class ArchiveService:
         else:
             # Create new archive directory and copy file
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            display_stem = Path(original_filename).stem if original_filename else source_file.stem
             archive_name = f"{timestamp}_{display_stem}"
             archive_dir = settings.archive_dir / printer_folder / archive_name
             archive_dir.mkdir(parents=True, exist_ok=True)
@@ -954,6 +998,8 @@ class ArchiveService:
             file_path=str(dest_file.relative_to(settings.base_dir)),
             file_size=dest_file.stat().st_size,
             content_hash=content_hash,
+            source_content_hash=source_content_hash,
+            applied_patches=json.dumps(applied_patches) if applied_patches else None,
             thumbnail_path=thumbnail_path,
             print_name=metadata.get("print_name") or display_stem,
             print_time_seconds=metadata.get("print_time_seconds"),

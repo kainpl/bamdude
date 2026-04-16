@@ -40,6 +40,14 @@ class ArchiveResponse(BaseModel):
     file_path: str
     file_size: int
     content_hash: str | None
+    # Hash of the UNPATCHED source (library file or prior archive) for
+    # BamDude-dispatched prints; NULL for external prints.
+    source_content_hash: str | None = None
+    # JSON array of patch identifiers applied before upload (v1: informational).
+    applied_patches: list[str] | None = None
+    # Effective hash for dedup queries: source_content_hash or content_hash.
+    # Computed at response time in the route; frontend groups by this.
+    effective_hash: str | None = None
     thumbnail_path: str | None
     timelapse_path: str | None
     source_3mf_path: str | None = None  # Original project 3MF from slicer

@@ -362,6 +362,13 @@ export interface Archive {
   file_path: string;
   file_size: number;
   content_hash: string | null;
+  // Hash of the UNPATCHED source (library file or prior archive) when known.
+  // NULL for external prints. Dedup groups by `effective_hash`.
+  source_content_hash: string | null;
+  // Patch identifiers applied before upload (v1: informational).
+  applied_patches: string[] | null;
+  // Group key for duplicate detection: source_content_hash ?? content_hash.
+  effective_hash: string | null;
   thumbnail_path: string | null;
   timelapse_path: string | null;
   source_3mf_path: string | null;
