@@ -690,6 +690,11 @@ class BackgroundDispatchService:
 
                 self._raise_if_cancel_requested(job)
 
+                # Swap-mode start macro — fires before the print starts.
+                await self._run_swap_macro_if_needed(
+                    job, printer, "swap_mode_start", f"Running swap start macro on {printer_name}..."
+                )
+
                 await self._set_active_message(job, f"Starting print on {printer_name}...")
                 started = printer_manager.start_print(
                     job.printer_id,
@@ -716,6 +721,11 @@ class BackgroundDispatchService:
                 if pre_state:
                     asyncio.create_task(self._verify_print_response(job.printer_id, printer_name, pre_state))
 
+                # Register swap config for on_print_complete to pick up.
+                from backend.app.main import register_swap_config
+
+                register_swap_config(job.printer_id, job.options if isinstance(job.options, dict) else {})
+
                 if job.requested_by_user_id and job.requested_by_username:
                     printer_manager.set_current_print_user(
                         job.printer_id,
@@ -725,6 +735,44 @@ class BackgroundDispatchService:
             except DispatchJobCancelled:
                 await self._set_active_message(job, f"Cancelled upload on {printer_name}.")
                 raise
+
+    async def _run_swap_macro_if_needed(
+        self,
+        job: PrintDispatchJob,
+        printer,
+        event: str,
+        status_message: str,
+    ):
+        """Execute a swap macro if the job's options request it for *event*.
+
+        Raises ``RuntimeError`` on failure so the dispatch job aborts.
+        """
+        opts = job.options if isinstance(job.options, dict) else {}
+        if not opts.get("execute_swap_macros"):
+            return
+        events = opts.get("swap_macro_events") or []
+        if event not in events:
+            return
+
+        from backend.app.core.database import async_session
+        from backend.app.services.macro_executor import find_swap_macro
+
+        async with async_session() as db:
+            macro = await find_swap_macro(db, event, printer)
+
+        if not macro or not macro.gcode:
+            logger.info(
+                "Dispatch job %s: no gcode for swap event '%s' on printer %s — skipping",
+                job.id,
+                event,
+                printer.name,
+            )
+            return
+
+        await self._set_active_message(job, status_message)
+        success, msg = await printer_manager.execute_macro_and_wait(job.printer_id, macro.gcode, macro.name)
+        if not success:
+            raise RuntimeError(f"Swap macro '{macro.name}' failed: {msg}")
 
     async def _run_print_library_file(self, job: PrintDispatchJob):
         from backend.app.main import register_expected_print
@@ -901,6 +949,11 @@ class BackgroundDispatchService:
 
                 self._raise_if_cancel_requested(job)
 
+                # Swap-mode start macro — fires before the print starts.
+                await self._run_swap_macro_if_needed(
+                    job, printer, "swap_mode_start", f"Running swap start macro on {printer_name}..."
+                )
+
                 await self._set_active_message(job, f"Starting print on {printer_name}...")
                 started = printer_manager.start_print(
                     job.printer_id,
@@ -923,6 +976,11 @@ class BackgroundDispatchService:
                     )
                     await db.rollback()
                     raise RuntimeError("Failed to start print")
+
+                # Register swap config for on_print_complete to pick up.
+                from backend.app.main import register_swap_config
+
+                register_swap_config(job.printer_id, job.options if isinstance(job.options, dict) else {})
 
                 pre_state = getattr(printer_manager.get_status(job.printer_id), "state", None)
                 if pre_state:

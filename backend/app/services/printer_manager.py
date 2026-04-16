@@ -158,6 +158,9 @@ class PrinterManager:
         self._current_print_user: dict[int, dict] = {}  # {printer_id: {"user_id": int, "username": str}}
         # Track plate-cleared acknowledgments for queue flow
         self._plate_cleared: set[int] = set()  # printer_ids where user confirmed plate is cleared
+        # Macro completion waiters: dispatch pipeline registers an Event here,
+        # _broadcast_macro_complete sets it when stg_cur transitions to idle.
+        self._macro_waiters: dict[int, tuple[asyncio.Event, dict]] = {}
 
     def get_printer(self, printer_id: int) -> PrinterInfo | None:
         """Get printer info by ID."""
@@ -435,6 +438,54 @@ class PrinterManager:
             )
         return False
 
+    async def execute_macro_and_wait(
+        self,
+        printer_id: int,
+        gcode: str,
+        macro_name: str,
+    ) -> tuple[bool, str]:
+        """Send a macro and block until ``on_macro_complete`` fires or the printer disconnects.
+
+        Uses :func:`macro_executor.send_macro_and_await_ack` for the initial
+        send+ACK, then waits for the ``stg_cur`` idle transition (reported by
+        ``_broadcast_macro_complete``).  No fixed timeout — the printer's own
+        status tracking handles errors/stalls.  A connectivity health-check
+        every 0.5 s catches disconnects that wouldn't trigger a callback.
+
+        Returns ``(success, message)``.
+        """
+        from backend.app.services.macro_executor import send_macro_and_await_ack
+
+        client = self._clients.get(printer_id)
+        if not client:
+            return False, "Printer not connected"
+
+        model = self._models.get(printer_id)
+        ack_ok, ack_msg = await send_macro_and_await_ack(client, gcode, macro_name, model)
+        if not ack_ok:
+            return False, ack_msg
+
+        # Register a completion waiter. _broadcast_macro_complete will .set()
+        # the Event when bambu_mqtt fires on_macro_complete.
+        event = asyncio.Event()
+        result: dict = {"status": "pending", "message": ""}
+        self._macro_waiters[printer_id] = (event, result)
+
+        try:
+            while not event.is_set():
+                if not client.state.connected:
+                    logger.warning(
+                        "[MACRO-WAIT] Printer %s disconnected while waiting for macro '%s'",
+                        printer_id,
+                        macro_name,
+                    )
+                    return False, "Printer disconnected during macro execution"
+                await asyncio.sleep(0.5)
+        finally:
+            self._macro_waiters.pop(printer_id, None)
+
+        return result["status"] == "completed", result.get("message", "")
+
     def stop_print(self, printer_id: int) -> bool:
         """Stop the current print on a connected printer."""
         if printer_id in self._clients:
@@ -564,7 +615,15 @@ class PrinterManager:
         return result
 
     async def _broadcast_macro_complete(self, printer_id: int, macro_name: str, status: str):
-        """Broadcast macro completion via WebSocket."""
+        """Notify waiting dispatch pipeline, then broadcast via WebSocket."""
+        # Unblock the dispatch pipeline first — it's blocking on the Event.
+        waiter = self._macro_waiters.get(printer_id)
+        if waiter:
+            event, result = waiter
+            result["status"] = status
+            result["message"] = f"Macro '{macro_name}' {status}"
+            event.set()
+
         from backend.app.core.websocket import ws_manager
 
         printer_name = self._printer_info.get(printer_id)

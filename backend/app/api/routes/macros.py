@@ -234,22 +234,7 @@ async def execute_macro(
     if not client or not client.state or not client.state.connected:
         raise HTTPException(400, "Printer is not connected")
 
-    # Wrap macro GCode with claim_action markers:
-    # - Start: M1002 gcode_claim_action:11 sets stg_cur=11 (signals "macro executing")
-    # - M400 S5 gives MQTT time to propagate the stage change
-    # - End: M400 waits for moves, then claim_action:0 clears stg_cur back to 0
-    import asyncio
-    import threading
-
-    raw_gcode = macro.gcode.strip()
-    # stg_cur=0 ("Printing") signals macro executing; idle value depends on model
-    # X1/X1C/X1E use stg_cur=-1 for idle, other models use 255
-    model_upper = (printer.model or "").upper().replace("-", "").replace(" ", "")
-    idle_stg = -1 if model_upper in ("X1", "X1C", "X1E") else 255
-    gcode = f"M1002 gcode_claim_action : 0;\nM400 S5;\n{raw_gcode}\nM400;\nM1002 gcode_claim_action : {idle_stg};"
-
-    # Set macro executing state before sending
-    client.state.macro_executing = macro.name
+    from backend.app.services.macro_executor import send_macro_and_await_ack
 
     logger.info(
         "[MACRO] Sending macro '%s' to printer '%s' (id=%d): "
@@ -257,59 +242,21 @@ async def execute_macro(
         macro.name,
         printer.name,
         printer.id,
-        raw_gcode.count("\n") + 1,
+        macro.gcode.strip().count("\n") + 1,
         macro.swap_mode_only,
         macro.event,
         client.state.state,
         client.state.stg_cur,
     )
 
-    # Send GCode and wait for ACK from printer
-    sent = client.send_gcode(gcode)
-    if not sent:
-        client.state.macro_executing = None
-        logger.warning("[MACRO] Failed to send macro '%s' - MQTT not connected", macro.name)
-        return MacroExecuteResponse(success=False, message="Failed to send GCode to printer")
+    success, error_msg = await send_macro_and_await_ack(client, macro.gcode, macro.name, printer.model)
 
-    seq_id = str(client._sequence_id)
-
-    # Wait for printer ACK (result: success/failed) - typically <200ms
-    ack_event = threading.Event()
-    ack_result: dict = {"success": False, "reason": ""}
-    client.register_ack_listener(seq_id, ack_event, ack_result)
-
-    try:
-        await asyncio.to_thread(ack_event.wait, 5.0)
-    except Exception:
-        pass
-
-    if not ack_event.is_set():
-        client._ack_listeners.pop(seq_id, None)
-        client.state.macro_executing = None
-        logger.warning("[MACRO] Timeout - no ACK for macro '%s' (seq=%s)", macro.name, seq_id)
-        raise HTTPException(408, "Printer did not acknowledge command in time")
-
-    if not ack_result["success"]:
-        client.state.macro_executing = None
-        logger.warning(
-            "[MACRO] Printer rejected macro '%s' (seq=%s): %s",
-            macro.name,
-            seq_id,
-            ack_result.get("reason", "unknown"),
-        )
-        raise HTTPException(400, f"Printer rejected macro: {ack_result.get('reason', 'unknown')}")
-
-    logger.info(
-        "[MACRO] ACK received - macro '%s' accepted by printer '%s' (seq=%s, result=%s, reason=%s)",
-        macro.name,
-        printer.name,
-        seq_id,
-        ack_result.get("success"),
-        ack_result.get("reason", ""),
-    )
+    if not success:
+        if "acknowledge" in error_msg.lower():
+            raise HTTPException(408, error_msg)
+        raise HTTPException(400, error_msg)
 
     return MacroExecuteResponse(
         success=True,
         message=f"Macro '{macro.name}' executing",
-        sequence_id=int(seq_id),
     )

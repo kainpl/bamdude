@@ -1495,6 +1495,33 @@ class PrintScheduler:
         printer_manager.consume_plate_cleared(item.queue_id)
         logger.info("Queue item %s: Status set to 'printing', sending print command...", item.id)
 
+        # Swap-mode start macro — fires before the print starts.
+        swap_events = []
+        if item.execute_swap_macros and item.swap_macro_events:
+            import json as _json
+
+            try:
+                swap_events = _json.loads(item.swap_macro_events) if isinstance(item.swap_macro_events, str) else []
+            except (ValueError, TypeError):
+                swap_events = []
+
+        if item.execute_swap_macros and "swap_mode_start" in swap_events:
+            from backend.app.services.macro_executor import find_swap_macro
+
+            macro = await find_swap_macro(db, "swap_mode_start", printer)
+            if macro and macro.gcode:
+                logger.info(
+                    "Queue item %s: Running swap start macro '%s' on %s...",
+                    item.id,
+                    macro.name,
+                    printer.name,
+                )
+                success, msg = await printer_manager.execute_macro_and_wait(item.queue_id, macro.gcode, macro.name)
+                if not success:
+                    logger.error("Queue item %s: Swap start macro failed: %s — failing item", item.id, msg)
+                    await self._fail_item(db, item, f"Swap start macro failed: {msg}")
+                    return
+
         # Start the print with AMS mapping, plate_id and print options
         started = printer_manager.start_print(
             item.queue_id,
@@ -1509,6 +1536,17 @@ class PrintScheduler:
         )
 
         if started:
+            # Register swap config for on_print_complete to pick up.
+            if swap_events:
+                from backend.app.main import register_swap_config
+
+                register_swap_config(
+                    item.queue_id,
+                    {
+                        "execute_swap_macros": True,
+                        "swap_macro_events": swap_events,
+                    },
+                )
             logger.info("Queue item %s: Print started successfully - %s", item.id, filename)
 
             # Get estimated time for notification

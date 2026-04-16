@@ -260,6 +260,11 @@ _expected_prints: dict[tuple[int, str], int] = {}
 # Used by usage tracker to map 3MF slots to physical AMS trays
 _print_ams_mappings: dict[int, list[int]] = {}
 
+# Swap-macro configuration for active prints: {printer_id: {"swap_macro_events": [...]}}
+# Populated at dispatch time; consumed + cleaned up in on_print_complete.
+# Only one print is active per printer at a time, so printer_id is a safe key.
+_active_swap_config: dict[int, dict] = {}
+
 # Track progress milestones for notifications: {printer_id: last_milestone_notified}
 # Milestones are 25, 50, 75. Value of 0 means no milestone notified yet for current print.
 _last_progress_milestone: dict[int, int] = {}
@@ -406,6 +411,21 @@ def register_expected_print(
     logging.getLogger(__name__).info(
         f"Registered expected print: printer={printer_id}, file={filename}, archive={archive_id}, ams_mapping={ams_mapping}"
     )
+
+
+def register_swap_config(printer_id: int, options: dict):
+    """Register swap-macro config for the current print on *printer_id*.
+
+    Called from dispatch/scheduler AFTER a successful ``start_print``.
+    ``on_print_complete`` reads and pops the config to decide whether
+    ``swap_mode_change_table`` should fire.
+    """
+    if not options.get("execute_swap_macros"):
+        return
+    events = options.get("swap_macro_events") or []
+    if events:
+        _active_swap_config[printer_id] = {"swap_macro_events": events}
+        logging.getLogger(__name__).info("[SWAP] Registered swap config for printer %s: events=%s", printer_id, events)
 
 
 def _get_start_ams_mapping(data: dict, archive_id: int | None) -> list[int] | None:
@@ -2445,6 +2465,26 @@ async def on_print_complete(printer_id: int, data: dict):
                 if archive:
                     archive_id = archive.id
 
+    # Swap-compatible files (macros baked in by third-party tooling like
+    # swaplist.app) handle table changes internally — the plate is already
+    # swapped and clean by the time the print finishes. Auto-clear the
+    # plate-cleared flag so the queue scheduler doesn't block on manual
+    # confirmation.
+    if archive_id:
+        try:
+            async with async_session() as db:
+                from backend.app.models.archive import PrintArchive as _ScArchive
+
+                _sc_result = await db.execute(select(_ScArchive.swap_compatible).where(_ScArchive.id == archive_id))
+                _sc_swap = _sc_result.scalar_one_or_none()
+                if _sc_swap:
+                    printer_manager.set_plate_cleared(printer_id)
+                    logger.info(
+                        "[SWAP] swap_compatible archive %s — plate auto-cleared for printer %s", archive_id, printer_id
+                    )
+        except Exception as e:
+            logger.debug("[SWAP] swap_compatible check failed (non-critical): %s", e)
+
     # Post-print SD card cleanup (Issue #374)
     # Printers auto-start files from root on power cycle (ghost prints).
     # cleanup_after_print=True (default): delete 3MF from root
@@ -2604,6 +2644,50 @@ async def on_print_complete(printer_id: int, data: dict):
         logger.warning("SD card file cleanup failed for printer %s: %s", printer_id, e)
 
     log_timing("SD card cleanup")
+
+    # Swap-mode change-table macro — runs after print completes (before queue
+    # picks up the next item). If this fails the queue pauses so a half-swapped
+    # table doesn't cause the next print to crash.
+    swap_config = _active_swap_config.pop(printer_id, None)
+    if swap_config and "swap_mode_change_table" in (swap_config.get("swap_macro_events") or []):
+        try:
+            async with async_session() as db:
+                from backend.app.models.printer import Printer as _SwapPrinter
+
+                _sw_result = await db.execute(select(_SwapPrinter).where(_SwapPrinter.id == printer_id))
+                _sw_printer = _sw_result.scalar_one_or_none()
+                if _sw_printer and _sw_printer.swap_mode_enabled:
+                    from backend.app.models.print_queue import PrintQueueItem
+                    from backend.app.services.macro_executor import find_swap_macro
+
+                    macro = await find_swap_macro(db, "swap_mode_change_table", _sw_printer)
+                    if macro and macro.gcode:
+                        logger.info("[SWAP] Running change_table macro '%s' for printer %s", macro.name, printer_id)
+                        _sw_ok, _sw_msg = await printer_manager.execute_macro_and_wait(
+                            printer_id, macro.gcode, macro.name
+                        )
+                        if _sw_ok:
+                            # Table swapped successfully — auto-clear plate so
+                            # the scheduler doesn't wait for manual confirmation.
+                            printer_manager.set_plate_cleared(printer_id)
+                            logger.info("[SWAP] change_table done — plate auto-cleared for printer %s", printer_id)
+                        if not _sw_ok:
+                            logger.error("[SWAP] change_table macro failed: %s — will pause queue", _sw_msg)
+                            # Set waiting_reason on the next pending queue item so the
+                            # scheduler doesn't try to start it on an un-swapped table.
+                            _next = await db.execute(
+                                select(PrintQueueItem)
+                                .where(PrintQueueItem.queue_id == printer_id)
+                                .where(PrintQueueItem.status == "pending")
+                                .order_by(PrintQueueItem.position)
+                                .limit(1)
+                            )
+                            _next_item = _next.scalar_one_or_none()
+                            if _next_item:
+                                _next_item.waiting_reason = f"Swap macro failed: {_sw_msg}"
+                                await db.commit()
+        except Exception as e:
+            logger.error("[SWAP] change_table macro error: %s", e)
 
     # Update queue item status early - must run before the archive_id early-return
     # so queue items don't get stuck in "printing" when archive lookup fails.
