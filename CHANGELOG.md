@@ -6,7 +6,47 @@ All notable changes to BamDude will be documented in this file.
 
 ---
 
-## [0.3.2] - 2026-04-10
+## [0.3.1.1] - 2026-04-17
+
+### Swap-Mode Macro Auto-Execution
+
+Swap macros now fire automatically during the dispatch/queue print flow — no manual execution needed.
+
+- **`swap_mode_start`** — runs before `start_print` on swap-enabled printers. If macro fails (ACK rejected or printer disconnects) the dispatch/queue item fails and queue pauses.
+- **`swap_mode_change_table`** — runs after `on_print_complete`. If it fails the next queue item gets `waiting_reason` set (queue paused until manual intervention).
+- **Per-job event selection** — new `execute_swap_macros` toggle + `swap_macro_events` checklist in Print Modal. UI hidden when source file is `swap_compatible` (macros baked in by swaplist.app) or no selected printer has swap mode.
+- **Plate-clear auto-bypass** — successful `change_table` macro or `swap_compatible` archive auto-calls `set_plate_cleared` so queue scheduler doesn't block on manual confirmation.
+- **Shared macro executor** — `send_macro_and_await_ack` extracted from `execute_macro` route into `services/macro_executor.py`; `PrinterManager.execute_macro_and_wait` blocks until `on_macro_complete` callback with connectivity health-check (no fixed timeout).
+- **DB fields**: `execute_swap_macros BOOLEAN`, `swap_macro_events TEXT` on `print_queue` (m008); wired through schemas, routes, queue_batch, dispatch, scheduler.
+
+### Quick Vibration Check Toggle & 3MF Patcher
+
+- **`mesh_mode_fast_check`** per-job toggle (default true) — mirrors the official "Quick Vibration Check" (belt-tension pre-flight). Added to queue items and reprint/print-library bodies (m006).
+- **3MF gcode post-processor** (`services/gcode_patcher.py`) — when toggle is OFF, patches `M970`/`M970.3` commands in all plate gcodes to `;M970...` (commented out), recalculates per-plate MD5 sidecars, repacks the 3MF. Masks `; machine_start_gcode = ...` parameter lines to avoid false positives (same technique as swap-hub). Passthrough (no repack) when lines are already commented.
+- **Wired into dispatch** — both reprint and library-file paths; archive created from patched file so `content_hash` matches what lands on SD.
+
+### Removed `vibration_cali` Per-Print Toggle
+
+- Upstream BambuStudio hardcodes `task_vibration_cali = false` for every model (confirmed in `SelectMachine.cpp`, `SendMultiMachinePage.cpp:510`). The per-print UI checkbox was removed from Studio.
+- **Dropped**: column from `print_queue` (m007 via `recreate_table`), field from all schemas, toggle from UI, i18n keys. MQTT payload still sends `"vibration_cali": false` for firmware compat. P2S-specific override removed (no longer needed).
+
+### Archive Source-Hash Dedup (Chain-of-Custody)
+
+- **`source_content_hash`** + **`applied_patches`** columns on `print_archives` (m009).
+- Dedup queries switch to `COALESCE(source_content_hash, content_hash)` — patched archives collapse against their library original.
+- **External-print fallback**: when `on_print_complete` archives an SD file with no dispatch metadata, a one-SELECT lookup inherits the chain from any prior archive with matching `content_hash` or `source_content_hash`.
+- **`effective_hash`** field in `ArchiveResponse` for frontend grouping.
+- Dispatch wiring passes `library_file.file_hash` as source for both direct and queue-driven prints.
+- Pre-existing `display_stem` UnboundLocalError in `archive_print` reuse path fixed.
+
+### on_print_start Duplicate Archive Guard
+
+- **`_active_prints` re-trigger check** before `_expected_prints` pop — if the printer already has an active print tracked, log `[CALLBACK] Duplicate print_start ... skipping` and return.
+- Covers every MQTT re-subscribe cause: laptop sleep/wake, macro execution, K-profile changes, printer control actions, AMS operations, any `ensure_fresh_connection` call.
+
+### Swap-Mode Profiles — JobOx A1 GCode
+
+- Embedded extracted JobOx A1 gcode into m005 seed entries (from Chinese A1-clone test file, Y=266 overflow confirms full-size). Same block used for both `swap_mode_start` and `swap_mode_change_table` pending official JobOx gcode.
 
 ### Library File Notes ([#3](https://github.com/kainpl/bamdude/issues/3))
 
@@ -156,10 +196,6 @@ Cycle `applied=0.2.3b1` → `next=0.2.3b2` (23 ported / 0 missing / 4 N/A). Full
 
 - **`scripts/set_version.js`** — sets version across `backend/app/core/config.py`, `frontend/package.json`, and `pyproject.toml` in one command
 - **MCP config fix** — `.mcp.json` updated with `cmd /c` wrapper for Windows compatibility
-
----
-
-## [0.3.1.1] - 2026-04-07
 
 ### Per-Printer Queue Architecture
 

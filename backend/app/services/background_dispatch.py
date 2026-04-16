@@ -569,6 +569,23 @@ class BackgroundDispatchService:
             if not file_path.exists():
                 raise RuntimeError("Archive file not found")
 
+            # Gcode post-processing: patch 3MF if the operator toggled off
+            # the vibration fast-check.  The patcher works on a temp copy
+            # and returns the original path unchanged if nothing needed.
+            upload_file_path = file_path
+            _patch_cleanup_dir = None
+            if not job.options.get("mesh_mode_fast_check", True):
+                from backend.app.services.gcode_patcher import patch_mesh_mode_fast_check
+
+                patched_path, patches = await asyncio.to_thread(patch_mesh_mode_fast_check, file_path)
+                if patches:
+                    upload_file_path = patched_path
+                    _patch_cleanup_dir = patched_path.parent
+                    # Merge into applied_patches so archive_print persists the chain.
+                    existing_patches = job.options.get("applied_patches") or []
+                    job.options["applied_patches"] = existing_patches + patches
+                    logger.info("Dispatch job %s: 3MF patched (%s)", job.id, patches)
+
             base_name = archive.filename
             if base_name.endswith(".gcode.3mf"):
                 base_name = base_name[:-10]
@@ -650,7 +667,7 @@ class BackgroundDispatchService:
                         upload_file_async,
                         printer_ip,
                         printer_access_code,
-                        file_path,
+                        upload_file_path,
                         remote_path,
                         progress_callback=upload_progress_callback,
                         socket_timeout=ftp_timeout,
@@ -664,12 +681,19 @@ class BackgroundDispatchService:
                     uploaded = await upload_file_async(
                         printer_ip,
                         printer_access_code,
-                        file_path,
+                        upload_file_path,
                         remote_path,
                         progress_callback=upload_progress_callback,
                         socket_timeout=ftp_timeout,
                         printer_model=printer_model,
                     )
+
+                # Clean up patched temp file after upload (original stays intact).
+                if _patch_cleanup_dir:
+                    import shutil
+
+                    shutil.rmtree(_patch_cleanup_dir, ignore_errors=True)
+                    _patch_cleanup_dir = None
 
                 if uploaded:
                     await self._set_active_upload_progress(job, 1, 1)
@@ -806,17 +830,32 @@ class BackgroundDispatchService:
             if not await printer_manager.ensure_fresh_connection_for_printer(printer):
                 raise RuntimeError("Can`t re-connect printer MQTT")
 
+            # Gcode post-processing: patch 3MF if the operator toggled off
+            # the vibration fast-check.
+            upload_file_path = file_path
+            _patch_cleanup_dir_lib = None
+            if not job.options.get("mesh_mode_fast_check", True):
+                from backend.app.services.gcode_patcher import patch_mesh_mode_fast_check
+
+                patched_path, patches = await asyncio.to_thread(patch_mesh_mode_fast_check, file_path)
+                if patches:
+                    upload_file_path = patched_path
+                    _patch_cleanup_dir_lib = patched_path.parent
+                    existing_patches = job.options.get("applied_patches") or []
+                    job.options["applied_patches"] = existing_patches + patches
+                    logger.info("Dispatch job %s: 3MF patched (%s)", job.id, patches)
+
             await self._set_active_message(job, f"Creating archive for {lib_file.filename}...")
             archive_service = ArchiveService(db)
-            # Carry the library file's hash through as the archive's
-            # source_content_hash. Once the patching pipeline lands, `file_path`
-            # will point at a temp patched file and applied_patches will be
-            # non-empty; for now they stay None/empty and effective_hash equals
-            # content_hash — behaviour is unchanged for unpatched dispatches.
             applied_patches = job.options.get("applied_patches") if isinstance(job.options, dict) else None
+            # Archive the file that will ACTUALLY be sent to the printer
+            # (patched or original). content_hash will match what lands on
+            # SD so on_print_complete chain-lookup works even if
+            # _expected_prints misses.  source_content_hash stays the
+            # library's original hash for design-level dedup.
             archive = await archive_service.archive_print(
                 printer_id=job.printer_id,
-                source_file=file_path,
+                source_file=upload_file_path,
                 original_filename=lib_file.filename,
                 project_id=job.project_id,
                 source_content_hash=lib_file.file_hash,
@@ -908,7 +947,7 @@ class BackgroundDispatchService:
                         upload_file_async,
                         printer_ip,
                         printer_access_code,
-                        file_path,
+                        upload_file_path,
                         remote_path,
                         progress_callback=upload_progress_callback,
                         socket_timeout=ftp_timeout,
@@ -922,12 +961,19 @@ class BackgroundDispatchService:
                     uploaded = await upload_file_async(
                         printer_ip,
                         printer_access_code,
-                        file_path,
+                        upload_file_path,
                         remote_path,
                         progress_callback=upload_progress_callback,
                         socket_timeout=ftp_timeout,
                         printer_model=printer_model,
                     )
+
+                # Clean up patched temp file after upload.
+                if _patch_cleanup_dir_lib:
+                    import shutil
+
+                    shutil.rmtree(_patch_cleanup_dir_lib, ignore_errors=True)
+                    _patch_cleanup_dir_lib = None
 
                 if uploaded:
                     await self._set_active_upload_progress(job, 1, 1)

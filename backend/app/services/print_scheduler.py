@@ -1291,38 +1291,6 @@ class PrintScheduler:
             file_path = lib_path if lib_path.is_absolute() else settings.base_dir / library_file.file_path
             filename = library_file.filename
 
-            # Create archive from library file so usage tracking has access to the 3MF
-            try:
-                from backend.app.services.archive import ArchiveService
-
-                archive_service = ArchiveService(db)
-                archive = await archive_service.archive_print(
-                    printer_id=item.queue_id,
-                    source_file=file_path,
-                    original_filename=filename,
-                    created_by_id=item.created_by_id,
-                    project_id=item.project_id,
-                    # Chain-of-custody: new archive shares the library file's
-                    # unpatched hash so dedup and reprint can trace back to
-                    # the source. applied_patches stays None until the
-                    # patcher pipeline lands.
-                    source_content_hash=library_file.file_hash,
-                )
-                if archive:
-                    # Copy swap_compatible from library file
-                    if library_file.swap_compatible:
-                        archive.swap_compatible = True
-                    item.archive_id = archive.id
-                    await db.flush()
-                    logger.info(
-                        "Queue item %s: Created archive %s from library file %s",
-                        item.id,
-                        archive.id,
-                        item.library_file_id,
-                    )
-            except Exception as e:
-                logger.warning("Queue item %s: Failed to create archive from library file: %s", item.id, e)
-
         else:
             # Neither archive nor library file specified
             await self._fail_item(db, item, "No source file specified")
@@ -1336,6 +1304,58 @@ class PrintScheduler:
             logger.error("Queue item %s: File not found: %s", item.id, file_path)
             await self._power_off_if_needed(db, item)
             return
+
+        # Gcode post-processing: patch 3MF if the operator toggled off
+        # the vibration fast-check for this queue item.  Must run BEFORE
+        # archive_print so the archive stores the patched file (its
+        # content_hash matches what will land on SD — important for
+        # on_print_complete chain-lookup when _expected_prints misses).
+        upload_file_path = file_path
+        _patch_cleanup_dir = None
+        _applied_patches: list[str] | None = None
+        if not item.mesh_mode_fast_check:
+            import asyncio as _asyncio
+
+            from backend.app.services.gcode_patcher import patch_mesh_mode_fast_check
+
+            patched_path, patches = await _asyncio.to_thread(patch_mesh_mode_fast_check, file_path)
+            if patches:
+                upload_file_path = patched_path
+                _patch_cleanup_dir = patched_path.parent
+                _applied_patches = patches
+                logger.info("Queue item %s: 3MF patched (%s)", item.id, patches)
+
+        # Create archive from the file that will ACTUALLY be sent to the
+        # printer (patched or original).  content_hash must match what lands
+        # on SD so on_print_complete chain-lookup works even if
+        # _expected_prints misses.
+        if library_file:
+            try:
+                from backend.app.services.archive import ArchiveService
+
+                archive_service = ArchiveService(db)
+                archive = await archive_service.archive_print(
+                    printer_id=item.queue_id,
+                    source_file=upload_file_path,
+                    original_filename=filename,
+                    created_by_id=item.created_by_id,
+                    project_id=item.project_id,
+                    source_content_hash=library_file.file_hash,
+                    applied_patches=_applied_patches,
+                )
+                if archive:
+                    if library_file.swap_compatible:
+                        archive.swap_compatible = True
+                    item.archive_id = archive.id
+                    await db.flush()
+                    logger.info(
+                        "Queue item %s: Created archive %s from library file %s",
+                        item.id,
+                        archive.id,
+                        item.library_file_id,
+                    )
+            except Exception as e:
+                logger.warning("Queue item %s: Failed to create archive from library file: %s", item.id, e)
 
         # Upload file to printer via FTP
         # Use a clean filename to avoid issues with double extensions like .gcode.3mf
@@ -1413,7 +1433,7 @@ class PrintScheduler:
                     upload_file_async,
                     printer.ip_address,
                     printer.access_code,
-                    file_path,
+                    upload_file_path,
                     remote_path,
                     socket_timeout=ftp_timeout,
                     printer_model=printer.model,
@@ -1425,7 +1445,7 @@ class PrintScheduler:
                 uploaded = await upload_file_async(
                     printer.ip_address,
                     printer.access_code,
-                    file_path,
+                    upload_file_path,
                     remote_path,
                     socket_timeout=ftp_timeout,
                     printer_model=printer.model,
@@ -1433,6 +1453,12 @@ class PrintScheduler:
         except Exception as e:
             uploaded = False
             logger.error("Queue item %s: FTP error: %s (type: %s)", item.id, e, type(e).__name__)
+        finally:
+            # Clean up patched temp file after upload (original stays intact).
+            if _patch_cleanup_dir:
+                import shutil
+
+                shutil.rmtree(_patch_cleanup_dir, ignore_errors=True)
 
         if not uploaded:
             error_msg = (

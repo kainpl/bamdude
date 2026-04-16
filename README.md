@@ -59,7 +59,7 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 ### Print Archive
 - Automatic 3MF archiving with metadata
 - 3D model preview (Three.js)
-- Duplicate detection & full-text search
+- Duplicate detection & full-text search (source-hash chain-of-custody for patched files)
 - Photo attachments & failure analysis
 - Timelapse editor (trim, speed, music)
 - Re-print to any printer with AMS mapping
@@ -82,7 +82,9 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 - Per-printer queues with status tracking (idle/printing/paused/error)
 - Auto error-pause on print failure (queue stops, user decides next step)
 - Staggered start for farms (limit concurrent heating, bed temp monitoring)
-- Swap Mode support (A1 Mini plate swapper, auto-detect swap files)
+- **Swap Mode** — A1 Mini / A1 plate swapper with multi-profile support (Kit, STL, JobOx), auto-detect swap files, per-job event selection (start sequence / change table), plate-clear auto-bypass
+- **Swap macro auto-execution** — `swap_mode_start` before print, `swap_mode_change_table` after print, with ACK + stg_cur completion tracking, queue pause on failure
+- **Quick Vibration Check toggle** — per-job toggle; when disabled, 3MF gcode post-processor comments out `M970` commands, recalculates MD5 sidecars, repacks archive
 - **G-code macros** — execute from printer menu, ACK-based MQTT confirmation, `stg_cur` completion tracking, real-time status on printer card
 - Model-aware maintenance types with history tracking and Excel export
 - Clear plate confirmation between prints
