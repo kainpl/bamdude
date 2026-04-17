@@ -660,6 +660,9 @@ export default {
     },
     toast: {
       source3mfAttached: 'Вихідний 3MF прикріплено: {{filename}}',
+      downloadRecovered: '3MF завантажено з принтера та прикріплено',
+      downloadRetryFailed: 'Не вдалось повторити: FTP принтера недоступний або файла немає на SD',
+      downloadRetryInProgress: 'Уже виконується інша спроба для цього архіву — зачекайте',
       failedUploadSource3mf: 'Не вдалося завантажити вихідний 3MF',
       source3mfRemoved: 'Вихідний 3MF видалено',
       failedRemoveSource3mf: 'Не вдалося видалити вихідний 3MF',
@@ -692,6 +695,7 @@ export default {
       exportFailed: 'Помилка експорту',
     },
     menu: {
+      retryDownload: 'Повторити завантаження 3MF',
       print: 'Друкувати',
       schedule: 'Запланувати',
       openInBambuStudio: 'Відкрити у слайсері',

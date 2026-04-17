@@ -1238,6 +1238,44 @@ async def toggle_favorite(
     return archive
 
 
+@router.post("/{archive_id}/retry-download")
+async def retry_archive_download(
+    archive_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.ARCHIVES_UPDATE_ALL),
+):
+    """Manually trigger a 3MF download attempt for a fallback archive.
+
+    Use case: the initial + startup + connect + last-chance retries all
+    failed, leaving the archive with ``file_path=""``.  The user can
+    click a button in the UI to try one more time — useful if they
+    manually copied the file back to SD or the printer's FTP recovered.
+    """
+    from backend.app.services.archive_download_retry import archive_download_retry
+
+    result = await db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))
+    archive = result.scalar_one_or_none()
+    if not archive:
+        raise HTTPException(404, "Archive not found")
+    if archive.file_path:
+        return {"status": "already_has_file", "recovered": False, "message": "Archive already has a file"}
+
+    status = await archive_download_retry.retry_archive(archive_id)
+    # Map service status → user-facing response.
+    messages = {
+        "recovered": "3MF recovered and attached",
+        "already_has_file": "Archive already has a file",
+        "in_progress": "Another retry is already running for this archive — please wait",
+        "failed": "Download failed — printer FTP unreachable or file no longer on SD",
+        "error": "Unexpected error — check server logs",
+    }
+    return {
+        "status": status,
+        "recovered": status == "recovered",
+        "message": messages.get(status, "Unknown status"),
+    }
+
+
 @router.post("/{archive_id}/rescan", response_model=ArchiveResponse)
 async def rescan_archive(
     archive_id: int,

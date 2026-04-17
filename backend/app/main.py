@@ -60,7 +60,6 @@ from backend.app.core.websocket import ws_manager
 from backend.app.models.smart_plug import SmartPlug
 from backend.app.services.archive import ArchiveService
 from backend.app.services.background_dispatch import background_dispatch
-from backend.app.services.bambu_ftp import download_file_async, get_ftp_retry_settings, with_ftp_retry
 from backend.app.services.bambu_mqtt import PrinterState
 from backend.app.services.git_backup import git_backup_service
 from backend.app.services.homeassistant import homeassistant_service
@@ -1369,7 +1368,6 @@ async def on_print_start(printer_id: int, data: dict):
 
     async with async_session() as db:
         from backend.app.models.printer import Printer
-        from backend.app.services.bambu_ftp import list_files_async
 
         result = await db.execute(select(Printer).where(Printer.id == printer_id))
         printer = result.scalar_one_or_none()
@@ -1700,157 +1698,16 @@ async def on_print_start(printer_id: int, data: dict):
                 _load_objects_from_archive(existing_archive, printer_id, logger)
                 return
 
-        # Build list of possible 3MF filenames to try
-        possible_names = []
+        # Shared download helper (same logic used by the retry service).
+        from backend.app.services.archive_download import try_download_3mf
 
-        # Bambu printers typically store files as "Name.gcode.3mf"
-        # The subtask_name is usually the best source for the filename
-        if subtask_name:
-            # Try common Bambu naming patterns
-            possible_names.append(f"{subtask_name}.gcode.3mf")
-            possible_names.append(f"{subtask_name}.3mf")
-
-        # Try original filename with .3mf extension
-        if filename:
-            # Extract just the filename part, not the full path
-            fname = filename.split("/")[-1] if "/" in filename else filename
-            if fname.endswith(".3mf"):
-                possible_names.append(fname)
-            elif fname.endswith(".gcode"):
-                base = fname.rsplit(".", 1)[0]
-                possible_names.append(f"{base}.gcode.3mf")
-                possible_names.append(f"{base}.3mf")
-            else:
-                possible_names.append(f"{fname}.gcode.3mf")
-                possible_names.append(f"{fname}.3mf")
-
-        # Also try with spaces converted to underscores (Bambu Studio may normalize filenames)
-        space_variants = []
-        for name in possible_names:
-            if " " in name:
-                space_variants.append(name.replace(" ", "_"))
-        possible_names.extend(space_variants)
-
-        # Remove duplicates while preserving order
-        seen = set()
-        possible_names = [x for x in possible_names if not (x in seen or seen.add(x))]
-
-        logger.info("Trying filenames: %s", possible_names)
-
-        # Try to find and download the 3MF file
-        temp_path = None
-        downloaded_filename = None
-
-        # Get FTP retry settings
-        ftp_retry_enabled, ftp_retry_count, ftp_retry_delay, ftp_timeout = await get_ftp_retry_settings()
-
-        for try_filename in possible_names:
-            if not try_filename.endswith(".3mf"):
-                continue
-
-            remote_paths = [
-                f"/cache/{try_filename}",
-                f"/model/{try_filename}",
-                f"/data/{try_filename}",
-                f"/data/Metadata/{try_filename}",
-                f"/{try_filename}",
-            ]
-
-            temp_path = app_settings.archive_dir / "temp" / try_filename
-            temp_path.parent.mkdir(parents=True, exist_ok=True)
-
-            for remote_path in remote_paths:
-                logger.debug("Trying FTP download: %s", remote_path)
-                try:
-                    if ftp_retry_enabled:
-                        downloaded = await with_ftp_retry(
-                            download_file_async,
-                            printer.ip_address,
-                            printer.access_code,
-                            remote_path,
-                            temp_path,
-                            socket_timeout=ftp_timeout,
-                            printer_model=printer.model,
-                            max_retries=ftp_retry_count,
-                            retry_delay=ftp_retry_delay,
-                            operation_name=f"Download 3MF from {remote_path}",
-                        )
-                    else:
-                        downloaded = await download_file_async(
-                            printer.ip_address,
-                            printer.access_code,
-                            remote_path,
-                            temp_path,
-                            socket_timeout=ftp_timeout,
-                            printer_model=printer.model,
-                        )
-                    if downloaded:
-                        downloaded_filename = try_filename
-                        logger.info("Downloaded: %s", remote_path)
-                        break
-                except Exception as e:
-                    logger.debug("FTP download failed for %s: %s", remote_path, e)
-
-            if downloaded_filename:
-                break
-
-        # If still not found, try listing directories to find matching file
-        # Different printer models use different directory structures
-        if not downloaded_filename and (filename or subtask_name):
-            search_term = (subtask_name or filename).lower().replace(".gcode", "").replace(".3mf", "")
-            logger.info("Direct FTP download failed, searching directories for '%s'", search_term)
-            search_dirs = ["/cache", "/model", "/data", "/data/Metadata", "/"]
-            for search_dir in search_dirs:
-                if downloaded_filename:
-                    break
-                try:
-                    dir_files = await list_files_async(
-                        printer.ip_address, printer.access_code, search_dir, printer_model=printer.model
-                    )
-                    threemf_files = [f.get("name") for f in dir_files if f.get("name", "").endswith(".3mf")]
-                    if threemf_files:
-                        logger.info(
-                            f"Found {len(threemf_files)} 3MF files in {search_dir}: {threemf_files[:5]}{'...' if len(threemf_files) > 5 else ''}"
-                        )
-                    for f in dir_files:
-                        if f.get("is_directory"):
-                            continue
-                        fname = f.get("name", "")
-                        # Normalize both for comparison (spaces and underscores are equivalent)
-                        fname_normalized = fname.lower().replace(" ", "_")
-                        search_normalized = search_term.replace(" ", "_")
-                        if fname.endswith(".3mf") and search_normalized in fname_normalized:
-                            logger.info("Found matching file in %s: %s", search_dir, fname)
-                            temp_path = app_settings.archive_dir / "temp" / fname
-                            temp_path.parent.mkdir(parents=True, exist_ok=True)
-                            if ftp_retry_enabled:
-                                downloaded = await with_ftp_retry(
-                                    download_file_async,
-                                    printer.ip_address,
-                                    printer.access_code,
-                                    f"{search_dir}/{fname}",
-                                    temp_path,
-                                    socket_timeout=ftp_timeout,
-                                    printer_model=printer.model,
-                                    max_retries=ftp_retry_count,
-                                    retry_delay=ftp_retry_delay,
-                                    operation_name=f"Download 3MF from {search_dir}/{fname}",
-                                )
-                            else:
-                                downloaded = await download_file_async(
-                                    printer.ip_address,
-                                    printer.access_code,
-                                    f"{search_dir}/{fname}",
-                                    temp_path,
-                                    socket_timeout=ftp_timeout,
-                                    printer_model=printer.model,
-                                )
-                            if downloaded:
-                                downloaded_filename = fname
-                                logger.info("Found and downloaded from %s: %s", search_dir, fname)
-                                break
-                except Exception as e:
-                    logger.debug("Failed to list %s: %s", search_dir, e)
+        temp_dir = app_settings.archive_dir / "temp"
+        download_result = await try_download_3mf(printer, subtask_name, filename, temp_dir)
+        if download_result:
+            temp_path, downloaded_filename = download_result
+        else:
+            temp_path = None
+            downloaded_filename = None
 
         if not downloaded_filename or not temp_path:
             logger.warning("Could not find 3MF file for print: %s", filename or subtask_name)
@@ -1877,7 +1734,15 @@ async def on_print_start(printer_id: int, data: dict):
                     print_name=print_name,
                     status="printing",
                     started_at=datetime.now(timezone.utc),
-                    extra_data={"no_3mf_available": True, "original_subtask": subtask_name, "_print_data": data},
+                    # Retry hooks recover from this state on:
+                    # (1) BamDude startup sweep, (2) printer reconnect,
+                    # (3) on_print_complete last-chance, (4) manual via API.
+                    # Purely on-demand — no periodic loop.
+                    extra_data={
+                        "no_3mf_available": True,
+                        "original_subtask": subtask_name,
+                        "_print_data": data,
+                    },
                 )
 
                 db.add(fallback_archive)
@@ -2484,6 +2349,36 @@ async def on_print_complete(printer_id: int, data: dict):
                     )
         except Exception as e:
             logger.debug("[SWAP] swap_compatible check failed (non-critical): %s", e)
+
+    # Last-chance 3MF download: if this print has a fallback archive
+    # (file_path="") and the print just finished, the file is still on
+    # SD right now and the printer is no longer busy writing to it — a
+    # good moment to try one more download before the cleanup step
+    # deletes or relocates it.
+    if archive_id:
+        try:
+            from backend.app.services.archive_download_retry import archive_download_retry
+
+            lc_status = await archive_download_retry.retry_archive(archive_id)
+            if lc_status == "recovered":
+                logger.info("[LAST-CHANCE] Recovered 3MF for archive %s", archive_id)
+            elif lc_status == "already_has_file":
+                logger.info("[LAST-CHANCE] Archive %s already has file — skipping", archive_id)
+            elif lc_status == "in_progress":
+                logger.info(
+                    "[LAST-CHANCE] Archive %s — another retry already in progress, letting it finish",
+                    archive_id,
+                )
+            else:
+                logger.info(
+                    "[LAST-CHANCE] Archive %s still without 3MF (status=%s); SD cleanup will run next. "
+                    "Manual retry available via POST /archives/%s/retry-download.",
+                    archive_id,
+                    lc_status,
+                    archive_id,
+                )
+        except Exception as e:
+            logger.warning("[LAST-CHANCE] Download attempt failed non-fatally: %s", e)
 
     # Post-print SD card cleanup (Issue #374)
     # Printers auto-start files from root on power cycle (ghost prints).
@@ -4041,6 +3936,14 @@ async def lifespan(app: FastAPI):
 
     # Start background dispatch worker for send/start operations
     await background_dispatch.start()
+
+    # Start the 3MF download retry service (fallback archives with file_path="").
+    # The startup sweep does sequential FTP calls (up to 60s each) and MUST NOT
+    # block lifespan — run it as a fire-and-forget task so uvicorn accepts
+    # requests immediately.
+    from backend.app.services.archive_download_retry import archive_download_retry
+
+    asyncio.create_task(archive_download_retry.start())
 
     # Start the smart plug scheduler for time-based on/off
     smart_plug_manager.start_scheduler()

@@ -1030,6 +1030,100 @@ class ArchiveService:
 
         return archive
 
+    async def attach_3mf_to_archive(
+        self,
+        archive_id: int,
+        source_file: Path,
+        original_filename: str | None = None,
+    ) -> bool:
+        """Fill in an empty/fallback archive with a 3MF that was recovered
+        later (e.g. by the background download-retry service).
+
+        Unlike :meth:`archive_print`, this updates an existing row in place
+        instead of inserting a new one.  Use case: ``on_print_start`` could
+        not download the 3MF at the time, so a fallback row was created
+        with ``file_path=""`` + ``extra_data["no_3mf_available"]=True``;
+        the retry service later manages to grab the file from SD.
+
+        Does NOT touch ``status``, ``started_at``, ``completed_at``,
+        ``project_id``, or ``created_by_id`` — those were set when the
+        archive was originally created.
+
+        Returns True on success, False on parse/copy failure.
+        """
+        result = await self.db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))
+        archive = result.scalar_one_or_none()
+        if archive is None:
+            return False
+
+        try:
+            content_hash = self.compute_file_hash(source_file)
+
+            printer_folder = str(archive.printer_id) if archive.printer_id is not None else "unassigned"
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            display_stem = Path(original_filename).stem if original_filename else source_file.stem
+            archive_dir = settings.archive_dir / printer_folder / f"{timestamp}_{display_stem}"
+            archive_dir.mkdir(parents=True, exist_ok=True)
+            # Prefer the clean original_filename (e.g. "Swapmod_STL.gcode.3mf")
+            # over the potentially-prefixed temp source_file name (e.g.
+            # "cover_1_Swapmod_STL.gcode.3mf" when it came from the cover
+            # endpoint's temp download).
+            dest_name = original_filename or source_file.name
+            dest_file = archive_dir / dest_name
+            shutil.copy2(source_file, dest_file)
+
+            # Parse 3MF metadata (reuse the same parser as archive_print).
+            parser = ThreeMFParser(dest_file)
+            metadata = parser.parse()
+
+            thumbnail_path = None
+            if "_thumbnail_data" in metadata:
+                thumb_file = archive_dir / f"thumbnail{metadata['_thumbnail_ext']}"
+                thumb_file.write_bytes(metadata["_thumbnail_data"])
+                thumbnail_path = str(thumb_file.relative_to(settings.base_dir))
+                del metadata["_thumbnail_data"]
+                del metadata["_thumbnail_ext"]
+
+            # Merge metadata into existing extra_data.  Preserve _print_data
+            # (set at fallback creation with the MQTT start payload) and
+            # drop the retry / no-3mf flags now that we have the file.
+            merged_extra = dict(archive.extra_data or {})
+            preserved_print_data = merged_extra.get("_print_data")
+            merged_extra.update(metadata)
+            if preserved_print_data is not None:
+                merged_extra["_print_data"] = preserved_print_data
+            merged_extra.pop("no_3mf_available", None)
+            merged_extra.pop("download_retry_count", None)
+            merged_extra.pop("download_next_retry", None)
+
+            archive.filename = original_filename or source_file.name
+            archive.file_path = str(dest_file.relative_to(settings.base_dir))
+            archive.file_size = dest_file.stat().st_size
+            archive.content_hash = content_hash
+            archive.thumbnail_path = thumbnail_path
+            archive.print_name = metadata.get("print_name") or display_stem
+            archive.print_time_seconds = metadata.get("print_time_seconds")
+            archive.filament_used_grams = metadata.get("filament_used_grams")
+            archive.filament_type = metadata.get("filament_type")
+            archive.filament_color = metadata.get("filament_color")
+            archive.layer_height = metadata.get("layer_height")
+            archive.total_layers = metadata.get("total_layers")
+            archive.nozzle_diameter = metadata.get("nozzle_diameter")
+            archive.bed_temperature = metadata.get("bed_temperature")
+            archive.nozzle_temperature = metadata.get("nozzle_temperature")
+            archive.sliced_for_model = metadata.get("sliced_for_model")
+            archive.makerworld_url = metadata.get("makerworld_url")
+            archive.designer = metadata.get("designer")
+            archive.extra_data = merged_extra
+
+            await self.db.commit()
+            await self.db.refresh(archive)
+            return True
+        except Exception as e:
+            logger.exception("attach_3mf_to_archive failed for archive %s: %s", archive_id, e)
+            await self.db.rollback()
+            return False
+
     async def get_archive(self, archive_id: int) -> PrintArchive | None:
         """Get an archive by ID with relationships loaded."""
         from sqlalchemy.orm import selectinload

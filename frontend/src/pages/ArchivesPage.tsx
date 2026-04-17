@@ -53,6 +53,7 @@ import {
   Zap,
   ArrowUpNarrowWide,
   ArrowDownWideNarrow,
+  DownloadCloud,
 } from 'lucide-react';
 import { api } from '../api/client';
 import { openInSlicer, type SlicerType } from '../utils/slicer';
@@ -217,6 +218,24 @@ function ArchiveCard({
   const isMultiPlate = platesData?.is_multi_plate ?? false;
   const displayPlateIndex = currentPlateIndex ?? 0;
 
+  const retryDownloadMutation = useMutation({
+    mutationFn: () => api.retryArchiveDownload(archive.id),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['archives'] });
+      if (data.status === 'recovered') {
+        showToast(t('archives.toast.downloadRecovered'));
+      } else if (data.status === 'in_progress') {
+        // Not an error — just another retry is already running.
+        showToast(t('archives.toast.downloadRetryInProgress'), 'info');
+      } else {
+        showToast(data.message || t('archives.toast.downloadRetryFailed'), 'error');
+      }
+    },
+    onError: (error: Error) => {
+      showToast(error.message || t('archives.toast.downloadRetryFailed'), 'error');
+    },
+  });
+
   const timelapseDeleteMutation = useMutation({
     mutationFn: () => api.deleteArchiveTimelapse(archive.id),
     onSuccess: () => {
@@ -362,6 +381,16 @@ function ArchiveCard({
   const isGcodeFile = isSlicedFile(archive);
 
   const contextMenuItems: ContextMenuItem[] = [
+    // Retry download — only shown for fallback archives (file_path empty).
+    // Hidden once the archive has a file.
+    ...(!archive.file_path ? [
+      {
+        label: t('archives.menu.retryDownload'),
+        icon: <DownloadCloud className="w-4 h-4" />,
+        onClick: () => retryDownloadMutation.mutate(),
+        disabled: retryDownloadMutation.isPending,
+      },
+    ] : []),
     // For gcode files: show Print option
     // For source files: show Slice as the primary action
     ...(isGcodeFile ? [

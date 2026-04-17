@@ -58,6 +58,7 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 
 ### Print Archive
 - Automatic 3MF archiving with metadata
+- **3MF download recovery** — when the printer's FTP fails during archive, recovery triggers fire on startup / printer reconnect / print-complete / manual button; per-archive lock prevents duplicate FTP sessions
 - 3D model preview (Three.js)
 - Duplicate detection & full-text search (source-hash chain-of-custody for patched files)
 - Photo attachments & failure analysis

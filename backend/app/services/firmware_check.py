@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
+from curl_cffi.requests import AsyncSession as CurlAsyncSession
 
 from backend.app.core.config import _data_dir
 
@@ -114,6 +115,13 @@ class FirmwareCheckService:
         self._build_id_time: float = 0
         self._version_cache: dict[str, FirmwareVersion] = {}
         self._cache_time: float = 0
+        # bambulab.com is behind Cloudflare with TLS fingerprint blocking:
+        # plain httpx → 403 (Cloudflare recognises Python's TLS handshake).
+        # curl_cffi impersonates a real Chrome TLS stack → 200.
+        # Used for the Next.js page + data endpoint.
+        self._cf_client = CurlAsyncSession(timeout=30, impersonate="chrome120")
+        # Wiki (wiki.bambulab.com) doesn't have the same block — plain httpx
+        # works fine and is lighter.
         self._client = httpx.AsyncClient(
             timeout=30.0,
             headers={
@@ -128,7 +136,7 @@ class FirmwareCheckService:
             return self._build_id
 
         try:
-            response = await self._client.get(f"{BAMBU_FIRMWARE_BASE}{FIRMWARE_PAGE}")
+            response = await self._cf_client.get(f"{BAMBU_FIRMWARE_BASE}{FIRMWARE_PAGE}")
             if response.status_code == 200:
                 # Extract buildId from the page
                 match = re.search(r'"buildId":"([^"]+)"', response.text)
@@ -168,33 +176,64 @@ class FirmwareCheckService:
         return None
 
     async def _fetch_from_download_page(self, api_key: str) -> FirmwareVersion | None:
-        """Fetch firmware info from Bambu Lab's download page (has download URLs)."""
-        build_id = await self._get_build_id()
-        if not build_id:
-            return None
+        """Fetch firmware info from Bambu Lab's download page (has download URLs).
 
-        try:
-            url = f"{BAMBU_FIRMWARE_BASE}/_next/data/{build_id}/en/support/firmware-download/{api_key}.json"
-            response = await self._client.get(url)
+        If the data endpoint returns non-200 (stale buildId → Cloudflare challenge
+        with 403, or 404 if the path changed), invalidate the cached buildId and
+        retry once.  Without this, a buildId that rolls over during our 1h cache
+        TTL leaves us stuck until the TTL expires — and the wiki fallback has
+        no download URL, so the UI reports "not yet available" even though the
+        file is listed on the public page.
+        """
+        for attempt in range(2):
+            build_id = await self._get_build_id()
+            if not build_id:
+                return None
 
-            if response.status_code == 200:
-                data = response.json()
-                page_props = data.get("pageProps", {})
-                printer_map = page_props.get("printerMap", {})
-                printer_data = printer_map.get(api_key, {})
-                versions = printer_data.get("versions", [])
+            try:
+                url = f"{BAMBU_FIRMWARE_BASE}/_next/data/{build_id}/en/support/firmware-download/{api_key}.json"
+                response = await self._cf_client.get(url)
 
-                if versions:
-                    latest = versions[0]
-                    return FirmwareVersion(
-                        version=latest.get("version", ""),
-                        download_url=latest.get("url", ""),
-                        release_notes=latest.get("release_notes_en"),
-                        release_time=latest.get("release_time"),
+                if response.status_code == 200:
+                    data = response.json()
+                    page_props = data.get("pageProps", {})
+                    printer_map = page_props.get("printerMap", {})
+                    printer_data = printer_map.get(api_key, {})
+                    versions = printer_data.get("versions", [])
+
+                    if versions:
+                        latest = versions[0]
+                        return FirmwareVersion(
+                            version=latest.get("version", ""),
+                            download_url=latest.get("url", ""),
+                            release_notes=latest.get("release_notes_en"),
+                            release_time=latest.get("release_time"),
+                        )
+                    return None
+
+                # Non-200 (commonly 403 behind Cloudflare when buildId is stale,
+                # or 404 when the path changes).  Invalidate the cached buildId
+                # and try once more with a fresh one.
+                if attempt == 0:
+                    logger.info(
+                        "Download-page data endpoint returned %s for %s — refreshing buildId and retrying",
+                        response.status_code,
+                        api_key,
                     )
-
-        except Exception as e:
-            logger.debug("Error fetching download page firmware for %s: %s", api_key, e)
+                    self._build_id = None
+                    self._build_id_time = 0
+                    continue
+                logger.debug(
+                    "Download-page data endpoint returned %s for %s after buildId refresh",
+                    response.status_code,
+                    api_key,
+                )
+            except Exception as e:
+                logger.debug("Error fetching download page firmware for %s (attempt %d): %s", api_key, attempt + 1, e)
+                if attempt == 0:
+                    self._build_id = None
+                    self._build_id_time = 0
+                    continue
 
         return None
 
@@ -432,8 +471,12 @@ class FirmwareCheckService:
             return None
 
     async def close(self):
-        """Close the HTTP client."""
+        """Close the HTTP clients."""
         await self._client.aclose()
+        try:
+            await self._cf_client.close()
+        except Exception:
+            pass
 
 
 # Singleton instance

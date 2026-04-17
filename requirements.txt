@@ -57,6 +57,9 @@ numpy>=1.24.0
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
 httpx>=0.26.0
+# Chrome/Firefox TLS impersonation — needed for bambulab.com firmware check
+# because Cloudflare blocks plain httpx via TLS fingerprinting.
+curl_cffi>=0.15.0
 ruff>=0.2.0
 
 pillow>=12.1.1

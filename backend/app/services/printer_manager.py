@@ -285,6 +285,18 @@ class PrinterManager:
 
         # Wait a moment for connection
         await asyncio.sleep(1)
+
+        # Trigger a one-shot 3MF download retry for any fallback archives
+        # on this printer — now that we're back online, the file may be
+        # reachable.
+        if client.state.connected:
+            try:
+                from backend.app.services.archive_download_retry import archive_download_retry
+
+                asyncio.create_task(archive_download_retry.retry_printer_archives(printer_id))
+            except Exception as e:
+                logger.debug("Failed to schedule 3MF retry on printer %s connect: %s", printer_id, e)
+
         return client.state.connected
 
     def disconnect_printer(self, printer_id: int, timeout: float = 0):

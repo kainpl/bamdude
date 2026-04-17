@@ -653,6 +653,9 @@ export default {
     toast: {
       source3mfAttached: 'Source 3MF attached: {{filename}}',
       failedUploadSource3mf: 'Failed to upload source 3MF',
+      downloadRecovered: '3MF downloaded from printer and attached',
+      downloadRetryFailed: 'Retry failed — printer FTP unreachable or file no longer on SD',
+      downloadRetryInProgress: 'Another retry is already running for this archive — please wait',
       source3mfRemoved: 'Source 3MF removed',
       failedRemoveSource3mf: 'Failed to remove source 3MF',
       f3dAttached: 'F3D attached: {{filename}}',
@@ -684,6 +687,7 @@ export default {
       exportFailed: 'Export failed',
     },
     menu: {
+      retryDownload: 'Retry 3MF download',
       print: 'Print',
       schedule: 'Schedule',
       openInBambuStudio: 'Open in Slicer',

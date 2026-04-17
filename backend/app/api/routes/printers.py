@@ -31,7 +31,6 @@ from backend.app.schemas.printer import (
 from backend.app.services.bambu_ftp import (
     delete_file_async,
     download_file_bytes_async,
-    download_file_try_paths_async,
     get_storage_info_async,
     list_files_async,
 )
@@ -726,6 +725,20 @@ async def get_printer_cover(
     # Note: No auth required - this is an image asset loaded via <img src> which can't send auth headers
     """Get the cover image for the current print job.
 
+    Serves the thumbnail from a local archive (DB-tracked).  Does NOT
+    initiate an FTP download from the printer — that would:
+    (a) race with the on_print_start download flow,
+    (b) race with the archive download-retry service,
+    (c) waste bandwidth re-pulling a 20-30 MB 3MF every time the UI
+        asks for a PNG thumbnail.
+
+    The 3MF file arrives via the print-start flow (archive_print copies
+    it to ``archive_dir`` and extracts ``thumbnail_path``).  While the
+    archive is still a fallback (``file_path=""``, no thumbnail) this
+    endpoint returns 404 and the UI shows a placeholder; once the
+    retry-download / reconnect / manual-retry flow fills the archive,
+    the next cover request succeeds.
+
     Args:
         view: Optional view type. Use "top" for top-down build plate view (useful for skip objects).
               Default returns angled 3D perspective view.
@@ -739,7 +752,6 @@ async def get_printer_cover(
     if not state:
         raise HTTPException(404, "Printer not connected")
 
-    # Use subtask_name as the 3MF filename (gcode_file is the path inside the 3MF)
     subtask_name = state.subtask_name
     if not subtask_name:
         raise HTTPException(404, f"No subtask_name in printer state (state={state.state})")
@@ -751,120 +763,65 @@ async def get_printer_cover(
         match = re.search(r"plate_(\d+)\.gcode", gcode_file)
         if match:
             plate_num = int(match.group(1))
-            logger.info("Detected plate number %s from gcode_file: %s", plate_num, gcode_file)
 
-    # Normalize view parameter
     view_key = view or "default"
 
-    # Check cache - include plate_num in cache key for multi-plate projects
+    # In-memory cache for PNG bytes — key includes (subtask, plate, view)
+    # so multi-plate prints don't poison across plates.
     if printer_id in _cover_cache:
         cache_key = (subtask_name, plate_num, view_key)
         if cache_key in _cover_cache[printer_id]:
             return Response(content=_cover_cache[printer_id][cache_key], media_type="image/png")
 
-    # Build possible 3MF filenames from subtask_name
-    # Bambu printers may store files as "name.gcode.3mf" (sliced via Bambu Studio)
-    # or just "name.3mf" (uploaded directly)
-    possible_filenames = []
-    if subtask_name.endswith(".3mf"):
-        possible_filenames.append(subtask_name)
-    else:
-        # Try both naming patterns
-        possible_filenames.append(f"{subtask_name}.gcode.3mf")
-        possible_filenames.append(f"{subtask_name}.3mf")
+    # Resolve the printing archive for this printer.  Match by print_name
+    # (== subtask_name) or filename variations.
+    from sqlalchemy import or_ as sa_or
 
-    # Also try with spaces converted to underscores (Bambu Studio may normalize filenames)
-    if " " in subtask_name:
-        normalized = subtask_name.replace(" ", "_")
-        if normalized.endswith(".3mf"):
-            possible_filenames.append(normalized)
-        else:
-            possible_filenames.append(f"{normalized}.gcode.3mf")
-            possible_filenames.append(f"{normalized}.3mf")
+    from backend.app.models.archive import PrintArchive
 
-    # Build list of all remote paths to try
-    remote_paths = []
-    for filename in possible_filenames:
-        remote_paths.extend(
-            [
-                f"/{filename}",  # Root directory (most common)
-                f"/cache/{filename}",
-                f"/model/{filename}",
-                f"/data/{filename}",
-            ]
-        )
-
-    # Use first filename for temp path (will be reused)
-    temp_filename = possible_filenames[0]
-    temp_path = settings.archive_dir / "temp" / f"cover_{printer_id}_{temp_filename}"
-    temp_path.parent.mkdir(parents=True, exist_ok=True)
-
-    logger.info(
-        f"Trying to download cover for '{subtask_name}' from {printer.ip_address} (trying {len(remote_paths)} paths)"
-    )
-
-    # Retry logic for transient FTP failures
-    max_retries = 2
-    last_error = None
-    downloaded = False
-
-    for attempt in range(max_retries + 1):
-        try:
-            downloaded = await download_file_try_paths_async(
-                printer.ip_address,
-                printer.access_code,
-                remote_paths,
-                temp_path,
-                printer_model=printer.model,
+    subtask_base = subtask_name.replace(".gcode.3mf", "").replace(".3mf", "")
+    archive_result = await db.execute(
+        select(PrintArchive)
+        .where(PrintArchive.printer_id == printer_id)
+        .where(PrintArchive.status == "printing")
+        .where(
+            sa_or(
+                PrintArchive.print_name == subtask_base,
+                PrintArchive.filename == f"{subtask_base}.gcode.3mf",
+                PrintArchive.filename == f"{subtask_base}.3mf",
+                PrintArchive.filename == subtask_name,
             )
-            if downloaded:
-                break
-        except Exception as e:
-            last_error = e
-            if attempt < max_retries:
-                logger.warning("FTP download attempt %s failed: %s, retrying...", attempt + 1, e)
-                await asyncio.sleep(0.5 * (attempt + 1))  # Brief backoff
-            else:
-                logger.error("FTP download failed after %s attempts: %s", max_retries + 1, e)
-
-    if last_error and not downloaded:
-        raise HTTPException(503, f"FTP download temporarily unavailable: {last_error}")
-
-    if not downloaded:
-        raise HTTPException(
-            404,
-            f"Could not download 3MF file for '{subtask_name}' from printer {printer.ip_address}. Tried: {possible_filenames}",
         )
+        .order_by(PrintArchive.created_at.desc())
+        .limit(1)
+    )
+    archive = archive_result.scalar_one_or_none()
+    if archive is None or not archive.file_path:
+        # Fallback archive with empty file_path, or no archive yet — UI will
+        # fall back to a placeholder.  No FTP initiated here.
+        raise HTTPException(404, f"No archive with a local 3MF yet for '{subtask_base}' on printer {printer_id}")
 
-    # Verify file actually exists and has content
-    if not temp_path.exists():
-        raise HTTPException(500, f"Download reported success but file not found: {temp_path}")
+    # 1. If the archive already has an extracted thumbnail PNG — serve it directly.
+    if archive.thumbnail_path and view != "top":
+        thumb_path = settings.base_dir / archive.thumbnail_path
+        if thumb_path.exists():
+            image_data = thumb_path.read_bytes()
+            if printer_id not in _cover_cache:
+                _cover_cache[printer_id] = {}
+            _cover_cache[printer_id][(subtask_name, plate_num, view_key)] = image_data
+            return Response(content=image_data, media_type="image/png")
 
-    file_size = temp_path.stat().st_size
-    logger.info("Downloaded file size: %s bytes", file_size)
-
-    if file_size == 0:
-        temp_path.unlink()
-        raise HTTPException(500, f"Downloaded file is empty for '{subtask_name}'")
+    # 2. Otherwise open the 3MF from archive_dir and extract the thumbnail
+    #    for the requested plate + view.
+    local_3mf = settings.base_dir / archive.file_path
+    if not local_3mf.exists():
+        raise HTTPException(404, f"Archive file missing on disk: {archive.file_path}")
 
     try:
-        # Extract thumbnail from 3MF (which is a ZIP file)
-        try:
-            zf = zipfile.ZipFile(temp_path, "r")
-        except zipfile.BadZipFile:
-            raise HTTPException(500, "Downloaded file is not a valid 3MF/ZIP archive")
-        except OSError as e:
-            logger.error("Failed to open 3MF file: %s", e, exc_info=True)
-            raise HTTPException(500, "Failed to open 3MF file. Check server logs for details.")
-
-        try:
-            # Try common thumbnail paths in 3MF files
-            # Use plate_num to get the correct plate's thumbnail for multi-plate projects
-            # Use top-down view if requested (better for skip objects modal)
+        with zipfile.ZipFile(local_3mf, "r") as zf:
             if view == "top":
                 thumbnail_paths = [
                     f"Metadata/top_{plate_num}.png",
-                    # Fall back to plate 1 if specific plate not found
                     "Metadata/top_1.png",
                     f"Metadata/plate_{plate_num}.png",
                     "Metadata/plate_1.png",
@@ -873,7 +830,6 @@ async def get_printer_cover(
             else:
                 thumbnail_paths = [
                     f"Metadata/plate_{plate_num}.png",
-                    # Fall back to plate 1 if specific plate not found
                     "Metadata/plate_1.png",
                     "Metadata/thumbnail.png",
                     f"Metadata/plate_{plate_num}_small.png",
@@ -885,7 +841,6 @@ async def get_printer_cover(
             for thumb_path in thumbnail_paths:
                 try:
                     image_data = zf.read(thumb_path)
-                    # Cache the result - include plate_num in cache key
                     if printer_id not in _cover_cache:
                         _cover_cache[printer_id] = {}
                     _cover_cache[printer_id][(subtask_name, plate_num, view_key)] = image_data
@@ -893,7 +848,7 @@ async def get_printer_cover(
                 except KeyError:
                     continue
 
-            # If no specific thumbnail found, try any PNG in Metadata
+            # Last-resort: any PNG under Metadata/
             for name in zf.namelist():
                 if name.startswith("Metadata/") and name.endswith(".png"):
                     image_data = zf.read(name)
@@ -902,16 +857,13 @@ async def get_printer_cover(
                     _cover_cache[printer_id][(subtask_name, plate_num, view_key)] = image_data
                     return Response(content=image_data, media_type="image/png")
 
-            raise HTTPException(404, "No thumbnail found in 3MF file")
-        finally:
-            zf.close()
+    except zipfile.BadZipFile:
+        raise HTTPException(500, "Archive 3MF file is not a valid ZIP")
+    except OSError as e:
+        logger.error("Failed to open archive 3MF %s: %s", local_3mf, e)
+        raise HTTPException(500, "Failed to read archive 3MF")
 
-    finally:
-        try:
-            if temp_path.exists():
-                temp_path.unlink()
-        except OSError:
-            pass  # File may still be in use on Windows
+    raise HTTPException(404, f"No thumbnail found in archive 3MF for plate {plate_num}")
 
 
 # ============================================

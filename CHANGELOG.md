@@ -8,6 +8,48 @@ All notable changes to BamDude will be documented in this file.
 
 ## [0.3.1.1] - 2026-04-17
 
+### 3MF Download Recovery Service
+
+When ``on_print_start`` can't pull the 3MF from the printer's SD (flaky FTP, path mismatch, slow card, TLS hiccup) a fallback archive is created with ``file_path=""``.  Four on-demand recovery triggers fill it in later — no periodic polling, so short prints aren't affected.
+
+- **Triggers**:
+  1. **BamDude startup sweep** — one-shot pass over every ``status='printing' AND file_path=''`` archive on server start (runs as `asyncio.create_task` so lifespan doesn't block the API).
+  2. **Printer reconnect** — `PrinterManager.connect_printer` fires `retry_printer_archives(printer_id)` after a successful connection.
+  3. **`on_print_complete` last-chance** — right after the swap-macro block, before SD cleanup runs, we try one more download.  The file is still on SD and the printer is no longer busy writing — highest-probability success window.
+  4. **Manual** — new `POST /api/v1/archives/{id}/retry-download` endpoint.  Frontend exposes a "Retry 3MF download" menu item on archive cards, visible only when `file_path` is empty.
+- **Per-archive lock with skip semantics** — concurrent calls (e.g. UI button click while startup sweep is running) immediately return `"in_progress"` with an info-level toast instead of duplicate FTP sessions.  Five distinct return statuses (`recovered`, `already_has_file`, `in_progress`, `failed`, `error`) mapped to clean UX messages in EN+UK.
+- **`ArchiveService.attach_3mf_to_archive(archive_id, source_file, original_filename)`** — updates an existing row in place: copies the file to a fresh archive dir, parses 3MF via `ThreeMFParser`, extracts thumbnail, fills `content_hash`, `thumbnail_path`, `print_name`, all filament/plate metadata fields, clears `no_3mf_available` and any retry metadata.  Uses `original_filename` for dest naming so the file isn't left as `cover_1_*` or similar temp-prefixed.
+
+### FTP Download Hardening
+
+Root cause of recurring retry failures: `download_file_async` wraps the transfer in `asyncio.wait_for(timeout=60.0)`, which killed in-flight 28 MB downloads from slow SD cards even when the printer was still sending bytes.
+
+- **`archive_download.try_download_3mf` rewritten** to use `download_file_try_paths_async` — one FTP session, multi-path probe, no outer asyncio timeout (same code path the cover endpoint uses reliably).  Socket-level timeout from the `ftp_timeout` DB setting still applies.
+- **Stage 1 remote-path order**: root (`/{filename}`) pulled to the front of the list (was last).  BamDude-dispatched prints upload to root, so the fallback flow now hits the right path on its first try instead of 4 timeouts on `/cache`, `/model`, `/data`, `/data/Metadata` before finding it.
+- **Stage 2 fuzzy-match** also converted to single-session `download_file_try_paths_async`.
+
+### Cover Endpoint — No FTP
+
+`GET /printers/{id}/cover` previously downloaded the full 3MF (up to 30 MB) from the printer every time the UI asked for a thumbnail PNG.  This raced with the archive download-retry service (both pulling the same file via separate FTP sessions) and wasted bandwidth on repeat renders.
+
+- **Rewritten to serve from local archive only**: resolve the printing `PrintArchive` for this printer + subtask, serve `archive.thumbnail_path` directly if available, else open the already-archived 3MF from `archive_dir` and extract the needed plate's PNG.
+- **Returns 404** if no archive with a local 3MF exists yet — the UI falls back to a placeholder.  Once the retry service fills the archive (via any trigger), the next cover request succeeds.
+- **Removed** `download_file_try_paths_async` import, temp-file lifecycle, `_cover_cache` still used for PNG-byte caching but keyed on `(subtask, plate, view)`.
+
+### `on_print_start` Download Refactor
+
+- Extracted the inline probe + fuzzy-search block (~115 lines) from `on_print_start` into shared `services/archive_download.py::try_download_3mf`.  Both the initial download and the background retry service call the same helper — previously they had divergent behaviour.
+- Removed the 2-tier retry wrapper around each remote_path; the new single-session approach is faster AND more reliable.
+
+### Firmware Check — Cloudflare TLS Bypass
+
+Bambu Lab moved behind a Cloudflare tier that blocks plain httpx via TLS fingerprinting (JA3): httpx's Python SSL handshake differs from real Chrome, so `GET /en/support/firmware-download/all` returned 403 regardless of `User-Agent`.  Our buildId parse silently failed, fell back to wiki (which has no download URL), and the UI reported "Firmware download not yet available" for P1 etc. even when the file was listed on the public page.
+
+- **Added `curl_cffi>=0.15.0`** as a dependency.  `curl_cffi` wraps libcurl with Chrome/Firefox TLS stack impersonation (`impersonate="chrome120"`).
+- **Dual-client architecture**: `self._cf_client = CurlAsyncSession(impersonate="chrome120")` for `bambulab.com` (page + data endpoint), `self._client = httpx.AsyncClient(...)` kept for wiki + firmware CDN (`public-cdn.bblmw.com`) — those aren't blocked.
+- **buildId self-heal**: on non-200 from the data endpoint (stale buildId, page layout change), `_fetch_from_download_page` invalidates the cached buildId and retries once with a freshly-fetched one.
+- **Result**: P1S check now returns `update_available=true, latest=01.10.00.00, download_url=https://public-cdn.bblmw.com/.../offline-ota-p003_v01.10.00.00-*.zip` as expected; UI shows the download button with the real URL.
+
 ### Swap-Mode Macro Auto-Execution
 
 Swap macros now fire automatically during the dispatch/queue print flow — no manual execution needed.

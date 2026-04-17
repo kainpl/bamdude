@@ -3295,6 +3295,12 @@ export const api = {
         used_meters: number;
       }>;
     }>(`/archives/${archiveId}/filament-requirements${plateId !== undefined ? `?plate_id=${plateId}` : ''}`),
+  retryArchiveDownload: (archiveId: number) =>
+    request<{
+      status: 'recovered' | 'already_has_file' | 'in_progress' | 'failed' | 'error';
+      recovered: boolean;
+      message: string;
+    }>(`/archives/${archiveId}/retry-download`, { method: 'POST' }),
   reprintArchive: (
     archiveId: number,
     printerId: number,
