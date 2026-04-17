@@ -58,7 +58,15 @@ export function TimelineItem({
   if (batchTotal > 1) tooltipLines.push(`${t('queue.timeline.batchGroupOf', { count: batchTotal })} · ${batchIndex + 1}/${batchTotal}`);
 
   const clampedWidth = Math.max(6, width);
-  const showLabel = clampedWidth >= 60;
+  // Slots that began before the visible window render with negative `left`.
+  // Without compensation, the label sits off-screen at the slot's hard-left
+  // edge.  Shifting the label right by the off-screen amount keeps the
+  // filename visible near the window-left edge; the label still truncates
+  // against the slot's right edge so it can't escape the slot bounds.
+  const hiddenLeft = Math.max(0, -left);
+  const labelOffset = hiddenLeft + 10; // 10px default gutter after the colour stripe
+  const labelWidth = clampedWidth - labelOffset - 4; // 4px right gutter
+  const showLabel = labelWidth >= 60;
 
   return (
     <button
@@ -78,7 +86,10 @@ export function TimelineItem({
       )}
 
       {showLabel && (
-        <div className="flex items-center gap-1 px-2 h-full pl-3 min-w-0">
+        <div
+          className="absolute top-0 bottom-0 flex items-center gap-1 min-w-0"
+          style={{ left: labelOffset, width: labelWidth }}
+        >
           {estimated && <HelpCircle className="w-3 h-3 text-bambu-gray shrink-0" />}
           {item.manual_start && <Hand className="w-3 h-3 text-yellow-400 shrink-0" />}
           {item.waiting_reason && <AlertTriangle className="w-3 h-3 text-yellow-400 shrink-0" />}

@@ -101,6 +101,7 @@ async def get_settings(
                 "ambient_drying_enabled",
                 "stagger_enabled",
                 "stagger_wait_for_bed",
+                "stagger_strict_for_direct_dispatch",
                 "ldap_enabled",
                 "ldap_auto_provision",
             ]:

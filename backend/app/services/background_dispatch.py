@@ -714,6 +714,29 @@ class BackgroundDispatchService:
 
                 self._raise_if_cancel_requested(job)
 
+                # Strict stagger check (optional, off by default): if enabled,
+                # refuse to start if no free slot, so Print Now respects the
+                # grid-load cap just like queue-driven dispatches.
+                try:
+                    from backend.app.api.routes.settings import get_setting
+                    from backend.app.services.print_scheduler import scheduler as print_scheduler
+
+                    async with async_session() as _sdb:
+                        _strict_raw = await get_setting(_sdb, "stagger_strict_for_direct_dispatch")
+                        _stagger_enabled, _stagger_concurrent, _, _ = await print_scheduler._get_stagger_settings(_sdb)
+                    if (
+                        _stagger_enabled
+                        and (_strict_raw or "false").lower() == "true"
+                        and not print_scheduler._can_start_staggered(_stagger_concurrent)
+                    ):
+                        raise RuntimeError(
+                            "Stagger cap reached — wait for a free slot or disable stagger_strict_for_direct_dispatch"
+                        )
+                except RuntimeError:
+                    raise
+                except Exception as _e:
+                    logger.debug("Strict stagger check failed (non-fatal): %s", _e)
+
                 # Swap-mode start macro — fires before the print starts.
                 await self._run_swap_macro_if_needed(
                     job, printer, "swap_mode_start", f"Running swap start macro on {printer_name}..."
@@ -749,6 +772,19 @@ class BackgroundDispatchService:
                 from backend.app.main import register_swap_config
 
                 register_swap_config(job.printer_id, job.options if isinstance(job.options, dict) else {})
+
+                # Register stagger slot so subsequent queue-driven
+                # dispatches respect the grid-load cap.  Uses system-wide
+                # default interval; per-printer override is queue-only.
+                try:
+                    from backend.app.services.print_scheduler import scheduler as print_scheduler
+
+                    async with async_session() as _sdb:
+                        _stagger_enabled, _, _stagger_interval, _ = await print_scheduler._get_stagger_settings(_sdb)
+                    if _stagger_enabled:
+                        print_scheduler._register_stagger_start(job.printer_id, _stagger_interval)
+                except Exception as _e:
+                    logger.debug("Stagger registration for direct dispatch failed: %s", _e)
 
                 if job.requested_by_user_id and job.requested_by_username:
                     printer_manager.set_current_print_user(
@@ -995,6 +1031,29 @@ class BackgroundDispatchService:
 
                 self._raise_if_cancel_requested(job)
 
+                # Strict stagger check (optional, off by default): if enabled,
+                # refuse to start if no free slot, so Print Now respects the
+                # grid-load cap just like queue-driven dispatches.
+                try:
+                    from backend.app.api.routes.settings import get_setting
+                    from backend.app.services.print_scheduler import scheduler as print_scheduler
+
+                    async with async_session() as _sdb:
+                        _strict_raw = await get_setting(_sdb, "stagger_strict_for_direct_dispatch")
+                        _stagger_enabled, _stagger_concurrent, _, _ = await print_scheduler._get_stagger_settings(_sdb)
+                    if (
+                        _stagger_enabled
+                        and (_strict_raw or "false").lower() == "true"
+                        and not print_scheduler._can_start_staggered(_stagger_concurrent)
+                    ):
+                        raise RuntimeError(
+                            "Stagger cap reached — wait for a free slot or disable stagger_strict_for_direct_dispatch"
+                        )
+                except RuntimeError:
+                    raise
+                except Exception as _e:
+                    logger.debug("Strict stagger check failed (non-fatal): %s", _e)
+
                 # Swap-mode start macro — fires before the print starts.
                 await self._run_swap_macro_if_needed(
                     job, printer, "swap_mode_start", f"Running swap start macro on {printer_name}..."
@@ -1027,6 +1086,19 @@ class BackgroundDispatchService:
                 from backend.app.main import register_swap_config
 
                 register_swap_config(job.printer_id, job.options if isinstance(job.options, dict) else {})
+
+                # Register stagger slot so subsequent queue-driven
+                # dispatches respect the grid-load cap.  Uses system-wide
+                # default interval; per-printer override is queue-only.
+                try:
+                    from backend.app.services.print_scheduler import scheduler as print_scheduler
+
+                    async with async_session() as _sdb:
+                        _stagger_enabled, _, _stagger_interval, _ = await print_scheduler._get_stagger_settings(_sdb)
+                    if _stagger_enabled:
+                        print_scheduler._register_stagger_start(job.printer_id, _stagger_interval)
+                except Exception as _e:
+                    logger.debug("Stagger registration for direct dispatch failed: %s", _e)
 
                 pre_state = getattr(printer_manager.get_status(job.printer_id), "state", None)
                 if pre_state:

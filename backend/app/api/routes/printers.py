@@ -780,10 +780,14 @@ async def get_printer_cover(
     from backend.app.models.archive import PrintArchive
 
     subtask_base = subtask_name.replace(".gcode.3mf", "").replace(".3mf", "")
+    # No status filter: the printer state can be FINISH (archive already
+    # flipped to "completed") while the UI still asks for the cover.  Also
+    # require a non-empty file_path so a fallback row (3MF pending) doesn't
+    # shadow an older populated archive with the same name.
     archive_result = await db.execute(
         select(PrintArchive)
         .where(PrintArchive.printer_id == printer_id)
-        .where(PrintArchive.status == "printing")
+        .where(PrintArchive.file_path != "")
         .where(
             sa_or(
                 PrintArchive.print_name == subtask_base,
@@ -796,9 +800,7 @@ async def get_printer_cover(
         .limit(1)
     )
     archive = archive_result.scalar_one_or_none()
-    if archive is None or not archive.file_path:
-        # Fallback archive with empty file_path, or no archive yet — UI will
-        # fall back to a placeholder.  No FTP initiated here.
+    if archive is None:
         raise HTTPException(404, f"No archive with a local 3MF yet for '{subtask_base}' on printer {printer_id}")
 
     # 1. If the archive already has an extracted thumbnail PNG — serve it directly.

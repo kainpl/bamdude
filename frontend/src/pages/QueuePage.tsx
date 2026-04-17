@@ -7,6 +7,7 @@ import { api } from '../api/client';
 import type { PrinterQueue, PrintQueueItem } from '../api/client';
 import { QueueCard } from '../components/QueueCard';
 import { QueueStatsBar } from '../components/Queue/QueueStatsBar';
+import { StaggerBanner } from '../components/Queue/StaggerBanner';
 import { QueueTimelineView } from '../components/Queue/QueueTimelineView';
 import { PrintModal } from '../components/PrintModal';
 
@@ -65,6 +66,21 @@ export function QueuePage() {
     queryFn: () => api.getQueue(undefined, 'pending'),
     refetchInterval: 30000,
   });
+
+  // Fetch all printing items (real + virtual external/direct) so Timeline
+  // can lay out the "now" slot even for prints initiated outside BamDude.
+  const { data: allPrintingItems } = useQuery({
+    queryKey: ['queue', 'all', 'printing'],
+    queryFn: () => api.getQueue(undefined, 'printing'),
+    refetchInterval: 10000,
+  });
+
+  // Combined list for Timeline — pending + printing.  Printing items (real
+  // + virtual) anchor each lane's "currently running" slot.
+  const allTimelineItems = useMemo(
+    () => [...(allPrintingItems ?? []), ...(allPendingItems ?? [])],
+    [allPrintingItems, allPendingItems],
+  );
 
   // Sync URL query param with viewMode so it survives reload + can be shared.
   useEffect(() => {
@@ -166,9 +182,9 @@ export function QueuePage() {
   }, [sortBy, sortedQueues, t]);
 
   const renderGrid = (items: PrinterQueue[]) => (
-    <div className={`grid gap-4 ${getGridClasses()}`}>
+    <div className={`grid gap-4 items-start ${getGridClasses()}`}>
       {items.map((queue) => (
-        <QueueCard key={queue.id} queue={queue} compact={viewMode === 'compact'} />
+        <QueueCard key={queue.id} queue={queue} compact={viewMode === 'compact'} onEditItem={setEditingItem} />
       ))}
     </div>
   );
@@ -309,6 +325,9 @@ export function QueuePage() {
         <QueueStatsBar queues={queues} pendingItems={allPendingItems} />
       )}
 
+      {/* Electrical-load diagnostic banner (stagger). Hidden when stagger is disabled. */}
+      <StaggerBanner />
+
       {/* Loading */}
       {isLoading && (
         <div className="flex justify-center items-center py-20">
@@ -357,46 +376,78 @@ export function QueuePage() {
       {!isLoading && queues && queues.length > 0 && viewMode === 'timeline' && sortedQueues.length > 0 && (
         <QueueTimelineView
           queues={sortedQueues}
-          items={allPendingItems}
+          items={allTimelineItems}
           onEditItem={setEditingItem}
         />
       )}
 
-      {/* All view - flat list of all pending items */}
+      {/* All view - flat list: active prints first (real + virtual
+          external/direct), then pending items numbered #1, #2, … */}
       {!isLoading && viewMode === 'all' && (
         <div className="space-y-2">
-          {(!allPendingItems || allPendingItems.length === 0) ? (
+          {((allPrintingItems?.length ?? 0) === 0 && (allPendingItems?.length ?? 0) === 0) ? (
             <div className="text-center py-12">
               <p className="text-bambu-gray">{t('queueCard.noPending')}</p>
             </div>
           ) : (
-            allPendingItems.map((item) => {
-              const queueInfo = queues?.find(q => q.id === item.queue_id);
-              return (
-                <div
-                  key={item.id}
-                  className="flex items-center gap-3 p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary"
-                >
-                  <span className="text-xs text-bambu-gray w-6 text-center shrink-0">#{item.position}</span>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm text-white truncate">
-                      {item.archive_name || item.library_file_name || `#${item.id}`}
-                    </p>
-                    <p className="text-xs text-bambu-gray truncate">
-                      {queueInfo?.printer_name || `Queue ${item.queue_id}`}
-                      {item.waiting_reason && (
-                        <span className="ml-2 text-yellow-400">· {item.waiting_reason}</span>
-                      )}
-                    </p>
-                  </div>
-                  {item.manual_start && (
-                    <span className="text-xs px-1.5 py-0.5 bg-yellow-400/20 text-yellow-400 rounded shrink-0">
-                      {t('queueCard.manualStart')}
+            <>
+              {(allPrintingItems ?? []).map((item) => {
+                const queueInfo = queues?.find(q => q.id === item.queue_id);
+                return (
+                  <div
+                    key={`printing-${item.id}`}
+                    className="flex items-center gap-3 p-3 bg-blue-500/5 rounded-lg border border-blue-400/30"
+                  >
+                    <span className="w-6 shrink-0 flex items-center justify-center">
+                      <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
                     </span>
-                  )}
-                </div>
-              );
-            })
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm text-white truncate">
+                        {item.archive_name || item.library_file_name || `#${item.id}`}
+                      </p>
+                      <p className="text-xs text-bambu-gray truncate">
+                        {queueInfo?.printer_name || `Queue ${item.queue_id}`}
+                        {item.source && item.source !== 'bamdude_queue' && (
+                          <span className="ml-2 text-amber-400">
+                            · {t(`queue.source.${item.source}`)}
+                          </span>
+                        )}
+                      </p>
+                    </div>
+                    <span className="text-xs px-1.5 py-0.5 bg-blue-400/20 text-blue-400 rounded shrink-0">
+                      {t('queueCard.status.printing')}
+                    </span>
+                  </div>
+                );
+              })}
+              {(allPendingItems ?? []).map((item, idx) => {
+                const queueInfo = queues?.find(q => q.id === item.queue_id);
+                return (
+                  <div
+                    key={item.id}
+                    className="flex items-center gap-3 p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary"
+                  >
+                    <span className="text-xs text-bambu-gray w-6 text-center shrink-0">#{idx + 1}</span>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm text-white truncate">
+                        {item.archive_name || item.library_file_name || `#${item.id}`}
+                      </p>
+                      <p className="text-xs text-bambu-gray truncate">
+                        {queueInfo?.printer_name || `Queue ${item.queue_id}`}
+                        {item.waiting_reason && (
+                          <span className="ml-2 text-yellow-400">· {item.waiting_reason}</span>
+                        )}
+                      </p>
+                    </div>
+                    {item.manual_start && (
+                      <span className="text-xs px-1.5 py-0.5 bg-yellow-400/20 text-yellow-400 rounded shrink-0">
+                        {t('queueCard.manualStart')}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </>
           )}
         </div>
       )}

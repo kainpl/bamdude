@@ -593,25 +593,27 @@ class GitBackupService:
 
         spools_data = []
         for s in spools:
-            spools_data.append({
-                "id": s.id,
-                "material": s.material,
-                "subtype": s.subtype,
-                "color_name": s.color_name,
-                "rgba": s.rgba,
-                "brand": s.brand,
-                "label_weight": s.label_weight,
-                "weight_used": s.weight_used,
-                "slicer_filament": s.slicer_filament,
-                "slicer_filament_name": s.slicer_filament_name,
-                "nozzle_temp_min": s.nozzle_temp_min,
-                "nozzle_temp_max": s.nozzle_temp_max,
-                "cost_per_kg": s.cost_per_kg,
-                "note": s.note,
-                "tag_uid": s.tag_uid,
-                "tray_uuid": s.tray_uuid,
-                "created_at": s.created_at.isoformat() if s.created_at else None,
-            })
+            spools_data.append(
+                {
+                    "id": s.id,
+                    "material": s.material,
+                    "subtype": s.subtype,
+                    "color_name": s.color_name,
+                    "rgba": s.rgba,
+                    "brand": s.brand,
+                    "label_weight": s.label_weight,
+                    "weight_used": s.weight_used,
+                    "slicer_filament": s.slicer_filament,
+                    "slicer_filament_name": s.slicer_filament_name,
+                    "nozzle_temp_min": s.nozzle_temp_min,
+                    "nozzle_temp_max": s.nozzle_temp_max,
+                    "cost_per_kg": s.cost_per_kg,
+                    "note": s.note,
+                    "tag_uid": s.tag_uid,
+                    "tray_uuid": s.tray_uuid,
+                    "created_at": s.created_at.isoformat() if s.created_at else None,
+                }
+            )
 
         files["spools/inventory.json"] = {
             "version": "1.0",
@@ -620,24 +622,24 @@ class GitBackupService:
         }
 
         # Usage history (last 500 entries)
-        result = await db.execute(
-            select(SpoolUsageHistory).order_by(desc(SpoolUsageHistory.created_at)).limit(500)
-        )
+        result = await db.execute(select(SpoolUsageHistory).order_by(desc(SpoolUsageHistory.created_at)).limit(500))
         history = result.scalars().all()
 
         history_data = []
         for h in history:
-            history_data.append({
-                "id": h.id,
-                "spool_id": h.spool_id,
-                "printer_id": h.printer_id,
-                "print_name": h.print_name,
-                "weight_used": h.weight_used,
-                "percent_used": h.percent_used,
-                "status": h.status,
-                "cost": h.cost,
-                "created_at": h.created_at.isoformat() if h.created_at else None,
-            })
+            history_data.append(
+                {
+                    "id": h.id,
+                    "spool_id": h.spool_id,
+                    "printer_id": h.printer_id,
+                    "print_name": h.print_name,
+                    "weight_used": h.weight_used,
+                    "percent_used": h.percent_used,
+                    "status": h.status,
+                    "cost": h.cost,
+                    "created_at": h.created_at.isoformat() if h.created_at else None,
+                }
+            )
 
         files["spools/usage_history.json"] = {
             "version": "1.0",
@@ -656,34 +658,36 @@ class GitBackupService:
 
         archives_data = []
         for a in archives:
-            archives_data.append({
-                "id": a.id,
-                "printer_id": a.printer_id,
-                "filename": a.filename,
-                "file_size": a.file_size,
-                "print_name": a.print_name,
-                "print_time_seconds": a.print_time_seconds,
-                "filament_used_grams": a.filament_used_grams,
-                "filament_type": a.filament_type,
-                "filament_color": a.filament_color,
-                "layer_height": a.layer_height,
-                "total_layers": a.total_layers,
-                "nozzle_diameter": a.nozzle_diameter,
-                "sliced_for_model": a.sliced_for_model,
-                "status": a.status,
-                "started_at": a.started_at.isoformat() if a.started_at else None,
-                "completed_at": a.completed_at.isoformat() if a.completed_at else None,
-                "makerworld_url": a.makerworld_url,
-                "designer": a.designer,
-                "is_favorite": a.is_favorite,
-                "tags": a.tags,
-                "notes": a.notes,
-                "cost": a.cost,
-                "energy_kwh": a.energy_kwh,
-                "energy_cost": a.energy_cost,
-                "quantity": a.quantity,
-                "created_at": a.created_at.isoformat() if a.created_at else None,
-            })
+            archives_data.append(
+                {
+                    "id": a.id,
+                    "printer_id": a.printer_id,
+                    "filename": a.filename,
+                    "file_size": a.file_size,
+                    "print_name": a.print_name,
+                    "print_time_seconds": a.print_time_seconds,
+                    "filament_used_grams": a.filament_used_grams,
+                    "filament_type": a.filament_type,
+                    "filament_color": a.filament_color,
+                    "layer_height": a.layer_height,
+                    "total_layers": a.total_layers,
+                    "nozzle_diameter": a.nozzle_diameter,
+                    "sliced_for_model": a.sliced_for_model,
+                    "status": a.status,
+                    "started_at": a.started_at.isoformat() if a.started_at else None,
+                    "completed_at": a.completed_at.isoformat() if a.completed_at else None,
+                    "makerworld_url": a.makerworld_url,
+                    "designer": a.designer,
+                    "is_favorite": a.is_favorite,
+                    "tags": a.tags,
+                    "notes": a.notes,
+                    "cost": a.cost,
+                    "energy_kwh": a.energy_kwh,
+                    "energy_cost": a.energy_cost,
+                    "quantity": a.quantity,
+                    "created_at": a.created_at.isoformat() if a.created_at else None,
+                }
+            )
 
         files["archives/print_archives.json"] = {
             "version": "1.0",
@@ -901,12 +905,14 @@ class GitBackupService:
                 content_str = json.dumps(content, indent=2, default=str)
                 content_b64 = base64.b64encode(content_str.encode("utf-8")).decode()
                 action = "update" if path in existing_paths else "create"
-                actions.append({
-                    "action": action,
-                    "file_path": path,
-                    "content": content_b64,
-                    "encoding": "base64",
-                })
+                actions.append(
+                    {
+                        "action": action,
+                        "file_path": path,
+                        "content": content_b64,
+                        "encoding": "base64",
+                    }
+                )
 
             if not actions:
                 return {"status": "skipped", "message": "No changes to commit", "commit_sha": None, "files_changed": 0}
@@ -990,16 +996,16 @@ class GitBackupService:
             for path, content in all_files:
                 content_str = json.dumps(content, indent=2, default=str)
                 content_b64 = base64.b64encode(content_str.encode("utf-8")).decode()
-                actions.append({
-                    "action": "create",
-                    "file_path": path,
-                    "content": content_b64,
-                    "encoding": "base64",
-                })
+                actions.append(
+                    {
+                        "action": "create",
+                        "file_path": path,
+                        "content": content_b64,
+                        "encoding": "base64",
+                    }
+                )
 
-            commit_message = (
-                f"Initial BamDude backup - {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
-            )
+            commit_message = f"Initial BamDude backup - {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
 
             # For an empty repo, just commit to the branch directly - GitLab handles this
             commit_response = await client.post(

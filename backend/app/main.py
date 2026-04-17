@@ -427,6 +427,62 @@ def register_swap_config(printer_id: int, options: dict):
         logging.getLogger(__name__).info("[SWAP] Registered swap config for printer %s: events=%s", printer_id, events)
 
 
+async def maybe_register_external_stagger(printer_id: int) -> None:
+    """If stagger is enabled and this printer just started heating from
+    cold, take a stagger slot so the grid-load cap is respected by any
+    subsequent queue dispatches.
+
+    Skips registration when bed is already at target — the print was
+    started long ago (BamDude restart during active print) and the
+    heating spike is already behind us.
+    """
+    try:
+        state = printer_manager.get_status(printer_id)
+        if state is None or not state.connected:
+            return
+        if state.state not in ("PREPARE", "RUNNING"):
+            return
+        bed_target = state.temperatures.get("bed_target", 0) if state.temperatures else 0
+        bed_cur = state.temperatures.get("bed", 0) if state.temperatures else 0
+        if bed_target <= 0 or bed_cur >= bed_target - 2:
+            return  # already at target, or no target set — no heating spike
+        from backend.app.services.print_scheduler import scheduler as print_scheduler
+
+        async with async_session() as db:
+            enabled, _, interval, _ = await print_scheduler._get_stagger_settings(db)
+        if not enabled:
+            return
+        print_scheduler._register_stagger_start(printer_id, interval)
+    except Exception as e:
+        logging.getLogger(__name__).debug("External stagger registration failed for printer %s: %s", printer_id, e)
+
+
+async def mark_queue_printing_for_printer(printer_id: int, item_id: int | None = None) -> None:
+    """Ensure the printer's queue reflects the real busy state.
+
+    Call this once we know an active print exists on *printer_id* —
+    regardless of source (queue-driven, BamDude direct, external).
+    The scheduler itself doesn't rely on queue.status (uses MQTT state),
+    but the UI does, and a stale idle status while a print runs is
+    confusing.
+
+    ``item_id`` is ``None`` for external / direct-dispatch prints that
+    have no corresponding ``PrintQueueItem``.
+    """
+    from backend.app.models.printer_queue import PrinterQueue
+    from backend.app.services.queue_counters import set_queue_printing
+
+    async with async_session() as db:
+        result = await db.execute(select(PrinterQueue).where(PrinterQueue.printer_id == printer_id))
+        queue = result.scalar_one_or_none()
+        if queue is None:
+            return
+        if queue.status == "printing" and queue.current_item_id == item_id:
+            return  # already in correct state
+        await set_queue_printing(db, queue.id, item_id)
+        await db.commit()
+
+
 def _get_start_ams_mapping(data: dict, archive_id: int | None) -> list[int] | None:
     """Resolve AMS mapping for print start without consuming stored queue/reprint state."""
     stored_ams_mapping = data.get("ams_mapping")
@@ -1595,6 +1651,10 @@ async def on_print_start(printer_id: int, data: dict):
                 if subtask_name:
                     _active_prints[(printer_id, f"{subtask_name}.3mf")] = archive.id
 
+                # Ensure queue reflects the busy state (queue-driven flow
+                # already sets this from the scheduler, but repeat-safe).
+                await mark_queue_printing_for_printer(printer_id)
+
                 # Set up energy tracking (#941: persist start on archive row)
                 await _record_energy_start(archive, printer_id, db, context="expected-print")
 
@@ -1665,38 +1725,33 @@ async def on_print_start(printer_id: int, data: dict):
         )
         existing_archive = existing.scalar_one_or_none()
         if existing_archive:
-            # Check if archive is stale (older than 4 hours) - likely a failed/cancelled print
-            # that didn't get properly updated
-            archive_age = datetime.now(timezone.utc) - existing_archive.created_at.replace(tzinfo=timezone.utc)
-            if archive_age.total_seconds() > 4 * 60 * 60:  # 4 hours
-                logger.warning(
-                    f"Found stale 'printing' archive {existing_archive.id} (age: {archive_age}), "
-                    f"marking as cancelled and creating new archive"
-                )
-                existing_archive.status = "cancelled"
-                existing_archive.failure_reason = "Stale - print likely cancelled or failed without status update"
-                await db.commit()
-                # Fall through to create new archive (don't return)
-                _existing_archive = None  # Clear so we don't use stale archive
-            else:
-                logger.info(
-                    f"Skipping duplicate - already have printing archive {existing_archive.id} for {check_name}"
-                )
-                # Track this as the active print
-                _active_prints[(printer_id, existing_archive.filename)] = existing_archive.id
-                # Also set up energy tracking if not already tracked (#941: persisted column)
-                if existing_archive.energy_start_kwh is None:
-                    await _record_energy_start(existing_archive, printer_id, db, context="existing-printing")
-                # Send notification with archive data (existing archive)
-                if not notification_sent:
-                    archive_data = {
-                        "print_time_seconds": existing_archive.print_time_seconds,
-                        "created_by_id": existing_archive.created_by_id,
-                    }
-                    await _send_print_start_notification(printer_id, data, archive_data, logger)
-                # Extract printable objects from the archived 3MF file
-                _load_objects_from_archive(existing_archive, printer_id, logger)
-                return
+            # The printer just fired on_print_start for ``check_name``, and we
+            # have a matching "printing" archive on file — by definition it IS
+            # the current print (a backend restart mid-print re-triggered the
+            # event). Adopt it, no matter how old it is. The previous 4-hour
+            # stale-cancel heuristic was wrong: on long prints it killed the
+            # real row and forced a duplicate to be created below.
+            logger.info(
+                "Adopting existing printing archive %s for %s (re-trigger of live print)",
+                existing_archive.id,
+                check_name,
+            )
+            _active_prints[(printer_id, existing_archive.filename)] = existing_archive.id
+            # Ensure queue reflects the busy state.
+            await mark_queue_printing_for_printer(printer_id)
+            # Also set up energy tracking if not already tracked (#941: persisted column)
+            if existing_archive.energy_start_kwh is None:
+                await _record_energy_start(existing_archive, printer_id, db, context="existing-printing")
+            # Send notification with archive data (existing archive)
+            if not notification_sent:
+                archive_data = {
+                    "print_time_seconds": existing_archive.print_time_seconds,
+                    "created_by_id": existing_archive.created_by_id,
+                }
+                await _send_print_start_notification(printer_id, data, archive_data, logger)
+            # Extract printable objects from the archived 3MF file
+            _load_objects_from_archive(existing_archive, printer_id, logger)
+            return
 
         # Shared download helper (same logic used by the retry service).
         from backend.app.services.archive_download import try_download_3mf
@@ -1708,6 +1763,63 @@ async def on_print_start(printer_id: int, data: dict):
         else:
             temp_path = None
             downloaded_filename = None
+
+        # Post-download content-hash adoption: second safety net in case the
+        # pre-download name check missed (e.g. an older BamDude version had
+        # flipped the original archive to "cancelled" via the now-removed
+        # stale heuristic, so a name+status="printing" lookup came up empty).
+        # If the same bytes already have a row on this printer, adopt it
+        # instead of creating a duplicate — even if the row is in a terminal
+        # status, flip it back to "printing" because the printer clearly is.
+        if temp_path:
+            from backend.app.services.archive import ArchiveService as _ArchiveSvc
+
+            temp_hash = _ArchiveSvc.compute_file_hash(temp_path)
+            hash_match_result = await db.execute(
+                select(PrintArchive)
+                .where(PrintArchive.printer_id == printer_id)
+                .where(PrintArchive.file_path != "")
+                .where(
+                    or_(
+                        PrintArchive.content_hash == temp_hash,
+                        PrintArchive.source_content_hash == temp_hash,
+                    )
+                )
+                .order_by(PrintArchive.created_at.desc())
+                .limit(1)
+            )
+            hash_match = hash_match_result.scalar_one_or_none()
+            if hash_match is not None:
+                logger.info(
+                    "Adopting existing archive %s by content_hash match (status was %s)",
+                    hash_match.id,
+                    hash_match.status,
+                )
+                if hash_match.status != "printing":
+                    hash_match.status = "printing"
+                    hash_match.failure_reason = None
+                    if hash_match.completed_at:
+                        hash_match.completed_at = None
+                    await db.commit()
+                _active_prints[(printer_id, hash_match.filename)] = hash_match.id
+                if subtask_name:
+                    _active_prints[(printer_id, f"{subtask_name}.3mf")] = hash_match.id
+                    _active_prints[(printer_id, subtask_name)] = hash_match.id
+                await mark_queue_printing_for_printer(printer_id)
+                if hash_match.energy_start_kwh is None:
+                    await _record_energy_start(hash_match, printer_id, db, context="hash-adoption")
+                if not notification_sent:
+                    archive_data = {
+                        "print_time_seconds": hash_match.print_time_seconds,
+                        "created_by_id": hash_match.created_by_id,
+                    }
+                    await _send_print_start_notification(printer_id, data, archive_data, logger)
+                _load_objects_from_archive(hash_match, printer_id, logger)
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
+                return
 
         if not downloaded_filename or not temp_path:
             logger.warning("Could not find 3MF file for print: %s", filename or subtask_name)
@@ -1770,6 +1882,10 @@ async def on_print_start(printer_id: int, data: dict):
                 if subtask_name:
                     _active_prints[(printer_id, f"{subtask_name}.3mf")] = fallback_archive.id
                     _active_prints[(printer_id, subtask_name)] = fallback_archive.id
+
+                # Ensure queue reflects the busy state (external / direct print).
+                await mark_queue_printing_for_printer(printer_id)
+                await maybe_register_external_stagger(printer_id)
 
                 # Record starting energy if smart plug available (#941: persisted column)
                 await _record_energy_start(fallback_archive, printer_id, db, context="fallback")
@@ -1848,6 +1964,10 @@ async def on_print_start(printer_id: int, data: dict):
                     _active_prints[(printer_id, filename)] = archive.id
                 if subtask_name:
                     _active_prints[(printer_id, f"{subtask_name}.3mf")] = archive.id
+
+                # Ensure queue reflects the busy state (external / direct print).
+                await mark_queue_printing_for_printer(printer_id)
+                await maybe_register_external_stagger(printer_id)
 
                 logger.info("Created archive %s for %s", archive.id, downloaded_filename)
 
@@ -2629,6 +2749,32 @@ async def on_print_complete(printer_id: int, data: dict):
                 await update_queue_counters(db, queue_item.queue_id)
                 await db.commit()
                 logger.info("Updated queue item %s status to %s", queue_item.id, queue_status)
+            else:
+                # No queue_item was printing → this was an external or
+                # direct-dispatch print.  Still flip queue.status back to
+                # idle/error so the UI's current-print card goes away and
+                # pending items unblock.
+                from backend.app.models.printer_queue import PrinterQueue
+                from backend.app.services.queue_counters import set_queue_error, set_queue_idle
+
+                _pq = (
+                    await db.execute(select(PrinterQueue).where(PrinterQueue.printer_id == printer_id))
+                ).scalar_one_or_none()
+                if _pq and _pq.status == "printing":
+                    status_raw = data.get("status", "completed")
+                    if status_raw == "aborted":
+                        status_raw = "cancelled"
+                    if status_raw == "failed":
+                        await set_queue_error(db, _pq.id)
+                    else:
+                        await set_queue_idle(db, _pq.id)
+                    await db.commit()
+                    logger.info(
+                        "External/direct print finished on printer %s → queue %s status=%s",
+                        printer_id,
+                        _pq.id,
+                        _pq.status,
+                    )
 
                 # MQTT relay - publish queue job completed
                 try:
@@ -3944,6 +4090,21 @@ async def lifespan(app: FastAPI):
     from backend.app.services.archive_download_retry import archive_download_retry
 
     asyncio.create_task(archive_download_retry.start())
+
+    # Stagger-slot reconciliation: scan printers after MQTT reconnect and
+    # register slots for any that are actively heating (PREPARE/RUNNING
+    # with bed below target).  Runs as a background task so lifespan
+    # doesn't wait on it.
+    async def _reconcile_stagger_on_startup():
+        # Give MQTT a moment to populate state for each reconnected client.
+        await asyncio.sleep(5)
+        try:
+            for printer_id in list(printer_manager._clients.keys()):
+                await maybe_register_external_stagger(printer_id)
+        except Exception as e:
+            logging.getLogger(__name__).warning("Stagger startup reconciliation failed: %s", e)
+
+    asyncio.create_task(_reconcile_stagger_on_startup())
 
     # Start the smart plug scheduler for time-based on/off
     smart_plug_manager.start_scheduler()

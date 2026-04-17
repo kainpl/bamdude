@@ -105,6 +105,12 @@ class PrintQueueItemResponse(BaseModel):
     created_by_id: int | None = None
     created_by_username: str | None = None
 
+    # Virtual-item fields (set by ``build_virtual_current_print`` for
+    # external / direct-dispatch prints that have no DB row).  Real
+    # queue items default to False + None.
+    is_virtual: bool = False
+    source: str | None = None  # 'external' | 'bamdude_direct' | 'bamdude_queue' (real items)
+
     class Config:
         from_attributes = True
 

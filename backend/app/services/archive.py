@@ -1116,6 +1116,30 @@ class ArchiveService:
             archive.designer = metadata.get("designer")
             archive.extra_data = merged_extra
 
+            # Backfill cost + quantity — fallback creation seeded them with
+            # NULL / 1, and without this the archive stays stuck there even
+            # after the 3MF lands.  Mirrors the logic in archive_print().
+            filament_grams = metadata.get("filament_used_grams")
+            if filament_grams:
+                from backend.app.api.routes.settings import get_setting
+
+                default_cost_setting = await get_setting(self.db, "default_filament_cost")
+                default_cost_per_kg = float(default_cost_setting) if default_cost_setting else 25.0
+                archive.cost = round((filament_grams / 1000) * default_cost_per_kg, 2)
+
+            printable_objects = metadata.get("printable_objects")
+            if printable_objects and isinstance(printable_objects, dict):
+                archive.quantity = len(printable_objects)
+
+            # Swap-compatible detection by filename suffix — mirrors the
+            # post-archive_print check in on_print_start. Fallback creation
+            # defaulted swap_compatible=False, so without this backfill a
+            # *.swap.3mf / *.swaps.3mf file landed via retry would stay
+            # flagged as non-swap.
+            fname_lower = (original_filename or source_file.name).lower()
+            if fname_lower.endswith((".swap.3mf", ".swaps.3mf")) or ".swap." in fname_lower or ".swaps." in fname_lower:
+                archive.swap_compatible = True
+
             await self.db.commit()
             await self.db.refresh(archive)
             return True

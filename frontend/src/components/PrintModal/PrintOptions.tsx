@@ -45,13 +45,13 @@ export function PrintOptionsPanel({
       {isExpanded && (
         <div className="mt-2 bg-bambu-dark rounded-lg p-3 space-y-2">
           {PRINT_OPTIONS_CONFIG.map(({ key, labelKey, descKey }) => (
-            <label key={key} className="flex items-center justify-between cursor-pointer group">
-              <div>
+            <label key={key} className="flex items-center justify-between gap-3 cursor-pointer group">
+              <div className="min-w-0 flex-1">
                 <span className="text-sm text-white">{t(labelKey)}</span>
                 <p className="text-xs text-bambu-gray">{t(descKey)}</p>
               </div>
               <div
-                className={`relative w-10 h-5 rounded-full transition-colors ${
+                className={`relative w-10 h-5 rounded-full transition-colors flex-shrink-0 ${
                   options[key] ? 'bg-bambu-green' : 'bg-bambu-dark-tertiary'
                 }`}
                 onClick={() => handleToggle(key)}

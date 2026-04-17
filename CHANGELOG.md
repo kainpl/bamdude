@@ -6,6 +6,55 @@ All notable changes to BamDude will be documented in this file.
 
 ---
 
+## [0.3.1.2] - 2026-04-18
+
+### Queue Card & Page UX Polish
+
+- **Sequential display numbering** — queue rows now render `#1, #2, #3…` by index, not raw `position` (which grows unbounded across reorders/clones). Per-queue in M-mode, global in "all" view.
+- **Bump-to-bottom** — new action + endpoint (`POST /queue/{id}/bump-bottom`, `/batch/{id}/bump-bottom`) with `bump_block_to_bottom` helper in `queue_ops`.
+- **Dead-button hiding** — `Up`/`BumpTop` on the first pending item and `Down`/`BumpBottom` on the last are hidden (they were no-ops). Batch-aware: a block at the top hides the whole top set.
+- **"View archive" menu item** in the `⋮` dropdown — navigates to `/archives?search={name}` when the item has an `archive_id`.
+- **Active prints in "all" view** — flat queue list now shows real + virtual external/direct-dispatch active prints at the top with a pulsing blue dot, source badge (external/bamdude_direct), and "Printing" status pill.
+- **Active prints in timeline view** — `QueuePage` fetches printing items alongside pending and merges them before passing to `QueueTimelineView`. External prints now anchor the "now" slot and push the pending chain forward by `stagger_interval`.
+- **Timeline label sticks to visible portion** — when a slot started before the window, its label shifts right by the off-screen amount so the filename stays readable instead of slipping under the left edge.
+
+### Current-Print Card (M-mode) Redesign
+
+Matched the scale of the printer-card current-print panel for visual consistency:
+
+- Thumbnail **80×80** (was 40×40), with placeholder square when no image
+- Progress bar `h-2` (was `h-1.5`), `text-sm text-white` percentage with `Math.round`
+- **Triple-metric row** under progress: remaining `formatDuration` · green `ETA` · `Layers` icon + `layer_num/total_layers` — identical to PrinterCard
+- Blue progress color preserved as a signal that this is the queue card (green is used on PrinterCard)
+
+### Batch Grouping Visible
+
+- **Colored left stripe** (3px, inline `style`) on every pending row that's part of a batch. All siblings of one `batch_id` share one color; different batches use different hues. Palette: 6 distinct non-status hues (blue/purple/amber/teal/pink/cyan), hashed from `batch_id` via djb2.
+- **"Batch N" badge** next to the filename adopts the same hue.
+- **Tailwind JIT workaround** — border color set via `style={{ borderLeft: ... }}` because dynamic class suffixes aren't reliably scanned by the JIT compiler.
+
+### Backend Fixes
+
+- **`batch_id` was missing from API responses** (`_enrich_response` in `print_queue.py`). The column was populated in DB and the Pydantic schema declared the field with a default of `None`, so no validation error — but every batched item came through as `batch_id: null`, breaking all batch UX. Now explicitly included in the response dict.
+- **`attach_3mf_to_archive` backfills `cost`, `quantity`, and `swap_compatible`** — mirror of `archive_print`. Previously fallback archives recovered via the retry service stayed with `cost=NULL`/`quantity=1`/`swap_compatible=False` even after the 3MF landed.
+- **Cover endpoint no longer filters by `status='printing'`** — the printer could already be in `FINISH` state (archive flipped to `completed`) while the UI still asks for the cover. Now also requires `file_path != ''` so a just-created fallback row doesn't shadow an older populated archive with the same name.
+
+### Restart-During-Print Duplicate Archive
+
+The 4-hour stale-archive check in `on_print_start` was killing live `printing` archives on long prints, then creating a duplicate from the re-downloaded 3MF. Two fixes:
+
+- **Removed the stale-cancel branch entirely** — if a matching `status='printing'` archive exists when the printer fires a new print_start, it IS the current print by definition. Adopt it; age is irrelevant when MQTT reports `gcode_state=RUNNING` with the same subtask.
+- **Post-download content-hash adoption** — second safety net after the name-based check. After `try_download_3mf`, compute SHA256 and look for any archive on this printer with matching `content_hash`/`source_content_hash`. If found, flip back to `status='printing'` (clearing `failure_reason`/`completed_at` if needed), adopt into `_active_prints`, delete the temp file, and return — no new row created.
+
+### Other
+
+- **"Release to auto-start"** wording — the `manual_start` Play button's label was "Start print" with toast "Print started", implying immediate printing. Now "Release to auto-start" + "Released — will print when queue reaches it", both locales. `startQueueItem` actually just clears the `manual_start` flag, so the scheduler picks the item up when its turn comes.
+- **Print-options toggle layout** — `mesh_mode_fast_check` had a long description that squeezed the toggle switch horizontally. Added `gap-3 min-w-0 flex-1` on the label row and `flex-shrink-0` on the toggle.
+- **QueuePage M-mode grid `items-start`** — cards no longer stretch to the tallest sibling in a row; each card sizes to its own content.
+- **34 new `queue_ops` unit tests** covering `resolve_block_ids`/`get_batch_pending_items`, `reorder_block` (solo/batch, up/down, boundaries, bad direction), `bump_block_to_top`/`bump_block_to_bottom`, `clone_item`/`clone_batch` (keep/drop batch, position appending, non-pending filtering), and `set_status`/`set_status_for_batch` transitions.
+
+---
+
 ## [0.3.1.1] - 2026-04-17
 
 ### 3MF Download Recovery Service

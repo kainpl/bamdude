@@ -921,6 +921,7 @@ export interface AppSettings {
   stagger_concurrent: number;
   stagger_interval_minutes: number;
   stagger_wait_for_bed: boolean;
+  stagger_strict_for_direct_dispatch: boolean;
   // LDAP authentication
   ldap_enabled: boolean;
   ldap_server_url: string;
@@ -1415,6 +1416,31 @@ export interface PrintQueueItem {
   sliced_for_model?: string | null;
   created_by_id?: number | null;
   created_by_username?: string | null;
+  // Virtual-item markers set by the backend for external / direct-dispatch
+  // prints that have no DB row.  Real queue items leave these at
+  // is_virtual=false / source=null.
+  is_virtual?: boolean;
+  source?: 'external' | 'bamdude_direct' | 'bamdude_queue' | null;
+}
+
+export interface StaggerSlotInfo {
+  printer_id: number;
+  printer_name: string;
+  started_at: number;
+  temp_reached_at: number | null;
+  state: 'heating' | 'interval_wait';
+  seconds_to_free: number;
+  interval_seconds: number;
+}
+
+export interface StaggerState {
+  enabled: boolean;
+  concurrent: number;
+  interval_minutes: number;
+  wait_for_bed: boolean;
+  slots: StaggerSlotInfo[];
+  free_slots: number;
+  next_free_in_seconds: number | null;
 }
 
 export interface PrintQueueItemCreate {
@@ -3566,6 +3592,51 @@ export const api = {
     }),
   removeFromQueue: (id: number) =>
     request<{ message: string }>(`/queue/${id}`, { method: 'DELETE' }),
+  getStaggerState: () => request<StaggerState>('/queue/stagger-state'),
+  // Queue item commands
+  reorderQueueItem: (id: number, direction: 'up' | 'down') =>
+    request<{ moved: number; direction: string; block_size: number }>(
+      `/queue/${id}/reorder?direction=${direction}`,
+      { method: 'POST' }
+    ),
+  bumpQueueItem: (id: number) =>
+    request<{ shifted: number; block_size: number }>(`/queue/${id}/bump`, { method: 'POST' }),
+  bumpQueueItemBottom: (id: number) =>
+    request<{ shifted: number; block_size: number }>(`/queue/${id}/bump-bottom`, { method: 'POST' }),
+  cloneQueueItem: (id: number, scope: 'single' | 'batch' = 'single') =>
+    request<PrintQueueItem>(`/queue/${id}/clone?scope=${scope}`, { method: 'POST' }),
+  skipQueueItem: (id: number) =>
+    request<{ status: string; item_id: number }>(`/queue/${id}/skip`, { method: 'POST' }),
+  unskipQueueItem: (id: number) =>
+    request<{ status: string; item_id: number }>(`/queue/${id}/unskip`, { method: 'POST' }),
+  toggleManualStart: (id: number) =>
+    request<{ manual_start: boolean; item_id: number }>(`/queue/${id}/manual-start`, { method: 'PATCH' }),
+  retryQueueItem: (id: number) =>
+    request<PrintQueueItem>(`/queue/${id}/retry`, { method: 'POST' }),
+  // Batch operations
+  cancelBatch: (batchId: string) =>
+    request<{ cancelled: number; batch_id: string }>(`/queue/batch/${batchId}/cancel`, { method: 'POST' }),
+  skipBatch: (batchId: string) =>
+    request<{ skipped: number; batch_id: string }>(`/queue/batch/${batchId}/skip`, { method: 'POST' }),
+  reorderBatch: (batchId: string, direction: 'up' | 'down') =>
+    request<{ moved: number; direction: string; batch_size: number }>(
+      `/queue/batch/${batchId}/reorder?direction=${direction}`,
+      { method: 'POST' }
+    ),
+  bumpBatch: (batchId: string) =>
+    request<{ shifted: number; batch_size: number }>(`/queue/batch/${batchId}/bump`, { method: 'POST' }),
+  bumpBatchBottom: (batchId: string) =>
+    request<{ shifted: number; batch_size: number }>(`/queue/batch/${batchId}/bump-bottom`, { method: 'POST' }),
+  updateBatch: (batchId: string, data: PrintQueueItemUpdate) =>
+    request<{ updated: number; batch_id: string; fields: string[] }>(`/queue/batch/${batchId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  cloneBatch: (batchId: string, scope: 'one' | 'batch' = 'batch') =>
+    request<{ cloned: number; scope: string; source_batch_id?: string; new_batch_id?: string; new_item_id?: number }>(
+      `/queue/batch/${batchId}/clone?scope=${scope}`,
+      { method: 'POST' }
+    ),
   reorderQueue: (items: { id: number; position: number }[]) =>
     request<{ message: string }>('/queue/reorder', {
       method: 'POST',

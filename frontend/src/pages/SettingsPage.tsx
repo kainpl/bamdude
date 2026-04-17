@@ -869,6 +869,7 @@ export function SettingsPage() {
       (settings.stagger_concurrent ?? 2) !== (localSettings.stagger_concurrent ?? 2) ||
       (settings.stagger_interval_minutes ?? 5) !== (localSettings.stagger_interval_minutes ?? 5) ||
       (settings.stagger_wait_for_bed ?? true) !== (localSettings.stagger_wait_for_bed ?? true) ||
+      (settings.stagger_strict_for_direct_dispatch ?? false) !== (localSettings.stagger_strict_for_direct_dispatch ?? false) ||
       settings.per_printer_mapping_expanded !== localSettings.per_printer_mapping_expanded ||
       settings.date_format !== localSettings.date_format ||
       settings.time_format !== localSettings.time_format ||
@@ -942,6 +943,7 @@ export function SettingsPage() {
         stagger_concurrent: localSettings.stagger_concurrent,
         stagger_interval_minutes: localSettings.stagger_interval_minutes,
         stagger_wait_for_bed: localSettings.stagger_wait_for_bed,
+        stagger_strict_for_direct_dispatch: localSettings.stagger_strict_for_direct_dispatch,
         per_printer_mapping_expanded: localSettings.per_printer_mapping_expanded,
         date_format: localSettings.date_format,
         time_format: localSettings.time_format,
@@ -2239,6 +2241,27 @@ export function SettingsPage() {
                           type="checkbox"
                           checked={localSettings.stagger_wait_for_bed ?? true}
                           onChange={(e) => updateSetting('stagger_wait_for_bed', e.target.checked)}
+                          className="sr-only peer"
+                        />
+                        <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                      </label>
+                    </div>
+
+                    {/* Strict mode for direct dispatches — block Print Now if no slot */}
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <label className="block text-sm text-white">
+                          {t('settings.staggerStrictForDirect')}
+                        </label>
+                        <p className="text-xs text-bambu-gray mt-0.5">
+                          {t('settings.staggerStrictForDirectDescription')}
+                        </p>
+                      </div>
+                      <label className="relative inline-flex items-center cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={localSettings.stagger_strict_for_direct_dispatch ?? false}
+                          onChange={(e) => updateSetting('stagger_strict_for_direct_dispatch', e.target.checked)}
                           className="sr-only peer"
                         />
                         <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>

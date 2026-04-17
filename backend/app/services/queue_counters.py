@@ -55,8 +55,15 @@ async def set_queue_error(db: AsyncSession, queue_id: int, failed_item_id: int |
     logger.info("Queue %d set to error state (failed item: %s)", queue_id, failed_item_id)
 
 
-async def set_queue_printing(db: AsyncSession, queue_id: int, item_id: int) -> None:
-    """Set queue to printing status when a print starts."""
+async def set_queue_printing(db: AsyncSession, queue_id: int, item_id: int | None = None) -> None:
+    """Set queue to printing status when a print starts.
+
+    ``item_id`` may be None for prints that have no corresponding
+    ``PrintQueueItem`` row (external prints, BamDude direct dispatch).
+    In that case the queue still transitions to "printing" so the UI
+    reflects the real printer state — the queue widget then synthesises
+    a virtual current-print item for display.
+    """
     result = await db.execute(select(PrinterQueue).where(PrinterQueue.id == queue_id))
     queue = result.scalar_one_or_none()
     if not queue:

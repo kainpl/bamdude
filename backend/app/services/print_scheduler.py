@@ -707,6 +707,72 @@ class PrintScheduler:
 
     # ── Staggered start helpers ──────────────────────────────────────────
 
+    async def get_stagger_state_snapshot(self, db: AsyncSession) -> dict:
+        """Return current stagger state for UI diagnostics.
+
+        Shape:
+            {
+              "enabled": bool,
+              "concurrent": int,
+              "interval_minutes": int,
+              "wait_for_bed": bool,
+              "slots": [
+                {"printer_id": int, "printer_name": str,
+                 "started_at": float, "temp_reached_at": float | None,
+                 "state": "heating" | "interval_wait",
+                 "seconds_to_free": int},
+                ...
+              ],
+              "free_slots": int,
+              "next_free_in_seconds": int | None,
+            }
+        """
+        enabled, concurrent, interval_seconds, wait_for_bed = await self._get_stagger_settings(db)
+        now = time.monotonic()
+
+        slots: list[dict] = []
+        times_to_free: list[int] = []
+        for slot in self._stagger_slots:
+            info = printer_manager.get_printer(slot.printer_id)
+            name = info.name if info else f"Printer #{slot.printer_id}"
+
+            if wait_for_bed:
+                if slot.temp_reached_at is None:
+                    slot_state = "heating"
+                    seconds_to_free = max(0, int(slot.interval_seconds))
+                else:
+                    slot_state = "interval_wait"
+                    seconds_to_free = max(0, int(slot.interval_seconds - (now - slot.temp_reached_at)))
+            else:
+                slot_state = "interval_wait"
+                seconds_to_free = max(0, int(slot.interval_seconds - (now - slot.started_at)))
+
+            slots.append(
+                {
+                    "printer_id": slot.printer_id,
+                    "printer_name": name,
+                    "started_at": slot.started_at,
+                    "temp_reached_at": slot.temp_reached_at,
+                    "state": slot_state,
+                    "seconds_to_free": seconds_to_free,
+                    "interval_seconds": slot.interval_seconds,
+                }
+            )
+            times_to_free.append(seconds_to_free)
+
+        free_slots = max(0, concurrent - len(self._stagger_slots))
+        next_free = None if free_slots > 0 or not times_to_free else min(times_to_free)
+
+        return {
+            "enabled": enabled,
+            "concurrent": concurrent,
+            "interval_minutes": interval_seconds // 60,
+            "wait_for_bed": wait_for_bed,
+            "slots": slots,
+            "free_slots": free_slots,
+            "next_free_in_seconds": next_free,
+        }
+
     async def _get_stagger_settings(self, db: AsyncSession) -> tuple[bool, int, int, bool]:
         """Return (enabled, concurrent, interval_seconds, wait_for_bed)."""
         enabled = await self._get_bool_setting(db, "stagger_enabled")
