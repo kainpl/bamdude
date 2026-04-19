@@ -2001,6 +2001,7 @@ export interface UnlinkedSpool {
   id: number;
   filament_name: string | null;
   filament_material: string | null;
+  filament_vendor: string | null;
   filament_color_hex: string | null;
   remaining_weight: number | null;
   location: string | null;
