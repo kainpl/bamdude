@@ -16,6 +16,17 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
+class FileNotOnPrinterError(Exception):
+    """Raised when a remote FTP path returns 550 (file not found).
+
+    550 means the file does not exist at that path — retrying the same path
+    will never succeed. Callers use this sentinel with with_ftp_retry's
+    non_retry_exceptions to immediately move on to the next candidate path
+    instead of burning the full retry budget (up to 11 × 30s per path) on
+    a lookup that cannot recover.
+    """
+
+
 def _graceful_close_data_conn(conn) -> None:
     """Close an FTP data-channel socket, draining the TLS layer first.
 
@@ -306,6 +317,13 @@ class BambuFTPClient:
             logger.info("Successfully downloaded %s to %s (%s bytes)", remote_path, local_path, file_size)
             return True
         except (OSError, ftplib.Error) as e:
+            # 550 means the file is not at this path. Surface as a sentinel so
+            # callers can abandon this path immediately and advance to the next
+            # candidate instead of retrying 11× at 30s intervals (the pattern
+            # that cost #972's reporter ~48 min of dead retries).
+            if isinstance(e, ftplib.error_perm) and str(e).startswith("550"):
+                logger.info("FTP download failed for %s: %s (not on printer)", remote_path, e)
+                raise FileNotOnPrinterError(f"{remote_path}: {e}") from e
             # Log at INFO level so we can see failures in normal logs
             logger.info("FTP download failed for %s: %s", remote_path, e)
             # Clean up partial file if it exists
@@ -726,7 +744,16 @@ async def download_file_try_paths_async(
             return False
 
         try:
-            return any(client.download_to_file(remote_path, local_path) for remote_path in remote_paths)
+            # FileNotOnPrinterError signals "try the next path", not "give up" —
+            # this function's whole purpose is to walk a list of candidates
+            # over one connection. Only a real transport error should bubble.
+            for remote_path in remote_paths:
+                try:
+                    if client.download_to_file(remote_path, local_path):
+                        return True
+                except FileNotOnPrinterError:
+                    continue
+            return False
         finally:
             client.disconnect()
 

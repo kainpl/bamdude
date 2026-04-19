@@ -20,11 +20,13 @@ import pytest
 
 from backend.app.services.bambu_ftp import (
     BambuFTPClient,
+    FileNotOnPrinterError,
     delete_file_async,
     download_file_async,
     download_file_try_paths_async,
     list_files_async,
     upload_file_async,
+    with_ftp_retry,
 )
 
 # Brief delay to allow pyftpdlib to flush uploaded files to disk.
@@ -289,14 +291,17 @@ class TestDownload:
         assert not local.exists()
         client.disconnect()
 
-    def test_download_to_file_missing_returns_false(self, ftp_client_factory, tmp_path):
-        """Missing file returns False."""
+    def test_download_to_file_missing_raises_not_on_printer(self, ftp_client_factory, tmp_path):
+        """Missing file raises FileNotOnPrinterError so callers can short-circuit
+        the retry loop — 550 means the file isn't there and retrying won't help."""
         local = tmp_path / "missing.bin"
         client = ftp_client_factory()
         client.connect()
-        result = client.download_to_file("/cache/no_such_file.bin", local)
-        assert result is False
-        client.disconnect()
+        try:
+            with pytest.raises(FileNotOnPrinterError):
+                client.download_to_file("/cache/no_such_file.bin", local)
+        finally:
+            client.disconnect()
 
     def test_download_large_file(self, ftp_client_factory, ftp_server):
         """Large file download (>1MB) works correctly."""
@@ -917,3 +922,59 @@ class TestFailureScenarios:
             downloaded = client2.download_file("/cache/voidresp_test.3mf")
             assert downloaded == content, f"Content mismatch for model={model}"
             client2.disconnect()
+
+
+# ---------------------------------------------------------------------------
+# Short-circuit retries on 550 (#972)
+# ---------------------------------------------------------------------------
+class TestFileNotOnPrinterShortCircuit:
+    """FileNotOnPrinterError must bypass the retry budget.
+
+    Before this fix, a 3MF path that wasn't on the printer (550) cost
+    `ftp_retry_count + 1` attempts × `ftp_retry_delay` seconds per candidate
+    path. With ftp_retry_count=10 and four candidate paths, that's ~22 min
+    of dead retries before the real path is tried. #972 in the wild showed
+    48 min of retrying paths that didn't exist.
+    """
+
+    async def test_with_ftp_retry_propagates_file_not_on_printer_without_retrying(self):
+        """with_ftp_retry raises FileNotOnPrinterError on first attempt.
+
+        Verifies non_retry_exceptions short-circuits before the retry loop
+        has a chance to sleep and try again.
+        """
+        attempts = {"n": 0}
+
+        async def always_missing(*_args, **_kwargs):
+            attempts["n"] += 1
+            raise FileNotOnPrinterError("/cache/absent.3mf: 550")
+
+        with pytest.raises(FileNotOnPrinterError):
+            await with_ftp_retry(
+                always_missing,
+                max_retries=10,
+                retry_delay=0.01,
+                operation_name="test 550 short-circuit",
+                non_retry_exceptions=(FileNotOnPrinterError,),
+            )
+
+        assert attempts["n"] == 1, "550 must not trigger any retry"
+
+    async def test_with_ftp_retry_still_retries_transient_errors(self):
+        """Non-550 exceptions continue to retry up to max_retries + 1."""
+        attempts = {"n": 0}
+
+        async def flaky(*_args, **_kwargs):
+            attempts["n"] += 1
+            raise TimeoutError("transient")
+
+        result = await with_ftp_retry(
+            flaky,
+            max_retries=2,
+            retry_delay=0.01,
+            operation_name="test transient retries",
+            non_retry_exceptions=(FileNotOnPrinterError,),
+        )
+
+        assert result is None
+        assert attempts["n"] == 3, "Transient errors should retry to exhaustion"
