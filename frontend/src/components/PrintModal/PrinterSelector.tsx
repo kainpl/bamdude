@@ -243,7 +243,10 @@ export function PrinterSelector({
     if (!status.connected) return t('printModal.printerStateOffline');
     const state = status.state;
     if (!state) return null;
-    if (state === 'RUNNING') return t('printModal.printerStatePrinting');
+    // stg_cur_name is an English stage string from Bambu firmware ("Auto bed leveling", "Heatbed preheating",
+    // etc.) — preferred over the generic "Printing" label because it tells the user what the printer is actually
+    // doing. Falls back to the localized label when firmware doesn't provide a stage name.
+    if (state === 'RUNNING') return status.stg_cur_name || t('printModal.printerStatePrinting');
     if (state === 'PREPARE') return t('printModal.printerStatePreparing');
     if (state === 'PAUSE') return t('printModal.printerStatePaused');
     if (state === 'IDLE') return t('printModal.printerStateIdle');

@@ -30,7 +30,7 @@ openpyxl>=3.1.0
 pywebpush>=2.0.0
 
 # Utilities
-python-multipart>=0.0.6
+python-multipart>=0.0.26  # CVE-2026-40347 (malformed multipart DoS)
 aiofiles>=23.0.0
 
 # QR Code generation
@@ -54,7 +54,7 @@ opencv-python-headless>=4.8.0
 numpy>=1.24.0
 
 # Development
-pytest>=8.0.0
+pytest>=9.0.3  # CVE-2025-71176 (tmp_path traversal)
 pytest-asyncio>=0.23.0
 httpx>=0.26.0
 # Chrome/Firefox TLS impersonation — needed for bambulab.com firmware check
@@ -62,5 +62,5 @@ httpx>=0.26.0
 curl_cffi>=0.15.0
 ruff>=0.2.0
 
-pillow>=12.1.1
+pillow>=12.2.0  # CVE-2026-40192 (JPEG decoding heap overflow)
 aiogram>=3.20
