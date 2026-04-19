@@ -1647,6 +1647,24 @@ class PrintScheduler:
                 )
             logger.info("Queue item %s: Print started successfully - %s", item.id, filename)
 
+            # Watchdog: if the printer never transitions out of pre_state, the
+            # MQTT publish was accepted locally but didn't reach the printer
+            # (half-broken session — #887/#936 / #967). Schedule a background
+            # task that reverts the item back to pending and force-reconnects
+            # the MQTT session. The swap-mode branch skips the revert to avoid
+            # re-firing swap_mode_start on the next dispatch — see below.
+            _post_status = printer_manager.get_status(item.printer_id)
+            _pre_state = _post_status.state if _post_status else None
+            if _pre_state:
+                asyncio.create_task(
+                    self._watchdog_print_start(
+                        item.id,
+                        item.printer_id,
+                        _pre_state,
+                        swap_start_fired="swap_mode_start" in swap_events,
+                    )
+                )
+
             # Get estimated time for notification
             estimated_time = None
             if archive and archive.print_time_seconds:
@@ -1707,6 +1725,84 @@ class PrintScheduler:
             )
 
             await self._power_off_if_needed(db, item)
+
+    @staticmethod
+    async def _watchdog_print_start(
+        queue_item_id: int,
+        printer_id: int,
+        pre_state: str,
+        swap_start_fired: bool = False,
+        timeout: float = 45.0,
+        poll_interval: float = 3.0,
+    ) -> None:
+        """Revert a queue item if the printer never acknowledges the start command.
+
+        Optimistically we mark the queue item as "printing" right after the MQTT
+        project_file publish succeeds locally. If the printer drops/ignores the
+        command (half-broken MQTT session — #887/#936), the state never
+        transitions and the item would otherwise stay stuck in "printing"
+        forever (#967).
+
+        ``swap_start_fired`` is the BamDude-specific guard: when a swap_mode_start
+        macro already ran successfully on the real printer before start_print,
+        a revert + re-dispatch would re-fire it and cause a double physical
+        table swap. In that case we keep the item in "printing", log a louder
+        warning telling the operator to intervene manually, and still
+        force-reconnect the MQTT session so subsequent commands land.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            await asyncio.sleep(poll_interval)
+            status = printer_manager.get_status(printer_id)
+            if not status:
+                return  # Printer disconnected — don't mess with the DB
+            if status.state != pre_state:
+                return  # Printer picked up the job
+
+        if swap_start_fired:
+            logger.error(
+                "Queue item %s: printer %d did not respond to print command within "
+                "%.0fs (state still %s), BUT swap_mode_start already fired — NOT "
+                "reverting to pending to avoid double table swap. Operator intervention "
+                "required (#967 + swap-mode)",
+                queue_item_id,
+                printer_id,
+                timeout,
+                pre_state,
+            )
+        else:
+            # No swap side-effects on the physical printer — safe to revert.
+            async with async_session() as db:
+                item = await db.get(PrintQueueItem, queue_item_id)
+                if not item or item.status != "printing":
+                    return  # Already moved on (completed/cancelled/etc.)
+                item.status = "pending"
+                item.started_at = None
+                await db.commit()
+                logger.warning(
+                    "Queue item %s: printer %d did not respond to print command within "
+                    "%.0fs (state still %s) — reverted to 'pending' for retry (#967)",
+                    queue_item_id,
+                    printer_id,
+                    timeout,
+                    pre_state,
+                )
+            # Drop any swap config that was registered post-start_print so a
+            # subsequent dispatch can arm it fresh.
+            try:
+                from backend.app.main import _active_swap_config
+
+                _active_swap_config.pop(printer_id, None)
+            except Exception:  # pragma: no cover — import failure is non-fatal
+                pass
+
+        # Same half-broken-session recovery as background_dispatch: force the
+        # MQTT client to reconnect so the next dispatch lands without a power cycle.
+        client = printer_manager.get_client(printer_id)
+        if client and hasattr(client, "force_reconnect_stale_session"):
+            client.force_reconnect_stale_session(
+                f"queue print command unacknowledged after {timeout:.0f}s (state still {pre_state})"
+            )
 
 
 # Global scheduler instance
