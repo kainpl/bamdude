@@ -51,6 +51,11 @@ class Printer(Base):
     swap_profile: Mapped[str | None] = mapped_column(String(50), nullable=True)
     # Require user to confirm plate is cleared before next queued print starts
     require_plate_clear: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Persisted plate-clear gate: set True at print-end when require_plate_clear
+    # is on; cleared when the user confirms or dispatch runs. Persisting it in
+    # DB (vs the previous in-memory set) means Auto Off power cycles can't
+    # silently bypass the confirmation (#961).
+    awaiting_plate_clear: Mapped[bool] = mapped_column(Boolean, default=False)
     # Auto turn off chamber light after print starts (P1S/P1P turn it on automatically)
     auto_light_off: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

@@ -25,6 +25,10 @@ class PrintArchive(Base):
     # lives alongside for future reprint-reapply semantics.
     source_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     applied_patches: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Printer-assigned subtask identifier observed in MQTT push_status. Advisory
+    # match key: on_print_start consults it as a fast pre-check before falling
+    # back to our primary name + content_hash matching (#972).
+    subtask_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     thumbnail_path: Mapped[str | None] = mapped_column(String(500))
     timelapse_path: Mapped[str | None] = mapped_column(String(500))
     source_3mf_path: Mapped[str | None] = mapped_column(String(500))  # Original project 3MF from slicer
