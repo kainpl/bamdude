@@ -6,6 +6,53 @@ All notable changes to BamDude will be documented in this file.
 
 ---
 
+## [0.3.2] - 2026-04-19
+
+### Security
+
+- **Webhook tokens no longer leak to logs when Debug Logging is enabled** (upstream `b71b7216`). `Settings → Support → Debug Logging` previously raised `httpx` + `httpcore` to DEBUG level; httpx logs full request URLs, and Discord / generic-webhook URLs embed bearer tokens in the path. Any user who collected a support bundle with Debug Logging enabled wrote their webhook tokens into `bamdude.log` in plaintext. Both loggers are now pinned to WARNING even in debug mode; paho.mqtt stays on DEBUG (no secrets in MQTT traces).
+  - **Action required:** if you ever enabled Debug Logging on a previous release, rotate any exposed Discord / generic webhook tokens.
+- **Exception details no longer leak through HTTP error responses** (upstream PR #933). Six handlers in `backend/app/api/routes/auth.py` (`/setup`, SMTP save, advanced-auth enable/disable, password reset) returned `detail=f"...{str(e)}"`, leaking SQL / stack / internal paths. Now return static messages; the exception is logged server-side with `%s` lazy formatting. One intentional keep: the Test SMTP endpoint still surfaces the exception text in its response `message` — admin-only diagnostic field the user needs to fix their SMTP config.
+- **Dead `?token=` URL bootstrap removed from AuthContext.** The login flow previously picked up an `auth_token` from the URL query string and wrote it directly to `localStorage` before any server verify — a session-fixation vector where `https://bamdude.example.com/?token=ATTACKER_TOKEN` would hijack the victim's session on click. This was a leftover from the SpoolBuddy kiosk launcher (removed during the BamDude fork). A grep across frontend + backend confirmed zero call sites still generate such URLs, so the branch was deleted entirely rather than reintroducing the 2-arg `setAuthToken` pattern.
+- **CVE-patch dependency bumps** (upstream v0.2.3 sync):
+  - `pillow 12.1.1 → 12.2.0` — CVE-2026-40192 (JPEG decoding heap overflow).
+  - `python-multipart 0.0.6 → 0.0.26` — CVE-2026-40347 (malformed multipart DoS).
+  - `pytest 8.0.0 → 9.0.3` — CVE-2025-71176 (tmp_path traversal); major 8→9 bump.
+  - `dompurify 3.3.3 → 3.4.0` — GHSA-39q2-94rc-95cp (sanitization bypass).
+
+### Fixes
+
+- **Direct library prints are attributed to the authenticated user** (upstream `f03d0c4c`). `POST /library/files/{id}/print` was receiving the current user via `Depends` and throwing the reference away with `_`, passing `None` for both `requested_by_user_id`/`requested_by_username`. The resulting `print_archives` row had NULL ownership, breaking per-user history filtering and owner-scoped permission checks downstream.
+- **ToastContext guards against post-unmount async callbacks** (upstream `58d33cdb`). An async handler (commonly a login-flow error handler) could resolve after React had already torn down the provider, firing a pending `setTimeout` against a dead component tree and crashing with `"window is not defined"`. Every `setToasts` call site (`showToast`, `showPersistentToast`, `dismissToast`, two auto-dismiss timer callbacks) now short-circuits via an `isMountedRef` guard. Ported upstream's 4-test regression suite verbatim.
+- **FTP short-circuits 550 responses with `FileNotOnPrinterError`** (upstream `46c246c5`, #972). When a 3MF path wasn't present on the printer's SD card, the FTP server answered 550 but our code caught it as a generic `ftplib.Error` and returned `False` — indistinguishable from a transient transport failure. `with_ftp_retry` (max 10 × 30s) then burned the full retry budget on every candidate path, multiplying into tens of minutes of dead retries per download attempt (#972 reporter saw ~48 min). A new sentinel exception surfaces the 550 so `download_file_try_paths_async` can skip to the next candidate inside its single connection, and any caller listing the sentinel in `non_retry_exceptions` aborts instantly. Shared 3MF cache from the same upstream PR is deliberately skipped — BamDude's cover endpoint reads from the local archive only and never touches FTP.
+- **Virtual Printer tolerates null-terminated MQTT payloads from OrcaSlicer on Linux** (upstream `68920f8c`, #927). OrcaSlicer's Linux build includes the C-string `\0` terminator in the published payload length, so every request body ended with `\x00`. Strict `json.loads` rejected the extra byte and the VP silently dropped `pushall` / `get_version` / `project_file` from that slicer configuration. Strip trailing whitespace + null before parsing; previously-silent decode failures now log at DEBUG with a truncated payload snippet.
+- **PrinterSelector restores `stg_cur_name` fallback for RUNNING printers.** A previous commit removed the firmware-provided stage name (e.g. "Auto bed leveling", "Heatbed preheating") in favor of the generic localized "Printing" label — losing useful printer-state context. Firmware stage name wins when present, localized fallback kicks in when it's absent (matches upstream behavior).
+
+### Features / UX
+
+- **LinkSpoolModal shows vendor name** (upstream `f84e5ba1`, #958). Spoolman filament entries carry a `vendor` relationship ("Polymaker", "Bambu Lab", etc.) — critical for picking the right spool when several share material + color. Backend `UnlinkedSpool` schema gains `filament_vendor`; the search filter matches vendor text; the modal detail line now prefixes with `{vendor} · ` when available.
+
+### Server-Authoritative Locale
+
+- **Frontend follows the server's `settings.language` on first mount.** A new `LanguageSync` component pulls the authoritative language from `GET /settings` on app load and forces `i18n.changeLanguage(serverLang)` if the browser-detected locale differs. The farm operator configures the farm language once; individual browsers no longer override it via auto-detect. User-driven picks in Settings UI still write to the server (that path is unchanged).
+- **Startup locale reconciliation.** `_reconcile_locale_on_startup` in `main.py` realigns seeded `maintenance_types` / `notification_templates` with the current `settings.language` on every boot — idempotent, fixes drift from old installs that seeded EN defaults then switched the system language to UK. Also drops the dead `notification_language` row left behind by pre-0.3 versions; notifications now follow the `language` setting directly.
+
+### i18n
+
+- Hardcoded English strings replaced with `t()` calls in PrintModal's `FilamentMapping` (Type not found / Color mismatch / Ready badges) and `PrintersPage` maintenance tooltip (three branches: due, warning, both).
+- Migrated `inQueue_plural` → i18next-v21 `_one / _few / _many / _other` notation. Ukrainian now uses all three CLDR plural forms correctly; English uses `_one / _other`.
+- `locales.test.ts` parity check now normalizes CLDR plural suffixes before comparing EN ↔ UK key sets — different languages legitimately have different plural categories, and the raw-key check was structurally broken for plural-aware i18n keys.
+
+### Migrations
+
+- **m005 (A1 Jobox macro seed) — G-code line terminators added** to every command in `_JOBOX_A1_GCODE`. Some firmware parsers require the trailing `;`; missing terminators caused silent skip on certain A1 builds. Seed-only: existing installs that already applied m005 keep the old G-code; new installs get the fixed version. Re-import the macro from the UI if you need the fix on an existing install.
+
+### Upstream sync
+
+This release completes a focused pre-release batch from the v0.2.3 upstream audit — 9 security / correctness / small-feature items that shouldn't wait for the full port cycle. The large upstream items (2FA/OIDC/MFA cluster, Obico AI failure detection, X2D printer support, firmware rollback UI, MQTT queue-reliability fixes, China cloud region) are tracked in `temp/bambuddy-changes-audit-v0.2.3b3-v0.2.3.md` and will land on a separate `feature/upstream-v0.2.3` branch.
+
+---
+
 ## [0.3.1.2] - 2026-04-18
 
 ### Queue Card & Page UX Polish
