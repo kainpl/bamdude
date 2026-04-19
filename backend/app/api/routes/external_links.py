@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermissionIfAuthEnabled
+from backend.app.core.auth import RequirePermission
 from backend.app.core.config import settings as app_settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -34,7 +34,7 @@ router = APIRouter(prefix="/external-links", tags=["external-links"])
 @router.get("/", response_model=list[ExternalLinkResponse])
 async def list_external_links(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.EXTERNAL_LINKS_READ),
+    _: User | None = RequirePermission(Permission.EXTERNAL_LINKS_READ),
 ):
     """List all external links ordered by sort_order."""
     result = await db.execute(select(ExternalLink).order_by(ExternalLink.sort_order, ExternalLink.id))
@@ -46,7 +46,7 @@ async def list_external_links(
 async def create_external_link(
     link_data: ExternalLinkCreate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.EXTERNAL_LINKS_CREATE),
+    _: User | None = RequirePermission(Permission.EXTERNAL_LINKS_CREATE),
 ):
     """Create a new external link."""
     # Get the highest sort_order to place new link at end
@@ -74,7 +74,7 @@ async def create_external_link(
 async def get_external_link(
     link_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.EXTERNAL_LINKS_READ),
+    _: User | None = RequirePermission(Permission.EXTERNAL_LINKS_READ),
 ):
     """Get a specific external link."""
     result = await db.execute(select(ExternalLink).where(ExternalLink.id == link_id))
@@ -91,7 +91,7 @@ async def update_external_link(
     link_id: int,
     update_data: ExternalLinkUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.EXTERNAL_LINKS_UPDATE),
+    _: User | None = RequirePermission(Permission.EXTERNAL_LINKS_UPDATE),
 ):
     """Update an external link."""
     result = await db.execute(select(ExternalLink).where(ExternalLink.id == link_id))
@@ -117,7 +117,7 @@ async def update_external_link(
 async def delete_external_link(
     link_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.EXTERNAL_LINKS_DELETE),
+    _: User | None = RequirePermission(Permission.EXTERNAL_LINKS_DELETE),
 ):
     """Delete an external link."""
     result = await db.execute(select(ExternalLink).where(ExternalLink.id == link_id))
@@ -139,7 +139,7 @@ async def delete_external_link(
 async def reorder_external_links(
     reorder_data: ExternalLinkReorder,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.EXTERNAL_LINKS_UPDATE),
+    _: User | None = RequirePermission(Permission.EXTERNAL_LINKS_UPDATE),
 ):
     """Update the sort order of external links."""
     # Update sort_order for each link based on position in the list
@@ -165,7 +165,7 @@ async def upload_icon(
     link_id: int,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.EXTERNAL_LINKS_UPDATE),
+    _: User | None = RequirePermission(Permission.EXTERNAL_LINKS_UPDATE),
 ):
     """Upload a custom icon for an external link."""
     result = await db.execute(select(ExternalLink).where(ExternalLink.id == link_id))
@@ -214,7 +214,7 @@ async def upload_icon(
 async def delete_icon(
     link_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.EXTERNAL_LINKS_UPDATE),
+    _: User | None = RequirePermission(Permission.EXTERNAL_LINKS_UPDATE),
 ):
     """Delete the custom icon for an external link."""
     result = await db.execute(select(ExternalLink).where(ExternalLink.id == link_id))

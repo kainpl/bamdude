@@ -17,7 +17,7 @@ from backend.app.services.print_scheduler import PrintScheduler
 
 
 class TestConservativeDryingParams:
-    """Test _get_conservative_drying_params — picks safest temp/duration for mixed filaments."""
+    """Test _get_conservative_drying_params - picks safest temp/duration for mixed filaments."""
 
     @pytest.fixture
     def scheduler(self):
@@ -98,7 +98,7 @@ class TestConservativeDryingParams:
 
 
 class TestDryingPresets:
-    """Test _get_drying_presets — loads user presets from DB or falls back to defaults."""
+    """Test _get_drying_presets - loads user presets from DB or falls back to defaults."""
 
     @pytest.fixture
     def scheduler(self):
@@ -156,7 +156,7 @@ class TestDryingPresets:
 
 
 class TestSyncDryingState:
-    """Test _sync_drying_state — syncs in-memory state with actual printer status."""
+    """Test _sync_drying_state - syncs in-memory state with actual printer status."""
 
     @pytest.fixture
     def scheduler(self):
@@ -196,7 +196,7 @@ class TestSyncDryingState:
 
 
 class TestStopDrying:
-    """Test _stop_drying — sends stop commands and clears tracking."""
+    """Test _stop_drying - sends stop commands and clears tracking."""
 
     @pytest.fixture
     def scheduler(self):
@@ -293,7 +293,7 @@ class TestMinimumDryingTime:
 
         await scheduler._check_auto_drying(db, [item], set())
 
-        # Should NOT have sent stop command via humidity check — minimum time not elapsed
+        # Should NOT have sent stop command via humidity check - minimum time not elapsed
         # The only calls should NOT include the humidity-based stop
         for call in mock_pm.send_drying_command.call_args_list:
             # If any stop was called, it should NOT be from the humidity path
@@ -347,7 +347,7 @@ class TestMinimumDryingTime:
         await scheduler._check_auto_drying(db, [item], set())
 
         # Should have sent stop command (humidity-based stop after minimum time)
-        mock_pm.send_drying_command.assert_any_call(1, 0, temp=0, duration=0, mode=0)
+        mock_pm.send_drying_command.assert_any_call(1, 0, 0, 0, mode=0)
 
     @staticmethod
     def _make_setting(value):
@@ -588,7 +588,7 @@ class _DryingTestBase:
 
 
 class TestAmbientDrying(_DryingTestBase):
-    """Tests for ambient drying mode — drying based on humidity regardless of queue state."""
+    """Tests for ambient drying mode - drying based on humidity regardless of queue state."""
 
     @pytest.fixture
     def scheduler(self):
@@ -630,7 +630,7 @@ class TestAmbientDrying(_DryingTestBase):
         }
         db.execute = AsyncMock(side_effect=self._make_db_side_effect(settings_returns))
 
-        # Empty queue — ambient mode should still dry
+        # Empty queue - ambient mode should still dry
         await scheduler._check_auto_drying(db, [], set())
 
         mock_pm.send_drying_command.assert_called_once_with(1, 0, 45, 12, mode=1, filament="PLA")
@@ -736,7 +736,7 @@ class TestAmbientDrying(_DryingTestBase):
 
         await scheduler._check_auto_drying(db, [], set())
 
-        # Should NOT have sent stop — humidity still high, drying continues
+        # Should NOT have sent stop - humidity still high, drying continues
         for call in mock_pm.send_drying_command.call_args_list:
             assert call.kwargs.get("mode") != 0, "Should not stop drying in ambient mode with high humidity"
         assert 1 in scheduler._drying_in_progress
@@ -837,8 +837,8 @@ class TestBlockForDryingBugFix(_DryingTestBase):
 
         await scheduler._check_auto_drying(db, [item], set())
 
-        # Should have sent stop command — humidity dropped below threshold after 30+ min
-        mock_pm.send_drying_command.assert_any_call(1, 0, temp=0, duration=0, mode=0)
+        # Should have sent stop command - humidity dropped below threshold after 30+ min
+        mock_pm.send_drying_command.assert_any_call(1, 0, 0, 0, mode=0)
 
     @pytest.mark.asyncio
     @patch("backend.app.services.print_scheduler.printer_manager")
@@ -882,5 +882,5 @@ class TestBlockForDryingBugFix(_DryingTestBase):
 
         await scheduler._check_auto_drying(db, [item], set())
 
-        # Should NOT start drying — block mode with pending items
+        # Should NOT start drying - block mode with pending items
         mock_pm.send_drying_command.assert_not_called()

@@ -7,7 +7,7 @@ import { Card, CardContent, CardHeader } from './Card';
 import { Button } from './Button';
 import { useToast } from '../contexts/ToastContext';
 
-type LocalMode = 'immediate' | 'review' | 'print_queue' | 'file_manager' | 'proxy';
+type LocalMode = 'print_queue' | 'file_manager' | 'proxy';
 
 export function VirtualPrinterSettings() {
   const { t } = useTranslation();
@@ -16,7 +16,7 @@ export function VirtualPrinterSettings() {
 
   const [localEnabled, setLocalEnabled] = useState(false);
   const [localAccessCode, setLocalAccessCode] = useState('');
-  const [localMode, setLocalMode] = useState<LocalMode>('immediate');
+  const [localMode, setLocalMode] = useState<LocalMode>('file_manager');
   const [localModel, setLocalModel] = useState('BL-P001');
   const [localTargetPrinterId, setLocalTargetPrinterId] = useState<number | null>(null);
   const [localRemoteInterfaceIp, setLocalRemoteInterfaceIp] = useState('');
@@ -53,10 +53,10 @@ export function VirtualPrinterSettings() {
   useEffect(() => {
     if (settings) {
       setLocalEnabled(settings.enabled);
-      // Map legacy 'queue' mode to 'review'
-      let mode: LocalMode = settings.mode === 'queue' ? 'review' : settings.mode as LocalMode;
-      if (mode !== 'immediate' && mode !== 'review' && mode !== 'print_queue' && mode !== 'file_manager' && mode !== 'proxy') {
-        mode = 'immediate'; // fallback
+      // Map legacy modes to print_queue
+      let mode: LocalMode = settings.mode as LocalMode;
+      if (mode !== 'print_queue' && mode !== 'file_manager' && mode !== 'proxy') {
+        mode = 'file_manager'; // fallback for legacy immediate/review/queue modes
       }
       setLocalMode(mode);
       setLocalModel(settings.model);
@@ -79,9 +79,9 @@ export function VirtualPrinterSettings() {
       // Revert local state on error
       if (settings) {
         setLocalEnabled(settings.enabled);
-        // Map legacy 'queue' mode to 'review'
-        const mode = settings.mode === 'queue' ? 'review' : settings.mode;
-        setLocalMode(['immediate', 'review', 'print_queue', 'file_manager', 'proxy'].includes(mode) ? mode as LocalMode : 'immediate');
+        // Map legacy modes to print_queue
+        const mode = settings.mode;
+        setLocalMode(['print_queue', 'file_manager', 'proxy'].includes(mode) ? mode as LocalMode : 'file_manager');
         setLocalModel(settings.model);
         setLocalTargetPrinterId(settings.target_printer_id);
       }
@@ -408,30 +408,6 @@ export function VirtualPrinterSettings() {
           <div className="py-3 border-t border-bambu-dark-tertiary">
             <div className="text-white font-medium mb-2">{t('virtualPrinter.mode.title')}</div>
             <div className="grid grid-cols-2 gap-3">
-              <button
-                onClick={() => handleModeChange('immediate')}
-                disabled={pendingAction === 'mode'}
-                className={`p-3 rounded-lg border text-left transition-colors ${
-                  localMode === 'immediate'
-                    ? 'border-bambu-green bg-bambu-green/10'
-                    : 'border-bambu-dark-tertiary hover:border-bambu-gray'
-                }`}
-              >
-                <div className="text-white font-medium">{t('virtualPrinter.mode.archive')}</div>
-                <div className="text-xs text-bambu-gray">{t('virtualPrinter.mode.archiveDesc')}</div>
-              </button>
-              <button
-                onClick={() => handleModeChange('review')}
-                disabled={pendingAction === 'mode'}
-                className={`p-3 rounded-lg border text-left transition-colors ${
-                  localMode === 'review'
-                    ? 'border-bambu-green bg-bambu-green/10'
-                    : 'border-bambu-dark-tertiary hover:border-bambu-gray'
-                }`}
-              >
-                <div className="text-white font-medium">{t('virtualPrinter.mode.review')}</div>
-                <div className="text-xs text-bambu-gray">{t('virtualPrinter.mode.reviewDesc')}</div>
-              </button>
               <button
                 onClick={() => handleModeChange('print_queue')}
                 disabled={pendingAction === 'mode'}

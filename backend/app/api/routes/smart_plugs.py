@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.api.routes.settings import get_setting
-from backend.app.core.auth import RequirePermissionIfAuthEnabled
+from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.printer import Printer
@@ -20,6 +20,8 @@ from backend.app.schemas.smart_plug import (
     HASensorEntity,
     HATestConnectionRequest,
     HATestConnectionResponse,
+    RESTTestConnectionRequest,
+    RESTTestConnectionResponse,
     SmartPlugControl,
     SmartPlugCreate,
     SmartPlugEnergy,
@@ -33,6 +35,7 @@ from backend.app.services.homeassistant import homeassistant_service
 from backend.app.services.mqtt_relay import mqtt_relay
 from backend.app.services.notification_service import notification_service
 from backend.app.services.printer_manager import printer_manager
+from backend.app.services.rest_smart_plug import rest_smart_plug_service
 from backend.app.services.tasmota import tasmota_service
 
 logger = logging.getLogger(__name__)
@@ -43,7 +46,7 @@ router = APIRouter(prefix="/smart-plugs", tags=["smart-plugs"])
 @router.get("/", response_model=list[SmartPlugResponse])
 async def list_smart_plugs(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SMART_PLUGS_READ),
+    _: User | None = RequirePermission(Permission.SMART_PLUGS_READ),
 ):
     """List all smart plugs."""
     result = await db.execute(select(SmartPlug).order_by(SmartPlug.name))
@@ -54,7 +57,7 @@ async def list_smart_plugs(
 async def create_smart_plug(
     data: SmartPlugCreate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SMART_PLUGS_CREATE),
+    _: User | None = RequirePermission(Permission.SMART_PLUGS_CREATE),
 ):
     """Create a new smart plug."""
     # Validate printer_id if provided
@@ -156,7 +159,7 @@ async def create_smart_plug(
 async def get_smart_plug_by_printer(
     printer_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SMART_PLUGS_READ),
+    _: User | None = RequirePermission(Permission.SMART_PLUGS_READ),
 ):
     """Get the main smart plug assigned to a printer.
 
@@ -183,7 +186,7 @@ async def get_smart_plug_by_printer(
 async def get_script_plugs_by_printer(
     printer_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SMART_PLUGS_READ),
+    _: User | None = RequirePermission(Permission.SMART_PLUGS_READ),
 ):
     """Get all HA entities assigned to a printer for display on printer card.
 
@@ -260,7 +263,7 @@ class DiscoveredTasmotaDevice(BaseModel):
 @router.post("/discover/scan", response_model=TasmotaScanStatus)
 async def start_tasmota_scan(
     request: TasmotaScanRequest | None = Body(default=None),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SMART_PLUGS_READ),
+    _: User | None = RequirePermission(Permission.SMART_PLUGS_READ),
 ):
     """Start an IP range scan for Tasmota devices.
 
@@ -286,7 +289,7 @@ async def start_tasmota_scan(
 
 @router.get("/discover/status", response_model=TasmotaScanStatus)
 async def get_tasmota_scan_status(
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SMART_PLUGS_READ),
+    _: User | None = RequirePermission(Permission.SMART_PLUGS_READ),
 ):
     """Get the current Tasmota scan status."""
     scanned, total = tasmota_scanner.progress
@@ -299,7 +302,7 @@ async def get_tasmota_scan_status(
 
 @router.post("/discover/stop", response_model=TasmotaScanStatus)
 async def stop_tasmota_scan(
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SMART_PLUGS_READ),
+    _: User | None = RequirePermission(Permission.SMART_PLUGS_READ),
 ):
     """Stop the current Tasmota scan."""
     tasmota_scanner.stop()
@@ -313,7 +316,7 @@ async def stop_tasmota_scan(
 
 @router.get("/discover/devices", response_model=list[DiscoveredTasmotaDevice])
 async def get_discovered_tasmota_devices(
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SMART_PLUGS_READ),
+    _: User | None = RequirePermission(Permission.SMART_PLUGS_READ),
 ):
     """Get list of discovered Tasmota devices."""
     return [
@@ -334,18 +337,28 @@ async def get_discovered_tasmota_devices(
 @router.post("/ha/test-connection", response_model=HATestConnectionResponse)
 async def test_ha_connection(
     request: HATestConnectionRequest,
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SMART_PLUGS_CONTROL),
+    _: User | None = RequirePermission(Permission.SMART_PLUGS_CONTROL),
 ):
     """Test connection to Home Assistant."""
     result = await homeassistant_service.test_connection(request.url, request.token)
     return HATestConnectionResponse(**result)
 
 
+@router.post("/rest/test-connection", response_model=RESTTestConnectionResponse)
+async def test_rest_connection(
+    request: RESTTestConnectionRequest,
+    _: User | None = RequirePermission(Permission.SMART_PLUGS_CONTROL),
+):
+    """Test connection to a REST/HTTP endpoint."""
+    result = await rest_smart_plug_service.test_connection(request.url, request.method, request.headers)
+    return RESTTestConnectionResponse(**result)
+
+
 @router.get("/ha/entities", response_model=list[HAEntity])
 async def list_ha_entities(
     db: AsyncSession = Depends(get_db),
     search: str | None = None,
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SMART_PLUGS_READ),
+    _: User | None = RequirePermission(Permission.SMART_PLUGS_READ),
 ):
     """List available Home Assistant entities.
 
@@ -372,7 +385,7 @@ async def list_ha_entities(
 @router.get("/ha/sensors", response_model=list[HASensorEntity])
 async def list_ha_sensor_entities(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SMART_PLUGS_READ),
+    _: User | None = RequirePermission(Permission.SMART_PLUGS_READ),
 ):
     """List available Home Assistant sensor entities for energy monitoring.
 
@@ -398,7 +411,7 @@ async def list_ha_sensor_entities(
 async def get_smart_plug(
     plug_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SMART_PLUGS_READ),
+    _: User | None = RequirePermission(Permission.SMART_PLUGS_READ),
 ):
     """Get a specific smart plug."""
     result = await db.execute(select(SmartPlug).where(SmartPlug.id == plug_id))
@@ -413,7 +426,7 @@ async def update_smart_plug(
     plug_id: int,
     data: SmartPlugUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SMART_PLUGS_UPDATE),
+    _: User | None = RequirePermission(Permission.SMART_PLUGS_UPDATE),
 ):
     """Update a smart plug."""
     result = await db.execute(select(SmartPlug).where(SmartPlug.id == plug_id))
@@ -523,7 +536,7 @@ async def update_smart_plug(
 async def delete_smart_plug(
     plug_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SMART_PLUGS_DELETE),
+    _: User | None = RequirePermission(Permission.SMART_PLUGS_DELETE),
 ):
     """Delete a smart plug."""
     result = await db.execute(select(SmartPlug).where(SmartPlug.id == plug_id))
@@ -557,6 +570,8 @@ async def _get_service_for_plug(plug: SmartPlug, db: AsyncSession):
         ha_settings = await get_homeassistant_settings(db)
         homeassistant_service.configure(ha_settings["ha_url"], ha_settings["ha_token"])
         return homeassistant_service
+    if plug.plug_type == "rest":
+        return rest_smart_plug_service
     return tasmota_service
 
 
@@ -565,7 +580,7 @@ async def control_smart_plug(
     plug_id: int,
     control: SmartPlugControl,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SMART_PLUGS_CONTROL),
+    _: User | None = RequirePermission(Permission.SMART_PLUGS_CONTROL),
 ):
     """Manual control: on/off/toggle."""
     result = await db.execute(select(SmartPlug).where(SmartPlug.id == plug_id))
@@ -675,7 +690,7 @@ async def trigger_associated_scripts(printer_id: int, plug_state: str, db: Async
 async def get_plug_status(
     plug_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SMART_PLUGS_READ),
+    _: User | None = RequirePermission(Permission.SMART_PLUGS_READ),
 ):
     """Get current plug status from device including energy data."""
     result = await db.execute(select(SmartPlug).where(SmartPlug.id == plug_id))
@@ -809,7 +824,7 @@ async def check_power_alerts(plug: SmartPlug, current_power: float | None, db: A
 @router.post("/test-connection")
 async def test_connection(
     data: SmartPlugTestConnection,
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SMART_PLUGS_CONTROL),
+    _: User | None = RequirePermission(Permission.SMART_PLUGS_CONTROL),
 ):
     """Test connection to a Tasmota device."""
     result = await tasmota_service.test_connection(

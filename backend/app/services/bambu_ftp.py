@@ -16,6 +16,43 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
+class FileNotOnPrinterError(Exception):
+    """Raised when a remote FTP path returns 550 (file not found).
+
+    550 means the file does not exist at that path — retrying the same path
+    will never succeed. Callers use this sentinel with with_ftp_retry's
+    non_retry_exceptions to immediately move on to the next candidate path
+    instead of burning the full retry budget (up to 11 × 30s per path) on
+    a lookup that cannot recover.
+    """
+
+
+def _graceful_close_data_conn(conn) -> None:
+    """Close an FTP data-channel socket, draining the TLS layer first.
+
+    For TLS-wrapped data channels (implicit FTPS) we must ``unwrap()`` the
+    SSL layer before closing the underlying TCP socket; otherwise the
+    kernel can send a RST in place of FIN while the local send buffer
+    still contains the last chunk, causing the server to record a 0-byte
+    upload. This matches the behavior of Python's own
+    ``ftplib.FTP.storbinary``, which also calls ``conn.unwrap()`` before
+    the transfercmd context manager closes the socket.
+    """
+    try:
+        if isinstance(conn, ssl.SSLSocket):
+            try:
+                conn.unwrap()
+            except (OSError, ssl.SSLError):
+                # Peer already closed / TLS layer already shut - fall through
+                # to the plain close below.
+                pass
+    finally:
+        try:
+            conn.close()
+        except OSError:
+            pass
+
+
 class ImplicitFTP_TLS(FTP_TLS):
     """FTP_TLS subclass for implicit FTPS (port 990) with model-specific SSL handling.
 
@@ -83,7 +120,7 @@ class BambuFTPClient:
     # These models have varying FTP SSL behavior depending on firmware version
     A1_MODELS = ("A1", "A1 Mini")
     # Chunk size for manual upload transfer (64KB)
-    # Smaller chunks provide smoother progress reporting — at typical printer FTP
+    # Smaller chunks provide smoother progress reporting - at typical printer FTP
     # speeds (~50-100KB/s) this gives a progress update roughly every second.
     CHUNK_SIZE = 64 * 1024
 
@@ -280,6 +317,13 @@ class BambuFTPClient:
             logger.info("Successfully downloaded %s to %s (%s bytes)", remote_path, local_path, file_size)
             return True
         except (OSError, ftplib.Error) as e:
+            # 550 means the file is not at this path. Surface as a sentinel so
+            # callers can abandon this path immediately and advance to the next
+            # candidate instead of retrying 11× at 30s intervals (the pattern
+            # that cost #972's reporter ~48 min of dead retries).
+            if isinstance(e, ftplib.error_perm) and str(e).startswith("550"):
+                logger.info("FTP download failed for %s: %s (not on printer)", remote_path, e)
+                raise FileNotOnPrinterError(f"{remote_path}: {e}") from e
             # Log at INFO level so we can see failures in normal logs
             logger.info("FTP download failed for %s: %s", remote_path, e)
             # Clean up partial file if it exists
@@ -408,10 +452,7 @@ class BambuFTPClient:
                     logger.error("FTP connection lost during upload: %s", e)
                     raise
                 finally:
-                    try:
-                        conn.close()
-                    except OSError:
-                        pass
+                    _graceful_close_data_conn(conn)
 
             # Wait for the server's 226 "Transfer complete" response to confirm
             # the file has been flushed to the SD card. Without this, the printer
@@ -420,7 +461,7 @@ class BambuFTPClient:
             # See: https://bugs.python.org/issue25458 (ftplib response desync)
             try:
                 old_timeout = self._ftp.sock.gettimeout()
-                # Use a generous timeout — H2D printers can take 30+ seconds
+                # Use a generous timeout - H2D printers can take 30+ seconds
                 # to send the 226 after the data channel closes.
                 self._ftp.sock.settimeout(max(self.timeout, 60))
                 try:
@@ -429,7 +470,7 @@ class BambuFTPClient:
                 finally:
                     self._ftp.sock.settimeout(old_timeout)
             except Exception as e:
-                # Timeout or error reading 226 — log but proceed, the data
+                # Timeout or error reading 226 - log but proceed, the data
                 # was fully sent so the file is likely on the SD card.
                 logger.warning(
                     "FTP STOR confirmation not received for %s (proceeding): %s (%s)",
@@ -504,10 +545,7 @@ class BambuFTPClient:
                 logger.error("FTP connection lost during upload_bytes: %s", e)
                 raise
             finally:
-                try:
-                    conn.close()
-                except OSError:
-                    pass
+                _graceful_close_data_conn(conn)
             # Wait for 226 confirmation (see upload_file for rationale)
             try:
                 old_timeout = self._ftp.sock.gettimeout()
@@ -517,7 +555,7 @@ class BambuFTPClient:
                 finally:
                     self._ftp.sock.settimeout(old_timeout)
             except Exception:
-                pass  # Best-effort — data was sent, proceed
+                pass  # Best-effort - data was sent, proceed
             return True
         except (OSError, ftplib.Error):
             return False
@@ -706,7 +744,16 @@ async def download_file_try_paths_async(
             return False
 
         try:
-            return any(client.download_to_file(remote_path, local_path) for remote_path in remote_paths)
+            # FileNotOnPrinterError signals "try the next path", not "give up" —
+            # this function's whole purpose is to walk a list of candidates
+            # over one connection. Only a real transport error should bubble.
+            for remote_path in remote_paths:
+                try:
+                    if client.download_to_file(remote_path, local_path):
+                        return True
+                except FileNotOnPrinterError:
+                    continue
+            return False
         finally:
             client.disconnect()
 

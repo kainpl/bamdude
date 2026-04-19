@@ -5,6 +5,7 @@ uvicorn[standard]>=0.27.0
 # Database
 sqlalchemy>=2.0.0
 aiosqlite>=0.19.0
+asyncpg>=0.29.0  # PostgreSQL async driver (optional — install only if using PostgreSQL)
 greenlet>=3.0.0
 
 # Pydantic
@@ -17,7 +18,7 @@ aioftp>=0.22.0
 
 # Virtual Printer (emulates Bambu printer for slicer uploads)
 pyftpdlib>=2.0.0
-cryptography>=46.0.5
+cryptography>=46.0.6  # CVE-2026-34073 (X.509 wildcard SAN validation bypass)
 
 # 3MF Processing (standard zipfile is sufficient for Bambu 3MF files)
 defusedxml>=0.7.0  # Safe XML parsing (prevents XXE attacks)
@@ -29,7 +30,7 @@ openpyxl>=3.1.0
 pywebpush>=2.0.0
 
 # Utilities
-python-multipart>=0.0.6
+python-multipart>=0.0.26  # CVE-2026-40347 (malformed multipart DoS)
 aiofiles>=23.0.0
 
 # QR Code generation
@@ -46,16 +47,20 @@ psutil>=6.0.0
 # Authentication
 PyJWT>=2.12.0
 passlib[bcrypt]>=1.7.4
+ldap3>=2.9.0
 
 # Plate Detection (optional - enables build plate empty detection)
 opencv-python-headless>=4.8.0
 numpy>=1.24.0
 
 # Development
-pytest>=8.0.0
+pytest>=9.0.3  # CVE-2025-71176 (tmp_path traversal)
 pytest-asyncio>=0.23.0
 httpx>=0.26.0
+# Chrome/Firefox TLS impersonation — needed for bambulab.com firmware check
+# because Cloudflare blocks plain httpx via TLS fingerprinting.
+curl_cffi>=0.15.0
 ruff>=0.2.0
 
-pillow>=12.1.1
+pillow>=12.2.0  # CVE-2026-40192 (JPEG decoding heap overflow)
 aiogram>=3.20

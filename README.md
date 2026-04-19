@@ -1,5 +1,9 @@
 <p align="center">
-  <img src="static/img/bamdude_logo_dark.png" alt="BamDude Logo" width="300">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="static/img/bamdude_logo_dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="static/img/bamdude_logo_light.png">
+    <img src="static/img/bamdude_logo_dark.png" alt="BamDude Logo" width="300">
+  </picture>
 </p>
 
 <h1 align="center">BamDude</h1>
@@ -54,8 +58,9 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 
 ### Print Archive
 - Automatic 3MF archiving with metadata
+- **3MF download recovery** — when the printer's FTP fails during archive, recovery triggers fire on startup / printer reconnect / print-complete / manual button; per-archive lock prevents duplicate FTP sessions
 - 3D model preview (Three.js)
-- Duplicate detection & full-text search
+- Duplicate detection & full-text search (source-hash chain-of-custody for patched files)
 - Photo attachments & failure analysis
 - Timelapse editor (trim, speed, music)
 - Re-print to any printer with AMS mapping
@@ -78,8 +83,13 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 - Per-printer queues with status tracking (idle/printing/paused/error)
 - Auto error-pause on print failure (queue stops, user decides next step)
 - Staggered start for farms (limit concurrent heating, bed temp monitoring)
+- **Swap Mode** — A1 Mini / A1 plate swapper with multi-profile support (Kit, STL, JobOx), auto-detect swap files, per-job event selection (start sequence / change table), plate-clear auto-bypass
+- **Swap macro auto-execution** — `swap_mode_start` before print, `swap_mode_change_table` after print, with ACK + stg_cur completion tracking, queue pause on failure
+- **Quick Vibration Check toggle** — per-job toggle; when disabled, 3MF gcode post-processor comments out `M970` commands, recalculates MD5 sidecars, repacks archive
+- **G-code macros** — execute from printer menu, ACK-based MQTT confirmation, `stg_cur` completion tracking, real-time status on printer card
+- Model-aware maintenance types with history tracking and Excel export
 - Clear plate confirmation between prints
-- Smart plug integration (Tasmota, HA, MQTT)
+- Smart plug integration (Tasmota, HA, MQTT, REST/webhook)
 - Energy consumption tracking
 - Auto power-on/off
 - Background print dispatch with WebSocket progress
@@ -118,7 +128,7 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 - 13 handler modules, 171 i18n keys (EN/UK), MarkdownV2 formatting
 
 ### Notifications
-- Telegram, WhatsApp, Discord, Email, Pushover, ntfy
+- Telegram (auto-restart bot on config change), Discord, Email, Pushover, ntfy, CallMeBot
 - Home Assistant, custom webhooks
 - Customizable message templates (MarkdownV2 editor)
 - Per-chat quiet hours & daily digest (Telegram)
@@ -141,8 +151,9 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 - Prometheus metrics for Grafana
 - Local OrcaSlicer preset import
 - K-profiles (pressure advance)
-- GitHub backup
+- Git backup (GitHub + GitLab)
 - API keys & webhooks
+- LDAP/Active Directory authentication
 
 ### Virtual Printer & Remote Printing
 - Proxy Mode for remote printing via TLS relay
@@ -153,6 +164,7 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 ### Authentication
 - Group-based permissions (80+ granular)
 - JWT tokens, API key support
+- LDAP/Active Directory with group mapping
 - Per-user Bambu Cloud accounts
 - Advanced Auth via Email (SMTP)
 - Per-user email notifications
@@ -161,7 +173,7 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 </tr>
 </table>
 
-**Plus:** Customizable themes, mobile responsive, multi-language (EN/UK/DE/JA/IT), auto updates, database backup/restore
+**Plus:** Customizable themes, mobile responsive, multi-language (EN/UK), auto updates, database backup/restore, PostgreSQL support
 
 ---
 
@@ -208,6 +220,14 @@ pip install -r requirements.txt
 uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
 ```
 
+### Upgrading
+
+**From Bambuddy 2.2.2:** Place your `bambuddy.db` in the `data/` directory and start BamDude. Data is automatically imported into a fresh database. The original file is preserved as backup.
+
+**From BamDude 3.0.1:** Place your `bambuddy.db` in `data/` and start. The file is renamed to `bamdude.db` and schema is upgraded automatically.
+
+**Docker volume migration:** If upgrading from the `bambuddy-he` Docker image, run `install/migrate-volumes.sh` first to copy data volumes.
+
 ### Telegram Bot Setup
 
 1. Create a bot via [@BotFather](https://t.me/BotFather), get the token
@@ -230,7 +250,7 @@ uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
 |-----------|------------|
 | Backend | Python, FastAPI, SQLAlchemy, aiogram 3.x |
 | Frontend | React 19, TypeScript, Tailwind CSS 4 |
-| Database | SQLite (async) |
+| Database | SQLite (default) or PostgreSQL |
 | 3D Viewer | Three.js |
 | Communication | MQTT (TLS), FTPS |
 | Telegram | aiogram 3.x, MarkdownV2, FSM |

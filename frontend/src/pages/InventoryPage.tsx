@@ -7,7 +7,7 @@ import {
   TrendingDown, Layers, Printer, AlertTriangle, X, Clock, LayoutGrid, TableProperties, Columns,
   ArrowUp, ArrowDown, ArrowUpDown, Group, ChevronDown, Check, RefreshCw,
 } from 'lucide-react';
-import { api, spoolbuddyApi } from '../api/client';
+import { api } from '../api/client';
 import type { InventorySpool, SpoolAssignment, SpoolCatalogEntry } from '../api/client';
 import { Button } from '../components/Button';
 import { SpoolFormModal } from '../components/SpoolFormModal';
@@ -132,7 +132,7 @@ type CellCtx = {
   onSyncWeight?: (spool: InventorySpool) => void;
 };
 
-// Column header labels (25 columns — matching SpoolBuddy exactly)
+// Column header labels (25 columns)
 const columnHeaders: Record<string, (t: TFn) => string> = {
   id: (t) => t('inventory.columns.id'),
   added_time: (t) => t('inventory.columns.added_time'),
@@ -164,7 +164,7 @@ const columnHeaders: Record<string, (t: TFn) => string> = {
   weight_check: (t) => t('inventory.columns.weight_check'),
 };
 
-// Column cell renderers (25 columns — matching SpoolBuddy exactly)
+// Column cell renderers (25 columns)
 const columnCells: Record<string, (ctx: CellCtx) => ReactNode> = {
   id: ({ spool }) => (
     <span className="text-sm font-medium text-white">{spool.id}</span>
@@ -302,7 +302,7 @@ const columnCells: Record<string, (ctx: CellCtx) => ReactNode> = {
     const coreWeight = spool.core_weight || 0;
     const calculatedWeight = Math.max(0, spool.label_weight - spool.weight_used) + coreWeight;
 
-    // Edge case: scale < core_weight means spool is empty or not on scale — treat as match
+    // Edge case: scale < core_weight means spool is empty or not on scale - treat as match
     let difference: number;
     let isMatch: boolean;
     if (scaleWeight < coreWeight) {
@@ -350,7 +350,7 @@ const columnCells: Record<string, (ctx: CellCtx) => ReactNode> = {
   },
 };
 
-// Sort value extractors — return a comparable value for each sortable column
+// Sort value extractors - return a comparable value for each sortable column
 const columnSortValues: Record<string, (spool: InventorySpool, assignmentMap: Record<number, SpoolAssignment>) => string | number> = {
   id: (s) => s.id,
   added_time: (s) => s.created_at || '',
@@ -515,18 +515,6 @@ function InventoryPage() {
       showToast(t('inventory.spoolRestored'), 'success');
     },
   });
-
-  const handleSyncWeight = async (spool: InventorySpool) => {
-    if (spool.last_scale_weight == null) return;
-    try {
-      await spoolbuddyApi.updateSpoolWeight(spool.id, spool.last_scale_weight);
-      queryClient.invalidateQueries({ queryKey: ['inventory-spools'] });
-      const spoolName = [spool.brand, spool.material, spool.color_name].filter(Boolean).join(' ');
-      showToast(`Synced "${spoolName}" to scale weight`, 'success');
-    } catch {
-      showToast('Failed to sync weight', 'error');
-    }
-  };
 
   // Low stock threshold from backend settings
   const lowStockThreshold = settings?.low_stock_threshold ?? 20;
@@ -766,7 +754,7 @@ function InventoryPage() {
     return items;
   }, [sortedSpools, groupSimilar, assignmentMap]);
 
-  // Pagination (after sorting) — pageSize -1 means "All"
+  // Pagination (after sorting) - pageSize -1 means "All"
   const showAll = pageSize === -1;
   const totalDisplayItems = displayItems.length;
   const effectivePageSize = showAll ? totalDisplayItems || 1 : pageSize;
@@ -810,15 +798,15 @@ function InventoryPage() {
   };
 
   return (
-    <div className="p-4 md:p-6 space-y-6">
+    <div className="p-4 md:p-6 space-y-4">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <div className="flex items-center gap-3">
-            <Package className="w-6 h-6 text-bambu-green" />
+            {/*<Disc3 className="w-6 h-6 text-bambu-green" />*/}
             <h1 className="text-2xl font-bold text-white">{t('inventory.title')}</h1>
           </div>
-          <p className="text-sm text-bambu-gray mt-1 ml-9">{t('inventory.noSpools').split('.')[0] ? '' : ''}</p>
+          <p className="text-sm text-bambu-gray">{t('inventory.noSpools').split('.')[0] ? '' : ''}</p>
         </div>
         <Button onClick={() => setFormModal({ spool: null })}>
           <Plus className="w-4 h-4" />
@@ -830,7 +818,7 @@ function InventoryPage() {
       {stats && !isLoading && (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
           {/* Total Inventory */}
-          <div className="bg-bambu-dark-secondary rounded-lg p-4">
+          <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg p-4">
             <div className="flex items-center gap-2 mb-1">
               <Package className="w-4 h-4 text-bambu-green" />
               <span className="text-xs text-bambu-gray font-medium uppercase tracking-wide">{t('inventory.totalInventory')}</span>
@@ -840,7 +828,7 @@ function InventoryPage() {
           </div>
 
           {/* Total Consumed */}
-          <div className="bg-bambu-dark-secondary rounded-lg p-4">
+          <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg p-4">
             <div className="flex items-center gap-2 mb-1">
               <TrendingDown className="w-4 h-4 text-blue-400" />
               <span className="text-xs text-bambu-gray font-medium uppercase tracking-wide">{t('inventory.totalConsumed')}</span>
@@ -850,7 +838,7 @@ function InventoryPage() {
           </div>
 
           {/* By Material */}
-          <div className="bg-bambu-dark-secondary rounded-lg p-4">
+          <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg p-4">
             <div className="flex items-center gap-2 mb-1">
               <Layers className="w-4 h-4 text-green-400" />
               <span className="text-xs text-bambu-gray font-medium uppercase tracking-wide">{t('inventory.byMaterial')}</span>
@@ -868,7 +856,7 @@ function InventoryPage() {
           </div>
 
           {/* In Printer */}
-          <div className="bg-bambu-dark-secondary rounded-lg p-4">
+          <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg p-4">
             <div className="flex items-center gap-2 mb-1">
               <Printer className="w-4 h-4 text-purple-400" />
               <span className="text-xs text-bambu-gray font-medium uppercase tracking-wide">{t('inventory.inPrinter')}</span>
@@ -878,7 +866,7 @@ function InventoryPage() {
           </div>
 
           {/* Low Stock */}
-          <div className="bg-bambu-dark-secondary rounded-lg p-4">
+          <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg p-4">
             <div className="flex items-center gap-2 mb-1">
               <AlertTriangle className="w-4 h-4 text-yellow-400" />
               <span className="text-xs text-bambu-gray font-medium uppercase tracking-wide">{t('inventory.lowStock')}</span>
@@ -1360,7 +1348,6 @@ function InventoryPage() {
                           currencySymbol={currencySymbol}
                           dateFormat={dateFormat}
                           t={t}
-                          onSyncWeight={handleSyncWeight}
                         />
                       );
                     }
@@ -1383,7 +1370,6 @@ function InventoryPage() {
                         currencySymbol={currencySymbol}
                         dateFormat={dateFormat}
                         t={t}
-                        onSyncWeight={handleSyncWeight}
                       />
                     );
                   })}
@@ -1792,7 +1778,7 @@ function SpoolTableGroup({
   );
 }
 
-/* Empty state matching SpoolBuddy's design */
+/* Empty state */
 function EmptyFilterState({
   hasFilters,
   onAddSpool,

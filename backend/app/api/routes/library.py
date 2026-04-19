@@ -19,7 +19,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.app.core.auth import (
     require_ownership_permission,
-    require_permission_if_auth_enabled,
+    require_permission,
 )
 from backend.app.core.config import settings as app_settings
 from backend.app.core.database import get_db
@@ -62,6 +62,21 @@ from backend.app.utils.threemf_tools import extract_nozzle_mapping_from_3mf
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/library", tags=["library"])
+
+
+def _clean_3mf_metadata(obj):
+    """Remove non-JSON-serializable data (bytes, internal keys) from 3MF metadata."""
+    if isinstance(obj, dict):
+        return {
+            k: _clean_3mf_metadata(v)
+            for k, v in obj.items()
+            if not isinstance(v, bytes) and k not in ("_thumbnail_data", "_thumbnail_ext")
+        }
+    elif isinstance(obj, list):
+        return [_clean_3mf_metadata(i) for i in obj if not isinstance(i, bytes)]
+    elif isinstance(obj, bytes):
+        return None
+    return obj
 
 
 def get_library_dir() -> Path:
@@ -243,7 +258,7 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", "
 async def list_folders(
     response: Response,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_READ)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_READ)),
 ):
     """Get all folders as a tree structure."""
     # Prevent browser caching of folder list
@@ -302,7 +317,7 @@ async def list_folders(
 async def get_folders_by_project(
     project_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_READ)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_READ)),
 ):
     """Get all folders linked to a specific project."""
     result = await db.execute(
@@ -347,7 +362,7 @@ async def get_folders_by_project(
 async def get_folders_by_archive(
     archive_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_READ)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_READ)),
 ):
     """Get all folders linked to a specific archive."""
     result = await db.execute(
@@ -393,7 +408,7 @@ async def get_folders_by_archive(
 async def create_folder(
     data: FolderCreate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_UPLOAD)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD)),
 ):
     """Create a new folder."""
     # Verify parent exists if specified
@@ -452,7 +467,7 @@ async def create_folder(
 async def get_folder(
     folder_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_READ)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_READ)),
 ):
     """Get a folder by ID."""
     result = await db.execute(
@@ -495,7 +510,7 @@ async def update_folder(
     folder_id: int,
     data: FolderUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_UPDATE_ALL)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_UPDATE_ALL)),
 ):
     """Update a folder.
 
@@ -590,7 +605,7 @@ async def update_folder(
 async def delete_folder(
     folder_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_DELETE_ALL)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_DELETE_ALL)),
 ):
     """Delete a folder and all its contents (cascade).
 
@@ -640,6 +655,7 @@ async def delete_folder(
 
     # Delete folder (cascade will handle files and subfolders)
     await db.delete(folder)
+    await db.commit()
 
     return {"status": "success", "message": "Folder deleted"}
 
@@ -707,7 +723,7 @@ def _validate_external_path(path_str: str) -> Path:
 async def create_external_folder(
     data: ExternalFolderCreate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_UPLOAD)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD)),
 ):
     """Create an external folder that points to a host directory."""
     resolved = _validate_external_path(data.external_path)
@@ -760,12 +776,12 @@ async def create_external_folder(
 async def scan_external_folder(
     folder_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_UPLOAD)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD)),
 ):
     """Scan an external folder and sync files to the database.
 
     Discovers new files, removes DB entries for deleted files.
-    Does not copy files — stores the external path directly.
+    Does not copy files - stores the external path directly.
     """
     result = await db.execute(select(LibraryFolder).where(LibraryFolder.id == folder_id))
     folder = result.scalar_one_or_none()
@@ -779,18 +795,65 @@ async def scan_external_folder(
     if not ext_path.exists() or not ext_path.is_dir():
         raise HTTPException(status_code=400, detail=f"External path is not accessible: {folder.external_path}")
 
-    # Get existing DB files for this folder
+    # Collect all existing child external subfolder IDs (walk parent chain to find descendants)
+    all_folder_ids = {folder_id}
+    queue = [folder_id]
+    while queue:
+        parent = queue.pop()
+        children_result = await db.execute(select(LibraryFolder.id).where(LibraryFolder.parent_id == parent))
+        for (child_id,) in children_result.all():
+            all_folder_ids.add(child_id)
+            queue.append(child_id)
+
+    # Get existing DB files across ALL folder IDs (root + subfolders)
     existing_result = await db.execute(
-        select(LibraryFile).where(LibraryFile.folder_id == folder_id, LibraryFile.is_external.is_(True))
+        select(LibraryFile).where(LibraryFile.folder_id.in_(all_folder_ids), LibraryFile.is_external.is_(True))
     )
     existing_files = {f.file_path: f for f in existing_result.scalars().all()}
+
+    # Build folder cache mapping relative paths to folder IDs
+    folder_cache: dict[str, int] = {"": folder_id}
 
     # Scan the directory
     added = 0
     removed = 0
     found_paths = set()
 
-    for dirpath, _dirnames, filenames in os.walk(ext_path):
+    for dirpath, dirnames, filenames in os.walk(ext_path):
+        # Filter hidden directories unless configured
+        if not folder.external_show_hidden:
+            dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+
+        # Compute relative directory path from ext_path
+        rel_dir = str(Path(dirpath).relative_to(ext_path)).replace("\\", "/")
+        if rel_dir == ".":
+            rel_dir = ""
+
+        # Create subfolder chain in DB when new directories are encountered
+        target_folder_id = folder_cache.get(rel_dir)
+        if target_folder_id is None:
+            parts = rel_dir.split("/")
+            current_path = ""
+            current_parent_id = folder_id
+            for part in parts:
+                current_path = f"{current_path}/{part}" if current_path else part
+                if current_path in folder_cache:
+                    current_parent_id = folder_cache[current_path]
+                else:
+                    # Create subfolder in DB
+                    new_folder = LibraryFolder(
+                        name=part,
+                        parent_id=current_parent_id,
+                        is_external=True,
+                        external_path=str(ext_path / current_path),
+                        external_show_hidden=folder.external_show_hidden,
+                    )
+                    db.add(new_folder)
+                    await db.flush()
+                    folder_cache[current_path] = new_folder.id
+                    all_folder_ids.add(new_folder.id)
+                    current_parent_id = new_folder.id
+            target_folder_id = folder_cache[current_path]
         for filename in filenames:
             # Skip hidden files unless configured
             if not folder.external_show_hidden and filename.startswith("."):
@@ -840,7 +903,7 @@ async def scan_external_folder(
                     parser = ThreeMFParser(str(filepath))
                     meta = parser.parse()
                     if meta:
-                        file_metadata = meta
+                        file_metadata = _clean_3mf_metadata(meta)
                     thumb_data = parser.extract_thumbnail()
                     if thumb_data:
                         thumb_dir = get_library_thumbnails_dir()
@@ -878,7 +941,7 @@ async def scan_external_folder(
                     thumbnail_path = to_relative_path(Path(thumbnail_path_str))
 
             db_file = LibraryFile(
-                folder_id=folder_id,
+                folder_id=target_folder_id,
                 is_external=True,
                 filename=filename,
                 file_path=file_path_str,
@@ -905,6 +968,32 @@ async def scan_external_folder(
             await db.delete(db_file)
             removed += 1
 
+    # Clean up orphaned subfolders (directories that no longer exist on disk)
+    # Re-fetch all child external subfolders
+    all_sub_result = await db.execute(
+        select(LibraryFolder).where(
+            LibraryFolder.id.in_(all_folder_ids),
+            LibraryFolder.id != folder_id,
+        )
+    )
+    all_subfolders = all_sub_result.scalars().all()
+
+    # Process deepest-first (sort by path depth descending)
+    all_subfolders.sort(key=lambda f: f.external_path.count("/") if f.external_path else 0, reverse=True)
+
+    for sub in all_subfolders:
+        if sub.external_path and not Path(sub.external_path).exists():
+            # Delete only if folder has no files and no child folders remaining
+            file_count = await db.execute(select(func.count(LibraryFile.id)).where(LibraryFile.folder_id == sub.id))
+            if (file_count.scalar() or 0) > 0:
+                continue
+            child_count = await db.execute(
+                select(func.count(LibraryFolder.id)).where(LibraryFolder.parent_id == sub.id)
+            )
+            if (child_count.scalar() or 0) > 0:
+                continue
+            await db.delete(sub)
+
     await db.commit()
 
     return {"status": "success", "added": added, "removed": removed}
@@ -918,14 +1007,16 @@ async def scan_external_folder(
 async def list_files(
     response: Response,
     folder_id: int | None = None,
+    project_id: int | None = None,
     include_root: bool = True,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_READ)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_READ)),
 ):
-    """List files, optionally filtered by folder.
+    """List files, optionally filtered by folder or project.
 
     Args:
         folder_id: Filter by folder ID. If None and include_root=True, returns root files.
+        project_id: Return all files across folders linked to this project (bulk fetch, avoids N+1).
         include_root: If True and folder_id is None, returns files at root level.
                      If False and folder_id is None, returns all files.
     """
@@ -933,6 +1024,10 @@ async def list_files(
 
     if folder_id is not None:
         query = query.where(LibraryFile.folder_id == folder_id)
+    elif project_id is not None:
+        # Single join instead of one query per folder (avoids N+1 pattern)
+        query = query.join(LibraryFolder, LibraryFile.folder_id == LibraryFolder.id)
+        query = query.where(LibraryFolder.project_id == project_id)
     elif include_root:
         query = query.where(LibraryFile.folder_id.is_(None))
 
@@ -951,6 +1046,18 @@ async def list_files(
                 .group_by(LibraryFile.file_hash)
             )
             hash_counts = {h: c - 1 for h, c in dup_result.all()}  # -1 to exclude self
+
+    # Notes counts (gh#3) - single grouped query, no N+1.
+    notes_counts: dict[int, int] = {}
+    if files:
+        from backend.app.models.library_file_note import LibraryFileNote
+
+        note_result = await db.execute(
+            select(LibraryFileNote.library_file_id, func.count(LibraryFileNote.id))
+            .where(LibraryFileNote.library_file_id.in_([f.id for f in files]))
+            .group_by(LibraryFileNote.library_file_id)
+        )
+        notes_counts = dict(note_result.all())
 
     # Prevent browser caching of file list
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
@@ -985,6 +1092,8 @@ async def list_files(
                 print_time_seconds=print_time,
                 filament_used_grams=filament_grams,
                 sliced_for_model=sliced_for_model,
+                swap_compatible=f.swap_compatible,
+                notes_count=notes_counts.get(f.id, 0),
             )
         )
 
@@ -998,7 +1107,7 @@ async def upload_file(
     folder_id: int | None = None,
     generate_stl_thumbnails: bool = Query(default=True),
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_UPLOAD)),
+    current_user: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD)),
 ):
     """Upload a file to the library."""
     try:
@@ -1057,21 +1166,7 @@ async def upload_file(
                         f.write(thumbnail_data)
                     thumbnail_path = str(thumb_path)
 
-                # Clean metadata - remove non-JSON-serializable data (bytes, etc.)
-                def clean_metadata(obj):
-                    if isinstance(obj, dict):
-                        return {
-                            k: clean_metadata(v)
-                            for k, v in obj.items()
-                            if not isinstance(v, bytes) and k not in ("_thumbnail_data", "_thumbnail_ext")
-                        }
-                    elif isinstance(obj, list):
-                        return [clean_metadata(i) for i in obj if not isinstance(i, bytes)]
-                    elif isinstance(obj, bytes):
-                        return None
-                    return obj
-
-                metadata = clean_metadata(raw_metadata)
+                metadata = _clean_3mf_metadata(raw_metadata)
             except Exception as e:
                 logger.warning("Failed to parse 3MF: %s", e)
 
@@ -1097,6 +1192,14 @@ async def upload_file(
             if generate_stl_thumbnails:
                 thumbnail_path = generate_stl_thumbnail(file_path, thumbnails_dir)
 
+        # Detect swap mode compatibility from filename. Covers both the
+        # singular ".swap." suffix (older / custom tooling) and the ".swaps."
+        # suffix that swaplist.app actually emits on export.
+        fname_lower = filename.lower()
+        swap_compatible = (
+            fname_lower.endswith((".swap.3mf", ".swaps.3mf")) or ".swap." in fname_lower or ".swaps." in fname_lower
+        )
+
         # Create database entry (store relative paths for portability)
         library_file = LibraryFile(
             folder_id=folder_id,
@@ -1108,6 +1211,7 @@ async def upload_file(
             thumbnail_path=to_relative_path(thumbnail_path) if thumbnail_path else None,
             file_metadata=metadata if metadata else None,
             created_by_id=current_user.id if current_user else None,
+            swap_compatible=swap_compatible,
         )
         db.add(library_file)
         await db.commit()
@@ -1137,7 +1241,7 @@ async def extract_zip_file(
     create_folder_from_zip: bool = Query(default=False),
     generate_stl_thumbnails: bool = Query(default=True),
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_UPLOAD)),
+    current_user: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD)),
 ):
     """Upload and extract a ZIP file to the library.
 
@@ -1300,20 +1404,7 @@ async def extract_zip_file(
                                     f.write(thumbnail_data)
                                 thumbnail_path = str(thumb_path)
 
-                            def clean_metadata(obj):
-                                if isinstance(obj, dict):
-                                    return {
-                                        k: clean_metadata(v)
-                                        for k, v in obj.items()
-                                        if not isinstance(v, bytes) and k not in ("_thumbnail_data", "_thumbnail_ext")
-                                    }
-                                elif isinstance(obj, list):
-                                    return [clean_metadata(i) for i in obj if not isinstance(i, bytes)]
-                                elif isinstance(obj, bytes):
-                                    return None
-                                return obj
-
-                            metadata = clean_metadata(raw_metadata)
+                            metadata = _clean_3mf_metadata(raw_metadata)
                         except Exception as e:
                             logger.warning("Failed to parse 3MF from ZIP: %s", e)
 
@@ -1398,7 +1489,7 @@ async def extract_zip_file(
 async def batch_generate_stl_thumbnails(
     request: BatchThumbnailRequest,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_UPDATE_ALL)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_UPDATE_ALL)),
 ):
     """Generate thumbnails for STL files in batch.
 
@@ -1526,7 +1617,7 @@ def is_sliced_file(filename: str) -> bool:
 async def add_files_to_queue(
     request: AddToQueueRequest,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.QUEUE_CREATE)),
+    _: User | None = Depends(require_permission(Permission.QUEUE_CREATE)),
 ):
     """Add library files to the print queue.
 
@@ -1605,7 +1696,7 @@ async def add_files_to_queue(
 async def get_library_file_plates(
     file_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_READ)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_READ)),
 ):
     """Get available plates from a multi-plate 3MF library file.
 
@@ -1901,7 +1992,7 @@ async def get_library_file_filament_requirements(
     file_id: int,
     plate_id: int | None = None,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_READ)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_READ)),
 ):
     """Get filament requirements from a library file.
 
@@ -2035,7 +2126,7 @@ async def print_library_file(
     printer_id: int,
     body: FilePrintRequest | None = None,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.PRINTERS_CONTROL)),
+    current_user: User | None = Depends(require_permission(Permission.PRINTERS_CONTROL)),
 ):
     """Dispatch a library file for send/start on a printer.
 
@@ -2082,6 +2173,12 @@ async def print_library_file(
     if not printer_manager.is_connected(printer_id):
         raise HTTPException(status_code=400, detail="Printer is not connected")
 
+    # Validate project exists before dispatching so a bogus ID yields 404, not a FK-constraint 500
+    if body.project_id is not None:
+        project_result = await db.execute(select(Project).where(Project.id == body.project_id))
+        if not project_result.scalar_one_or_none():
+            raise HTTPException(status_code=404, detail="Project not found")
+
     plate_name = body.plate_name
     if not plate_name and body.plate_id is not None:
         plate_name = f"Plate {body.plate_id}"
@@ -2090,6 +2187,14 @@ async def print_library_file(
     if plate_name:
         dispatch_source_name = f"{lib_file.filename} • {plate_name}"
 
+    # Swap-macro execution only applies to swap-enabled printers AND files
+    # that don't already carry swap macros baked in by third-party tooling
+    # (``swap_compatible`` → double-fire risk). Mute the fields in either
+    # case before they propagate into dispatch options or queued copies.
+    if not printer.swap_mode_enabled or getattr(lib_file, "swap_compatible", False):
+        body.execute_swap_macros = False
+        body.swap_macro_events = None
+
     try:
         dispatch_result = await background_dispatch.dispatch_print_library_file(
             file_id=file_id,
@@ -2097,11 +2202,34 @@ async def print_library_file(
             printer_id=printer_id,
             printer_name=printer.name,
             options=body.model_dump(exclude_none=True),
-            requested_by_user_id=None,
-            requested_by_username=None,
+            project_id=body.project_id,
+            requested_by_user_id=current_user.id if current_user else None,
+            requested_by_username=current_user.username if current_user else None,
         )
     except DispatchEnqueueRejected as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
+
+    batch_id: str | None = None
+    extra = max(0, (body.quantity or 1) - 1)
+    if extra > 0:
+        from backend.app.services.queue_batch import enqueue_batch_copies
+
+        _items, batch_id = await enqueue_batch_copies(
+            db,
+            printer_id=printer_id,
+            count=extra,
+            library_file_id=file_id,
+            plate_id=body.plate_id,
+            ams_mapping=body.ams_mapping,
+            bed_levelling=body.bed_levelling,
+            flow_cali=body.flow_cali,
+            layer_inspect=body.layer_inspect,
+            timelapse=body.timelapse,
+            use_ams=body.use_ams,
+            mesh_mode_fast_check=body.mesh_mode_fast_check,
+            execute_swap_macros=body.execute_swap_macros,
+            swap_macro_events=body.swap_macro_events,
+        )
 
     return {
         "status": "dispatched",
@@ -2110,6 +2238,8 @@ async def print_library_file(
         "filename": lib_file.filename,
         "dispatch_job_id": dispatch_result["dispatch_job_id"],
         "dispatch_position": dispatch_result["dispatch_position"],
+        "batch_id": batch_id,
+        "queued_copies": extra,
     }
 
 
@@ -2120,7 +2250,7 @@ async def print_library_file(
 async def get_file(
     file_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_READ)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_READ)),
 ):
     """Get a file by ID with full details."""
     result = await db.execute(
@@ -2200,6 +2330,7 @@ async def get_file(
         print_time_seconds=print_time,
         filament_used_grams=filament_grams,
         sliced_for_model=sliced_for_model,
+        swap_compatible=file.swap_compatible,
     )
 
 
@@ -2307,6 +2438,7 @@ async def delete_file(
         logger.warning("Failed to delete file from disk: %s", e)
 
     await db.delete(file)
+    await db.commit()
 
     return {"status": "success", "message": "File deleted"}
 
@@ -2318,7 +2450,7 @@ async def delete_file(
 async def download_file(
     file_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_READ)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_READ)),
 ):
     """Download a file."""
     result = await db.execute(select(LibraryFile).where(LibraryFile.id == file_id))
@@ -2342,7 +2474,7 @@ async def download_file(
 async def create_library_slicer_token(
     file_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_READ)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_READ)),
 ):
     """Create a short-lived download token for opening files in slicer applications.
 
@@ -2425,7 +2557,7 @@ async def get_thumbnail(file_id: int, db: AsyncSession = Depends(get_db)):
 async def get_gcode(
     file_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_READ)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_READ)),
 ):
     """Get gcode for a file (for preview)."""
     result = await db.execute(select(LibraryFile).where(LibraryFile.id == file_id))
@@ -2569,6 +2701,8 @@ async def bulk_delete(
             await db.delete(folder)
             deleted_folders += 1
 
+    await db.commit()
+
     return BulkDeleteResponse(deleted_files=deleted_files, deleted_folders=deleted_folders)
 
 
@@ -2578,7 +2712,7 @@ async def bulk_delete(
 @router.get("/stats")
 async def get_library_stats(
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission_if_auth_enabled(Permission.LIBRARY_READ)),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_READ)),
 ):
     """Get library statistics."""
     # Total files

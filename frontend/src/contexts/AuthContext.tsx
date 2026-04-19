@@ -4,7 +4,12 @@ import type { Permission, UserResponse } from '../api/client';
 
 interface AuthContextType {
   user: UserResponse | null;
-  authEnabled: boolean;
+  /**
+   * Kept for backward compatibility with consumers that used to check whether
+   * the deployment had opt-in auth. The opt-in mode has been removed; auth is
+   * always on, so this is a permanent ``true``. New code should not read it.
+   */
+  authEnabled: true;
   requiresSetup: boolean;
   loading: boolean;
   isAdmin: boolean;
@@ -22,7 +27,6 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<UserResponse | null>(null);
-  const [authEnabled, setAuthEnabled] = useState(false);
   const [requiresSetup, setRequiresSetup] = useState(false);
   const [loading, setLoading] = useState(true);
   const hasRedirectedRef = useRef(false);
@@ -30,48 +34,41 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const checkAuthStatus = async () => {
     try {
-      // Bootstrap: if URL has ?token= param, store it and strip from URL.
-      // Allows SpoolBuddy kiosk to pass API key via URL on first load.
-      const urlParams = new URLSearchParams(window.location.search);
-      const urlToken = urlParams.get('token');
-      if (urlToken) {
-        setAuthToken(urlToken);
-        urlParams.delete('token');
-        const cleanSearch = urlParams.toString();
-        const cleanUrl = window.location.pathname
-          + (cleanSearch ? `?${cleanSearch}` : '')
-          + window.location.hash;
-        window.history.replaceState({}, '', cleanUrl);
-      }
+      // Note: no `?token=` URL-param bootstrap. That flow was introduced for the
+      // SpoolBuddy kiosk launcher (removed in the BamDude fork) and was a session-
+      // fixation vector — an attacker-crafted link like /?token=ATTACKER_TOKEN would
+      // overwrite localStorage with the attacker's token before any server verify.
+      // If a future feature needs cross-origin auth bootstrap, port upstream's
+      // 2-arg setAuthToken(token, persistToLocalStorage=false) from PR #933 instead.
 
       const status = await api.getAuthStatus();
       if (!mountedRef.current) return;
-      setAuthEnabled(status.auth_enabled);
       setRequiresSetup(status.requires_setup);
 
-      if (status.auth_enabled) {
-        const token = getAuthToken();
-        if (token) {
-          try {
-            const currentUser = await api.getCurrentUser();
-            if (!mountedRef.current) return;
-            setUser(currentUser);
-          } catch {
-            // Token invalid, clear it
-            setAuthToken(null);
-            if (!mountedRef.current) return;
-            setUser(null);
-          }
-        } else {
+      // If setup is required, don't try to load a user - even a cached token
+      // can't be validated against a system that has no admin yet.
+      if (status.requires_setup) {
+        setUser(null);
+        return;
+      }
+
+      const token = getAuthToken();
+      if (token) {
+        try {
+          const currentUser = await api.getCurrentUser();
+          if (!mountedRef.current) return;
+          setUser(currentUser);
+        } catch {
+          // Token invalid/expired - drop it and force re-login.
+          setAuthToken(null);
+          if (!mountedRef.current) return;
           setUser(null);
         }
       } else {
-        // Auth not enabled, allow access
         setUser(null);
       }
     } catch {
       if (!mountedRef.current) return;
-      setAuthEnabled(false);
       setUser(null);
     } finally {
       if (mountedRef.current) {
@@ -89,22 +86,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  // Separate effect to handle redirect only when setup is required
+  // Redirect to /setup when the backend reports no admin exists yet.
   useEffect(() => {
-    // Only redirect if setup is truly required (first time setup)
-    // Don't redirect if user manually navigated to /setup or is on camera page
-    if (!loading && requiresSetup && !authEnabled) {
+    if (loading) return;
+    if (requiresSetup) {
       const currentPath = window.location.pathname;
-      // Only redirect if not already on setup page or camera page, and haven't redirected yet
       if (currentPath !== '/setup' && !currentPath.startsWith('/camera/') && !hasRedirectedRef.current) {
         hasRedirectedRef.current = true;
         window.location.href = '/setup';
       }
-    } else if (!requiresSetup) {
-      // Reset redirect flag when setup is no longer required
+    } else {
       hasRedirectedRef.current = false;
     }
-  }, [loading, requiresSetup, authEnabled]);
+  }, [loading, requiresSetup]);
 
   const login = async (username: string, password: string) => {
     const response = await api.login({ username, password });
@@ -122,7 +116,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const refreshUser = async () => {
-    if (authEnabled && getAuthToken()) {
+    if (getAuthToken()) {
       try {
         const currentUser = await api.getCurrentUser();
         if (mountedRef.current) {
@@ -147,29 +141,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [user?.permissions]);
 
   // Computed admin status
-  const isAdmin = useMemo(() => {
-    if (!authEnabled) return true; // Auth disabled = admin access
-    return user?.is_admin ?? false;
-  }, [authEnabled, user?.is_admin]);
+  const isAdmin = useMemo(() => user?.is_admin ?? false, [user?.is_admin]);
 
   // Permission check functions
   const hasPermission = useCallback((permission: Permission): boolean => {
-    if (!authEnabled) return true; // Auth disabled = allow all
     if (isAdmin) return true; // Admins have all permissions
     return permissionSet.has(permission);
-  }, [authEnabled, isAdmin, permissionSet]);
+  }, [isAdmin, permissionSet]);
 
   const hasAnyPermission = useCallback((...permissions: Permission[]): boolean => {
-    if (!authEnabled) return true;
     if (isAdmin) return true;
     return permissions.some(p => permissionSet.has(p));
-  }, [authEnabled, isAdmin, permissionSet]);
+  }, [isAdmin, permissionSet]);
 
   const hasAllPermissions = useCallback((...permissions: Permission[]): boolean => {
-    if (!authEnabled) return true;
     if (isAdmin) return true;
     return permissions.every(p => permissionSet.has(p));
-  }, [authEnabled, isAdmin, permissionSet]);
+  }, [isAdmin, permissionSet]);
 
   // Ownership-based permission check
   const canModify = useCallback((
@@ -177,7 +165,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     action: 'update' | 'delete' | 'reprint',
     createdById: number | null | undefined,
   ): boolean => {
-    if (!authEnabled) return true;  // Auth disabled, allow all
     if (isAdmin) return true;  // Admins can modify anything
 
     const allPerm = `${resource}:${action}_all` as Permission;
@@ -194,13 +181,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
 
     return false;
-  }, [authEnabled, isAdmin, permissionSet, user?.id]);
+  }, [isAdmin, permissionSet, user?.id]);
 
   return (
     <AuthContext.Provider
       value={{
         user,
-        authEnabled,
+        authEnabled: true,
         requiresSetup,
         loading,
         isAdmin,

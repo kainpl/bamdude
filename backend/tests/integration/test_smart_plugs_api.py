@@ -825,3 +825,135 @@ class TestSmartPlugsAPI:
         result = response.json()
         assert result["mqtt_power_multiplier"] == 0.001
         assert result["mqtt_energy_multiplier"] == 0.001
+
+    # ========================================================================
+    # REST Smart Plug Integration tests
+    # ========================================================================
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_create_rest_plug(self, async_client: AsyncClient):
+        """Verify REST plug can be created with ON/OFF URLs."""
+        data = {
+            "name": "REST Plug",
+            "plug_type": "rest",
+            "rest_on_url": "http://openhab:8080/rest/items/MyPlug",
+            "rest_on_body": "ON",
+            "rest_off_url": "http://openhab:8080/rest/items/MyPlug",
+            "rest_off_body": "OFF",
+            "rest_method": "POST",
+            "enabled": True,
+        }
+
+        response = await async_client.post("/api/v1/smart-plugs/", json=data)
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["name"] == "REST Plug"
+        assert result["plug_type"] == "rest"
+        assert result["rest_on_url"] == "http://openhab:8080/rest/items/MyPlug"
+        assert result["rest_on_body"] == "ON"
+        assert result["rest_off_url"] == "http://openhab:8080/rest/items/MyPlug"
+        assert result["rest_off_body"] == "OFF"
+        assert result["rest_method"] == "POST"
+        assert result["ip_address"] is None
+        assert result["ha_entity_id"] is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_create_rest_plug_on_url_only(self, async_client: AsyncClient):
+        """Verify REST plug can be created with only ON URL."""
+        data = {
+            "name": "REST ON Only",
+            "plug_type": "rest",
+            "rest_on_url": "http://iobroker:8087/set/plug?value=true",
+            "rest_method": "GET",
+            "enabled": True,
+        }
+
+        response = await async_client.post("/api/v1/smart-plugs/", json=data)
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["rest_on_url"] == "http://iobroker:8087/set/plug?value=true"
+        assert result["rest_off_url"] is None
+        assert result["rest_method"] == "GET"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_create_rest_plug_missing_urls_fails(self, async_client: AsyncClient):
+        """Verify creating REST plug without any URL fails."""
+        data = {
+            "name": "REST Plug",
+            "plug_type": "rest",
+            "enabled": True,
+        }
+
+        response = await async_client.post("/api/v1/smart-plugs/", json=data)
+
+        assert response.status_code == 422  # Validation error
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_create_rest_plug_with_status_and_energy(self, async_client: AsyncClient):
+        """Verify REST plug with status polling and energy monitoring."""
+        data = {
+            "name": "REST Full",
+            "plug_type": "rest",
+            "rest_on_url": "http://ha:8080/api/plug/on",
+            "rest_off_url": "http://ha:8080/api/plug/off",
+            "rest_method": "POST",
+            "rest_headers": '{"Authorization": "Bearer test-token"}',
+            "rest_status_url": "http://ha:8080/api/plug/status",
+            "rest_status_path": "state",
+            "rest_status_on_value": "ON",
+            "rest_power_path": "power.current",
+            "rest_energy_path": "energy.today",
+            "enabled": True,
+        }
+
+        response = await async_client.post("/api/v1/smart-plugs/", json=data)
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["rest_headers"] == '{"Authorization": "Bearer test-token"}'
+        assert result["rest_status_url"] == "http://ha:8080/api/plug/status"
+        assert result["rest_status_path"] == "state"
+        assert result["rest_status_on_value"] == "ON"
+        assert result["rest_power_path"] == "power.current"
+        assert result["rest_energy_path"] == "energy.today"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_update_rest_plug(self, async_client: AsyncClient, smart_plug_factory, db_session):
+        """Verify REST plug fields can be updated."""
+        plug = await smart_plug_factory(plug_type="rest")
+
+        response = await async_client.patch(
+            f"/api/v1/smart-plugs/{plug.id}",
+            json={
+                "rest_on_url": "http://new-host:8080/on",
+                "rest_method": "PUT",
+            },
+        )
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["rest_on_url"] == "http://new-host:8080/on"
+        assert result["rest_method"] == "PUT"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_rest_plug_is_controllable(self, async_client: AsyncClient, smart_plug_factory, db_session):
+        """Verify REST plugs can be controlled (not monitor-only like MQTT)."""
+        plug = await smart_plug_factory(plug_type="rest")
+
+        # REST plugs should NOT return 400 like MQTT plugs
+        response = await async_client.post(
+            f"/api/v1/smart-plugs/{plug.id}/control",
+            json={"action": "on"},
+        )
+
+        # Should attempt to send the request (may fail with 503 since URL is not real,
+        # but should NOT return 400 "monitor-only")
+        assert response.status_code != 400

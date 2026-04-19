@@ -67,7 +67,7 @@ class TelegramChat(Base):
     chat_id: Mapped[int] = mapped_column(BigInteger, unique=True, nullable=False, index=True)
     label: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
-    # Role — defines permissions. NULL only for auto-registered chats pending setup.
+    # Role - defines permissions. NULL only for auto-registered chats pending setup.
     group_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("groups.id", ondelete="RESTRICT"), nullable=True)
 
     # Optional link to system user (does NOT override group permissions)
@@ -75,14 +75,14 @@ class TelegramChat(Base):
 
     is_active: Mapped[bool] = mapped_column(Boolean, default=False)
 
-    # Notification preferences — JSON list of enabled event types
+    # Notification preferences - JSON list of enabled event types
     # NULL = use DEFAULT_NOTIFY_EVENTS, [] = none, [...] = custom selection
     notify_events: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
 
-    # Daily digest — receive daily summary
+    # Daily digest - receive daily summary
     daily_digest: Mapped[bool] = mapped_column(Boolean, default=False)
 
-    # Quiet hours — suppress notifications during these hours
+    # Quiet hours - suppress notifications during these hours
     quiet_hours_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     quiet_hours_start: Mapped[str | None] = mapped_column(String(5), nullable=True)  # HH:MM
     quiet_hours_end: Mapped[str | None] = mapped_column(String(5), nullable=True)  # HH:MM

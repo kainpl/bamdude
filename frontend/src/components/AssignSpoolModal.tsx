@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { X, Loader2, Package, Search } from 'lucide-react';
@@ -29,6 +29,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
   const { showToast } = useToast();
   const [selectedSpoolId, setSelectedSpoolId] = useState<number | null>(null);
   const [searchFilter, setSearchFilter] = useState('');
+  const [disableFiltering, setDisableFiltering] = useState(false);
   const [pendingAssignId, setPendingAssignId] = useState<number | null>(null);
   const [showMismatchConfirm, setShowMismatchConfirm] = useState(false);
   const [mismatchDetails, setMismatchDetails] = useState<{
@@ -38,6 +39,18 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
     spoolProfile?: string;
     trayProfile?: string;
   } | null>(null);
+
+  // Reset selected spool when filtering mode changes
+  useEffect(() => {
+    setSelectedSpoolId(null);
+  }, [disableFiltering]);
+
+  // Reset filtering when modal opens
+  useEffect(() => {
+    if (isOpen) {
+      setDisableFiltering(false);
+    }
+  }, [isOpen]);
 
   const { data: spools, isLoading } = useQuery({
     queryKey: ['inventory-spools'],
@@ -128,7 +141,17 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
     !assignedSpoolIds.has(spool.id) && (isExternalSlot || (!spool.tag_uid && !spool.tray_uuid))
   );
 
-  const filteredSpools = manualSpools?.filter((spool: InventorySpool) => {
+  // Stage 1: Filter by tray profile match (unless disabled)
+  const profileFilteredSpools = (!disableFiltering && trayInfo?.profile)
+    ? manualSpools?.filter((spool: InventorySpool) => {
+        const spoolProfile = normalizeValue(spool.slicer_filament_name) || normalizeValue(spool.slicer_filament);
+        const trayProfile = normalizeValue(trayInfo.profile);
+        return spoolProfile === trayProfile;
+      })
+    : manualSpools;
+
+  // Stage 2: Search filter on material/brand/color_name/subtype
+  const filteredSpools = profileFilteredSpools?.filter((spool: InventorySpool) => {
     if (!searchFilter) return true;
     const q = searchFilter.toLowerCase();
     return (
@@ -192,13 +215,13 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
 
   return (
     <>
-      <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="fixed inset-0 z-50 flex items-start sm:items-center justify-center overflow-y-auto p-4">
         <div
           className="absolute inset-0 bg-black/60 backdrop-blur-sm"
           onClick={onClose}
         />
 
-      <div className="relative w-full max-w-2xl mx-4 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl shadow-2xl">
+      <div className="relative w-full max-w-2xl bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl shadow-2xl max-h-[90vh] overflow-hidden flex flex-col my-auto">
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-bambu-dark-tertiary">
           <div className="flex items-center gap-2">
@@ -214,7 +237,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
         </div>
 
         {/* Content */}
-        <div className="p-4 space-y-4">
+        <div className="p-4 space-y-4 overflow-y-auto">
           {/* Tray info */}
           {trayInfo && (
             <div className="p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
@@ -296,26 +319,37 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
         </div>
 
         {/* Footer */}
-        <div className="flex justify-end gap-2 p-4 border-t border-bambu-dark-tertiary">
-          <Button variant="secondary" onClick={onClose}>
-            {t('common.cancel')}
-          </Button>
-          <Button
-            onClick={handleAssign}
-            disabled={!selectedSpoolId || assignMutation.isPending}
-          >
-            {assignMutation.isPending ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                {t('inventory.assigning')}
-              </>
-            ) : (
-              <>
-                <Package className="w-4 h-4" />
-                {t('inventory.assignSpool')}
-              </>
-            )}
-          </Button>
+        <div className="flex justify-between items-center p-4 border-t border-bambu-dark-tertiary">
+          <label className="flex items-center gap-2 text-sm text-bambu-gray cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={disableFiltering}
+              onChange={(e) => setDisableFiltering(e.target.checked)}
+              className="rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+            />
+            {t('inventory.showAllSpools')}
+          </label>
+          <div className="flex gap-2">
+            <Button variant="secondary" onClick={onClose}>
+              {t('common.cancel')}
+            </Button>
+            <Button
+              onClick={handleAssign}
+              disabled={!selectedSpoolId || assignMutation.isPending}
+            >
+              {assignMutation.isPending ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  {t('inventory.assigning')}
+                </>
+              ) : (
+                <>
+                  <Package className="w-4 h-4" />
+                  {t('inventory.assignSpool')}
+                </>
+              )}
+            </Button>
+          </div>
         </div>
 
 

@@ -28,6 +28,35 @@ import {Toggle} from './Toggle';
 import {TelegramChatCard} from './TelegramChatCard';
 import {AddTelegramChatModal} from './AddTelegramChatModal';
 
+function RegistrationModeToggle() {
+    const { t } = useTranslation();
+    const queryClient = useQueryClient();
+
+    const { data: settings } = useQuery({
+        queryKey: ['settings'],
+        queryFn: api.getSettings,
+    });
+
+    const updateMutation = useMutation({
+        mutationFn: (open: boolean) => api.updateSettings({ telegram_registration_open: open }),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['settings'] });
+        },
+    });
+
+    const isOpen = settings?.telegram_registration_open ?? false;
+
+    return (
+        <div className="flex items-center gap-2">
+            <span className="text-xs text-bambu-gray">{t('telegram.registrationMode')}</span>
+            <Toggle
+                checked={isOpen}
+                onChange={(checked) => updateMutation.mutate(checked)}
+            />
+        </div>
+    );
+}
+
 interface NotificationProviderCardProps {
     provider: NotificationProvider;
     onEdit: (provider: NotificationProvider) => void;
@@ -135,6 +164,13 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                             >
                                 <Edit2 className="w-4 h-4"/>
                             </button>
+                            <button
+                                onClick={() => setShowDeleteConfirm(true)}
+                                className="p-1.5 text-bambu-gray hover:text-red-400 hover:bg-bambu-dark-tertiary rounded transition-colors"
+                                title={t('notifications.delete')}
+                            >
+                                <Trash2 className="w-4 h-4"/>
+                            </button>
                         </div>
                     </div>
 
@@ -237,26 +273,28 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                         )}
                     </div>
 
-                    {/* Test Button */}
-                    <div className="mb-3">
-                        <Button
-                            size="sm"
-                            variant="secondary"
-                            disabled={testMutation.isPending}
-                            onClick={() => {
-                                setTestResult(null);
-                                testMutation.mutate();
-                            }}
-                            className="w-full"
-                        >
-                            {testMutation.isPending ? (
-                                <Loader2 className="w-4 h-4 animate-spin"/>
-                            ) : (
-                                <Send className="w-4 h-4"/>
-                            )}
-                            {t('notifications.sendTestNotification')}
-                        </Button>
-                    </div>
+                    {/* Test Button (not for Telegram) */}
+                    {!isTelegram && (
+                        <div className="mb-3">
+                            <Button
+                                size="sm"
+                                variant="secondary"
+                                disabled={testMutation.isPending}
+                                onClick={() => {
+                                    setTestResult(null);
+                                    testMutation.mutate();
+                                }}
+                                className="w-full"
+                            >
+                                {testMutation.isPending ? (
+                                    <Loader2 className="w-4 h-4 animate-spin"/>
+                                ) : (
+                                    <Send className="w-4 h-4"/>
+                                )}
+                                {t('notifications.sendTestNotification')}
+                            </Button>
+                        </div>
+                    )}
 
                     {/* Test Result */}
                     {testResult && (
@@ -562,7 +600,7 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                                 </div>
                             </div>
 
-                            {/* Quiet Hours — hidden for Telegram (per-chat setting) */}
+                            {/* Quiet Hours - hidden for Telegram (per-chat setting) */}
                             {!isTelegram && (
                             <div className="space-y-2">
                                 <div className="flex items-center justify-between">
@@ -642,7 +680,7 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                     )}
                 </CardContent>
 
-                {/* Telegram Chats — inside the same card */}
+                {/* Telegram Chats - inside the same card */}
                 {isTelegram && (
                     <div className="p-6 p-4 pt-0">
                         <div className="pt-3 border-t border-bambu-dark-tertiary">
@@ -652,7 +690,8 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                                     {t('telegram.title')}
                                 </h4>
                                 <div className="flex items-center gap-2">
-                                    <Button size="sm" variant="secondary" onClick={() => {
+                                    <RegistrationModeToggle />
+                                    <Button size="sm" onClick={() => {
                                         setEditingTelegramChat(null);
                                         setShowTelegramChatModal(true);
                                     }}>
@@ -682,7 +721,7 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                             ) : (
                                 <div className="text-center text-bambu-gray py-4">
                                     <p className="text-xs mb-2">{t('telegram.noChatsDescription')}</p>
-                                    <Button size="sm" variant="secondary" onClick={() => {
+                                    <Button size="sm" onClick={() => {
                                         setEditingTelegramChat(null);
                                         setShowTelegramChatModal(true);
                                     }}>

@@ -106,7 +106,7 @@ class TestPrintCompleteLogic:
             )
 
             # Cancel background tasks spawned by on_print_complete before
-            # leaving the mock context — prevents them from running with
+            # leaving the mock context - prevents them from running with
             # the real async_session and sending real notifications.
             for task in asyncio.all_tasks() - tasks_before:
                 task.cancel()

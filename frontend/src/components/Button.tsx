@@ -1,7 +1,7 @@
 import type { ButtonHTMLAttributes, ReactNode } from 'react';
 
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: 'primary' | 'secondary' | 'danger' | 'ghost';
+  variant?: 'primary' | 'secondary' | 'outline' | 'danger' | 'ghost';
   size?: 'sm' | 'md' | 'lg';
   children: ReactNode;
 }
@@ -20,6 +20,11 @@ export function Button({
     primary: 'bg-bambu-green hover:bg-bambu-green-light text-white focus:ring-bambu-green',
     secondary:
       'bg-bambu-dark-tertiary hover:bg-bambu-gray-dark text-white focus:ring-bambu-gray',
+    // Header / toolbar secondary action - muted fill, visible border, gray
+    // text that brightens on hover. Used for row-level actions that share a
+    // toolbar with a primary CTA (e.g. "New folder" next to "Upload").
+    outline:
+      'bg-bambu-dark-secondary border border-bambu-dark-tertiary text-bambu-gray hover:text-white hover:border-bambu-gray focus:ring-bambu-gray',
     danger: 'bg-red-600 hover:bg-red-700 text-white focus:ring-red-500',
     ghost:
       'bg-transparent hover:bg-bambu-dark-tertiary text-bambu-gray-light hover:text-white',

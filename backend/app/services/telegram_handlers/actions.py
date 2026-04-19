@@ -179,7 +179,7 @@ async def cb_clear_plate(callback: CallbackQuery, tg_chat: TelegramChat | None =
     await show_printer_detail(callback, printer_id, tg_chat)
 
 
-# === Generic actions (pause, stop, resume, light) — catch-all, must be last ===
+# === Generic actions (pause, stop, resume, light) - catch-all, must be last ===
 
 
 @router.callback_query(F.data.startswith("action:"))

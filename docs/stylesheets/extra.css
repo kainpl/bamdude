@@ -1,0 +1,225 @@
+/* BamDude Custom Styles */
+
+:root {
+  --md-primary-fg-color: #00ae42;
+  --md-primary-fg-color--light: #4cda6e;
+  --md-primary-fg-color--dark: #008031;
+  --md-accent-fg-color: #00ae42;
+}
+
+/* Larger logo in header */
+.md-header__button.md-logo {
+  padding: 0;
+  margin-right: 0.4rem;
+}
+
+.md-header__button.md-logo img,
+.md-header__button.md-logo svg {
+  height: 2.4rem;
+  width: auto;
+}
+
+/* Fix washed out colors - remove opacity effects */
+.md-typeset {
+  color: var(--md-typeset-color);
+}
+
+[data-md-color-scheme="slate"] {
+  --md-default-bg-color: #1a1a2e;
+  --md-default-fg-color: rgba(255, 255, 255, 0.95);
+  --md-default-fg-color--light: rgba(255, 255, 255, 0.75);
+  --md-typeset-color: rgba(255, 255, 255, 0.92);
+  --md-typeset-a-color: #00ae42;
+}
+
+[data-md-color-scheme="default"] {
+  --md-default-bg-color: #ffffff;
+  --md-default-fg-color: rgba(0, 0, 0, 0.87);
+  --md-typeset-color: rgba(0, 0, 0, 0.87);
+  --md-typeset-a-color: #00ae42;
+}
+
+/* Feature cards - stronger colors */
+.md-typeset .feature-card {
+  background: var(--md-code-bg-color);
+  border-radius: 12px;
+  padding: 1.5rem;
+  border: 1px solid var(--md-typeset-table-color);
+  transition: transform 0.2s, box-shadow 0.2s;
+  opacity: 1;
+}
+
+.md-typeset .feature-card h3 {
+  opacity: 1;
+  color: var(--md-typeset-color);
+}
+
+.md-typeset .feature-card p {
+  margin-bottom: 0;
+  font-size: 0.9rem;
+  opacity: 1;
+  color: var(--md-typeset-color);
+}
+
+/* Hero section for home page */
+.md-typeset .hero {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 2rem;
+  align-items: center;
+  margin: 2rem 0 4rem;
+}
+
+.md-typeset .hero h1 {
+  font-size: 2.5rem;
+  font-weight: 700;
+  margin-bottom: 1rem;
+  background: linear-gradient(135deg, #00ae42, #4cda6e);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.md-typeset .hero p {
+  font-size: 1.2rem;
+  color: var(--md-typeset-color);
+}
+
+/* Feature cards */
+.md-typeset .feature-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1.5rem;
+  margin: 2rem 0;
+}
+
+.md-typeset .feature-card {
+  background: var(--md-code-bg-color);
+  border-radius: 12px;
+  padding: 1.5rem;
+  border: 1px solid var(--md-typeset-table-color);
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.md-typeset .feature-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+}
+
+.md-typeset .feature-card h3 {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0;
+  font-size: 1.1rem;
+}
+
+/* Quick start cards */
+.md-typeset .quick-start {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem;
+  margin: 2rem 0;
+}
+
+.md-typeset .quick-start a {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 1.5rem;
+  background: var(--md-code-bg-color);
+  border-radius: 12px;
+  text-decoration: none;
+  border: 2px solid transparent;
+  transition: border-color 0.2s, transform 0.2s;
+}
+
+.md-typeset .quick-start a:hover {
+  border-color: var(--md-primary-fg-color);
+  transform: translateY(-2px);
+}
+
+/* Stats badges */
+.md-typeset .stats-row {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin: 1.5rem 0;
+}
+
+.md-typeset .stat-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  background: var(--md-code-bg-color);
+  border-radius: 100px;
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+/* Screenshot container */
+.md-typeset .screenshot {
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  margin: 1.5rem 0;
+}
+
+.md-typeset .screenshot img {
+  display: block;
+  width: 100%;
+}
+
+/* Button styles */
+.md-typeset .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1.5rem;
+  border-radius: 8px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.md-typeset .btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.md-typeset .btn-primary {
+  background: var(--md-primary-fg-color);
+  color: white;
+}
+
+.md-typeset .btn-secondary {
+  background: var(--md-code-bg-color);
+  color: var(--md-typeset-color);
+  border: 2px solid var(--md-typeset-table-color);
+}
+
+/* Keyboard shortcut styling */
+.md-typeset kbd {
+  background: var(--md-code-bg-color);
+  border: 1px solid var(--md-typeset-table-color);
+  border-radius: 4px;
+  padding: 0.2rem 0.4rem;
+  font-size: 0.85rem;
+  box-shadow: 0 2px 0 var(--md-typeset-table-color);
+}
+
+/* Mobile improvements */
+@media (max-width: 768px) {
+  .md-typeset .feature-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .md-typeset .quick-start {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .md-typeset .hero h1 {
+    font-size: 1.8rem;
+  }
+}

@@ -1,11 +1,10 @@
-import logging
 import os
 from pathlib import Path
 
 from pydantic_settings import BaseSettings
 
 # Application version - single source of truth
-APP_VERSION = "0.3.1.1"
+APP_VERSION = "0.3.2"
 GITHUB_REPO = "kainpl/bamdude"
 
 # App directory - where the application is installed (for static files)
@@ -26,46 +25,33 @@ _log_dir_env = os.environ.get("LOG_DIR")
 _log_dir = Path(_log_dir_env) if _log_dir_env else _app_dir / "logs"
 
 
-def _migrate_database() -> Path:
-    """Migrate database from old names to current name if needed.
-
-    Chain: bambutrack.db → bambuddy.db → bamdude.db
-    """
-    target = _data_dir / "bamdude.db"
-
-    # Try each old name in order
-    for old_name in ("bambuddy.db", "bambutrack.db"):
-        old_db = _data_dir / old_name
-        if old_db.exists() and not target.exists():
-            try:
-                old_db.rename(target)
-                logging.info("Migrated database: %s -> %s", old_db, target)
-            except Exception as e:
-                logging.warning("Could not migrate database: %s. Using old location.", e)
-                return old_db
-
-    return target
+def _get_database_path() -> Path:
+    """Return the path to bamdude.db (may not exist yet)."""
+    return _data_dir / "bamdude.db"
 
 
-# Determine database path (handles migration)
-_db_path = _migrate_database()
+# External DATABASE_URL takes priority (PostgreSQL support)
+_external_db_url = os.environ.get("DATABASE_URL")
+
+# Determine database path - only used for SQLite
+_db_path = _get_database_path() if not _external_db_url else None
 
 
 class Settings(BaseSettings):
     app_name: str = "BamDude"
     debug: bool = False  # Default to production mode
 
-    # Paths — these accept env vars DATA_DIR, LOG_DIR etc.
+    # Paths - these accept env vars DATA_DIR, LOG_DIR etc.
     data_dir: Path = _data_dir
     log_dir: Path = _log_dir
     base_dir: Path = _data_dir  # For backwards compatibility (alias for data_dir)
     archive_dir: Path = _data_dir / "archive"
     plate_calibration_dir: Path = _plate_cal_dir  # Plate detection references
     static_dir: Path = _app_dir / "static"  # Static files are part of app, not data
-    database_url: str = f"sqlite+aiosqlite:///{_db_path}"
+    database_url: str = _external_db_url or f"sqlite+aiosqlite:///{_db_path}"
 
     # Logging
-    log_level: str = "INFO"  # Override with LOG_LEVEL env var or DEBUG=true
+    log_level: str = "INFO"  # Override with LOG_LEVEL env var (DEBUG, INFO, WARNING, ERROR)
     log_to_file: bool = True  # Set to false to disable file logging
 
     # API
@@ -86,9 +72,10 @@ class Settings(BaseSettings):
         # Recalculate paths derived from data_dir
         object.__setattr__(self, "base_dir", self.data_dir)
         object.__setattr__(self, "archive_dir", self.data_dir / "archive")
-        # Recalculate database_url if data_dir was overridden from env
-        db_path = self.data_dir / "bamdude.db"
-        object.__setattr__(self, "database_url", f"sqlite+aiosqlite:///{db_path}")
+        # Recalculate database_url only for SQLite (don't overwrite external DATABASE_URL)
+        if not _external_db_url:
+            db_path = self.data_dir / "bamdude.db"
+            object.__setattr__(self, "database_url", f"sqlite+aiosqlite:///{db_path}")
 
 
 settings = Settings()

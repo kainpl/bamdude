@@ -4,7 +4,7 @@ This module provides both transparent TCP proxying and TLS-terminating
 proxying for forwarding data between a slicer and a real Bambu printer,
 enabling remote printing over any network connection.
 
-Most protocols (FTP, FileTransfer, Camera) use transparent TCP proxying —
+Most protocols (FTP, FileTransfer, Camera) use transparent TCP proxying -
 raw bytes are forwarded without decryption, preserving end-to-end TLS
 between slicer and printer. Only MQTT is TLS-terminated so Bambuddy can
 rewrite the printer's real IP with the proxy's bind IP in MQTT payloads.
@@ -28,7 +28,7 @@ class _SessionReuseSSLContext:
     """Proxy around SSLContext that injects a TLS session into wrap_bio().
 
     vsFTPd (used by some Bambu printers like X1C) requires TLS session reuse
-    on FTP data channels — the data connection must reuse the TLS session from
+    on FTP data channels - the data connection must reuse the TLS session from
     the control channel. Without this, the printer rejects the data connection
     with "522 SSL connection failed: session reuse required".
 
@@ -136,7 +136,7 @@ class TLSProxy:
             on_connect: Optional callback when client connects (receives client_id)
             on_disconnect: Optional callback when client disconnects (receives client_id)
             bind_address: IP address to bind to (default: all interfaces)
-            rewrite_ip: Optional (old_ip, new_ip) tuple — replaces occurrences of
+            rewrite_ip: Optional (old_ip, new_ip) tuple - replaces occurrences of
                 the printer's real IP with the proxy's bind IP in printer→client data.
                 This prevents the slicer from discovering the printer's real IP
                 in MQTT payloads (ip_addr, rtsp_url, etc.) and bypassing the proxy.
@@ -442,7 +442,7 @@ class TLSProxy:
                         break
 
                 if pos + remaining_length > length:
-                    # Incomplete — keep in buffer
+                    # Incomplete - keep in buffer
                     new_buffer = bytearray(buffer[packet_start:])
                     return bytes(result), new_buffer
 
@@ -453,7 +453,7 @@ class TLSProxy:
             buffer.clear()
             return bytes(result) if result else bytes(data), buffer
 
-        # Buffer contains old_ip — parse packets and rewrite
+        # Buffer contains old_ip - parse packets and rewrite
         result = bytearray()
         pos = 0
         length = len(buffer)
@@ -483,7 +483,7 @@ class TLSProxy:
 
             # Check if we have enough data for the full packet
             if pos + remaining_length > length:
-                # Incomplete packet — keep in buffer for next call
+                # Incomplete packet - keep in buffer for next call
                 new_buffer = bytearray(buffer[packet_start:])
                 return bytes(result), new_buffer
 
@@ -566,7 +566,7 @@ class TLSProxy:
                     if not rewrite_logged and data:
                         if self._rewrite_old in data:
                             logger.warning(
-                                "%s proxy IP rewrite FAILED — %s still present after rewrite!",
+                                "%s proxy IP rewrite FAILED - %s still present after rewrite!",
                                 self.name,
                                 self._rewrite_old.decode(),
                             )
@@ -882,7 +882,7 @@ class FTPTLSProxy(TLSProxy):
             return
 
         # Capture the TLS session from the control channel for data channel
-        # reuse. vsFTPd (X1C) requires require_ssl_reuse — the data connection
+        # reuse. vsFTPd (X1C) requires require_ssl_reuse - the data connection
         # must present the same TLS session as the control channel.
         ctrl_ssl_object = printer_writer.get_extra_info("ssl_object")
         ctrl_tls_session = ctrl_ssl_object.session if ctrl_ssl_object else None
@@ -891,7 +891,7 @@ class FTPTLSProxy(TLSProxy):
 
         # Track data channel protection level per session.
         # PROT C = cleartext data, PROT P = TLS data.
-        # Default to cleartext — many Bambu printers (A1, H2D) use PROT C.
+        # Default to cleartext - many Bambu printers (A1, H2D) use PROT C.
         # If the slicer sends PROT P, we switch to TLS for data connections.
         session_state: dict[str, str | ssl.SSLSession] = {"prot": "C"}
         if ctrl_tls_session:
@@ -955,7 +955,7 @@ class FTPTLSProxy(TLSProxy):
     ) -> None:
         """Forward FTP client commands, replacing EPSV with PASV.
 
-        EPSV responses only contain a port number — the client reuses the
+        EPSV responses only contain a port number - the client reuses the
         control connection IP for data.  When the control IP is the real
         printer (due to iptables REDIRECT), EPSV data connections bypass
         the proxy.  PASV responses include an explicit IP that the proxy
@@ -1160,7 +1160,7 @@ class FTPTLSProxy(TLSProxy):
         # Get control channel TLS session for data channel reuse
         tls_session = session_state.get("tls_session") if use_tls else None
 
-        # Try the printer's original port first — this ensures the port
+        # Try the printer's original port first - this ensures the port
         # matches even when bounce protection or iptables REDIRECT is in play.
         try:
             await self._start_data_proxy_server(printer_port, printer_ip, printer_port, use_tls, tls_session)
@@ -1202,7 +1202,7 @@ class FTPTLSProxy(TLSProxy):
 
         The slicer-side listener is ALWAYS cleartext.  Even when the slicer
         sends PROT P on the control channel, Bambu Studio does not perform
-        a TLS handshake on the data connection — it relies on the implicit
+        a TLS handshake on the data connection - it relies on the implicit
         FTPS control channel for authentication and sends data unencrypted.
 
         The printer-side outbound connection follows the PROT level:
@@ -1216,12 +1216,12 @@ class FTPTLSProxy(TLSProxy):
         connected = asyncio.Event()
         server_holder: list[asyncio.Server] = []
 
-        # Slicer side: ALWAYS cleartext — Bambu Studio does not do TLS on
+        # Slicer side: ALWAYS cleartext - Bambu Studio does not do TLS on
         # the data channel even after sending PROT P.
         # Printer side: TLS if PROT P, cleartext if PROT C.
         # For TLS data connections, wrap the SSL context to reuse the
         # control channel's TLS session if available. vsFTPd (X1C) requires
-        # require_ssl_reuse — without this, data connections are rejected
+        # require_ssl_reuse - without this, data connections are rejected
         # with "522 SSL connection failed: session reuse required".
         if use_tls and tls_session:
             client_ssl = _SessionReuseSSLContext(self._client_ssl_context, tls_session)
@@ -1229,7 +1229,7 @@ class FTPTLSProxy(TLSProxy):
         else:
             client_ssl = self._client_ssl_context if use_tls else None
 
-        # Slicer side is ALWAYS cleartext — Bambu Studio does not do TLS on
+        # Slicer side is ALWAYS cleartext - Bambu Studio does not do TLS on
         # the data channel even after PROT P (confirmed for both H2D and X1C).
         printer_mode = "TLS" if use_tls else "cleartext"
 
@@ -1307,7 +1307,7 @@ class FTPTLSProxy(TLSProxy):
                 # printer side to signal upload complete.
                 #
                 # Bambu Studio does NOT close the FTP data channel after sending
-                # STOR data — it keeps the connection open and waits for the
+                # STOR data - it keeps the connection open and waits for the
                 # printer to close its side + send 226 on the control channel.
                 # A naive bidirectional proxy deadlocks here because the proxy
                 # waits for the slicer EOF that never comes.
@@ -1315,12 +1315,12 @@ class FTPTLSProxy(TLSProxy):
                 # Fix: read slicer data with an idle timeout. Once data has been
                 # received and the slicer goes quiet, close the printer side so
                 # the printer can send 226. For RETR (download), the printer
-                # sends data and closes — the slicer reads until EOF — so this
+                # sends data and closes - the slicer reads until EOF - so this
                 # unidirectional approach works for both directions.
                 total_c2p = len(slicer_buffer)
                 if not slicer_eof:
                     # Read remaining slicer data with idle detection.
-                    # Must be short — Bambu Studio expects 226 almost instantly
+                    # Must be short - Bambu Studio expects 226 almost instantly
                     # after sending data. Too long and the slicer times out.
                     idle_timeout = 0.3
                     while True:
@@ -1328,7 +1328,7 @@ class FTPTLSProxy(TLSProxy):
                             chunk = await asyncio.wait_for(client_reader.read(65536), timeout=idle_timeout)
                         except TimeoutError:
                             if total_c2p > 0:
-                                # Slicer sent data then went idle — upload done
+                                # Slicer sent data then went idle - upload done
                                 logger.debug(
                                     "FTP data proxy port %s: slicer idle after %s bytes, closing printer side",
                                     port,
@@ -1361,7 +1361,7 @@ class FTPTLSProxy(TLSProxy):
                 # Without this delay, the data channel FIN arrives at the
                 # slicer before the 226 response on the control channel.
                 # BambuStudio reacts to the data channel FIN within <1ms
-                # by sending QUIT + closing the control channel — before
+                # by sending QUIT + closing the control channel - before
                 # 226 arrives (~2-3ms network RTT). This causes verify_job
                 # to be treated as failed and shows the login modal.
                 #
@@ -1387,7 +1387,7 @@ class FTPTLSProxy(TLSProxy):
             handle_data,
             "0.0.0.0",  # nosec B104
             port,
-            # No TLS on slicer side — Bambu Studio doesn't do TLS on data
+            # No TLS on slicer side - Bambu Studio doesn't do TLS on data
             # channel even after PROT P (confirmed by connection hang test).
         )
         server_holder.append(server)
@@ -1470,7 +1470,7 @@ class SlicerProxyManager:
         self._probe_servers: list[asyncio.Server] = []
         self._tasks: list[asyncio.Task] = []
 
-    # FTP passive data port range — Bambu printers typically use ports in
+    # FTP passive data port range - Bambu printers typically use ports in
     # this range for EPSV/PASV data connections. We pre-listen on all of
     # them so EPSV works transparently without decrypting FTP control.
     FTP_DATA_PORT_MIN = 50000
@@ -1480,7 +1480,7 @@ class SlicerProxyManager:
         """Start proxy services.
 
         Uses transparent TCP proxying for most protocols (FTP, FileTransfer,
-        Camera) — raw bytes are forwarded without TLS termination, so the
+        Camera) - raw bytes are forwarded without TLS termination, so the
         slicer gets the printer's real TLS certificate end-to-end.
 
         Only MQTT is TLS-terminated because we must decrypt the payload to
@@ -1500,7 +1500,7 @@ class SlicerProxyManager:
             )
             ftp_listen_port = redirect_target
 
-        # FTP control — raw TCP pass-through (end-to-end TLS with printer)
+        # FTP control - raw TCP pass-through (end-to-end TLS with printer)
         self._ftp_proxy = TCPProxy(
             name="FTP",
             listen_port=ftp_listen_port,
@@ -1511,7 +1511,7 @@ class SlicerProxyManager:
             bind_address=self.bind_address,
         )
 
-        # FTP data ports — pre-listen on the entire passive port range.
+        # FTP data ports - pre-listen on the entire passive port range.
         # Since FTP control is encrypted end-to-end, we can't read EPSV
         # responses to know which port the printer chose. Instead, we
         # listen on every port in the range and forward to the same port
@@ -1528,7 +1528,7 @@ class SlicerProxyManager:
             )
             self._ftp_data_proxies.append(dp)
 
-        # MQTT — TLS-terminating proxy (must decrypt to rewrite IP addresses)
+        # MQTT - TLS-terminating proxy (must decrypt to rewrite IP addresses)
         self._mqtt_proxy = TLSProxy(
             name="MQTT",
             listen_port=self.LOCAL_MQTT_PORT,
@@ -1542,7 +1542,7 @@ class SlicerProxyManager:
             rewrite_ip=(self.target_host, self.bind_address) if self.bind_address != "0.0.0.0" else None,  # nosec B104
         )
 
-        # File transfer — raw TCP pass-through (port 6000)
+        # File transfer - raw TCP pass-through (port 6000)
         self._file_transfer_proxy = TCPProxy(
             name="FileTransfer",
             listen_port=self.PRINTER_FILE_TRANSFER_PORT,
@@ -1553,7 +1553,7 @@ class SlicerProxyManager:
             bind_address=self.bind_address,
         )
 
-        # RTSP camera — raw TCP pass-through (port 322)
+        # RTSP camera - raw TCP pass-through (port 322)
         self._rtsp_proxy = TCPProxy(
             name="RTSP",
             listen_port=self.PRINTER_RTSP_PORT,
@@ -1564,7 +1564,7 @@ class SlicerProxyManager:
             bind_address=self.bind_address,
         )
 
-        # Auxiliary ports (2024-2026) — raw TCP pass-through for undocumented
+        # Auxiliary ports (2024-2026) - raw TCP pass-through for undocumented
         # proprietary services. Required by BambuStudio/OrcaSlicer for some
         # models (A1, P1S). Silently ignored if the printer doesn't listen.
         for aux_port in self.PRINTER_AUX_PORTS:
@@ -1580,7 +1580,7 @@ class SlicerProxyManager:
                 )
             )
 
-        # Bind/auth — respond with VP identity instead of proxying to printer.
+        # Bind/auth - respond with VP identity instead of proxying to printer.
         # The detect response contains the printer name, serial, model, and
         # bind status. Proxying it would leak the real printer's identity and
         # cause the slicer to treat it as a different device.
@@ -1690,7 +1690,7 @@ class SlicerProxyManager:
                     )
                     self._probe_servers.append(srv)
                 except OSError:
-                    pass  # Port in use or no permission — skip
+                    pass  # Port in use or no permission - skip
             if self._probe_servers:
                 probed = [s.sockets[0].getsockname()[1] for s in self._probe_servers if s.sockets]
                 logger.info("Proxy diagnostic: probing un-proxied ports %s on %s", probed, self.bind_address)
@@ -1770,7 +1770,7 @@ class SlicerProxyManager:
         peername = writer.get_extra_info("peername")
         client = f"{peername[0]}:{peername[1]}" if peername else "unknown"
         logger.warning(
-            "PROBE: slicer connected to un-proxied port %d from %s — this port may need proxying",
+            "PROBE: slicer connected to un-proxied port %d from %s - this port may need proxying",
             port,
             client,
         )

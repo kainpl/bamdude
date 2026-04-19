@@ -214,6 +214,10 @@ class TestVirtualPrinterInstance:
             base_dir=tmp_path,
             session_factory=mock_session_factory,
         )
+        # Short-circuit the online-printer lookup so the archive path runs
+        # instead of falling through to _save_to_library (which would add a
+        # LibraryFile without manual_start to mock_db).
+        inst._find_best_queue = AsyncMock(return_value=mock_queue)
 
         # Create a temp 3mf file
         file_path = tmp_path / "test.3mf"
@@ -273,6 +277,8 @@ class TestVirtualPrinterInstance:
             base_dir=tmp_path,
             session_factory=mock_session_factory,
         )
+        # Short-circuit the online-printer lookup (see sibling test for why).
+        inst._find_best_queue = AsyncMock(return_value=mock_queue)
 
         # Create a temp 3mf file
         file_path = tmp_path / "test.3mf"
@@ -1162,7 +1168,7 @@ class TestSlicerProxyManager:
             patch.object(SlicerProxyManager, "_log_activity"),
         ):
             mock_create_task.return_value = MagicMock()
-            # start() will create proxies then try to gather tasks — we just
+            # start() will create proxies then try to gather tasks - we just
             # need to verify the proxy types after creation.
             # Trigger start but let gather return immediately.
             await mgr.start()
@@ -1214,7 +1220,7 @@ class TestSlicerProxyManager:
             bind_address="10.0.0.1",
         )
 
-        # Before start, proxies are None — verify constructor stores rewrite config
+        # Before start, proxies are None - verify constructor stores rewrite config
         assert mgr.bind_address == "10.0.0.1"
         assert mgr.target_host == "192.168.1.100"
 

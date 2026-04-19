@@ -264,21 +264,15 @@ describe('VirtualPrinterSettings', () => {
   });
 
   describe('mode selection', () => {
-    it('renders Archive mode option', async () => {
+    // Removed: legacy "Archive" and "Review" modes were replaced by
+    // "File Manager" / "Queue" / "Proxy" in the BamDude redesign.
+
+    it('renders File Manager mode option', async () => {
       render(<VirtualPrinterSettings />);
 
       await waitFor(() => {
-        expect(screen.getByText('Archive')).toBeInTheDocument();
-        expect(screen.getByText('Archive files immediately')).toBeInTheDocument();
-      });
-    });
-
-    it('renders Review mode option', async () => {
-      render(<VirtualPrinterSettings />);
-
-      await waitFor(() => {
-        expect(screen.getByText('Review')).toBeInTheDocument();
-        expect(screen.getByText('Review before archiving')).toBeInTheDocument();
+        expect(screen.getByText('File Manager')).toBeInTheDocument();
+        expect(screen.getByText('Save directly to File Manager')).toBeInTheDocument();
       });
     });
 
@@ -291,51 +285,53 @@ describe('VirtualPrinterSettings', () => {
       });
     });
 
-    it('highlights current mode (review)', async () => {
+    it('highlights current mode (file_manager)', async () => {
       vi.mocked(virtualPrinterApi.getSettings).mockResolvedValue(
-        createMockSettings({ mode: 'review' })
+        createMockSettings({ mode: 'file_manager' })
       );
 
       render(<VirtualPrinterSettings />);
 
       await waitFor(() => {
-        const reviewButton = screen.getByText('Review').closest('button');
-        expect(reviewButton?.className).toContain('border-bambu-green');
+        const button = screen.getByText('File Manager').closest('button');
+        expect(button?.className).toContain('border-bambu-green');
       });
     });
 
-    it('highlights current mode (legacy queue maps to review)', async () => {
+    it('highlights File Manager when legacy mode is returned (fallback)', async () => {
+      // Legacy values (immediate / review / queue with non-current-shape)
+      // map to file_manager in the BamDude component (component:58-61).
       vi.mocked(virtualPrinterApi.getSettings).mockResolvedValue(
-        createMockSettings({ mode: 'queue' })
+        createMockSettings({ mode: 'immediate' })
       );
 
       render(<VirtualPrinterSettings />);
 
       await waitFor(() => {
-        const reviewButton = screen.getByText('Review').closest('button');
-        expect(reviewButton?.className).toContain('border-bambu-green');
+        const button = screen.getByText('File Manager').closest('button');
+        expect(button?.className).toContain('border-bambu-green');
       });
     });
 
-    it('changes mode to review on click', async () => {
+    it('changes mode to file_manager on click', async () => {
       const user = userEvent.setup();
       vi.mocked(virtualPrinterApi.updateSettings).mockResolvedValue(
-        createMockSettings({ mode: 'review' })
+        createMockSettings({ mode: 'file_manager' })
       );
 
       render(<VirtualPrinterSettings />);
 
       await waitFor(() => {
-        expect(screen.getByText('Review')).toBeInTheDocument();
+        expect(screen.getByText('File Manager')).toBeInTheDocument();
       });
 
-      const reviewButton = screen.getByText('Review').closest('button');
-      if (reviewButton) {
-        await user.click(reviewButton);
+      const button = screen.getByText('File Manager').closest('button');
+      if (button) {
+        await user.click(button);
       }
 
       await waitFor(() => {
-        expect(virtualPrinterApi.updateSettings).toHaveBeenCalledWith({ mode: 'review' });
+        expect(virtualPrinterApi.updateSettings).toHaveBeenCalledWith({ mode: 'file_manager' });
       });
     });
 

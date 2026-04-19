@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, PlainSerializer
+from pydantic import BaseModel, Field, PlainSerializer
 
 
 # Custom serializer to ensure UTC datetimes have Z suffix
@@ -15,7 +15,7 @@ UTCDatetime = Annotated[datetime | None, PlainSerializer(serialize_utc_datetime)
 
 
 class PrintQueueItemCreate(BaseModel):
-    queue_id: int  # Required — which printer's queue to add to
+    queue_id: int  # Required - which printer's queue to add to
     # Either archive_id OR library_file_id must be provided
     archive_id: int | None = None
     library_file_id: int | None = None
@@ -27,10 +27,16 @@ class PrintQueueItemCreate(BaseModel):
     # Print options
     bed_levelling: bool = True
     flow_cali: bool = True
-    vibration_cali: bool = False
     layer_inspect: bool = False
     timelapse: bool = False
     use_ams: bool = True
+    mesh_mode_fast_check: bool = True
+    execute_swap_macros: bool = True
+    swap_macro_events: list[str] | None = None
+    # Batch: create N identical items sharing a batch_id (1..50)
+    quantity: int = Field(default=1, ge=1, le=50)
+    # Project to associate the resulting archive with (when triggered from project view)
+    project_id: int | None = None
 
 
 class PrintQueueItemUpdate(BaseModel):
@@ -44,16 +50,18 @@ class PrintQueueItemUpdate(BaseModel):
     # Print options
     bed_levelling: bool | None = None
     flow_cali: bool | None = None
-    vibration_cali: bool | None = None
     layer_inspect: bool | None = None
     timelapse: bool | None = None
     use_ams: bool | None = None
+    mesh_mode_fast_check: bool | None = None
+    execute_swap_macros: bool | None = None
+    swap_macro_events: list[str] | None = None
 
 
 class PrintQueueItemResponse(BaseModel):
     id: int
     queue_id: int
-    printer_id: int | None = None  # Convenience — resolved from queue
+    printer_id: int | None = None  # Convenience - resolved from queue
     waiting_reason: str | None = None
     archive_id: int | None
     library_file_id: int | None
@@ -66,15 +74,18 @@ class PrintQueueItemResponse(BaseModel):
     # Print options
     bed_levelling: bool = True
     flow_cali: bool = True
-    vibration_cali: bool = False
     layer_inspect: bool = False
     timelapse: bool = False
     use_ams: bool = True
+    mesh_mode_fast_check: bool = True
+    execute_swap_macros: bool = True
+    swap_macro_events: list[str] | None = None
     status: Literal["pending", "printing", "completed", "failed", "skipped", "cancelled"]
     started_at: UTCDatetime
     completed_at: UTCDatetime
     error_message: str | None
     created_at: UTCDatetime
+    batch_id: str | None = None
 
     # Nested info for UI
     archive_name: str | None = None
@@ -93,6 +104,12 @@ class PrintQueueItemResponse(BaseModel):
     # User tracking
     created_by_id: int | None = None
     created_by_username: str | None = None
+
+    # Virtual-item fields (set by ``build_virtual_current_print`` for
+    # external / direct-dispatch prints that have no DB row).  Real
+    # queue items default to False + None.
+    is_virtual: bool = False
+    source: str | None = None  # 'external' | 'bamdude_direct' | 'bamdude_queue' (real items)
 
     class Config:
         from_attributes = True
@@ -118,10 +135,12 @@ class PrintQueueBulkUpdate(BaseModel):
     # Print options
     bed_levelling: bool | None = None
     flow_cali: bool | None = None
-    vibration_cali: bool | None = None
     layer_inspect: bool | None = None
     timelapse: bool | None = None
     use_ams: bool | None = None
+    mesh_mode_fast_check: bool | None = None
+    execute_swap_macros: bool | None = None
+    swap_macro_events: list[str] | None = None
 
 
 class PrintQueueBulkUpdateResponse(BaseModel):

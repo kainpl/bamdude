@@ -199,6 +199,9 @@ export function useWebSocket() {
         // Refetch printer status immediately when print starts to get printable_objects_count
         if (message.printer_id !== undefined) {
           queryClient.invalidateQueries({ queryKey: ['printerStatus', message.printer_id] });
+          // Update queue data (status, current print)
+          debouncedInvalidate('queues');
+          queryClient.invalidateQueries({ queryKey: ['queue', message.printer_id] });
         }
         break;
 
@@ -236,6 +239,11 @@ export function useWebSocket() {
         // The printer_status websocket messages will naturally update the status
         debouncedInvalidate('archives');
         debouncedInvalidate('archiveStats');
+        // Update queue data (counters, status, pending items)
+        debouncedInvalidate('queues');
+        if (message.printer_id !== undefined) {
+          queryClient.invalidateQueries({ queryKey: ['queue', message.printer_id] });
+        }
         break;
 
       case 'archive_created':
@@ -251,6 +259,17 @@ export function useWebSocket() {
         debouncedInvalidate('library-files');
         debouncedInvalidate('library-stats');
         break;
+
+      case 'library_file_notes_changed': {
+        // gh#3 - notes count changed somewhere; refresh file lists (which
+        // carry notes_count) and any open per-file notes query.
+        const fileId = (message as unknown as { data?: { file_id?: number } }).data?.file_id;
+        debouncedInvalidate('library-files');
+        if (typeof fileId === 'number') {
+          queryClient.invalidateQueries({ queryKey: ['library-file-notes', fileId] });
+        }
+        break;
+      }
 
       case 'pong':
         // Keepalive response, ignore
@@ -285,6 +304,21 @@ export function useWebSocket() {
         debouncedInvalidate('inventory-spools');
         break;
 
+      case 'macro_executed': {
+        // Macro execution result - show toast globally + dispatch for UI state
+        const macroData = message.data as Record<string, unknown> | undefined;
+        if (macroData) {
+          showToast(
+            String(macroData.message || 'Macro executed'),
+            macroData.success ? 'success' : 'error',
+          );
+          window.dispatchEvent(new CustomEvent('macro-executed', {
+            detail: macroData,
+          }));
+        }
+        break;
+      }
+
       case 'unknown_tag':
         // Unknown RFID tag detected - dispatch event for UI
         window.dispatchEvent(new CustomEvent('unknown-tag', {
@@ -298,6 +332,10 @@ export function useWebSocket() {
         }));
         break;
 
+      case 'telegram_chat_registered':
+        queryClient.invalidateQueries({ queryKey: ['telegram-chats'] });
+        break;
+
       case 'background_dispatch':
         window.dispatchEvent(
           new CustomEvent('background-dispatch', {
@@ -306,47 +344,6 @@ export function useWebSocket() {
         );
         break;
 
-      case 'spoolbuddy_weight':
-        window.dispatchEvent(new CustomEvent('spoolbuddy-weight', { detail: message }));
-        break;
-
-      case 'spoolbuddy_tag_matched':
-        window.dispatchEvent(new CustomEvent('spoolbuddy-tag-matched', { detail: message }));
-        debouncedInvalidate('inventory-spools');
-        break;
-
-      case 'spoolbuddy_unknown_tag':
-        window.dispatchEvent(new CustomEvent('spoolbuddy-unknown-tag', { detail: message }));
-        break;
-
-      case 'spoolbuddy_tag_removed':
-        window.dispatchEvent(new CustomEvent('spoolbuddy-tag-removed', { detail: message }));
-        break;
-
-      case 'spoolbuddy_tag_written':
-        window.dispatchEvent(new CustomEvent('spoolbuddy-tag-written', { detail: message }));
-        debouncedInvalidate('inventory-spools');
-        break;
-
-      case 'spoolbuddy_tag_write_failed':
-        window.dispatchEvent(new CustomEvent('spoolbuddy-tag-write-failed', { detail: message }));
-        break;
-
-      case 'spoolbuddy_online':
-        window.dispatchEvent(new CustomEvent('spoolbuddy-online', { detail: message }));
-        debouncedInvalidate('spoolbuddy-devices');
-        debouncedInvalidate('spoolbuddy-update-check');
-        break;
-
-      case 'spoolbuddy_offline':
-        window.dispatchEvent(new CustomEvent('spoolbuddy-offline', { detail: message }));
-        debouncedInvalidate('spoolbuddy-devices');
-        break;
-
-      case 'spoolbuddy_update':
-        debouncedInvalidate('spoolbuddy-devices');
-        debouncedInvalidate('spoolbuddy-update-check');
-        break;
     }
   }, [queryClient, debouncedInvalidate, throttledPrinterStatusUpdate, showToast, t]);
 

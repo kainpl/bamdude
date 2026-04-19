@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { Printer, Archive, Calendar, BarChart3, Cloud, Settings, Sun, Moon, ChevronLeft, ChevronRight, Keyboard, Github, GripVertical, ArrowUpCircle, Wrench, FolderKanban, FolderOpen, X, Menu, Info, Plug, Bug, LogOut, Key, Loader2, Disc3, ShieldAlert, Bell, type LucideIcon } from 'lucide-react';
+import { Printer, Archive, Calendar, BarChart3, Cloud, Settings, Sun, Moon, ChevronLeft, ChevronRight, Keyboard, GripVertical, ArrowUpCircle, Wrench, FolderKanban, FolderOpen, X, Menu, Info, Plug, Bug, LogOut, Key, Loader2, Disc3, ShieldAlert, Bell, type LucideIcon } from 'lucide-react';
+import { GitHubIcon } from './BrandIcons';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '../contexts/ThemeContext';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
@@ -9,6 +10,7 @@ import { useQuery, useQueries } from '@tanstack/react-query';
 import { api, supportApi, pendingUploadsApi, type Permission } from '../api/client';
 import { getIconByName } from './IconPicker';
 import { useIsSidebarCompact } from '../hooks/useIsSidebarCompact';
+import { useColorCatalogVersion } from '../hooks/useColorCatalogVersion';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { Card, CardHeader, CardContent } from './Card';
@@ -78,6 +80,9 @@ export function Layout() {
   const { mode, toggleMode } = useTheme();
   const { t } = useTranslation();
   const isSidebarCompact = useIsSidebarCompact();
+  // Re-render Layout (and downstream pages) when the color catalog finishes loading
+  // so cached getColorName() results refresh from HSL fallback to catalog names.
+  useColorCatalogVersion();
   const { user, authEnabled, logout, hasPermission } = useAuth();
   const { showToast } = useToast();
   const [showChangePasswordModal, setShowChangePasswordModal] = useState(false);
@@ -725,9 +730,9 @@ export function Layout() {
                   target="_blank"
                   rel="noopener noreferrer"
                   className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white"
-                  title={t('nav.viewOnGithub')}
+                  title={t('nav.viewOnGitHubIcon')}
                 >
-                  <Github className="w-5 h-5" />
+                  <GitHubIcon className="w-5 h-5" />
                 </a>
                 <button
                   onClick={() => setShowShortcuts(true)}
@@ -829,9 +834,9 @@ export function Layout() {
                 target="_blank"
                 rel="noopener noreferrer"
                 className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white"
-                title={t('nav.viewOnGithub')}
+                title={t('nav.viewOnGitHubIcon')}
               >
-                <Github className="w-5 h-5" />
+                <GitHubIcon className="w-5 h-5" />
               </a>
               <button
                 onClick={() => setShowShortcuts(true)}

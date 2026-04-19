@@ -50,8 +50,10 @@ import {
   Settings,
   User,
   Play,
-  ClipboardList,
   Zap,
+  ArrowUpNarrowWide,
+  ArrowDownWideNarrow,
+  DownloadCloud,
 } from 'lucide-react';
 import { api } from '../api/client';
 import { openInSlicer, type SlicerType } from '../utils/slicer';
@@ -86,7 +88,7 @@ type TFunction = (key: string, options?: Record<string, unknown>) => string;
 /**
  * Check if an archive represents a sliced/printable file.
  * Uses filename (.gcode, .gcode.3mf) as primary check, then falls back to
- * metadata — a .3mf with total_layers or print_time is sliced (contains gcode),
+ * metadata - a .3mf with total_layers or print_time is sliced (contains gcode),
  * while a raw source .3mf (CAD export) has neither.
  */
 function isSlicedFile(archive: { filename?: string | null; total_layers?: number | null; print_time_seconds?: number | null }): boolean {
@@ -95,7 +97,7 @@ function isSlicedFile(archive: { filename?: string | null; total_layers?: number
     const lower = filename.toLowerCase();
     if (lower.endsWith('.gcode') || lower.includes('.gcode.')) return true;
   }
-  // .3mf can be either sliced or source — check for gcode metadata
+  // .3mf can be either sliced or source - check for gcode metadata
   if (archive.total_layers || archive.print_time_seconds) return true;
   return false;
 }
@@ -215,6 +217,24 @@ function ArchiveCard({
   const plates = platesData?.plates ?? [];
   const isMultiPlate = platesData?.is_multi_plate ?? false;
   const displayPlateIndex = currentPlateIndex ?? 0;
+
+  const retryDownloadMutation = useMutation({
+    mutationFn: () => api.retryArchiveDownload(archive.id),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['archives'] });
+      if (data.status === 'recovered') {
+        showToast(t('archives.toast.downloadRecovered'));
+      } else if (data.status === 'in_progress') {
+        // Not an error — just another retry is already running.
+        showToast(t('archives.toast.downloadRetryInProgress'), 'info');
+      } else {
+        showToast(data.message || t('archives.toast.downloadRetryFailed'), 'error');
+      }
+    },
+    onError: (error: Error) => {
+      showToast(error.message || t('archives.toast.downloadRetryFailed'), 'error');
+    },
+  });
 
   const timelapseDeleteMutation = useMutation({
     mutationFn: () => api.deleteArchiveTimelapse(archive.id),
@@ -361,6 +381,16 @@ function ArchiveCard({
   const isGcodeFile = isSlicedFile(archive);
 
   const contextMenuItems: ContextMenuItem[] = [
+    // Retry download — only shown for fallback archives (file_path empty).
+    // Hidden once the archive has a file.
+    ...(!archive.file_path ? [
+      {
+        label: t('archives.menu.retryDownload'),
+        icon: <DownloadCloud className="w-4 h-4" />,
+        onClick: () => retryDownloadMutation.mutate(),
+        disabled: retryDownloadMutation.isPending,
+      },
+    ] : []),
     // For gcode files: show Print option
     // For source files: show Slice as the primary action
     ...(isGcodeFile ? [
@@ -911,6 +941,9 @@ function ArchiveCard({
           >
             {isSlicedFile(archive) ? t('archives.card.gcode') : t('archives.card.source')}
           </span>
+          {archive.swap_compatible && (
+            <span className="text-[10px] px-1 py-0.5 bg-amber-500/20 text-amber-400 rounded">SWAP</span>
+          )}
           {/* File hash badge */}
           {archive.content_hash && (
             <span
@@ -1933,6 +1966,9 @@ function ArchiveListRow({
                 +{archive.duplicate_count}
               </span>
             )}
+            {archive.swap_compatible && (
+              <span className="text-[10px] px-1 py-0.5 bg-amber-500/20 text-amber-400 rounded flex-shrink-0">SWAP</span>
+            )}
             {archive.timelapse_path && (
               <span title={t('archives.list.hasTimelapse')}>
                 <Film className="w-3.5 h-3.5 text-bambu-green flex-shrink-0" />
@@ -2321,7 +2357,7 @@ function ArchiveListRow({
 }
 
 type SortOption = 'date-desc' | 'date-asc' | 'name-asc' | 'name-desc' | 'size-desc' | 'size-asc';
-type ViewMode = 'grid' | 'list' | 'calendar' | 'log';
+type ViewMode = 'grid' | 'list' | 'calendar';
 type Collection = 'all' | 'recent' | 'this-week' | 'this-month' | 'favorites' | 'failed' | 'duplicates';
 
 const collections: { id: Collection; labelKey: string; icon: React.ReactNode }[] = [
@@ -2338,7 +2374,7 @@ export function ArchivesPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
-  const { hasPermission, hasAnyPermission } = useAuth();
+  const { hasAnyPermission } = useAuth();
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState(search);
@@ -2390,6 +2426,20 @@ export function ArchivesPage() {
   const [sortBy, setSortBy] = useState<SortOption>(() =>
     (localStorage.getItem('archiveSortBy') as SortOption) || 'date-desc'
   );
+  // Derived field+direction split for the two-control sort UI (select + toggle).
+  // Keeps `sortBy` as the single source-of-truth so localStorage and the
+  // backend query param stay backward-compatible.
+  const sortField = sortBy.split('-')[0] as 'date' | 'name' | 'size';
+  const sortDir = sortBy.split('-')[1] as 'asc' | 'desc';
+  const setSortField = (field: 'date' | 'name' | 'size') => {
+    setSortBy(`${field}-${sortDir}` as SortOption);
+    setPage(1);
+  };
+  const toggleSortDir = () => {
+    const next = sortDir === 'asc' ? 'desc' : 'asc';
+    setSortBy(`${sortField}-${next}` as SortOption);
+    setPage(1);
+  };
   const [collection, setCollection] = useState<Collection>(() =>
     (localStorage.getItem('archiveCollection') as Collection) || 'all'
   );
@@ -2400,28 +2450,7 @@ export function ArchivesPage() {
   const [highlightedArchiveId, setHighlightedArchiveId] = useState<number | null>(null);
   const [pendingNavigationArchiveId, setPendingNavigationArchiveId] = useState<number | null>(null);
 
-  // Log view state
-  const [logFilterUser, setLogFilterUser] = useState<string | null>(() =>
-    localStorage.getItem('logFilterUser') || null
-  );
-  const [logFilterStatus, setLogFilterStatus] = useState<string | null>(() =>
-    localStorage.getItem('logFilterStatus')
-  );
-  const [logFilterDateFrom, setLogFilterDateFrom] = useState(() =>
-    localStorage.getItem('logFilterDateFrom') || ''
-  );
-  const [logFilterDateTo, setLogFilterDateTo] = useState(() =>
-    localStorage.getItem('logFilterDateTo') || ''
-  );
-  const [logOffset, setLogOffset] = useState(() => {
-    const saved = localStorage.getItem('logOffset');
-    return saved ? Number(saved) : 0;
-  });
-  const [showClearLogConfirm, setShowClearLogConfirm] = useState(false);
-  const [logPageSize, setLogPageSize] = useState(() => {
-    const saved = localStorage.getItem('logPageSize');
-    return saved ? Number(saved) : 25;
-  });
+
 
   const handleNavigateToArchive = useCallback((archiveId: number) => {
     setPendingNavigationArchiveId(archiveId);
@@ -2514,27 +2543,6 @@ export function ArchivesPage() {
     queryFn: api.getSettings,
   });
 
-  const { data: users } = useQuery({
-    queryKey: ['users'],
-    queryFn: api.getUsers,
-    enabled: viewMode === 'log',
-  });
-
-  const { data: printLogData, isLoading: isLogLoading } = useQuery({
-    queryKey: ['print-log', filterPrinter, logFilterUser, logFilterStatus, logFilterDateFrom, logFilterDateTo, search, logOffset, logPageSize],
-    queryFn: () => api.getPrintLog({
-      search: search || undefined,
-      printerId: filterPrinter || undefined,
-      username: logFilterUser || undefined,
-      status: logFilterStatus || undefined,
-      dateFrom: logFilterDateFrom || undefined,
-      dateTo: logFilterDateTo || undefined,
-      limit: logPageSize,
-      offset: logOffset,
-    }),
-    enabled: viewMode === 'log',
-  });
-
   const timeFormat: TimeFormat = settings?.time_format || 'system';
   const dateFormat: DateFormat = settings?.date_format || 'system';
   const preferredSlicer: SlicerType = settings?.preferred_slicer || 'bambu_studio';
@@ -2556,17 +2564,6 @@ export function ArchivesPage() {
     },
   });
 
-  const clearLogMutation = useMutation({
-    mutationFn: () => api.clearPrintLog(),
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['print-log'] });
-      setLogOffset(0);
-      showToast(t('archives.log.cleared', { count: data.deleted }));
-    },
-    onError: () => {
-      showToast(t('archives.log.clearFailed'), 'error');
-    },
-  });
 
   // Persist all filters to localStorage
   useEffect(() => {
@@ -2638,46 +2635,6 @@ export function ArchivesPage() {
     return () => clearTimeout(timer);
   }, [search]);
 
-  // Persist log view filters
-  useEffect(() => {
-    if (logFilterUser) {
-      localStorage.setItem('logFilterUser', logFilterUser);
-    } else {
-      localStorage.removeItem('logFilterUser');
-    }
-  }, [logFilterUser]);
-
-  useEffect(() => {
-    if (logFilterStatus) {
-      localStorage.setItem('logFilterStatus', logFilterStatus);
-    } else {
-      localStorage.removeItem('logFilterStatus');
-    }
-  }, [logFilterStatus]);
-
-  useEffect(() => {
-    if (logFilterDateFrom) {
-      localStorage.setItem('logFilterDateFrom', logFilterDateFrom);
-    } else {
-      localStorage.removeItem('logFilterDateFrom');
-    }
-  }, [logFilterDateFrom]);
-
-  useEffect(() => {
-    if (logFilterDateTo) {
-      localStorage.setItem('logFilterDateTo', logFilterDateTo);
-    } else {
-      localStorage.removeItem('logFilterDateTo');
-    }
-  }, [logFilterDateTo]);
-
-  useEffect(() => {
-    localStorage.setItem('logOffset', logOffset.toString());
-  }, [logOffset]);
-
-  useEffect(() => {
-    localStorage.setItem('logPageSize', logPageSize.toString());
-  }, [logPageSize]);
 
   const printerMap = new Map(printers?.map((p) => [p.id, p.name]) || []);
 
@@ -2809,7 +2766,7 @@ export function ArchivesPage() {
 
   return (
     <div
-      className="p-4 md:p-8 relative"
+      className="p-4 md:p-6 relative"
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
@@ -2894,17 +2851,14 @@ export function ArchivesPage() {
         </div>
       )}
 
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
         <div>
           <h1 className="text-2xl font-bold text-white">{t('archives.page.title')}</h1>
           {viewMode === 'calendar' && (
-            <p className="text-bambu-gray">{t('archives.calendarView')}</p>
-          )}
-          {viewMode === 'log' && (
-            <p className="text-bambu-gray">{t('archives.logView')}</p>
+            <p className="text-bambu-gray text-sm">{t('archives.calendarView')}</p>
           )}
           {(viewMode === 'grid' || viewMode === 'list') && paginationMeta && (
-            <p className="text-bambu-gray">
+            <p className="text-bambu-gray text-sm">
               {t('common.showingRange', {
                 from: ((paginationMeta.current_page - 1) * paginationMeta.per_page) + 1,
                 to: Math.min(paginationMeta.current_page * paginationMeta.per_page, paginationMeta.total),
@@ -2914,17 +2868,57 @@ export function ArchivesPage() {
           )}
         </div>
         <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
+          {/* View mode toggle - matches PrintersPage card-size selector style */}
+          <div className="flex items-center bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
+            <button
+              onClick={() => setViewMode('grid')}
+              className={`px-2 py-1.5 transition-colors rounded-l-lg ${
+                viewMode === 'grid'
+                  ? 'bg-bambu-green text-white'
+                  : 'text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-white'
+              }`}
+              title={t('archives.gridView')}
+            >
+              <LayoutGrid className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => setViewMode('list')}
+              className={`px-2 py-1.5 transition-colors ${
+                viewMode === 'list'
+                  ? 'bg-bambu-green text-white'
+                  : 'text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-white'
+              }`}
+              title={t('archives.listView')}
+            >
+              <List className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => setViewMode('calendar')}
+              className={`px-2 py-1.5 transition-colors rounded-r-lg ${
+                viewMode === 'calendar'
+                  ? 'bg-bambu-green text-white'
+                  : 'text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-white'
+              }`}
+              title={t('archives.calendarView')}
+            >
+              <CalendarDays className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div className="w-px h-6 bg-bambu-dark-tertiary" />
+
           {/* Export dropdown */}
           <div className="relative">
             <Button
-              variant="secondary"
+              variant="outline"
+              size="sm"
               onClick={() => setShowExportMenu(!showExportMenu)}
               disabled={isExporting}
             >
               {isExporting ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
               ) : (
-                <FileSpreadsheet className="w-4 h-4" />
+                <FileSpreadsheet className="w-4 h-4 mr-2" />
               )}
               {t('common.export')}
             </Button>
@@ -2994,125 +2988,59 @@ export function ArchivesPage() {
           {/* Compare button (only when 2-5 items selected) */}
           {selectedIds.size >= 2 && selectedIds.size <= 5 && (
             <Button
-              variant="secondary"
+              variant="outline"
+              size="sm"
               onClick={() => setShowCompareModal(true)}
             >
-              <GitCompare className="w-4 h-4" />
+              <GitCompare className="w-4 h-4 mr-2" />
               {t('archives.page.compare', { count: selectedIds.size })}
             </Button>
           )}
           {!selectionMode && (
-            <Button variant="secondary" onClick={() => setIsSelectionMode(true)}>
-              <CheckSquare className="w-4 h-4" />
+            <Button variant="outline" size="sm" onClick={() => setIsSelectionMode(true)}>
+              <CheckSquare className="w-4 h-4 mr-2" />
               {t('archives.page.select')}
             </Button>
           )}
-          <Button
-            onClick={() => setShowUpload(true)}
-            disabled={!hasPermission('archives:create')}
-            title={!hasPermission('archives:create') ? t('archives.permission.noCreate') : undefined}
-          >
-            <Upload className="w-4 h-4" />
-            {t('archives.page.upload3mf')}
-          </Button>
         </div>
       </div>
 
-      {/* View mode toggle + pagination + per page selector */}
-      <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
-        <div className="flex items-center border border-bambu-dark-tertiary rounded-lg overflow-hidden flex-shrink-0 w-fit">
-          <button
-            className={`p-2 ${viewMode === 'grid' ? 'bg-bambu-green text-white' : 'bg-bambu-dark text-bambu-gray hover:text-white'}`}
-            onClick={() => setViewMode('grid')}
-            title={t('archives.gridView')}
-          >
-            <LayoutGrid className="w-4 h-4" />
+      {/* Pagination row - only rendered when there are multiple pages */}
+      {(viewMode === 'grid' || viewMode === 'list') && paginationMeta && paginationMeta.last_page > 1 && (
+        <div className="flex items-center justify-end gap-2 mb-4">
+          <button onClick={() => setPage(1)} disabled={page <= 1} className="p-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white disabled:opacity-50 hover:bg-bambu-dark-secondary">
+            <ChevronsLeft className="w-4 h-4" />
           </button>
-          <button
-            className={`p-2 ${viewMode === 'list' ? 'bg-bambu-green text-white' : 'bg-bambu-dark text-bambu-gray hover:text-white'}`}
-            onClick={() => setViewMode('list')}
-            title={t('archives.listView')}
-          >
-            <List className="w-4 h-4" />
+          <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1} className="p-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white disabled:opacity-50 hover:bg-bambu-dark-secondary">
+            <ChevronLeft className="w-4 h-4" />
           </button>
-          <button
-            className={`p-2 ${viewMode === 'calendar' ? 'bg-bambu-green text-white' : 'bg-bambu-dark text-bambu-gray hover:text-white'}`}
-            onClick={() => setViewMode('calendar')}
-            title={t('archives.calendarView')}
-          >
-            <CalendarDays className="w-4 h-4" />
+          <span className="text-sm text-bambu-gray">{paginationMeta.current_page} / {paginationMeta.last_page}</span>
+          <button onClick={() => setPage(p => Math.min(paginationMeta.last_page, p + 1))} disabled={page >= paginationMeta.last_page} className="p-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white disabled:opacity-50 hover:bg-bambu-dark-secondary">
+            <ChevronRight className="w-4 h-4" />
           </button>
-          <button
-            className={`p-2 ${viewMode === 'log' ? 'bg-bambu-green text-white' : 'bg-bambu-dark text-bambu-gray hover:text-white'}`}
-            onClick={() => setViewMode('log')}
-            title={t('archives.logView')}
-          >
-            <ClipboardList className="w-4 h-4" />
+          <button onClick={() => setPage(paginationMeta.last_page)} disabled={page >= paginationMeta.last_page} className="p-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white disabled:opacity-50 hover:bg-bambu-dark-secondary">
+            <ChevronsRight className="w-4 h-4" />
           </button>
         </div>
-        {(viewMode === 'grid' || viewMode === 'list') && paginationMeta && paginationMeta.last_page > 1 && (
-          <div className="flex items-center gap-2">
-            <button onClick={() => setPage(1)} disabled={page <= 1} className="p-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white disabled:opacity-50 hover:bg-bambu-dark-secondary">
-              <ChevronsLeft className="w-4 h-4" />
-            </button>
-            <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1} className="p-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white disabled:opacity-50 hover:bg-bambu-dark-secondary">
-              <ChevronLeft className="w-4 h-4" />
-            </button>
-            <span className="text-sm text-bambu-gray">{paginationMeta.current_page} / {paginationMeta.last_page}</span>
-            <button onClick={() => setPage(p => Math.min(paginationMeta.last_page, p + 1))} disabled={page >= paginationMeta.last_page} className="p-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white disabled:opacity-50 hover:bg-bambu-dark-secondary">
-              <ChevronRight className="w-4 h-4" />
-            </button>
-            <button onClick={() => setPage(paginationMeta.last_page)} disabled={page >= paginationMeta.last_page} className="p-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white disabled:opacity-50 hover:bg-bambu-dark-secondary">
-              <ChevronsRight className="w-4 h-4" />
-            </button>
-          </div>
-        )}
-        {(viewMode === 'grid' || viewMode === 'list') && (
-          <div className="flex items-center gap-1.5 sm:gap-2">
-            <span className="text-xs text-bambu-gray hidden sm:inline">{t('common.show')}</span>
-            <select
-              className="w-14 sm:w-16 px-1.5 sm:px-2 py-1.5 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-bambu-gray focus:border-bambu-green focus:outline-none text-center"
-              value={perPage}
-              onChange={(e) => { setPerPage(Number(e.target.value)); setPage(1); }}
-            >
-              {[12, 24, 48, 96].map((n) => (
-                <option key={n} value={n}>{n}</option>
-              ))}
-            </select>
-            <select
-              className="px-1.5 sm:px-2 py-1.5 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-bambu-gray focus:border-bambu-green focus:outline-none max-w-[140px] sm:max-w-none"
-              value={sortBy}
-              onChange={(e) => { setSortBy(e.target.value as SortOption); setPage(1); }}
-            >
-              <option value="date-desc">{t('archives.sortNewest')}</option>
-              <option value="date-asc">{t('archives.sortOldest')}</option>
-              <option value="name-asc">{t('archives.sortName')} A-Z</option>
-              <option value="name-desc">{t('archives.sortName')} Z-A</option>
-              <option value="size-desc">{t('archives.sortLargest')}</option>
-              <option value="size-asc">{t('archives.sortSmallest')}</option>
-            </select>
-          </div>
-        )}
-      </div>
+      )}
 
       {/* Filters (hidden in log/calendar views) */}
-      {(viewMode === 'grid' || viewMode === 'list') && <Card className="mb-6">
-        <CardContent className="py-4">
-          <div className="flex flex-col gap-3">
-            {/* Search - full width */}
-            <div className="w-full relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray" />
-              <input
-                ref={searchInputRef}
-                type="text"
-                placeholder={t('archives.searchPlaceholder')}
-                className="w-full pl-10 pr-4 py-3 md:py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
-            </div>
-            {/* Filters - horizontal scroll on mobile */}
-            <div className="flex gap-2 md:gap-3 overflow-x-auto pb-1 md:pb-0 -mx-4 px-4 md:mx-0 md:px-0 md:flex-wrap scrollbar-hide w-full">
+      {(viewMode === 'grid' || viewMode === 'list') && (
+        <div className="flex flex-col gap-2 mb-4 p-3 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary">
+          {/* Search - full width */}
+          <div className="w-full relative h-9">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray/50" />
+            <input
+              ref={searchInputRef}
+              type="text"
+              placeholder={t('archives.searchPlaceholder')}
+              className="w-full h-9 pl-10 pr-4 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm placeholder:text-bambu-gray/50 focus:border-bambu-green focus:outline-none"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+          {/* Filters - horizontal scroll on mobile */}
+          <div className="flex gap-2 md:gap-3 overflow-x-auto pb-1 md:pb-0 -mx-3 px-3 md:mx-0 md:px-0 md:flex-wrap scrollbar-hide w-full">
             {/* Collection filter */}
             <div className="flex items-center gap-2 flex-shrink-0 md:flex-shrink md:flex-1 md:min-w-0">
               <select
@@ -3239,7 +3167,6 @@ export function ArchivesPage() {
                 </button>
               </div>
             )}
-            </div>
             {hasTopFilters && (
               <Button
                 variant="ghost"
@@ -3251,7 +3178,45 @@ export function ArchivesPage() {
                 {t('archives.page.reset')}
               </Button>
             )}
-          </div>
+            </div>
+
+            {/* Third row: per-page on the left, sort (field + direction) on the right */}
+            <div className="flex items-center justify-between gap-2 mt-3">
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs text-bambu-gray">{t('common.show')}</span>
+                <select
+                  className="h-9 px-3 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-bambu-gray focus:border-bambu-green focus:outline-none"
+                  value={perPage}
+                  onChange={(e) => { setPerPage(Number(e.target.value)); setPage(1); }}
+                >
+                  {[12, 24, 48, 96].map((n) => (
+                    <option key={n} value={n}>{n}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex items-center gap-1">
+                <select
+                  className="h-9 min-w-[7rem] px-3 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                  value={sortField}
+                  onChange={(e) => setSortField(e.target.value as 'date' | 'name' | 'size')}
+                >
+                  <option value="date">{t('common.date')}</option>
+                  <option value="name">{t('common.name')}</option>
+                  <option value="size">{t('fileManager.size')}</option>
+                </select>
+                <button
+                  onClick={toggleSortDir}
+                  className="h-9 w-9 flex items-center justify-center bg-bambu-dark border border-bambu-dark-tertiary rounded-lg hover:border-bambu-green transition-colors"
+                  title={sortDir === 'asc' ? t('fileManager.ascending') : t('fileManager.descending')}
+                >
+                  {sortDir === 'asc' ? (
+                    <ArrowUpNarrowWide className="w-4 h-4 text-bambu-gray" />
+                  ) : (
+                    <ArrowDownWideNarrow className="w-4 h-4 text-bambu-gray" />
+                  )}
+                </button>
+              </div>
+            </div>
           {/* Color Filter */}
           {uniqueColors.length > 0 && (
             <div className="flex items-center gap-3 mt-4 pt-4 border-t border-bambu-dark-tertiary">
@@ -3295,8 +3260,8 @@ export function ArchivesPage() {
               )}
             </div>
           )}
-        </CardContent>
-      </Card>}
+        </div>
+      )}
 
       {/* Pending Uploads Panel (visible when in queue mode with pending files) */}
       <PendingUploadsPanel />
@@ -3373,217 +3338,6 @@ export function ArchivesPage() {
             ))}
           </div>
         </Card>
-      ) : viewMode === 'log' ? (
-        <div className="space-y-4">
-          {/* Log filters */}
-          <Card>
-            <CardContent className="py-3">
-              <div className="flex flex-col md:flex-row gap-3 md:items-center md:flex-wrap">
-                {/* Search */}
-                <div className="flex-1 relative md:min-w-[200px]">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray" />
-                  <input
-                    type="text"
-                    placeholder={t('archives.searchPlaceholder')}
-                    className="w-full pl-10 pr-4 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
-                    value={search}
-                    onChange={(e) => { setSearch(e.target.value); setLogOffset(0); }}
-                  />
-                </div>
-                {/* Printer filter */}
-                <select
-                  className="px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
-                  value={filterPrinter || ''}
-                  onChange={(e) => { setFilterPrinter(e.target.value ? Number(e.target.value) : null); setLogOffset(0); }}
-                >
-                  <option value="">{t('archives.log.allPrinters')}</option>
-                  {printers?.map((p) => (
-                    <option key={p.id} value={p.id}>{p.name}</option>
-                  ))}
-                </select>
-                {/* User filter */}
-                <select
-                  className="px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
-                  value={logFilterUser || ''}
-                  onChange={(e) => { setLogFilterUser(e.target.value || null); setLogOffset(0); }}
-                >
-                  <option value="">{t('archives.log.allUsers')}</option>
-                  {users?.map((u) => (
-                    <option key={u.id} value={u.username}>{u.username}</option>
-                  ))}
-                </select>
-                {/* Status filter */}
-                <select
-                  className="px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
-                  value={logFilterStatus || ''}
-                  onChange={(e) => { setLogFilterStatus(e.target.value || null); setLogOffset(0); }}
-                >
-                  <option value="">{t('archives.log.allStatuses')}</option>
-                  <option value="completed">{t('archives.status.completed')}</option>
-                  <option value="failed">{t('archives.status.failed')}</option>
-                  <option value="stopped">{t('archives.status.stopped')}</option>
-                  <option value="cancelled">{t('archives.log.cancelled')}</option>
-                  <option value="skipped">{t('archives.log.skipped')}</option>
-                </select>
-                {/* Date range */}
-                <div className="flex items-center gap-2">
-                  <label className="text-sm text-bambu-gray">{t('archives.log.dateFrom')}</label>
-                  <input
-                    type="date"
-                    className="px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
-                    value={logFilterDateFrom}
-                    onChange={(e) => { setLogFilterDateFrom(e.target.value); setLogOffset(0); }}
-                  />
-                </div>
-                <div className="flex items-center gap-2">
-                  <label className="text-sm text-bambu-gray">{t('archives.log.dateTo')}</label>
-                  <input
-                    type="date"
-                    className="px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
-                    value={logFilterDateTo}
-                    onChange={(e) => { setLogFilterDateTo(e.target.value); setLogOffset(0); }}
-                  />
-                </div>
-                {/* Clear log button */}
-                <div className="ml-auto">
-                  <Button
-                    variant="danger"
-                    size="sm"
-                    onClick={() => setShowClearLogConfirm(true)}
-                    disabled={!hasPermission('archives:delete_all') || clearLogMutation.isPending}
-                  >
-                    <Trash2 className="w-4 h-4" />
-                    {t('archives.log.clearLog')}
-                  </Button>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Log table */}
-          <Card>
-            {isLogLoading ? (
-              <div className="flex items-center justify-center py-12">
-                <Loader2 className="w-6 h-6 animate-spin text-bambu-green" />
-              </div>
-            ) : !printLogData?.items.length ? (
-              <div className="text-center py-12 text-bambu-gray">
-                {t('archives.log.noEntries')}
-              </div>
-            ) : (
-              <>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-bambu-dark-tertiary text-bambu-gray text-left">
-                        <th className="px-4 py-3 font-medium">{t('archives.log.date')}</th>
-                        <th className="px-4 py-3 font-medium">{t('archives.log.printName')}</th>
-                        <th className="px-4 py-3 font-medium">{t('archives.log.printer')}</th>
-                        <th className="px-4 py-3 font-medium">{t('archives.log.user')}</th>
-                        <th className="px-4 py-3 font-medium">{t('archives.log.status')}</th>
-                        <th className="px-4 py-3 font-medium">{t('archives.log.duration')}</th>
-                        <th className="px-4 py-3 font-medium">{t('archives.log.filament')}</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-bambu-dark-tertiary">
-                      {printLogData.items.map((entry) => (
-                        <tr key={entry.id} className="hover:bg-bambu-dark-secondary/50">
-                          <td className="px-4 py-3 text-white whitespace-nowrap">
-                            {formatDateTime(entry.started_at || entry.created_at, timeFormat, dateFormat)}
-                          </td>
-                          <td className="px-4 py-3">
-                            <div className="flex items-center gap-2">
-                              {entry.thumbnail_path && (
-                                <img
-                                  src={api.getPrintLogThumbnail(entry.id)}
-                                  alt=""
-                                  className="w-8 h-8 rounded object-cover flex-shrink-0"
-                                  onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-                                />
-                              )}
-                              <span className="text-white truncate max-w-[200px]">
-                                {entry.print_name || '—'}
-                              </span>
-                            </div>
-                          </td>
-                          <td className="px-4 py-3 text-bambu-gray-light">{entry.printer_name || '—'}</td>
-                          <td className="px-4 py-3 text-bambu-gray-light">{entry.created_by_username || '—'}</td>
-                          <td className="px-4 py-3">
-                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
-                              entry.status === 'completed' ? 'bg-green-500/20 text-green-400' :
-                              entry.status === 'failed' ? 'bg-red-500/20 text-red-400' :
-                              entry.status === 'stopped' ? 'bg-yellow-500/20 text-yellow-400' :
-                              entry.status === 'cancelled' ? 'bg-orange-500/20 text-orange-400' :
-                              entry.status === 'skipped' ? 'bg-blue-500/20 text-blue-400' :
-                              'bg-gray-500/20 text-gray-400'
-                            }`}>
-                              {entry.status}
-                            </span>
-                          </td>
-                          <td className="px-4 py-3 text-bambu-gray-light whitespace-nowrap">
-                            {entry.duration_seconds ? formatDuration(entry.duration_seconds) : '—'}
-                          </td>
-                          <td className="px-4 py-3">
-                            <div className="flex items-center gap-1.5">
-                              {entry.filament_color && (
-                                <span
-                                  className="w-3 h-3 rounded-full border border-black/20 flex-shrink-0"
-                                  style={{ backgroundColor: entry.filament_color.startsWith('#') ? entry.filament_color : undefined }}
-                                />
-                              )}
-                              <span className="text-bambu-gray-light text-xs">
-                                {entry.filament_type || '—'}
-                              </span>
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                {/* Pagination */}
-                <div className="flex items-center justify-between px-4 py-3 border-t border-bambu-dark-tertiary flex-wrap gap-2">
-                  <div className="flex items-center gap-3">
-                    <div className="flex items-center gap-1.5">
-                      <label className="text-xs text-bambu-gray">{t('archives.log.rowsPerPage')}</label>
-                      <select
-                        className="px-2 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-xs focus:border-bambu-green focus:outline-none"
-                        value={logPageSize}
-                        onChange={(e) => { setLogPageSize(Number(e.target.value)); setLogOffset(0); }}
-                      >
-                        <option value={10}>10</option>
-                        <option value={25}>25</option>
-                        <option value={50}>50</option>
-                        <option value={100}>100</option>
-                      </select>
-                    </div>
-                    <span className="text-sm text-bambu-gray">
-                      {t('archives.log.showing', { count: Math.min(logOffset + logPageSize, printLogData.total), total: printLogData.total })}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Button variant="secondary" size="sm" onClick={() => setLogOffset(0)} disabled={logOffset === 0}>
-                      <ChevronsLeft className="w-4 h-4" />
-                    </Button>
-                    <Button variant="secondary" size="sm" onClick={() => setLogOffset(Math.max(0, logOffset - logPageSize))} disabled={logOffset === 0}>
-                      <ChevronLeft className="w-4 h-4" />
-                    </Button>
-                    <span className="text-sm text-bambu-gray">
-                      {Math.floor(logOffset / logPageSize) + 1} / {Math.max(1, Math.ceil(printLogData.total / logPageSize))}
-                    </span>
-                    <Button variant="secondary" size="sm" onClick={() => setLogOffset(logOffset + logPageSize)} disabled={logOffset + logPageSize >= printLogData.total}>
-                      <ChevronRight className="w-4 h-4" />
-                    </Button>
-                    <Button variant="secondary" size="sm" onClick={() => setLogOffset(Math.max(0, (Math.ceil(printLogData.total / logPageSize) - 1) * logPageSize))} disabled={logOffset + logPageSize >= printLogData.total}>
-                      <ChevronsRight className="w-4 h-4" />
-                    </Button>
-                  </div>
-                </div>
-              </>
-            )}
-          </Card>
-
-        </div>
       ) : null}
 
       {/* Upload Modal */}
@@ -3646,20 +3400,6 @@ export function ArchivesPage() {
         <TagManagementModal onClose={() => setShowTagManagement(false)} />
       )}
 
-      {/* Clear Log Confirmation */}
-      {showClearLogConfirm && (
-        <ConfirmModal
-          title={t('archives.log.clearLogTitle')}
-          message={t('archives.log.clearLogConfirm')}
-          confirmText={t('archives.log.clearLogButton')}
-          variant="danger"
-          onConfirm={() => {
-            clearLogMutation.mutate();
-            setShowClearLogConfirm(false);
-          }}
-          onCancel={() => setShowClearLogConfirm(false)}
-        />
-      )}
     </div>
   );
 }

@@ -1,4 +1,4 @@
-"""Printer queue model — one queue per printer with status tracking."""
+"""Printer queue model - one queue per printer with status tracking."""
 
 from datetime import datetime
 

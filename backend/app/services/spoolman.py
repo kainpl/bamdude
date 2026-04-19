@@ -708,7 +708,7 @@ class SpoolmanClient:
         1. tray_uuid: 32-character hex string (preferred, consistent across printers)
         2. tag_uid: 16-character hex string (RFID tag, varies between readers)
 
-        Note: tray_info_idx (e.g. "GFA00") is NOT a reliable indicator — third-party
+        Note: tray_info_idx (e.g. "GFA00") is NOT a reliable indicator - third-party
         spools using Bambu generic presets also have GF-prefixed tray_info_idx values.
         The tray_info_idx parameter is kept for API compatibility but ignored.
 
@@ -805,7 +805,7 @@ class SpoolmanClient:
             return None
 
         # Determine which identifier to use for Spoolman (prefer tray_uuid, fallback to tag_uid)
-        # Zero-filled values mean the AMS hasn't read the RFID tag — treat as no tag
+        # Zero-filled values mean the AMS hasn't read the RFID tag - treat as no tag
         zero_uuid = "00000000000000000000000000000000"
         zero_tag = "0000000000000000"
         spool_tag = None
@@ -861,7 +861,7 @@ class SpoolmanClient:
             )
 
         # Fallback path: no RFID tag available (newer firmware may not expose UUIDs)
-        # Only update existing spools matched by location — never create new ones without a tag
+        # Only update existing spools matched by location - never create new ones without a tag
         # to avoid duplicates when old spools exist from previous RFID-based syncs
         existing = self._find_spool_by_location(location, cached_spools)
         if existing:
@@ -877,7 +877,7 @@ class SpoolmanClient:
             )
 
         logger.info(
-            "No existing spool found at '%s' — skipping (no RFID tag to create with)",
+            "No existing spool found at '%s' - skipping (no RFID tag to create with)",
             location,
         )
         return None

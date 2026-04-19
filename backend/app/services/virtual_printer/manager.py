@@ -414,6 +414,8 @@ class VirtualPrinterInstance:
             from backend.app.services.archive import ArchiveService
 
             async with self._session_factory() as db:
+                # First check if we can find a queue before archiving
+                # We need sliced_for_model from 3MF metadata - parse it early
                 service = ArchiveService(db)
                 archive = await service.archive_print(
                     printer_id=None,
@@ -425,40 +427,41 @@ class VirtualPrinterInstance:
                     },
                 )
                 if archive:
-                    logger.info("[VP %s] Archived: %s - %s", self.name, archive.id, archive.print_name)
-                    if not self.target_printer_id:
-                        logger.warning("[VP %s] No target printer configured, cannot add to queue", self.name)
-                    else:
-                        # Find or verify queue for target printer (queue_id == printer_id)
-                        from sqlalchemy import select as sa_select
-
-                        from backend.app.models.printer_queue import PrinterQueue
-
-                        result = await db.execute(
-                            sa_select(PrinterQueue).where(PrinterQueue.printer_id == self.target_printer_id)
+                    queue = await self._find_best_queue(db, archive)
+                    if not queue:
+                        # No matching queue - delete archive and save to library instead
+                        logger.info(
+                            "[VP %s] No matching printer queue, saving to library: %s", self.name, archive.print_name
                         )
-                        queue = result.scalar_one_or_none()
-                        if not queue:
-                            logger.warning("[VP %s] No queue found for printer %s", self.name, self.target_printer_id)
-                        else:
-                            plate_id = self._extract_plate_id(file_path)
-                            queue_item = PrintQueueItem(
-                                queue_id=queue.id,
-                                archive_id=archive.id,
-                                plate_id=plate_id,
-                                position=1,
-                                status="pending",
-                                manual_start=not self.auto_dispatch,
-                            )
-                            db.add(queue_item)
-                            await db.commit()
-                            logger.info("[VP %s] Added to queue: %s", self.name, queue_item.id)
+                        await db.delete(archive)
+                        await db.commit()
+                        await self._save_to_library(file_path, source_ip)
+                        return
+
+                    plate_id = self._extract_plate_id(file_path)
+                    queue_item = PrintQueueItem(
+                        queue_id=queue.id,
+                        archive_id=archive.id,
+                        plate_id=plate_id,
+                        position=1,
+                        status="pending",
+                        manual_start=not self.auto_dispatch,
+                    )
+                    db.add(queue_item)
+                    await db.commit()
+                    logger.info(
+                        "[VP %s] Added to queue %s (printer %s): %s",
+                        self.name,
+                        queue.id,
+                        queue.printer_id,
+                        queue_item.id,
+                    )
                     try:
                         file_path.unlink()
                     except OSError:
                         pass
                     self._pending_files.pop(file_path.name, None)
-                else:  # archive is None
+                else:
                     logger.error("Failed to archive file: %s", file_path.name)
         except Exception as e:
             logger.error("Error adding to print queue: %s", e)
@@ -482,6 +485,79 @@ class VirtualPrinterInstance:
         except Exception:
             return None
         return None
+
+    async def _find_best_queue(self, db, archive):
+        """Find the best printer queue for this job.
+
+        If target_printer_id is set and online → use it.
+        Otherwise, find the least busy online printer matching sliced_for_model.
+        Returns None if no matching printer is available (file should go to library instead).
+
+        "Least busy" = lowest total queue time (current print remaining + sum of pending print times).
+        """
+        from sqlalchemy import select as sa_select
+        from sqlalchemy.sql import func as sa_func
+
+        from backend.app.models.archive import PrintArchive
+        from backend.app.models.print_queue import PrintQueueItem
+        from backend.app.models.printer import Printer
+        from backend.app.models.printer_queue import PrinterQueue
+        from backend.app.services.printer_manager import printer_manager
+
+        # If explicit target is set and printer is online, use it directly
+        if self.target_printer_id:
+            state = printer_manager.get_status(self.target_printer_id)
+            if state and state.connected:
+                result = await db.execute(
+                    sa_select(PrinterQueue).where(PrinterQueue.printer_id == self.target_printer_id)
+                )
+                queue = result.scalar_one_or_none()
+                if queue:
+                    return queue
+            logger.info(
+                "[VP %s] Target printer %s not available, searching alternatives", self.name, self.target_printer_id
+            )
+
+        # Must have sliced_for_model to auto-assign
+        sliced_model = archive.sliced_for_model if archive else None
+        if not sliced_model:
+            logger.info("[VP %s] No sliced_for_model in archive, cannot auto-assign to queue", self.name)
+            return None
+
+        # Get online printers matching the model
+        result = await db.execute(
+            sa_select(PrinterQueue, Printer.model)
+            .join(Printer, Printer.id == PrinterQueue.printer_id)
+            .where(Printer.is_active.is_(True), Printer.model == sliced_model)
+        )
+        matching_queues = result.all()
+
+        # Filter to online and calculate total queue time
+        candidates: list[tuple[PrinterQueue, int]] = []
+        for queue, _model in matching_queues:
+            state = printer_manager.get_status(queue.printer_id)
+            if not state or not state.connected:
+                continue
+
+            # Current print remaining (minutes → seconds)
+            current_remaining = state.remaining_time * 60 if state.remaining_time > 0 else 0
+
+            # Sum of pending items' estimated print time
+            pending_result = await db.execute(
+                sa_select(sa_func.coalesce(sa_func.sum(PrintArchive.print_time_seconds), 0))
+                .select_from(PrintQueueItem)
+                .join(PrintArchive, PrintArchive.id == PrintQueueItem.archive_id, isouter=True)
+                .where(PrintQueueItem.queue_id == queue.id, PrintQueueItem.status == "pending")
+            )
+            pending_time = pending_result.scalar() or 0
+            candidates.append((queue, current_remaining + pending_time))
+
+        if not candidates:
+            return None
+
+        # Least busy first, then by printer_id for determinism
+        candidates.sort(key=lambda c: (c[1], c[0].printer_id))
+        return candidates[0][0]
 
     # -- Service lifecycle --
 

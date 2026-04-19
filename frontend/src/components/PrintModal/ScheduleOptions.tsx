@@ -202,11 +202,13 @@ export function ScheduleOptionsPanel({
               />
             </div>
           </div>
-          {/* Hidden datetime-local for calendar picker */}
+          {/* Hidden datetime-local for calendar picker - positioned at the
+              calendar button so the native picker opens nearby */}
           <input
             ref={hiddenInputRef}
             type="datetime-local"
-            className="sr-only"
+            className="absolute opacity-0 pointer-events-none"
+            style={{ top: 0, left: 0, width: 0, height: 0 }}
             value={options.scheduledTime}
             onChange={handleCalendarChange}
             tabIndex={-1}

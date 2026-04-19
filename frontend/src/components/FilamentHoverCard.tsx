@@ -157,7 +157,7 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
         <div
           ref={cardRef}
           className={`
-            absolute left-1/2 -translate-x-1/2 z-50
+            absolute left-1/2 -translate-x-1/2 z-[60]
             ${position === 'top' ? 'bottom-full mb-2' : 'top-full mt-2'}
             animate-in fade-in-0 zoom-in-95 duration-150
           `}
@@ -232,7 +232,7 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
                     {t('ams.fill')}
                   </span>
                   <span className="text-xs text-white font-semibold flex items-center gap-1">
-                    <span>{data.fillLevel !== null ? `${data.fillLevel}%` : '—'}</span>
+                    <span>{data.fillLevel !== null ? `${data.fillLevel}%` : '-'}</span>
                     {assignedRemainingWeight !== null && data.fillLevel !== null && (
                       <span className="text-[9px] text-bambu-gray font-normal">• {assignedRemainingWeight}g</span>
                     )}
@@ -287,7 +287,7 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
                         )}
                       </button>
                     ) : (
-                      <span className="text-[10px] text-bambu-gray">—</span>
+                      <span className="text-[10px] text-bambu-gray">-</span>
                     )}
                   </div>
 
@@ -505,7 +505,7 @@ export function EmptySlotHoverCard({ children, className = '', configureSlot, in
 
       {isVisible && (
         <div className="
-          absolute left-1/2 -translate-x-1/2 bottom-full mb-2 z-50
+          absolute left-1/2 -translate-x-1/2 bottom-full mb-2 z-[60]
           animate-in fade-in-0 zoom-in-95 duration-150
         ">
           <div className="

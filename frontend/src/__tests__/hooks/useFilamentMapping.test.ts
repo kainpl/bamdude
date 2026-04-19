@@ -495,7 +495,7 @@ describe('computeAmsMapping - nozzle filtering', () => {
   });
 
   it('stays restricted when target nozzle has trays but wrong type', () => {
-    // Left nozzle has PETG, right has PLA — but requires PLA on left
+    // Left nozzle has PETG, right has PLA - but requires PLA on left
     const reqs = {
       filaments: [
         { slot_id: 1, type: 'PLA', color: '#FF0000', used_grams: 10, nozzle_id: 1 },
@@ -611,7 +611,7 @@ function createH2DStatus(): PrinterStatus {
         ],
       },
       {
-        id: 128, // AMS-HT, RIGHT nozzle (extruder 0) — empty
+        id: 128, // AMS-HT, RIGHT nozzle (extruder 0) - empty
         humidity: 48,
         temp: 21.4,
         tray: [
@@ -717,7 +717,7 @@ describe('H2D model tests (dual nozzle, real data)', () => {
 
     it('skips empty AMS-HT tray (no tray_type)', () => {
       const result = buildLoadedFilaments(createH2DStatus());
-      // AMS-HT 128 is empty in real data — should be skipped
+      // AMS-HT 128 is empty in real data - should be skipped
       const ht = result.filter((f) => f.amsId === 128);
       expect(ht).toHaveLength(0);
     });

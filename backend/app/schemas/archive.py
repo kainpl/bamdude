@@ -40,6 +40,14 @@ class ArchiveResponse(BaseModel):
     file_path: str
     file_size: int
     content_hash: str | None
+    # Hash of the UNPATCHED source (library file or prior archive) for
+    # BamDude-dispatched prints; NULL for external prints.
+    source_content_hash: str | None = None
+    # JSON array of patch identifiers applied before upload (v1: informational).
+    applied_patches: list[str] | None = None
+    # Effective hash for dedup queries: source_content_hash or content_hash.
+    # Computed at response time in the route; frontend groups by this.
+    effective_hash: str | None = None
     thumbnail_path: str | None
     timelapse_path: str | None
     source_3mf_path: str | None = None  # Original project 3MF from slicer
@@ -92,6 +100,9 @@ class ArchiveResponse(BaseModel):
     # Energy tracking
     energy_kwh: float | None = None
     energy_cost: float | None = None
+
+    # Swap mode
+    swap_compatible: bool = False
 
     created_at: datetime
 
@@ -152,6 +163,10 @@ class ArchiveStats(BaseModel):
     # Energy stats
     total_energy_kwh: float = 0.0
     total_energy_cost: float = 0.0
+    # Set when the date-range query in "total consumption" mode is running on
+    # incomplete snapshot history - e.g. right after a fresh upgrade before the
+    # hourly snapshot loop has built up a baseline. Frontend shows a tooltip.
+    energy_data_warming_up: bool = False
 
 
 class PaginationMeta(BaseModel):
@@ -245,7 +260,11 @@ class ReprintRequest(BaseModel):
     # Print options
     bed_levelling: bool = True
     flow_cali: bool = False
-    vibration_cali: bool = True
     layer_inspect: bool = False
     timelapse: bool = False
     use_ams: bool = True  # Not exposed in UI, but needed for API
+    mesh_mode_fast_check: bool = True
+    execute_swap_macros: bool = True
+    swap_macro_events: list[str] | None = None
+    # Batch: first copy dispatches now, remaining (quantity-1) queue up
+    quantity: int = 1

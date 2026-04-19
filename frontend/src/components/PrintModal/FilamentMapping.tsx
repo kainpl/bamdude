@@ -144,11 +144,11 @@ export function FilamentMapping({
         <Circle className="w-4 h-4" fill={statusColor} stroke="none" />
         <span>{t('printModal.filamentMapping')}</span>
         {hasTypeMismatch ? (
-          <span className="text-xs text-orange-400">(Type not found)</span>
+          <span className="text-xs text-orange-400">({t('printModal.filamentTypeNotFound')})</span>
         ) : hasColorMismatch ? (
-          <span className="text-xs text-yellow-400">(Color mismatch)</span>
+          <span className="text-xs text-yellow-400">({t('printModal.filamentColorMismatch')})</span>
         ) : (
-          <span className="text-xs text-bambu-green">(Ready)</span>
+          <span className="text-xs text-bambu-green">({t('printModal.filamentReady')})</span>
         )}
         {isExpanded ? (
           <ChevronUp className="w-4 h-4 ml-auto" />

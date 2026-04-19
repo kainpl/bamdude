@@ -19,9 +19,9 @@ class Printer(Base):
     nozzle_count: Mapped[int] = mapped_column(default=1)  # 1 or 2, auto-detected from MQTT
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     auto_archive: Mapped[bool] = mapped_column(Boolean, default=True)
-    cleanup_after_print: Mapped[bool] = mapped_column(Boolean, default=True)  # Delete files from SD after print
+    cleanup_after_print: Mapped[bool] = mapped_column(Boolean, default=False)  # Delete files from SD after print
     mqtt_connection_timeout: Mapped[int] = mapped_column(
-        default=300
+        default=900
     )  # How long MQTT connection is considered valid (seconds); 0 = disabled
     print_hours_offset: Mapped[float] = mapped_column(Float, default=0.0)  # Baseline hours to add
     runtime_seconds: Mapped[int] = mapped_column(default=0)  # Accumulated active runtime (RUNNING/PAUSE states)
@@ -42,6 +42,17 @@ class Printer(Base):
     plate_detection_roi_h: Mapped[float | None] = mapped_column(Float, nullable=True)  # Height %
     # Staggered start: per-printer interval override (0 = use system default)
     stagger_interval_minutes: Mapped[int] = mapped_column(default=0)
+    # Swap mode: A1 Mini plate swapper (swap-systems.com)
+    swap_mode_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Active swap-mode variant (catalog key from core/swap_profiles.py).
+    # Null when swap_mode_enabled is False, or when swap is enabled without a
+    # specific profile. Identifies which set of swap macros fires for this
+    # printer (e.g. "a1mini_v1" vs "a1mini_v2" vs "a1").
+    swap_profile: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    # Require user to confirm plate is cleared before next queued print starts
+    require_plate_clear: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Auto turn off chamber light after print starts (P1S/P1P turn it on automatically)
+    auto_light_off: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 

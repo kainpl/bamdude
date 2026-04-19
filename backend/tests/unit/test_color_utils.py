@@ -1,4 +1,4 @@
-"""Unit tests for color_utils — hex color similarity comparison."""
+"""Unit tests for color_utils - hex color similarity comparison."""
 
 from backend.app.utils.color_utils import colors_similar
 
@@ -21,7 +21,7 @@ class TestColorsSimilar:
         assert colors_similar("FF0000FF", "0000FFFF") is False
 
     def test_ignores_alpha_channel(self):
-        # Same RGB, different alpha — should match
+        # Same RGB, different alpha - should match
         assert colors_similar("FF000000", "FF0000FF") is True
 
     def test_six_digit_hex(self):
@@ -42,7 +42,7 @@ class TestColorsSimilar:
         assert colors_similar(" FF0000 ", "FF0000") is True
 
     def test_custom_threshold(self):
-        # Distance ~43.6 — within 50 but outside 30
+        # Distance ~43.6 - within 50 but outside 30
         assert colors_similar("7CC4D5FF", "56B7E6FF", threshold=30) is False
         assert colors_similar("7CC4D5FF", "56B7E6FF", threshold=50) is True
 

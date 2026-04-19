@@ -289,7 +289,7 @@ export function formatDateTime(
     return `${formatDateInput(date, dateFormat)} ${formatTimeInput(date, timeFormat)}`;
   }
 
-  // System default — use locale
+  // System default - use locale
   const defaultOptions: Intl.DateTimeFormatOptions = {
     year: 'numeric',
     month: 'short',

@@ -84,6 +84,9 @@ class LibraryFile(Base):
     # User tracking (Issue #206)
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
+    # Swap mode compatibility (processed for plate swapper)
+    swap_compatible: Mapped[bool] = mapped_column(Boolean, default=False)
+
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -92,8 +95,20 @@ class LibraryFile(Base):
     folder: Mapped["LibraryFolder | None"] = relationship(back_populates="files")
     project: Mapped["Project | None"] = relationship()
     created_by: Mapped["User | None"] = relationship()
+    # gh#3 - delete notes alongside the file at the ORM level; the DB FK also
+    # has ON DELETE CASCADE for direct SQL deletes, but ORM cascade covers
+    # in-session `db.delete(file)` calls regardless of SQLite pragma state.
+    file_notes: Mapped[list["LibraryFileNote"]] = relationship(
+        "LibraryFileNote",
+        cascade="all, delete-orphan",
+        # passive_deletes=False → ORM explicitly deletes children before the
+        # parent, which works regardless of SQLite `PRAGMA foreign_keys` state.
+        # PostgreSQL FKs handle it at the DB level too; both paths converge.
+        passive_deletes=False,
+    )
 
 
 from backend.app.models.archive import PrintArchive  # noqa: E402, F811
+from backend.app.models.library_file_note import LibraryFileNote  # noqa: E402, F401
 from backend.app.models.project import Project  # noqa: E402, F811
 from backend.app.models.user import User  # noqa: E402, F811

@@ -72,7 +72,6 @@ async def test_engine():
         archive,
         color_catalog,
         external_link,
-        filament,
         group,
         kprofile_note,
         maintenance,
@@ -141,11 +140,44 @@ async def async_client(test_engine, db_session) -> AsyncGenerator[AsyncClient, N
         patch("backend.app.main.init_printer_connections", mock_init_printer_connections),
     ):
         # Seed default groups for tests that need them
-        from backend.app.core.database import seed_default_groups
+        from backend.app.migrations.m001_bamdude_baseline import _seed_default_groups
 
-        await seed_default_groups()
+        await _seed_default_groups(test_async_session)
 
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # Seed an admin user so the setup-gate middleware lets requests through
+        # and log them in so each request carries a valid JWT by default.
+        # Tests that want to exercise unauthenticated behavior can clear
+        # `client.headers['Authorization']` or build their own AsyncClient.
+        from sqlalchemy import select
+
+        from backend.app.core.auth import create_access_token, get_password_hash
+        from backend.app.main import invalidate_setup_gate_cache
+        from backend.app.models.group import Group
+        from backend.app.models.user import User
+
+        async with test_async_session() as setup_db:
+            admin = User(
+                username="test_admin",
+                password_hash=get_password_hash("test_admin_pass"),
+                role="admin",
+                is_active=True,
+            )
+            admin_group = (
+                await setup_db.execute(select(Group).where(Group.name == "Administrators"))
+            ).scalar_one_or_none()
+            if admin_group is not None:
+                admin.groups.append(admin_group)
+            setup_db.add(admin)
+            await setup_db.commit()
+
+        invalidate_setup_gate_cache()
+        admin_token = create_access_token(data={"sub": "test_admin"})
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        ) as client:
             yield client
 
         # The app lifespan called init_db() which used the module-level engine
@@ -344,6 +376,12 @@ def smart_plug_factory(db_session):
         if plug_type == "homeassistant":
             defaults["ha_entity_id"] = "switch.test"
             defaults["ip_address"] = None
+        elif plug_type == "rest":
+            defaults["ip_address"] = None
+            defaults["ha_entity_id"] = None
+            defaults["rest_on_url"] = kwargs.get("rest_on_url", "http://192.168.1.50:8080/api/plug/on")
+            defaults["rest_off_url"] = kwargs.get("rest_off_url", "http://192.168.1.50:8080/api/plug/off")
+            defaults["rest_method"] = kwargs.get("rest_method", "POST")
         elif plug_type == "mqtt":
             # Legacy fields (for backward compatibility tests)
             defaults["mqtt_topic"] = kwargs.get("mqtt_topic", "test/topic")

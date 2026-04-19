@@ -7,16 +7,16 @@ from backend.app.core.database import Base
 
 
 class PrintQueueItem(Base):
-    """Print queue item — always assigned to a specific printer's queue."""
+    """Print queue item - always assigned to a specific printer's queue."""
 
     __tablename__ = "print_queue"
 
     id: Mapped[int] = mapped_column(primary_key=True)
 
-    # Queue assignment (required — every item belongs to a printer's queue)
+    # Queue assignment (required - every item belongs to a printer's queue)
     queue_id: Mapped[int] = mapped_column(ForeignKey("printer_queues.id"), nullable=False)
 
-    # Waiting reason — why this pending item hasn't started yet
+    # Waiting reason - why this pending item hasn't started yet
     # e.g. "Plate not cleared", "Printer offline", "Drying in progress", "Previous print failed"
     waiting_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -32,12 +32,11 @@ class PrintQueueItem(Base):
     scheduled_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # None = ASAP
     manual_start: Mapped[bool] = mapped_column(Boolean, default=False)
 
-    # Conditions
     # Power management
     auto_off_after: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # AMS mapping: JSON array of global tray IDs per filament slot
-    # Format: "[5, -1, 2, -1]" — position=slot_id-1, value=global tray ID, -1=unused
+    # Format: "[5, -1, 2, -1]" - position=slot_id-1, value=global tray ID, -1=unused
     ams_mapping: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Plate ID for multi-plate 3MF files (1-indexed, None = plate 1)
@@ -46,13 +45,27 @@ class PrintQueueItem(Base):
     # Print options
     bed_levelling: Mapped[bool] = mapped_column(Boolean, default=True)
     flow_cali: Mapped[bool] = mapped_column(Boolean, default=True)
-    vibration_cali: Mapped[bool] = mapped_column(Boolean, default=False)
     layer_inspect: Mapped[bool] = mapped_column(Boolean, default=False)
     timelapse: Mapped[bool] = mapped_column(Boolean, default=False)
     use_ams: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Mesh-mode fast check — operator intent only, processing to be wired up
+    # later (unpacking → gcode patching → repacking on dispatch).
+    mesh_mode_fast_check: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Swap-mode macro execution intent. Paired with ``swap_macro_events`` (JSON
+    # array of event keys, e.g. ["swap_mode_start","swap_mode_change_table"])
+    # so the operator can disable individual events while keeping the feature
+    # on. Only honoured for printers that have swap mode enabled; on non-swap
+    # printers the API route stores ``execute_swap_macros=False`` regardless
+    # of what the client sent. Dispatch-side logic TBD.
+    execute_swap_macros: Mapped[bool] = mapped_column(Boolean, default=True)
+    swap_macro_events: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Status: pending, printing, completed, failed, skipped, cancelled
     status: Mapped[str] = mapped_column(String(20), default="pending")
+
+    # Batch grouping - UUID string shared by all items created together via quantity>1.
+    # Nullable: single-copy adds (quantity=1) leave this unset.
+    batch_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
 
     # Tracking
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

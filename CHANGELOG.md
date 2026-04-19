@@ -6,7 +6,334 @@ All notable changes to BamDude will be documented in this file.
 
 ---
 
-## [0.3.1.1] - 2026-04-05
+## [0.3.2] - 2026-04-19
+
+### Security
+
+- **Webhook tokens no longer leak to logs when Debug Logging is enabled** (upstream `b71b7216`). `Settings → Support → Debug Logging` previously raised `httpx` + `httpcore` to DEBUG level; httpx logs full request URLs, and Discord / generic-webhook URLs embed bearer tokens in the path. Any user who collected a support bundle with Debug Logging enabled wrote their webhook tokens into `bamdude.log` in plaintext. Both loggers are now pinned to WARNING even in debug mode; paho.mqtt stays on DEBUG (no secrets in MQTT traces).
+  - **Action required:** if you ever enabled Debug Logging on a previous release, rotate any exposed Discord / generic webhook tokens.
+- **Exception details no longer leak through HTTP error responses** (upstream PR #933). Six handlers in `backend/app/api/routes/auth.py` (`/setup`, SMTP save, advanced-auth enable/disable, password reset) returned `detail=f"...{str(e)}"`, leaking SQL / stack / internal paths. Now return static messages; the exception is logged server-side with `%s` lazy formatting. One intentional keep: the Test SMTP endpoint still surfaces the exception text in its response `message` — admin-only diagnostic field the user needs to fix their SMTP config.
+- **Dead `?token=` URL bootstrap removed from AuthContext.** The login flow previously picked up an `auth_token` from the URL query string and wrote it directly to `localStorage` before any server verify — a session-fixation vector where `https://bamdude.example.com/?token=ATTACKER_TOKEN` would hijack the victim's session on click. This was a leftover from the SpoolBuddy kiosk launcher (removed during the BamDude fork). A grep across frontend + backend confirmed zero call sites still generate such URLs, so the branch was deleted entirely rather than reintroducing the 2-arg `setAuthToken` pattern.
+- **CVE-patch dependency bumps** (upstream v0.2.3 sync):
+  - `pillow 12.1.1 → 12.2.0` — CVE-2026-40192 (JPEG decoding heap overflow).
+  - `python-multipart 0.0.6 → 0.0.26` — CVE-2026-40347 (malformed multipart DoS).
+  - `pytest 8.0.0 → 9.0.3` — CVE-2025-71176 (tmp_path traversal); major 8→9 bump.
+  - `dompurify 3.3.3 → 3.4.0` — GHSA-39q2-94rc-95cp (sanitization bypass).
+
+### Fixes
+
+- **Direct library prints are attributed to the authenticated user** (upstream `f03d0c4c`). `POST /library/files/{id}/print` was receiving the current user via `Depends` and throwing the reference away with `_`, passing `None` for both `requested_by_user_id`/`requested_by_username`. The resulting `print_archives` row had NULL ownership, breaking per-user history filtering and owner-scoped permission checks downstream.
+- **ToastContext guards against post-unmount async callbacks** (upstream `58d33cdb`). An async handler (commonly a login-flow error handler) could resolve after React had already torn down the provider, firing a pending `setTimeout` against a dead component tree and crashing with `"window is not defined"`. Every `setToasts` call site (`showToast`, `showPersistentToast`, `dismissToast`, two auto-dismiss timer callbacks) now short-circuits via an `isMountedRef` guard. Ported upstream's 4-test regression suite verbatim.
+- **FTP short-circuits 550 responses with `FileNotOnPrinterError`** (upstream `46c246c5`, #972). When a 3MF path wasn't present on the printer's SD card, the FTP server answered 550 but our code caught it as a generic `ftplib.Error` and returned `False` — indistinguishable from a transient transport failure. `with_ftp_retry` (max 10 × 30s) then burned the full retry budget on every candidate path, multiplying into tens of minutes of dead retries per download attempt (#972 reporter saw ~48 min). A new sentinel exception surfaces the 550 so `download_file_try_paths_async` can skip to the next candidate inside its single connection, and any caller listing the sentinel in `non_retry_exceptions` aborts instantly. Shared 3MF cache from the same upstream PR is deliberately skipped — BamDude's cover endpoint reads from the local archive only and never touches FTP.
+- **Virtual Printer tolerates null-terminated MQTT payloads from OrcaSlicer on Linux** (upstream `68920f8c`, #927). OrcaSlicer's Linux build includes the C-string `\0` terminator in the published payload length, so every request body ended with `\x00`. Strict `json.loads` rejected the extra byte and the VP silently dropped `pushall` / `get_version` / `project_file` from that slicer configuration. Strip trailing whitespace + null before parsing; previously-silent decode failures now log at DEBUG with a truncated payload snippet.
+- **PrinterSelector restores `stg_cur_name` fallback for RUNNING printers.** A previous commit removed the firmware-provided stage name (e.g. "Auto bed leveling", "Heatbed preheating") in favor of the generic localized "Printing" label — losing useful printer-state context. Firmware stage name wins when present, localized fallback kicks in when it's absent (matches upstream behavior).
+
+### Features / UX
+
+- **LinkSpoolModal shows vendor name** (upstream `f84e5ba1`, #958). Spoolman filament entries carry a `vendor` relationship ("Polymaker", "Bambu Lab", etc.) — critical for picking the right spool when several share material + color. Backend `UnlinkedSpool` schema gains `filament_vendor`; the search filter matches vendor text; the modal detail line now prefixes with `{vendor} · ` when available.
+
+### Server-Authoritative Locale
+
+- **Frontend follows the server's `settings.language` on first mount.** A new `LanguageSync` component pulls the authoritative language from `GET /settings` on app load and forces `i18n.changeLanguage(serverLang)` if the browser-detected locale differs. The farm operator configures the farm language once; individual browsers no longer override it via auto-detect. User-driven picks in Settings UI still write to the server (that path is unchanged).
+- **Startup locale reconciliation.** `_reconcile_locale_on_startup` in `main.py` realigns seeded `maintenance_types` / `notification_templates` with the current `settings.language` on every boot — idempotent, fixes drift from old installs that seeded EN defaults then switched the system language to UK. Also drops the dead `notification_language` row left behind by pre-0.3 versions; notifications now follow the `language` setting directly.
+
+### i18n
+
+- Hardcoded English strings replaced with `t()` calls in PrintModal's `FilamentMapping` (Type not found / Color mismatch / Ready badges) and `PrintersPage` maintenance tooltip (three branches: due, warning, both).
+- Migrated `inQueue_plural` → i18next-v21 `_one / _few / _many / _other` notation. Ukrainian now uses all three CLDR plural forms correctly; English uses `_one / _other`.
+- `locales.test.ts` parity check now normalizes CLDR plural suffixes before comparing EN ↔ UK key sets — different languages legitimately have different plural categories, and the raw-key check was structurally broken for plural-aware i18n keys.
+
+### Migrations
+
+- **m005 (A1 Jobox macro seed) — G-code line terminators added** to every command in `_JOBOX_A1_GCODE`. Some firmware parsers require the trailing `;`; missing terminators caused silent skip on certain A1 builds. Seed-only: existing installs that already applied m005 keep the old G-code; new installs get the fixed version. Re-import the macro from the UI if you need the fix on an existing install.
+
+### Upstream sync
+
+This release completes a focused pre-release batch from the v0.2.3 upstream audit — 9 security / correctness / small-feature items that shouldn't wait for the full port cycle. The large upstream items (2FA/OIDC/MFA cluster, Obico AI failure detection, X2D printer support, firmware rollback UI, MQTT queue-reliability fixes, China cloud region) are tracked in `temp/bambuddy-changes-audit-v0.2.3b3-v0.2.3.md` and will land on a separate `feature/upstream-v0.2.3` branch.
+
+---
+
+## [0.3.1.2] - 2026-04-18
+
+### Queue Card & Page UX Polish
+
+- **Sequential display numbering** — queue rows now render `#1, #2, #3…` by index, not raw `position` (which grows unbounded across reorders/clones). Per-queue in M-mode, global in "all" view.
+- **Bump-to-bottom** — new action + endpoint (`POST /queue/{id}/bump-bottom`, `/batch/{id}/bump-bottom`) with `bump_block_to_bottom` helper in `queue_ops`.
+- **Dead-button hiding** — `Up`/`BumpTop` on the first pending item and `Down`/`BumpBottom` on the last are hidden (they were no-ops). Batch-aware: a block at the top hides the whole top set.
+- **"View archive" menu item** in the `⋮` dropdown — navigates to `/archives?search={name}` when the item has an `archive_id`.
+- **Active prints in "all" view** — flat queue list now shows real + virtual external/direct-dispatch active prints at the top with a pulsing blue dot, source badge (external/bamdude_direct), and "Printing" status pill.
+- **Active prints in timeline view** — `QueuePage` fetches printing items alongside pending and merges them before passing to `QueueTimelineView`. External prints now anchor the "now" slot and push the pending chain forward by `stagger_interval`.
+- **Timeline label sticks to visible portion** — when a slot started before the window, its label shifts right by the off-screen amount so the filename stays readable instead of slipping under the left edge.
+
+### Current-Print Card (M-mode) Redesign
+
+Matched the scale of the printer-card current-print panel for visual consistency:
+
+- Thumbnail **80×80** (was 40×40), with placeholder square when no image
+- Progress bar `h-2` (was `h-1.5`), `text-sm text-white` percentage with `Math.round`
+- **Triple-metric row** under progress: remaining `formatDuration` · green `ETA` · `Layers` icon + `layer_num/total_layers` — identical to PrinterCard
+- Blue progress color preserved as a signal that this is the queue card (green is used on PrinterCard)
+
+### Batch Grouping Visible
+
+- **Colored left stripe** (3px, inline `style`) on every pending row that's part of a batch. All siblings of one `batch_id` share one color; different batches use different hues. Palette: 6 distinct non-status hues (blue/purple/amber/teal/pink/cyan), hashed from `batch_id` via djb2.
+- **"Batch N" badge** next to the filename adopts the same hue.
+- **Tailwind JIT workaround** — border color set via `style={{ borderLeft: ... }}` because dynamic class suffixes aren't reliably scanned by the JIT compiler.
+
+### Backend Fixes
+
+- **`batch_id` was missing from API responses** (`_enrich_response` in `print_queue.py`). The column was populated in DB and the Pydantic schema declared the field with a default of `None`, so no validation error — but every batched item came through as `batch_id: null`, breaking all batch UX. Now explicitly included in the response dict.
+- **`attach_3mf_to_archive` backfills `cost`, `quantity`, and `swap_compatible`** — mirror of `archive_print`. Previously fallback archives recovered via the retry service stayed with `cost=NULL`/`quantity=1`/`swap_compatible=False` even after the 3MF landed.
+- **Cover endpoint no longer filters by `status='printing'`** — the printer could already be in `FINISH` state (archive flipped to `completed`) while the UI still asks for the cover. Now also requires `file_path != ''` so a just-created fallback row doesn't shadow an older populated archive with the same name.
+
+### Restart-During-Print Duplicate Archive
+
+The 4-hour stale-archive check in `on_print_start` was killing live `printing` archives on long prints, then creating a duplicate from the re-downloaded 3MF. Two fixes:
+
+- **Removed the stale-cancel branch entirely** — if a matching `status='printing'` archive exists when the printer fires a new print_start, it IS the current print by definition. Adopt it; age is irrelevant when MQTT reports `gcode_state=RUNNING` with the same subtask.
+- **Post-download content-hash adoption** — second safety net after the name-based check. After `try_download_3mf`, compute SHA256 and look for any archive on this printer with matching `content_hash`/`source_content_hash`. If found, flip back to `status='printing'` (clearing `failure_reason`/`completed_at` if needed), adopt into `_active_prints`, delete the temp file, and return — no new row created.
+
+### Other
+
+- **"Release to auto-start"** wording — the `manual_start` Play button's label was "Start print" with toast "Print started", implying immediate printing. Now "Release to auto-start" + "Released — will print when queue reaches it", both locales. `startQueueItem` actually just clears the `manual_start` flag, so the scheduler picks the item up when its turn comes.
+- **Print-options toggle layout** — `mesh_mode_fast_check` had a long description that squeezed the toggle switch horizontally. Added `gap-3 min-w-0 flex-1` on the label row and `flex-shrink-0` on the toggle.
+- **QueuePage M-mode grid `items-start`** — cards no longer stretch to the tallest sibling in a row; each card sizes to its own content.
+- **34 new `queue_ops` unit tests** covering `resolve_block_ids`/`get_batch_pending_items`, `reorder_block` (solo/batch, up/down, boundaries, bad direction), `bump_block_to_top`/`bump_block_to_bottom`, `clone_item`/`clone_batch` (keep/drop batch, position appending, non-pending filtering), and `set_status`/`set_status_for_batch` transitions.
+
+---
+
+## [0.3.1.1] - 2026-04-17
+
+### 3MF Download Recovery Service
+
+When ``on_print_start`` can't pull the 3MF from the printer's SD (flaky FTP, path mismatch, slow card, TLS hiccup) a fallback archive is created with ``file_path=""``.  Four on-demand recovery triggers fill it in later — no periodic polling, so short prints aren't affected.
+
+- **Triggers**:
+  1. **BamDude startup sweep** — one-shot pass over every ``status='printing' AND file_path=''`` archive on server start (runs as `asyncio.create_task` so lifespan doesn't block the API).
+  2. **Printer reconnect** — `PrinterManager.connect_printer` fires `retry_printer_archives(printer_id)` after a successful connection.
+  3. **`on_print_complete` last-chance** — right after the swap-macro block, before SD cleanup runs, we try one more download.  The file is still on SD and the printer is no longer busy writing — highest-probability success window.
+  4. **Manual** — new `POST /api/v1/archives/{id}/retry-download` endpoint.  Frontend exposes a "Retry 3MF download" menu item on archive cards, visible only when `file_path` is empty.
+- **Per-archive lock with skip semantics** — concurrent calls (e.g. UI button click while startup sweep is running) immediately return `"in_progress"` with an info-level toast instead of duplicate FTP sessions.  Five distinct return statuses (`recovered`, `already_has_file`, `in_progress`, `failed`, `error`) mapped to clean UX messages in EN+UK.
+- **`ArchiveService.attach_3mf_to_archive(archive_id, source_file, original_filename)`** — updates an existing row in place: copies the file to a fresh archive dir, parses 3MF via `ThreeMFParser`, extracts thumbnail, fills `content_hash`, `thumbnail_path`, `print_name`, all filament/plate metadata fields, clears `no_3mf_available` and any retry metadata.  Uses `original_filename` for dest naming so the file isn't left as `cover_1_*` or similar temp-prefixed.
+
+### FTP Download Hardening
+
+Root cause of recurring retry failures: `download_file_async` wraps the transfer in `asyncio.wait_for(timeout=60.0)`, which killed in-flight 28 MB downloads from slow SD cards even when the printer was still sending bytes.
+
+- **`archive_download.try_download_3mf` rewritten** to use `download_file_try_paths_async` — one FTP session, multi-path probe, no outer asyncio timeout (same code path the cover endpoint uses reliably).  Socket-level timeout from the `ftp_timeout` DB setting still applies.
+- **Stage 1 remote-path order**: root (`/{filename}`) pulled to the front of the list (was last).  BamDude-dispatched prints upload to root, so the fallback flow now hits the right path on its first try instead of 4 timeouts on `/cache`, `/model`, `/data`, `/data/Metadata` before finding it.
+- **Stage 2 fuzzy-match** also converted to single-session `download_file_try_paths_async`.
+
+### Cover Endpoint — No FTP
+
+`GET /printers/{id}/cover` previously downloaded the full 3MF (up to 30 MB) from the printer every time the UI asked for a thumbnail PNG.  This raced with the archive download-retry service (both pulling the same file via separate FTP sessions) and wasted bandwidth on repeat renders.
+
+- **Rewritten to serve from local archive only**: resolve the printing `PrintArchive` for this printer + subtask, serve `archive.thumbnail_path` directly if available, else open the already-archived 3MF from `archive_dir` and extract the needed plate's PNG.
+- **Returns 404** if no archive with a local 3MF exists yet — the UI falls back to a placeholder.  Once the retry service fills the archive (via any trigger), the next cover request succeeds.
+- **Removed** `download_file_try_paths_async` import, temp-file lifecycle, `_cover_cache` still used for PNG-byte caching but keyed on `(subtask, plate, view)`.
+
+### `on_print_start` Download Refactor
+
+- Extracted the inline probe + fuzzy-search block (~115 lines) from `on_print_start` into shared `services/archive_download.py::try_download_3mf`.  Both the initial download and the background retry service call the same helper — previously they had divergent behaviour.
+- Removed the 2-tier retry wrapper around each remote_path; the new single-session approach is faster AND more reliable.
+
+### Firmware Check — Cloudflare TLS Bypass
+
+Bambu Lab moved behind a Cloudflare tier that blocks plain httpx via TLS fingerprinting (JA3): httpx's Python SSL handshake differs from real Chrome, so `GET /en/support/firmware-download/all` returned 403 regardless of `User-Agent`.  Our buildId parse silently failed, fell back to wiki (which has no download URL), and the UI reported "Firmware download not yet available" for P1 etc. even when the file was listed on the public page.
+
+- **Added `curl_cffi>=0.15.0`** as a dependency.  `curl_cffi` wraps libcurl with Chrome/Firefox TLS stack impersonation (`impersonate="chrome120"`).
+- **Dual-client architecture**: `self._cf_client = CurlAsyncSession(impersonate="chrome120")` for `bambulab.com` (page + data endpoint), `self._client = httpx.AsyncClient(...)` kept for wiki + firmware CDN (`public-cdn.bblmw.com`) — those aren't blocked.
+- **buildId self-heal**: on non-200 from the data endpoint (stale buildId, page layout change), `_fetch_from_download_page` invalidates the cached buildId and retries once with a freshly-fetched one.
+- **Result**: P1S check now returns `update_available=true, latest=01.10.00.00, download_url=https://public-cdn.bblmw.com/.../offline-ota-p003_v01.10.00.00-*.zip` as expected; UI shows the download button with the real URL.
+
+### Swap-Mode Macro Auto-Execution
+
+Swap macros now fire automatically during the dispatch/queue print flow — no manual execution needed.
+
+- **`swap_mode_start`** — runs before `start_print` on swap-enabled printers. If macro fails (ACK rejected or printer disconnects) the dispatch/queue item fails and queue pauses.
+- **`swap_mode_change_table`** — runs after `on_print_complete`. If it fails the next queue item gets `waiting_reason` set (queue paused until manual intervention).
+- **Per-job event selection** — new `execute_swap_macros` toggle + `swap_macro_events` checklist in Print Modal. UI hidden when source file is `swap_compatible` (macros baked in by swaplist.app) or no selected printer has swap mode.
+- **Plate-clear auto-bypass** — successful `change_table` macro or `swap_compatible` archive auto-calls `set_plate_cleared` so queue scheduler doesn't block on manual confirmation.
+- **Shared macro executor** — `send_macro_and_await_ack` extracted from `execute_macro` route into `services/macro_executor.py`; `PrinterManager.execute_macro_and_wait` blocks until `on_macro_complete` callback with connectivity health-check (no fixed timeout).
+- **DB fields**: `execute_swap_macros BOOLEAN`, `swap_macro_events TEXT` on `print_queue` (m008); wired through schemas, routes, queue_batch, dispatch, scheduler.
+
+### Quick Vibration Check Toggle & 3MF Patcher
+
+- **`mesh_mode_fast_check`** per-job toggle (default true) — mirrors the official "Quick Vibration Check" (belt-tension pre-flight). Added to queue items and reprint/print-library bodies (m006).
+- **3MF gcode post-processor** (`services/gcode_patcher.py`) — when toggle is OFF, patches `M970`/`M970.3` commands in all plate gcodes to `;M970...` (commented out), recalculates per-plate MD5 sidecars, repacks the 3MF. Masks `; machine_start_gcode = ...` parameter lines to avoid false positives (same technique as swap-hub). Passthrough (no repack) when lines are already commented.
+- **Wired into dispatch** — both reprint and library-file paths; archive created from patched file so `content_hash` matches what lands on SD.
+
+### Removed `vibration_cali` Per-Print Toggle
+
+- Upstream BambuStudio hardcodes `task_vibration_cali = false` for every model (confirmed in `SelectMachine.cpp`, `SendMultiMachinePage.cpp:510`). The per-print UI checkbox was removed from Studio.
+- **Dropped**: column from `print_queue` (m007 via `recreate_table`), field from all schemas, toggle from UI, i18n keys. MQTT payload still sends `"vibration_cali": false` for firmware compat. P2S-specific override removed (no longer needed).
+
+### Archive Source-Hash Dedup (Chain-of-Custody)
+
+- **`source_content_hash`** + **`applied_patches`** columns on `print_archives` (m009).
+- Dedup queries switch to `COALESCE(source_content_hash, content_hash)` — patched archives collapse against their library original.
+- **External-print fallback**: when `on_print_complete` archives an SD file with no dispatch metadata, a one-SELECT lookup inherits the chain from any prior archive with matching `content_hash` or `source_content_hash`.
+- **`effective_hash`** field in `ArchiveResponse` for frontend grouping.
+- Dispatch wiring passes `library_file.file_hash` as source for both direct and queue-driven prints.
+- Pre-existing `display_stem` UnboundLocalError in `archive_print` reuse path fixed.
+
+### on_print_start Duplicate Archive Guard
+
+- **`_active_prints` re-trigger check** before `_expected_prints` pop — if the printer already has an active print tracked, log `[CALLBACK] Duplicate print_start ... skipping` and return.
+- Covers every MQTT re-subscribe cause: laptop sleep/wake, macro execution, K-profile changes, printer control actions, AMS operations, any `ensure_fresh_connection` call.
+
+### Swap-Mode Profiles — JobOx A1 GCode
+
+- Embedded extracted JobOx A1 gcode into m005 seed entries (from Chinese A1-clone test file, Y=266 overflow confirms full-size). Same block used for both `swap_mode_start` and `swap_mode_change_table` pending official JobOx gcode.
+
+### Library File Notes ([#3](https://github.com/kainpl/bamdude/issues/3))
+
+Users can now attach multiple free-form notes to any library file, with per-note author tracking and live sync across tabs.
+
+- **Multiple notes per file** — no fixed limit on count; each note up to 1000 characters.
+- **Author tracking** — notes record who created/edited them (`user_id`) and when (`created_at`, `updated_at`). Only the original author can edit or delete their own note; other users see the text and meta but no edit/delete controls. When authentication is disabled, the install is single-user-trusted so all controls are open.
+- **Cascade delete** — deleting a library file deletes its notes at both the ORM (`cascade="all, delete-orphan"`) and DB (`ON DELETE CASCADE`) levels. Deleting a user keeps their notes but anonymises them (`ON DELETE SET NULL`).
+- **Card view UX** — thumbnail carries a message-square overlay icon: `MessageSquarePlus` when the file has no notes (click → opens create form immediately), `MessageSquare` + count badge when notes exist (click → popover with the newest note, prev/next pagination, edit, delete, add-new).
+- **List view UX** — same icon button in the actions column, inline variant (no count badge to save row space).
+- **WebSocket sync** — the backend broadcasts a `library_file_notes_changed` event with the new total count whenever a note is created/updated/deleted, so open tabs update their icon/count and any open popover refreshes without a manual reload.
+- **Performance** — the file-list endpoint returns `notes_count` via a single grouped COUNT query (no N+1) so the card icon decision is zero-fetch on mount.
+- **New permission** `library:notes_write` — granted to all three default groups including Viewers, so viewer-role users can post their own observations without being elevated to `library:update`.
+- **Migration** — folded into m002 (`library_file_notes` table with indexed `library_file_id`, dialect-aware: SQLite `INTEGER AUTOINCREMENT` vs PostgreSQL `SERIAL`) since we're still in the 0.3.2 cycle.
+- **Tests** — 15 pytest integration tests (CRUD, 1000-char validation, cascade, `notes_count` reflection) + 13 vitest (popover pagination, char counter, own-only edit/delete gating, save round-trip, icon variant switching).
+
+### Print Batches & Quantity
+
+- **Quantity field in Print Modal** — stepper (1–50) unified across "Print Now" and "Add to Queue"
+- **Batch grouping** — N>1 items share a UUID `batch_id` for coordinated cancel/tracking
+- **Direct print + extras** — "Print Now" dispatches the first copy immediately and enqueues remaining N−1 copies with the same `batch_id` (new `enqueue_batch_copies` helper)
+- **`batch_id` column** on `print_queue` (indexed) + migration m002
+- **API**: `quantity` on `FilePrintRequest`, `ReprintRequest`, `PrintQueueItemCreate`; `batch_id`, `queued_copies` in direct-print responses
+
+### Queue Page Redesign
+
+- **Stats bar** — sticky tiles at top: printing / pending / estimated remaining time / errors
+- **Timeline view mode** — swim-lane Gantt across all printer queues (new `/queue?view=timeline`)
+  - Range selector: 12h / 24h / 72h (persisted to localStorage)
+  - Active prints anchored at `started_at`; scheduled jobs pinned to `scheduled_time`; stagger interval respected between jobs
+  - Filament color stripe, estimated/manual/waiting icons, batch "1/N" label, active-print progress stripe
+  - Click slot → edit in Print Modal; right-click → cancel item / cancel batch / edit
+  - Vertical "Now" marker that advances every minute
+- **URL-synced view mode** — `?view=compact|expanded|all|timeline` survives reload and is shareable
+- **Removed inline stats `<p>`** — superseded by new stats bar
+
+### Telegram Bot Hot-Reload
+
+- **Auto-restart on provider changes** — creating, updating, or deleting a Telegram notification provider automatically restarts the bot (no app restart needed)
+- **Per-chat notification routing** — notifications are now sent to all active `telegram_chats` subscribed to the event type, instead of requiring `chat_id` in provider config
+- **WebSocket chat registration** — new Telegram chat auto-registration broadcasts `telegram_chat_registered` via WebSocket, frontend refreshes chat list in real-time
+- **Removed test buttons** — "Test Configuration" and "Send Test Notification" buttons hidden for Telegram providers (bot manages its own lifecycle)
+
+### Firmware Update Source Fix
+
+- **Download page as primary source** — firmware version check now uses bambulab.com download page instead of wiki, preventing "update available" when no download URL exists
+- **Download URL validation** — firmware upload preparation now checks for download URL availability before allowing update
+
+### Developer Mode WebSocket
+
+- **Real-time developer mode status** — `developer_mode` changes from MQTT `fun` field and probe responses now trigger `on_state_change`, pushing updates to frontend via WebSocket immediately
+
+### UI Improvements
+
+- **Password visibility toggle** — added eye/eye-off toggle on Setup page (admin password + confirm), Login page, and printer Add/Edit modals (access code)
+- **Default view filter** — removed Profiles, Notifications, and Settings from "Default View" dropdown (kept: Printers, Archives, Queue, Stats, Maintenance, Projects, Inventory, Files)
+- **Delete button on provider card** — notification provider delete button added to card header alongside edit and toggle
+- **Printer defaults** — `cleanup_after_print` default changed to `false` (files moved to cache by default), `mqtt_connection_timeout` default changed to 900s
+
+### Macro Execution System
+
+- **Execute macros from printer menu** — new "Macros" sub-menu in printer card context menu, filtered by printer model and swap mode
+- **GCode execution with ACK** — sends wrapped GCode via MQTT, waits for printer ACK (~100ms) before returning HTTP response; rejects if printer declines
+- **Claim action markers** — macros auto-wrapped with `M1002 gcode_claim_action:11/0` for `stg_cur`-based execution tracking
+- **Real-time status on card** — printer card shows "Executing: {macro name}" during macro execution via `stg_cur=11` detection
+- **Completion via WebSocket** — `stg_cur` transition 11→0 triggers `macro_executed` WebSocket event with global toast notification
+- **`macro_executing` state** — tracked per-printer in `PrinterState`, exposed in status API and WebSocket updates
+- **`on_macro_complete` callback** — new MQTT client callback wired through `PrinterManager` for WebSocket broadcast
+- **`ensure_fresh_connection`** — MQTT connection freshness check before macro execution
+- **`POST /macros/{id}/execute`** — new API endpoint with model/swap_mode validation
+- **Printer create schema** — `swap_mode_enabled`, `stagger_interval_minutes`, `auto_light_off` now properly saved on printer creation
+
+### Maintenance Type Codes
+
+- **`type_code` column** — stable, locale-independent identifier for maintenance types (e.g. `clean_carbon_rods`, `check_belt_tension`)
+- **System types** get predefined codes, custom types get `custom_{id}`
+- **Simplified matching** — rod/rail filtering, wiki URL lookup, and default type seeding now use `type_code` instead of reverse-mapping translated names
+- **Migration** — backfills codes for existing types (EN + UK name matching)
+
+### Bug Fixes
+
+- **System logs empty** — fixed `bambuddy.log` → `bamdude.log` filename in support routes (missed during rebrand), application log viewer on `/system` now works
+- **No-AMS print failure** — fix `0700_8012` "Failed to get AMS mapping table" on printers without physical AMS (P2S, A1 without AMS) by remapping external spool entries and omitting `ams_mapping2` (PR #2 by @latsss)
+- **Printer create missing fields** — `swap_mode_enabled`, `stagger_interval_minutes`, `auto_light_off` were silently ignored when creating a printer (missing from `PrinterCreate` schema)
+- **Docker detection false positive** — Proxmox LXC containers were misdetected as Docker; now reads `/run/systemd/container` instead of checking `.git` presence
+- **Error boundary** — React ErrorBoundary wraps the app; crashes show error message with stack trace and reload button instead of white screen
+- **3MF metadata serialization crash** — bytes objects in 3MF metadata (thumbnail data) caused JSON crash on external library add and ZIP extraction; extracted shared `_clean_3mf_metadata()` helper
+- **3MF single-active-extruder mapping** — dual-nozzle 3MF with only one nozzle installed now maps all filaments to the active extruder directly instead of failing complex mapping
+- **Calendar picker position** — native date picker now opens near the date field instead of off-screen
+- **Spool gradient/multi-color detection** — RFID auto-provisioning now correctly identifies Gradient, Dual Color, and Tri Color filament subtypes from `tray_id_name` code
+- **Stats filter by user** — `GET /archives/stats` now accepts `created_by_id` query param for per-user statistics; gated by new `stats:filter_by_user` permission
+- **Per-printer plate-clear requirement** — new `require_plate_clear` setting per printer (default true); auto-disabled when swap mode enabled; queue scheduler respects per-printer setting
+- **Prefer lowest filament** — new `prefer_lowest_filament` setting; when multiple AMS trays match, scheduler picks the one with lowest remaining filament to reduce waste
+- **Bulk printer actions** — select multiple printers, stop/pause/resume/clear plate/clear HMS in bulk; floating toolbar with select by state/location; i18n EN+UK
+- **Print quantity / batch** — `quantity` field (1..50) in Print Modal works for both direct print and add-to-queue. Add-to-queue with N creates N pending items sharing a `batch_id`; direct print with N dispatches the first copy and queues the remaining N−1 on the printer's queue with a `batch_id` for grouping
+
+### UI Polish
+
+- **Printer card menu** — reorganized menu items with separators (Info/Maintenance | Calibration/Macros | Reconnect/MQTT Debug | Edit/Delete), click outside to close
+- **Macros button visibility** — "Macros" menu item only shown when matching macros exist for the printer
+- **SWAP badge** — moved to model line (before model name), visible at all card sizes
+- **Card height** — printer cards no longer stretch to match tallest card in row (`items-start`)
+
+### Upstream Bambuddy v0.2.3b3 Adaptation
+
+Cycle `applied=0.2.3b2` → `next=0.2.3b3` (16 ported / 0 missing / 0 deferred / 6 N/A — full coverage). Full audit: `temp/bambuddy-changes-audit-v0.2.3b2-v0.2.3b3.md`.
+
+- **P2S/N7 AMS Drying** — P2S printers with firmware 01.02.00.00+ now support remote AMS drying (moved from `_DRYING_UNSUPPORTED_MODELS` to `_DRYING_MIN_FIRMWARE`). N7 added (P2S internal model code)
+- **LDAP Default Fallback Group** — Settings → Authentication → LDAP → Advanced now has a "Default group" selector. Authenticated LDAP users with no mapped groups are auto-assigned to this fallback group instead of landing without permissions. New `ldap_default_group` setting + dropdown UI; logged warning each time fallback is applied. EN+UK i18n
+- **LDAP POSIX Primary Group** — LDAP authenticator now resolves the user's primary `gidNumber` against `posixGroup` entries (not just `memberUid`-based supplementary groups). DN deduplication is case-insensitive (LDAP DNs are case-insensitive by spec)
+- **LDAP SQLite NOT NULL fix (#794)** — m002 migration now drops `NOT NULL` on `users.password_hash` for upgraded SQLite installs (pre-LDAP). Patches `sqlite_master` via `writable_schema` + `PRAGMA schema_version` bump. PostgreSQL path uses `ALTER COLUMN ... DROP NOT NULL`. Idempotent
+- **H2C Nozzle Rack Slot Numbering (#943)** — `NozzleRackCard` now uses fixed `RACK_BASE_ID = 16` instead of `min(present_ids)`. When the lowest-ID rack slot is mounted in the hotend (firmware omits its ID from `device.nozzle.info`), the empty placeholder no longer shifts every remaining nozzle one slot left
+- **Plate-Clear Button Reset (#912)** — `PrinterQueueWidget` now resets `clearPlateMutation` state on `printerState` transition out of FINISH/FAILED. Without this, the React Query `isSuccess` flag persisted from the first plate clear and rendered the static "Plate Ready" confirmation instead of a clickable button on the next print cycle
+- **Spoolman Stale Location Cleanup (#921)** — Spoolman auto-sync (`on_ams_change`) now calls `clear_location_for_removed_spools` after each sync cycle. Without this, removing a spool from the AMS left its Spoolman location pointing at the printer (causing double-booked slots if reinserted elsewhere). Manual `sync_printer_ams` route now passes `synced_spool_ids` so just-synced spools aren't accidentally cleared
+- **Color Catalog refactor (#857)** — Removed hardcoded color tables and made `color_catalog` the single source of truth for filament color names. Backend: deleted `app/core/bambu_colors.py` (317 lines), added `GET /api/inventory/colors/map` (Bambu Lab > defaults > others priority), `spool_tag_matcher.create_spool_from_tray` now resolves color via hex catalog lookup with a fallback to `tray_id_name` only when it's a human-readable name (no `-`). Frontend: rewrote `utils/colors.ts` to read a runtime catalog populated by the new `ColorCatalogContext` (single fetch per session, gated on auth-loading), added `useColorCatalogVersion` hook (`useSyncExternalStore`) so pages re-render when the catalog finishes loading, removed ~250 lines of hardcoded `BAMBU_FILAMENT_COLORS`/`BAMBU_COLOR_CODE_FALLBACK`/`getBambuColorName` from `PrintersPage.tsx`, removed `BAMBU_HEX_COLORS` (~200 entries) from `colors.ts`. The previous suffix-based fallback was structurally guaranteed to mislabel any color outside the hand-maintained list (e.g. `*-R1` → "Scarlet Red" even when the printer was loaded with `A17-R1` PLA Translucent Cherry Pink). Custom/third-party filaments and arbitrary user-added spools are unaffected — the catalog is for display name resolution only, not validation. 19 vitest + 8 pytest integration + 3 pytest unit added
+- **Energy date-range stats + restart-resilient per-print tracking (#941)** — Statistics page now returns correct totals for Today/Week/Month in "total consumption" mode (previously always zero with any date filter active). New `smart_plug_energy_snapshots` table captures each plug's lifetime counter every hour via a background loop in `SmartPlugManager`; `_sum_snapshot_deltas` computes per-plug `max(0, last_in_range − baseline)` for the requested range, falling back to the earliest snapshot ever recorded and flagging `energy_data_warming_up` when no pre-range baseline exists (fresh upgrade). New `energy_start_kwh` column on `print_archives` persists the plug's lifetime counter at print start, replacing the in-memory `_print_energy_start` dict that was lost on backend restart mid-print — per-print energy tracking is now restart-resilient regardless of mode. Frontend `StatsPage` shows an `AlertTriangle` next to Energy Used / Energy Cost with a tooltip when the warming-up flag is set, so the "low values right after upgrading" situation is explained in-product (EN+UK i18n). Migration m002 adds the column + table dialect-aware (SQLite `INTEGER PRIMARY KEY AUTOINCREMENT` vs PG `SERIAL`). MQTT-only plugs (which expose only "today") are skipped from snapshots. 8 pytest tests added (snapshot delta arithmetic, counter-reset clamp, warming_up fallback, endpoint windowing, restart-resilience, snapshot task lifecycle)
+- **Scheduled Local Backups (#884)** — Settings → Backup now includes a "Scheduled Local Backups" card that automatically creates complete snapshots (database + all data directories) on an hourly, daily, or weekly schedule with configurable time-of-day and retention count. Backups are written as ZIP files to a configurable output directory (defaults to `DATA_DIR/backups/`), which Docker users can mount as a volume to off-host storage. Each backup in the list can be downloaded, restored, or deleted directly from the UI. The manual download endpoint has also been refactored to stream from a temp file via `FileResponse` instead of loading the entire ZIP into memory, removing the OOM risk for multi-GB backups. Filename rebrand: new backups use `bamdude-backup-*.zip` while pre-existing `bambuddy-backup-*.zip` files are still listed, downloadable, restorable, and deletable for backward compatibility. The DB file inside the ZIP is renamed `bambuddy.db` → `bamdude.db`; the restore endpoint accepts both names. Works with both SQLite and PostgreSQL installs (uses portable SQLite dump format). 29 pytest unit tests + 9 vitest smoke tests added. EN/UK i18n.
+- **Printers Page Search and Filters (#852)** — Live search bar and two filter dropdowns (status, location) on the Printers page for finding specific printers in large setups, especially on mobile where Ctrl+F is impractical. Search matches printer name, model, location, and serial number (case-insensitive, whitespace-trimmed) with an X clear button. The status filter covers All / Printing / Paused / Idle / Finished / Error / Offline and is reactive to WebSocket status updates via a React Query cache subscription — so a print finishing while "Printing" is selected immediately removes the printer from the filtered list. The location filter is only shown when at least one printer has a location configured. All three filters are combinable; the controls are hidden when no printers are configured yet, and an empty-state message appears when no printer matches the current search/filters. EN/UK i18n.
+- **Print Files Directly from Project View (#930)** — Project detail page now lists printable files (`.gcode`, `.gcode.3mf`) from every linked library folder inline, with Play (Print Now) and CalendarPlus (Add to Queue) action buttons on each sliced file. Removes the round-trip through File Manager for common reprint workflows. Backend adds a `project_id` query parameter to `GET /library/files` that returns all files across linked folders in a single join query (replacing the prior one-request-per-folder N+1 pattern), and validates `project_id` on both the direct-print and queue paths so a stale ID yields 404 instead of an FK-constraint 500. Prints triggered from project view are automatically associated with the originating project, so the resulting archive shows up in that project's history without manual assignment. Threaded through `archive_print(project_id=...)` → `PrintArchive.project_id`. PrintModal accepts an optional `projectId` prop. EN/UK i18n.
+- **Camera reconnect counter + ffmpeg log flood (#925)** — Frontend reconnect banner could briefly display "attempt 6 of 5" before giving up; the displayed value is now clamped to `MAX_RECONNECT_ATTEMPTS`. Backend: every failed ffmpeg spawn previously logged the full ~20-line ffmpeg version/configuration/lib banner, producing hundreds of lines of noise per failed camera click. New `_summarize_ffmpeg_stderr` helper strips banner-prefix lines and caps output at the last 10 meaningful lines, applied at all three stderr log sites (immediate-failure inline, `_read_ffmpeg_stderr` helper used by stream-ended and read-timeout paths). 5 pytest tests added (empty input, banner stripping, line cap, blank-line filtering, banner-only). Underlying X1C "camera service stops accepting connections" firmware behaviour is independent of these two fixes.
+- **Energy snapshot capture on PostgreSQL** — `_strip_tz_from_params` engine hook now recursively walks any nesting of dict/list/tuple to strip `tzinfo` from datetime params at any depth. Without this, the new hourly snapshot loop crashed every cycle on PG installs because SQLAlchemy's `insertmanyvalues` batches the rows into a single `INSERT ... SELECT FROM (VALUES ...)` whose params arrive as nested containers, slipping past the previous one-level-deep strip. SQLite was never affected. Combines upstream commits `9f643724` + `1516d581` into the final form
+- **Virtual Printer serial-adaptive parity** — minor `client_serial and ...` truthy-guard alignment with upstream `mqtt_server.py::_handle_publish`. Functional logic for serial-adaptive PUBLISH/SUBSCRIBE handling (#927) was already in place
+- **Support bundle: filter `_ip` keys** — added `"_ip"` to `support.py::sensitive_keys` (security; closes potential leak if `*_ip` settings ever land in the `Settings` table; current `bind_ip`/`remote_interface_ip` live on `virtual_printer` table and aren't affected by this filter)
+- **No skipped items** — full coverage of the v0.2.3b3 upstream release.
+- **Skipped (not applicable)**: SpoolBuddy device management tab (2B), SpoolBuddy auto-wake (3A), SpoolBuddy LCD off-on-idle (3B), External link icon stream-token (4G — BamDude icons are intentionally unauthenticated), SJF toggle disappearing (4H — SJF not ported), SpoolBuddy Docker fix (4I)
+
+### Upstream Bambuddy v0.2.3b2 Adaptation
+
+Cycle `applied=0.2.3b1` → `next=0.2.3b2` (23 ported / 0 missing / 4 N/A). Full audit: `temp/bambuddy-changes-audit-v0.2.3b1-v0.2.3b2.md`.
+
+- **Database engine info on System page** — "Database Engine" StatCard shows active engine (SQLite / PostgreSQL) and version string (`SHOW server_version` / `SELECT sqlite_version()`), i18n EN+UK
+- **API key empty printer list semantics** — migration m002 now includes dialect-aware `UPDATE api_keys SET printer_ids = NULL WHERE ... = '[]'` cleanup. Callsites already use correct `is None` semantics; `[]` now correctly means "no access", `NULL` means "all printers"
+- **Queue widget honors `require_plate_clear`** — `PrinterQueueWidget` accepts per-printer `requirePlateClear` prop; "Clear Plate & Start Next" prompt is suppressed when the flag is disabled (and automatically disabled in swap mode). Unlike upstream (global setting), BamDude uses the per-printer flag
+- **AMS probe timeout tests** — added 4 upstream behavior tests (`test_first_timeout_allows_retry`, `test_second_timeout_forces_reconnect`, `test_successful_probe_resets_failure_counter`, `test_no_timeout_when_probe_not_sent`) covering #887 self-healing reconnect logic already in production
+- **Skipped (not applicable)**: SpoolBuddy quick menu (1F), SpoolBuddy kiosk auto-blank fix (4E), SpoolBuddy inventory broadcast (4I), thumbnail 401-retry (4D — BamDude's thumbnail endpoints are intentionally unauthenticated, no stream-token scheme to invalidate)
+
+### Security
+
+- **`cryptography>=46.0.6`** pin (CVE-2026-34073 — X.509 wildcard SAN validation bypass). Installed `cryptography==46.0.7`, `aiohttp==3.13.5`, `Pygments==2.20.0` already exceed patched thresholds
+
+### Dependencies
+
+- **lucide-react** `0.555.0` → `1.8.0` (major version, ~32% bundle size reduction)
+- **tailwindcss** + **@tailwindcss/postcss** → `4.2.2`
+
+### Tooling
+
+- **`scripts/set_version.js`** — sets version across `backend/app/core/config.py`, `frontend/package.json`, and `pyproject.toml` in one command
+- **MCP config fix** — `.mcp.json` updated with `cmd /c` wrapper for Windows compatibility
 
 ### Per-Printer Queue Architecture
 
@@ -47,15 +374,112 @@ Electrical load management for large print farms — spread printer startups ove
 - **Default print options** — bed levelling + flow calibration ON; vibration calibration, layer inspection, timelapse OFF
 - **Sidebar Links i18n** — all strings in ExternalLinksSettings translated
 
+### Archive Deduplication
+
+- **Per-printer file dedup** — same 3MF printed 10 times on one printer stores only 1 copy on disk
+- **Content hash check** — SHA256 hash computed before copy; reuses existing file if match found for same printer
+- **Safe deletion** — file only removed from disk when last archive record referencing it is deleted
+- **Upload button removed** — manual 3MF upload to archives removed (use File Manager instead)
+
 ### Dead Code Removal
 
-- **~1600 lines removed** across backend and frontend
+- **~3000 lines removed** across backend and frontend
+- **`filaments` table removed** — dead catalog with no UI; cost now from `spool.cost_per_kg` → `default_filament_cost` setting
+- **`print_log_entries` table removed** — redundant copy of archive data; all print history is in `print_archives`
+- **Filament catalog**: model, schema, routes, API client, permissions, tests — all deleted
+- **Print log**: model, schema, service, routes, API client, UI tab, tests — all deleted
 - Scheduler: `_find_idle_printer_for_model` and 4 helper methods (~300 lines)
 - PrintModal: model-based assignment UI (~340 lines)
 - Notification: `on_queue_job_assigned` event, template, schema
 - Telegram: `target_model` UI key, `queue_job_assigned` event
 - Obsolete ALTER TABLE migrations for dropped fields
 - Tests for removed features (`test_scheduler_busy_only`, `test_scheduler_filament_override`)
+
+### Virtual Printer
+
+- **Removed modes**: `immediate` (auto-archive) and `review` (pending uploads) — use File Manager or Print Queue
+- **Default mode**: `file_manager` (was `immediate`)
+- **Smart queue assignment**: when no `target_printer_id` set, auto-selects least busy online printer matching `sliced_for_model`; falls back to file manager if no match
+- **Migration**: existing VPs with `immediate`/`review` → `file_manager`, `queue` (legacy) → `print_queue`
+
+### Git Backup (GitHub + GitLab)
+
+- **Renamed**: `github_backup` → `git_backup` across all files, classes, tables, API endpoints
+- **GitLab support**: full provider with Commits API, self-hosted URL support
+- **Provider selector**: choose GitHub or GitLab in backup settings UI
+- **API base URL**: configurable for self-hosted GitLab instances
+- **Migration**: existing configs auto-tagged as `provider = 'github'`; tables renamed `github_backup_config` → `git_backup_config`, `github_backup_logs` → `git_backup_logs`
+- **API path**: `/api/v1/github-backup/` → `/api/v1/git-backup/`
+
+### PostgreSQL Support
+
+- **Optional PostgreSQL backend** — set `DATABASE_URL=postgresql+asyncpg://user:pass@host/db` to use PostgreSQL instead of SQLite
+- **SQLite remains default** — zero-config, no changes needed for existing users
+- **Dialect-aware engine** — automatic pool sizing, PG timezone handling, PRAGMA guards
+- **Full-text search**: FTS5 (SQLite) vs tsvector + GIN index (PostgreSQL) — transparent to API
+- **Migration helpers**: `table_exists`, `column_exists`, `recreate_table` work on both dialects
+- **Portable backup**: backup always creates SQLite ZIP regardless of backend
+- **Cross-database restore**: import SQLite backup into PostgreSQL with automatic type conversion (boolean, datetime, JSON)
+- **Auto-migration**: switch from SQLite to PG → data transfers automatically on first start
+- **System info**: shows current database engine (SQLite/PostgreSQL)
+
+### REST/Webhook Smart Plugs
+
+- **New plug type**: `rest` — control any device via HTTP API (openHAB, ioBroker, Node-RED, FHEM, etc.)
+- **Control URLs**: configurable ON/OFF URLs with HTTP method, body, and custom headers
+- **Status polling**: JSON path extraction from status endpoint with configurable ON value
+- **Energy monitoring**: separate power/energy URLs with multipliers for unit conversion (e.g. Wh→kWh)
+- **Test connection**: verify endpoint reachability from settings UI
+
+### LDAP/Active Directory Authentication
+
+- **LDAP authentication**: bind with service account, search for user, verify credentials
+- **Security**: StartTLS and LDAPS only (no plaintext), LDAP filter value escaping
+- **Auto-provisioning**: create local accounts on first LDAP login
+- **Group mapping**: AD memberOf + POSIX memberUid mapped to BamDude groups
+- **Password management**: disabled for LDAP users (managed by LDAP server)
+- **Settings UI**: server config, test connection, group mapping, enable/disable
+- **User indicators**: LDAP badge in user list, hidden password change for LDAP users
+
+### Upstream Bug Fixes (from Bambuddy v0.2.3b2)
+
+**Security:**
+- Fix path traversal in file uploads (`_safe_filename` helper)
+- Fix API key empty `printer_ids` granting full access
+- Add HTTP security headers middleware (nosniff, DENY, referrer-policy)
+- Restrict temp file permissions for camera snapshots (0o600)
+
+**Bug fixes:**
+- Fix external spool `ams_mapping2` using wrong `ams_id` on single-nozzle printers
+- Fix WebSocket crash on printers without `fun` field (vt_tray normalization)
+- Fix developer mode probe destabilizing MQTT on auto-reconnect (5s delay, cache across reconnects)
+- Fix spool manager double filament deduction during active prints
+- Fix multi-plug automation only working for first plug
+- Fix AMS history cleanup naive/aware datetime mismatch
+- Fix FilamentHoverCard z-index behind sidebar
+- Standardize webhook notification payloads with structured event data
+- Fix ffmpeg process leak causing multi-GB memory growth
+
+**Features:**
+- Enable AMS drying support for H2S with firmware gate
+- Show plate number on printer cards and stream overlay (plate 2+)
+- External folder scan preserves disk subfolder structure, cleans orphaned subfolders
+- File manager delete commits before response (fixes stale UI race)
+- AssignSpoolModal "Show all spools" toggle to bypass profile filtering
+- Spool inventory and archive metadata backup in git backup
+- Auto light off setting for P1S/P1P (turn off chamber light after print starts)
+
+### Removed SpoolBuddy
+
+- **SpoolBuddy hardware integration removed** — the RPi-based filament station (NFC reader, scale, kiosk display) was a hardware-specific feature from upstream Bambuddy. Removed: backend API (routes, model, schema, SSH service), frontend (6 pages, 12 components, hooks), standalone daemon package, 18,700+ lines total.
+- **Table dropped**: `spoolbuddy_devices` (migration handles existing DBs)
+- **Spool inventory page** retained — scale weight display kept, sync-to-device button removed
+
+### Configuration
+
+- **`LOG_LEVEL` env var** — controls log level directly (`DEBUG`, `INFO`, `WARNING`, `ERROR`); `DEBUG=true` no longer forces debug logging
+- **Spoolman/Cloud permissions** — migrated from removed `FILAMENTS_*` to `INVENTORY_*` permissions
+- **Git Backup permissions** — renamed `github:backup` → `git:backup`, `github:restore` → `git:restore`
 
 ### Queue UI
 
@@ -74,6 +498,52 @@ Electrical load management for large print farms — spread printer startups ove
 - Docker image: `kainpl/bamdude`
 - Database auto-migration chain: `bambutrack.db → bambuddy.db → bamdude.db`
 - Docker volume migration script: `install/migrate-volumes.sh`
+
+### Swap Mode
+
+- **Printer field**: `swap_mode_enabled` toggle (A1 Mini plate swapper)
+- **File/Archive field**: `swap_compatible` auto-detect from `*.swap.3mf` filenames
+- **Print filtering**: swap files only shown for swap-enabled printers
+- **SWAP badge**: on file manager cards/list and archive views
+
+### Macros System
+
+- **G-code macros**: reusable snippets triggered by events (swap_mode_start, swap_mode_change_table)
+- **Multi-model support**: each macro targets specific printer models (JSON array)
+- **Built-in macros**: swap start/change table sequences from swap-hub project
+- **G-code editor**: custom component with syntax highlighting (G/M commands, parameters, comments)
+- **Settings UI**: macros management in Printing tab with add/edit/delete/toggle
+
+### Maintenance Improvements
+
+- **Model-aware types**: maintenance types target specific printer models (`printer_models` field)
+- **Auto-assign**: only matching types created for new printers (A1 gets rail maintenance, X1C gets rod)
+- **History tracking**: `performed_by_user_id` and `performed_by_chat_id` on every action
+- **History tab**: sortable/paginated table with date, printer, type, hours, performer
+- **History export**: Excel (.xlsx) download with optional printer filter
+- **Printer filter**: filter history by printer, link from printer cards and maintenance status
+- **Per-printer links**: navigate to filtered maintenance history from printer dropdown menu
+
+### UI Polish
+
+- **Printer modals**: 2-column layout, scrollable (`max-h-90vh`)
+- **Maintenance status**: 2-column grid with `items-start` (independent card heights)
+- **Auto-archive**: always enabled, removed toggle from printer forms and info dialog
+- **Registration mode**: toggle in Telegram provider card
+- **Service worker**: updated cache names for rebrand
+
+### Migration System
+
+- **File-based migrations** — versioned auto-discovered migration files replacing monolithic 1,600-line `run_migrations()`
+- **Sequential execution** — all migrations run in order for any startup scenario (fresh, import, upgrade)
+- **`database.py`**: 2,059 → 122 lines
+- **m000**: Bambuddy 2.2.2 → BamDude import (25 tables, 4696+ rows, read-only source, auto-detect)
+- **m001**: BamDude 3.0.1 baseline (FTS5, groups, templates, catalogs, maintenance types, macros)
+- **m002**: BamDude 3.0.1 → 3.1.1 (queues, macros, swap mode, maintenance tracking, schema cleanup)
+- **Schema cleanup**: DROP COLUMN via `recreate_table` for `print_count`, `require_previous_success`, `target_model`, `target_location`, `filament_overrides`, `required_filament_types`, `on_queue_job_assigned`; DROP TABLE `filaments`, `print_log_entries`
+- **Smart legacy detection**: Bambuddy 2.2.2 vs BamDude 3.0.1 by `telegram_chats` table presence
+- **Migration helpers**: `add_column`, `recreate_table`, `column_exists`, `table_exists` with `PRAGMA foreign_keys = OFF`
+- **Idempotent upgrades**: all DDL guarded by existence checks, safe to run on fresh DB
 
 ### Tests
 

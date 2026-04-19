@@ -11,7 +11,7 @@ from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermissionIfAuthEnabled
+from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.printer import Printer
@@ -49,10 +49,10 @@ _stream_start_times: dict[int, float] = {}
 _active_external_streams: set[int] = set()
 
 # Track ALL spawned ffmpeg PIDs (persists even if _active_streams entries are removed)
-# Maps PID -> spawn timestamp — used by cleanup to find truly orphaned OS processes
+# Maps PID -> spawn timestamp - used by cleanup to find truly orphaned OS processes
 _spawned_ffmpeg_pids: dict[int, float] = {}
 
-# Track disconnect events per stream_id — allows stop endpoint and cleanup
+# Track disconnect events per stream_id - allows stop endpoint and cleanup
 # to signal generators to stop reconnecting instead of just killing the process
 _disconnect_events: dict[str, asyncio.Event] = {}
 
@@ -196,13 +196,46 @@ async def _terminate_ffmpeg(process: asyncio.subprocess.Process, stream_id: str 
     _spawned_ffmpeg_pids.pop(process.pid, None)
 
 
+def _summarize_ffmpeg_stderr(text: str | None) -> str:
+    """Strip ffmpeg's boilerplate banner and keep only actionable lines.
+
+    ffmpeg prints ~20 lines of version/build/configuration/lib headers before
+    any actual error message. Logging the full banner on every retry floods
+    the log (hundreds of lines per failed stream). This filter drops the
+    banner and caps output at the last 10 meaningful lines (upstream #925).
+    """
+    if not text:
+        return ""
+    banner_prefixes = (
+        "ffmpeg version ",
+        "  built with ",
+        "  configuration:",
+        "  libavutil ",
+        "  libavcodec ",
+        "  libavformat ",
+        "  libavdevice ",
+        "  libavfilter ",
+        "  libswscale ",
+        "  libswresample ",
+        "  libpostproc ",
+    )
+    meaningful = [ln for ln in text.splitlines() if ln.strip() and not ln.startswith(banner_prefixes)]
+    return "\n".join(meaningful[-10:])
+
+
 async def _read_ffmpeg_stderr(process: asyncio.subprocess.Process) -> str | None:
-    """Read ffmpeg stderr for diagnostics (best-effort, non-blocking)."""
+    """Read ffmpeg stderr for diagnostics (best-effort, non-blocking).
+
+    Returns the stderr content with ffmpeg's boilerplate banner stripped,
+    so log output stays focused on the actual error.
+    """
     if not process or not process.stderr:
         return None
     try:
         data = await asyncio.wait_for(process.stderr.read(), timeout=2.0)
-        return data.decode(errors="replace") if data else None
+        if not data:
+            return None
+        return _summarize_ffmpeg_stderr(data.decode(errors="replace")) or None
     except (TimeoutError, Exception):
         return None
 
@@ -333,11 +366,11 @@ async def generate_rtsp_mjpeg_stream(
             await asyncio.sleep(0.1)
             if process.returncode is not None:
                 stderr = await process.stderr.read()
-                stderr_text = stderr.decode(errors="replace")
+                stderr_text = _summarize_ffmpeg_stderr(stderr.decode(errors="replace"))
                 logger.error("ffmpeg failed immediately (attempt %d): %s", reconnect_count + 1, stderr_text)
                 _spawned_ffmpeg_pids.pop(process.pid, None)
                 if not got_any_frames and reconnect_count == 0:
-                    # First attempt failed immediately — camera is likely unreachable
+                    # First attempt failed immediately - camera is likely unreachable
                     yield (
                         b"--frame\r\n"
                         b"Content-Type: text/plain\r\n\r\n"
@@ -361,7 +394,7 @@ async def generate_rtsp_mjpeg_stream(
                     chunk = await asyncio.wait_for(process.stdout.read(8192), timeout=30.0)
 
                     if not chunk:
-                        # ffmpeg exited — log stderr and break to reconnect
+                        # ffmpeg exited - log stderr and break to reconnect
                         stderr_text = await _read_ffmpeg_stderr(process)
                         if stderr_text:
                             logger.warning("ffmpeg stderr (stream_id=%s): %s", stream_id, stderr_text)
@@ -651,7 +684,7 @@ async def camera_stream(
 @router.api_route("/{printer_id}/camera/stop", methods=["GET", "POST"])
 async def stop_camera_stream(
     printer_id: int,
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.CAMERA_VIEW),
+    _: User | None = RequirePermission(Permission.CAMERA_VIEW),
 ):
     """Stop all active camera streams for a printer.
 
@@ -752,8 +785,12 @@ async def camera_snapshot(
         )
 
     # Create temporary file for the snapshot
-    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
-        temp_path = Path(f.name)
+    import os
+
+    fd, tmp_name = tempfile.mkstemp(suffix=".jpg")
+    os.close(fd)
+    temp_path = Path(tmp_name)
+    temp_path.chmod(0o600)
 
     try:
         success = await capture_camera_frame(
@@ -792,7 +829,7 @@ async def camera_snapshot(
 async def test_camera(
     printer_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.CAMERA_VIEW),
+    _: User | None = RequirePermission(Permission.CAMERA_VIEW),
 ):
     """Test camera connection for a printer.
 
@@ -812,7 +849,7 @@ async def test_camera(
 @router.get("/{printer_id}/camera/status")
 async def camera_status(
     printer_id: int,
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.CAMERA_VIEW),
+    _: User | None = RequirePermission(Permission.CAMERA_VIEW),
 ):
     """Get the status of an active camera stream.
 
@@ -880,7 +917,7 @@ async def test_external_camera(
     url: str,
     camera_type: str,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.CAMERA_VIEW),
+    _: User | None = RequirePermission(Permission.CAMERA_VIEW),
 ):
     """Test external camera connection.
 
@@ -907,7 +944,7 @@ async def check_plate_empty(
     use_external: bool = False,
     include_debug_image: bool = False,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.CAMERA_VIEW),
+    _: User | None = RequirePermission(Permission.CAMERA_VIEW),
 ):
     """Check if the build plate is empty using camera vision.
 
@@ -1015,7 +1052,7 @@ async def calibrate_plate_detection(
     label: str | None = None,
     use_external: bool = False,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.CAMERA_VIEW),
+    _: User | None = RequirePermission(Permission.CAMERA_VIEW),
 ):
     """Calibrate plate detection by capturing a reference image of the empty plate.
 
@@ -1079,7 +1116,7 @@ async def delete_plate_calibration(
     printer_id: int,
     plate_type: str | None = None,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.CAMERA_VIEW),
+    _: User | None = RequirePermission(Permission.CAMERA_VIEW),
 ):
     """Delete the plate detection calibration for a printer and plate type.
 
@@ -1120,7 +1157,7 @@ async def get_plate_detection_status(
     printer_id: int,
     plate_type: str | None = None,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.CAMERA_VIEW),
+    _: User | None = RequirePermission(Permission.CAMERA_VIEW),
 ):
     """Check plate detection status for a printer and plate type.
 
@@ -1164,7 +1201,7 @@ async def get_plate_detection_status(
 async def get_plate_references(
     printer_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.CAMERA_VIEW),
+    _: User | None = RequirePermission(Permission.CAMERA_VIEW),
 ):
     """Get all calibration references for a printer with metadata.
 
@@ -1228,7 +1265,7 @@ async def update_reference_label(
     index: int,
     label: str,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.CAMERA_VIEW),
+    _: User | None = RequirePermission(Permission.CAMERA_VIEW),
 ):
     """Update the label for a calibration reference."""
     from backend.app.services.plate_detection import PlateDetector, is_plate_detection_available
@@ -1253,7 +1290,7 @@ async def delete_reference(
     printer_id: int,
     index: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.CAMERA_VIEW),
+    _: User | None = RequirePermission(Permission.CAMERA_VIEW),
 ):
     """Delete a specific calibration reference."""
     from backend.app.services.plate_detection import PlateDetector, is_plate_detection_available
@@ -1276,7 +1313,7 @@ async def delete_reference(
 def _scan_bambu_ffmpeg_pids() -> list[int]:
     """Scan /proc for ffmpeg processes with Bambu RTSP URLs.
 
-    These are definitely ours — no other software connects to rtsp(s)://bblp:.
+    These are definitely ours - no other software connects to rtsp(s)://bblp:.
     This catches orphans that survive app restarts and are not in any tracking dict.
     """
     import os
@@ -1305,11 +1342,11 @@ async def cleanup_orphaned_streams():
     Called periodically from the background task loop in main.py.
 
     Three-layer cleanup:
-    1. /proc scan — finds ALL Bambu ffmpeg processes on the system, even those
+    1. /proc scan - finds ALL Bambu ffmpeg processes on the system, even those
        from previous app sessions. This is the nuclear safety net.
-    2. _spawned_ffmpeg_pids — tracks PIDs spawned this session, catches orphans
+    2. _spawned_ffmpeg_pids - tracks PIDs spawned this session, catches orphans
        that were removed from _active_streams but not killed.
-    3. _active_streams — kills stale entries with no recent frames.
+    3. _active_streams - kills stale entries with no recent frames.
     """
     import os
     import signal
@@ -1321,7 +1358,7 @@ async def cleanup_orphaned_streams():
     # Collect PIDs that are legitimately in-use (active stream, process alive)
     active_pids = {proc.pid for proc in _active_streams.values() if proc.returncode is None}
 
-    # 1. /proc scan — catch ALL orphaned Bambu ffmpeg processes on the system.
+    # 1. /proc scan - catch ALL orphaned Bambu ffmpeg processes on the system.
     #    Any ffmpeg with rtsp(s)://bblp: that is NOT in an active stream is orphaned.
     for pid in _scan_bambu_ffmpeg_pids():
         if pid in active_pids:

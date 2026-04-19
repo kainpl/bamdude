@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.app.core.auth import RequirePermissionIfAuthEnabled
+from backend.app.core.auth import RequirePermission
 from backend.app.core.catalog_defaults import DEFAULT_COLOR_CATALOG, DEFAULT_SPOOL_CATALOG
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -126,7 +126,7 @@ class ColorLookupResult(BaseModel):
 @router.get("/catalog", response_model=list[CatalogEntryResponse])
 async def get_spool_catalog(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_READ),
+    _: User | None = RequirePermission(Permission.INVENTORY_READ),
 ):
     """Get all spool catalog entries."""
     result = await db.execute(select(SpoolCatalogEntry).order_by(SpoolCatalogEntry.name))
@@ -137,7 +137,7 @@ async def get_spool_catalog(
 async def add_catalog_entry(
     entry: CatalogEntryCreate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_UPDATE),
+    _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
     """Add a new spool catalog entry."""
     row = SpoolCatalogEntry(name=entry.name, weight=entry.weight, is_default=False)
@@ -152,7 +152,7 @@ async def update_catalog_entry(
     entry_id: int,
     entry: CatalogEntryUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_UPDATE),
+    _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
     """Update a spool catalog entry."""
     result = await db.execute(select(SpoolCatalogEntry).where(SpoolCatalogEntry.id == entry_id))
@@ -170,7 +170,7 @@ async def update_catalog_entry(
 async def delete_catalog_entry(
     entry_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_UPDATE),
+    _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
     """Delete a spool catalog entry."""
     result = await db.execute(select(SpoolCatalogEntry).where(SpoolCatalogEntry.id == entry_id))
@@ -186,7 +186,7 @@ async def delete_catalog_entry(
 async def bulk_delete_catalog_entries(
     data: BulkDeleteIdsRequest,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_UPDATE),
+    _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
     """Delete multiple spool catalog entries by ID."""
     if not data.ids:
@@ -202,7 +202,7 @@ async def bulk_delete_catalog_entries(
 @router.post("/catalog/reset")
 async def reset_spool_catalog(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_UPDATE),
+    _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
     """Reset spool catalog to defaults."""
     await db.execute(select(SpoolCatalogEntry))  # ensure table loaded
@@ -223,7 +223,7 @@ async def reset_spool_catalog(
 @router.get("/colors", response_model=list[ColorEntryResponse])
 async def get_color_catalog(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_READ),
+    _: User | None = RequirePermission(Permission.INVENTORY_READ),
 ):
     """Get all color catalog entries."""
     result = await db.execute(
@@ -234,11 +234,49 @@ async def get_color_catalog(
     return list(result.scalars().all())
 
 
+@router.get("/colors/map")
+async def get_color_name_map(
+    db: AsyncSession = Depends(get_db),
+):
+    """Compact {hex: name} map for frontend color-name resolution.
+
+    Not gated on INVENTORY_READ - every page that renders a spool color needs
+    this, including read-only views available to users without inventory access.
+    Normalized to lowercase 6-char hex without '#'. When multiple catalog entries
+    share the same hex (different materials or manufacturers), Bambu Lab wins,
+    then default entries, then the first encountered.
+    """
+    result = await db.execute(
+        select(
+            ColorCatalogEntry.hex_color,
+            ColorCatalogEntry.color_name,
+            ColorCatalogEntry.manufacturer,
+            ColorCatalogEntry.is_default,
+        )
+    )
+    mapping: dict[str, tuple[str, int]] = {}  # hex → (name, priority); higher priority wins
+    for hex_color, color_name, manufacturer, is_default in result.all():
+        if not hex_color or not color_name:
+            continue
+        key = hex_color.lstrip("#").lower()[:6]
+        if len(key) != 6:
+            continue
+        priority = 0
+        if manufacturer and manufacturer.strip().lower() == "bambu lab":
+            priority += 2
+        if is_default:
+            priority += 1
+        existing = mapping.get(key)
+        if existing is None or priority > existing[1]:
+            mapping[key] = (color_name, priority)
+    return {"colors": {k: v[0] for k, v in mapping.items()}}
+
+
 @router.post("/colors", response_model=ColorEntryResponse)
 async def add_color_entry(
     entry: ColorEntryCreate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_UPDATE),
+    _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
     """Add a new color catalog entry."""
     row = ColorCatalogEntry(
@@ -259,7 +297,7 @@ async def update_color_entry(
     entry_id: int,
     entry: ColorEntryUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_UPDATE),
+    _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
     """Update a color catalog entry."""
     result = await db.execute(select(ColorCatalogEntry).where(ColorCatalogEntry.id == entry_id))
@@ -279,7 +317,7 @@ async def update_color_entry(
 async def delete_color_entry(
     entry_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_UPDATE),
+    _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
     """Delete a color catalog entry."""
     result = await db.execute(select(ColorCatalogEntry).where(ColorCatalogEntry.id == entry_id))
@@ -295,7 +333,7 @@ async def delete_color_entry(
 async def bulk_delete_color_entries(
     data: BulkDeleteIdsRequest,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_UPDATE),
+    _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
     """Delete multiple color catalog entries by ID."""
     if not data.ids:
@@ -311,7 +349,7 @@ async def bulk_delete_color_entries(
 @router.post("/colors/reset")
 async def reset_color_catalog(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_UPDATE),
+    _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
     """Reset color catalog to defaults."""
     result = await db.execute(select(ColorCatalogEntry))
@@ -337,7 +375,7 @@ async def lookup_color(
     color_name: str,
     material: str | None = None,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_READ),
+    _: User | None = RequirePermission(Permission.INVENTORY_READ),
 ):
     """Look up a color by manufacturer and color name."""
     query = select(ColorCatalogEntry).where(
@@ -359,7 +397,7 @@ async def search_colors(
     manufacturer: str | None = None,
     material: str | None = None,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_READ),
+    _: User | None = RequirePermission(Permission.INVENTORY_READ),
 ):
     """Search colors by manufacturer and/or material."""
     query = select(ColorCatalogEntry)
@@ -374,7 +412,7 @@ async def search_colors(
 
 @router.post("/colors/sync")
 async def sync_from_filamentcolors(
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_UPDATE),
+    _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
     """Sync colors from FilamentColors.xyz API with progress streaming."""
 
@@ -485,7 +523,7 @@ async def sync_from_filamentcolors(
 async def list_spools(
     include_archived: bool = False,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_READ),
+    _: User | None = RequirePermission(Permission.INVENTORY_READ),
 ):
     """List all spools, excluding archived by default."""
     query = select(Spool).options(selectinload(Spool.k_profiles))
@@ -500,7 +538,7 @@ async def list_spools(
 async def get_spool(
     spool_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_READ),
+    _: User | None = RequirePermission(Permission.INVENTORY_READ),
 ):
     """Get a single spool with k_profiles."""
     result = await db.execute(select(Spool).options(selectinload(Spool.k_profiles)).where(Spool.id == spool_id))
@@ -514,7 +552,7 @@ async def get_spool(
 async def create_spool(
     spool_data: SpoolCreate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_UPDATE),
+    _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
     """Create a new spool."""
     spool = Spool(**spool_data.model_dump())
@@ -529,7 +567,7 @@ async def create_spool(
 async def bulk_create_spools(
     data: SpoolBulkCreate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_UPDATE),
+    _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
     """Create multiple identical spools."""
     spools = []
@@ -548,7 +586,7 @@ async def update_spool(
     spool_id: int,
     spool_data: SpoolUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_UPDATE),
+    _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
     """Update a spool."""
     result = await db.execute(select(Spool).where(Spool.id == spool_id))
@@ -573,7 +611,7 @@ async def update_spool(
 async def delete_spool(
     spool_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_UPDATE),
+    _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
     """Hard delete a spool."""
     result = await db.execute(select(Spool).where(Spool.id == spool_id))
@@ -590,7 +628,7 @@ async def delete_spool(
 async def archive_spool(
     spool_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_UPDATE),
+    _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
     """Soft-delete a spool by setting archived_at."""
     from datetime import datetime, timezone
@@ -610,7 +648,7 @@ async def archive_spool(
 async def restore_spool(
     spool_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_UPDATE),
+    _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
     """Restore an archived spool."""
     result = await db.execute(select(Spool).where(Spool.id == spool_id))
@@ -631,7 +669,7 @@ async def restore_spool(
 async def list_k_profiles(
     spool_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_READ),
+    _: User | None = RequirePermission(Permission.INVENTORY_READ),
 ):
     """List K-profiles for a spool."""
     result = await db.execute(select(SpoolKProfile).where(SpoolKProfile.spool_id == spool_id))
@@ -643,7 +681,7 @@ async def replace_k_profiles(
     spool_id: int,
     profiles: list[SpoolKProfileBase],
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_UPDATE),
+    _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
     """Replace all K-profiles for a spool (batch save)."""
     # Verify spool exists
@@ -676,7 +714,7 @@ async def replace_k_profiles(
 async def list_assignments(
     printer_id: int | None = None,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_VIEW_ASSIGNMENTS),
+    _: User | None = RequirePermission(Permission.INVENTORY_VIEW_ASSIGNMENTS),
 ):
     """List spool assignments, optionally filtered by printer."""
     from backend.app.services.printer_manager import printer_manager
@@ -741,7 +779,7 @@ async def list_assignments(
 async def assign_spool(
     data: SpoolAssignmentCreate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_UPDATE),
+    _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
     """Assign a spool to an AMS slot and auto-configure via MQTT."""
     from backend.app.services.printer_manager import printer_manager
@@ -853,10 +891,10 @@ async def assign_spool(
 
             # Resolve tray_info_idx + setting_id for the MQTT command.
             # Three sources in priority order:
-            #   1. Cloud profile (if cloud connected) — resolve filament_id
+            #   1. Cloud profile (if cloud connected) - resolve filament_id
             #      from setting_id via cloud API
-            #   2. Local profile — use generic filament ID for material
-            #   3. Hard-coded fallback — generic Bambu filament IDs
+            #   2. Local profile - use generic filament ID for material
+            #   3. Hard-coded fallback - generic Bambu filament IDs
             tray_info_idx = ""
             setting_id = ""
             sf = spool.slicer_filament or ""
@@ -865,7 +903,7 @@ async def assign_spool(
                 # Check if it's a cloud preset (GFS*, PFUS*, or GF* official)
                 base_sf = sf.split("_")[0] if "_" in sf else sf
                 if base_sf.startswith("GFS") or base_sf.startswith("PFUS"):
-                    # Cloud setting_id — need to resolve real filament_id
+                    # Cloud setting_id - need to resolve real filament_id
                     # Use base_sf (version suffix stripped) for cloud API + MQTT
                     setting_id = base_sf
                     try:
@@ -901,7 +939,7 @@ async def assign_spool(
                         logger.warning("Spool assign: cloud lookup failed for %r: %s", sf, e)
 
                     if not tray_info_idx:
-                        # Cloud lookup failed — use normalize as fallback
+                        # Cloud lookup failed - use normalize as fallback
                         tray_info_idx, setting_id = normalize_slicer_filament(sf)
                 elif base_sf.startswith("GF"):
                     # Official Bambu filament_id (e.g. "GFL05")
@@ -909,7 +947,7 @@ async def assign_spool(
                     logger.info("Spool assign: using official filament_id=%r", tray_info_idx)
 
                 else:
-                    # Could be a local preset ID or material type — try local DB
+                    # Could be a local preset ID or material type - try local DB
                     try:
                         local_id = int(sf)
                         from backend.app.models.local_preset import LocalPreset as LP
@@ -931,7 +969,7 @@ async def assign_spool(
                                 tray_info_idx,
                             )
                     except (ValueError, TypeError):
-                        # Not a numeric ID — treat as material type string
+                        # Not a numeric ID - treat as material type string
                         tray_info_idx, setting_id = normalize_slicer_filament(sf)
 
             # Cross-check: the cloud API returns the base filament_id for
@@ -1052,7 +1090,7 @@ async def assign_spool(
                         preset_id_to_save = f"local_{local_id}"
                         preset_source = "local"
                     except (ValueError, TypeError):
-                        # Cloud or builtin preset — convert filament_id to setting_id
+                        # Cloud or builtin preset - convert filament_id to setting_id
                         preset_id_to_save = filament_id_to_setting_id(tray_info_idx) if tray_info_idx else setting_id
                 else:
                     preset_id_to_save = filament_id_to_setting_id(tray_info_idx) if tray_info_idx else ""
@@ -1123,7 +1161,7 @@ async def unassign_spool(
     ams_id: int,
     tray_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_UPDATE),
+    _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
     """Unassign a spool from an AMS slot."""
     result = await db.execute(
@@ -1183,7 +1221,7 @@ async def link_tag_to_spool(
     spool_id: int,
     data: LinkTagRequest,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_UPDATE),
+    _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
     """Link an RFID tag_uid/tray_uuid to an existing spool."""
     result = await db.execute(select(Spool).options(selectinload(Spool.k_profiles)).where(Spool.id == spool_id))
@@ -1263,7 +1301,7 @@ async def get_spool_usage_history(
     spool_id: int,
     limit: int = 50,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_READ),
+    _: User | None = RequirePermission(Permission.INVENTORY_READ),
 ):
     """Get usage history for a specific spool."""
     from backend.app.models.spool_usage_history import SpoolUsageHistory
@@ -1287,7 +1325,7 @@ async def get_all_usage_history(
     limit: int = 100,
     printer_id: int | None = None,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_READ),
+    _: User | None = RequirePermission(Permission.INVENTORY_READ),
 ):
     """Get global usage history, optionally filtered by printer."""
     from backend.app.models.spool_usage_history import SpoolUsageHistory
@@ -1303,7 +1341,7 @@ async def get_all_usage_history(
 async def clear_spool_usage_history(
     spool_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_UPDATE),
+    _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
     """Clear usage history for a spool."""
     from backend.app.models.spool_usage_history import SpoolUsageHistory
@@ -1321,13 +1359,13 @@ async def clear_spool_usage_history(
 @router.post("/sync-ams-weights")
 async def sync_weights_from_ams(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_UPDATE),
+    _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
     """Force-sync spool weight_used from live AMS remain% data.
 
     Overwrites the database weight_used for every assigned spool using the
     current AMS remain% from connected printers.  This is a manual recovery
-    tool — it bypasses the normal "only increase" guard.
+    tool - it bypasses the normal "only increase" guard.
     """
     from backend.app.services.printer_manager import printer_manager
 

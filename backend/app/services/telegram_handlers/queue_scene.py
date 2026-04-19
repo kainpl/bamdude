@@ -1,4 +1,4 @@
-"""Add to Queue scene — select file → select target → confirm."""
+"""Add to Queue scene - select file → select target → confirm."""
 
 from __future__ import annotations
 
@@ -108,7 +108,7 @@ async def cb_qadd_page(callback: CallbackQuery, state: FSMContext, tg_chat: Tele
 
 @router.callback_query(F.data.startswith("qadd:file:"))
 async def cb_qadd_select_file(callback: CallbackQuery, state: FSMContext, tg_chat: TelegramChat | None = None) -> None:
-    """File selected — show target selection."""
+    """File selected - show target selection."""
     lang = await get_language()
     file_id = int(callback.data.split(":")[2])
     await callback.answer()
@@ -251,7 +251,7 @@ async def _show_confirm(callback: CallbackQuery, state: FSMContext, lang: str) -
 
 @router.callback_query(F.data == "qadd:confirm")
 async def cb_qadd_confirm(callback: CallbackQuery, state: FSMContext, tg_chat: TelegramChat | None = None) -> None:
-    """Confirm — create queue item."""
+    """Confirm - create queue item."""
     lang = await get_language()
 
     data = await state.get_data()

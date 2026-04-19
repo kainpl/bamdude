@@ -13,7 +13,7 @@ from backend.app.services.spoolman import AMSTray, SpoolmanClient
 
 
 class TestIsBambuLabSpool:
-    """Tests for is_bambu_lab_spool — detects BL spools via RFID hardware identifiers only."""
+    """Tests for is_bambu_lab_spool - detects BL spools via RFID hardware identifiers only."""
 
     @pytest.fixture
     def client(self):
@@ -41,7 +41,7 @@ class TestIsBambuLabSpool:
         assert client.is_bambu_lab_spool("", tag_uid="") is False
 
     def test_tray_info_idx_ignored(self, client):
-        """tray_info_idx is NOT a reliable BL indicator — third-party spools
+        """tray_info_idx is NOT a reliable BL indicator - third-party spools
         using Bambu generic presets also have GF-prefixed tray_info_idx values."""
         # Third-party spool with Bambu preset but no RFID identifiers
         assert client.is_bambu_lab_spool("", tray_info_idx="GFA00") is False
@@ -49,7 +49,7 @@ class TestIsBambuLabSpool:
         assert client.is_bambu_lab_spool("", tray_info_idx="GFSA02_04") is False
 
     def test_tray_info_idx_with_valid_uuid_returns_true(self, client):
-        """BL spool with both RFID UUID and preset ID — detected by UUID."""
+        """BL spool with both RFID UUID and preset ID - detected by UUID."""
         assert (
             client.is_bambu_lab_spool(
                 "A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4",

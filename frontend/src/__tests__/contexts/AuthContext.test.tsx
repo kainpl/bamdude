@@ -1,5 +1,9 @@
 /**
  * Tests for the AuthContext permission helpers.
+ *
+ * The opt-in "auth disabled" mode was removed - the system always requires
+ * authentication. Tests for the old behavior (everyone is admin, all
+ * permissions granted) were deleted.
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
@@ -36,150 +40,75 @@ function createWrapper() {
 }
 
 describe('AuthContext', () => {
-  describe('when auth is disabled', () => {
+  describe('when setup is required (no admin yet)', () => {
     beforeEach(() => {
+      localStorage.removeItem('auth_token');
       server.use(
         http.get('/api/v1/auth/status', () => {
           return HttpResponse.json({
-            auth_enabled: false,
-            requires_setup: false,
-          });
-        })
-      );
-    });
-
-    it('authEnabled is false', async () => {
-      const { result } = renderHook(() => useAuth(), {
-        wrapper: createWrapper(),
-      });
-
-      await waitFor(() => {
-        expect(result.current.authEnabled).toBe(false);
-      });
-    });
-
-    it('hasPermission returns true for any permission when auth disabled', async () => {
-      const { result } = renderHook(() => useAuth(), {
-        wrapper: createWrapper(),
-      });
-
-      await waitFor(() => {
-        expect(result.current.authEnabled).toBe(false);
-      });
-
-      // When auth is disabled, all permissions should be granted
-      expect(result.current.hasPermission('printers:read' as Permission)).toBe(true);
-      expect(result.current.hasPermission('settings:update' as Permission)).toBe(true);
-      expect(result.current.hasPermission('users:delete' as Permission)).toBe(true);
-    });
-
-    it('hasAnyPermission returns true for any permissions when auth disabled', async () => {
-      const { result } = renderHook(() => useAuth(), {
-        wrapper: createWrapper(),
-      });
-
-      await waitFor(() => {
-        expect(result.current.authEnabled).toBe(false);
-      });
-
-      expect(
-        result.current.hasAnyPermission('printers:read' as Permission, 'settings:update' as Permission)
-      ).toBe(true);
-    });
-
-    it('hasAllPermissions returns true for any permissions when auth disabled', async () => {
-      const { result } = renderHook(() => useAuth(), {
-        wrapper: createWrapper(),
-      });
-
-      await waitFor(() => {
-        expect(result.current.authEnabled).toBe(false);
-      });
-
-      expect(
-        result.current.hasAllPermissions('printers:read' as Permission, 'settings:update' as Permission)
-      ).toBe(true);
-    });
-  });
-
-  describe('when auth requires setup', () => {
-    beforeEach(() => {
-      server.use(
-        http.get('/api/v1/auth/status', () => {
-          return HttpResponse.json({
-            auth_enabled: false,
+            auth_enabled: true,
             requires_setup: true,
           });
-        })
+        }),
       );
     });
 
-    it('requiresSetup is true', async () => {
+    it('requiresSetup is true and user is null', async () => {
       const { result } = renderHook(() => useAuth(), {
         wrapper: createWrapper(),
       });
 
       await waitFor(() => {
-        expect(result.current.requiresSetup).toBe(true);
+        expect(result.current.loading).toBe(false);
       });
+
+      expect(result.current.requiresSetup).toBe(true);
+      expect(result.current.user).toBeNull();
     });
   });
 
-  describe('when auth is enabled but not logged in', () => {
+  describe('when auth is required but user is not logged in', () => {
     beforeEach(() => {
-      // Clear any stored token
       localStorage.removeItem('auth_token');
-
       server.use(
         http.get('/api/v1/auth/status', () => {
           return HttpResponse.json({
             auth_enabled: true,
             requires_setup: false,
           });
-        })
+        }),
       );
     });
 
-    it('user is null when not logged in', async () => {
+    it('user is null', async () => {
       const { result } = renderHook(() => useAuth(), {
         wrapper: createWrapper(),
       });
 
       await waitFor(() => {
-        expect(result.current.authEnabled).toBe(true);
+        expect(result.current.loading).toBe(false);
       });
 
-      // User should be null when not logged in
       expect(result.current.user).toBeNull();
+      expect(result.current.authEnabled).toBe(true);
     });
 
-    it('hasPermission returns false when not logged in', async () => {
+    it('hasPermission returns false without a user', async () => {
       const { result } = renderHook(() => useAuth(), {
         wrapper: createWrapper(),
       });
 
       await waitFor(() => {
-        expect(result.current.authEnabled).toBe(true);
+        expect(result.current.loading).toBe(false);
       });
 
-      // Without a user, permissions should be denied
       expect(result.current.hasPermission('printers:read' as Permission)).toBe(false);
-    });
-  });
-
-  describe('CVE-2026-25505 fix: auth disabled grants all access', () => {
-    beforeEach(() => {
-      server.use(
-        http.get('/api/v1/auth/status', () => {
-          return HttpResponse.json({
-            auth_enabled: false,
-            requires_setup: false,
-          });
-        })
-      );
+      expect(result.current.hasAnyPermission('printers:read' as Permission)).toBe(false);
+      expect(result.current.hasAllPermissions('printers:read' as Permission)).toBe(false);
+      expect(result.current.isAdmin).toBe(false);
     });
 
-    it('isAdmin is true when auth is disabled', async () => {
+    it('canModify returns false without a user', async () => {
       const { result } = renderHook(() => useAuth(), {
         wrapper: createWrapper(),
       });
@@ -188,77 +117,8 @@ describe('AuthContext', () => {
         expect(result.current.loading).toBe(false);
       });
 
-      // When auth disabled, user is treated as admin
-      expect(result.current.isAdmin).toBe(true);
-    });
-
-    it('canModify allows all modifications when auth disabled', async () => {
-      const { result } = renderHook(() => useAuth(), {
-        wrapper: createWrapper(),
-      });
-
-      await waitFor(() => {
-        expect(result.current.loading).toBe(false);
-      });
-
-      // All canModify checks should pass when auth is disabled
-      expect(result.current.canModify('queue', 'update', 1)).toBe(true);
-      expect(result.current.canModify('queue', 'update', 999)).toBe(true);
-      expect(result.current.canModify('queue', 'update', null)).toBe(true);
-      expect(result.current.canModify('archives', 'delete', 1)).toBe(true);
-      expect(result.current.canModify('library', 'update', null)).toBe(true);
-    });
-
-    it('all permissions are granted when auth is disabled', async () => {
-      const { result } = renderHook(() => useAuth(), {
-        wrapper: createWrapper(),
-      });
-
-      await waitFor(() => {
-        expect(result.current.loading).toBe(false);
-      });
-
-      // All permission checks should pass
-      expect(result.current.hasPermission('archives:read' as Permission)).toBe(true);
-      expect(result.current.hasPermission('archives:delete_all' as Permission)).toBe(true);
-      expect(result.current.hasPermission('settings:update' as Permission)).toBe(true);
-      expect(result.current.hasPermission('api_keys:create' as Permission)).toBe(true);
-      expect(result.current.hasPermission('groups:delete' as Permission)).toBe(true);
-    });
-
-    it('hasAnyPermission returns true for protected permissions', async () => {
-      const { result } = renderHook(() => useAuth(), {
-        wrapper: createWrapper(),
-      });
-
-      await waitFor(() => {
-        expect(result.current.loading).toBe(false);
-      });
-
-      expect(
-        result.current.hasAnyPermission(
-          'api_keys:create' as Permission,
-          'groups:delete' as Permission
-        )
-      ).toBe(true);
-    });
-
-    it('hasAllPermissions returns true for any combination', async () => {
-      const { result } = renderHook(() => useAuth(), {
-        wrapper: createWrapper(),
-      });
-
-      await waitFor(() => {
-        expect(result.current.loading).toBe(false);
-      });
-
-      expect(
-        result.current.hasAllPermissions(
-          'settings:update' as Permission,
-          'api_keys:create' as Permission,
-          'groups:delete' as Permission
-        )
-      ).toBe(true);
+      expect(result.current.canModify('queue', 'update', 1)).toBe(false);
+      expect(result.current.canModify('archives', 'delete', null)).toBe(false);
     });
   });
 });

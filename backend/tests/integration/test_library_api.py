@@ -945,8 +945,13 @@ class TestLibraryPermissions:
         db_session.add(settings)
         await db_session.commit()
 
-        # Request without token should fail
-        response = await async_client.get("/api/v1/library/files")
+        # Request without token should fail. async_client carries a default
+        # admin bearer token from conftest; explicitly clear it to exercise
+        # the unauthenticated path.
+        response = await async_client.get(
+            "/api/v1/library/files",
+            headers={"Authorization": ""},
+        )
         assert response.status_code == 401
 
     @pytest.mark.asyncio

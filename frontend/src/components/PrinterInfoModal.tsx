@@ -59,7 +59,7 @@ export function PrinterInfoModal({ printer, status, totalPrintHours, onClose }: 
   // Model
   rows.push({
     label: t('printers.model'),
-    value: printer.model ?? '—',
+    value: printer.model ?? '-',
   });
 
   // Connection Status
@@ -142,7 +142,7 @@ export function PrinterInfoModal({ printer, status, totalPrintHours, onClose }: 
   // Firmware
   rows.push({
     label: t('printers.firmware'),
-    value: status?.firmware_version ?? '—',
+    value: status?.firmware_version ?? '-',
   });
 
   // Developer Mode
@@ -183,19 +183,6 @@ export function PrinterInfoModal({ printer, status, totalPrintHours, onClose }: 
     });
   }
 
-  // Auto-Archive
-  rows.push({
-    label: t('printers.autoArchive'),
-    value: (
-      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
-        printer.auto_archive
-          ? 'bg-bambu-green/20 text-bambu-green'
-          : 'bg-bambu-dark-tertiary text-bambu-gray'
-      }`}>
-        {printer.auto_archive ? t('printers.enabled') : t('printers.disabled')}
-      </span>
-    ),
-  });
 
   // Cleanup After Print
   rows.push({

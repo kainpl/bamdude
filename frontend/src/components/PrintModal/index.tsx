@@ -19,13 +19,21 @@ import { PlateSelector } from './PlateSelector';
 import { PrinterSelector } from './PrinterSelector';
 import { PrintOptionsPanel } from './PrintOptions';
 import { ScheduleOptionsPanel } from './ScheduleOptions';
+import { SwapMacrosPanel } from './SwapMacros';
 import type {
   PrintModalProps,
   PrintOptions,
   ScheduleOptions,
   ScheduleType,
+  SwapMacroEvent,
+  SwapMacrosOptions,
 } from './types';
-import { DEFAULT_PRINT_OPTIONS, DEFAULT_SCHEDULE_OPTIONS } from './types';
+import {
+  DEFAULT_PRINT_OPTIONS,
+  DEFAULT_SCHEDULE_OPTIONS,
+  DEFAULT_SWAP_MACROS_OPTIONS,
+  SWAP_MACRO_EVENTS,
+} from './types';
 
 /**
  * Unified PrintModal component that handles three modes:
@@ -45,6 +53,7 @@ export function PrintModal({
   initialSelectedPrinterIds,
   onClose,
   onSuccess,
+  projectId,
 }: PrintModalProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -89,12 +98,24 @@ export function PrintModal({
       return {
         bed_levelling: queueItem.bed_levelling ?? DEFAULT_PRINT_OPTIONS.bed_levelling,
         flow_cali: queueItem.flow_cali ?? DEFAULT_PRINT_OPTIONS.flow_cali,
-        vibration_cali: queueItem.vibration_cali ?? DEFAULT_PRINT_OPTIONS.vibration_cali,
         layer_inspect: queueItem.layer_inspect ?? DEFAULT_PRINT_OPTIONS.layer_inspect,
         timelapse: queueItem.timelapse ?? DEFAULT_PRINT_OPTIONS.timelapse,
+        mesh_mode_fast_check: queueItem.mesh_mode_fast_check ?? DEFAULT_PRINT_OPTIONS.mesh_mode_fast_check,
       };
     }
     return DEFAULT_PRINT_OPTIONS;
+  });
+
+  const [swapMacros, setSwapMacros] = useState<SwapMacrosOptions>(() => {
+    if (mode === 'edit-queue-item' && queueItem) {
+      const execute = queueItem.execute_swap_macros ?? false;
+      const storedEvents = (queueItem.swap_macro_events ?? null) as SwapMacroEvent[] | null;
+      return {
+        execute,
+        events: storedEvents ?? (execute ? [...SWAP_MACRO_EVENTS] : []),
+      };
+    }
+    return DEFAULT_SWAP_MACROS_OPTIONS;
   });
 
   const [scheduleOptions, setScheduleOptions] = useState<ScheduleOptions>(() => {
@@ -147,6 +168,9 @@ export function PrintModal({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitProgress, setSubmitProgress] = useState({ current: 0, total: 0 });
 
+  // Quantity (batch). Only exposed for reprint + add-to-queue modes.
+  const [quantity, setQuantity] = useState<number>(1);
+
   const [filamentWarningItems, setFilamentWarningItems] = useState<FilamentWarningItem[] | null>(null);
 
   // Track which printers have had the "Expand custom mapping by default" setting applied
@@ -195,6 +219,9 @@ export function PrintModal({
 
   // Get sliced_for_model from archive or library file
   const slicedForModel = archiveDetails?.sliced_for_model || libraryFileDetails?.sliced_for_model || null;
+
+  // Check swap compatibility
+  const swapCompatible = archiveDetails?.swap_compatible || libraryFileDetails?.swap_compatible || false;
 
   // Fetch plates for archives
   const { data: archivePlatesData, isError: archivePlatesError } = useQuery({
@@ -484,6 +511,22 @@ export function PrintModal({
       return amsMapping;
     };
 
+    // Swap-macro payload is only meaningful on a swap-enabled printer AND
+    // when the source file doesn't already ship with swap macros baked in
+    // (swap_compatible → third-party tooling embedded them in the gcode).
+    // For anything else we emit (false, null) so stored state never implies
+    // macros will fire where they can't or would double-fire.
+    const getSwapPayloadForPrinter = (printerId: number): {
+      execute_swap_macros: boolean;
+      swap_macro_events: string[] | null;
+    } => {
+      const printer = printers?.find(p => p.id === printerId);
+      if (swapCompatible || !printer?.swap_mode_enabled || !swapMacros.execute || swapMacros.events.length === 0) {
+        return { execute_swap_macros: false, swap_macro_events: null };
+      }
+      return { execute_swap_macros: true, swap_macro_events: swapMacros.events };
+    };
+
     // Common queue data for add-to-queue and edit modes
     const getQueueData = (printerId: number, plateOverride?: number | null): PrintQueueItemCreate => ({
       queue_id: printerId,  // queue_id == printer_id (always per-printer queue)
@@ -498,6 +541,9 @@ export function PrintModal({
         ? new Date(scheduleOptions.scheduledTime).toISOString()
         : undefined,
       ...printOptions,
+      ...getSwapPayloadForPrinter(printerId),
+      quantity: mode === 'edit-queue-item' ? 1 : quantity,
+      project_id: projectId,
     });
 
     // Loop through plates × printers
@@ -514,19 +560,27 @@ export function PrintModal({
           if (mode === 'reprint') {
             // Reprint mode - start print immediately (single plate only, multi-select not available)
             const printerMapping = getMappingForPrinter(printerId);
+            const swapPayload = getSwapPayloadForPrinter(printerId);
             if (isLibraryFile) {
               await api.printLibraryFile(libraryFileId!, printerId, {
                 plate_id: selectedPlate ?? undefined,
                 plate_name: selectedPlateName,
                 ams_mapping: printerMapping,
                 ...printOptions,
+                ...swapPayload,
+                quantity,
+                project_id: projectId,
               });
             } else {
+              // project_id is intentionally omitted here: reprintArchive targets an existing
+              // archive that already carries its own project association from the original print.
               await api.reprintArchive(archiveId!, printerId, {
                 plate_id: selectedPlate ?? undefined,
                 plate_name: selectedPlateName,
                 ams_mapping: printerMapping,
                 ...printOptions,
+                ...swapPayload,
+                quantity,
               });
             }
           } else if (mode === 'edit-queue-item' && progressCounter === 1) {
@@ -542,6 +596,7 @@ export function PrintModal({
                 ? new Date(scheduleOptions.scheduledTime).toISOString()
                 : null,
               ...printOptions,
+              ...getSwapPayloadForPrinter(printerId),
             };
             await updateQueueMutation.mutateAsync(updateData);
           } else {
@@ -561,7 +616,7 @@ export function PrintModal({
 
     setIsSubmitting(false);
 
-    // Show result toast (skip for reprint mode — the dispatch toast handles it)
+    // Show result toast (skip for reprint mode - the dispatch toast handles it)
     if (results.failed === 0) {
       if (mode !== 'reprint') {
         if (mode === 'edit-queue-item') {
@@ -724,7 +779,7 @@ export function PrintModal({
               multiSelect={mode === 'add-to-queue'}
             />
 
-            {/* Printer selection with per-printer mapping — hidden when printer is pre-selected via props */}
+            {/* Printer selection with per-printer mapping - hidden when printer is pre-selected via props */}
             {!initialSelectedPrinterIds?.length && (
               <PrinterSelector
                 printers={printers || []}
@@ -739,6 +794,7 @@ export function PrintModal({
                 onAutoConfigurePrinter={multiPrinterMapping.autoConfigurePrinter}
                 onUpdatePrinterConfig={multiPrinterMapping.updatePrinterConfig}
                 slicedForModel={slicedForModel}
+                swapCompatible={swapCompatible}
               />
             )}
 
@@ -784,6 +840,49 @@ export function PrintModal({
             {/* Print options */}
             {(mode === 'reprint' || effectivePrinterCount > 0) && (
               <PrintOptionsPanel options={printOptions} onChange={setPrintOptions} defaultExpanded={!!initialSelectedPrinterIds?.length} />
+            )}
+
+            {/* Swap-mode macros — only relevant when at least one selected
+                printer has swap mode enabled AND the source file does not
+                already carry swap macros baked in by third-party tooling
+                (swap_compatible flag). Hidden completely otherwise. */}
+            {!swapCompatible && selectedPrinters.some(id => printers?.find(p => p.id === id)?.swap_mode_enabled) && (
+              <SwapMacrosPanel options={swapMacros} onChange={setSwapMacros} />
+            )}
+
+            {/* Quantity (batch) - not for edit mode */}
+            {mode !== 'edit-queue-item' && effectivePrinterCount > 0 && (
+              <div className="mb-4 flex items-center justify-between bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg p-3">
+                <div>
+                  <div className="text-sm text-white font-medium">{t('printModal.quantity')}</div>
+                  <div className="text-xs text-bambu-gray">{t('printModal.quantityHint')}</div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setQuantity(q => Math.max(1, q - 1))}
+                    disabled={quantity <= 1}
+                    className="w-8 h-8 rounded bg-bambu-dark border border-bambu-dark-tertiary text-white hover:border-bambu-green disabled:opacity-40"
+                  >−</button>
+                  <input
+                    type="number"
+                    min={1}
+                    max={50}
+                    value={quantity}
+                    onChange={(e) => {
+                      const v = parseInt(e.target.value, 10);
+                      if (Number.isFinite(v)) setQuantity(Math.min(50, Math.max(1, v)));
+                    }}
+                    className="w-14 text-center bg-bambu-dark border border-bambu-dark-tertiary rounded text-white py-1"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setQuantity(q => Math.min(50, q + 1))}
+                    disabled={quantity >= 50}
+                    className="w-8 h-8 rounded bg-bambu-dark border border-bambu-dark-tertiary text-white hover:border-bambu-green disabled:opacity-40"
+                  >+</button>
+                </div>
+              </div>
             )}
 
             {/* Schedule options - only for queue modes */}

@@ -215,7 +215,6 @@ class TestPrintQueueAPI:
             "archive_id": archive.id,
             "bed_levelling": False,
             "flow_cali": True,
-            "vibration_cali": False,
             "layer_inspect": True,
             "timelapse": True,
             "use_ams": False,
@@ -225,7 +224,6 @@ class TestPrintQueueAPI:
         result = response.json()
         assert result["bed_levelling"] is False
         assert result["flow_cali"] is True
-        assert result["vibration_cali"] is False
         assert result["layer_inspect"] is True
         assert result["timelapse"] is True
         assert result["use_ams"] is False
@@ -807,7 +805,6 @@ class TestBulkUpdateEndpoint:
                 "position": 1,
                 "bed_levelling": True,
                 "flow_cali": False,
-                "vibration_cali": True,
             }
             defaults.update(kwargs)
 

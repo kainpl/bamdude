@@ -1,8 +1,7 @@
 """Integration tests for per-user cloud credentials and cloud endpoint permissions.
 
 Regression tests for:
-- Per-user cloud token storage (when auth enabled)
-- Global fallback (when auth disabled)
+- Per-user cloud token storage (auth is always on post-refactor)
 - Cloud endpoints use CLOUD_AUTH permission (not SETTINGS_READ)
 """
 
@@ -97,28 +96,21 @@ class TestPerUserCloudCredentials:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_cloud_status_returns_not_authenticated_by_default(self, async_client: AsyncClient):
-        """Cloud status should show not authenticated when no token is stored."""
-        with patch("backend.app.core.auth.is_auth_enabled", return_value=False):
-            response = await async_client.get("/api/v1/cloud/status")
-            assert response.status_code == 200
-            data = response.json()
-            assert data["is_authenticated"] is False
+        """Cloud status should show not authenticated when no cloud token is stored."""
+        response = await async_client.get("/api/v1/cloud/status")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["is_authenticated"] is False
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_cloud_status_accessible_when_auth_disabled(self, async_client: AsyncClient):
-        """Cloud endpoints should work when auth is disabled (global fallback)."""
-        with patch("backend.app.core.auth.is_auth_enabled", return_value=False):
-            response = await async_client.get("/api/v1/cloud/status")
-            assert response.status_code == 200
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_cloud_status_requires_auth_when_enabled(self, async_client: AsyncClient):
-        """Cloud endpoints should require auth when auth is enabled."""
-        with patch("backend.app.core.auth.is_auth_enabled", return_value=True):
-            response = await async_client.get("/api/v1/cloud/status")
-            assert response.status_code == 401
+    async def test_cloud_status_requires_http_auth(self, async_client: AsyncClient):
+        """Cloud endpoints reject requests that carry no JWT or API key."""
+        response = await async_client.get(
+            "/api/v1/cloud/status",
+            headers={"Authorization": ""},
+        )
+        assert response.status_code == 401
 
 
 class TestCloudEndpointPermissions:
@@ -200,21 +192,20 @@ class TestCloudEndpointPermissions:
         Regression test: previously used SETTINGS_READ which blocked users who
         had cloud:auth permission but not settings:read.
         """
-        with patch("backend.app.core.auth.is_auth_enabled", return_value=True):
-            # User with only settings:read should be denied
-            response = await async_client.get(
-                "/api/v1/cloud/settings",
-                headers={"Authorization": f"Bearer {settings_only_setup}"},
-            )
-            assert response.status_code == 403
+        # User with only settings:read should be denied
+        response = await async_client.get(
+            "/api/v1/cloud/settings",
+            headers={"Authorization": f"Bearer {settings_only_setup}"},
+        )
+        assert response.status_code == 403
 
-            # User with cloud:auth should be allowed (will get 401 since no cloud token,
-            # but NOT 403 — permission check passes)
-            response = await async_client.get(
-                "/api/v1/cloud/settings",
-                headers={"Authorization": f"Bearer {cloud_only_setup}"},
-            )
-            assert response.status_code == 401  # No cloud token, but permission OK
+        # User with cloud:auth should be allowed (will get 401 since no cloud token,
+        # but NOT 403 - permission check passes)
+        response = await async_client.get(
+            "/api/v1/cloud/settings",
+            headers={"Authorization": f"Bearer {cloud_only_setup}"},
+        )
+        assert response.status_code == 401  # No cloud token, but permission OK
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -222,20 +213,19 @@ class TestCloudEndpointPermissions:
         self, async_client: AsyncClient, settings_only_setup, cloud_only_setup
     ):
         """GET /cloud/status should require CLOUD_AUTH."""
-        with patch("backend.app.core.auth.is_auth_enabled", return_value=True):
-            # settings:read only → 403
-            response = await async_client.get(
-                "/api/v1/cloud/status",
-                headers={"Authorization": f"Bearer {settings_only_setup}"},
-            )
-            assert response.status_code == 403
+        # settings:read only → 403
+        response = await async_client.get(
+            "/api/v1/cloud/status",
+            headers={"Authorization": f"Bearer {settings_only_setup}"},
+        )
+        assert response.status_code == 403
 
-            # cloud:auth → 200
-            response = await async_client.get(
-                "/api/v1/cloud/status",
-                headers={"Authorization": f"Bearer {cloud_only_setup}"},
-            )
-            assert response.status_code == 200
+        # cloud:auth → 200
+        response = await async_client.get(
+            "/api/v1/cloud/status",
+            headers={"Authorization": f"Bearer {cloud_only_setup}"},
+        )
+        assert response.status_code == 200
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -243,20 +233,19 @@ class TestCloudEndpointPermissions:
         self, async_client: AsyncClient, settings_only_setup, cloud_only_setup
     ):
         """GET /cloud/fields should require CLOUD_AUTH, not SETTINGS_READ."""
-        with patch("backend.app.core.auth.is_auth_enabled", return_value=True):
-            # settings:read only → 403
-            response = await async_client.get(
-                "/api/v1/cloud/fields",
-                headers={"Authorization": f"Bearer {settings_only_setup}"},
-            )
-            assert response.status_code == 403
+        # settings:read only → 403
+        response = await async_client.get(
+            "/api/v1/cloud/fields",
+            headers={"Authorization": f"Bearer {settings_only_setup}"},
+        )
+        assert response.status_code == 403
 
-            # cloud:auth → 200
-            response = await async_client.get(
-                "/api/v1/cloud/fields",
-                headers={"Authorization": f"Bearer {cloud_only_setup}"},
-            )
-            assert response.status_code == 200
+        # cloud:auth → 200
+        response = await async_client.get(
+            "/api/v1/cloud/fields",
+            headers={"Authorization": f"Bearer {cloud_only_setup}"},
+        )
+        assert response.status_code == 200
 
 
 class TestCloudTokenStorage:

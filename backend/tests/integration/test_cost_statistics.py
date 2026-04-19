@@ -370,7 +370,7 @@ class TestCostCalculationScenarios:
         )
         db_session.add(history_new)
 
-        # Create archive with old SpoolUsageHistory (archive_id NULL — legacy record)
+        # Create archive with old SpoolUsageHistory (archive_id NULL - legacy record)
         archive_old = await archive_factory(
             printer.id,
             print_name="LegacyPrint",

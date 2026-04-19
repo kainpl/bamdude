@@ -13,7 +13,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import settings
 from backend.app.models.archive import PrintArchive
-from backend.app.models.filament import Filament
 from backend.app.models.printer import Printer
 
 logger = logging.getLogger(__name__)
@@ -728,30 +727,33 @@ class ArchiveService:
         return sha256.hexdigest()
 
     async def get_duplicate_hashes_and_names(self) -> tuple[set[str], set[tuple[str, str]]]:
-        """Get all content hashes and (print name, hash) pairs that appear more than once.
+        """Get all effective hashes and (print name, hash) pairs that appear more than once.
 
-        For hashes: returns all hashes with > 1 archive (true duplicates).
-        For name/hash pairs: returns only pairs that have > 1 archive
-                     (i.e., same file archived multiple times, not different files with same name).
+        Uses ``COALESCE(source_content_hash, content_hash)`` as the effective
+        hash so BamDude-patched archives collapse against their original
+        source. External prints (no source hash) fall back to raw content
+        hash — same behaviour as before m009.
 
         Returns a tuple of (duplicate_hashes, duplicate_name_hash_pairs).
         """
         from sqlalchemy import func
 
+        effective_hash = func.coalesce(PrintArchive.source_content_hash, PrintArchive.content_hash)
+
         result = await self.db.execute(
-            select(PrintArchive.content_hash)
+            select(effective_hash)
             .where(PrintArchive.content_hash.isnot(None))
-            .group_by(PrintArchive.content_hash)
+            .group_by(effective_hash)
             .having(func.count(PrintArchive.id) > 1)
         )
         duplicate_hashes = {row[0] for row in result.all()}
 
-        # Find print names that have multiple archives with the SAME hash
+        # Find print names that have multiple archives with the SAME effective hash
         # This avoids marking different files with the same name as duplicates
         result = await self.db.execute(
-            select(func.lower(PrintArchive.print_name), PrintArchive.content_hash)
+            select(func.lower(PrintArchive.print_name), effective_hash)
             .where(PrintArchive.print_name.isnot(None), PrintArchive.content_hash.isnot(None))
-            .group_by(func.lower(PrintArchive.print_name), PrintArchive.content_hash)
+            .group_by(func.lower(PrintArchive.print_name), effective_hash)
             .having(func.count(PrintArchive.id) > 1)
         )
         duplicate_name_hash_pairs = {(row[0], row[1]) for row in result.all()}
@@ -771,13 +773,16 @@ class ArchiveService:
         """
         duplicates = []
 
-        # First, find exact matches by content hash
+        # First, find exact matches by effective hash (source_content_hash or
+        # content_hash). This groups BamDude-patched archives with their
+        # library originals; external prints still dedup by raw content_hash.
         if content_hash:
+            effective_hash = func.coalesce(PrintArchive.source_content_hash, PrintArchive.content_hash)
             result = await self.db.execute(
                 select(PrintArchive)
                 .where(
                     and_(
-                        PrintArchive.content_hash == content_hash,
+                        effective_hash == content_hash,
                         PrintArchive.id != archive_id,
                     )
                 )
@@ -813,8 +818,6 @@ class ArchiveService:
             if makerworld_model_id:
                 # Match by MakerWorld model ID stored in extra_data (same design from MakerWorld)
                 # Use json_extract for SQLite compatibility (astext is PostgreSQL-only)
-                from sqlalchemy import func
-
                 name_conditions.append(
                     func.json_extract(PrintArchive.extra_data, "$.makerworld_model_id") == str(makerworld_model_id)
                 )
@@ -846,6 +849,10 @@ class ArchiveService:
         print_data: dict | None = None,
         created_by_id: int | None = None,
         original_filename: str | None = None,
+        project_id: int | None = None,
+        *,
+        source_content_hash: str | None = None,
+        applied_patches: list[str] | None = None,
     ) -> PrintArchive | None:
         """Archive a 3MF file with metadata.
 
@@ -856,6 +863,10 @@ class ArchiveService:
             created_by_id: User ID who created this archive (optional, for user tracking)
             original_filename: Original human-readable filename (optional, for library files
                 stored with UUID names)
+            source_content_hash: SHA256 of the UNPATCHED source file, when the
+                caller (BamDude dispatch) knows it. None for external prints.
+            applied_patches: Patch identifiers applied by the dispatch pipeline
+                before upload. None for external prints.
         """
         # Verify printer exists if specified
         if printer_id is not None:
@@ -864,21 +875,70 @@ class ArchiveService:
             if not printer:
                 return None
 
-        # Create archive directory structure
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        display_stem = Path(original_filename).stem if original_filename else source_file.stem
-        archive_name = f"{timestamp}_{display_stem}"
-        # Use "unassigned" folder for archives without a printer
+        # Compute content hash from source file (before copying)
+        content_hash = self.compute_file_hash(source_file)
+
+        # External-print fallback: if the caller didn't provide source_content_hash
+        # (i.e. print was initiated outside BamDude), try to link this archive to
+        # an existing chain by looking for any prior archive that has either the
+        # same content_hash (exact bytes on disk) or the same source_content_hash
+        # (this file is itself the original someone patched before). The oldest
+        # match wins — it's closest to the root of the chain.
+        if source_content_hash is None:
+            chain_lookup = await self.db.execute(
+                select(func.coalesce(PrintArchive.source_content_hash, PrintArchive.content_hash))
+                .where(
+                    or_(
+                        PrintArchive.content_hash == content_hash,
+                        PrintArchive.source_content_hash == content_hash,
+                    )
+                )
+                .order_by(PrintArchive.created_at.asc())
+                .limit(1)
+            )
+            chain_hash = chain_lookup.scalar_one_or_none()
+            if chain_hash and chain_hash != content_hash:
+                # Only inherit the chain hash when it actually differs from the
+                # file we just hashed. Setting source == content is redundant
+                # (COALESCE resolves both to the same value anyway).
+                source_content_hash = chain_hash
+
+        effective_hash = source_content_hash or content_hash
+
+        # Check if we already have this file for this printer (dedup within printer).
+        # Uses COALESCE(source_content_hash, content_hash) so patched variants
+        # collapse against their original on the same printer.
         printer_folder = str(printer_id) if printer_id is not None else "unassigned"
-        archive_dir = settings.archive_dir / printer_folder / archive_name
-        archive_dir.mkdir(parents=True, exist_ok=True)
+        existing = await self.db.execute(
+            select(PrintArchive)
+            .where(
+                func.coalesce(PrintArchive.source_content_hash, PrintArchive.content_hash) == effective_hash,
+                PrintArchive.printer_id == printer_id,
+                PrintArchive.file_path.isnot(None),
+            )
+            .limit(1)
+        )
+        existing_archive = existing.scalar_one_or_none()
 
-        # Copy 3MF file
-        dest_file = archive_dir / source_file.name
-        shutil.copy2(source_file, dest_file)
+        # `display_stem` is used below as a fallback for `print_name` when the
+        # 3MF has no name metadata. Hoist it out of the if/else so the reuse
+        # path (existing_archive) also has a valid value.
+        display_stem = Path(original_filename).stem if original_filename else source_file.stem
 
-        # Compute content hash for duplicate detection
-        content_hash = self.compute_file_hash(dest_file)
+        if existing_archive and existing_archive.file_path:
+            # Reuse existing file on disk
+            dest_file = settings.base_dir / existing_archive.file_path
+            archive_dir = dest_file.parent
+            thumbnail_reuse = existing_archive.thumbnail_path
+        else:
+            # Create new archive directory and copy file
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            archive_name = f"{timestamp}_{display_stem}"
+            archive_dir = settings.archive_dir / printer_folder / archive_name
+            archive_dir.mkdir(parents=True, exist_ok=True)
+            dest_file = archive_dir / source_file.name
+            shutil.copy2(source_file, dest_file)
+            thumbnail_reuse = None
 
         # Extract plate number from filename (e.g., "plate_5" from "/data/Metadata/plate_5.gcode")
         plate_number = None
@@ -892,12 +952,13 @@ class ArchiveService:
         parser = ThreeMFParser(dest_file, plate_number=plate_number)
         metadata = parser.parse()
 
-        # Save thumbnail if present
-        thumbnail_path = None
+        # Save thumbnail if present (reuse existing if file was deduped)
+        thumbnail_path = thumbnail_reuse
         if "_thumbnail_data" in metadata:
-            thumb_file = archive_dir / f"thumbnail{metadata['_thumbnail_ext']}"
-            thumb_file.write_bytes(metadata["_thumbnail_data"])
-            thumbnail_path = str(thumb_file.relative_to(settings.base_dir))
+            if not thumbnail_reuse:
+                thumb_file = archive_dir / f"thumbnail{metadata['_thumbnail_ext']}"
+                thumb_file.write_bytes(metadata["_thumbnail_data"])
+                thumbnail_path = str(thumb_file.relative_to(settings.base_dir))
             del metadata["_thumbnail_data"]
             del metadata["_thumbnail_ext"]
 
@@ -910,25 +971,17 @@ class ArchiveService:
         started_at = datetime.now(timezone.utc) if status == "printing" else None
         completed_at = datetime.now(timezone.utc) if status in ("completed", "failed", "archived") else None
 
-        # Calculate cost based on filament usage and type
+        # Calculate initial cost estimate from default setting.
+        # This is a placeholder - usage_tracker.on_print_complete() will overwrite
+        # archive.cost with the actual cost from spool.cost_per_kg later.
         cost = None
         filament_grams = metadata.get("filament_used_grams")
-        filament_type = metadata.get("filament_type")
-        if filament_grams and filament_type:
-            # For multi-material prints, use the first filament type for cost calculation
-            primary_type = filament_type.split(",")[0].strip()
-            # Look up filament cost_per_kg from database
-            filament_result = await self.db.execute(select(Filament).where(Filament.type == primary_type).limit(1))
-            filament = filament_result.scalar_one_or_none()
-            if filament:
-                cost = round((filament_grams / 1000) * filament.cost_per_kg, 2)
-            else:
-                # Use default filament cost from settings
-                from backend.app.api.routes.settings import get_setting
+        if filament_grams:
+            from backend.app.api.routes.settings import get_setting
 
-                default_cost_setting = await get_setting(self.db, "default_filament_cost")
-                default_cost_per_kg = float(default_cost_setting) if default_cost_setting else 25.0
-                cost = round((filament_grams / 1000) * default_cost_per_kg, 2)
+            default_cost_setting = await get_setting(self.db, "default_filament_cost")
+            default_cost_per_kg = float(default_cost_setting) if default_cost_setting else 25.0
+            cost = round((filament_grams / 1000) * default_cost_per_kg, 2)
 
         # Calculate quantity from printable objects count
         # printable_objects is a dict of {identify_id: name} for non-skipped objects
@@ -945,6 +998,8 @@ class ArchiveService:
             file_path=str(dest_file.relative_to(settings.base_dir)),
             file_size=dest_file.stat().st_size,
             content_hash=content_hash,
+            source_content_hash=source_content_hash,
+            applied_patches=json.dumps(applied_patches) if applied_patches else None,
             thumbnail_path=thumbnail_path,
             print_name=metadata.get("print_name") or display_stem,
             print_time_seconds=metadata.get("print_time_seconds"),
@@ -966,6 +1021,7 @@ class ArchiveService:
             quantity=quantity,
             extra_data=metadata,
             created_by_id=created_by_id,
+            project_id=project_id,
         )
 
         self.db.add(archive)
@@ -973,6 +1029,124 @@ class ArchiveService:
         await self.db.refresh(archive)
 
         return archive
+
+    async def attach_3mf_to_archive(
+        self,
+        archive_id: int,
+        source_file: Path,
+        original_filename: str | None = None,
+    ) -> bool:
+        """Fill in an empty/fallback archive with a 3MF that was recovered
+        later (e.g. by the background download-retry service).
+
+        Unlike :meth:`archive_print`, this updates an existing row in place
+        instead of inserting a new one.  Use case: ``on_print_start`` could
+        not download the 3MF at the time, so a fallback row was created
+        with ``file_path=""`` + ``extra_data["no_3mf_available"]=True``;
+        the retry service later manages to grab the file from SD.
+
+        Does NOT touch ``status``, ``started_at``, ``completed_at``,
+        ``project_id``, or ``created_by_id`` — those were set when the
+        archive was originally created.
+
+        Returns True on success, False on parse/copy failure.
+        """
+        result = await self.db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))
+        archive = result.scalar_one_or_none()
+        if archive is None:
+            return False
+
+        try:
+            content_hash = self.compute_file_hash(source_file)
+
+            printer_folder = str(archive.printer_id) if archive.printer_id is not None else "unassigned"
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            display_stem = Path(original_filename).stem if original_filename else source_file.stem
+            archive_dir = settings.archive_dir / printer_folder / f"{timestamp}_{display_stem}"
+            archive_dir.mkdir(parents=True, exist_ok=True)
+            # Prefer the clean original_filename (e.g. "Swapmod_STL.gcode.3mf")
+            # over the potentially-prefixed temp source_file name (e.g.
+            # "cover_1_Swapmod_STL.gcode.3mf" when it came from the cover
+            # endpoint's temp download).
+            dest_name = original_filename or source_file.name
+            dest_file = archive_dir / dest_name
+            shutil.copy2(source_file, dest_file)
+
+            # Parse 3MF metadata (reuse the same parser as archive_print).
+            parser = ThreeMFParser(dest_file)
+            metadata = parser.parse()
+
+            thumbnail_path = None
+            if "_thumbnail_data" in metadata:
+                thumb_file = archive_dir / f"thumbnail{metadata['_thumbnail_ext']}"
+                thumb_file.write_bytes(metadata["_thumbnail_data"])
+                thumbnail_path = str(thumb_file.relative_to(settings.base_dir))
+                del metadata["_thumbnail_data"]
+                del metadata["_thumbnail_ext"]
+
+            # Merge metadata into existing extra_data.  Preserve _print_data
+            # (set at fallback creation with the MQTT start payload) and
+            # drop the retry / no-3mf flags now that we have the file.
+            merged_extra = dict(archive.extra_data or {})
+            preserved_print_data = merged_extra.get("_print_data")
+            merged_extra.update(metadata)
+            if preserved_print_data is not None:
+                merged_extra["_print_data"] = preserved_print_data
+            merged_extra.pop("no_3mf_available", None)
+            merged_extra.pop("download_retry_count", None)
+            merged_extra.pop("download_next_retry", None)
+
+            archive.filename = original_filename or source_file.name
+            archive.file_path = str(dest_file.relative_to(settings.base_dir))
+            archive.file_size = dest_file.stat().st_size
+            archive.content_hash = content_hash
+            archive.thumbnail_path = thumbnail_path
+            archive.print_name = metadata.get("print_name") or display_stem
+            archive.print_time_seconds = metadata.get("print_time_seconds")
+            archive.filament_used_grams = metadata.get("filament_used_grams")
+            archive.filament_type = metadata.get("filament_type")
+            archive.filament_color = metadata.get("filament_color")
+            archive.layer_height = metadata.get("layer_height")
+            archive.total_layers = metadata.get("total_layers")
+            archive.nozzle_diameter = metadata.get("nozzle_diameter")
+            archive.bed_temperature = metadata.get("bed_temperature")
+            archive.nozzle_temperature = metadata.get("nozzle_temperature")
+            archive.sliced_for_model = metadata.get("sliced_for_model")
+            archive.makerworld_url = metadata.get("makerworld_url")
+            archive.designer = metadata.get("designer")
+            archive.extra_data = merged_extra
+
+            # Backfill cost + quantity — fallback creation seeded them with
+            # NULL / 1, and without this the archive stays stuck there even
+            # after the 3MF lands.  Mirrors the logic in archive_print().
+            filament_grams = metadata.get("filament_used_grams")
+            if filament_grams:
+                from backend.app.api.routes.settings import get_setting
+
+                default_cost_setting = await get_setting(self.db, "default_filament_cost")
+                default_cost_per_kg = float(default_cost_setting) if default_cost_setting else 25.0
+                archive.cost = round((filament_grams / 1000) * default_cost_per_kg, 2)
+
+            printable_objects = metadata.get("printable_objects")
+            if printable_objects and isinstance(printable_objects, dict):
+                archive.quantity = len(printable_objects)
+
+            # Swap-compatible detection by filename suffix — mirrors the
+            # post-archive_print check in on_print_start. Fallback creation
+            # defaulted swap_compatible=False, so without this backfill a
+            # *.swap.3mf / *.swaps.3mf file landed via retry would stay
+            # flagged as non-swap.
+            fname_lower = (original_filename or source_file.name).lower()
+            if fname_lower.endswith((".swap.3mf", ".swaps.3mf")) or ".swap." in fname_lower or ".swaps." in fname_lower:
+                archive.swap_compatible = True
+
+            await self.db.commit()
+            await self.db.refresh(archive)
+            return True
+        except Exception as e:
+            logger.exception("attach_3mf_to_archive failed for archive %s: %s", archive_id, e)
+            await self.db.rollback()
+            return False
 
     async def get_archive(self, archive_id: int) -> PrintArchive | None:
         """Get an archive by ID with relationships loaded."""
@@ -1249,13 +1423,24 @@ class ArchiveService:
                 f"file_path is empty or invalid: '{archive.file_path}'"
             )
 
-        # Delete database record FIRST — if the commit fails (e.g. database locked
+        # Check if other archives share the same file (deduplication)
+        shared = False
+        if archive.file_path:
+            shared_result = await self.db.execute(
+                select(func.count(PrintArchive.id)).where(
+                    PrintArchive.file_path == archive.file_path,
+                    PrintArchive.id != archive_id,
+                )
+            )
+            shared = (shared_result.scalar() or 0) > 0
+
+        # Delete database record FIRST - if the commit fails (e.g. database locked
         # during concurrent bulk deletes), the files stay on disk and nothing is lost.
         await self.db.delete(archive)
         await self.db.commit()
 
-        # Only delete files AFTER the DB commit succeeds to avoid orphaned records
-        if dir_to_delete:
+        # Only delete files AFTER the DB commit succeeds and no other archives reference them
+        if dir_to_delete and not shared:
             shutil.rmtree(dir_to_delete, ignore_errors=True)
 
         return True

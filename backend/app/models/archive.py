@@ -17,7 +17,14 @@ class PrintArchive(Base):
     filename: Mapped[str] = mapped_column(String(255))
     file_path: Mapped[str] = mapped_column(String(500))
     file_size: Mapped[int] = mapped_column(Integer)
-    content_hash: Mapped[str | None] = mapped_column(String(64))  # SHA256 hash for duplicate detection
+    content_hash: Mapped[str | None] = mapped_column(String(64))  # SHA256 of the bytes stored in the archive dir
+    # Chain-of-custody for BamDude-patched prints: hash of the UNPATCHED source
+    # (library file or prior archive). NULL for external prints. Dedup queries
+    # use COALESCE(source_content_hash, content_hash) so patched variants
+    # collapse against their original. JSON array of applied patch identifiers
+    # lives alongside for future reprint-reapply semantics.
+    source_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    applied_patches: Mapped[str | None] = mapped_column(Text, nullable=True)
     thumbnail_path: Mapped[str | None] = mapped_column(String(500))
     timelapse_path: Mapped[str | None] = mapped_column(String(500))
     source_3mf_path: Mapped[str | None] = mapped_column(String(500))  # Original project 3MF from slicer
@@ -65,6 +72,12 @@ class PrintArchive(Base):
     # Energy tracking
     energy_kwh: Mapped[float | None] = mapped_column(Float)  # Energy consumed in kWh
     energy_cost: Mapped[float | None] = mapped_column(Float)  # Cost of energy consumed
+    # Plug lifetime counter captured at print start; delta at print end becomes energy_kwh.
+    # Persisted so per-print tracking survives backend restarts mid-print (upstream #941).
+    energy_start_kwh: Mapped[float | None] = mapped_column(Float)
+
+    # Swap mode compatibility (processed for plate swapper)
+    swap_compatible: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

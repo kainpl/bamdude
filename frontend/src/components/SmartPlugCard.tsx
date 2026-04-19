@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
-import { Plug, Power, PowerOff, Loader2, Trash2, Settings2, Thermometer, Clock, Wifi, WifiOff, Edit2, Bell, Calendar, LayoutGrid, ExternalLink, Home, Radio, Eye } from 'lucide-react';
+import { Plug, Power, PowerOff, Loader2, Trash2, Settings2, Thermometer, Clock, Wifi, WifiOff, Edit2, Bell, Calendar, LayoutGrid, ExternalLink, Home, Radio, Eye, Globe } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api/client';
 import type { SmartPlug, SmartPlugUpdate } from '../api/client';
@@ -133,6 +133,8 @@ export function SmartPlugCard({ plug, onEdit }: SmartPlugCardProps) {
                   <Radio className={`w-5 h-5 ${isReachable ? 'text-teal-400' : 'text-red-400'}`} />
                 ) : plug.plug_type === 'homeassistant' ? (
                   <Home className={`w-5 h-5 ${isReachable ? (isOn ? 'text-bambu-green' : 'text-bambu-gray') : 'text-red-400'}`} />
+                ) : plug.plug_type === 'rest' ? (
+                  <Globe className={`w-5 h-5 ${isReachable ? (isOn ? 'text-bambu-green' : 'text-bambu-gray') : 'text-red-400'}`} />
                 ) : (
                   <Plug className={`w-5 h-5 ${isReachable ? (isOn ? 'text-bambu-green' : 'text-bambu-gray') : 'text-red-400'}`} />
                 )}
@@ -141,9 +143,9 @@ export function SmartPlugCard({ plug, onEdit }: SmartPlugCardProps) {
                 <h3 className="font-medium text-white truncate">{plug.name}</h3>
                 <p
                   className="text-sm text-bambu-gray truncate"
-                  title={plug.plug_type === 'mqtt' ? plug.mqtt_topic ?? undefined : plug.plug_type === 'homeassistant' ? plug.ha_entity_id ?? undefined : plug.ip_address ?? undefined}
+                  title={plug.plug_type === 'mqtt' ? plug.mqtt_topic ?? undefined : plug.plug_type === 'homeassistant' ? plug.ha_entity_id ?? undefined : plug.plug_type === 'rest' ? plug.rest_on_url ?? plug.rest_off_url ?? undefined : plug.ip_address ?? undefined}
                 >
-                  {plug.plug_type === 'mqtt' ? plug.mqtt_topic : plug.plug_type === 'homeassistant' ? plug.ha_entity_id : plug.ip_address}
+                  {plug.plug_type === 'mqtt' ? plug.mqtt_topic : plug.plug_type === 'homeassistant' ? plug.ha_entity_id : plug.plug_type === 'rest' ? (plug.rest_on_url || plug.rest_off_url) : plug.ip_address}
                 </p>
               </div>
             </div>
@@ -161,6 +163,13 @@ export function SmartPlugCard({ plug, onEdit }: SmartPlugCardProps) {
               ) : plug.plug_type === 'homeassistant' ? (
                 <div className="flex items-center gap-1 text-sm">
                   <span className="px-1 py-0.5 bg-blue-500/20 text-blue-400 text-[10px] font-medium rounded">HA</span>
+                  <span className={isReachable ? (isOn ? 'text-status-ok' : 'text-bambu-gray') : 'text-status-error'}>
+                    {isReachable ? (status?.state || '?') : t('smartPlugs.offline')}
+                  </span>
+                </div>
+              ) : plug.plug_type === 'rest' ? (
+                <div className="flex items-center gap-1 text-sm">
+                  <span className="px-1 py-0.5 bg-purple-500/20 text-purple-400 text-[10px] font-medium rounded">REST</span>
                   <span className={isReachable ? (isOn ? 'text-status-ok' : 'text-bambu-gray') : 'text-status-error'}>
                     {isReachable ? (status?.state || '?') : t('smartPlugs.offline')}
                   </span>

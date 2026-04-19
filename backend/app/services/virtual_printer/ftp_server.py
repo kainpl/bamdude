@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 # Default FTP port for Bambu printers (implicit FTPS).
 # Must be 990 (same as real printers) to avoid iptables REDIRECT,
 # which rewrites the destination IP to the incoming interface's primary
-# address — breaking multi-VP setups with different bind IPs.
+# address - breaking multi-VP setups with different bind IPs.
 # Requires CAP_NET_BIND_SERVICE or root.
 FTP_PORT = 990
 
@@ -288,7 +288,7 @@ class FTPSession:
                 # Use the local IP of the control connection
                 sockname = self.writer.get_extra_info("sockname")
                 ip = sockname[0] if sockname else "127.0.0.1"
-                # 0.0.0.0 is not routable — fall back to control connection IP
+                # 0.0.0.0 is not routable - fall back to control connection IP
                 if ip == "0.0.0.0":  # nosec B104
                     ip = "127.0.0.1"
 
@@ -315,7 +315,7 @@ class FTPSession:
         would complete and the StreamReaderProtocol could release its strong
         reader reference, potentially destabilising the connection.
         """
-        # Reject duplicate connections — only one data connection per transfer
+        # Reject duplicate connections - only one data connection per transfer
         if self._data_reader is not None:
             logger.warning("FTP rejecting duplicate data connection from %s", self.remote_ip)
             try:

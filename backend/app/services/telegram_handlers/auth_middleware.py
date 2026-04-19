@@ -1,4 +1,4 @@
-"""Telegram bot auth middleware — checks chat authorization on every update."""
+"""Telegram bot auth middleware - checks chat authorization on every update."""
 
 import logging
 from collections.abc import Awaitable, Callable
@@ -53,7 +53,7 @@ class TelegramAuthMiddleware(BaseMiddleware):
                     tg_chat = await self._auto_register(db, event, chat_id)
                     lang = await get_language()
                     await self._reply(event, escape_md(t(lang, NS, "auth.registered")))
-                    return  # Don't process further — chat is disabled
+                    return  # Don't process further - chat is disabled
                 # Unknown chat, silently ignore
                 return
 
@@ -71,7 +71,7 @@ class TelegramAuthMiddleware(BaseMiddleware):
                     await self._reply(event, escape_md(t(lang, NS, "auth.pending_setup")))
                 return
 
-        # Chat is authorized — attach to handler data and proceed
+        # Chat is authorized - attach to handler data and proceed
         data["tg_chat"] = tg_chat
         return await handler(event, data)
 
@@ -124,7 +124,23 @@ class TelegramAuthMiddleware(BaseMiddleware):
         )
         db.add(tg_chat)
         await db.commit()
+        await db.refresh(tg_chat)
         logger.info("Auto-registered Telegram chat %s (label=%s)", chat_id, label)
+
+        # Notify frontend via WebSocket
+        from backend.app.core.websocket import ws_manager
+
+        await ws_manager.broadcast(
+            {
+                "type": "telegram_chat_registered",
+                "data": {
+                    "id": tg_chat.id,
+                    "chat_id": tg_chat.chat_id,
+                    "label": tg_chat.label,
+                },
+            }
+        )
+
         return tg_chat
 
     @staticmethod

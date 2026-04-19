@@ -1,6 +1,6 @@
-// Bambuddy Service Worker
-const CACHE_NAME = 'bambuddy-v25';
-const STATIC_CACHE = 'bambuddy-static-v25';
+// BamDude Service Worker
+const CACHE_NAME = 'bamdude-v1';
+const STATIC_CACHE = 'bamdude-static-v1';
 
 // Static assets to cache on install
 const STATIC_ASSETS = [

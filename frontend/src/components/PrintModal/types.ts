@@ -32,6 +32,8 @@ export interface PrintModalProps {
   onClose: () => void;
   /** Handler for successful operation */
   onSuccess?: () => void;
+  /** Project ID to associate the resulting archive with (only when triggered from project view) */
+  projectId?: number;
 }
 
 /**
@@ -40,9 +42,9 @@ export interface PrintModalProps {
 export interface PrintOptions {
   bed_levelling: boolean;
   flow_cali: boolean;
-  vibration_cali: boolean;
   layer_inspect: boolean;
   timelapse: boolean;
+  mesh_mode_fast_check: boolean;
 }
 
 /**
@@ -51,9 +53,30 @@ export interface PrintOptions {
 export const DEFAULT_PRINT_OPTIONS: PrintOptions = {
   bed_levelling: true,
   flow_cali: true,
-  vibration_cali: false,
   layer_inspect: false,
   timelapse: false,
+  mesh_mode_fast_check: true,
+};
+
+/**
+ * Swap-mode macro events that can be toggled per print job.
+ * Hardcoded because the swap flow only uses these two events.
+ */
+export const SWAP_MACRO_EVENTS = ['swap_mode_start', 'swap_mode_change_table'] as const;
+export type SwapMacroEvent = typeof SWAP_MACRO_EVENTS[number];
+
+/**
+ * Swap-macro execution intent for a single print job.
+ * `events` is the subset of `SWAP_MACRO_EVENTS` the operator wants to fire.
+ */
+export interface SwapMacrosOptions {
+  execute: boolean;
+  events: SwapMacroEvent[];
+}
+
+export const DEFAULT_SWAP_MACROS_OPTIONS: SwapMacrosOptions = {
+  execute: true,
+  events: [...SWAP_MACRO_EVENTS],
 };
 
 /**
@@ -119,6 +142,8 @@ export interface PrinterSelectorProps {
   disableBusy?: boolean;
   /** Suggested model from sliced file (for pre-selection) */
   slicedForModel?: string | null;
+  /** File is swap mode compatible - filter to swap-enabled printers only */
+  swapCompatible?: boolean;
 }
 
 /**
@@ -131,7 +156,7 @@ export interface PlateSelectorProps {
   onToggle: (plateIndex: number) => void;
   onSelectAll?: () => void;
   onDeselectAll?: () => void;
-  /** Whether multi-select (checkboxes) is enabled — true in add-to-queue mode */
+  /** Whether multi-select (checkboxes) is enabled - true in add-to-queue mode */
   multiSelect?: boolean;
 }
 
@@ -169,6 +194,14 @@ export interface PrintOptionsProps {
   options: PrintOptions;
   onChange: (options: PrintOptions) => void;
   defaultExpanded?: boolean;
+}
+
+/**
+ * Props for the SwapMacros panel.
+ */
+export interface SwapMacrosPanelProps {
+  options: SwapMacrosOptions;
+  onChange: (options: SwapMacrosOptions) => void;
 }
 
 /**

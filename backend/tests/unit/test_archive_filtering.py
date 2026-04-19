@@ -2,8 +2,8 @@
 Unit tests for archive filtering and timelapse snapshot-diff logic.
 
 Tests:
-1. Calibration print filtering — /usr/ prefix skips archive creation
-2. Timelapse snapshot-diff — _list_timelapse_videos and _scan_for_timelapse_with_retries
+1. Calibration print filtering - /usr/ prefix skips archive creation
+2. Timelapse snapshot-diff - _list_timelapse_videos and _scan_for_timelapse_with_retries
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -329,13 +329,13 @@ class TestScanForTimelapseWithRetries:
         """Should not pick old files even if they'd sort first by mtime."""
         mock_archive, mock_printer = self._make_mocks()
 
-        # Both old files exist at baseline — neither should be picked
+        # Both old files exist at baseline - neither should be picked
         baseline_files = [
             {"name": "old_video1.mp4", "is_directory": False, "size": 1000, "path": "/timelapse/old_video1.mp4"},
             {"name": "old_video2.mp4", "is_directory": False, "size": 2000, "path": "/timelapse/old_video2.mp4"},
         ]
 
-        # Always return same files — no new file ever appears
+        # Always return same files - no new file ever appears
         async def mock_list_mp4s(printer):
             return baseline_files, "/timelapse"
 
@@ -359,7 +359,7 @@ class TestScanForTimelapseWithRetries:
 
             await _scan_for_timelapse_with_retries(1)
 
-        # "benchy" not in "old_video1.mp4" or "old_video2.mp4" — no match at all
+        # "benchy" not in "old_video1.mp4" or "old_video2.mp4" - no match at all
         mock_service.attach_timelapse.assert_not_called()
 
     @pytest.mark.asyncio

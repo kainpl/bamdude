@@ -12,11 +12,9 @@ import { Button } from './Button';
 import { ConfirmModal } from './ConfirmModal';
 import { useToast } from '../contexts/ToastContext';
 
-type LocalMode = 'immediate' | 'review' | 'print_queue' | 'file_manager' | 'proxy';
+type LocalMode = 'print_queue' | 'file_manager' | 'proxy';
 
 const MODE_LABELS: Record<string, string> = {
-  immediate: 'archive',
-  review: 'review',
   print_queue: 'queue',
   file_manager: 'fileManager',
   proxy: 'proxy',
@@ -37,7 +35,7 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
   const [localName, setLocalName] = useState(printer.name);
   const [localAccessCode, setLocalAccessCode] = useState('');
   const [localMode, setLocalMode] = useState<LocalMode>(
-    (printer.mode === 'queue' ? 'review' : printer.mode) as LocalMode
+    (['print_queue', 'file_manager', 'proxy'].includes(printer.mode) ? printer.mode : 'file_manager') as LocalMode
   );
   const [localTargetPrinterId, setLocalTargetPrinterId] = useState<number | null>(printer.target_printer_id);
   const [localBindIp, setLocalBindIp] = useState(printer.bind_ip || '');
@@ -52,7 +50,7 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
   useEffect(() => {
     if (!pendingAction) {
       setLocalEnabled(printer.enabled);
-      setLocalMode((printer.mode === 'queue' ? 'review' : printer.mode) as LocalMode);
+      setLocalMode((['print_queue', 'file_manager', 'proxy'].includes(printer.mode) ? printer.mode : 'file_manager') as LocalMode);
       setLocalName(printer.name);
       setLocalTargetPrinterId(printer.target_printer_id);
       setLocalBindIp(printer.bind_ip || '');
@@ -85,7 +83,7 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
     onError: (error: Error) => {
       showToast(error.message || t('virtualPrinter.toast.failedToUpdate'), 'error');
       setLocalEnabled(printer.enabled);
-      setLocalMode((printer.mode === 'queue' ? 'review' : printer.mode) as LocalMode);
+      setLocalMode((['print_queue', 'file_manager', 'proxy'].includes(printer.mode) ? printer.mode : 'file_manager') as LocalMode);
       setLocalTargetPrinterId(printer.target_printer_id);
       setLocalBindIp(printer.bind_ip || '');
       setPendingAction(null);
@@ -256,7 +254,7 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
             <div>
               <div className="text-white text-sm font-medium mb-2">{t('virtualPrinter.mode.title')}</div>
               <div className="grid grid-cols-2 gap-2">
-                {(['immediate', 'review', 'print_queue', 'file_manager', 'proxy'] as const).map((mode) => (
+                {(['print_queue', 'file_manager', 'proxy'] as const).map((mode) => (
                   <button
                     key={mode}
                     onClick={() => handleModeChange(mode)}

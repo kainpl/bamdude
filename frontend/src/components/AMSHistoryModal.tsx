@@ -244,7 +244,7 @@ export function AMSHistoryModal({
                   <p className="text-xs" style={{ color: textSecondary }}>{t('common.current', 'Current')}</p>
                   <div className="flex items-center gap-2">
                     <p className="text-2xl font-bold" style={{ color: getHumidityColor(currentHumidity) }}>
-                      {currentHumidity != null ? `${currentHumidity}%` : '—'}
+                      {currentHumidity != null ? `${currentHumidity}%` : '-'}
                     </p>
                     <TrendIcon trend={humidityTrend} />
                   </div>
@@ -252,19 +252,19 @@ export function AMSHistoryModal({
                 <div className="rounded-lg p-4 max-[550px]:order-4" style={{ backgroundColor: cardBg }}>
                   <p className="text-xs" style={{ color: textSecondary }}>{t('common.average', 'Average')}</p>
                   <p className="text-2xl font-bold" style={{ color: textPrimary }}>
-                    {data?.avg_humidity != null ? `${data.avg_humidity}%` : '—'}
+                    {data?.avg_humidity != null ? `${data.avg_humidity}%` : '-'}
                   </p>
                 </div>
                 <div className="rounded-lg p-4 max-[550px]:order-1" style={{ backgroundColor: cardBg }}>
                   <p className="text-xs" style={{ color: textSecondary }}>{t('common.min', 'Min')}</p>
                   <p className="text-2xl font-bold text-green-500">
-                    {data?.min_humidity != null ? `${data.min_humidity}%` : '—'}
+                    {data?.min_humidity != null ? `${data.min_humidity}%` : '-'}
                   </p>
                 </div>
                 <div className="rounded-lg p-4 max-[550px]:order-3" style={{ backgroundColor: cardBg }}>
                   <p className="text-xs" style={{ color: textSecondary }}>{t('common.max', 'Max')}</p>
                   <p className="text-2xl font-bold text-red-500">
-                    {data?.max_humidity != null ? `${data.max_humidity}%` : '—'}
+                    {data?.max_humidity != null ? `${data.max_humidity}%` : '-'}
                   </p>
                 </div>
               </>
@@ -274,7 +274,7 @@ export function AMSHistoryModal({
                   <p className="text-xs" style={{ color: textSecondary }}>{t('common.current', 'Current')}</p>
                   <div className="flex items-center gap-2">
                     <p className="text-2xl font-bold" style={{ color: getTempColor(currentTemp) }}>
-                      {currentTemp != null ? `${currentTemp}°C` : '—'}
+                      {currentTemp != null ? `${currentTemp}°C` : '-'}
                     </p>
                     <TrendIcon trend={tempTrend} />
                   </div>
@@ -282,19 +282,19 @@ export function AMSHistoryModal({
                 <div className="rounded-lg p-4 max-[550px]:order-4" style={{ backgroundColor: cardBg }}>
                   <p className="text-xs" style={{ color: textSecondary }}>{t('common.average', 'Average')}</p>
                   <p className="text-2xl font-bold" style={{ color: textPrimary }}>
-                    {data?.avg_temperature != null ? `${data.avg_temperature}°C` : '—'}
+                    {data?.avg_temperature != null ? `${data.avg_temperature}°C` : '-'}
                   </p>
                 </div>
                 <div className="rounded-lg p-4 max-[550px]:order-1" style={{ backgroundColor: cardBg }}>
                   <p className="text-xs" style={{ color: textSecondary }}>{t('common.min', 'Min')}</p>
                   <p className="text-2xl font-bold text-blue-500">
-                    {data?.min_temperature != null ? `${data.min_temperature}°C` : '—'}
+                    {data?.min_temperature != null ? `${data.min_temperature}°C` : '-'}
                   </p>
                 </div>
                 <div className="rounded-lg p-4 max-[550px]:order-3" style={{ backgroundColor: cardBg }}>
                   <p className="text-xs" style={{ color: textSecondary }}>{t('common.max', 'Max')}</p>
                   <p className="text-2xl font-bold text-red-500">
-                    {data?.max_temperature != null ? `${data.max_temperature}°C` : '—'}
+                    {data?.max_temperature != null ? `${data.max_temperature}°C` : '-'}
                   </p>
                 </div>
               </>
