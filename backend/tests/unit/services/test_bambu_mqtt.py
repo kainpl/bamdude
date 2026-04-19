@@ -3524,3 +3524,164 @@ class TestStaleReconnect:
 
         assert state_changes == [False]
         assert mqtt_client.state.connected is False
+
+
+class TestZombieSessionDetection:
+    """Tests for ams_filament_setting response tracking (#887).
+
+    When a printer's MQTT session degrades so that telemetry flows but
+    published commands never reach the printer, the zombie detector
+    counts consecutive unanswered ams_filament_setting commands and
+    force-reconnects after two.
+    """
+
+    @pytest.fixture
+    def mqtt_client(self):
+        import time
+        from unittest.mock import MagicMock
+
+        from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+        client = BambuMQTTClient(
+            ip_address="192.168.1.100",
+            serial_number="TEST123",
+            access_code="12345678",
+        )
+        client.state.connected = True
+        mock_paho = MagicMock()
+        mock_paho.socket.return_value = MagicMock()
+        client._client = mock_paho
+        client._connect_time = time.monotonic() - 10.0
+        # Set developer_mode so the dev-mode probe branch doesn't interfere
+        client.state.developer_mode = True
+        return client
+
+    def test_initial_state_is_clean(self, mqtt_client):
+        """Tracking fields start at zero / no pending command."""
+        assert mqtt_client._last_ams_cmd_time == 0.0
+        assert mqtt_client._ams_cmd_unanswered == 0
+
+    def test_publish_sets_pending_time(self, mqtt_client):
+        """ams_set_filament_setting records the publish timestamp."""
+        import time
+
+        before = time.monotonic()
+        mqtt_client.ams_set_filament_setting(
+            ams_id=0,
+            tray_id=0,
+            tray_info_idx="GFL99",
+            tray_type="PLA",
+            tray_sub_brands="",
+            tray_color="FF0000FF",
+            nozzle_temp_min=190,
+            nozzle_temp_max=230,
+        )
+        assert mqtt_client._last_ams_cmd_time >= before
+
+    def test_reset_slot_sets_pending_time(self, mqtt_client):
+        """reset_ams_slot also records the publish timestamp."""
+        import time
+
+        before = time.monotonic()
+        mqtt_client.reset_ams_slot(ams_id=0, tray_id=0)
+        assert mqtt_client._last_ams_cmd_time >= before
+
+    def test_response_clears_pending(self, mqtt_client):
+        """An ams_filament_setting response clears the pending state."""
+        import time
+
+        mqtt_client._last_ams_cmd_time = time.monotonic()
+        mqtt_client._ams_cmd_unanswered = 1
+
+        # Walk the elif branch in _handle_print_response
+        cmd = "ams_filament_setting"
+        if cmd == "ams_filament_setting" and mqtt_client._last_ams_cmd_time > 0:
+            mqtt_client._last_ams_cmd_time = 0.0
+            mqtt_client._ams_cmd_unanswered = 0
+
+        assert mqtt_client._last_ams_cmd_time == 0.0
+        assert mqtt_client._ams_cmd_unanswered == 0
+
+    def test_single_timeout_increments_counter(self, mqtt_client):
+        """One unanswered command increments the counter but does not reconnect."""
+        import time
+
+        mqtt_client._last_ams_cmd_time = time.monotonic() - 11.0
+
+        mqtt_client._update_state({"gcode_state": "IDLE"})
+
+        assert mqtt_client._ams_cmd_unanswered == 1
+        assert mqtt_client._last_ams_cmd_time == 0.0
+        # Should NOT force-reconnect after just one
+        assert mqtt_client.state.connected is True
+
+    def test_two_timeouts_force_reconnect(self, mqtt_client):
+        """Two consecutive unanswered commands trigger force_reconnect."""
+        import time
+
+        state_change_called = []
+        mqtt_client.on_state_change = lambda s: state_change_called.append(True)
+
+        # First unanswered command
+        mqtt_client._last_ams_cmd_time = time.monotonic() - 11.0
+        mqtt_client._update_state({"gcode_state": "IDLE"})
+        assert mqtt_client._ams_cmd_unanswered == 1
+        assert mqtt_client.state.connected is True
+
+        # Second unanswered command
+        mqtt_client._last_ams_cmd_time = time.monotonic() - 11.0
+        mqtt_client._update_state({"gcode_state": "IDLE"})
+
+        assert mqtt_client._ams_cmd_unanswered == 0  # reset after reconnect
+        assert mqtt_client.state.connected is False
+        assert mqtt_client._stale_reconnecting is True
+        mqtt_client._client.socket().close.assert_called()
+        assert len(state_change_called) > 0
+
+    def test_response_between_timeouts_resets_counter(self, mqtt_client):
+        """A successful response after one timeout resets the counter."""
+        import time
+
+        # First unanswered command
+        mqtt_client._last_ams_cmd_time = time.monotonic() - 11.0
+        mqtt_client._update_state({"gcode_state": "IDLE"})
+        assert mqtt_client._ams_cmd_unanswered == 1
+
+        # Now a response arrives — clear pending
+        mqtt_client._last_ams_cmd_time = 0.0
+        mqtt_client._ams_cmd_unanswered = 0
+
+        # Next unanswered command should be count=1, not count=2
+        mqtt_client._last_ams_cmd_time = time.monotonic() - 11.0
+        mqtt_client._update_state({"gcode_state": "IDLE"})
+        assert mqtt_client._ams_cmd_unanswered == 1
+        assert mqtt_client.state.connected is True  # no reconnect
+
+    def test_on_connect_resets_tracking(self, mqtt_client):
+        """_on_connect resets zombie tracking fields."""
+        import time
+
+        mqtt_client._last_ams_cmd_time = time.monotonic()
+        mqtt_client._ams_cmd_unanswered = 5
+
+        # subscribe() must return (result, mid) tuple
+        mqtt_client._client.subscribe.return_value = (0, 1)
+        mqtt_client._on_connect(mqtt_client._client, None, None, 0)
+
+        assert mqtt_client._last_ams_cmd_time == 0.0
+        assert mqtt_client._ams_cmd_unanswered == 0
+
+    def test_no_check_when_no_command_pending(self, mqtt_client):
+        """If no command was published, push_status does not trigger detection."""
+        assert mqtt_client._last_ams_cmd_time == 0.0
+        mqtt_client._update_state({"gcode_state": "IDLE"})
+        assert mqtt_client._ams_cmd_unanswered == 0
+
+    def test_no_timeout_within_window(self, mqtt_client):
+        """A command published <10s ago should not trigger a timeout."""
+        import time
+
+        mqtt_client._last_ams_cmd_time = time.monotonic() - 5.0
+        mqtt_client._update_state({"gcode_state": "IDLE"})
+        assert mqtt_client._ams_cmd_unanswered == 0
+        assert mqtt_client._last_ams_cmd_time > 0  # still pending

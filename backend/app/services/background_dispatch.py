@@ -1139,6 +1139,14 @@ class BackgroundDispatchService:
             timeout,
             pre_state,
         )
+        # Strong signal the MQTT session is half-broken (#887, #936): telemetry
+        # still arrives but our publishes don't reach the printer. Force a fresh
+        # session so the next dispatch can land without a power cycle.
+        client = printer_manager.get_client(printer_id)
+        if client:
+            client.force_reconnect_stale_session(
+                f"print command unacknowledged after {timeout:.0f}s (state still {pre_state})"
+            )
 
     @staticmethod
     async def _cleanup_sd_card_file(
