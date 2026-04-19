@@ -1,6 +1,8 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
+import { api } from './api/client';
 import { Layout } from './components/Layout';
 import { PrintersPage } from './pages/PrintersPage';
 import { ArchivesPage } from './pages/ArchivesPage';
@@ -37,6 +39,41 @@ const queryClient = new QueryClient({
 
 function WebSocketProvider({ children }: { children: React.ReactNode }) {
   useWebSocket();
+  return <>{children}</>;
+}
+
+/**
+ * Pulls the authoritative system language from the server on first mount
+ * after auth and forces i18n to match.  Server-side `settings.language`
+ * is the source of truth because it also drives backend outputs
+ * (notification templates, maintenance-type names, Telegram bot),
+ * and the farm operator configures it once for the whole install —
+ * individual browsers shouldn't override that via auto-detection.
+ *
+ * User-driven picks in Settings UI still write to the server (that's
+ * the intentional override path); this effect only corrects cases
+ * where the browser auto-detected a different language than configured.
+ */
+function LanguageSync({ children }: { children: React.ReactNode }) {
+  const { i18n } = useTranslation();
+  const syncedRef = React.useRef(false);
+
+  useEffect(() => {
+    if (syncedRef.current) return;
+    syncedRef.current = true;
+    (async () => {
+      try {
+        const settings = await api.getSettings();
+        const serverLang = settings.language;
+        if (serverLang && serverLang !== i18n.language) {
+          await i18n.changeLanguage(serverLang);
+        }
+      } catch {
+        // Best-effort — if /settings fails we leave i18n on its detected value.
+      }
+    })();
+  }, [i18n]);
+
   return <>{children}</>;
 }
 
@@ -162,7 +199,7 @@ function App() {
                 <Route path="/overlay/:printerId" element={<StreamOverlayPage />} />
 
                 {/* Main app with WebSocket for real-time updates */}
-                <Route element={<ProtectedRoute><WebSocketProvider><Layout /></WebSocketProvider></ProtectedRoute>}>
+                <Route element={<ProtectedRoute><LanguageSync><WebSocketProvider><Layout /></WebSocketProvider></LanguageSync></ProtectedRoute>}>
                   <Route index element={<PrintersPage />} />
                   <Route path="archives" element={<ArchivesPage />} />
                   <Route path="queue" element={<QueuePage />} />

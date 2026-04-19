@@ -243,7 +243,7 @@ export function PrinterSelector({
     if (!status.connected) return t('printModal.printerStateOffline');
     const state = status.state;
     if (!state) return null;
-    if (state === 'RUNNING') return status.stg_cur_name || t('printModal.printerStatePrinting');
+    if (state === 'RUNNING') return t('printModal.printerStatePrinting');
     if (state === 'PREPARE') return t('printModal.printerStatePreparing');
     if (state === 'PAUSE') return t('printModal.printerStatePaused');
     if (state === 'IDLE') return t('printModal.printerStateIdle');

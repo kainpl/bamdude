@@ -2412,8 +2412,15 @@ function PrinterCard({
                       : 'bg-status-ok/20 text-status-ok'
                   }`}
                   title={
-                    maintenanceInfo.due_count > 0 || maintenanceInfo.warning_count > 0
-                      ? `${maintenanceInfo.due_count > 0 ? `${maintenanceInfo.due_count} maintenance due` : ''}${maintenanceInfo.due_count > 0 && maintenanceInfo.warning_count > 0 ? ', ' : ''}${maintenanceInfo.warning_count > 0 ? `${maintenanceInfo.warning_count} due soon` : ''} - Click to view`
+                    maintenanceInfo.due_count > 0 && maintenanceInfo.warning_count > 0
+                      ? t('printers.maintenanceDueAndWarningTooltip', {
+                          due: maintenanceInfo.due_count,
+                          warning: maintenanceInfo.warning_count,
+                        })
+                      : maintenanceInfo.due_count > 0
+                      ? t('printers.maintenanceDueTooltip', { count: maintenanceInfo.due_count })
+                      : maintenanceInfo.warning_count > 0
+                      ? t('printers.maintenanceWarningTooltip', { count: maintenanceInfo.warning_count })
                       : t('printers.maintenanceUpToDate')
                   }
                 >

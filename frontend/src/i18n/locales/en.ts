@@ -242,6 +242,9 @@ export default {
     },
     // Maintenance
     maintenanceUpToDate: 'All maintenance up to date - Click to view',
+    maintenanceDueTooltip: '{{count}} maintenance due - Click to view',
+    maintenanceWarningTooltip: '{{count}} due soon - Click to view',
+    maintenanceDueAndWarningTooltip: '{{due}} due, {{warning}} due soon - Click to view',
     // Chamber light
     chamberLightOn: 'Turn on chamber light',
     chamberLightOff: 'Turn off chamber light',
@@ -370,8 +373,8 @@ export default {
     },
     // Queue info
     queue: {
-      inQueue: '{{count}} print in queue',
-      inQueue_plural: '{{count}} prints in queue',
+      inQueue_one: '{{count}} print in queue',
+      inQueue_other: '{{count}} prints in queue',
     },
     // Controls section
     controls: 'Controls',
@@ -3599,6 +3602,9 @@ export default {
     selectPrinter: 'Select Printer',
     selectPlate: 'Select Plate',
     filamentMapping: 'Filament Mapping',
+    filamentTypeNotFound: 'Type not found',
+    filamentColorMismatch: 'Color mismatch',
+    filamentReady: 'Ready',
     totalCost: 'Total cost:',
     slotRemainingShort: ' - {{grams}}g left',
     printSettings: 'Print Settings',

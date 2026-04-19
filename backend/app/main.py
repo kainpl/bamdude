@@ -4106,6 +4106,46 @@ async def lifespan(app: FastAPI):
 
     asyncio.create_task(_reconcile_stagger_on_startup())
 
+    # Locale reconciliation: if the system language setting has drifted from
+    # what's seeded in `maintenance_types` / `notification_templates` (e.g.
+    # user ran an older version that seeded EN defaults then switched the
+    # system language to UK without re-triggering the settings-PATCH flow,
+    # or a restore brought in EN rows under a UK config), realign once at
+    # startup.  Idempotent — safe to run every boot.  Fire-and-forget.
+    async def _reconcile_locale_on_startup():
+        try:
+            from sqlalchemy import delete
+
+            from backend.app.api.routes.settings import get_setting
+            from backend.app.core.database import async_session
+            from backend.app.models.settings import Settings as SettingsModel
+            from backend.app.services.locale_updater import update_locale_data
+
+            async with async_session() as locale_db:
+                lang = await get_setting(locale_db, "language") or "en"
+                result = await update_locale_data(locale_db, lang)
+
+                # Drop dead `notification_language` row left over from
+                # pre-0.3 versions. Feature was removed; notifications
+                # now follow the `language` setting.
+                stale = await locale_db.execute(
+                    delete(SettingsModel).where(SettingsModel.key == "notification_language")
+                )
+                if stale.rowcount:
+                    await locale_db.commit()
+
+                logging.getLogger(__name__).info(
+                    "Locale startup reconcile (%s): %d notification templates, %d maintenance types%s",
+                    result["language"],
+                    result["notification_templates_updated"],
+                    result["maintenance_types_updated"],
+                    " (cleaned up legacy notification_language row)" if stale.rowcount else "",
+                )
+        except Exception as e:
+            logging.getLogger(__name__).warning("Locale startup reconciliation failed: %s", e)
+
+    asyncio.create_task(_reconcile_locale_on_startup())
+
     # Start the smart plug scheduler for time-based on/off
     smart_plug_manager.start_scheduler()
 

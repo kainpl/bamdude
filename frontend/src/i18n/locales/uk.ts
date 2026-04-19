@@ -250,6 +250,9 @@ export default {
     },
     // Maintenance
     maintenanceUpToDate: 'Обслуговування актуальне - натисніть для перегляду',
+    maintenanceDueTooltip: '{{count}} обслуговувань прострочено - натисніть для перегляду',
+    maintenanceWarningTooltip: '{{count}} скоро до обслуговування - натисніть для перегляду',
+    maintenanceDueAndWarningTooltip: '{{due}} прострочено, {{warning}} скоро - натисніть для перегляду',
     // Chamber light
     chamberLightOn: 'Увімкнути підсвічування камери',
     chamberLightOff: 'Вимкнути підсвічування камери',
@@ -378,8 +381,9 @@ export default {
     },
     // Queue info
     queue: {
-      inQueue: '{{count}} друк у черзі',
-      inQueue_plural: '{{count}} друків у черзі',
+      inQueue_one: '{{count}} друк у черзі',
+      inQueue_few: '{{count}} друки у черзі',
+      inQueue_many: '{{count}} друків у черзі',
     },
     // Controls section
     controls: 'Керування',
@@ -3595,6 +3599,9 @@ export default {
     selectPrinter: 'Виберіть принтер',
     selectPlate: 'Виберіть платформу',
     filamentMapping: 'Призначення філаменту',
+    filamentTypeNotFound: 'Тип не знайдено',
+    filamentColorMismatch: 'Колір не збігається',
+    filamentReady: 'Готово',
     totalCost: 'Загальна вартість:',
     slotRemainingShort: ' - {{grams}}г залишилось',
     printSettings: 'Налаштування друку',
