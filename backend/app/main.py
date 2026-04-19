@@ -2804,6 +2804,22 @@ async def on_print_complete(printer_id: int, data: dict):
                 await update_queue_counters(db, queue_item.queue_id)
                 await db.commit()
                 logger.info("Updated queue item %s status to %s", queue_item.id, queue_status)
+
+                # MQTT relay - publish queue job completed.
+                # Guarded by the `if queue_item:` scope because queue_item / queue_status
+                # are only defined there; on the external-print path below there's no
+                # job to report to the relay.
+                try:
+                    printer_info = printer_manager.get_printer(printer_id)
+                    await mqtt_relay.on_queue_job_completed(
+                        job_id=queue_item.id,
+                        filename=filename or subtask_name,
+                        printer_id=printer_id,
+                        printer_name=printer_info.name if printer_info else "Unknown",
+                        status=queue_status,
+                    )
+                except Exception:
+                    pass  # Don't fail if MQTT fails
             else:
                 # No queue_item was printing → this was an external or
                 # direct-dispatch print.  Still flip queue.status back to
@@ -2830,19 +2846,6 @@ async def on_print_complete(printer_id: int, data: dict):
                         _pq.id,
                         _pq.status,
                     )
-
-                # MQTT relay - publish queue job completed
-                try:
-                    printer_info = printer_manager.get_printer(printer_id)
-                    await mqtt_relay.on_queue_job_completed(
-                        job_id=queue_item.id,
-                        filename=filename or subtask_name,
-                        printer_id=printer_id,
-                        printer_name=printer_info.name if printer_info else "Unknown",
-                        status=queue_status,
-                    )
-                except Exception:
-                    pass  # Don't fail if MQTT fails
 
                 # Check if queue is now empty and send notification
                 try:
