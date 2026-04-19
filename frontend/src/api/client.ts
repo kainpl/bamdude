@@ -273,8 +273,9 @@ export interface PrinterStatus {
   developer_mode: boolean | null;
   // Currently executing macro name (null = no macro running)
   macro_executing: string | null;
-  // Queue: user has acknowledged plate is cleared for next queued print
-  plate_cleared: boolean;
+  // Queue plate-clear gate (#961): true means the printer is waiting on user
+  // confirmation before the next auto-dispatch; false means the gate is released.
+  awaiting_plate_clear: boolean;
   // AMS drying support
   supports_drying: boolean;
 }

@@ -9,55 +9,65 @@ from backend.app.services.print_scheduler import PrintScheduler
 from backend.app.services.printer_manager import PrinterManager
 
 
-class TestPrinterManagerPlateCleared:
-    """Test the plate-cleared flag management in PrinterManager."""
+class TestPrinterManagerAwaitingPlateClear:
+    """Test the awaiting_plate_clear gate management in PrinterManager.
+
+    Semantics are inverted from the previous _plate_cleared set: presence now
+    means the printer is BLOCKED on user confirmation, absence means the gate
+    is released.
+    """
 
     @pytest.fixture
     def manager(self):
-        return PrinterManager()
+        mgr = PrinterManager()
+        # Short-circuit the DB persist that would otherwise run as fire-and-forget
+        # and interact with async_session the tests don't set up.
+        mgr._persist_awaiting_plate_clear = AsyncMock(return_value=None)
+        mgr._schedule_async = lambda _coro: None
+        return mgr
 
-    def test_plate_cleared_initially_false(self, manager):
-        """No printers should have plate cleared by default."""
-        assert not manager.is_plate_cleared(1)
-        assert not manager.is_plate_cleared(999)
+    def test_awaiting_initially_false(self, manager):
+        """No printers should be awaiting by default."""
+        assert not manager.is_awaiting_plate_clear(1)
+        assert not manager.is_awaiting_plate_clear(999)
 
-    def test_set_plate_cleared(self, manager):
-        """Setting plate cleared should make is_plate_cleared return True."""
-        manager.set_plate_cleared(1)
-        assert manager.is_plate_cleared(1)
-        assert not manager.is_plate_cleared(2)
+    def test_arm_gate(self, manager):
+        """set_awaiting_plate_clear(pid, True) arms the gate for that printer only."""
+        manager.set_awaiting_plate_clear(1, True)
+        assert manager.is_awaiting_plate_clear(1)
+        assert not manager.is_awaiting_plate_clear(2)
 
-    def test_consume_plate_cleared(self, manager):
-        """Consuming plate cleared should reset the flag."""
-        manager.set_plate_cleared(1)
-        assert manager.is_plate_cleared(1)
-        manager.consume_plate_cleared(1)
-        assert not manager.is_plate_cleared(1)
+    def test_release_gate(self, manager):
+        """set_awaiting_plate_clear(pid, False) releases the gate."""
+        manager.set_awaiting_plate_clear(1, True)
+        assert manager.is_awaiting_plate_clear(1)
+        manager.set_awaiting_plate_clear(1, False)
+        assert not manager.is_awaiting_plate_clear(1)
 
-    def test_consume_plate_cleared_idempotent(self, manager):
-        """Consuming when not set should not raise."""
-        manager.consume_plate_cleared(1)  # Should not raise
-        assert not manager.is_plate_cleared(1)
+    def test_release_when_not_armed_is_idempotent(self, manager):
+        """Releasing a gate that was never armed is a no-op, not an error."""
+        manager.set_awaiting_plate_clear(1, False)  # Should not raise
+        assert not manager.is_awaiting_plate_clear(1)
 
-    def test_set_plate_cleared_multiple_printers(self, manager):
-        """Plate cleared should be tracked per printer."""
-        manager.set_plate_cleared(1)
-        manager.set_plate_cleared(3)
-        assert manager.is_plate_cleared(1)
-        assert not manager.is_plate_cleared(2)
-        assert manager.is_plate_cleared(3)
+    def test_gate_is_per_printer(self, manager):
+        """Arming one printer doesn't affect others."""
+        manager.set_awaiting_plate_clear(1, True)
+        manager.set_awaiting_plate_clear(3, True)
+        assert manager.is_awaiting_plate_clear(1)
+        assert not manager.is_awaiting_plate_clear(2)
+        assert manager.is_awaiting_plate_clear(3)
 
-    def test_consume_only_affects_target_printer(self, manager):
-        """Consuming plate cleared for one printer should not affect others."""
-        manager.set_plate_cleared(1)
-        manager.set_plate_cleared(2)
-        manager.consume_plate_cleared(1)
-        assert not manager.is_plate_cleared(1)
-        assert manager.is_plate_cleared(2)
+    def test_release_only_affects_target_printer(self, manager):
+        """Releasing one printer's gate shouldn't release others."""
+        manager.set_awaiting_plate_clear(1, True)
+        manager.set_awaiting_plate_clear(2, True)
+        manager.set_awaiting_plate_clear(1, False)
+        assert not manager.is_awaiting_plate_clear(1)
+        assert manager.is_awaiting_plate_clear(2)
 
 
-class TestSchedulerIdleCheckWithPlateCleared:
-    """Test _is_printer_idle with plate-cleared flag interactions."""
+class TestSchedulerIdleCheckWithAwaitingPlateClear:
+    """Test _is_printer_idle with the awaiting_plate_clear gate."""
 
     @pytest.fixture
     def scheduler(self):
@@ -78,35 +88,35 @@ class TestSchedulerIdleCheckWithPlateCleared:
         assert scheduler._is_printer_idle(1) is False
 
     @patch("backend.app.services.print_scheduler.printer_manager")
-    def test_finish_state_not_idle_without_plate_cleared(self, mock_pm, scheduler):
-        """Printer in FINISH state should NOT be idle without plate cleared."""
+    def test_finish_state_not_idle_when_awaiting(self, mock_pm, scheduler):
+        """FINISH with gate armed blocks dispatch."""
         mock_pm.is_connected.return_value = True
         mock_pm.get_status.return_value = MagicMock(state="FINISH")
-        mock_pm.is_plate_cleared.return_value = False
+        mock_pm.is_awaiting_plate_clear.return_value = True
         assert scheduler._is_printer_idle(1) is False
 
     @patch("backend.app.services.print_scheduler.printer_manager")
-    def test_finish_state_idle_with_plate_cleared(self, mock_pm, scheduler):
-        """Printer in FINISH state should be idle when plate is cleared."""
+    def test_finish_state_idle_when_gate_released(self, mock_pm, scheduler):
+        """FINISH with gate released is dispatch-ready."""
         mock_pm.is_connected.return_value = True
         mock_pm.get_status.return_value = MagicMock(state="FINISH")
-        mock_pm.is_plate_cleared.return_value = True
+        mock_pm.is_awaiting_plate_clear.return_value = False
         assert scheduler._is_printer_idle(1) is True
 
     @patch("backend.app.services.print_scheduler.printer_manager")
-    def test_failed_state_not_idle_without_plate_cleared(self, mock_pm, scheduler):
-        """Printer in FAILED state should NOT be idle without plate cleared."""
+    def test_failed_state_not_idle_when_awaiting(self, mock_pm, scheduler):
+        """FAILED with gate armed blocks dispatch."""
         mock_pm.is_connected.return_value = True
         mock_pm.get_status.return_value = MagicMock(state="FAILED")
-        mock_pm.is_plate_cleared.return_value = False
+        mock_pm.is_awaiting_plate_clear.return_value = True
         assert scheduler._is_printer_idle(1) is False
 
     @patch("backend.app.services.print_scheduler.printer_manager")
-    def test_failed_state_idle_with_plate_cleared(self, mock_pm, scheduler):
-        """Printer in FAILED state should be idle when plate is cleared."""
+    def test_failed_state_idle_when_gate_released(self, mock_pm, scheduler):
+        """FAILED with gate released is dispatch-ready."""
         mock_pm.is_connected.return_value = True
         mock_pm.get_status.return_value = MagicMock(state="FAILED")
-        mock_pm.is_plate_cleared.return_value = True
+        mock_pm.is_awaiting_plate_clear.return_value = False
         assert scheduler._is_printer_idle(1) is True
 
     @patch("backend.app.services.print_scheduler.printer_manager")

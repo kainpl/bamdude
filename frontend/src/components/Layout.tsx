@@ -242,7 +242,7 @@ export function Layout() {
   const needsClearPlate = printerStatusQueries.some(result => {
     const status = result.data;
     if (!status) return false;
-    return (status.state === 'FINISH' || status.state === 'FAILED') && !status.plate_cleared;
+    return (status.state === 'FINISH' || status.state === 'FAILED') && !!status.awaiting_plate_clear;
   });
 
   // Calculate debug duration client-side for real-time updates

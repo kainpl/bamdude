@@ -12,11 +12,11 @@ interface PrinterQueueWidgetProps {
   printerId: number;
   printerModel?: string | null;
   printerState?: string | null;
-  plateCleared?: boolean;
+  awaitingPlateClear?: boolean;
   requirePlateClear?: boolean;
 }
 
-export function PrinterQueueWidget({ printerId, printerState, plateCleared, requirePlateClear = true }: PrinterQueueWidgetProps) {
+export function PrinterQueueWidget({ printerId, printerState, awaitingPlateClear, requirePlateClear = true }: PrinterQueueWidgetProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
@@ -59,7 +59,7 @@ export function PrinterQueueWidget({ printerId, printerState, plateCleared, requ
   const nextAutoItem = autoDispatchQueue[0];
   const nextItem = queue?.[0];
   // Only prompt "Clear Plate & Start Next" when there are auto-dispatchable items
-  const needsClearPlate = requirePlateClear && (printerState === 'FINISH' || printerState === 'FAILED') && !plateCleared && autoDispatchQueue.length > 0;
+  const needsClearPlate = requirePlateClear && (printerState === 'FINISH' || printerState === 'FAILED') && !!awaitingPlateClear && autoDispatchQueue.length > 0;
 
   if (needsClearPlate) {
     const displayItem = nextAutoItem || nextItem;

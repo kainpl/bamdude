@@ -316,7 +316,7 @@ export function QueueCard({ queue, compact = false, onEditItem }: QueueCardProps
   const hasAutoDispatchItems = pendingItems?.some(item => !item.manual_start) ?? false;
   const needsClearPlate =
     (status?.state === 'FINISH' || status?.state === 'FAILED') &&
-    !status?.plate_cleared &&
+    !!status?.awaiting_plate_clear &&
     hasAutoDispatchItems;
 
   // Find the current printing item (first printing-status item from pending query, or use status info)

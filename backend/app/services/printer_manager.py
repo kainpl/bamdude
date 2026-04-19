@@ -156,8 +156,12 @@ class PrinterManager:
         self._loop: asyncio.AbstractEventLoop | None = None
         # Track who started the current print (Issue #206)
         self._current_print_user: dict[int, dict] = {}  # {printer_id: {"user_id": int, "username": str}}
-        # Track plate-cleared acknowledgments for queue flow
-        self._plate_cleared: set[int] = set()  # printer_ids where user confirmed plate is cleared
+        # Plate-clear gate for queue flow, persisted to Printer.awaiting_plate_clear (m010, #961).
+        # Semantically INVERTED vs the old _plate_cleared set: presence means the printer is
+        # WAITING for user confirmation (blocked from auto-dispatch). Absence means the gate is
+        # clear and the scheduler may proceed. Rehydrated from DB at startup so an Auto Off
+        # power cycle can't silently bypass a pending confirmation.
+        self._awaiting_plate_clear: set[int] = set()
         # Macro completion waiters: dispatch pipeline registers an Event here,
         # _broadcast_macro_complete sets it when stg_cur transitions to idle.
         self._macro_waiters: dict[int, tuple[asyncio.Event, dict]] = {}
@@ -178,17 +182,44 @@ class PrinterManager:
         """Clear the current print user when print completes (Issue #206)."""
         self._current_print_user.pop(printer_id, None)
 
-    def set_plate_cleared(self, printer_id: int):
-        """Mark that user has cleared the build plate for this printer."""
-        self._plate_cleared.add(printer_id)
+    def is_awaiting_plate_clear(self, printer_id: int) -> bool:
+        """Returns True when the printer's queue is blocked on user plate-clear confirmation."""
+        return printer_id in self._awaiting_plate_clear
 
-    def is_plate_cleared(self, printer_id: int) -> bool:
-        """Check if user has confirmed the plate is cleared."""
-        return printer_id in self._plate_cleared
+    def set_awaiting_plate_clear(self, printer_id: int, awaiting: bool) -> None:
+        """Arm or release the plate-clear gate. Persists to Printer.awaiting_plate_clear
+        asynchronously so an Auto Off power cycle can't drop the flag (#961)."""
+        if awaiting:
+            self._awaiting_plate_clear.add(printer_id)
+        else:
+            self._awaiting_plate_clear.discard(printer_id)
+        self._schedule_async(self._persist_awaiting_plate_clear(printer_id, awaiting))
 
-    def consume_plate_cleared(self, printer_id: int):
-        """Clear the plate-cleared flag (called when scheduler starts next print)."""
-        self._plate_cleared.discard(printer_id)
+    async def _persist_awaiting_plate_clear(self, printer_id: int, awaiting: bool) -> None:
+        """Best-effort DB write for the awaiting-plate-clear flag. Swallows errors
+        (connection issues shouldn't break the in-memory scheduler gate)."""
+        try:
+            from backend.app.core.database import async_session
+
+            async with async_session() as db:
+                result = await db.execute(select(Printer).where(Printer.id == printer_id))
+                printer = result.scalar_one_or_none()
+                if printer and printer.awaiting_plate_clear != awaiting:
+                    printer.awaiting_plate_clear = awaiting
+                    await db.commit()
+        except Exception as e:  # pragma: no cover — persistence is best-effort
+            logger.warning("Failed to persist awaiting_plate_clear for printer %s: %s", printer_id, e)
+
+    async def load_awaiting_plate_clear_from_db(self) -> None:
+        """Rehydrate the in-memory set from Printer.awaiting_plate_clear at startup (#961)."""
+        from backend.app.core.database import async_session
+
+        async with async_session() as db:
+            result = await db.execute(select(Printer.id).where(Printer.awaiting_plate_clear.is_(True)))
+            ids = [row[0] for row in result.all()]
+        self._awaiting_plate_clear = set(ids)
+        if ids:
+            logger.info("Restored awaiting_plate_clear gate for %d printer(s): %s", len(ids), ids)
 
     def set_event_loop(self, loop: asyncio.AbstractEventLoop):
         """Set the event loop for async callbacks."""

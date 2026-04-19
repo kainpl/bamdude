@@ -201,7 +201,7 @@ class PrintScheduler:
                 elif not printer_idle:
                     if self._drying_in_progress.get(printer_id):
                         new_reason = "Drying in progress"
-                    elif rpc and not printer_manager.is_plate_cleared(printer_id):
+                    elif rpc and printer_manager.is_awaiting_plate_clear(printer_id):
                         status = printer_manager.get_status(printer_id)
                         if status and status.state in ("FINISH", "FAILED"):
                             new_reason = "Plate not cleared"
@@ -301,14 +301,14 @@ class PrintScheduler:
                 for pid in busy_printers:
                     state = printer_manager.get_status(pid)
                     connected = printer_manager.is_connected(pid)
-                    plate_cleared = printer_manager.is_plate_cleared(pid)
+                    awaiting_plate_clear = printer_manager.is_awaiting_plate_clear(pid)
                     state_name = state.state if state else "NO_STATUS"
                     logger.info(
-                        "Queue: printer %d not available - connected=%s, state=%s, plate_cleared=%s",
+                        "Queue: printer %d not available - connected=%s, state=%s, awaiting_plate_clear=%s",
                         pid,
                         connected,
                         state_name,
-                        plate_cleared,
+                        awaiting_plate_clear,
                     )
 
             # Auto-drying: start drying on idle printers that have no pending queue items
@@ -871,16 +871,20 @@ class PrintScheduler:
 
         # IDLE = ready for next print
         # FINISH/FAILED = ready if plate-clear not required, or user confirmed plate is cleared
+        # Printer is ready for dispatch when it's IDLE (never printed / user cleared)
+        # OR at FINISH/FAILED with the plate-clear gate released. The gate is the
+        # persisted ``awaiting_plate_clear`` flag inverted — absent means clear,
+        # present means still waiting on user confirmation.
         idle = state.state == "IDLE" or (
             state.state in ("FINISH", "FAILED")
-            and (not require_plate_clear or printer_manager.is_plate_cleared(printer_id))
+            and (not require_plate_clear or not printer_manager.is_awaiting_plate_clear(printer_id))
         )
         if not idle:
             logger.debug(
-                "Printer %d: not idle - state=%s, plate_cleared=%s",
+                "Printer %d: not idle - state=%s, awaiting_plate_clear=%s",
                 printer_id,
                 state.state,
-                printer_manager.is_plate_cleared(printer_id),
+                printer_manager.is_awaiting_plate_clear(printer_id),
             )
         return idle
 
@@ -1583,8 +1587,10 @@ class PrintScheduler:
         await update_queue_counters(db, item.queue_id)
         await db.commit()
 
-        # Consume the plate-cleared flag now that we're starting a print
-        printer_manager.consume_plate_cleared(item.queue_id)
+        # No need to consume a plate-cleared flag here — in the new awaiting-based
+        # model the gate was released when the user confirmed (or by the clear-plate
+        # endpoint / swap macro). If we reached this dispatch point, is_awaiting was
+        # already False (see _is_printer_idle gate).
         logger.info("Queue item %s: Status set to 'printing', sending print command...", item.id)
 
         # Swap-mode start macro — fires before the print starts.

@@ -167,7 +167,7 @@ async def cb_clear_plate(callback: CallbackQuery, tg_chat: TelegramChat | None =
     printer_id = int(callback.data.split(":")[2])
 
     try:
-        printer_manager.set_plate_cleared(printer_id)
+        printer_manager.set_awaiting_plate_clear(printer_id, False)
         await callback.answer(f"\u2705 {t(lang, NS, 'printers.clear_plate_ok')}")
     except Exception:
         await callback.answer(t(lang, NS, "printers.clear_plate_fail"), show_alert=True)

@@ -2662,7 +2662,7 @@ function PrinterCard({
                 </div>
 
                 {/* Queue Widget - always visible when there are pending items */}
-                <PrinterQueueWidget printerId={printer.id} printerModel={printer.model} printerState={status.state} plateCleared={status.plate_cleared} requirePlateClear={printer.require_plate_clear} />
+                <PrinterQueueWidget printerId={printer.id} printerModel={printer.model} printerState={status.state} awaitingPlateClear={status.awaiting_plate_clear} requirePlateClear={printer.require_plate_clear} />
               </>
             )}
 

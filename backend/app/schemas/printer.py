@@ -291,7 +291,9 @@ class PrinterStatus(BaseModel):
     developer_mode: bool | None = None
     # Currently executing macro name (None = no macro running)
     macro_executing: str | None = None
-    # Queue: user has acknowledged plate is cleared for next queued print
-    plate_cleared: bool = False
+    # Queue plate-clear gate (#961): True means the printer is waiting on
+    # user confirmation before the next auto-dispatch. False means the gate
+    # is released (either never armed, or user/swap cleared it).
+    awaiting_plate_clear: bool = False
     # AMS drying support
     supports_drying: bool = False

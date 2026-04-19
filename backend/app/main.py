@@ -2498,10 +2498,16 @@ async def on_print_complete(printer_id: int, data: dict):
                 if archive:
                     archive_id = archive.id
 
+    # Local flag — set True by any swap path (swap_compatible archive or
+    # runtime change_table macro) that physically clears the plate. Used at
+    # the end of on_print_complete to decide whether to arm the
+    # awaiting_plate_clear gate (#961 inversion).
+    _plate_auto_cleared_by_swap = False
+
     # Swap-compatible files (macros baked in by third-party tooling like
     # swaplist.app) handle table changes internally — the plate is already
-    # swapped and clean by the time the print finishes. Auto-clear the
-    # plate-cleared flag so the queue scheduler doesn't block on manual
+    # swapped and clean by the time the print finishes. Skip arming the
+    # plate-clear gate so the queue scheduler doesn't block on manual
     # confirmation.
     if archive_id:
         try:
@@ -2511,7 +2517,7 @@ async def on_print_complete(printer_id: int, data: dict):
                 _sc_result = await db.execute(select(_ScArchive.swap_compatible).where(_ScArchive.id == archive_id))
                 _sc_swap = _sc_result.scalar_one_or_none()
                 if _sc_swap:
-                    printer_manager.set_plate_cleared(printer_id)
+                    _plate_auto_cleared_by_swap = True
                     logger.info(
                         "[SWAP] swap_compatible archive %s — plate auto-cleared for printer %s", archive_id, printer_id
                     )
@@ -2730,9 +2736,10 @@ async def on_print_complete(printer_id: int, data: dict):
                             printer_id, macro.gcode, macro.name
                         )
                         if _sw_ok:
-                            # Table swapped successfully — auto-clear plate so
-                            # the scheduler doesn't wait for manual confirmation.
-                            printer_manager.set_plate_cleared(printer_id)
+                            # Table swapped successfully — skip arming the
+                            # plate-clear gate so the scheduler doesn't wait
+                            # for manual confirmation.
+                            _plate_auto_cleared_by_swap = True
                             logger.info("[SWAP] change_table done — plate auto-cleared for printer %s", printer_id)
                         if not _sw_ok:
                             logger.error("[SWAP] change_table macro failed: %s — will pause queue", _sw_msg)
@@ -3588,6 +3595,20 @@ async def on_print_complete(printer_id: int, data: dict):
         asyncio.create_task(_scan_for_timelapse_with_retries(archive_id, baseline))
         log_timing("Timelapse scan scheduled")
 
+    # Arm the plate-clear gate if the printer is configured to require it
+    # and no swap path already cleared the plate. Persisted to DB so an
+    # Auto Off power cycle can't let the queue bypass the confirmation (#961).
+    if archive_id and not _plate_auto_cleared_by_swap:
+        try:
+            async with async_session() as db:
+                _r = await db.execute(select(Printer.require_plate_clear).where(Printer.id == printer_id))
+                _require = _r.scalar_one_or_none()
+            if _require:
+                printer_manager.set_awaiting_plate_clear(printer_id, True)
+                logger.info("[PLATE] Armed awaiting_plate_clear gate for printer %s", printer_id)
+        except Exception as e:
+            logger.warning("[PLATE] Failed to arm awaiting_plate_clear: %s", e)
+
     logger.info("[CALLBACK] on_print_complete finished for printer %s, archive %s", printer_id, archive_id)
 
 
@@ -4199,6 +4220,10 @@ async def lifespan(app: FastAPI):
 
     # Resume any pending auto-offs that were interrupted by restart
     await smart_plug_manager.resume_pending_auto_offs()
+
+    # Rehydrate plate-clear gates from DB so an Auto Off power cycle during a
+    # pending confirmation can't let the queue auto-dispatch onto a dirty plate (#961).
+    await printer_manager.load_awaiting_plate_clear_from_db()
 
     # Start the notification digest scheduler
     notification_service.start_digest_scheduler()
