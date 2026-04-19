@@ -107,8 +107,10 @@ def _apply_log_level(debug: bool):
     if debug:
         logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
         logging.getLogger("aiosqlite").setLevel(logging.WARNING)
-        logging.getLogger("httpcore").setLevel(logging.DEBUG)
-        logging.getLogger("httpx").setLevel(logging.DEBUG)
+        # httpx/httpcore pinned to WARNING even in debug mode — at DEBUG they log
+        # full request URLs, which leak bearer tokens in Discord/generic-webhook URLs.
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
+        logging.getLogger("httpx").setLevel(logging.WARNING)
         logging.getLogger("paho.mqtt").setLevel(logging.DEBUG)
     else:
         logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)

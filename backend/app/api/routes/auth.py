@@ -233,7 +233,7 @@ async def setup_auth(request: SetupRequest, db: AsyncSession = Depends(get_db)):
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Setup failed: {str(e)}",
+            detail="Setup failed",
         )
 
 
@@ -432,7 +432,9 @@ async def test_smtp_connection(
         logger.info(f"Test email sent successfully to {test_request.test_recipient}")
         return TestSMTPResponse(success=True, message="Test email sent successfully")
     except Exception as e:
-        logger.error(f"Failed to send test email: {e}")
+        logger.error("Failed to send test email: %s", e)
+        # Note: `message` is surfaced to the admin in the Test SMTP dialog on purpose —
+        # that endpoint is admin-only and the exception text is the diagnostic user needs.
         return TestSMTPResponse(success=False, message=f"Failed to send test email: {str(e)}")
 
 
@@ -467,10 +469,10 @@ async def save_smtp_config(
         return {"message": "SMTP settings saved successfully"}
     except Exception as e:
         await db.rollback()
-        logger.error(f"Failed to save SMTP settings: {e}")
+        logger.error("Failed to save SMTP settings: %s", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to save SMTP settings: {str(e)}",
+            detail="Failed to save SMTP settings",
         )
 
 
@@ -512,10 +514,10 @@ async def enable_advanced_auth(
         return {"message": "Advanced authentication enabled successfully", "advanced_auth_enabled": True}
     except Exception as e:
         await db.rollback()
-        logger.error(f"Failed to enable advanced authentication: {e}")
+        logger.error("Failed to enable advanced authentication: %s", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to enable advanced authentication: {str(e)}",
+            detail="Failed to enable advanced authentication",
         )
 
 
@@ -546,10 +548,10 @@ async def disable_advanced_auth(
         return {"message": "Advanced authentication disabled successfully", "advanced_auth_enabled": False}
     except Exception as e:
         await db.rollback()
-        logger.error(f"Failed to disable advanced authentication: {e}")
+        logger.error("Failed to disable advanced authentication: %s", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to disable advanced authentication: {str(e)}",
+            detail="Failed to disable advanced authentication",
         )
 
 
@@ -609,7 +611,7 @@ async def forgot_password(request: ForgotPasswordRequest, db: AsyncSession = Dep
 
             logger.info(f"Password reset email sent to {user.email}")
         except Exception as e:
-            logger.error(f"Failed to send password reset email: {e}")
+            logger.error("Failed to send password reset email: %s", e)
             # Don't reveal error to user for security
 
     return ForgotPasswordResponse(
@@ -693,10 +695,10 @@ async def reset_user_password(
         return ResetPasswordResponse(message=f"Password reset email sent to {user.email}")
     except Exception as e:
         await db.rollback()
-        logger.error(f"Failed to reset password for user {user.username}: {e}")
+        logger.error("Failed to reset password for user %s: %s", user.username, e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to reset password: {str(e)}",
+            detail="Failed to reset password",
         )
 
 
