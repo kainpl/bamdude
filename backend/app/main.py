@@ -1568,8 +1568,19 @@ async def on_print_start(printer_id: int, data: dict):
         # Get the filename and subtask_name
         filename = data.get("filename", "")
         subtask_name = data.get("subtask_name", "")
+        # Printer-assigned subtask identifier. Normalize "" and "0" to None —
+        # both appear as "no subtask" in MQTT pushes and must not match across
+        # prints (every missing-id archive would otherwise collide).
+        subtask_id = data.get("subtask_id") or None
+        if subtask_id == "0":
+            subtask_id = None
 
-        logger.info("[CALLBACK] Print start detected - filename: %s, subtask: %s", filename, subtask_name)
+        logger.info(
+            "[CALLBACK] Print start detected - filename: %s, subtask: %s, subtask_id: %s",
+            filename,
+            subtask_name,
+            subtask_id,
+        )
 
         # Skip calibration prints - internal printer files should not be archived
         # Bambu calibration gcode lives under /usr/ (e.g. /usr/etc/print/auto_cali_for_user.gcode)
@@ -1705,25 +1716,56 @@ async def on_print_start(printer_id: int, data: dict):
         from backend.app.models.archive import PrintArchive
 
         check_name = subtask_name or filename.split("/")[-1].replace(".gcode", "").replace(".3mf", "")
-        existing = await db.execute(
-            select(PrintArchive)
-            .where(PrintArchive.printer_id == printer_id)
-            .where(PrintArchive.status == "printing")
-            .where(
-                or_(
-                    PrintArchive.print_name == check_name,
-                    PrintArchive.filename.in_(
-                        [
-                            f"{check_name}.3mf",
-                            f"{check_name}.gcode.3mf",
-                        ]
-                    ),
-                )
+
+        # Pre-check: if the printer told us a subtask_id, look for an archive
+        # with the same id on this printer first. The printer-assigned id is
+        # unique per submission (see start_print submission_id), so a match is
+        # a stronger signal than name alone. Only consult status="printing" to
+        # avoid reviving old cancelled rows — BamDude has no stale-cancel
+        # heuristic, so a terminal status here is deliberate (#972 port).
+        existing_archive: PrintArchive | None = None
+        if subtask_id:
+            subtask_match = await db.execute(
+                select(PrintArchive)
+                .where(PrintArchive.printer_id == printer_id)
+                .where(PrintArchive.subtask_id == subtask_id)
+                .where(PrintArchive.status == "printing")
+                .order_by(PrintArchive.created_at.desc())
+                .limit(1)
             )
-            .order_by(PrintArchive.created_at.desc())
-            .limit(1)
-        )
-        existing_archive = existing.scalar_one_or_none()
+            existing_archive = subtask_match.scalar_one_or_none()
+            if existing_archive:
+                logger.info(
+                    "Resuming archive %s on subtask_id match (%s)",
+                    existing_archive.id,
+                    subtask_id,
+                )
+
+        if existing_archive is None:
+            existing = await db.execute(
+                select(PrintArchive)
+                .where(PrintArchive.printer_id == printer_id)
+                .where(PrintArchive.status == "printing")
+                .where(
+                    or_(
+                        PrintArchive.print_name == check_name,
+                        PrintArchive.filename.in_(
+                            [
+                                f"{check_name}.3mf",
+                                f"{check_name}.gcode.3mf",
+                            ]
+                        ),
+                    )
+                )
+                .order_by(PrintArchive.created_at.desc())
+                .limit(1)
+            )
+            existing_archive = existing.scalar_one_or_none()
+            # Backfill subtask_id onto an archive that matched by name only —
+            # next restart can then use the faster subtask_id pre-check path.
+            if existing_archive and subtask_id and existing_archive.subtask_id is None:
+                existing_archive.subtask_id = subtask_id
+                await db.commit()
         if existing_archive:
             # The printer just fired on_print_start for ``check_name``, and we
             # have a matching "printing" archive on file — by definition it IS
@@ -1801,6 +1843,10 @@ async def on_print_start(printer_id: int, data: dict):
                     if hash_match.completed_at:
                         hash_match.completed_at = None
                     await db.commit()
+                # Backfill subtask_id so the next restart skips the content_hash path.
+                if subtask_id and hash_match.subtask_id is None:
+                    hash_match.subtask_id = subtask_id
+                    await db.commit()
                 _active_prints[(printer_id, hash_match.filename)] = hash_match.id
                 if subtask_name:
                     _active_prints[(printer_id, f"{subtask_name}.3mf")] = hash_match.id
@@ -1844,6 +1890,7 @@ async def on_print_start(printer_id: int, data: dict):
                     file_path="",  # Empty - no 3MF file available
                     file_size=0,
                     print_name=print_name,
+                    subtask_id=subtask_id,
                     status="printing",
                     started_at=datetime.now(timezone.utc),
                     # Retry hooks recover from this state on:
@@ -1943,6 +1990,7 @@ async def on_print_start(printer_id: int, data: dict):
                 printer_id=printer_id,
                 source_file=temp_path,
                 print_data={**data, "status": "printing"},
+                subtask_id=subtask_id,
             )
 
             if archive:

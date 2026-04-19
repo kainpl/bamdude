@@ -3040,6 +3040,13 @@ class BambuMQTTClient:
                     flat_ams_mapping,
                 )
 
+            # Unique submission ID per invocation. Third-party MQTT observers
+            # (OctoEverywhere, etc.) were treating every reprint as a continuation
+            # of the prior task when project_id/subtask_id/task_id were hardcoded
+            # "0"; the printer kept broadcasting the old gcode_start_time and
+            # observers accumulated compounding durations (#1011).
+            submission_id = str(int(time.time() * 1000))
+
             command = {
                 "print": {
                     "sequence_id": "20000",
@@ -3066,9 +3073,9 @@ class BambuMQTTClient:
                     "nozzle_offset_cali": 2,
                     "subtask_name": filename.replace(".3mf", "").replace(".gcode", ""),
                     "profile_id": "0",
-                    "project_id": "0",
-                    "subtask_id": "0",
-                    "task_id": "0",
+                    "project_id": submission_id,
+                    "subtask_id": submission_id,
+                    "task_id": submission_id,
                 }
             }
 

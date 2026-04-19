@@ -853,6 +853,7 @@ class ArchiveService:
         *,
         source_content_hash: str | None = None,
         applied_patches: list[str] | None = None,
+        subtask_id: str | None = None,
     ) -> PrintArchive | None:
         """Archive a 3MF file with metadata.
 
@@ -867,6 +868,9 @@ class ArchiveService:
                 caller (BamDude dispatch) knows it. None for external prints.
             applied_patches: Patch identifiers applied by the dispatch pipeline
                 before upload. None for external prints.
+            subtask_id: Printer-assigned subtask identifier from MQTT push_status,
+                captured by on_print_start when available. Advisory pre-check
+                key in later resume attempts (#972).
         """
         # Verify printer exists if specified
         if printer_id is not None:
@@ -1022,6 +1026,7 @@ class ArchiveService:
             extra_data=metadata,
             created_by_id=created_by_id,
             project_id=project_id,
+            subtask_id=subtask_id,
         )
 
         self.db.add(archive)
