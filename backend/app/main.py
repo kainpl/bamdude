@@ -32,6 +32,7 @@ from backend.app.api.routes import (
     macros,
     maintenance,
     metrics,
+    mfa,
     notification_templates,
     notifications,
     pending_uploads,
@@ -4392,6 +4393,18 @@ PUBLIC_API_PATTERNS = [
     # orcaslicer://) cannot send auth headers. These endpoints validate a short-lived
     # download token in the URL path instead.
     "/dl/",  # /archives/{id}/dl/{token}/{filename}, /library/files/{id}/dl/{token}/{filename}
+    # 2FA + OIDC endpoints consumed by the login page before the user has a JWT.
+    # /verify trades a pre-auth token for a JWT; /oidc/providers lists enabled
+    # OIDC buttons; /oidc/authorize/{id} starts the PKCE flow; /oidc/callback
+    # lands from the identity provider; /oidc/exchange swaps the bridge token
+    # for a JWT. All of these carry their own short-lived token binding so the
+    # auth-middleware can skip them safely.
+    "/auth/2fa/verify",
+    "/auth/2fa/send-code",
+    "/auth/oidc/providers",
+    "/auth/oidc/authorize/",
+    "/auth/oidc/callback",
+    "/auth/oidc/exchange",
 ]
 
 
@@ -4557,6 +4570,7 @@ async def auth_middleware(request, call_next):
 
 # API routes
 app.include_router(auth.router, prefix=app_settings.api_prefix)
+app.include_router(mfa.router, prefix=app_settings.api_prefix)
 app.include_router(users.router, prefix=app_settings.api_prefix)
 app.include_router(groups.router, prefix=app_settings.api_prefix)
 app.include_router(printers.router, prefix=app_settings.api_prefix)

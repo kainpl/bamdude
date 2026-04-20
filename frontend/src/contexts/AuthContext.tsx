@@ -102,7 +102,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const login = async (username: string, password: string) => {
     const response = await api.login({ username, password });
-    setAuthToken(response.access_token);
+    // LoginResponse.access_token is optional (undefined when 2FA is required).
+    // Batch G (§18.11) adds the step-machine — until then we treat a missing
+    // token the same as a failed login so callers aren't silently logged in.
+    setAuthToken(response.access_token ?? null);
     await checkAuthStatus();
   };
 
