@@ -443,8 +443,12 @@ async def change_own_password(
             detail="User not found",
         )
 
-    # Update password
+    # Update password. password_changed_at invalidates all JWTs issued before
+    # this moment (§18.4 I2 — freshness check in get_current_user).
+    from datetime import datetime, timezone
+
     user.password_hash = get_password_hash(password_data.new_password)
+    user.password_changed_at = datetime.now(timezone.utc)
     await db.commit()
 
     return {"message": "Password changed successfully"}

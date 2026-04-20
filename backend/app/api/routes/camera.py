@@ -525,7 +525,7 @@ async def create_stream_token(
     loaded by ``<img>`` / ``<video>`` tags — those can't send Authorization
     headers. Tokens last 60 minutes and are reusable within that window.
     """
-    return {"token": create_camera_stream_token()}
+    return {"token": await create_camera_stream_token()}
 
 
 @router.get("/{printer_id}/camera/stream")

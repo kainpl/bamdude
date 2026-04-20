@@ -1,8 +1,10 @@
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
+import jwt
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials
+from jwt.exceptions import PyJWTError as JWTError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -23,6 +25,7 @@ from backend.app.core.auth import (
     get_user_by_email,
     get_user_by_username,
     has_any_admin,
+    revoke_jti,
     security,
 )
 from backend.app.core.database import get_db
@@ -396,8 +399,39 @@ async def get_current_user_info(
 
 
 @router.post("/logout")
-async def logout():
-    """Logout (client should discard token)."""
+async def logout(
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    """Logout — revoke the caller's JWT ``jti`` so it can't be reused (§18.4).
+
+    Accepts the bearer token via the standard ``Authorization`` header. Validates
+    the signature without enforcing ``exp`` (expired tokens still get their jti
+    blacklisted) so a user who logs out after their token expired can't have
+    anyone replay that token within our revocation window.
+    """
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization[len("Bearer ") :]
+        try:
+            payload = jwt.decode(
+                token,
+                SECRET_KEY,
+                algorithms=[ALGORITHM],
+                options={"verify_exp": False},
+            )
+            jti = payload.get("jti")
+            exp = payload.get("exp")
+            if jti:
+                # Revoke until the token's original expiry so the blacklist doesn't
+                # grow forever. After exp the JWT is dead regardless of the row.
+                expires_at = (
+                    datetime.fromtimestamp(exp, tz=timezone.utc)
+                    if exp
+                    else datetime.now(timezone.utc) + timedelta(hours=24)
+                )
+                await revoke_jti(jti, expires_at, username=payload.get("sub"))
+        except JWTError:
+            # Malformed / signature-invalid token — nothing to revoke.
+            pass
     return {"message": "Logged out successfully"}
 
 
@@ -599,6 +633,7 @@ async def forgot_password(request: ForgotPasswordRequest, db: AsyncSession = Dep
             # Generate new password
             new_password = generate_secure_password()
             user.password_hash = get_password_hash(new_password)
+            user.password_changed_at = datetime.now(timezone.utc)  # §18.4: invalidate existing JWTs
             await db.commit()
 
             login_url = await get_external_login_url(db)
@@ -681,6 +716,7 @@ async def reset_user_password(
         # Generate new password
         new_password = generate_secure_password()
         user.password_hash = get_password_hash(new_password)
+        user.password_changed_at = datetime.now(timezone.utc)  # §18.4: invalidate existing JWTs
         await db.commit()
 
         login_url = await get_external_login_url(db)
