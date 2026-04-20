@@ -30,7 +30,7 @@ class TestPerUserCloudCredentials:
 
         user = User(
             username="clouduser",
-            password_hash=get_password_hash("testpass123"),
+            password_hash=get_password_hash("TestPass123!"),
             role="user",
         )
         db_session.add(user)
@@ -61,7 +61,7 @@ class TestPerUserCloudCredentials:
 
         user = User(
             username="clouduser2",
-            password_hash=get_password_hash("testpass456"),
+            password_hash=get_password_hash("TestPass456!"),
             role="user",
         )
         db_session.add(user)
@@ -76,7 +76,7 @@ class TestPerUserCloudCredentials:
         """Get auth token for user with cloud permissions."""
         response = await async_client.post(
             "/api/v1/auth/login",
-            json={"username": "clouduser", "password": "testpass123"},
+            json={"username": "clouduser", "password": "TestPass123!"},
         )
         if response.status_code == 200:
             return response.json().get("access_token")
@@ -87,7 +87,7 @@ class TestPerUserCloudCredentials:
         """Get auth token for second user."""
         response = await async_client.post(
             "/api/v1/auth/login",
-            json={"username": "clouduser2", "password": "testpass456"},
+            json={"username": "clouduser2", "password": "TestPass456!"},
         )
         if response.status_code == 200:
             return response.json().get("access_token")
@@ -133,7 +133,7 @@ class TestCloudEndpointPermissions:
             db.add(group)
             user = User(
                 username="settingsuser",
-                password_hash=get_password_hash("testpass123"),
+                password_hash=get_password_hash("TestPass123!"),
                 role="user",
             )
             db.add(user)
@@ -164,7 +164,7 @@ class TestCloudEndpointPermissions:
             db.add(group)
             user = User(
                 username="cloudonly",
-                password_hash=get_password_hash("testpass123"),
+                password_hash=get_password_hash("TestPass123!"),
                 role="user",
             )
             db.add(user)

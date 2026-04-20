@@ -158,7 +158,7 @@ async def async_client(test_engine, db_session) -> AsyncGenerator[AsyncClient, N
         async with test_async_session() as setup_db:
             admin = User(
                 username="test_admin",
-                password_hash=get_password_hash("test_admin_pass"),
+                password_hash=get_password_hash("Test_AdminPass1!"),
                 role="admin",
                 is_active=True,
             )

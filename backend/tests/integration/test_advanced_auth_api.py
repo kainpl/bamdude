@@ -43,7 +43,7 @@ async def _setup_smtp_and_advanced_auth(async_client: AsyncClient, token: str):
 
 
 async def _create_regular_user(
-    async_client: AsyncClient, token: str, username: str = "regular", password: str = "regularpass123"
+    async_client: AsyncClient, token: str, username: str = "regular", password: str = "RegularPass123!"
 ):
     """Create a regular (non-admin) user and return their token."""
     headers = {"Authorization": f"Bearer {token}"}
@@ -96,7 +96,7 @@ class TestSMTPConfigAPI:
     @pytest.mark.integration
     async def test_smtp_settings_requires_admin(self, async_client: AsyncClient, admin_token: str):
         """Non-admin user gets 403 on SMTP endpoints."""
-        user_token = await _create_regular_user(async_client, admin_token, "smtpregular", "pass123456")
+        user_token = await _create_regular_user(async_client, admin_token, "smtpregular", "Pass123456!")
         headers = {"Authorization": f"Bearer {user_token}"}
 
         response = await async_client.post("/api/v1/auth/smtp", headers=headers, json=SMTP_DATA)
@@ -196,7 +196,7 @@ class TestAdvancedAuthToggleAPI:
     @pytest.mark.integration
     async def test_enable_requires_admin(self, async_client: AsyncClient, admin_token: str):
         """Non-admin user gets 403 on enable/disable."""
-        user_token = await _create_regular_user(async_client, admin_token, "toggleregular", "pass123456")
+        user_token = await _create_regular_user(async_client, admin_token, "toggleregular", "Pass123456!")
         headers = {"Authorization": f"Bearer {user_token}"}
 
         response = await async_client.post("/api/v1/auth/advanced-auth/enable", headers=headers)
@@ -236,13 +236,13 @@ class TestEmailLoginAPI:
             await async_client.patch(
                 f"/api/v1/users/{user_id}",
                 headers=headers,
-                json={"password": "knownpassword123"},
+                json={"password": "KnownPassword123!"},
             )
 
         # Login with email
         response = await async_client.post(
             "/api/v1/auth/login",
-            json={"username": "emailuser@test.com", "password": "knownpassword123"},
+            json={"username": "emailuser@test.com", "password": "KnownPassword123!"},
         )
         assert response.status_code == 200
         assert "access_token" in response.json()
@@ -265,12 +265,12 @@ class TestEmailLoginAPI:
             await async_client.patch(
                 f"/api/v1/users/{user_id}",
                 headers=headers,
-                json={"password": "casepassword123"},
+                json={"password": "CasePassword123!"},
             )
 
         response = await async_client.post(
             "/api/v1/auth/login",
-            json={"username": "CASEUSER@TEST.COM", "password": "casepassword123"},
+            json={"username": "CASEUSER@TEST.COM", "password": "CasePassword123!"},
         )
         assert response.status_code == 200
         assert "access_token" in response.json()
@@ -285,13 +285,13 @@ class TestEmailLoginAPI:
         await async_client.post(
             "/api/v1/users/",
             headers=headers,
-            json={"username": "noemail", "password": "noEmailPass1", "email": "noemail@test.com", "role": "user"},
+            json={"username": "noemail", "password": "NoEmailPass1!", "email": "noemail@test.com", "role": "user"},
         )
 
         # Try to login with email - should fail since advanced auth is off
         response = await async_client.post(
             "/api/v1/auth/login",
-            json={"username": "noemail@test.com", "password": "noEmailPass1"},
+            json={"username": "noemail@test.com", "password": "NoEmailPass1!"},
         )
         assert response.status_code == 401
 
@@ -313,13 +313,13 @@ class TestEmailLoginAPI:
             await async_client.patch(
                 f"/api/v1/users/{user_id}",
                 headers=headers,
-                json={"password": "usernamepass123"},
+                json={"password": "UsernamePass123!"},
             )
 
         # Login with username (not email)
         response = await async_client.post(
             "/api/v1/auth/login",
-            json={"username": "usernameuser", "password": "usernamepass123"},
+            json={"username": "usernameuser", "password": "UsernamePass123!"},
         )
         assert response.status_code == 200
         assert "access_token" in response.json()
@@ -406,13 +406,13 @@ class TestForgotPasswordAPI:
             await async_client.patch(
                 f"/api/v1/users/{user_id}",
                 headers=headers,
-                json={"password": "originalpass123"},
+                json={"password": "OriginalPass123!"},
             )
 
         # Verify login works with original password
         login_resp = await async_client.post(
             "/api/v1/auth/login",
-            json={"username": "resetme", "password": "originalpass123"},
+            json={"username": "resetme", "password": "OriginalPass123!"},
         )
         assert login_resp.status_code == 200
 
@@ -426,7 +426,7 @@ class TestForgotPasswordAPI:
         # Old password should no longer work
         login_resp = await async_client.post(
             "/api/v1/auth/login",
-            json={"username": "resetme", "password": "originalpass123"},
+            json={"username": "resetme", "password": "OriginalPass123!"},
         )
         assert login_resp.status_code == 401
 
@@ -470,7 +470,7 @@ class TestAdminResetPasswordAPI:
     async def test_reset_password_requires_admin(self, async_client: AsyncClient, admin_token: str):
         """Non-admin user gets 403 on reset-password."""
         # Create regular user before enabling advanced auth (no email required)
-        user_token = await _create_regular_user(async_client, admin_token, "resetregular", "pass123456")
+        user_token = await _create_regular_user(async_client, admin_token, "resetregular", "Pass123456!")
 
         with patch("backend.app.api.routes.users.send_email"):
             await _setup_smtp_and_advanced_auth(async_client, admin_token)
@@ -525,7 +525,7 @@ class TestAdminResetPasswordAPI:
         create_resp = await async_client.post(
             "/api/v1/users/",
             headers=headers,
-            json={"username": "noemailuser", "password": "noemail123456", "role": "user"},
+            json={"username": "noemailuser", "password": "NoEmail123456!", "role": "user"},
         )
         user_id = create_resp.json()["id"]
 

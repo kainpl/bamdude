@@ -37,7 +37,7 @@ class TestOwnershipPermissionsSetup:
             headers={"Authorization": f"Bearer {admin_token}"},
             json={
                 "username": "operator1",
-                "password": "operatorpass123",
+                "password": "OperatorPass123!",
                 "group_ids": [operators_group["id"]],
             },
         )
@@ -46,7 +46,7 @@ class TestOwnershipPermissionsSetup:
         # Login as operator
         operator_login = await async_client.post(
             "/api/v1/auth/login",
-            json={"username": "operator1", "password": "operatorpass123"},
+            json={"username": "operator1", "password": "OperatorPass123!"},
         )
         operator_token = operator_login.json()["access_token"]
 
@@ -56,7 +56,7 @@ class TestOwnershipPermissionsSetup:
             headers={"Authorization": f"Bearer {admin_token}"},
             json={
                 "username": "operator2",
-                "password": "operatorpass123",
+                "password": "OperatorPass123!",
                 "group_ids": [operators_group["id"]],
             },
         )
@@ -64,7 +64,7 @@ class TestOwnershipPermissionsSetup:
 
         operator2_login = await async_client.post(
             "/api/v1/auth/login",
-            json={"username": "operator2", "password": "operatorpass123"},
+            json={"username": "operator2", "password": "OperatorPass123!"},
         )
         operator2_token = operator2_login.json()["access_token"]
 
@@ -74,14 +74,14 @@ class TestOwnershipPermissionsSetup:
             headers={"Authorization": f"Bearer {admin_token}"},
             json={
                 "username": "viewer1",
-                "password": "viewerpass123",
+                "password": "ViewerPass123!",
                 "group_ids": [viewers_group["id"]],
             },
         )
 
         viewer_login = await async_client.post(
             "/api/v1/auth/login",
-            json={"username": "viewer1", "password": "viewerpass123"},
+            json={"username": "viewer1", "password": "ViewerPass123!"},
         )
         viewer_token = viewer_login.json()["access_token"]
 
@@ -716,7 +716,7 @@ class TestUserItemsCountAndDeletion(TestOwnershipPermissionsSetup):
             headers={"Authorization": f"Bearer {auth_setup['admin_token']}"},
             json={
                 "username": "deletewithitems",
-                "password": "password123",
+                "password": "Password123!",
             },
         )
         user_id = create_response.json()["id"]

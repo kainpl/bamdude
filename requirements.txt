@@ -48,6 +48,8 @@ psutil>=6.0.0
 PyJWT>=2.12.0
 passlib[bcrypt]>=1.7.4
 ldap3>=2.9.0
+# TOTP (RFC 6238) for 2FA authenticator apps (§18.1)
+pyotp>=2.9.0
 
 # Plate Detection (optional - enables build plate empty detection)
 opencv-python-headless>=4.8.0
