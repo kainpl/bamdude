@@ -2599,6 +2599,12 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+  // H-6: confirm password reset using the token from the emailed link
+  forgotPasswordConfirm: (token: string, newPassword: string) =>
+    request<ForgotPasswordResponse>('/auth/forgot-password/confirm', {
+      method: 'POST',
+      body: JSON.stringify({ token, new_password: newPassword }),
+    }),
   resetUserPassword: (data: ResetPasswordRequest) =>
     request<ResetPasswordResponse>('/auth/reset-password', {
       method: 'POST',
