@@ -3780,3 +3780,70 @@ class TestZombieSessionDetection:
         mqtt_client._update_state({"gcode_state": "IDLE"})
         assert mqtt_client._ams_cmd_unanswered == 0
         assert mqtt_client._last_ams_cmd_time > 0  # still pending
+
+
+class TestDeleteKProfileDualNozzleDetection:
+    """Regression guard: dual-nozzle detection by serial prefix (#988).
+
+    ``delete_kprofile`` branches on serial-prefix-derived dual-nozzle status.
+    H2D family serials start with "094"; X2D serials start with "20P9".
+    Non-dual families (X1C "00M", P1S "01P", P2S "22E", A1 "039", etc.)
+    must take the single-nozzle branch.
+    """
+
+    def _make_client(self, serial: str):
+        from unittest.mock import MagicMock
+
+        from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+        client = BambuMQTTClient(
+            ip_address="192.168.1.100",
+            serial_number=serial,
+            access_code="12345678",
+        )
+        client._client = MagicMock()
+        client.state.connected = True
+        return client
+
+    def _published(self, client):
+        return json.loads(client._client.publish.call_args[0][1])["print"]
+
+    def test_h2d_serial_uses_dual_nozzle_format(self):
+        client = self._make_client("09400A000000001")
+        client.delete_kprofile(cali_idx=1, filament_id="GFA00", nozzle_id="HH00-0.4")
+        cmd = self._published(client)
+        # Dual-nozzle command omits setting_id.
+        assert "setting_id" not in cmd
+        assert cmd["extruder_id"] == 0
+
+    def test_x2d_serial_uses_dual_nozzle_format(self):
+        """X2D prefix "20P9" must take the same dual-nozzle branch as H2D (#988)."""
+        client = self._make_client("20P90A000000001")
+        client.delete_kprofile(cali_idx=1, filament_id="GFA00", nozzle_id="HH00-0.4")
+        cmd = self._published(client)
+        assert "setting_id" not in cmd
+        assert cmd["extruder_id"] == 0
+
+    def test_p2s_serial_uses_single_nozzle_format(self):
+        """P2S is single-nozzle — must NOT take the dual-nozzle branch."""
+        client = self._make_client("22E00A000000001")
+        client.delete_kprofile(
+            cali_idx=1,
+            filament_id="GFA00",
+            nozzle_id="HH00-0.4",
+            setting_id="PFB123",
+        )
+        cmd = self._published(client)
+        # Single-nozzle command includes setting_id.
+        assert cmd["setting_id"] == "PFB123"
+
+    def test_x1c_serial_uses_single_nozzle_format(self):
+        client = self._make_client("00M00A000000001")
+        client.delete_kprofile(
+            cali_idx=1,
+            filament_id="GFA00",
+            nozzle_id="HH00-0.4",
+            setting_id="PFB123",
+        )
+        cmd = self._published(client)
+        assert cmd["setting_id"] == "PFB123"

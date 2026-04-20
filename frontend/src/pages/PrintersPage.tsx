@@ -1041,6 +1041,8 @@ function mapModelCode(ssdpModel: string | null): string {
     'BL-P001': 'X1C',
     'BL-P002': 'X1',
     'BL-P003': 'X1E',
+    // X2 Series
+    'N6': 'X2D',
     // P Series
     'C11': 'P1S',
     'C12': 'P1P',
@@ -1052,6 +1054,7 @@ function mapModelCode(ssdpModel: string | null): string {
     'X1C': 'X1C',
     'X1': 'X1',
     'X1E': 'X1E',
+    'X2D': 'X2D',
     'P1S': 'P1S',
     'P1P': 'P1P',
     'P2S': 'P2S',
@@ -5199,6 +5202,9 @@ function AddPrinterModal({
                       <option value="H2D Pro">H2D Pro</option>
                       <option value="H2S">H2S</option>
                     </optgroup>
+                    <optgroup label="X2 Series">
+                      <option value="X2D">X2D</option>
+                    </optgroup>
                     <optgroup label="X1 Series">
                       <option value="X1E">X1E</option>
                       <option value="X1C">X1 Carbon</option>
@@ -5740,6 +5746,9 @@ function EditPrinterModal({
                       <option value="H2D">H2D</option>
                       <option value="H2D Pro">H2D Pro</option>
                       <option value="H2S">H2S</option>
+                    </optgroup>
+                    <optgroup label="X2 Series">
+                      <option value="X2D">X2D</option>
                     </optgroup>
                     <optgroup label="X1 Series">
                       <option value="X1E">X1E</option>

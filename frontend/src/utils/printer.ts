@@ -1,6 +1,7 @@
 export function getPrinterImage(model: string | null | undefined): string {
   if (!model) return '/img/printers/default.png';
   const m = model.toLowerCase().replace(/\s+/g, '');
+  if (m.includes('x2d') || m === 'n6') return '/img/printers/x2d.png';
   if (m.includes('x1e')) return '/img/printers/x1e.png';
   if (m.includes('x1c') || m.includes('x1carbon')) return '/img/printers/x1c.png';
   if (m.includes('x1')) return '/img/printers/x1c.png';
