@@ -14,6 +14,8 @@ import {
   RefreshCw,
   Box,
   HardDrive,
+  DoorOpen,
+  DoorClosed,
   AlertTriangle,
   AlertCircle,
   Terminal,
@@ -2414,6 +2416,21 @@ function PrinterCard({
                   <HardDrive className="w-3 h-3" />
                   {t('printers.noSd')}
                 </button>
+              )}
+              {/* Enclosure door badge — only for printers with an actual enclosure.
+                  Open = yellow warning (firmware may pause the print on open), closed = green OK.
+                  Backend parses the bit from home_flag (X1 family) or stat (P1/P2/H2/A1). */}
+              {status?.connected && ['X1C', 'X1', 'X1E', 'P1S', 'P1P', 'P2S', 'H2D', 'H2D Pro', 'H2C', 'H2S'].includes(printer.model ?? '') && (
+                <span
+                  className={`flex items-center px-2 py-1 rounded-full text-xs ${
+                    status.door_open
+                      ? 'bg-status-warning/20 text-status-warning'
+                      : 'bg-status-ok/20 text-status-ok'
+                  }`}
+                  title={status.door_open ? t('printers.door.open') : t('printers.door.closed')}
+                >
+                  {status.door_open ? <DoorOpen className="w-3 h-3" /> : <DoorClosed className="w-3 h-3" />}
+                </span>
               )}
               {/* Maintenance Status Indicator */}
               {maintenanceInfo && (

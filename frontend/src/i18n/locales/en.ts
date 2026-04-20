@@ -299,6 +299,10 @@ export default {
     notInserted: 'Not inserted',
     noSd: 'No SD',
     sdCardMissing: 'No SD card detected. Prints that store files on the printer will fail; insert a card or switch "Store sent files" off.',
+    door: {
+      open: 'Enclosure door open',
+      closed: 'Enclosure door closed',
+    },
     totalPrintHours: 'Print Hours',
     activeNozzle: 'Active: {{nozzle}} nozzle',
     nozzleRack: 'Nozzle Rack',
