@@ -1,8 +1,10 @@
+import os
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 import jwt
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials
 from jwt.exceptions import PyJWTError as JWTError
 from sqlalchemy import select
@@ -86,6 +88,44 @@ def _api_key_to_user_response(api_key) -> UserResponse:
         permissions=sorted(ALL_PERMISSIONS),
         created_at=api_key.created_at.isoformat(),
     )
+
+
+# ---------------------------------------------------------------------------
+# §18.5 M-R9-A: Real client IP resolution for rate limiting behind reverse proxies.
+# Set TRUSTED_PROXY_IPS (comma-separated) to enable X-Forwarded-For trust.
+# Without this env var client.host is used directly (safe default for direct-deploy).
+# ---------------------------------------------------------------------------
+_TRUSTED_PROXY_IPS: frozenset[str] = frozenset(
+    ip.strip() for ip in os.environ.get("TRUSTED_PROXY_IPS", "").split(",") if ip.strip()
+)
+
+
+def _get_client_ip(request: Request) -> str:
+    """Return the real client IP for rate-limiting purposes.
+
+    When ``TRUSTED_PROXY_IPS`` is configured and the direct TCP peer is a
+    trusted proxy, ``X-Forwarded-For`` is evaluated right-to-left: the
+    rightmost IP that is NOT itself a trusted proxy is the true client
+    address (M-R10-A fix for multi-hop nginx chains). Standard nginx with
+    ``proxy_add_x_forwarded_for`` appends the client IP, so the rightmost
+    entry that isn't a known proxy is always the real caller.
+
+    Falls back to ``request.client.host`` when ``TRUSTED_PROXY_IPS`` is
+    unset (direct deployment without a reverse proxy).
+    """
+    # I5: per-request unique token instead of "unknown" when the transport has
+    # no client address — prevents collision with any literal username and
+    # prevents all such requests from sharing a single rate-limit bucket.
+    direct_ip = request.client.host if request.client else f"__no_ip_{secrets.token_hex(8)}__"
+    if _TRUSTED_PROXY_IPS and direct_ip in _TRUSTED_PROXY_IPS:
+        forwarded_for = request.headers.get("X-Forwarded-For", "")
+        ips = [ip.strip() for ip in forwarded_for.split(",") if ip.strip()]
+        for ip in reversed(ips):
+            if ip not in _TRUSTED_PROXY_IPS:
+                return ip
+        if ips:
+            return ips[0]
+    return direct_ip
 
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
@@ -253,11 +293,36 @@ async def get_auth_status(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/login", response_model=LoginResponse)
-async def login(request: LoginRequest, db: AsyncSession = Depends(get_db)):
+async def login(
+    request: LoginRequest,
+    raw_request: Request,
+    db: AsyncSession = Depends(get_db),
+):
     """Login and get access token.
 
     Supports username or email-based login. Username lookup is case-insensitive.
+
+    §18.5 rate limiting: two sliding-window buckets — per-username
+    (MAX_LOGIN_ATTEMPTS_PER_USERNAME in 15 min) and per-client-IP
+    (MAX_LOGIN_ATTEMPTS_PER_IP in 15 min). On successful login both buckets
+    are cleared. Behind a reverse proxy configure ``TRUSTED_PROXY_IPS`` so
+    the real client IP is used; otherwise the TCP peer is.
     """
+    from backend.app.core.rate_limit import (
+        MAX_LOGIN_ATTEMPTS_PER_IP,
+        MAX_LOGIN_ATTEMPTS_PER_USERNAME,
+        check_rate_limit,
+        clear_failed_attempts,
+        record_failed_attempt,
+    )
+    from backend.app.models.auth_ephemeral import EventType
+
+    client_ip = _get_client_ip(raw_request)
+    await check_rate_limit(
+        db, request.username, event_type=EventType.LOGIN_ATTEMPT, max_attempts=MAX_LOGIN_ATTEMPTS_PER_USERNAME
+    )
+    await check_rate_limit(db, client_ip, event_type=EventType.LOGIN_IP, max_attempts=MAX_LOGIN_ATTEMPTS_PER_IP)
+
     # Check if LDAP is enabled
     ldap_user = None
     ldap_settings = await _get_ldap_settings(db)
@@ -306,6 +371,10 @@ async def login(request: LoginRequest, db: AsyncSession = Depends(get_db)):
             user = await authenticate_user_by_email(db, request.username, request.password)
 
     if not user:
+        # §18.5: record the failure into both buckets so repeated attempts trip
+        # the rate limit even when the username doesn't exist.
+        await record_failed_attempt(db, request.username, event_type=EventType.LOGIN_ATTEMPT)
+        await record_failed_attempt(db, client_ip, event_type=EventType.LOGIN_IP)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
@@ -315,6 +384,10 @@ async def login(request: LoginRequest, db: AsyncSession = Depends(get_db)):
     # Reload user with groups for proper permission calculation
     result = await db.execute(select(User).where(User.id == user.id).options(selectinload(User.groups)))
     user = result.scalar_one()
+
+    # §18.5: successful login clears both rate-limit buckets for this pair.
+    await clear_failed_attempts(db, user.username, event_type=EventType.LOGIN_ATTEMPT)
+    await clear_failed_attempts(db, client_ip, event_type=EventType.LOGIN_IP)
 
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(data={"sub": user.username}, expires_delta=access_token_expires)
@@ -601,11 +674,41 @@ async def get_advanced_auth_status(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/forgot-password", response_model=ForgotPasswordResponse)
-async def forgot_password(request: ForgotPasswordRequest, db: AsyncSession = Depends(get_db)):
-    """Request password reset via email (advanced auth only)."""
+async def forgot_password(
+    request: ForgotPasswordRequest,
+    raw_request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Request password reset via email (advanced auth only).
+
+    §18.5 rate limiting: 3/15 min per email address + 10/15 min per client IP.
+    Buckets recorded on every call (not just failures) because the endpoint is
+    public and intentionally returns success even for nonexistent emails
+    (anti-enumeration) — a per-email counter without this would let an
+    attacker mass-trigger sends as long as each email is unique.
+    """
     import logging
 
+    from backend.app.core.rate_limit import (
+        MAX_PASSWORD_RESET_PER_IP,
+        MAX_PASSWORD_RESET_PER_USERNAME,
+        check_rate_limit,
+        record_failed_attempt,
+    )
+    from backend.app.models.auth_ephemeral import EventType
+
     logger = logging.getLogger(__name__)
+
+    client_ip = _get_client_ip(raw_request)
+    await check_rate_limit(
+        db, request.email, event_type=EventType.PASSWORD_RESET_SEND, max_attempts=MAX_PASSWORD_RESET_PER_USERNAME
+    )
+    await check_rate_limit(
+        db, client_ip, event_type=EventType.PASSWORD_RESET_IP, max_attempts=MAX_PASSWORD_RESET_PER_IP
+    )
+    # Record the event eagerly — see docstring for the anti-enumeration rationale.
+    await record_failed_attempt(db, request.email, event_type=EventType.PASSWORD_RESET_SEND)
+    await record_failed_attempt(db, client_ip, event_type=EventType.PASSWORD_RESET_IP)
 
     # Check if advanced auth is enabled
     advanced_auth = await is_advanced_auth_enabled(db)
