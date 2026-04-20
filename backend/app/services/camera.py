@@ -23,6 +23,13 @@ JPEG_END = b"\xff\xd9"
 # Cache the ffmpeg path after first lookup
 _ffmpeg_path: str | None = None
 
+# PIDs of ffmpeg processes spawned for one-shot frame capture (finish photos,
+# timelapse seed frames, future Obico detection). The cleanup task in
+# routes/camera.py consults this set and skips these PIDs so a short-lived
+# snapshot running in parallel with the cleanup tick can't get SIGKILL'd by
+# the /proc-scan orphan sweep (#979 upstream 62950e37).
+_active_capture_pids: set[int] = set()
+
 
 def get_ffmpeg_path() -> str | None:
     """Find the ffmpeg executable path.
@@ -504,12 +511,16 @@ async def capture_camera_frame_bytes(
 
     logger.info("Capturing camera frame bytes from %s using RTSP (model: %s)", ip_address, model)
 
+    process: asyncio.subprocess.Process | None = None
     try:
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+        # Protect this short-lived capture from the orphan-ffmpeg cleanup sweep —
+        # the /proc scan can otherwise SIGKILL us mid-snapshot (#979).
+        _active_capture_pids.add(process.pid)
 
         try:
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
@@ -534,6 +545,8 @@ async def capture_camera_frame_bytes(
         logger.exception("Camera frame bytes capture failed: %s", e)
         return None
     finally:
+        if process is not None:
+            _active_capture_pids.discard(process.pid)
         proxy_server.close()
         await proxy_server.wait_closed()
 
