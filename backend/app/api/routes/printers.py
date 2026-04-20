@@ -589,6 +589,7 @@ async def get_printer_status(
         ipcam=state.ipcam,
         wifi_signal=state.wifi_signal,
         wired_network=state.wired_network,
+        door_open=state.door_open,
         nozzles=nozzles,
         nozzle_rack=nozzle_rack,
         print_options=print_options,

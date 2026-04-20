@@ -122,6 +122,7 @@ class PrinterState:
     ipcam: bool = False  # Live view / camera streaming enabled
     wifi_signal: int | None = None  # WiFi signal strength in dBm
     wired_network: bool = False  # Ethernet connection detected (home_flag bit 18)
+    door_open: bool = False  # Enclosure door open (home_flag bit 23 on X1*, stat bit 23 elsewhere)
     # Nozzle hardware info (for dual nozzle printers, index 0 = left, 1 = right)
     nozzles: list = field(default_factory=lambda: [NozzleInfo(), NozzleInfo()])
     # AI detection and print options
@@ -2334,23 +2335,71 @@ class BambuMQTTClient:
                             )
                         )
 
-        # Parse SD card status
-        if "sdcard" in data:
-            self.state.sdcard = data["sdcard"] is True
-
-        # Parse home_flag for "Store Sent Files on External Storage" setting (bit 11)
+        # Parse home_flag first so SD-card / door detection below can use it.
+        # Bit 8 = HAS_SDCARD_NORMAL, bit 9 = HAS_SDCARD_ABNORMAL, bit 11 = store-to-SD,
+        # bit 18 = wired network, bit 23 = door-open (X1 family only).
+        home_flag = None
         if "home_flag" in data:
             home_flag = data["home_flag"]
-            # Bit 11 controls "Store Sent Files on External Storage"
             # Convert to unsigned 32-bit if negative
             if home_flag < 0:
                 home_flag = home_flag & 0xFFFFFFFF
+
+        # SD card presence.
+        # Use the top-level `sdcard` field with a permissive truthy check covering
+        # the bool / int / "HAS_SDCARD_NORMAL" variants that different firmware
+        # revisions emit. We do NOT derive it from home_flag — heartbeat pushes
+        # clear bits 8-9 even when a card is inserted, which made the UI badge
+        # flap. The only remaining consumer is the firmware-update precondition
+        # check in firmware_update.py; other callers were removed upstream.
+        if "sdcard" in data:
+            raw_sdcard = data["sdcard"]
+            if isinstance(raw_sdcard, str):
+                self.state.sdcard = "HAS_SDCARD" in raw_sdcard.upper() or raw_sdcard.lower() in ("true", "normal", "1")
+            else:
+                self.state.sdcard = bool(raw_sdcard)
+
+        # Store-sent-files-to-SD toggle (home_flag bit 11).
+        if home_flag is not None:
             store_to_sdcard = bool((home_flag >> 11) & 1)
             if store_to_sdcard != self.state.store_to_sdcard:
                 logger.debug(
                     f"[{self.serial_number}] store_to_sdcard changed: {self.state.store_to_sdcard} -> {store_to_sdcard}"
                 )
             self.state.store_to_sdcard = store_to_sdcard
+
+        # Door open detection — source depends on printer family:
+        #   X1 series (X1, X1C, X1E): home_flag bit 23
+        #   All others (P1/P2/H2/A1/N-series): top-level `stat` field (hex string), bit 23
+        # Both share the same bitmask (0x00800000) but live in different fields.
+        model_upper = (self.model or "").upper().strip()
+        is_x1_family = model_upper in ("X1", "X1C", "X1E")
+        if is_x1_family and home_flag is not None:
+            door_open = (home_flag & 0x00800000) != 0
+            if door_open != self.state.door_open:
+                logger.debug(
+                    "[%s] door_open changed: %s -> %s (home_flag=0x%08X)",
+                    self.serial_number,
+                    self.state.door_open,
+                    door_open,
+                    home_flag,
+                )
+            self.state.door_open = door_open
+        elif not is_x1_family and "stat" in data:
+            try:
+                stat_value = int(data["stat"], 16) if isinstance(data["stat"], str) else int(data["stat"])
+                door_open = (stat_value & 0x00800000) != 0
+                if door_open != self.state.door_open:
+                    logger.debug(
+                        "[%s] door_open changed: %s -> %s (stat=0x%08X)",
+                        self.serial_number,
+                        self.state.door_open,
+                        door_open,
+                        stat_value,
+                    )
+                self.state.door_open = door_open
+            except (ValueError, TypeError):
+                logger.debug("[%s] could not parse stat field: %r", self.serial_number, data["stat"])
 
         # Parse timelapse status (recording active during print)
         if "timelapse" in data:

@@ -3526,6 +3526,101 @@ class TestStaleReconnect:
         assert mqtt_client.state.connected is False
 
 
+class TestDoorOpenParsing:
+    """Tests for enclosure door state parsing (X1 home_flag bit 23 vs others stat bit 23)."""
+
+    def _make_client(self, model: str):
+        from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+        return BambuMQTTClient(
+            ip_address="192.168.1.100",
+            serial_number="TEST",
+            access_code="12345678",
+            model=model,
+        )
+
+    def test_x1c_door_open_from_home_flag(self):
+        client = self._make_client("X1C")
+        # bit 23 set
+        client._update_state({"home_flag": 0xC0E5CD98})
+        assert client.state.door_open is True
+
+    def test_x1c_door_closed_from_home_flag(self):
+        client = self._make_client("X1C")
+        client.state.door_open = True  # start "open"
+        client._update_state({"home_flag": 0xC065CD98})
+        assert client.state.door_open is False
+
+    def test_x1c_ignores_stat_field(self):
+        # X1C must NOT use stat (bit 23 in stat is unrelated for X1)
+        client = self._make_client("X1C")
+        client._update_state({"home_flag": 0xC065CD98, "stat": "47A58000"})
+        assert client.state.door_open is False  # home_flag wins
+
+    def test_h2d_door_open_from_stat(self):
+        client = self._make_client("H2D")
+        client._update_state({"stat": "640A58000"})  # bit 23 set
+        assert client.state.door_open is True
+
+    def test_h2d_door_closed_from_stat(self):
+        client = self._make_client("H2D")
+        client.state.door_open = True
+        client._update_state({"stat": "640258000"})  # bit 23 cleared
+        assert client.state.door_open is False
+
+    def test_h2d_ignores_home_flag(self):
+        # Non-X1 must NOT consume home_flag for door state
+        client = self._make_client("H2D")
+        client._update_state({"home_flag": 0xC0E5CD98, "stat": "640258000"})
+        assert client.state.door_open is False  # stat wins
+
+    def test_invalid_stat_does_not_raise(self):
+        client = self._make_client("H2D")
+        client._update_state({"stat": "not-hex"})
+        assert client.state.door_open is False
+
+
+class TestSdCardParsing:
+    """SD-card state is only set from the top-level `sdcard` field (bool/int/
+    string variants). home_flag is NOT consulted — heartbeat pushes clear those
+    bits even when a card is inserted, which caused the badge to flap."""
+
+    def _make_client(self, model: str = "H2D"):
+        from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+        return BambuMQTTClient(
+            ip_address="192.168.1.100",
+            serial_number="TEST",
+            access_code="12345678",
+            model=model,
+        )
+
+    def test_home_flag_alone_does_not_touch_sdcard(self):
+        client = self._make_client()
+        client.state.sdcard = True
+        for home_flag in (0x00000000, 0x00000100, 0x00000200):
+            client._update_state({"home_flag": home_flag})
+        assert client.state.sdcard is True
+
+    def test_sdcard_string_fallback_when_no_home_flag(self):
+        client = self._make_client()
+        client._update_state({"sdcard": "HAS_SDCARD_NORMAL"})
+        assert client.state.sdcard is True
+
+    def test_sdcard_int_fallback_when_no_home_flag(self):
+        # `1 is True` is False — the old strict check flapped here.
+        client = self._make_client()
+        client._update_state({"sdcard": 1})
+        assert client.state.sdcard is True
+
+    def test_sdcard_bool_fallback_when_no_home_flag(self):
+        client = self._make_client()
+        client._update_state({"sdcard": True})
+        assert client.state.sdcard is True
+        client._update_state({"sdcard": False})
+        assert client.state.sdcard is False
+
+
 class TestZombieSessionDetection:
     """Tests for ams_filament_setting response tracking (#887).
 
