@@ -4039,6 +4039,19 @@ async def lifespan(app: FastAPI):
     # Startup
     await init_db()
 
+    # Register an app-scoped httpx client for Bambu Cloud services so
+    # per-request BambuCloudService instances reuse the same connection pool
+    # (important for routes like /cloud/filament-info that chain many
+    # get_setting_detail calls). The shared client stores no region/token
+    # state, so the per-request ownership pattern that fixed the region-bleed
+    # bug is preserved.
+    import httpx as _httpx
+
+    from backend.app.services.bambu_cloud import set_shared_http_client
+
+    _shared_cloud_http_client = _httpx.AsyncClient(timeout=30.0)
+    set_shared_http_client(_shared_cloud_http_client)
+
     # Fix queue items stuck with invalid "aborted" status (should be "cancelled").
     # This can happen when a print was cancelled mid-print on versions before this fix.
     try:
@@ -4311,6 +4324,10 @@ async def lifespan(app: FastAPI):
     await mqtt_smart_plug_service.disconnect(timeout=2)
 
     await mqtt_relay.disconnect(timeout=2)
+
+    # Drop the shared Bambu Cloud HTTP client we registered at startup.
+    set_shared_http_client(None)
+    await _shared_cloud_http_client.aclose()
 
     # Checkpoint WAL and close all database connections
     try:

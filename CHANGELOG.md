@@ -35,6 +35,10 @@ Upstream Bambuddy v0.2.3 sync. Fifteen commits on `feature/upstream-v0.2.3` cove
 - **Snapshot PID tracking exempts short-lived ffmpeg from cleanup** (#979). `cleanup_orphaned_streams` does a `/proc` scan for Bambu ffmpeg processes and SIGKILL's anything not in `_active_streams`. A finish-photo or timelapse seed frame running in parallel with a cleanup tick used to get killed mid-capture. New `_active_capture_pids` set is populated by `capture_camera_frame_bytes` and consulted by the cleanup sweep.
 - **Stream-token gate on image-asset endpoints** (#979 full port). The camera stream/snapshot, cover thumbnail, and plate-detection reference endpoints are now gated by a short-lived (60-min) query-param token minted from `POST /printers/camera/stream-token`. `<img src>` tags can't send `Authorization` headers; previously these endpoints were served unauthenticated, so anyone who could reach the host could scrape the camera feed even without valid session credentials. New frontend plumbing (`useStreamTokenSync` hook mounted above `BrowserRouter` so `/camera/:id` and `/overlay/:id` standalone routes also receive the token; `withStreamToken(url)` helper in `api/client.ts`; automatic refresh on 401 via global `<img>` error listener) makes the change transparent for authenticated sessions. Standalone `<img>` embeds from unauthenticated browsers (e.g. OBS overlays) now require a prior login in the same browser session to acquire a token.
 
+### Cloud
+
+- **Region-aware per-request cloud service** (#1013). `BambuCloudService` was a process-wide singleton — a China-region login would pin `api.bambulab.cn` globally, so user B's next firmware check silently hit the wrong API. Singleton is gone. Every `/cloud/*` endpoint now builds a per-request service from the caller's stored region + token via `build_authenticated_cloud(db, user)` and `await cloud.close()`s it when done. An app-scoped `httpx.AsyncClient` is shared across requests for connection pooling (no region state held in it). Region persists on `users.cloud_region` (m011) and is also stored in `Settings` for the auth-disabled fallback. Frontend already had a Global/China selector on the login form; it's now correctly threaded through verify + set-token mutations and exposed in `CloudAuthStatus` so the UI can show "Connected (China)" after a reload.
+
 ### Security
 
 - **No secrets lost through debug-dumped Settings**. `_collect_support_info` used to drop sensitive-keyed settings silently. Support bundles now preserve the key with value `[REDACTED]`, so operators can see which settings were configured without reading the values. Added `host` and `credential` to the sensitive-suffix set (hostnames, generic `*_credential` fields).
@@ -46,6 +50,8 @@ Upstream Bambuddy v0.2.3 sync. Fifteen commits on `feature/upstream-v0.2.3` cove
   - `print_archives.subtask_id VARCHAR(64)` + `ix_print_archives_subtask_id`.
   - `printers.awaiting_plate_clear BOOLEAN NOT NULL DEFAULT 0`.
   - No backfill — existing rows stay with `subtask_id=NULL` / `awaiting_plate_clear=False`, which matches the "nothing pending" semantics of a fresh post-upgrade state.
+- **m011 — cloud region column**.
+  - `users.cloud_region VARCHAR(10)` — per-user Bambu Cloud region ("global" / "china") stored alongside token + email so per-request service builds hit the right API endpoint. Existing rows stay NULL and are treated as "global" by `_normalise_region()`.
 
 ### Misc / Chores
 

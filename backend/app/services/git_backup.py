@@ -21,7 +21,7 @@ from backend.app.core.database import async_session
 from backend.app.models.git_backup import GitBackupConfig, GitBackupLog
 from backend.app.models.printer import Printer
 from backend.app.models.settings import Settings
-from backend.app.services.bambu_cloud import get_cloud_service
+from backend.app.services.bambu_cloud import BambuCloudService
 from backend.app.services.printer_manager import printer_manager
 
 logger = logging.getLogger(__name__)
@@ -509,18 +509,28 @@ class GitBackupService:
                 logger.info("Collected K-profiles for %s: %s", serial, printer_profiles)
 
     async def _collect_cloud_profiles(self, db: AsyncSession, files: dict):
-        """Collect Bambu Cloud profiles if authenticated."""
-        # Check if cloud is authenticated
-        cloud = get_cloud_service()
+        """Collect Bambu Cloud profiles if authenticated.
 
-        # Try to restore token from DB
-        result = await db.execute(select(Settings).where(Settings.key == "bambu_cloud_token"))
-        setting = result.scalar_one_or_none()
-        if setting and setting.value:
-            cloud.set_token(setting.value)
+        Backup scheduler runs outside an HTTP request context, so we read the
+        token + region directly from the Settings table and construct a
+        per-run ``BambuCloudService``. The singleton is gone (cross-tenant
+        region leak — see ``bambu_cloud`` module comment).
+        """
+        # Read token + region from Settings. We match exactly how
+        # routes.cloud.store_token writes them.
+        result = await db.execute(select(Settings).where(Settings.key.in_(["bambu_cloud_token", "bambu_cloud_region"])))
+        stored = {s.key: s.value for s in result.scalars().all()}
+        token = stored.get("bambu_cloud_token")
+        if not token:
+            logger.info("Cloud not authenticated, skipping cloud profiles")
+            return
 
+        region = stored.get("bambu_cloud_region") or "global"
+        cloud = BambuCloudService(region=region)
+        cloud.set_token(token)
         if not cloud.is_authenticated:
             logger.info("Cloud not authenticated, skipping cloud profiles")
+            await cloud.close()
             return
 
         try:
@@ -567,6 +577,8 @@ class GitBackupService:
 
         except Exception as e:
             logger.warning("Failed to collect cloud profiles: %s", e)
+        finally:
+            await cloud.close()
 
     async def _collect_settings(self, db: AsyncSession, files: dict):
         """Collect app settings."""
