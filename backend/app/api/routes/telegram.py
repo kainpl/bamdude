@@ -248,7 +248,7 @@ async def test_chat(
     from backend.app.i18n import escape_md
     from backend.app.services.telegram_bot import send_message
 
-    text = escape_md("Test message from Bambuddy HE. If you see this, the chat is connected!")
+    text = escape_md("Test message from BamDude. If you see this, the chat is connected!")
     ok = await send_message(chat.chat_id, f"\u2705 {text}")
     if not ok:
         raise HTTPException(500, "Failed to send message. Is the bot running?")
