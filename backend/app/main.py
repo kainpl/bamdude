@@ -1773,6 +1773,15 @@ async def on_print_start(printer_id: int, data: dict):
             # event). Adopt it, no matter how old it is. The previous 4-hour
             # stale-cancel heuristic was wrong: on long prints it killed the
             # real row and forced a duplicate to be created below.
+            #
+            # Divergence from upstream Bambuddy v0.2.3 #972 "revive" path: they
+            # KEEP stale-cancel AND add a subtask_id-match revive. BamDude keeps
+            # neither — we skip stale-cancel entirely, so there's nothing to
+            # revive. Trade-off: an orphan row from a crash-mid-print without
+            # a matching on_print_start later stays "printing" in DB until
+            # manually cleaned up. Addressing that is a separate feature (a
+            # targeted startup sweep comparing DB printing-rows against live
+            # MQTT state), not a stale-cancel-by-age heuristic.
             logger.info(
                 "Adopting existing printing archive %s for %s (re-trigger of live print)",
                 existing_archive.id,
