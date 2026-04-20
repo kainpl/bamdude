@@ -136,6 +136,41 @@ def verify_slicer_download_token(token: str, resource_type: str, resource_id: in
     return True
 
 
+# --- Camera stream tokens ---
+# Reusable tokens for MJPEG stream / snapshot endpoints that are loaded by
+# <img> / <video> tags — those can't send Authorization headers, so the
+# frontend obtains a token and appends ?token=... to the URL. Tokens live
+# here in-memory (reset on restart — the frontend hook catches the 401 and
+# refreshes); a future port of upstream's AuthEphemeralToken table will move
+# them to the DB for multi-worker safety.
+_camera_stream_tokens: dict[str, datetime] = {}
+CAMERA_STREAM_TOKEN_EXPIRE_MINUTES = 60
+
+
+def create_camera_stream_token() -> str:
+    """Create a reusable camera-stream token (valid until CAMERA_STREAM_TOKEN_EXPIRE_MINUTES)."""
+    # Opportunistically prune expired entries so the dict doesn't grow unbounded.
+    now = datetime.now(timezone.utc)
+    expired = [t for t, exp in _camera_stream_tokens.items() if exp < now]
+    for t in expired:
+        del _camera_stream_tokens[t]
+
+    token = secrets.token_urlsafe(24)
+    _camera_stream_tokens[token] = now + timedelta(minutes=CAMERA_STREAM_TOKEN_EXPIRE_MINUTES)
+    return token
+
+
+def verify_camera_stream_token(token: str) -> bool:
+    """Verify a camera stream token. Reusable within its lifetime (not single-use)."""
+    expiry = _camera_stream_tokens.get(token)
+    if not expiry:
+        return False
+    if datetime.now(timezone.utc) > expiry:
+        del _camera_stream_tokens[token]
+        return False
+    return True
+
+
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a password against a hash.
 
@@ -552,6 +587,29 @@ def require_permission(*permissions: str | Permission):
 def RequirePermission(*permissions: str | Permission):
     """Convenience dependency that requires ALL specified permissions."""
     return Depends(require_permission(*permissions))
+
+
+def require_camera_stream_token():
+    """Dependency that validates a camera-stream token passed as ``?token=...``.
+
+    Used for camera stream / snapshot endpoints loaded via ``<img>`` / ``<video>``
+    tags — those can't send Authorization headers, so the frontend obtains a
+    token from ``POST /printers/camera/stream-token`` and appends it to the URL.
+    """
+
+    def checker(token: str | None = None) -> None:
+        if not token or not verify_camera_stream_token(token):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=(
+                    "Valid camera stream token required. Obtain one from POST /api/v1/printers/camera/stream-token"
+                ),
+            )
+
+    return checker
+
+
+RequireCameraStreamToken = Depends(require_camera_stream_token())
 
 
 def require_ownership_permission(

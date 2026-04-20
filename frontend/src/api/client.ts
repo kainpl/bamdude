@@ -18,6 +18,25 @@ export function getAuthToken(): string | null {
   return authToken;
 }
 
+// Stream token for image/video URLs loaded via <img>/<video> tags
+// (these can't send Authorization headers, so a query param token is used)
+let streamToken: string | null = null;
+
+export function setStreamToken(token: string | null) {
+  streamToken = token;
+}
+
+export function getStreamToken(): string | null {
+  return streamToken;
+}
+
+/** Append the stream token to a URL if available (for <img>/<video> src). */
+export function withStreamToken(url: string): string {
+  if (!streamToken) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}token=${encodeURIComponent(streamToken)}`;
+}
+
 function parseContentDispositionFilename(header: string | null): string | null {
   if (!header) return null;
   // RFC 5987: filename*=utf-8''percent-encoded-name
@@ -4070,10 +4089,12 @@ export const api = {
     }),
 
   // Camera
+  getCameraStreamToken: () =>
+    request<{ token: string }>('/printers/camera/stream-token', { method: 'POST' }),
   getCameraStreamUrl: (printerId: number, fps = 10) =>
-    `${API_BASE}/printers/${printerId}/camera/stream?fps=${fps}`,
+    withStreamToken(`${API_BASE}/printers/${printerId}/camera/stream?fps=${fps}`),
   getCameraSnapshotUrl: (printerId: number) =>
-    `${API_BASE}/printers/${printerId}/camera/snapshot`,
+    withStreamToken(`${API_BASE}/printers/${printerId}/camera/snapshot`),
   testCameraConnection: (printerId: number) =>
     request<{ success: boolean; message?: string; error?: string }>(`/printers/${printerId}/camera/test`),
   getCameraStatus: (printerId: number) =>
@@ -4115,7 +4136,7 @@ export const api = {
     }>(`/printers/${printerId}/camera/plate-detection/references`);
   },
   getPlateReferenceThumbnailUrl: (printerId: number, index: number) => {
-    return `${API_BASE}/printers/${printerId}/camera/plate-detection/references/${index}/thumbnail`;
+    return withStreamToken(`${API_BASE}/printers/${printerId}/camera/plate-detection/references/${index}/thumbnail`);
   },
   updatePlateReferenceLabel: (printerId: number, index: number, label: string) => {
     const params = new URLSearchParams();

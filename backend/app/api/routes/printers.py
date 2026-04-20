@@ -8,7 +8,7 @@ from fastapi.responses import Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermission
+from backend.app.core.auth import RequireCameraStreamToken, RequirePermission
 from backend.app.core.config import settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -724,9 +724,12 @@ async def get_printer_cover(
     printer_id: int,
     view: str | None = None,
     db: AsyncSession = Depends(get_db),
+    _token: None = RequireCameraStreamToken,
 ):
-    # Note: No auth required - this is an image asset loaded via <img src> which can't send auth headers
     """Get the cover image for the current print job.
+
+    Gated by ``?token=...`` query param (short-lived camera-stream token)
+    since ``<img src>`` cannot send Authorization headers.
 
     Serves the thumbnail from a local archive (DB-tracked).  Does NOT
     initiate an FTP download from the printer — that would:

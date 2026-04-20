@@ -22,7 +22,7 @@ import {
   MoreVertical,
 } from 'lucide-react';
 import { BatchActionDialog } from './Queue/BatchActionDialog';
-import { api } from '../api/client';
+import { api, withStreamToken } from '../api/client';
 import type { PrinterQueue, PrintQueueItem, Permission } from '../api/client';
 import { Card, CardContent } from './Card';
 import { useAuth } from '../contexts/AuthContext';
@@ -393,7 +393,7 @@ export function QueueCard({ queue, compact = false, onEditItem }: QueueCardProps
             <div className="flex items-start gap-3">
               {currentThumbnail ? (
                 <img
-                  src={currentThumbnail}
+                  src={withStreamToken(currentThumbnail)}
                   alt=""
                   className="w-20 h-20 rounded-lg object-cover flex-shrink-0 bg-bambu-dark-tertiary"
                 />

@@ -55,7 +55,7 @@ import {
 } from 'lucide-react';
 
 import { useNavigate } from 'react-router-dom';
-import { api, discoveryApi, firmwareApi, macrosApi } from '../api/client';
+import { api, discoveryApi, firmwareApi, macrosApi, withStreamToken } from '../api/client';
 import { BulkPrinterToolbar } from '../components/BulkPrinterToolbar';
 import { formatDateOnly, formatETA, formatDuration, parseUTCDate } from '../utils/date';
 import type { Printer, PrinterCreate, AMSUnit, DiscoveredPrinter, FirmwareUpdateInfo, FirmwareUploadStatus, LinkedSpoolInfo, SpoolAssignment, HMSError, Macro } from '../api/client';
@@ -807,7 +807,7 @@ function CoverImage({ url, printName }: { url: string | null; printName?: string
   const cacheBustedUrl = useMemo(() => {
     if (!url) return null;
     const sep = url.includes('?') ? '&' : '?';
-    return `${url}${sep}v=${encodeURIComponent(printName || Date.now().toString())}`;
+    return withStreamToken(`${url}${sep}v=${encodeURIComponent(printName || Date.now().toString())}`);
   }, [url, printName]);
 
   // Reset loaded/error state when the image URL changes
@@ -2147,7 +2147,7 @@ function PrinterCard({
               {/* Printer Model Image (or print preview in compact mode) */}
               {cardSize === 1 && status?.cover_url && (status.state === 'RUNNING' || status.state === 'PAUSE') ? (
                 <img
-                  src={status.cover_url}
+                  src={withStreamToken(status.cover_url)}
                   alt={status.subtask_name || t('printers.printPreview')}
                   className={`object-cover rounded-lg bg-bambu-dark flex-shrink-0 ${getImageSize()}`}
                 />
