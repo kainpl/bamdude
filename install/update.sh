@@ -123,7 +123,37 @@ require_cmd curl
 
 [ -d "$INSTALL_DIR" ] || die "Install directory not found: $INSTALL_DIR"
 cd "$INSTALL_DIR"
-[ -d .git ] || die "No git repository found in: $INSTALL_DIR"
+if [ ! -d .git ]; then
+  cat >&2 <<EOF
+ERROR: No git repository found in: $INSTALL_DIR
+
+update.sh pulls new versions with \`git pull\`, so it needs BamDude to be a
+working git clone. Most commonly this path is hit when BamDude was installed
+from a downloaded ZIP instead of via install.sh, so the .git directory is
+missing.
+
+Recovery steps:
+
+  1. Back up the database and data directory (so your history, settings and
+     archives survive the reinstall):
+
+       sudo systemctl stop ${SERVICE_NAME}
+       sudo tar -czvf /tmp/bamdude-backup-\$(date +%Y%m%d).tar.gz \\
+         $INSTALL_DIR/bamdude.db* $INSTALL_DIR/data/
+
+  2. Re-install from the official installer, which does a real \`git clone\`
+     into the same path:
+
+       curl -fsSL https://raw.githubusercontent.com/kainpl/bamdude/main/install/install.sh | sudo bash
+
+  3. Restore the backup on top of the fresh install:
+
+       sudo systemctl stop ${SERVICE_NAME}
+       sudo tar -xzvf /tmp/bamdude-backup-\$(date +%Y%m%d).tar.gz -C /
+       sudo systemctl start ${SERVICE_NAME}
+EOF
+  exit 1
+fi
 
 if [ -z "$BRANCH" ]; then
   BRANCH="$(git rev-parse --abbrev-ref HEAD)"

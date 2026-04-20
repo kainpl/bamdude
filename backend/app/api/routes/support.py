@@ -562,7 +562,11 @@ async def _collect_support_info() -> dict:
         except Exception:
             logger.debug("Failed to collect virtual printer info", exc_info=True)
 
-        # Non-sensitive settings
+        # All settings — sensitive values get redacted, non-sensitive pass through.
+        # Keeping the key + [REDACTED] (instead of the old skip-silently behaviour)
+        # means new feature-flags are visible in support bundles without needing
+        # code changes, and the operator can tell at a glance whether a setting
+        # was configured vs. simply missing.
         result = await db.execute(select(Settings))
         all_settings = result.scalars().all()
         sensitive_keys = {
@@ -584,12 +588,14 @@ async def _collect_support_info() -> dict:
             "path",  # Filesystem paths may contain usernames
             "config",  # URLs may contain IPs, configs may have embedded secrets
             "_ip",  # IP address fields (e.g. virtual_printer_remote_interface_ip)
+            "host",  # hostnames/FQDNs may leak internal infra layout
+            "credential",  # generic credential-bearing keys (ldap_bind_credential, etc.)
         }
         for s in all_settings:
-            # Skip sensitive settings
             if any(sensitive in s.key.lower() for sensitive in sensitive_keys):
-                continue
-            info["settings"][s.key] = s.value
+                info["settings"][s.key] = "[REDACTED]" if s.value else ""
+            else:
+                info["settings"][s.key] = s.value
 
         # Notification providers (anonymized - type/enabled/error status only)
         try:

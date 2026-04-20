@@ -80,3 +80,7 @@ node_modules/
 
 debug_logs/
 site/
+
+# Local tool wrapper binaries (npm-installed CLIs, pip --user scripts) that
+# some dev setups drop into a repo-local bin/ — never part of the source tree.
+bin/

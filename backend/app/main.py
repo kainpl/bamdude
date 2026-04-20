@@ -4374,7 +4374,10 @@ async def security_headers_middleware(request, call_next):
     """Add security headers to all responses."""
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
+    # SAMEORIGIN (not DENY) so same-origin iframes in the UI — notably the
+    # ExternalLinkPage sidebar and reverse-proxied Spoolman embeds — can load
+    # their content. Cross-origin clickjacking is still blocked.
+    response.headers["X-Frame-Options"] = "SAMEORIGIN"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     return response
 
