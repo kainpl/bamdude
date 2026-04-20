@@ -305,6 +305,8 @@ export default {
     sdCard: 'SD-карта',
     inserted: 'Вставлена',
     notInserted: 'Не вставлена',
+    noSd: 'Без SD',
+    sdCardMissing: 'SD-карта не виявлена. Друки, що зберігають файли на принтері, не стартонуть; вставте карту або вимкніть «Зберігати надіслані файли».',
     totalPrintHours: 'Годин друку',
     activeNozzle: 'Активне: сопло {{nozzle}}',
     nozzleRack: 'Стійка сопел',

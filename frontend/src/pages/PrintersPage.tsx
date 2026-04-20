@@ -2400,6 +2400,21 @@ function PrinterCard({
                   </button>
                 );
               })()}
+              {/* SD card missing indicator — shown only when the printer is online
+                  AND reports no SD card. Heartbeat flap from upstream's #899/#0D7C0D40
+                  series can't happen here because our permissive sdcard parser
+                  reads the top-level field only (it doesn't derive from
+                  home_flag bits 8-9, which is what flipped on heartbeats). */}
+              {status?.connected && status?.sdcard === false && (
+                <button
+                  onClick={() => setShowPrinterInfo(true)}
+                  className="flex items-center gap-1 px-2 py-1 rounded-full text-xs bg-status-warning/20 text-status-warning cursor-pointer hover:opacity-80 transition-opacity"
+                  title={t('printers.sdCardMissing')}
+                >
+                  <HardDrive className="w-3 h-3" />
+                  {t('printers.noSd')}
+                </button>
+              )}
               {/* Maintenance Status Indicator */}
               {maintenanceInfo && (
                 <button
