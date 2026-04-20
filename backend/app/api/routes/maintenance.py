@@ -44,14 +44,14 @@ DEFAULT_MAINTENANCE_TYPES = [
         "icon": "Sparkles",
         "printer_models": '["X1C", "X1", "X1E", "P1P", "P1S"]',
     },
-    # Steel rod models only (P2S)
+    # Steel rod models only (P2S, X2D — X2D shares P2S's hardened-steel gantry, #988)
     {
         "type_code": "lubricate_steel_rods",
         "name": "Lubricate Steel Rods",
         "description": "Apply lubricant to steel rods for smooth motion",
         "default_interval_hours": 50.0,
         "icon": "Droplet",
-        "printer_models": '["P2S"]',
+        "printer_models": '["P2S", "X2D"]',
     },
     {
         "type_code": "clean_steel_rods",
@@ -59,7 +59,7 @@ DEFAULT_MAINTENANCE_TYPES = [
         "description": "Wipe steel rods with a dry cloth",
         "default_interval_hours": 100.0,
         "icon": "Sparkles",
-        "printer_models": '["P2S"]',
+        "printer_models": '["P2S", "X2D"]',
     },
     # Linear rail models only (A1/H2)
     {
