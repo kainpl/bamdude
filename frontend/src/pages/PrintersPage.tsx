@@ -27,6 +27,9 @@ import {
   Pencil,
   ArrowUpNarrowWide,
   ArrowDownWideNarrow,
+  ArrowUp,
+  ArrowDown,
+  MoveVertical,
   Layers,
   Video,
   Search,
@@ -1344,6 +1347,9 @@ function PrinterCard({
   const [showPauseConfirm, setShowPauseConfirm] = useState(false);
   const [showSpeedMenu, setShowSpeedMenu] = useState<number | null>(null);
   const [showResumeConfirm, setShowResumeConfirm] = useState(false);
+  const [showBedJogMenu, setShowBedJogMenu] = useState<number | null>(null);
+  const [bedJogStep, setBedJogStep] = useState<number>(10);
+  const [showNotHomedModal, setShowNotHomedModal] = useState<null | { distance: number }>(null);
   const [showSkipObjectsModal, setShowSkipObjectsModal] = useState(false);
   const [showUploadForPrint, setShowUploadForPrint] = useState(false);
   const [showPrinterInfo, setShowPrinterInfo] = useState(false);
@@ -1746,6 +1752,20 @@ function PrinterCard({
       }
       showToast(error.message || t('printers.toast.failedToSetSpeed'), 'error');
     },
+  });
+
+  const bedJogMutation = useMutation({
+    mutationFn: ({ distance, force }: { distance: number; force?: boolean }) =>
+      api.bedJog(printer.id, distance, force ?? false),
+    onError: (error: Error) =>
+      showToast(error.message || t('printers.toast.failedToSendCommand'), 'error'),
+  });
+
+  const homeAxesMutation = useMutation({
+    mutationFn: (axes: 'z' | 'xy' | 'all') => api.homeAxes(printer.id, axes),
+    onSuccess: () => showToast(t('printers.bedJog.homingStarted')),
+    onError: (error: Error) =>
+      showToast(error.message || t('printers.toast.failedToSendCommand'), 'error'),
   });
 
   // Plate detection setting mutation
@@ -2906,6 +2926,97 @@ function PrinterCard({
                                       {label}
                                     </button>
                                   ))}
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        );
+                      })()}
+
+                      {/* Separator */}
+                      <div className="w-px h-5 bg-bambu-gray/30" />
+
+                      {/* Bed Jog (Z-axis) — compact badge, popover holds the actual controls.
+                          When the printer isn't yet homed since finish, show a Studio-style
+                          warning modal offering Home Z, Move Anyway, or Cancel. "Move anyway"
+                          gets remembered per-printer in sessionStorage so the warning only
+                          appears once per browser session. */}
+                      {(() => {
+                        const canControl = hasPermission('printers:control');
+                        const disabled = isPrinting || !canControl;
+                        const bambuIsPlateBelow = true; // positive Z moves plate away from nozzle
+                        const requestJog = (direction: 1 | -1) => {
+                          const signed = direction * bedJogStep * (bambuIsPlateBelow ? 1 : -1);
+                          const warnedKey = `bamdude.bedJog.warned.${printer.id}`;
+                          const warned = (() => {
+                            try { return sessionStorage.getItem(warnedKey) === '1'; }
+                            catch { return false; }
+                          })();
+                          setShowBedJogMenu(null);
+                          if (warned) {
+                            bedJogMutation.mutate({ distance: signed, force: true });
+                          } else {
+                            setShowNotHomedModal({ distance: signed });
+                          }
+                        };
+                        return (
+                          <div className="relative">
+                            <button
+                              onClick={() => setShowBedJogMenu(showBedJogMenu === printer.id ? null : printer.id)}
+                              disabled={disabled}
+                              className={`flex items-center gap-1 px-1.5 py-1 rounded transition-colors ${
+                                disabled
+                                  ? 'bg-bambu-dark cursor-not-allowed'
+                                  : 'bg-indigo-500/10 hover:bg-indigo-500/20'
+                              }`}
+                              title={!canControl ? t('printers.permission.noControl') : isPrinting ? t('printers.bedJog.disabledWhilePrinting') : t('printers.bedJog.title')}
+                            >
+                              <MoveVertical className={`w-3.5 h-3.5 ${disabled ? 'text-bambu-gray/50' : 'text-indigo-400'}`} />
+                              <span className={`text-[10px] ${disabled ? 'text-bambu-gray/50' : 'text-indigo-400'}`}>
+                                {t('printers.bedJog.bed')}
+                              </span>
+                              <span className={`text-[10px] tabular-nums opacity-70 ${disabled ? 'text-bambu-gray/50' : 'text-indigo-400'}`}>
+                                {bedJogStep}mm
+                              </span>
+                            </button>
+                            {showBedJogMenu === printer.id && (
+                              <>
+                                <div className="fixed inset-0 z-40" onClick={() => setShowBedJogMenu(null)} />
+                                <div className="absolute bottom-full left-0 mb-1 z-50 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-lg p-2 min-w-[140px]">
+                                  <div className="flex items-center justify-between gap-1 mb-2">
+                                    <button
+                                      onClick={() => requestJog(-1)}
+                                      className="flex-1 flex items-center justify-center py-1.5 rounded bg-indigo-500/15 hover:bg-indigo-500/30 text-indigo-300"
+                                      aria-label={t('printers.bedJog.up')}
+                                    >
+                                      <ArrowUp className="w-4 h-4" />
+                                    </button>
+                                    <button
+                                      onClick={() => requestJog(1)}
+                                      className="flex-1 flex items-center justify-center py-1.5 rounded bg-indigo-500/15 hover:bg-indigo-500/30 text-indigo-300"
+                                      aria-label={t('printers.bedJog.down')}
+                                    >
+                                      <ArrowDown className="w-4 h-4" />
+                                    </button>
+                                  </div>
+                                  <div className="text-[9px] uppercase tracking-wider text-bambu-gray/70 px-1 mb-1">
+                                    {t('printers.bedJog.step')}
+                                  </div>
+                                  <div className="flex gap-1">
+                                    {[1, 10, 50].map((step) => (
+                                      <button
+                                        key={step}
+                                        onClick={() => setBedJogStep(step)}
+                                        className={`flex-1 px-1 py-1 rounded text-[10px] transition-colors ${
+                                          bedJogStep === step
+                                            ? 'bg-bambu-green/20 text-bambu-green'
+                                            : 'bg-bambu-dark text-bambu-gray hover:bg-bambu-dark-tertiary'
+                                        }`}
+                                      >
+                                        {step}
+                                      </button>
+                                    ))}
+                                  </div>
                                 </div>
                               </>
                             )}
@@ -4515,6 +4626,56 @@ function PrinterCard({
           }}
           onCancel={() => setShowResumeConfirm(false)}
         />
+      )}
+
+      {/* Bed Jog — not-homed warning (Studio-style). Shown the first time a
+          user tries to move the bed in a browser session; "Move anyway" wraps
+          the jog with M211 S0/S1 to bypass soft endstops and remembers the
+          choice in sessionStorage as bamdude.bedJog.warned.<printer_id>. */}
+      {showNotHomedModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl w-full max-w-sm p-5">
+            <div className="flex items-start gap-3 mb-4">
+              <AlertTriangle className="w-5 h-5 text-yellow-400 flex-shrink-0 mt-0.5" />
+              <div>
+                <h3 className="text-sm font-semibold text-white mb-1">
+                  {t('printers.bedJog.notHomedTitle')}
+                </h3>
+                <p className="text-xs text-bambu-gray leading-relaxed">
+                  {t('printers.bedJog.notHomedMessage')}
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-col gap-2">
+              <button
+                onClick={() => {
+                  homeAxesMutation.mutate('z');
+                  setShowNotHomedModal(null);
+                }}
+                className="w-full px-3 py-2 rounded-lg text-xs font-medium bg-bambu-green/20 text-bambu-green hover:bg-bambu-green/30 transition-colors"
+              >
+                {t('printers.bedJog.homeZ')}
+              </button>
+              <button
+                onClick={() => {
+                  const d = showNotHomedModal.distance;
+                  try { sessionStorage.setItem(`bamdude.bedJog.warned.${printer.id}`, '1'); } catch { /* ignore */ }
+                  bedJogMutation.mutate({ distance: d, force: true });
+                  setShowNotHomedModal(null);
+                }}
+                className="w-full px-3 py-2 rounded-lg text-xs font-medium bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30 transition-colors"
+              >
+                {t('printers.bedJog.moveAnyway')}
+              </button>
+              <button
+                onClick={() => setShowNotHomedModal(null)}
+                className="w-full px-3 py-2 rounded-lg text-xs font-medium bg-bambu-dark text-bambu-gray hover:bg-bambu-dark-tertiary transition-colors"
+              >
+                {t('common.cancel')}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Skip Objects Modal */}

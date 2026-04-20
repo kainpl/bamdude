@@ -2684,6 +2684,18 @@ export const api = {
       method: 'POST',
     }),
 
+  // Bed (Z-axis) jog
+  bedJog: (printerId: number, distance: number, force: boolean = false) =>
+    request<{ success: boolean; message: string }>(
+      `/printers/${printerId}/bed-jog?distance=${distance}&force=${force}`,
+      { method: 'POST' },
+    ),
+  homeAxes: (printerId: number, axes: 'z' | 'xy' | 'all' = 'z') =>
+    request<{ success: boolean; message: string }>(
+      `/printers/${printerId}/home-axes?axes=${axes}`,
+      { method: 'POST' },
+    ),
+
   // Chamber Light Control
   setChamberLight: (printerId: number, on: boolean) =>
     request<{ success: boolean; message: string }>(`/printers/${printerId}/chamber-light?on=${on}`, {
