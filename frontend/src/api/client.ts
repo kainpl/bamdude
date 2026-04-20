@@ -5323,6 +5323,14 @@ export const pendingUploadsApi = {
 };
 
 // Firmware API Types
+export interface AvailableFirmwareVersion {
+  version: string;
+  file_available: boolean;
+  download_url: string | null;
+  release_notes: string | null;
+  release_time: string | null;
+}
+
 export interface FirmwareUpdateInfo {
   printer_id: number;
   printer_name: string;
@@ -5332,6 +5340,7 @@ export interface FirmwareUpdateInfo {
   update_available: boolean;
   download_url: string | null;
   release_notes: string | null;
+  available_versions: AvailableFirmwareVersion[];
 }
 
 export interface FirmwareUploadPrepare {
@@ -5343,6 +5352,7 @@ export interface FirmwareUploadPrepare {
   update_available: boolean;
   current_version: string | null;
   latest_version: string | null;
+  target_version: string | null;
   firmware_filename: string | null;
   errors: string[];
 }
@@ -5364,13 +5374,16 @@ export const firmwareApi = {
   checkPrinterUpdate: (printerId: number) =>
     request<FirmwareUpdateInfo>(`/firmware/updates/${printerId}`),
 
-  prepareUpload: (printerId: number) =>
-    request<FirmwareUploadPrepare>(`/firmware/updates/${printerId}/prepare`),
+  prepareUpload: (printerId: number, version?: string) =>
+    request<FirmwareUploadPrepare>(
+      `/firmware/updates/${printerId}/prepare${version ? `?version=${encodeURIComponent(version)}` : ''}`,
+    ),
 
-  startUpload: (printerId: number) =>
-    request<{ started: boolean; message: string }>(`/firmware/updates/${printerId}/upload`, {
-      method: 'POST',
-    }),
+  startUpload: (printerId: number, version?: string) =>
+    request<{ started: boolean; message: string }>(
+      `/firmware/updates/${printerId}/upload${version ? `?version=${encodeURIComponent(version)}` : ''}`,
+      { method: 'POST' },
+    ),
 
   getUploadStatus: (printerId: number) =>
     request<FirmwareUploadStatus>(`/firmware/updates/${printerId}/upload/status`),

@@ -603,6 +603,13 @@ export default {
       uploadFirmware: 'Завантажити прошивку',
       uploadFailed: 'Не вдалося почати завантаження: {{error}}',
       uploadedToast: 'Прошивку завантажено! Запустіть оновлення з екрана принтера.',
+      availableVersions: 'Доступні версії',
+      usable: 'Доступна',
+      unavailable: 'Недоступна',
+      installed: 'Встановлена',
+      newerBadge: 'новіша',
+      olderBadge: 'старіша',
+      currentBadge: 'поточна',
     },
     accessCodePlaceholder: 'Залиште порожнім, щоб зберегти поточний',
     // ROI editor

@@ -79,9 +79,16 @@ class FirmwareUpdateService:
         self,
         printer_id: int,
         db: AsyncSession,
+        target_version: str | None = None,
     ) -> dict:
         """
         Check prerequisites for firmware update.
+
+        Args:
+            printer_id: Printer DB id.
+            db: Async session.
+            target_version: Specific version to prepare (for rollback or reinstall
+                of a non-latest version). When omitted, prepares the latest version.
 
         Returns:
             Dict with:
@@ -93,6 +100,7 @@ class FirmwareUpdateService:
             - update_available: bool
             - current_version: str | None
             - latest_version: str | None
+            - target_version: str | None
             - firmware_filename: str | None
             - errors: list[str]
         """
@@ -105,6 +113,7 @@ class FirmwareUpdateService:
             "update_available": False,
             "current_version": None,
             "latest_version": None,
+            "target_version": target_version,
             "firmware_filename": None,
             "errors": [],
         }
@@ -162,19 +171,27 @@ class FirmwareUpdateService:
                 result["latest_version"] = latest.version
                 result["update_available"] = True  # Assume update needed
 
-        if not result["update_available"]:
-            result["errors"].append("Firmware is already up to date")
-
-        # Get firmware file info (requires download URL)
-        file_info = await firmware_service.get_firmware_file_info(model)
-        if result["update_available"] and (not file_info or not file_info.get("download_url")):
-            result["update_available"] = False
-            result["errors"].append("Firmware download not yet available from Bambu Lab")
+        # Get firmware file info (for target_version if specified, else latest)
+        file_info = await firmware_service.get_firmware_file_info(model, version=target_version)
         if file_info:
             result["firmware_filename"] = file_info["filename"]
             # Estimate size (typical firmware is 50-150MB)
             # We'll get actual size during download
             result["firmware_size"] = 100 * 1024 * 1024  # 100MB estimate
+        elif target_version:
+            # Requested specific version has no download URL (wiki-only announcement)
+            result["errors"].append(f"Firmware file for {target_version} is not available from Bambu Lab")
+
+        # When a target version is requested, allow proceeding even if it equals or
+        # is older than the current version (explicit downgrade/reinstall path).
+        if target_version:
+            result["update_available"] = bool(file_info)
+        elif not result["update_available"]:
+            result["errors"].append("Firmware is already up to date")
+        elif not file_info or not file_info.get("download_url"):
+            # Latest-path: wiki announced a version the download page doesn't yet publish.
+            result["update_available"] = False
+            result["errors"].append("Firmware download not yet available from Bambu Lab")
 
         # Check space
         if result["sd_card_free_space"] > 0:
@@ -204,12 +221,17 @@ class FirmwareUpdateService:
         self,
         printer_id: int,
         db: AsyncSession,
+        target_version: str | None = None,
     ) -> bool:
         """
         Start the firmware upload process.
 
         This runs asynchronously and broadcasts progress via WebSocket.
         Returns True if upload started successfully.
+
+        ``target_version`` lets the caller install a specific version (rollback /
+        reinstall) rather than the latest. Must match a version that the download
+        page publishes — wiki-only versions have no file.
         """
         state = get_upload_state(printer_id)
 
@@ -245,6 +267,7 @@ class FirmwareUpdateService:
                 ip_address=printer.ip_address,
                 access_code=printer.access_code,
                 model=model,
+                target_version=target_version,
             )
         )
 
@@ -256,6 +279,7 @@ class FirmwareUpdateService:
         ip_address: str,
         access_code: str,
         model: str,
+        target_version: str | None = None,
     ):
         """Perform the actual firmware download and upload."""
         state = get_upload_state(printer_id)
@@ -268,17 +292,20 @@ class FirmwareUpdateService:
             state.message = "Preparing firmware..."
             await self._broadcast_progress(printer_id, state)
 
-            firmware_path = await firmware_service.download_firmware(model)
+            firmware_path = await firmware_service.download_firmware(model, version=target_version)
 
             if not firmware_path:
                 raise Exception("Failed to download firmware")
 
             state.firmware_filename = firmware_path.name
 
-            # Get firmware version for state
-            latest = await firmware_service.get_latest_version(model)
-            if latest:
-                state.firmware_version = latest.version
+            # Get firmware version for state — use explicit target when set, else latest.
+            if target_version:
+                state.firmware_version = target_version
+            else:
+                latest = await firmware_service.get_latest_version(model)
+                if latest:
+                    state.firmware_version = latest.version
 
             # Upload to printer (0-100% progress shown here)
             state.status = FirmwareUploadStatus.UPLOADING
