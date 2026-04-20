@@ -6,6 +6,62 @@ All notable changes to BamDude will be documented in this file.
 
 ---
 
+## [0.4.0] - 2026-04-20
+
+Upstream Bambuddy v0.2.3 sync. Fifteen commits on `feature/upstream-v0.2.3` covering queue-reliability (#887/#936/#961/#967/#972), drying gate (#971), FTP salvage & short-circuit, camera snapshot cleanup (#979), SD/door telemetry, and a half-dozen smaller fixes. New migration `m010` adds `subtask_id` (archives) + `awaiting_plate_clear` (printers). See `temp/bambuddy-changes-audit-v0.2.3b3-v0.2.3.md` for the full audit with rationale for each item included, skipped, or deliberately diverged from upstream.
+
+### Queue Reliability
+
+- **Signal-based MQTT zombie detection** (#887). The existing `ensure_fresh_connection` was a time-based preflight; it couldn't tell the difference between a quiet but healthy session and a half-broken one where our publishes silently drop. New mechanism: `BambuMQTTClient.force_reconnect_stale_session(reason)` closes the MQTT socket so paho auto-reconnects with a fresh session. Triggered by three signal-based paths: `ams_filament_setting` unanswered 2×10 s, dev-mode probe unanswered 2× (already landed, now routed through the shared helper), and `_verify_print_response` in `background_dispatch` after an unacked `start_print`. The preflight is kept for Telegram-handler UX predictability.
+- **`_watchdog_print_start` in print_scheduler** (#967). Queue item marked "printing" after MQTT publish that the printer never processes used to stay stuck forever. The watchdog polls for a state transition and, if none arrives within 45 s, reverts the item to `pending` and force-reconnects the MQTT session. Swap-mode-safe: if `swap_mode_start` already physically moved the plate, the revert is skipped (we don't re-fire the macro on retry) and the operator is asked to intervene instead.
+- **`PrintArchive.subtask_id` + resume pre-check** (#972). The printer's `submission_id` (the new unique-per-invocation identifier in `start_print`) is captured as `subtask_id` on `print_archives`. `on_print_start` consults it as a pre-match before the name-based lookup, so a backend restart mid-print adopts the right row even when two archives share a `print_name`. Also backfills `subtask_id` onto rows that matched by name on older runs. Unlike upstream's companion revive-from-cancelled path we deliberately do NOT un-cancel terminal rows — BamDude removed upstream's 4-hour stale-cancel heuristic long ago (it killed legitimate long prints), so there's nothing to revive.
+- **`printers.awaiting_plate_clear` persisted column** (#961). The plate-clear gate used to live in an in-memory set; an Auto Off power cycle dropped it and the queue auto-dispatched onto a dirty plate. Now persisted to DB + rehydrated at startup. Semantics inverted: presence means **blocked on user confirmation** (absence = clear to dispatch). Armed at end of `on_print_complete` when `require_plate_clear` is true and no swap path already cleared the plate. Frontend: `plateCleared` prop/field renamed to `awaitingPlateClear`; `clear_plate` endpoint now also accepts `IDLE` state so post-Auto-Off recovery works. Upstream's parallel move of `require_plate_clear` to a global setting is deliberately NOT ported — BamDude keeps the per-printer column with default `true`.
+- **`submission_id` on `start_print`** (#1011). Replaces the hardcoded `project_id / subtask_id / task_id = "0"` with a millisecond-timestamp UUID. Third-party MQTT observers (OctoEverywhere etc.) used to treat every reprint as a continuation of the prior task because `task_id` collided.
+
+### MQTT & Telemetry
+
+- **Permissive SD-card parsing** (#899 / #DD349954 / #0D7C0D40). The old `data["sdcard"] is True` check rejected every non-bool form real firmware emits (integer `1`, `"HAS_SDCARD_NORMAL"`, `"normal"`); the flag went False on any firmware that uses the enum form. Now string forms match `HAS_SDCARD` / `true` / `normal` / `1`; everything else is `bool(raw)`. `home_flag` parsing also moved ahead of SD so both share a normalised unsigned value.
+- **Door-open detection** (part of #988). New `PrinterState.door_open` parsed from `home_flag` bit 23 on X1 series or from the top-level `stat` hex string bit 23 on everything else (P1 / P2 / H2 / A1 / N-series).
+- **Two new badges on the printer card** — `No SD` (yellow, only when online + no card) and enclosure-door status (yellow `DoorOpen` when open, green `DoorClosed` when closed, rendered only for printers with an actual enclosure). Positive SD state is silent to match HMS / maintenance badge style; door positive state is shown to distinguish "closed" from "no enclosure".
+- **`dry_sf_reason` surfaced to the user** (#971). AMS drying silently fails when the firmware emits a blocker reason (power, AMS busy, filament at outlet, etc.). The `start_drying` route now returns `409 Conflict` with the human-readable reason instead of a fake `200`. Auto-drying in the scheduler logs the same human text instead of raw code lists. Nine codes mapped in a new `DRYING_BLOCKING_REASONS` constant reachable for future reuse. If the filament kwarg is empty it's backfilled from the first loaded tray's `tray_type` (firmware rejects the payload otherwise).
+
+### FTP
+
+- **`FileNotOnPrinterError` short-circuit on 550** (#972). When a candidate 3MF path isn't on the SD, the old code caught `ftplib.error_perm` as a generic failure and burned the full retry budget on every subsequent path — up to tens of minutes of dead retries per download. A sentinel exception now raises on 550 so `download_file_try_paths_async` skips to the next path inside one FTP session and `with_ftp_retry` callers can abort via `non_retry_exceptions`.
+- **Salvage-after-timeout in `download_file_async`** (#972, 1b434880). `asyncio.wait_for` cannot cancel `run_in_executor` threads, so on timeout the download worker may still be mid-transfer. A per-attempt `completion = {"success": False}` dict lets us distinguish a completed-but-late download from an in-progress partial write; the finally-block salvages only when the worker signalled genuine success AND the file is on disk.
+
+### Camera
+
+- **Snapshot PID tracking exempts short-lived ffmpeg from cleanup** (#979). `cleanup_orphaned_streams` does a `/proc` scan for Bambu ffmpeg processes and SIGKILL's anything not in `_active_streams`. A finish-photo or timelapse seed frame running in parallel with a cleanup tick used to get killed mid-capture. New `_active_capture_pids` set is populated by `capture_camera_frame_bytes` and consulted by the cleanup sweep. Upstream's companion stream-token changes are N/A — BamDude's `/camera/stream` endpoint is intentionally unauthenticated (served to `<img>` tags), so there's no token stack to port against.
+
+### Security
+
+- **No secrets lost through debug-dumped Settings**. `_collect_support_info` used to drop sensitive-keyed settings silently. Support bundles now preserve the key with value `[REDACTED]`, so operators can see which settings were configured without reading the values. Added `host` and `credential` to the sensitive-suffix set (hostnames, generic `*_credential` fields).
+- **`X-Frame-Options: SAMEORIGIN`** (was `DENY`). The old header blocked the sidebar external-link iframes and reverse-proxied Spoolman embeds on any farm setup where both sit on the same hostname. Cross-origin clickjacking is still blocked.
+
+### Migrations
+
+- **m010 — queue reliability schema**.
+  - `print_archives.subtask_id VARCHAR(64)` + `ix_print_archives_subtask_id`.
+  - `printers.awaiting_plate_clear BOOLEAN NOT NULL DEFAULT 0`.
+  - No backfill — existing rows stay with `subtask_id=NULL` / `awaiting_plate_clear=False`, which matches the "nothing pending" semantics of a fresh post-upgrade state.
+
+### Misc / Chores
+
+- **CI** gains `workflow_dispatch` (manual trigger from Actions UI).
+- **`.gitignore`** excludes repo-local `bin/` directories (npm/pip-user shims).
+- **`install/update.sh`** missing-`.git` error replaced with a multiline recovery guide (backup → reinstall via install.sh → restore) for users who downloaded a ZIP instead of cloning.
+- **Sample credentials cosmetic cleanup** — `notification_template.py` `TempPass123!` / `NewPass456!` replaced with `<generated-password>` / `<new-password>` placeholders so secret scanners stop flagging the preview data.
+- **Frontend test infrastructure restored** — six root causes (empty localStorage mock, missing `setAuthToken` import paths, outdated MSW auth fixtures, obsolete auth-disabled test cases) fixed in one sweep. Previously: 1094 pass / 39 fail on the v0.2.3b3 baseline. Now: 1132 pass / 0 fail / 1 intentionally skipped.
+- **Upstream items deliberately skipped** (documented in `temp/bambuddy-changes-audit-v0.2.3b3-v0.2.3.md`):
+  - 5A revive-from-cancelled path (we don't have stale-cancel, so there's nothing to revive).
+  - 6B `require_plate_clear` global-default-off (we keep per-printer + default true by design).
+  - 4C shared 3MF download cache (our cover endpoint reads from the archive, never FTP).
+  - X2D series (items 1E, 2B, 8B, 12I) — targeted for a future cycle.
+  - Full 2FA / OIDC / Obico clusters — tracked on separate branches.
+
+---
+
 ## [0.3.2] - 2026-04-19
 
 ### Security
