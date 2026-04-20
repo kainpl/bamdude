@@ -1296,3 +1296,74 @@ class TestAmsChangeCallback:
         # This tests the callback signature
         assert manager._on_ams_change is not None
         assert callable(manager._on_ams_change)
+
+
+class TestDryingBlockingReasons:
+    """Tests for first_drying_blocking_reason / find_ams_unit helpers (#971)."""
+
+    def test_no_reasons_returns_none(self):
+        from backend.app.services.printer_manager import first_drying_blocking_reason
+
+        assert first_drying_blocking_reason({}) is None
+        assert first_drying_blocking_reason({"dry_sf_reason": []}) is None
+
+    def test_first_known_code_wins(self):
+        from backend.app.services.printer_manager import first_drying_blocking_reason
+
+        # Code 2 = "AMS is busy" — first in the list
+        result = first_drying_blocking_reason({"dry_sf_reason": [2, 6]})
+        assert result is not None
+        assert result[0] == 2
+        assert "busy" in result[1].lower()
+
+    def test_code_coerces_from_string(self):
+        """Real firmware occasionally stringifies numeric codes."""
+        from backend.app.services.printer_manager import first_drying_blocking_reason
+
+        result = first_drying_blocking_reason({"dry_sf_reason": ["3"]})
+        assert result is not None
+        assert result[0] == 3
+
+    def test_unknown_codes_skipped(self):
+        """Future firmware codes we haven't mapped yet are fail-open."""
+        from backend.app.services.printer_manager import first_drying_blocking_reason
+
+        assert first_drying_blocking_reason({"dry_sf_reason": [99]}) is None
+        # Mix unknown + known → known wins
+        result = first_drying_blocking_reason({"dry_sf_reason": [99, 1]})
+        assert result is not None
+        assert result[0] == 1
+
+    def test_malformed_entries_skipped(self):
+        from backend.app.services.printer_manager import first_drying_blocking_reason
+
+        assert first_drying_blocking_reason({"dry_sf_reason": [None, "abc", {}]}) is None
+
+    def test_none_input_is_none(self):
+        from backend.app.services.printer_manager import first_drying_blocking_reason
+
+        assert first_drying_blocking_reason(None) is None
+
+    def test_find_ams_unit_matches_by_id(self):
+        from backend.app.services.printer_manager import find_ams_unit
+
+        raw = {"ams": [{"id": 0, "tray": []}, {"id": 1, "tray": [{}]}]}
+        result = find_ams_unit(raw, 1)
+        assert result is not None
+        assert result["id"] == 1
+
+    def test_find_ams_unit_missing_returns_none(self):
+        from backend.app.services.printer_manager import find_ams_unit
+
+        assert find_ams_unit({"ams": [{"id": 0}]}, 7) is None
+        assert find_ams_unit(None, 0) is None
+        assert find_ams_unit({}, 0) is None
+
+    def test_find_ams_unit_coerces_string_id(self):
+        """Some firmware emits the id as a string."""
+        from backend.app.services.printer_manager import find_ams_unit
+
+        raw = {"ams": [{"id": "2", "tray": []}]}
+        result = find_ams_unit(raw, 2)
+        assert result is not None
+        assert result["id"] == "2"

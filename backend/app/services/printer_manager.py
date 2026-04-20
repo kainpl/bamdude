@@ -132,6 +132,58 @@ def supports_drying(model: str | None, firmware: str | None) -> bool:
     return True
 
 
+# AMS ``dry_sf_reason`` codes → human-readable blockers. Sourced from firmware
+# observations in upstream #971. When one of these codes is present in an AMS
+# push_status the firmware silently drops the drying command, so we surface
+# them explicitly on the API route instead of returning a fake success.
+DRYING_BLOCKING_REASONS: dict[int, str] = {
+    0: "Printer is busy",
+    1: "Insufficient power — too many AMS drying or external PSU required",
+    2: "AMS is busy",
+    3: "Filament is at the AMS outlet — retract it first",
+    4: "AMS is already starting a drying cycle",
+    5: "Not supported in 2D mode",
+    6: "AMS is already drying",
+    7: "AMS firmware is upgrading",
+    8: "Plug in the external AMS power adapter to start drying",
+}
+
+
+def first_drying_blocking_reason(ams_unit: dict | None) -> tuple[int, str] | None:
+    """Return the first blocking reason in an AMS unit's ``dry_sf_reason`` list.
+
+    Returns ``(code, message)`` when at least one known blocker code is present,
+    or ``None`` when the AMS is free to start drying. Unknown / malformed codes
+    are skipped (fail-open) so a future firmware addition doesn't break existing
+    clients that haven't been updated — they'll just see a regular drying-start
+    error instead of a human-readable one.
+    """
+    if not ams_unit:
+        return None
+    for raw in ams_unit.get("dry_sf_reason") or []:
+        try:
+            code = int(raw)
+        except (TypeError, ValueError):
+            continue
+        message = DRYING_BLOCKING_REASONS.get(code)
+        if message:
+            return code, message
+    return None
+
+
+def find_ams_unit(raw_data: dict | None, ams_id: int) -> dict | None:
+    """Locate an AMS unit dict inside a printer push_status payload by id."""
+    if not raw_data:
+        return None
+    for unit in raw_data.get("ams") or []:
+        try:
+            if int(unit.get("id", -1)) == ams_id:
+                return unit
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 class PrinterInfo:
     """Basic printer info for callbacks."""
 

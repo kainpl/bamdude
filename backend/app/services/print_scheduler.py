@@ -28,7 +28,11 @@ from backend.app.services.bambu_ftp import (
     with_ftp_retry,
 )
 from backend.app.services.notification_service import notification_service
-from backend.app.services.printer_manager import printer_manager, supports_drying
+from backend.app.services.printer_manager import (
+    first_drying_blocking_reason,
+    printer_manager,
+    supports_drying,
+)
 from backend.app.services.smart_plug_manager import smart_plug_manager
 from backend.app.utils.threemf_tools import extract_nozzle_mapping_from_3mf
 
@@ -1105,14 +1109,17 @@ class PrintScheduler:
                     )
                     continue
 
-                # Check cannot-dry reasons (power constraints etc.)
-                sf_reasons = ams_data.get("dry_sf_reason", [])
-                if sf_reasons:
+                # Check cannot-dry reasons (power constraints etc.) — surface
+                # the first human-readable blocker so support logs actually tell
+                # the operator why auto-drying skipped, not just a bare code list.
+                blocker = first_drying_blocking_reason(ams_data)
+                if blocker is not None:
                     logger.debug(
-                        "Auto-drying: printer %d AMS %d skipped - cannot dry reasons: %s",
+                        "Auto-drying: printer %d AMS %d skipped — blocker code %d: %s",
                         pid,
                         ams_id,
-                        sf_reasons,
+                        blocker[0],
+                        blocker[1],
                     )
                     continue
 

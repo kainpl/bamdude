@@ -35,6 +35,8 @@ from backend.app.services.bambu_ftp import (
     list_files_async,
 )
 from backend.app.services.printer_manager import (
+    find_ams_unit,
+    first_drying_blocking_reason,
     get_derived_status_name,
     printer_manager,
     supports_chamber_temp,
@@ -1457,6 +1459,26 @@ async def start_drying(
         raise HTTPException(400, "Temperature must be 45-85°C")
     if duration < 1 or duration > 24:
         raise HTTPException(400, "Duration must be 1-24 hours")
+
+    # Inspect the live AMS unit: surface blocking dry_sf_reasons (otherwise the
+    # firmware silently ignores the command — #971) and backfill an empty
+    # filament field from the first loaded tray so the printer doesn't reject
+    # the payload.
+    target_ams = find_ams_unit(live_state.raw_data if live_state else None, ams_id)
+    if target_ams is not None:
+        blocker = first_drying_blocking_reason(target_ams)
+        if blocker is not None:
+            raise HTTPException(409, blocker[1])
+
+        if not filament:
+            for tray in target_ams.get("tray") or []:
+                tray_type = tray.get("tray_type")
+                if tray_type:
+                    filament = str(tray_type)
+                    break
+
+    if not filament:
+        filament = "PLA"
 
     success = printer_manager.send_drying_command(
         printer_id, ams_id, temp, duration, mode=1, filament=filament, rotate_tray=rotate_tray
