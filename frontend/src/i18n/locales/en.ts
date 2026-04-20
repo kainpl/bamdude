@@ -1897,6 +1897,10 @@ export default {
     disableAuthentication: 'Disable Authentication',
     // Additional settings
     configureBamdude: 'Configure BamDude',
+    search: {
+      placeholder: 'Search settings…',
+      noResults: 'No matches',
+    },
     systemDefault: 'System Default',
     archiveSettings: 'Archive Settings',
     queueAndScheduling: 'Queue & Scheduling',

@@ -1902,6 +1902,10 @@ export default {
     disableAuthentication: 'Вимкнути автентифікацію',
     // Additional settings
     configureBamdude: 'Налаштувати BamDude',
+    search: {
+      placeholder: 'Пошук у налаштуваннях…',
+      noResults: 'Нічого не знайдено',
+    },
     systemDefault: 'Системне значення',
     archiveSettings: 'Налаштування архіву',
     queueAndScheduling: 'Черги та планування',
