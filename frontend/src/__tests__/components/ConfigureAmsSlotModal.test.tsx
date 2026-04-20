@@ -10,6 +10,8 @@ import { api } from '../../api/client';
 
 // Mock the API client
 vi.mock('../../api/client', () => ({
+  setAuthToken: vi.fn(),
+  getAuthToken: vi.fn(() => 'test-admin-token'),
   api: {
     getCloudSettings: vi.fn(),
     getKProfiles: vi.fn(),

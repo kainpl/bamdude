@@ -130,6 +130,12 @@ describe('Layout', () => {
     it('shows modal when plate-not-empty event is dispatched', async () => {
       render(<Layout />);
 
+      // Wait for AuthContext to finish loading the admin user so the listener's
+      // hasPermission('printers:control') guard sees a real user instead of null.
+      await waitFor(() => {
+        expect(document.querySelector('a[href="/settings"]')).toBeInTheDocument();
+      });
+
       // Dispatch the plate-not-empty event
       window.dispatchEvent(
         new CustomEvent('plate-not-empty', {
@@ -150,6 +156,10 @@ describe('Layout', () => {
 
     it('closes modal when I Understand button is clicked', async () => {
       render(<Layout />);
+
+      await waitFor(() => {
+        expect(document.querySelector('a[href="/settings"]')).toBeInTheDocument();
+      });
 
       // Dispatch the plate-not-empty event
       window.dispatchEvent(

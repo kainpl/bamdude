@@ -86,14 +86,12 @@ vi.stubGlobal('WebSocket', MockWebSocket);
 // Mock scrollTo
 window.scrollTo = vi.fn();
 
-// Mock localStorage
-const localStorageMock = {
-  getItem: vi.fn(),
-  setItem: vi.fn(),
-  removeItem: vi.fn(),
-  clear: vi.fn(),
-};
-Object.defineProperty(window, 'localStorage', { value: localStorageMock });
+// localStorage: use jsdom's built-in storage instead of an empty vi.fn() stub.
+// The previous vi.fn() mock stored nothing, so anything that persisted state
+// (auth_token, user preferences, sidebar order) silently lost data between
+// reads. Real jsdom localStorage is per-jsdom-environment and isolated per test
+// file by default, which is what we want anyway. Any individual test that needs
+// to observe calls can still spyOn(Storage.prototype, 'setItem').
 
 // Suppress console output during tests (reduces noise)
 // Remove these lines if you need to debug test output

@@ -147,9 +147,12 @@ describe('QueuePage', () => {
         expect(screen.getByText('All')).toBeInTheDocument();
       });
       await user.click(screen.getByText('All'));
-      // 'All' view renders the flat pending list - should show pending item.
+      // 'All' view renders the flat pending list — the pending item's name now
+      // appears in both the card title and a tooltip/attribute, so multiple
+      // elements share the text. `getAllByText` + length assertion proves the
+      // item rendered without caring about the exact DOM duplication.
       await waitFor(() => {
-        expect(screen.getByText('Pending Print')).toBeInTheDocument();
+        expect(screen.getAllByText('Pending Print').length).toBeGreaterThanOrEqual(1);
       });
     });
   });
