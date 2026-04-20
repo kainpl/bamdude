@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 import jwt
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials
 from jwt.exceptions import PyJWTError as JWTError
 from sqlalchemy import select
@@ -18,6 +18,7 @@ from backend.app.core.auth import (
     SECRET_KEY,
     Permission,
     RequirePermission,
+    _is_token_fresh,
     _validate_api_key,
     authenticate_user,
     authenticate_user_by_email,
@@ -27,6 +28,7 @@ from backend.app.core.auth import (
     get_user_by_email,
     get_user_by_username,
     has_any_admin,
+    is_jti_revoked,
     revoke_jti,
     security,
 )
@@ -296,6 +298,7 @@ async def get_auth_status(db: AsyncSession = Depends(get_db)):
 async def login(
     request: LoginRequest,
     raw_request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
 ):
     """Login and get access token.
@@ -389,6 +392,48 @@ async def login(
     await clear_failed_attempts(db, user.username, event_type=EventType.LOGIN_ATTEMPT)
     await clear_failed_attempts(db, client_ip, event_type=EventType.LOGIN_IP)
 
+    # --- 2FA check ---------------------------------------------------------
+    # If the user has any active 2FA method, return a pre_auth_token + cookie
+    # instead of a full JWT. The caller completes the flow via
+    # ``POST /api/v1/auth/2fa/verify``.
+    from backend.app.models.settings import Settings as _Settings
+    from backend.app.models.user_totp import UserTOTP
+
+    totp_row = (await db.execute(select(UserTOTP).where(UserTOTP.user_id == user.id))).scalar_one_or_none()
+    totp_enabled = totp_row is not None and totp_row.is_enabled
+
+    email_2fa_row = (
+        await db.execute(select(_Settings).where(_Settings.key == f"user_{user.id}_email_2fa_enabled"))
+    ).scalar_one_or_none()
+    email_otp_enabled = email_2fa_row is not None and email_2fa_row.value.lower() == "true" and user.email is not None
+
+    if totp_enabled or email_otp_enabled:
+        from backend.app.api.routes.mfa import create_pre_auth_token
+
+        challenge_id = secrets.token_urlsafe(32)
+        pre_auth_token = await create_pre_auth_token(db, user.username, challenge_id=challenge_id)
+        response.set_cookie(
+            key="2fa_challenge",
+            value=challenge_id,
+            httponly=True,
+            secure=raw_request.url.scheme == "https",
+            samesite="lax",
+            max_age=300,
+            path="/api/v1/auth/2fa",
+        )
+        methods: list[str] = []
+        if totp_enabled:
+            methods.append("totp")
+        if email_otp_enabled:
+            methods.append("email")
+        if totp_enabled:
+            methods.append("backup")
+        return LoginResponse(
+            requires_2fa=True,
+            pre_auth_token=pre_auth_token,
+            two_fa_methods=methods,
+        )
+
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(data={"sub": user.username}, expires_delta=access_token_expires)
 
@@ -451,8 +496,22 @@ async def get_current_user_info(
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
+        jti = payload.get("jti")
+        if jti and await is_jti_revoked(jti):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Could not validate credentials",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
         user = await get_user_by_username(db, username)
         if user is None or not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Could not validate credentials",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        if not _is_token_fresh(payload.get("iat"), user):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Could not validate credentials",

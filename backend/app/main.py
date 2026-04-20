@@ -4408,17 +4408,11 @@ PUBLIC_API_PATTERNS = [
 ]
 
 
-@app.middleware("http")
-async def security_headers_middleware(request, call_next):
-    """Add security headers to all responses."""
-    response = await call_next(request)
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    # SAMEORIGIN (not DENY) so same-origin iframes in the UI — notably the
-    # ExternalLinkPage sidebar and reverse-proxied Spoolman embeds — can load
-    # their content. Cross-origin clickjacking is still blocked.
-    response.headers["X-Frame-Options"] = "SAMEORIGIN"
-    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    return response
+# NOTE: security_headers_middleware is registered *after* auth_middleware below
+# so it becomes the outermost layer and its headers also apply to the early
+# JSONResponse returns from auth_middleware (401 auth-required, 503 setup-required).
+# Starlette middleware order: the LAST @app.middleware("http")-decorated function
+# is the OUTERMOST, so its post-call_next response patch runs on every response.
 
 
 # Setup-gate cache - True once we've confirmed at least one admin exists.
@@ -4566,6 +4560,23 @@ async def auth_middleware(request, call_next):
         )
 
     return await call_next(request)
+
+
+@app.middleware("http")
+async def security_headers_middleware(request, call_next):
+    """Add security headers to all responses.
+
+    Registered AFTER auth_middleware so it runs OUTERMOST — meaning it also
+    patches the early JSONResponse returns auth_middleware uses for 401/503.
+    """
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    # SAMEORIGIN (not DENY) so same-origin iframes in the UI — notably the
+    # ExternalLinkPage sidebar and reverse-proxied Spoolman embeds — can load
+    # their content. Cross-origin clickjacking is still blocked.
+    response.headers["X-Frame-Options"] = "SAMEORIGIN"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
 
 
 # API routes
