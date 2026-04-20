@@ -35,6 +35,7 @@ from backend.app.api.routes import (
     mfa,
     notification_templates,
     notifications,
+    obico,
     pending_uploads,
     print_queue,
     printer_queues,
@@ -4296,6 +4297,16 @@ async def lifespan(app: FastAPI):
 
         traceback.print_exc()
 
+    # Start Obico AI failure-detection loop. The loop itself is opt-in (gated by
+    # the ``obico_enabled`` setting); we always launch it so it can pick up the
+    # toggle without a restart.
+    try:
+        from backend.app.services.obico_detection import obico_detection_service
+
+        await obico_detection_service.start()
+    except Exception as e:
+        logging.getLogger(__name__).warning("Failed to start Obico detection service: %s", e)
+
     yield
 
     # Shutdown
@@ -4309,6 +4320,12 @@ async def lifespan(app: FastAPI):
     print_scheduler.stop()
     await background_dispatch.stop()
     smart_plug_manager.stop_scheduler()
+    try:
+        from backend.app.services.obico_detection import obico_detection_service
+
+        obico_detection_service.stop()
+    except Exception:
+        pass
     notification_service.stop_digest_scheduler()
     git_backup_service.stop_scheduler()
     local_backup_service.stop_scheduler()
@@ -4405,6 +4422,9 @@ PUBLIC_API_PATTERNS = [
     "/auth/oidc/authorize/",
     "/auth/oidc/callback",
     "/auth/oidc/exchange",
+    # Obico ML API fetches JPEG frames by one-shot nonce (issue #172 follow-up).
+    # The nonce itself is the credential: 32-byte random, single-use, ~30s TTL.
+    "/obico/cached-frame/",  # /obico/cached-frame/{nonce}
 ]
 
 
@@ -4650,6 +4670,7 @@ app.include_router(firmware.router, prefix=app_settings.api_prefix)
 app.include_router(git_backup.router, prefix=app_settings.api_prefix)
 app.include_router(local_backup.router, prefix=app_settings.api_prefix)
 app.include_router(metrics.router, prefix=app_settings.api_prefix)
+app.include_router(obico.router, prefix=app_settings.api_prefix)
 app.include_router(virtual_printers.router, prefix=app_settings.api_prefix)
 app.include_router(printer_queues.router, prefix=app_settings.api_prefix)
 app.include_router(telegram.router, prefix=app_settings.api_prefix)

@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, ChevronDown, Save, Mail, Flame, Code, Pencil } from 'lucide-react';
+import { Loader2, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, ChevronDown, Save, Mail, Flame, Code, Pencil, ScanEye } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, macrosApi } from '../api/client';
@@ -28,6 +28,7 @@ import { EmailSettings } from '../components/EmailSettings';
 import { LDAPSettings } from '../components/LDAPSettings';
 import { TwoFactorSettings } from '../components/TwoFactorSettings';
 import { OIDCProviderSettings } from '../components/OIDCProviderSettings';
+import { FailureDetectionSettings } from '../components/FailureDetectionSettings';
 import { APIBrowser } from '../components/APIBrowser';
 import { Toggle } from '../components/Toggle';
 import { getGroupName, getGroupDescription } from '../utils/groupI18n';
@@ -40,7 +41,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Palette, Search } from 'lucide-react';
 import { registerSettingsSearch, getSettingsSearchEntries } from '../lib/settingsSearch';
 
-const validTabs = ['general', 'printing', 'filament', 'notifications', 'plugs', 'network', 'virtual-printer', 'apikeys', 'users', 'backup'] as const;
+const validTabs = ['general', 'printing', 'filament', 'notifications', 'plugs', 'network', 'virtual-printer', 'apikeys', 'failure-detection', 'users', 'backup'] as const;
 type TabType = typeof validTabs[number];
 type UsersSubTab = 'users' | 'email' | 'ldap' | 'twofa' | 'oidc';
 
@@ -55,6 +56,10 @@ registerSettingsSearch({ labelKey: 'settings.tabs.smartPlugs', tab: 'plugs', key
 registerSettingsSearch({ labelKey: 'settings.tabs.network', tab: 'network', keywords: 'network external url reverse proxy public notification link ftp retry upload retries backoff home assistant ha hass mqtt publishing broker topic integration prometheus metrics grafana monitoring bearer token', anchor: 'tab-network' });
 registerSettingsSearch({ labelKey: 'settings.tabs.virtualPrinter', tab: 'virtual-printer', keywords: 'virtual printer proxy archive slicer bambustudio orcaslicer ip bind port', anchor: 'tab-virtual-printer' });
 registerSettingsSearch({ labelKey: 'settings.tabs.apiKeys', tab: 'apikeys', keywords: 'api keys create permission scope webhook endpoint post http browser documentation test token bearer', anchor: 'tab-apikeys' });
+registerSettingsSearch({ labelKey: 'settings.tabs.failureDetection', labelFallback: 'Failure Detection', tab: 'failure-detection', keywords: 'failure detection ai ml obico spaghetti detect monitoring', anchor: 'card-fd-ml' });
+registerSettingsSearch({ labelKey: 'failureDetection.perPrinterTitle', labelFallback: 'Per-Printer Settings', tab: 'failure-detection', keywords: 'failure detection per printer enable per-printer sensitivity', anchor: 'card-fd-perprinter' });
+registerSettingsSearch({ labelKey: 'failureDetection.statusTitle', labelFallback: 'Detection Status', tab: 'failure-detection', keywords: 'failure detection status running connection', anchor: 'card-fd-status' });
+registerSettingsSearch({ labelKey: 'failureDetection.historyTitle', labelFallback: 'Detection History', tab: 'failure-detection', keywords: 'failure detection history log events', anchor: 'card-fd-history' });
 registerSettingsSearch({ labelKey: 'settings.tabs.users', tab: 'users', subTab: 'users', keywords: 'users accounts list groups roles permissions administrators operators viewers current user profile password change', anchor: 'tab-users-users' });
 registerSettingsSearch({ labelKey: 'settings.email.smtpSettings', labelFallback: 'SMTP Configuration', tab: 'users', subTab: 'email', keywords: 'smtp email send server port password auth starttls ssl', anchor: 'tab-users-email' });
 registerSettingsSearch({ labelKey: 'settings.ldap.title', labelFallback: 'LDAP Authentication', tab: 'users', subTab: 'ldap', keywords: 'ldap active directory ad authentication bind dn search base group mapping', anchor: 'tab-users-ldap' });
@@ -104,6 +109,7 @@ const TAB_I18N_KEY: Record<TabType, string> = {
   network: 'network',
   'virtual-printer': 'virtualPrinter',
   apikeys: 'apiKeys',
+  'failure-detection': 'failureDetection',
   users: 'users',
   backup: 'backup',
 };
@@ -639,6 +645,13 @@ export function SettingsPage() {
     queryKey: ['cloud-status'],
     queryFn: api.getCloudStatus,
   });
+
+  // Obico AI failure detection status for the Failure Detection tab indicator (#172)
+  const { data: obicoStatus } = useQuery({
+    queryKey: ['obico-status'],
+    queryFn: api.getObicoStatus,
+  });
+  const obicoActive = !!(obicoStatus?.is_running && obicoStatus?.enabled);
 
   // Advanced auth status for user creation
   const { data: advancedAuthStatus = { advanced_auth_enabled: false, smtp_configured: false } } = useQuery({
@@ -1308,6 +1321,18 @@ export function SettingsPage() {
               {apiKeys.length}
             </span>
           )}
+        </button>
+        <button
+          onClick={() => handleTabChange('failure-detection')}
+          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+            activeTab === 'failure-detection'
+              ? 'text-bambu-green border-bambu-green'
+              : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+          }`}
+        >
+          <ScanEye className="w-4 h-4" />
+          {t('settings.tabs.failureDetection')}
+          <span className={`w-2 h-2 rounded-full ${obicoActive ? 'bg-green-400' : 'bg-gray-500'}`} />
         </button>
         <button
           onClick={() => handleTabChange('users')}
@@ -4278,6 +4303,13 @@ export function SettingsPage() {
               </Button>
             </div>
           </Card>
+        </div>
+      )}
+
+      {/* ══════ FAILURE DETECTION TAB (Obico AI, §19) ══════ */}
+      {activeTab === 'failure-detection' && (
+        <div className="space-y-4">
+          <FailureDetectionSettings />
         </div>
       )}
 
