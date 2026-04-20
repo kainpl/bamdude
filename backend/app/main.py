@@ -4564,18 +4564,50 @@ async def auth_middleware(request, call_next):
 
 @app.middleware("http")
 async def security_headers_middleware(request, call_next):
-    """Add security headers to all responses.
+    """Add HTTP security headers + Content-Security-Policy to every response.
 
     Registered AFTER auth_middleware so it runs OUTERMOST — meaning it also
     patches the early JSONResponse returns auth_middleware uses for 401/503.
+
+    CSP notes:
+    - ``script-src 'self'``: hard XSS-exfiltration guard. Inline scripts are
+      not allowed; the SW registration script lives at ``/sw-register.js``
+      (see ``serve_sw_register`` below) so the strict directive holds.
+    - ``style-src 'unsafe-inline'``: React + several UI libs inject inline
+      styles at runtime; we cannot drop this without rewriting them.
+    - ``connect-src 'self' ws: wss:``: API + the same-origin /api/v1/ws
+      WebSocket. ``ws:``/``wss:`` is permissive on protocol but not host —
+      Safari historically does not accept ``'self'`` for WebSockets, hence
+      the explicit scheme allow.
+    - ``img-src``/``media-src`` accept ``data:``/``blob:`` for base64
+      thumbnails and Blob-URL timelapse previews.
+    - ``frame-src 'self' https:``: BamDude embeds Spoolman via
+      reverse-proxy (same origin) and arbitrary HTTPS external links from
+      the sidebar — both stay allowed.
+    - ``frame-ancestors 'none'``: nobody may embed BamDude. This is the
+      modern equivalent of ``X-Frame-Options: DENY``; the SAMEORIGIN value
+      we keep on ``X-Frame-Options`` is for legacy browsers only — modern
+      browsers use ``frame-ancestors`` which takes precedence.
     """
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
-    # SAMEORIGIN (not DENY) so same-origin iframes in the UI — notably the
-    # ExternalLinkPage sidebar and reverse-proxied Spoolman embeds — can load
-    # their content. Cross-origin clickjacking is still blocked.
     response.headers["X-Frame-Options"] = "SAMEORIGIN"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "img-src 'self' data: blob:; "
+        "media-src 'self' blob:; "
+        "connect-src 'self' ws: wss:; "
+        "font-src 'self' data: https://fonts.gstatic.com; "
+        "object-src 'none'; "
+        "base-uri 'self'; "
+        "frame-src 'self' https:; "
+        "frame-ancestors 'none';"
+    )
+    if request.url.scheme == "https":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return response
 
 
@@ -4683,6 +4715,19 @@ async def serve_service_worker():
             headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
         )
     return {"error": "Service worker not found"}
+
+
+@app.get("/sw-register.js")
+async def serve_sw_register():
+    """Serve the service-worker registration bootstrap script.
+
+    Served as a real JS file so the strict ``script-src 'self'`` CSP covers it
+    without needing ``'unsafe-inline'`` or per-build hashes on the inline tag.
+    """
+    reg_file = app_settings.static_dir / "sw-register.js"
+    if reg_file.exists():
+        return FileResponse(reg_file, media_type="application/javascript")
+    return {"error": "sw-register.js not found"}
 
 
 # Catch-all route for React Router (must be last)

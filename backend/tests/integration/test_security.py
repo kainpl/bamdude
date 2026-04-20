@@ -722,14 +722,7 @@ class TestChallengeIdCookieBinding:
 
 
 class TestSecurityHeaders:
-    """Every HTTP response must include the security headers BamDude ships.
-
-    BamDude divergence from upstream: §12C CSP was deliberately rejected
-    (``temp/bambuddy-changes-audit-v0.2.3b3-v0.2.3.md`` line ~601 — custom
-    reverse-proxy + sidebar-iframe deployments would break under upstream's
-    blanket CSP). The CSP-related assertions from upstream's test are
-    therefore intentionally omitted here.
-    """
+    """Every HTTP response must carry the standard security headers and CSP."""
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -741,6 +734,12 @@ class TestSecurityHeaders:
         assert resp.headers.get("x-content-type-options") == "nosniff"
         assert resp.headers.get("x-frame-options") == "SAMEORIGIN"
         assert resp.headers.get("referrer-policy") == "strict-origin-when-cross-origin"
+
+        csp = resp.headers.get("content-security-policy", "")
+        assert "default-src 'self'" in csp
+        assert "script-src 'self'" in csp
+        assert "frame-ancestors 'none'" in csp
+        assert "object-src 'none'" in csp
 
     @pytest.mark.asyncio
     @pytest.mark.integration
