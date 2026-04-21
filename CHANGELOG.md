@@ -6,7 +6,12 @@ All notable changes to BamDude will be documented in this file.
 
 ---
 
-## [0.3.2] - 2026-04-19
+## [0.3.2] - 2026-04-22
+
+### Documentation
+
+- **Upgrade & migration manual rewritten** — `docs/getting-started/upgrading.md` now covers every combination of source version × install method (Bambuddy 2.2.2, Bambuddy-HE / BamDude 0.2.x, routine BamDude updates, and the ⚠️ not-tested warning for Bambuddy 0.2.3+) across Docker Compose, `docker run` from GHCR, and native self-install paths. Adds tabbed backup recipes, a description of what runs on first boot, rollback, and a troubleshooting catalogue. README's Upgrading section reduced to a pointer + short summary.
+- **DOCKERHUB.md gains GitHub Container Registry quick-start** (`ghcr.io/kainpl/bamdude:latest`) alongside the existing Docker Hub and source-build examples. Upgrading section replaced with a 4-bullet summary linking to the full manual at `https://github.com/kainpl/bamdude/blob/main/docs/getting-started/upgrading.md` (absolute URL since Docker Hub renders flat Markdown without repo context).
 
 ### Security
 
