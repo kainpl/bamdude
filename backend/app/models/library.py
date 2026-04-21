@@ -76,6 +76,7 @@ class LibraryFile(Base):
     file_metadata: Mapped[dict | None] = mapped_column(JSON)
 
     # Usage tracking
+    print_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     last_printed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     # Increment on successful queue completion only (failed/cancelled don't count)
     # so the field reflects successful usage rather than attempt count (#1008).

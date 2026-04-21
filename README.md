@@ -220,13 +220,15 @@ pip install -r requirements.txt
 uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
 ```
 
-### Upgrading
+### Upgrading or migrating
 
-**From Bambuddy 2.2.2:** Place your `bambuddy.db` in the `data/` directory and start BamDude. Data is automatically imported into a fresh database. The original file is preserved as backup.
+Full manual: **[docs/getting-started/upgrading.md](docs/getting-started/upgrading.md)** — covers migration from Bambuddy 2.2.2, from Bambuddy-HE / BamDude 0.2.x, routine BamDude-to-BamDude updates, switching between self-install / Docker / GHCR, and rollback.
 
-**From BamDude 3.0.1:** Place your `bambuddy.db` in `data/` and start. The file is renamed to `bamdude.db` and schema is upgraded automatically.
+Short version:
 
-**Docker volume migration:** If upgrading from the `bambuddy-he` Docker image, run `install/migrate-volumes.sh` first to copy data volumes.
+- **From Bambuddy 2.2.2** (tested & supported) — drop `bambuddy.db` into BamDude's `data/` and start. The `m000` migration imports automatically and renames the file to `bamdude.db`.
+- **From Bambuddy-HE / BamDude 0.2.x / 0.3.x** (tested & supported) — Docker users run `install/migrate-volumes.sh` once to copy `bambuddy_he_*` → `bamdude_*`; native users just point the installer at the existing data dir.
+- **From Bambuddy 0.2.3 or newer** — ⚠️ not tested. BamDude diverged from upstream at 2.2.2 and applies its own migrations; newer upstream schemas may hit `no such column` errors on boot. Back up first, keep the Bambuddy data directory untouched, and file an issue if you hit a wall.
 
 ### Telegram Bot Setup
 

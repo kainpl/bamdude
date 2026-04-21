@@ -3067,12 +3067,12 @@ class BambuMQTTClient:
 
             # If all mapped slots are external spool (no real AMS trays), force use_ams=False.
             # P1S/P1P with no AMS rejects use_ams=True with "Failed to get AMS mapping table".
-            # Skip for H2D series - use_ams controls nozzle routing on those printers.
+            # Skip for H2D series — use_ams controls nozzle routing on those printers.
             if ams_mapping and use_ams and not is_h2d:
                 if all(t is None or int(t) < 0 or int(t) >= 254 for t in ams_mapping):
                     use_ams = False
                     logger.info(
-                        "[%s] All filament slots use external spool - setting use_ams=False",
+                        "[%s] All filament slots use external spool — setting use_ams=False",
                         self.serial_number,
                     )
 
@@ -3080,12 +3080,12 @@ class BambuMQTTClient:
             # On printers without a physical AMS, firmware rejects -1 (unmapped)
             # and 254 (virtual tray) in ams_mapping with 0700_8012 "Failed to get
             # AMS mapping table". Fix: remap -1→0 and omit ams_mapping2 entirely.
-            # H2D excluded - use_ams controls nozzle routing on those.
+            # H2D excluded — use_ams controls nozzle routing on those.
             no_ams_printer = not use_ams and not is_h2d and not self.state.raw_data.get("ams")
             if no_ams_printer and flat_ams_mapping:
                 flat_ams_mapping = [0 if v == -1 else v for v in flat_ams_mapping]
                 logger.info(
-                    "[%s] No AMS detected - remapped external spool: ams_mapping=%s, omitting ams_mapping2",
+                    "[%s] No AMS detected — remapped external spool: ams_mapping=%s, omitting ams_mapping2",
                     self.serial_number,
                     flat_ams_mapping,
                 )

@@ -6,7 +6,7 @@ Hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) by maziggy, with Te
 
 ## Quick Start
 
-### From Docker Hub (recommended)
+### From Docker Hub
 
 ```bash
 docker run -d \
@@ -17,6 +17,21 @@ docker run -d \
   -v bamdude_logs:/app/logs \
   --restart unless-stopped \
   kainpl/bamdude:latest
+```
+
+### From GitHub Container Registry
+
+Same image, different registry — `ghcr.io/kainpl/bamdude:latest` is the CI-built mirror:
+
+```bash
+docker run -d \
+  --name bamdude \
+  --network host \
+  -e TZ=Europe/Kyiv \
+  -v bamdude_data:/app/data \
+  -v bamdude_logs:/app/logs \
+  --restart unless-stopped \
+  ghcr.io/kainpl/bamdude:latest
 ```
 
 ### From source (docker compose)
@@ -93,16 +108,28 @@ volumes:
   bamdude_logs:
 ```
 
-## Upgrading
+## Upgrading & migration
 
-**From Bambuddy:** Place your `bambuddy.db` in the data volume and start the container. Data is imported automatically.
+Full manual (every source version × every install method, backup/rollback, troubleshooting):
+**https://github.com/kainpl/bamdude/blob/main/docs/getting-started/upgrading.md**
 
-**From Bambuddy HE Docker:** Run the volume migration script first:
-```bash
-docker compose down
-bash install/migrate-volumes.sh
-docker compose up -d
-```
+Short version:
+
+- **From Bambuddy 2.2.2** (tested & supported) — copy your Bambuddy data dir into the `bamdude_data` volume and start the container. The `m000` migration imports automatically and renames `bambuddy.db` → `bamdude.db`.
+    ```bash
+    docker volume create bamdude_data
+    docker run --rm \
+      -v /path/to/bambuddy/data:/from \
+      -v bamdude_data:/to \
+      alpine cp -a /from/. /to/
+    ```
+- **From Bambuddy-HE / BamDude 0.2.x** (tested & supported) — run the one-shot volume migration script, then start:
+    ```bash
+    bash install/migrate-volumes.sh   # copies bambuddy_he_* → bamdude_*
+    docker compose up -d
+    ```
+- **Between BamDude versions** — routine `docker compose pull && docker compose up -d` (or `docker pull ghcr.io/kainpl/bamdude:latest` + recreate).
+- **From Bambuddy 0.2.3 or newer** — ⚠️ **not tested.** BamDude diverged from upstream at 2.2.2 and applies its own migrations; newer upstream schemas may hit `no such column` on boot. Back up first and keep the Bambuddy data dir untouched so you can roll back.
 
 ## Telegram Bot Setup
 
