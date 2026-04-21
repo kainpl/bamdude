@@ -98,9 +98,7 @@ const mockStats = {
   disk_total_bytes: 107374182400,
 };
 
-// TODO(#stale-tests): re-enable once assertions are updated to match current component output.
-// See https://github.com/kainpl/bamdude/issues for the tracking ticket.
-describe.skip('FileManagerPage', () => {
+describe('FileManagerPage', () => {
   beforeEach(() => {
     // Clear localStorage to ensure consistent view mode
     localStorage.clear();

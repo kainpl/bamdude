@@ -37,9 +37,7 @@ const mockProjects = [
   },
 ];
 
-// TODO(#stale-tests): re-enable once assertions are updated to match current component output.
-// See https://github.com/kainpl/bamdude/issues for the tracking ticket.
-describe.skip('ProjectsPage', () => {
+describe('ProjectsPage', () => {
   beforeEach(() => {
     server.use(
       http.get('/api/v1/projects/', () => {

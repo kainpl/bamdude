@@ -9,9 +9,7 @@ import { Layout } from '../../components/Layout';
 import { http, HttpResponse } from 'msw';
 import { server } from '../mocks/server';
 
-// TODO(#stale-tests): re-enable once assertions are updated to match current component output.
-// See https://github.com/kainpl/bamdude/issues for the tracking ticket.
-describe.skip('Layout', () => {
+describe('Layout', () => {
   beforeEach(() => {
     server.use(
       http.get('/api/v1/printers/', () => {

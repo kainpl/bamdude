@@ -73,9 +73,7 @@ const mockLocalPresets = {
   printer: [],
 };
 
-// TODO(#stale-tests): re-enable once assertions are updated to match current component output.
-// See https://github.com/kainpl/bamdude/issues for the tracking ticket.
-describe.skip('LocalProfilesView', () => {
+describe('LocalProfilesView', () => {
   beforeEach(() => {
     server.use(
       http.get('/api/v1/local-presets/', () => {
