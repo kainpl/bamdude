@@ -117,6 +117,35 @@ async def db_session(test_engine) -> AsyncGenerator[AsyncSession, None]:
         yield session
 
 
+@pytest.fixture(autouse=True)
+async def _cancel_leaked_asyncio_tasks():
+    """Cancel asyncio tasks that leaked past the test body.
+
+    BamDude services spawn fire-and-forget tasks during normal operation —
+    ``asyncio.create_task(archive_download_retry.retry_printer_archives(...))``
+    in ``printer_manager.connect_printer``, background-dispatch verifiers,
+    smart-plug snapshot loops, and so on. Most unit tests mock the outer
+    service, but a handful exercise the real code path and schedule a
+    task that finishes only after the test returns. Under pytest-asyncio's
+    per-function loop the next test gets a fresh loop, and any aiosqlite
+    / callback left behind fires against the closed loop — surfacing as
+    ``PytestUnhandledThreadExceptionWarning: Event loop is closed``.
+
+    Cancelling every pending task after the test body clears the queue
+    before the loop dies. aiosqlite worker threads (separate from asyncio
+    tasks) still occasionally slip past; the matching ``filterwarnings``
+    entry in pytest.ini swallows the residual noise.
+    """
+    yield
+    pending = [t for t in asyncio.all_tasks() if not t.done() and t is not asyncio.current_task()]
+    for task in pending:
+        task.cancel()
+    if pending:
+        # return_exceptions so a task that raises during cancel doesn't
+        # propagate and fail the test that already passed.
+        await asyncio.gather(*pending, return_exceptions=True)
+
+
 @pytest.fixture
 async def async_client(test_engine, db_session) -> AsyncGenerator[AsyncClient, None]:
     """Create an async test client."""
