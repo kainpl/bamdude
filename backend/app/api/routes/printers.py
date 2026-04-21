@@ -8,7 +8,7 @@ from fastapi.responses import Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermissionIfAuthEnabled
+from backend.app.core.auth import RequirePermission
 from backend.app.core.config import settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -31,7 +31,6 @@ from backend.app.schemas.printer import (
 from backend.app.services.bambu_ftp import (
     delete_file_async,
     download_file_bytes_async,
-    download_file_try_paths_async,
     get_storage_info_async,
     list_files_async,
 )
@@ -48,7 +47,7 @@ router = APIRouter(prefix="/printers", tags=["printers"])
 
 @router.get("/", response_model=list[PrinterResponse])
 async def list_printers(
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_READ),
+    _=RequirePermission(Permission.PRINTERS_READ),
     db: AsyncSession = Depends(get_db),
 ):
     """List all configured printers."""
@@ -59,7 +58,7 @@ async def list_printers(
 @router.post("/", response_model=PrinterResponse)
 async def create_printer(
     printer_data: PrinterCreate,
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CREATE),
+    _=RequirePermission(Permission.PRINTERS_CREATE),
     db: AsyncSession = Depends(get_db),
 ):
     """Add a new printer."""
@@ -73,6 +72,13 @@ async def create_printer(
     await db.commit()
     await db.refresh(printer)
 
+    # Auto-create printer queue
+    from backend.app.models.printer_queue import PrinterQueue
+
+    queue = PrinterQueue(id=printer.id, printer_id=printer.id)
+    db.add(queue)
+    await db.commit()
+
     # Connect to the printer
     if printer.is_active:
         await printer_manager.connect_printer(printer)
@@ -82,7 +88,7 @@ async def create_printer(
 
 @router.get("/usb-cameras")
 async def list_usb_cameras(
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_READ),
+    _=RequirePermission(Permission.PRINTERS_READ),
 ):
     """List available USB cameras connected to the system.
 
@@ -102,7 +108,7 @@ async def list_usb_cameras(
 async def get_available_filaments(
     model: str = Query(..., description="Target printer model"),
     location: str | None = Query(None, description="Optional location filter"),
-    _=RequirePermissionIfAuthEnabled(Permission.QUEUE_CREATE),
+    _=RequirePermission(Permission.QUEUE_CREATE),
     db: AsyncSession = Depends(get_db),
 ):
     """Get deduplicated list of filaments loaded across all active printers of a given model.
@@ -198,7 +204,7 @@ async def get_available_filaments(
 
 @router.get("/developer-mode-warnings")
 async def get_developer_mode_warnings(
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_READ),
+    _=RequirePermission(Permission.PRINTERS_READ),
     db: AsyncSession = Depends(get_db),
 ):
     """Check if any connected printer lacks developer LAN mode."""
@@ -222,7 +228,7 @@ async def get_developer_mode_warnings(
 @router.get("/{printer_id}", response_model=PrinterResponse)
 async def get_printer(
     printer_id: int,
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_READ),
+    _=RequirePermission(Permission.PRINTERS_READ),
     db: AsyncSession = Depends(get_db),
 ):
     """Get a specific printer."""
@@ -237,7 +243,7 @@ async def get_printer(
 async def update_printer(
     printer_id: int,
     printer_data: PrinterUpdate,
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_UPDATE),
+    _=RequirePermission(Permission.PRINTERS_UPDATE),
     db: AsyncSession = Depends(get_db),
 ):
     """Update a printer."""
@@ -282,7 +288,7 @@ async def update_printer(
 async def delete_printer(
     printer_id: int,
     delete_archives: bool = True,
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_DELETE),
+    _=RequirePermission(Permission.PRINTERS_DELETE),
     db: AsyncSession = Depends(get_db),
 ):
     """Delete a printer.
@@ -335,7 +341,7 @@ async def delete_printer(
 @router.get("/{printer_id}/status", response_model=PrinterStatus)
 async def get_printer_status(
     printer_id: int,
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_READ),
+    _=RequirePermission(Permission.PRINTERS_READ),
     db: AsyncSession = Depends(get_db),
 ):
     """Get real-time status of a printer."""
@@ -607,6 +613,7 @@ async def get_printer_status(
         heatbreak_fan_speed=state.heatbreak_fan_speed,
         firmware_version=state.firmware_version,
         developer_mode=state.developer_mode if state else None,
+        macro_executing=state.macro_executing if state else None,
         plate_cleared=printer_manager.is_plate_cleared(printer_id),
         supports_drying=supports_drying(printer.model, state.firmware_version),
     )
@@ -615,7 +622,7 @@ async def get_printer_status(
 @router.get("/{printer_id}/current-print-user")
 async def get_current_print_user(
     printer_id: int,
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_READ),
+    _=RequirePermission(Permission.PRINTERS_READ),
     db: AsyncSession = Depends(get_db),
 ):
     """Get the user who started the current print (for reprint tracking).
@@ -636,7 +643,7 @@ async def get_current_print_user(
 @router.post("/{printer_id}/refresh-status")
 async def refresh_printer_status(
     printer_id: int,
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_READ),
+    _=RequirePermission(Permission.PRINTERS_READ),
     db: AsyncSession = Depends(get_db),
 ):
     """Request a full status refresh from the printer (sends pushall command)."""
@@ -655,7 +662,7 @@ async def refresh_printer_status(
 @router.post("/{printer_id}/connect")
 async def connect_printer(
     printer_id: int,
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
     db: AsyncSession = Depends(get_db),
 ):
     """Manually connect to a printer."""
@@ -671,7 +678,7 @@ async def connect_printer(
 @router.post("/{printer_id}/disconnect")
 async def disconnect_printer(
     printer_id: int,
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
     db: AsyncSession = Depends(get_db),
 ):
     """Manually disconnect from a printer."""
@@ -689,7 +696,7 @@ async def test_printer_connection(
     ip_address: str,
     serial_number: str,
     access_code: str,
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CREATE),
+    _=RequirePermission(Permission.PRINTERS_CREATE),
 ):
     """Test connection to a printer without saving."""
     result = await printer_manager.test_connection(
@@ -718,6 +725,20 @@ async def get_printer_cover(
     # Note: No auth required - this is an image asset loaded via <img src> which can't send auth headers
     """Get the cover image for the current print job.
 
+    Serves the thumbnail from a local archive (DB-tracked).  Does NOT
+    initiate an FTP download from the printer — that would:
+    (a) race with the on_print_start download flow,
+    (b) race with the archive download-retry service,
+    (c) waste bandwidth re-pulling a 20-30 MB 3MF every time the UI
+        asks for a PNG thumbnail.
+
+    The 3MF file arrives via the print-start flow (archive_print copies
+    it to ``archive_dir`` and extracts ``thumbnail_path``).  While the
+    archive is still a fallback (``file_path=""``, no thumbnail) this
+    endpoint returns 404 and the UI shows a placeholder; once the
+    retry-download / reconnect / manual-retry flow fills the archive,
+    the next cover request succeeds.
+
     Args:
         view: Optional view type. Use "top" for top-down build plate view (useful for skip objects).
               Default returns angled 3D perspective view.
@@ -731,7 +752,6 @@ async def get_printer_cover(
     if not state:
         raise HTTPException(404, "Printer not connected")
 
-    # Use subtask_name as the 3MF filename (gcode_file is the path inside the 3MF)
     subtask_name = state.subtask_name
     if not subtask_name:
         raise HTTPException(404, f"No subtask_name in printer state (state={state.state})")
@@ -743,120 +763,67 @@ async def get_printer_cover(
         match = re.search(r"plate_(\d+)\.gcode", gcode_file)
         if match:
             plate_num = int(match.group(1))
-            logger.info("Detected plate number %s from gcode_file: %s", plate_num, gcode_file)
 
-    # Normalize view parameter
     view_key = view or "default"
 
-    # Check cache - include plate_num in cache key for multi-plate projects
+    # In-memory cache for PNG bytes — key includes (subtask, plate, view)
+    # so multi-plate prints don't poison across plates.
     if printer_id in _cover_cache:
         cache_key = (subtask_name, plate_num, view_key)
         if cache_key in _cover_cache[printer_id]:
             return Response(content=_cover_cache[printer_id][cache_key], media_type="image/png")
 
-    # Build possible 3MF filenames from subtask_name
-    # Bambu printers may store files as "name.gcode.3mf" (sliced via Bambu Studio)
-    # or just "name.3mf" (uploaded directly)
-    possible_filenames = []
-    if subtask_name.endswith(".3mf"):
-        possible_filenames.append(subtask_name)
-    else:
-        # Try both naming patterns
-        possible_filenames.append(f"{subtask_name}.gcode.3mf")
-        possible_filenames.append(f"{subtask_name}.3mf")
+    # Resolve the printing archive for this printer.  Match by print_name
+    # (== subtask_name) or filename variations.
+    from sqlalchemy import or_ as sa_or
 
-    # Also try with spaces converted to underscores (Bambu Studio may normalize filenames)
-    if " " in subtask_name:
-        normalized = subtask_name.replace(" ", "_")
-        if normalized.endswith(".3mf"):
-            possible_filenames.append(normalized)
-        else:
-            possible_filenames.append(f"{normalized}.gcode.3mf")
-            possible_filenames.append(f"{normalized}.3mf")
+    from backend.app.models.archive import PrintArchive
 
-    # Build list of all remote paths to try
-    remote_paths = []
-    for filename in possible_filenames:
-        remote_paths.extend(
-            [
-                f"/{filename}",  # Root directory (most common)
-                f"/cache/{filename}",
-                f"/model/{filename}",
-                f"/data/{filename}",
-            ]
-        )
-
-    # Use first filename for temp path (will be reused)
-    temp_filename = possible_filenames[0]
-    temp_path = settings.archive_dir / "temp" / f"cover_{printer_id}_{temp_filename}"
-    temp_path.parent.mkdir(parents=True, exist_ok=True)
-
-    logger.info(
-        f"Trying to download cover for '{subtask_name}' from {printer.ip_address} (trying {len(remote_paths)} paths)"
-    )
-
-    # Retry logic for transient FTP failures
-    max_retries = 2
-    last_error = None
-    downloaded = False
-
-    for attempt in range(max_retries + 1):
-        try:
-            downloaded = await download_file_try_paths_async(
-                printer.ip_address,
-                printer.access_code,
-                remote_paths,
-                temp_path,
-                printer_model=printer.model,
+    subtask_base = subtask_name.replace(".gcode.3mf", "").replace(".3mf", "")
+    # No status filter: the printer state can be FINISH (archive already
+    # flipped to "completed") while the UI still asks for the cover.  Also
+    # require a non-empty file_path so a fallback row (3MF pending) doesn't
+    # shadow an older populated archive with the same name.
+    archive_result = await db.execute(
+        select(PrintArchive)
+        .where(PrintArchive.printer_id == printer_id)
+        .where(PrintArchive.file_path != "")
+        .where(
+            sa_or(
+                PrintArchive.print_name == subtask_base,
+                PrintArchive.filename == f"{subtask_base}.gcode.3mf",
+                PrintArchive.filename == f"{subtask_base}.3mf",
+                PrintArchive.filename == subtask_name,
             )
-            if downloaded:
-                break
-        except Exception as e:
-            last_error = e
-            if attempt < max_retries:
-                logger.warning("FTP download attempt %s failed: %s, retrying...", attempt + 1, e)
-                await asyncio.sleep(0.5 * (attempt + 1))  # Brief backoff
-            else:
-                logger.error("FTP download failed after %s attempts: %s", max_retries + 1, e)
-
-    if last_error and not downloaded:
-        raise HTTPException(503, f"FTP download temporarily unavailable: {last_error}")
-
-    if not downloaded:
-        raise HTTPException(
-            404,
-            f"Could not download 3MF file for '{subtask_name}' from printer {printer.ip_address}. Tried: {possible_filenames}",
         )
+        .order_by(PrintArchive.created_at.desc())
+        .limit(1)
+    )
+    archive = archive_result.scalar_one_or_none()
+    if archive is None:
+        raise HTTPException(404, f"No archive with a local 3MF yet for '{subtask_base}' on printer {printer_id}")
 
-    # Verify file actually exists and has content
-    if not temp_path.exists():
-        raise HTTPException(500, f"Download reported success but file not found: {temp_path}")
+    # 1. If the archive already has an extracted thumbnail PNG — serve it directly.
+    if archive.thumbnail_path and view != "top":
+        thumb_path = settings.base_dir / archive.thumbnail_path
+        if thumb_path.exists():
+            image_data = thumb_path.read_bytes()
+            if printer_id not in _cover_cache:
+                _cover_cache[printer_id] = {}
+            _cover_cache[printer_id][(subtask_name, plate_num, view_key)] = image_data
+            return Response(content=image_data, media_type="image/png")
 
-    file_size = temp_path.stat().st_size
-    logger.info("Downloaded file size: %s bytes", file_size)
-
-    if file_size == 0:
-        temp_path.unlink()
-        raise HTTPException(500, f"Downloaded file is empty for '{subtask_name}'")
+    # 2. Otherwise open the 3MF from archive_dir and extract the thumbnail
+    #    for the requested plate + view.
+    local_3mf = settings.base_dir / archive.file_path
+    if not local_3mf.exists():
+        raise HTTPException(404, f"Archive file missing on disk: {archive.file_path}")
 
     try:
-        # Extract thumbnail from 3MF (which is a ZIP file)
-        try:
-            zf = zipfile.ZipFile(temp_path, "r")
-        except zipfile.BadZipFile:
-            raise HTTPException(500, "Downloaded file is not a valid 3MF/ZIP archive")
-        except OSError as e:
-            logger.error("Failed to open 3MF file: %s", e, exc_info=True)
-            raise HTTPException(500, "Failed to open 3MF file. Check server logs for details.")
-
-        try:
-            # Try common thumbnail paths in 3MF files
-            # Use plate_num to get the correct plate's thumbnail for multi-plate projects
-            # Use top-down view if requested (better for skip objects modal)
+        with zipfile.ZipFile(local_3mf, "r") as zf:
             if view == "top":
                 thumbnail_paths = [
                     f"Metadata/top_{plate_num}.png",
-                    # Fall back to plate 1 if specific plate not found
                     "Metadata/top_1.png",
                     f"Metadata/plate_{plate_num}.png",
                     "Metadata/plate_1.png",
@@ -865,7 +832,6 @@ async def get_printer_cover(
             else:
                 thumbnail_paths = [
                     f"Metadata/plate_{plate_num}.png",
-                    # Fall back to plate 1 if specific plate not found
                     "Metadata/plate_1.png",
                     "Metadata/thumbnail.png",
                     f"Metadata/plate_{plate_num}_small.png",
@@ -877,7 +843,6 @@ async def get_printer_cover(
             for thumb_path in thumbnail_paths:
                 try:
                     image_data = zf.read(thumb_path)
-                    # Cache the result - include plate_num in cache key
                     if printer_id not in _cover_cache:
                         _cover_cache[printer_id] = {}
                     _cover_cache[printer_id][(subtask_name, plate_num, view_key)] = image_data
@@ -885,7 +850,7 @@ async def get_printer_cover(
                 except KeyError:
                     continue
 
-            # If no specific thumbnail found, try any PNG in Metadata
+            # Last-resort: any PNG under Metadata/
             for name in zf.namelist():
                 if name.startswith("Metadata/") and name.endswith(".png"):
                     image_data = zf.read(name)
@@ -894,13 +859,13 @@ async def get_printer_cover(
                     _cover_cache[printer_id][(subtask_name, plate_num, view_key)] = image_data
                     return Response(content=image_data, media_type="image/png")
 
-            raise HTTPException(404, "No thumbnail found in 3MF file")
-        finally:
-            zf.close()
+    except zipfile.BadZipFile:
+        raise HTTPException(500, "Archive 3MF file is not a valid ZIP")
+    except OSError as e:
+        logger.error("Failed to open archive 3MF %s: %s", local_3mf, e)
+        raise HTTPException(500, "Failed to read archive 3MF")
 
-    finally:
-        if temp_path.exists():
-            temp_path.unlink()
+    raise HTTPException(404, f"No thumbnail found in archive 3MF for plate {plate_num}")
 
 
 # ============================================
@@ -912,7 +877,7 @@ async def get_printer_cover(
 async def list_printer_files(
     printer_id: int,
     path: str = "/",
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_FILES),
+    _=RequirePermission(Permission.PRINTERS_FILES),
     db: AsyncSession = Depends(get_db),
 ):
     """List files on the printer at the specified path."""
@@ -937,7 +902,7 @@ async def list_printer_files(
 async def download_printer_file(
     printer_id: int,
     path: str,
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_FILES),
+    _=RequirePermission(Permission.PRINTERS_FILES),
     db: AsyncSession = Depends(get_db),
 ):
     """Download a file from the printer."""
@@ -978,7 +943,7 @@ async def download_printer_file(
 async def get_printer_file_gcode(
     printer_id: int,
     path: str,
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_FILES),
+    _=RequirePermission(Permission.PRINTERS_FILES),
     db: AsyncSession = Depends(get_db),
 ):
     """Get gcode for a file stored on a printer (for preview)."""
@@ -1017,7 +982,7 @@ async def get_printer_file_gcode(
 async def get_printer_file_plates(
     printer_id: int,
     path: str = Query(..., description="Full path to the 3MF file on the printer"),
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_FILES),
+    _=RequirePermission(Permission.PRINTERS_FILES),
     db: AsyncSession = Depends(get_db),
 ):
     """Get available plates from a multi-plate 3MF file stored on a printer."""
@@ -1262,7 +1227,7 @@ async def get_printer_file_plate_thumbnail(
     printer_id: int,
     plate_index: int,
     path: str = Query(..., description="Full path to the 3MF file on the printer"),
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_FILES),
+    _=RequirePermission(Permission.PRINTERS_FILES),
     db: AsyncSession = Depends(get_db),
 ):
     """Get a plate thumbnail image from a printer-stored 3MF file."""
@@ -1293,7 +1258,7 @@ async def get_printer_file_plate_thumbnail(
 async def download_printer_files_as_zip(
     printer_id: int,
     request: dict,
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_FILES),
+    _=RequirePermission(Permission.PRINTERS_FILES),
     db: AsyncSession = Depends(get_db),
 ):
     """Download multiple files from the printer as a ZIP archive."""
@@ -1340,7 +1305,7 @@ async def download_printer_files_as_zip(
 async def delete_printer_file(
     printer_id: int,
     path: str,
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_FILES),
+    _=RequirePermission(Permission.PRINTERS_FILES),
     db: AsyncSession = Depends(get_db),
 ):
     """Delete a file from the printer."""
@@ -1359,7 +1324,7 @@ async def delete_printer_file(
 @router.get("/{printer_id}/storage")
 async def get_printer_storage(
     printer_id: int,
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_READ),
+    _=RequirePermission(Permission.PRINTERS_READ),
     db: AsyncSession = Depends(get_db),
 ):
     """Get storage information from the printer."""
@@ -1381,7 +1346,7 @@ async def get_printer_storage(
 @router.post("/{printer_id}/logging/enable")
 async def enable_mqtt_logging(
     printer_id: int,
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
     db: AsyncSession = Depends(get_db),
 ):
     """Enable MQTT message logging for a printer."""
@@ -1400,7 +1365,7 @@ async def enable_mqtt_logging(
 @router.post("/{printer_id}/logging/disable")
 async def disable_mqtt_logging(
     printer_id: int,
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
     db: AsyncSession = Depends(get_db),
 ):
     """Disable MQTT message logging for a printer."""
@@ -1419,7 +1384,7 @@ async def disable_mqtt_logging(
 @router.get("/{printer_id}/logging")
 async def get_mqtt_logs(
     printer_id: int,
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_READ),
+    _=RequirePermission(Permission.PRINTERS_READ),
     db: AsyncSession = Depends(get_db),
 ):
     """Get MQTT message logs for a printer."""
@@ -1446,7 +1411,7 @@ async def get_mqtt_logs(
 @router.delete("/{printer_id}/logging")
 async def clear_mqtt_logs(
     printer_id: int,
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
     db: AsyncSession = Depends(get_db),
 ):
     """Clear MQTT message logs for a printer."""
@@ -1472,7 +1437,7 @@ async def start_drying(
     duration: int = 4,
     filament: str = "",
     rotate_tray: bool = False,
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
     db: AsyncSession = Depends(get_db),
 ):
     """Send AMS drying start command. temp=45-85, duration=hours."""
@@ -1504,7 +1469,7 @@ async def start_drying(
 async def stop_drying(
     printer_id: int,
     ams_id: int,
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
     db: AsyncSession = Depends(get_db),
 ):
     """Send AMS drying stop command."""
@@ -1531,7 +1496,7 @@ async def set_print_option(
     enabled: bool,
     print_halt: bool = True,
     sensitivity: str = "medium",
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
     db: AsyncSession = Depends(get_db),
 ):
     """Set an AI detection / print option on the printer.
@@ -1608,7 +1573,7 @@ async def start_calibration(
     motor_noise: bool = False,
     nozzle_offset: bool = False,
     high_temp_heatbed: bool = False,
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
     db: AsyncSession = Depends(get_db),
 ):
     """Start printer calibration with selected options.
@@ -1668,7 +1633,7 @@ async def start_calibration(
 @router.get("/{printer_id}/slot-presets")
 async def get_slot_presets(
     printer_id: int,
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_READ),
+    _=RequirePermission(Permission.PRINTERS_READ),
     db: AsyncSession = Depends(get_db),
 ):
     """Get all saved slot-to-preset mappings for a printer."""
@@ -1691,7 +1656,7 @@ async def get_slot_preset(
     printer_id: int,
     ams_id: int,
     tray_id: int,
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_READ),
+    _=RequirePermission(Permission.PRINTERS_READ),
     db: AsyncSession = Depends(get_db),
 ):
     """Get the saved preset for a specific slot."""
@@ -1723,7 +1688,7 @@ async def save_slot_preset(
     preset_id: str,
     preset_name: str,
     preset_source: str = "cloud",
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_UPDATE),
+    _=RequirePermission(Permission.PRINTERS_UPDATE),
     db: AsyncSession = Depends(get_db),
 ):
     """Save a preset mapping for a specific slot."""
@@ -1776,7 +1741,7 @@ async def delete_slot_preset(
     printer_id: int,
     ams_id: int,
     tray_id: int,
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_UPDATE),
+    _=RequirePermission(Permission.PRINTERS_UPDATE),
     db: AsyncSession = Depends(get_db),
 ):
     """Delete a saved preset mapping for a slot."""
@@ -1813,7 +1778,7 @@ async def configure_ams_slot(
     kprofile_filament_id: str = Query(""),
     kprofile_setting_id: str = Query(""),
     k_value: float = Query(0.0),
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
 ):
     """Configure an AMS slot with a specific filament setting and K profile.
 
@@ -1882,7 +1847,7 @@ async def configure_ams_slot(
     effective_tray_info_idx = tray_info_idx
 
     if not tray_info_idx:
-        # No preset provided — try slot reuse or generic fallback
+        # No preset provided - try slot reuse or generic fallback
         current_tray_info_idx = ""
         current_tray_type = ""
         state = printer_manager.get_status(printer_id)
@@ -1937,7 +1902,7 @@ async def configure_ams_slot(
     # Send filament setting + K-profile commands
     filament_id_for_kprofile = kprofile_filament_id if kprofile_filament_id else effective_tray_info_idx
 
-    # Always send ams_set_filament_setting — the user explicitly clicked
+    # Always send ams_set_filament_setting - the user explicitly clicked
     # "Configure Slot", so honor that.  Previous versions skipped this for
     # RFID-tagged slots to preserve the slicer eye icon, but printers cache
     # stale tag_uid/tray_uuid after a BL spool is removed, causing the check
@@ -1958,7 +1923,7 @@ async def configure_ams_slot(
         raise HTTPException(status_code=500, detail="Failed to send filament configuration command")
 
     # Method 1: Select existing calibration profile by cali_idx
-    # Do NOT include setting_id — BambuStudio never sends it in extrusion_cali_sel,
+    # Do NOT include setting_id - BambuStudio never sends it in extrusion_cali_sel,
     # and including it causes the firmware to mislink the profile on X1C/P1S.
     client.extrusion_cali_sel(
         ams_id=ams_id,
@@ -1972,7 +1937,7 @@ async def configure_ams_slot(
     # (cali_idx == -1). When cali_idx >= 0, extrusion_cali_sel already selected the
     # correct profile. Sending extrusion_cali_set with the same cali_idx would MODIFY
     # the existing profile's metadata (extruder_id, nozzle_id, name, setting_id),
-    # corrupting it — e.g., overwriting a High Flow extruder 1 profile with
+    # corrupting it - e.g., overwriting a High Flow extruder 1 profile with
     # hardcoded extruder_id=0 and nozzle_id=HS00.
     if k_value > 0 and cali_idx < 0:
         # Calculate global tray ID for extrusion_cali_set
@@ -2011,7 +1976,7 @@ async def reset_ams_slot(
     ams_id: int,
     tray_id: int,
     db: AsyncSession = Depends(get_db),
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
 ):
     """Reset an AMS slot to empty/unconfigured state.
 
@@ -2057,7 +2022,7 @@ async def reset_ams_slot(
 @router.get("/{printer_id}/ams-labels")
 async def get_ams_labels(
     printer_id: int,
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_READ),
+    _=RequirePermission(Permission.PRINTERS_READ),
     db: AsyncSession = Depends(get_db),
 ):
     """Get all user-defined AMS labels for a printer, keyed by AMS unit ID.
@@ -2112,7 +2077,7 @@ async def save_ams_label(
     printer_id: int,
     ams_id: int,
     body: AmsLabelBody,
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_UPDATE),
+    _=RequirePermission(Permission.PRINTERS_UPDATE),
     db: AsyncSession = Depends(get_db),
 ):
     """Create or update the friendly name for a specific AMS unit.
@@ -2149,7 +2114,7 @@ async def delete_ams_label(
     printer_id: int,
     ams_id: int,
     ams_serial: str = Query(default="", max_length=50),
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_UPDATE),
+    _=RequirePermission(Permission.PRINTERS_UPDATE),
     db: AsyncSession = Depends(get_db),
 ):
     """Delete the friendly name for a specific AMS unit, reverting to the auto label."""
@@ -2170,7 +2135,7 @@ async def delete_ams_label(
 async def debug_simulate_print_complete(
     printer_id: int,
     db: AsyncSession = Depends(get_db),
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
 ):
     """DEBUG: Simulate print completion to test freeze behavior.
 
@@ -2222,7 +2187,7 @@ async def debug_simulate_print_complete(
 @router.post("/{printer_id}/print/stop")
 async def stop_print(
     printer_id: int,
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
     db: AsyncSession = Depends(get_db),
 ):
     """Stop/cancel the current print job."""
@@ -2249,13 +2214,13 @@ async def stop_print(
 @router.post("/{printer_id}/clear-plate")
 async def clear_plate(
     printer_id: int,
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CLEAR_PLATE),
+    _=RequirePermission(Permission.PRINTERS_CLEAR_PLATE),
     db: AsyncSession = Depends(get_db),
 ):
     """Acknowledge that the build plate has been cleared after a finished/failed print.
 
     Sets a plate-cleared flag so the scheduler can start the next queued print.
-    No MQTT command is sent to the printer — the scheduler's start_print command
+    No MQTT command is sent to the printer - the scheduler's start_print command
     will override the FINISH/FAILED state when it sends the next job.
     """
     result = await db.execute(select(Printer).where(Printer.id == printer_id))
@@ -2284,7 +2249,7 @@ async def clear_plate(
 @router.post("/{printer_id}/print/pause")
 async def pause_print(
     printer_id: int,
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
     db: AsyncSession = Depends(get_db),
 ):
     """Pause the current print job."""
@@ -2311,7 +2276,7 @@ async def pause_print(
 @router.post("/{printer_id}/print/resume")
 async def resume_print(
     printer_id: int,
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
     db: AsyncSession = Depends(get_db),
 ):
     """Resume a paused print job."""
@@ -2339,7 +2304,7 @@ async def resume_print(
 async def set_print_speed(
     printer_id: int,
     mode: int = Query(..., description="Speed mode (1=silent, 2=standard, 3=sport, 4=ludicrous)"),
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
     db: AsyncSession = Depends(get_db),
 ):
     """Set the print speed mode."""
@@ -2368,7 +2333,7 @@ async def set_print_speed(
 async def set_chamber_light(
     printer_id: int,
     on: bool = Query(..., description="True to turn on, False to turn off"),
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
     db: AsyncSession = Depends(get_db),
 ):
     """Turn the chamber light on or off."""
@@ -2395,7 +2360,7 @@ async def set_chamber_light(
 @router.post("/{printer_id}/hms/clear")
 async def clear_hms_errors(
     printer_id: int,
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
     db: AsyncSession = Depends(get_db),
 ):
     """Clear HMS/print errors on the printer."""
@@ -2423,7 +2388,7 @@ async def clear_hms_errors(
 async def get_printable_objects(
     printer_id: int,
     reload: bool = False,
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_READ),
+    _=RequirePermission(Permission.PRINTERS_READ),
     db: AsyncSession = Depends(get_db),
 ):
     """Get the list of printable objects for the current print.
@@ -2538,7 +2503,7 @@ async def get_printable_objects(
 async def skip_objects(
     printer_id: int,
     object_ids: list[int],
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
     db: AsyncSession = Depends(get_db),
 ):
     """Skip specific objects during the current print.
@@ -2597,7 +2562,7 @@ async def refresh_ams_slot(
     printer_id: int,
     ams_id: int,
     slot_id: int,
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_AMS_RFID),
+    _=RequirePermission(Permission.PRINTERS_AMS_RFID),
     db: AsyncSession = Depends(get_db),
 ):
     """Re-read RFID for an AMS slot (triggers filament info refresh)."""
@@ -2717,7 +2682,7 @@ async def _apply_pa_after_refresh(printer_id: int, ams_id: int, slot_id: int):
             )
 
             # 1. Select K-profile
-            # NOTE: Do NOT send ams_set_filament_setting here — it tells the firmware
+            # NOTE: Do NOT send ams_set_filament_setting here - it tells the firmware
             # "this is a manual config" which destroys the RFID-detected spool state
             # (changes eye icon to pen icon in slicer).
             client.extrusion_cali_sel(
@@ -2748,7 +2713,7 @@ async def _apply_pa_after_refresh(printer_id: int, ams_id: int, slot_id: int):
 @router.get("/{printer_id}/runtime-debug")
 async def get_runtime_debug(
     printer_id: int,
-    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_READ),
+    _=RequirePermission(Permission.PRINTERS_READ),
     db: AsyncSession = Depends(get_db),
 ):
     """Debug endpoint: Get runtime tracking status for a printer."""

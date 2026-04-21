@@ -97,19 +97,20 @@ def has_stg_cur_idle_bug(model: str | None) -> bool:
 
 
 # Minimum firmware versions for AMS drying support (confirmed via capture testing)
-# Keys are exact model names (upper-cased). Do NOT use substring matching — it would
+# Keys are exact model names (upper-cased). Do NOT use substring matching - it would
 # incorrectly gate X1E (matched by "X1") and H2D Pro (matched by "H2D").
 _DRYING_MIN_FIRMWARE: dict[str, str] = {
     "H2D": "01.02.30.00",
+    "H2S": "01.02.00.00",
     "X1": "01.09.00.00",
     "X1C": "01.09.00.00",
     "P1P": "01.08.00.00",
     "P1S": "01.08.00.00",
+    "P2S": "01.02.00.00",
+    "N7": "01.02.00.00",  # P2S internal model code
 }
 # Models that definitely don't support AMS drying (no AMS 2 Pro / AMS-HT compatibility)
-_DRYING_UNSUPPORTED_MODELS = frozenset(
-    {"P2S", "A1", "A1MINI", "A1-MINI", "A1 MINI", "H2S", "H2C", "N7", "O1C", "O1C2", "O1S", "N1", "N2S"}
-)
+_DRYING_UNSUPPORTED_MODELS = frozenset({"A1", "A1MINI", "A1-MINI", "A1 MINI", "H2C", "O1C", "O1C2", "O1S", "N1", "N2S"})
 
 
 def supports_drying(model: str | None, firmware: str | None) -> bool:
@@ -117,7 +118,7 @@ def supports_drying(model: str | None, firmware: str | None) -> bool:
 
     Known models with confirmed min firmware get version-gated.
     Known unsupported models are blocked.
-    All other models (H2D Pro, X1E, future models) are allowed —
+    All other models (H2D Pro, X1E, future models) are allowed -
     the command fails gracefully with result: "fail" if unsupported.
     """
     if not model:
@@ -157,6 +158,9 @@ class PrinterManager:
         self._current_print_user: dict[int, dict] = {}  # {printer_id: {"user_id": int, "username": str}}
         # Track plate-cleared acknowledgments for queue flow
         self._plate_cleared: set[int] = set()  # printer_ids where user confirmed plate is cleared
+        # Macro completion waiters: dispatch pipeline registers an Event here,
+        # _broadcast_macro_complete sets it when stg_cur transitions to idle.
+        self._macro_waiters: dict[int, tuple[asyncio.Event, dict]] = {}
 
     def get_printer(self, printer_id: int) -> PrinterInfo | None:
         """Get printer info by ID."""
@@ -257,6 +261,9 @@ class PrinterManager:
             if self._on_layer_change:
                 self._schedule_async(self._on_layer_change(printer_id, layer_num))
 
+        def on_macro_complete(macro_name: str, status: str):
+            self._schedule_async(self._broadcast_macro_complete(printer_id, macro_name, status))
+
         client = BambuMQTTClient(
             ip_address=printer.ip_address,
             serial_number=printer.serial_number,
@@ -267,6 +274,7 @@ class PrinterManager:
             on_print_complete=on_print_complete,
             on_ams_change=on_ams_change,
             on_layer_change=on_layer_change,
+            on_macro_complete=on_macro_complete,
         )
 
         client.connect()
@@ -277,6 +285,18 @@ class PrinterManager:
 
         # Wait a moment for connection
         await asyncio.sleep(1)
+
+        # Trigger a one-shot 3MF download retry for any fallback archives
+        # on this printer — now that we're back online, the file may be
+        # reachable.
+        if client.state.connected:
+            try:
+                from backend.app.services.archive_download_retry import archive_download_retry
+
+                asyncio.create_task(archive_download_retry.retry_printer_archives(printer_id))
+            except Exception as e:
+                logger.debug("Failed to schedule 3MF retry on printer %s connect: %s", printer_id, e)
+
         return client.state.connected
 
     def disconnect_printer(self, printer_id: int, timeout: float = 0):
@@ -403,7 +423,6 @@ class PrinterManager:
         ams_mapping: list[int] | None = None,
         bed_levelling: bool = True,
         flow_cali: bool = False,
-        vibration_cali: bool = True,
         layer_inspect: bool = False,
         timelapse: bool = False,
         use_ams: bool = True,
@@ -426,11 +445,58 @@ class PrinterManager:
                 timelapse=timelapse,
                 bed_levelling=bed_levelling,
                 flow_cali=flow_cali,
-                vibration_cali=vibration_cali,
                 layer_inspect=layer_inspect,
                 use_ams=use_ams,
             )
         return False
+
+    async def execute_macro_and_wait(
+        self,
+        printer_id: int,
+        gcode: str,
+        macro_name: str,
+    ) -> tuple[bool, str]:
+        """Send a macro and block until ``on_macro_complete`` fires or the printer disconnects.
+
+        Uses :func:`macro_executor.send_macro_and_await_ack` for the initial
+        send+ACK, then waits for the ``stg_cur`` idle transition (reported by
+        ``_broadcast_macro_complete``).  No fixed timeout — the printer's own
+        status tracking handles errors/stalls.  A connectivity health-check
+        every 0.5 s catches disconnects that wouldn't trigger a callback.
+
+        Returns ``(success, message)``.
+        """
+        from backend.app.services.macro_executor import send_macro_and_await_ack
+
+        client = self._clients.get(printer_id)
+        if not client:
+            return False, "Printer not connected"
+
+        model = self._models.get(printer_id)
+        ack_ok, ack_msg = await send_macro_and_await_ack(client, gcode, macro_name, model)
+        if not ack_ok:
+            return False, ack_msg
+
+        # Register a completion waiter. _broadcast_macro_complete will .set()
+        # the Event when bambu_mqtt fires on_macro_complete.
+        event = asyncio.Event()
+        result: dict = {"status": "pending", "message": ""}
+        self._macro_waiters[printer_id] = (event, result)
+
+        try:
+            while not event.is_set():
+                if not client.state.connected:
+                    logger.warning(
+                        "[MACRO-WAIT] Printer %s disconnected while waiting for macro '%s'",
+                        printer_id,
+                        macro_name,
+                    )
+                    return False, "Printer disconnected during macro execution"
+                await asyncio.sleep(0.5)
+        finally:
+            self._macro_waiters.pop(printer_id, None)
+
+        return result["status"] == "completed", result.get("message", "")
 
     def stop_print(self, printer_id: int) -> bool:
         """Stop the current print on a connected printer."""
@@ -560,6 +626,33 @@ class PrinterManager:
 
         return result
 
+    async def _broadcast_macro_complete(self, printer_id: int, macro_name: str, status: str):
+        """Notify waiting dispatch pipeline, then broadcast via WebSocket."""
+        # Unblock the dispatch pipeline first — it's blocking on the Event.
+        waiter = self._macro_waiters.get(printer_id)
+        if waiter:
+            event, result = waiter
+            result["status"] = status
+            result["message"] = f"Macro '{macro_name}' {status}"
+            event.set()
+
+        from backend.app.core.websocket import ws_manager
+
+        printer_name = self._printer_info.get(printer_id)
+        await ws_manager.broadcast(
+            {
+                "type": "macro_executed",
+                "data": {
+                    "printer_id": printer_id,
+                    "printer_name": printer_name.name if printer_name else str(printer_id),
+                    "macro_name": macro_name,
+                    "status": status,
+                    "success": status == "completed",
+                    "message": f"Macro '{macro_name}' {status}",
+                },
+            }
+        )
+
 
 def get_derived_status_name(state: PrinterState, model: str | None = None) -> str | None:
     """
@@ -572,6 +665,10 @@ def get_derived_status_name(state: PrinterState, model: str | None = None) -> st
         state: The printer state to analyze
         model: Optional printer model for model-specific workarounds
     """
+    # Macro executing - show macro name instead of default "Printing" text
+    if state.macro_executing and state.stg_cur == 0:
+        return f"Executing: {state.macro_executing}"
+
     # A1/A1 Mini firmware bug: some versions report stg_cur=0 when idle
     # Only correct this specific case (IDLE + stg_cur=0) for affected models
     if state.state == "IDLE" and state.stg_cur == 0 and has_stg_cur_idle_bug(model):
@@ -723,9 +820,14 @@ def printer_state_to_dict(state: PrinterState, printer_id: int | None = None, mo
                 }
             )
 
-    # Parse virtual tray (external spool) — now a list
+    # Parse virtual tray (external spool) - now a list
     if "vt_tray" in raw_data:
-        for vt_data in raw_data["vt_tray"]:
+        vt_tray_raw = raw_data["vt_tray"]
+        if isinstance(vt_tray_raw, dict):
+            vt_tray_raw = [vt_tray_raw]
+        elif not isinstance(vt_tray_raw, list):
+            vt_tray_raw = []
+        for vt_data in vt_tray_raw:
             vt_tag_uid = vt_data.get("tag_uid")
             if vt_tag_uid in ("", "0000000000000000"):
                 vt_tag_uid = None

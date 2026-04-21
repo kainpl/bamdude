@@ -11,7 +11,7 @@ class TestUserNotificationsAPI:
     """Integration tests for /api/v1/user-notifications/ endpoints."""
 
     # ========================================================================
-    # GET /preferences — no auth
+    # GET /preferences - no auth
     # ========================================================================
 
     @pytest.mark.asyncio
@@ -28,13 +28,13 @@ class TestUserNotificationsAPI:
         assert data["notify_print_stopped"] is True
 
     # ========================================================================
-    # PUT /preferences — no auth
+    # PUT /preferences - no auth
     # ========================================================================
 
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_update_preferences_fails_without_auth(self, async_client: AsyncClient):
-        """Without auth enabled, PUT should return 400 (no user context)."""
+        """Without a bearer token, PUT should return 401 (auth is always on)."""
         data = {
             "notify_print_start": False,
             "notify_print_complete": True,
@@ -42,10 +42,15 @@ class TestUserNotificationsAPI:
             "notify_print_stopped": False,
         }
 
-        response = await async_client.put("/api/v1/user-notifications/preferences", json=data)
+        # async_client sends a default admin token - explicitly clear it to
+        # exercise the no-token path now that auth is always enabled.
+        response = await async_client.put(
+            "/api/v1/user-notifications/preferences",
+            json=data,
+            headers={"Authorization": ""},
+        )
 
-        assert response.status_code == 400
-        assert "Authentication must be enabled" in response.json()["detail"]
+        assert response.status_code == 401
 
     # ========================================================================
     # Schema validation

@@ -28,14 +28,12 @@ const createMockQueueItem = (overrides: Partial<PrintQueueItem> = {}): PrintQueu
   archive_id: 1,
   position: 1,
   scheduled_time: null,
-  require_previous_success: false,
   auto_off_after: false,
   manual_start: false,
   ams_mapping: null,
   plate_id: null,
   bed_levelling: true,
-  flow_cali: false,
-  vibration_cali: true,
+  flow_cali: true,
   layer_inspect: false,
   timelapse: false,
   use_ams: true,
@@ -509,7 +507,7 @@ describe('PrintModal', () => {
       await user.click(screen.getByText('Select all'));
 
       await waitFor(() => {
-        expect(screen.getByText(/3 printers selected/)).toBeInTheDocument();
+        expect(screen.getByText(/3 printer\(?s?\)? selected/)).toBeInTheDocument();
       });
     });
 
@@ -599,7 +597,7 @@ describe('PrintModal', () => {
       const busyButton = screen.getByText('X1 Carbon').closest('button');
       expect(busyButton).toBeDisabled();
 
-      // Click the busy printer — selection should not change
+      // Click the busy printer - selection should not change
       await user.click(busyButton!);
 
       // Idle printer should still be selectable
@@ -608,7 +606,7 @@ describe('PrintModal', () => {
       await user.click(idleButton!);
 
       await waitFor(() => {
-        expect(screen.getByText('1 printer selected')).toBeInTheDocument();
+        expect(screen.getByText(/1 printer\(?s?\)? selected/)).toBeInTheDocument();
       });
     });
 
@@ -632,7 +630,7 @@ describe('PrintModal', () => {
 
       await waitFor(() => {
         // Only 2 available printers selected (IDLE + FINISH), not the RUNNING one
-        expect(screen.getByText(/2 printers selected/)).toBeInTheDocument();
+        expect(screen.getByText(/2 printer\(?s?\)? selected/)).toBeInTheDocument();
       });
     });
 
@@ -658,7 +656,7 @@ describe('PrintModal', () => {
       await user.click(busyButton!);
 
       await waitFor(() => {
-        expect(screen.getByText('1 printer selected')).toBeInTheDocument();
+        expect(screen.getByText(/1 printer\(?s?\)? selected/)).toBeInTheDocument();
       });
     });
 
@@ -821,7 +819,7 @@ describe('PrintModal', () => {
       // Plate 1 is auto-selected. Click Plate 3 to add it (multi-select in add-to-queue mode)
       await user.click(screen.getByText('Plate 3'));
 
-      // Submit — should queue plates 1 and 3
+      // Submit - should queue plates 1 and 3
       const submitButton = document.querySelector('button[type="submit"]') as HTMLElement;
       await user.click(submitButton);
 
@@ -866,7 +864,7 @@ describe('PrintModal', () => {
       // Click select all
       await user.click(screen.getByText('Select All 3 Plates'));
 
-      // Find the submit button (type="submit") — distinct from the toggle button (type="button")
+      // Find the submit button (type="submit") - distinct from the toggle button (type="button")
       const submitButton = document.querySelector('button[type="submit"]') as HTMLElement;
       await user.click(submitButton);
 

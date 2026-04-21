@@ -19,6 +19,7 @@ import {
   MoreVertical,
   Download,
   Upload,
+  Copy,
 } from 'lucide-react';
 import { api } from '../api/client';
 import type { ProjectListItem, ProjectCreate, ProjectUpdate, ProjectImport, Permission } from '../api/client';
@@ -600,6 +601,58 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
   );
 }
 
+interface TemplateCardProps {
+  template: ProjectListItem;
+  onUse: () => void;
+  onDelete: () => void;
+  isCreating: boolean;
+  hasPermission: (permission: Permission) => boolean;
+  t: TFunction;
+}
+
+function TemplateCard({ template, onUse, onDelete, isCreating, hasPermission, t }: TemplateCardProps) {
+  return (
+    <div className="bg-bambu-card border border-bambu-dark-tertiary rounded-xl p-5 flex flex-col gap-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-center gap-2 min-w-0">
+          <div
+            className="w-3 h-3 rounded-full shrink-0"
+            style={{ backgroundColor: template.color || '#6B7280' }}
+          />
+          <h3 className="text-white font-medium truncate" title={template.name}>
+            {template.name}
+          </h3>
+        </div>
+        {hasPermission('projects:delete') && (
+          <button
+            type="button"
+            onClick={onDelete}
+            className="text-bambu-gray hover:text-red-400 transition-colors"
+            title={t('projects.templates.deleteTemplate')}
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
+        )}
+      </div>
+
+      {template.description && (
+        <p className="text-sm text-bambu-gray line-clamp-3">{template.description}</p>
+      )}
+
+      <Button
+        size="sm"
+        onClick={onUse}
+        disabled={isCreating || !hasPermission('projects:create')}
+        title={!hasPermission('projects:create') ? t('projects.noCreatePermission') : undefined}
+        className="w-full mt-auto"
+      >
+        {isCreating ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : <Plus className="w-4 h-4 mr-1" />}
+        {t('projects.templates.createFromTemplate')}
+      </Button>
+    </div>
+  );
+}
+
 export function ProjectsPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -618,10 +671,23 @@ export function ProjectsPage() {
 
   const currencySymbol = getCurrencySymbol(settings?.currency || 'USD');
 
-  const { data: projects, isLoading } = useQuery({
-    queryKey: ['projects', statusFilter === 'all' ? undefined : statusFilter],
-    queryFn: () => api.getProjects(statusFilter === 'all' ? undefined : statusFilter),
+  // Single projects query fetches every non-template project and caches
+  // across status-tab switches, so per-status badge counts stay accurate no
+  // matter which tab is currently visible.
+  const { data: allProjects, isLoading } = useQuery({
+    queryKey: ['projects', 'all'],
+    queryFn: () => api.getProjects(),
   });
+
+  const { data: templates, isLoading: templatesLoading } = useQuery({
+    queryKey: ['projects', 'templates'],
+    queryFn: api.getTemplates,
+  });
+
+  // Client-side status filter - see allProjects above.
+  const projects = statusFilter === 'all' || statusFilter === 'templates'
+    ? allProjects
+    : allProjects?.filter((p) => p.status === statusFilter);
 
   const createMutation = useMutation({
     mutationFn: (data: ProjectCreate) => api.createProject(data),
@@ -674,6 +740,31 @@ export function ProjectsPage() {
     },
   });
 
+  const createFromTemplateMutation = useMutation({
+    mutationFn: (templateId: number) => api.createProjectFromTemplate(templateId),
+    onSuccess: (newProject) => {
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      showToast(t('projects.toast.createdFromTemplate'), 'success');
+      navigate(`/projects/${newProject.id}`);
+    },
+    onError: (error: Error) => {
+      showToast(error.message, 'error');
+    },
+  });
+
+  const deleteTemplateMutation = useMutation({
+    mutationFn: (id: number) => api.deleteProject(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['projects', 'templates'] });
+      setDeleteConfirm(null);
+      showToast(t('projects.toast.templateDeleted'), 'success');
+    },
+    onError: (error: Error) => {
+      setDeleteConfirm(null);
+      showToast(error.message, 'error');
+    },
+  });
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleExportAll = async () => {
@@ -690,7 +781,7 @@ export function ProjectsPage() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `bambuddy_projects_${new Date().toISOString().split('T')[0]}.json`;
+      a.download = `bamdude_projects_${new Date().toISOString().split('T')[0]}.json`;
       a.click();
       URL.revokeObjectURL(url);
       showToast(t('projects.toast.exported'), 'success');
@@ -762,20 +853,27 @@ export function ProjectsPage() {
   };
 
   const handleDeleteConfirm = () => {
-    if (deleteConfirm !== null) {
+    if (deleteConfirm === null) return;
+    // Templates go through a dedicated mutation that invalidates the
+    // templates query (vs. the regular delete which reloads the page).
+    const isTemplate = templates?.some((tpl) => tpl.id === deleteConfirm) ?? false;
+    if (isTemplate) {
+      deleteTemplateMutation.mutate(deleteConfirm);
+    } else {
       deleteMutation.mutate(deleteConfirm);
     }
   };
 
-  // Count projects by status for filter badges
-  const projectCounts = projects?.reduce((acc, p) => {
+  // Count projects by status for filter badges - always derived from the
+  // full unfiltered list so badges stay accurate on every tab.
+  const projectCounts = allProjects?.reduce((acc, p) => {
     acc[p.status] = (acc[p.status] || 0) + 1;
     acc.all = (acc.all || 0) + 1;
     return acc;
   }, {} as Record<string, number>) || {};
 
   return (
-    <div className="p-4 md:p-8 space-y-8">
+    <div className="p-4 md:p-6 space-y-4">
       {/* Hidden file input for import */}
       <input
         ref={fileInputRef}
@@ -787,20 +885,16 @@ export function ProjectsPage() {
 
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-3">
-            <div className="p-2.5 bg-bambu-green/10 rounded-xl">
-              <FolderKanban className="w-6 h-6 text-bambu-green" />
-            </div>
-            {t('projects.title')}
-          </h1>
-          <p className="text-sm text-bambu-gray mt-2 ml-14">
-            {t('projects.subtitle')}
-          </p>
+        <div className="flex items-center gap-3">
+          {/*<FolderKanban className="w-6 h-6 text-bambu-green" />*/}
+          <div>
+            <h1 className="text-2xl font-bold text-white flex items-center gap-3">{t('projects.title')}</h1>
+            <p className="text-sm text-bambu-gray">{t('projects.subtitle')}</p>
+          </div>
         </div>
         <div className="flex gap-2">
           <Button
-            variant="secondary"
+            variant="outline"
             onClick={handleImportClick}
             disabled={!hasPermission('projects:create')}
             title={!hasPermission('projects:create') ? t('projects.noImportPermission') : t('projects.importProject')}
@@ -809,7 +903,7 @@ export function ProjectsPage() {
             {t('projects.import')}
           </Button>
           <Button
-            variant="secondary"
+            variant="outline"
             onClick={handleExportAll}
             disabled={!hasPermission('projects:read')}
             title={!hasPermission('projects:read') ? t('projects.noExportPermission') : t('projects.exportAll')}
@@ -832,11 +926,12 @@ export function ProjectsPage() {
       {/* Filter tabs */}
       <div className="flex gap-1 p-1 bg-bambu-dark rounded-xl w-fit">
         {[
-          { key: 'active', label: t('projects.statusActive'), icon: Clock },
-          { key: 'completed', label: t('projects.statusCompleted'), icon: CheckCircle2 },
-          { key: 'archived', label: t('projects.statusArchived'), icon: Archive },
-          { key: 'all', label: t('common.all'), icon: FolderKanban },
-        ].map(({ key, label, icon: Icon }) => (
+          { key: 'active', label: t('projects.statusActive'), icon: Clock, count: projectCounts.active },
+          { key: 'completed', label: t('projects.statusCompleted'), icon: CheckCircle2, count: projectCounts.completed },
+          { key: 'archived', label: t('projects.statusArchived'), icon: Archive, count: projectCounts.archived },
+          { key: 'all', label: t('common.all'), icon: FolderKanban, count: projectCounts.all },
+          { key: 'templates', label: t('projects.statusTemplates'), icon: Copy, count: templates?.length ?? 0 },
+        ].map(({ key, label, icon: Icon, count }) => (
           <button
             key={key}
             onClick={() => setStatusFilter(key)}
@@ -848,11 +943,11 @@ export function ProjectsPage() {
           >
             <Icon className="w-4 h-4" />
             <span>{label}</span>
-            {projectCounts[key] > 0 && (
+            {count > 0 && (
               <span className={`text-xs px-1.5 py-0.5 rounded-full ${
                 statusFilter === key ? 'bg-bambu-green/20 text-bambu-green' : 'bg-bambu-dark-tertiary'
               }`}>
-                {projectCounts[key]}
+                {count}
               </span>
             )}
           </button>
@@ -860,7 +955,38 @@ export function ProjectsPage() {
       </div>
 
       {/* Content */}
-      {isLoading ? (
+      {statusFilter === 'templates' ? (
+        templatesLoading ? (
+          <div className="flex items-center justify-center py-20">
+            <div className="flex flex-col items-center gap-3">
+              <Loader2 className="w-8 h-8 animate-spin text-bambu-green" />
+              <p className="text-sm text-bambu-gray">{t('projects.loading')}</p>
+            </div>
+          </div>
+        ) : templates && templates.length > 0 ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            {templates.map((template) => (
+              <TemplateCard
+                key={template.id}
+                template={template}
+                onUse={() => createFromTemplateMutation.mutate(template.id)}
+                onDelete={() => setDeleteConfirm(template.id)}
+                isCreating={createFromTemplateMutation.isPending && createFromTemplateMutation.variables === template.id}
+                hasPermission={hasPermission}
+                t={t}
+              />
+            ))}
+          </div>
+        ) : (
+          <div className="flex flex-col items-center justify-center py-20 px-4">
+            <div className="p-4 bg-bambu-dark rounded-2xl mb-4">
+              <Copy className="w-12 h-12 text-bambu-gray/50" />
+            </div>
+            <h3 className="text-lg font-medium text-white mb-2">{t('projects.templates.empty')}</h3>
+            <p className="text-bambu-gray text-center max-w-md">{t('projects.templates.emptyHint')}</p>
+          </div>
+        )
+      ) : isLoading ? (
         <div className="flex items-center justify-center py-20">
           <div className="flex flex-col items-center gap-3">
             <Loader2 className="w-8 h-8 animate-spin text-bambu-green" />
@@ -893,7 +1019,7 @@ export function ProjectsPage() {
           )}
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-8">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {projects?.map((project) => (
             <ProjectCard
               key={project.id}

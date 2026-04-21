@@ -175,7 +175,7 @@ describe('SpoolFormModal weightTouched', () => {
     // The default form data has weight_used=0, and for create mode the condition
     //   if (!isEditing || weightTouched) { data.weight_used = formData.weight_used; }
     // always includes weight_used since isEditing is false.
-    // The submit button also says "Add Spool" — use getAllByText and pick the button.
+    // The submit button also says "Add Spool" - use getAllByText and pick the button.
     const addButtons = screen.getAllByRole('button', { name: /add spool/i });
     const submitButton = addButtons.find(btn => btn.tagName === 'BUTTON' && btn.querySelector('svg.lucide-save'));
     expect(submitButton).toBeTruthy();

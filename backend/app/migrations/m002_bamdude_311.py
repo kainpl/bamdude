@@ -1,0 +1,555 @@
+"""BamDude 3.0.1 → 3.1.1 schema changes.
+
+Adds: printer_queues, macros, swap mode, stagger, maintenance history tracking,
+queue rework (queue_id), printer_models on maintenance types.
+Drops: filaments table (dead code, cost now from spool.cost_per_kg).
+"""
+
+version = 2
+name = "bamdude_311"
+
+
+async def upgrade(conn):
+    """Schema changes for 3.0.1 → 3.1.1."""
+
+    from sqlalchemy import text
+
+    from backend.app.migrations.helpers import (
+        add_column,
+        column_exists,
+        get_table_columns,
+        recreate_table,
+        table_exists,
+    )
+
+    # ── REST/Webhook smart plug fields ──
+    await add_column(conn, "smart_plugs", "rest_on_url VARCHAR(500)")
+    await add_column(conn, "smart_plugs", "rest_on_body TEXT")
+    await add_column(conn, "smart_plugs", "rest_off_url VARCHAR(500)")
+    await add_column(conn, "smart_plugs", "rest_off_body TEXT")
+    await add_column(conn, "smart_plugs", "rest_method VARCHAR(10)")
+    await add_column(conn, "smart_plugs", "rest_headers TEXT")
+    await add_column(conn, "smart_plugs", "rest_status_url VARCHAR(500)")
+    await add_column(conn, "smart_plugs", "rest_status_path VARCHAR(200)")
+    await add_column(conn, "smart_plugs", "rest_status_on_value VARCHAR(50)")
+    await add_column(conn, "smart_plugs", "rest_power_url VARCHAR(500)")
+    await add_column(conn, "smart_plugs", "rest_power_path VARCHAR(200)")
+    await add_column(conn, "smart_plugs", "rest_power_multiplier REAL DEFAULT 1.0")
+    await add_column(conn, "smart_plugs", "rest_energy_url VARCHAR(500)")
+    await add_column(conn, "smart_plugs", "rest_energy_path VARCHAR(200)")
+    await add_column(conn, "smart_plugs", "rest_energy_multiplier REAL DEFAULT 1.0")
+
+    # ── Printer enhancements ──
+    await add_column(conn, "printers", "stagger_interval_minutes INTEGER NOT NULL DEFAULT 0")
+    await add_column(conn, "printers", "swap_mode_enabled BOOLEAN NOT NULL DEFAULT 0")
+    await add_column(conn, "printers", "auto_light_off BOOLEAN NOT NULL DEFAULT 0")
+
+    # ── Library files: add swap_compatible, drop print_count ──
+    await add_column(conn, "library_files", "swap_compatible BOOLEAN NOT NULL DEFAULT 0")
+    if await column_exists(conn, "library_files", "print_count"):
+        await recreate_table(
+            conn,
+            "library_files",
+            """CREATE TABLE library_files (
+                id INTEGER PRIMARY KEY,
+                folder_id INTEGER REFERENCES library_folders(id) ON DELETE CASCADE,
+                project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+                is_external BOOLEAN NOT NULL DEFAULT 0,
+                filename VARCHAR(255) NOT NULL,
+                file_path VARCHAR(500) NOT NULL,
+                file_type VARCHAR(10) NOT NULL,
+                file_size INTEGER NOT NULL,
+                file_hash VARCHAR(64),
+                thumbnail_path VARCHAR(500),
+                file_metadata JSON,
+                last_printed_at DATETIME,
+                notes TEXT,
+                created_by_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                swap_compatible BOOLEAN NOT NULL DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )""",
+            "id, folder_id, project_id, is_external, filename, file_path, file_type, "
+            "file_size, file_hash, thumbnail_path, file_metadata, last_printed_at, notes, "
+            "created_by_id, swap_compatible, created_at, updated_at",
+        )
+
+    # ── Archive: swap compatibility ──
+    await add_column(conn, "print_archives", "swap_compatible BOOLEAN NOT NULL DEFAULT 0")
+
+    # ── Macros table ──
+    if not await table_exists(conn, "macros"):
+        await conn.execute(
+            text("""
+            CREATE TABLE macros (
+                id INTEGER PRIMARY KEY,
+                name VARCHAR(100) NOT NULL,
+                printer_models TEXT NOT NULL DEFAULT '["*"]',
+                swap_mode_only BOOLEAN NOT NULL DEFAULT 0,
+                event VARCHAR(50) NOT NULL,
+                gcode TEXT NOT NULL DEFAULT '',
+                is_custom BOOLEAN NOT NULL DEFAULT 0,
+                enabled BOOLEAN NOT NULL DEFAULT 1,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        )
+
+    # ── Printer queues ──
+    if not await table_exists(conn, "printer_queues"):
+        await conn.execute(
+            text("""
+            CREATE TABLE printer_queues (
+                id INTEGER PRIMARY KEY,
+                printer_id INTEGER NOT NULL UNIQUE REFERENCES printers(id) ON DELETE CASCADE,
+                status VARCHAR(20) NOT NULL DEFAULT 'idle',
+                last_activity_at DATETIME,
+                current_item_id INTEGER,
+                pending_count INTEGER NOT NULL DEFAULT 0,
+                completed_count INTEGER NOT NULL DEFAULT 0,
+                failed_count INTEGER NOT NULL DEFAULT 0,
+                cancelled_count INTEGER NOT NULL DEFAULT 0,
+                skipped_count INTEGER NOT NULL DEFAULT 0,
+                total_count INTEGER NOT NULL DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        )
+
+        # Create printer_queues for existing printers
+        await conn.execute(
+            text(
+                "INSERT INTO printer_queues "
+                "(id, printer_id, status, pending_count, completed_count, failed_count, "
+                "cancelled_count, skipped_count, total_count) "
+                "SELECT id, id, 'idle', 0, 0, 0, 0, 0, 0 FROM printers "
+                "WHERE id NOT IN (SELECT printer_id FROM printer_queues)"
+            )
+        )
+
+    # ── Queue rework: add queue_id to print_queue ──
+    await add_column(conn, "print_queue", "queue_id INTEGER REFERENCES printer_queues(id)")
+
+    # Migrate existing print_queue items: set queue_id = printer_id (only if old schema)
+    if await column_exists(conn, "print_queue", "printer_id"):
+        await conn.execute(
+            text("UPDATE print_queue SET queue_id = printer_id WHERE queue_id IS NULL AND printer_id IS NOT NULL")
+        )
+
+        # Delete orphaned items (model-based items without printer)
+        await conn.execute(text("DELETE FROM print_queue WHERE queue_id IS NULL AND printer_id IS NULL"))
+
+        # Fix queue_id where printer_queues.id != printer_id
+        try:
+            await conn.execute(
+                text(
+                    "UPDATE print_queue SET queue_id = ("
+                    "  SELECT pq.id FROM printer_queues pq WHERE pq.printer_id = print_queue.printer_id"
+                    ") WHERE printer_id IS NOT NULL AND EXISTS ("
+                    "  SELECT 1 FROM printer_queues pq2 "
+                    "  WHERE pq2.printer_id = print_queue.printer_id AND pq2.id != print_queue.queue_id"
+                    ")"
+                )
+            )
+        except Exception:
+            pass
+
+    # Recount queue counters
+    await conn.execute(
+        text(
+            "UPDATE printer_queues SET "
+            "pending_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id AND print_queue.status = 'pending'), "
+            "completed_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id AND print_queue.status = 'completed'), "
+            "failed_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id AND print_queue.status = 'failed'), "
+            "cancelled_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id AND print_queue.status = 'cancelled'), "
+            "skipped_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id AND print_queue.status = 'skipped'), "
+            "total_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id)"
+        )
+    )
+
+    # ── Clean up print_queue: drop legacy columns ──
+    # Remove: printer_id, require_previous_success, target_model, target_location,
+    # filament_overrides, required_filament_types (all from removed model-based assignment)
+    has_legacy = await column_exists(conn, "print_queue", "require_previous_success")
+    if has_legacy:
+        await recreate_table(
+            conn,
+            "print_queue",
+            """CREATE TABLE print_queue (
+                id INTEGER PRIMARY KEY,
+                queue_id INTEGER NOT NULL REFERENCES printer_queues(id),
+                waiting_reason TEXT,
+                archive_id INTEGER REFERENCES print_archives(id) ON DELETE CASCADE,
+                library_file_id INTEGER REFERENCES library_files(id) ON DELETE CASCADE,
+                project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+                position INTEGER NOT NULL DEFAULT 0,
+                scheduled_time DATETIME,
+                manual_start BOOLEAN NOT NULL DEFAULT 0,
+                auto_off_after BOOLEAN NOT NULL DEFAULT 0,
+                ams_mapping TEXT,
+                plate_id INTEGER,
+                bed_levelling BOOLEAN NOT NULL DEFAULT 1,
+                flow_cali BOOLEAN NOT NULL DEFAULT 1,
+                vibration_cali BOOLEAN NOT NULL DEFAULT 0,
+                layer_inspect BOOLEAN NOT NULL DEFAULT 0,
+                timelapse BOOLEAN NOT NULL DEFAULT 0,
+                use_ams BOOLEAN NOT NULL DEFAULT 1,
+                status VARCHAR(20) NOT NULL DEFAULT 'pending',
+                started_at DATETIME,
+                completed_at DATETIME,
+                error_message TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                created_by_id INTEGER REFERENCES users(id) ON DELETE SET NULL
+            )""",
+            "id, queue_id, waiting_reason, archive_id, library_file_id, project_id, "
+            "position, scheduled_time, manual_start, auto_off_after, ams_mapping, plate_id, "
+            "bed_levelling, flow_cali, vibration_cali, layer_inspect, timelapse, use_ams, "
+            "status, started_at, completed_at, error_message, created_at, created_by_id",
+        )
+
+    # ── Clean up removed notification template and event ──
+    await conn.execute(text("DELETE FROM notification_templates WHERE event_type = 'queue_job_assigned'"))
+
+    # ── Notification providers: drop on_queue_job_assigned ──
+    if await column_exists(conn, "notification_providers", "on_queue_job_assigned"):
+        await recreate_table(
+            conn,
+            "notification_providers",
+            """CREATE TABLE notification_providers (
+                id INTEGER PRIMARY KEY,
+                name VARCHAR(100) NOT NULL,
+                provider_type VARCHAR(50) NOT NULL,
+                enabled BOOLEAN DEFAULT 1,
+                config TEXT NOT NULL,
+                on_print_start BOOLEAN DEFAULT 0,
+                on_print_complete BOOLEAN DEFAULT 1,
+                on_print_failed BOOLEAN DEFAULT 1,
+                on_print_stopped BOOLEAN DEFAULT 1,
+                on_print_progress BOOLEAN DEFAULT 0,
+                on_print_missing_spool_assignment BOOLEAN DEFAULT 0,
+                on_printer_offline BOOLEAN DEFAULT 0,
+                on_printer_error BOOLEAN DEFAULT 0,
+                on_filament_low BOOLEAN DEFAULT 0,
+                on_maintenance_due BOOLEAN DEFAULT 0,
+                on_ams_humidity_high BOOLEAN DEFAULT 0,
+                on_ams_temperature_high BOOLEAN DEFAULT 0,
+                on_ams_ht_humidity_high BOOLEAN DEFAULT 0,
+                on_ams_ht_temperature_high BOOLEAN DEFAULT 0,
+                on_plate_not_empty BOOLEAN DEFAULT 1,
+                on_bed_cooled BOOLEAN DEFAULT 0,
+                on_first_layer_complete BOOLEAN DEFAULT 0,
+                on_queue_job_added BOOLEAN DEFAULT 0,
+                on_queue_job_started BOOLEAN DEFAULT 0,
+                on_queue_job_waiting BOOLEAN DEFAULT 1,
+                on_queue_job_skipped BOOLEAN DEFAULT 1,
+                on_queue_job_failed BOOLEAN DEFAULT 1,
+                on_queue_completed BOOLEAN DEFAULT 0,
+                quiet_hours_enabled BOOLEAN DEFAULT 0,
+                quiet_hours_start VARCHAR(5),
+                quiet_hours_end VARCHAR(5),
+                daily_digest_enabled BOOLEAN DEFAULT 0,
+                daily_digest_time VARCHAR(5),
+                printer_id INTEGER REFERENCES printers(id) ON DELETE SET NULL,
+                last_success DATETIME,
+                last_error TEXT,
+                last_error_at DATETIME,
+                created_at DATETIME,
+                updated_at DATETIME
+            )""",
+            "id, name, provider_type, enabled, config, "
+            "on_print_start, on_print_complete, on_print_failed, on_print_stopped, "
+            "on_print_progress, on_print_missing_spool_assignment, "
+            "on_printer_offline, on_printer_error, on_filament_low, on_maintenance_due, "
+            "on_ams_humidity_high, on_ams_temperature_high, "
+            "on_ams_ht_humidity_high, on_ams_ht_temperature_high, "
+            "on_plate_not_empty, on_bed_cooled, on_first_layer_complete, "
+            "on_queue_job_added, on_queue_job_started, on_queue_job_waiting, "
+            "on_queue_job_skipped, on_queue_job_failed, on_queue_completed, "
+            "quiet_hours_enabled, quiet_hours_start, quiet_hours_end, "
+            "daily_digest_enabled, daily_digest_time, "
+            "printer_id, last_success, last_error, last_error_at, "
+            "created_at, updated_at",
+        )
+
+    # ── Maintenance types: printer_models ──
+    await add_column(conn, "maintenance_types", "printer_models TEXT NOT NULL DEFAULT '[\"*\"]'")
+
+    # Backfill model-specific maintenance types (EN + UK names)
+    _carbon = '["X1C", "X1", "X1E", "P1P", "P1S"]'
+    _steel = '["P2S"]'
+    _linear = '["A1", "A1 Mini", "H2D", "H2D Pro", "H2C", "H2S"]'
+    _type_models = [
+        (_carbon, ["Clean Carbon Rods", "Очистити карбонові штанги"]),
+        (_steel, ["Lubricate Steel Rods", "Змастити сталеві штанги"]),
+        (_steel, ["Clean Steel Rods", "Очистити сталеві штанги"]),
+        (_linear, ["Lubricate Linear Rails", "Змастити лінійні рейки"]),
+        (_linear, ["Clean Linear Rails", "Очистити лінійні рейки"]),
+    ]
+    for models, names in _type_models:
+        for name in names:
+            await conn.execute(
+                text(
+                    "UPDATE maintenance_types SET printer_models = :models WHERE name = :name AND printer_models = '[\"*\"]'"
+                ),
+                {"models": models, "name": name},
+            )
+
+    # ── Maintenance history: who performed ──
+    await add_column(
+        conn, "maintenance_history", "performed_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL"
+    )
+    await add_column(
+        conn, "maintenance_history", "performed_by_chat_id INTEGER REFERENCES telegram_chats(id) ON DELETE SET NULL"
+    )
+
+    # Backfill performed_by_user_id from first user
+    await conn.execute(
+        text(
+            "UPDATE maintenance_history SET performed_by_user_id = ("
+            "  SELECT id FROM users ORDER BY id LIMIT 1"
+            ") WHERE performed_by_user_id IS NULL AND performed_by_chat_id IS NULL"
+        )
+    )
+
+    # ── Users: LDAP auth_source ──
+    await add_column(conn, "users", "auth_source VARCHAR(20) NOT NULL DEFAULT 'local'")
+
+    # ── Users: drop NOT NULL on password_hash (LDAP users have no local password, #794) ──
+    # Fresh installs go through Base.metadata.create_all() which already uses the current
+    # nullable model. This branch handles existing BamDude installs created before the LDAP
+    # commit (models/user.py: password_hash Mapped[str] → Mapped[str | None]) - those DBs
+    # still have the NOT NULL constraint and would hit IntegrityError on LDAP auto-provision.
+    from backend.app.core.db_dialect import is_postgres as _is_pg_pwd
+
+    if _is_pg_pwd():
+        # PostgreSQL supports ALTER COLUMN ... DROP NOT NULL directly.
+        try:
+            await conn.execute(text("ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL"))
+        except Exception:
+            # Already nullable - ignore.
+            pass
+    else:
+        # SQLite can't ALTER COLUMN; patch sqlite_master directly via writable_schema.
+        # Bump schema_version so SQLite reloads the table definition from disk - otherwise
+        # the current connection keeps enforcing the old NOT NULL from its cached schema.
+        try:
+            result = await conn.execute(text("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'"))
+            users_sql = result.scalar()
+            if users_sql and "password_hash VARCHAR(255) NOT NULL" in users_sql:
+                version_result = await conn.execute(text("PRAGMA schema_version"))
+                schema_version = version_result.scalar() or 0
+                await conn.execute(text("PRAGMA writable_schema = ON"))
+                await conn.execute(
+                    text(
+                        "UPDATE sqlite_master "
+                        "SET sql = replace(sql, 'password_hash VARCHAR(255) NOT NULL', 'password_hash VARCHAR(255)') "
+                        "WHERE type = 'table' AND name = 'users'"
+                    )
+                )
+                await conn.execute(text(f"PRAGMA schema_version = {schema_version + 1}"))
+                await conn.execute(text("PRAGMA writable_schema = OFF"))
+        except Exception:
+            pass
+
+    # ── Drop dead tables ──
+    for dead_table in ("filaments", "print_log_entries", "spoolbuddy_devices"):
+        if await table_exists(conn, dead_table):
+            await conn.execute(text(f"DROP TABLE {dead_table}"))  # noqa: S608
+
+    # ── Force auto_archive on all printers ──
+    await conn.execute(text("UPDATE printers SET auto_archive = 1 WHERE auto_archive = 0"))
+
+    # ── Migrate github_backup → git_backup (copy data + drop old) ──
+    # create_all() already created git_backup_config/logs from models,
+    # so we copy data from old tables into new ones, then drop old.
+    await add_column(conn, "git_backup_config", "provider VARCHAR(20) NOT NULL DEFAULT 'github'")
+    await add_column(conn, "git_backup_config", "api_base_url VARCHAR(500)")
+    await add_column(conn, "git_backup_config", "backup_spools BOOLEAN NOT NULL DEFAULT 0")
+    await add_column(conn, "git_backup_config", "backup_archives BOOLEAN NOT NULL DEFAULT 0")
+
+    if await table_exists(conn, "github_backup_config"):
+        # Copy config data (only if git_backup_config is empty)
+        result = await conn.execute(text("SELECT COUNT(*) FROM git_backup_config"))
+        if (result.scalar() or 0) == 0:
+            # Get columns that exist in both old and new tables
+            old_cols = await get_table_columns(conn, "github_backup_config")
+            new_cols = await get_table_columns(conn, "git_backup_config")
+            shared = [c for c in old_cols if c in new_cols]
+            if shared:
+                cols = ", ".join(shared)
+                await conn.execute(
+                    text(f"INSERT INTO git_backup_config ({cols}) SELECT {cols} FROM github_backup_config")
+                )  # noqa: S608
+        await conn.execute(text("DROP TABLE github_backup_config"))
+
+    if await table_exists(conn, "github_backup_logs"):
+        result = await conn.execute(text("SELECT COUNT(*) FROM git_backup_logs"))
+        if (result.scalar() or 0) == 0:
+            old_cols = await get_table_columns(conn, "github_backup_logs")
+            new_cols = await get_table_columns(conn, "git_backup_logs")
+            shared = [c for c in old_cols if c in new_cols]
+            if shared:
+                cols = ", ".join(shared)
+                await conn.execute(text(f"INSERT INTO git_backup_logs ({cols}) SELECT {cols} FROM github_backup_logs"))  # noqa: S608
+        await conn.execute(text("DROP TABLE github_backup_logs"))
+
+    # ── Migrate legacy VP modes to file_manager ──
+    if await table_exists(conn, "virtual_printers"):
+        await conn.execute(
+            text("UPDATE virtual_printers SET mode = 'file_manager' WHERE mode IN ('immediate', 'review')")
+        )
+        await conn.execute(text("UPDATE virtual_printers SET mode = 'print_queue' WHERE mode = 'queue'"))
+
+    # ── Maintenance type codes (stable, locale-independent identifiers) ──
+    _name_to_code = {
+        "Clean Carbon Rods": "clean_carbon_rods",
+        "Lubricate Steel Rods": "lubricate_steel_rods",
+        "Clean Steel Rods": "clean_steel_rods",
+        "Lubricate Linear Rails": "lubricate_linear_rails",
+        "Clean Linear Rails": "clean_linear_rails",
+        "Clean Nozzle/Hotend": "clean_nozzle",
+        "Check Belt Tension": "check_belt_tension",
+        "Clean Build Plate": "clean_build_plate",
+        "Check PTFE Tube": "check_ptfe_tube",
+        # Ukrainian
+        "Очистити карбонові штанги": "clean_carbon_rods",
+        "Змастити сталеві штанги": "lubricate_steel_rods",
+        "Очистити сталеві штанги": "clean_steel_rods",
+        "Змастити лінійні рейки": "lubricate_linear_rails",
+        "Очистити лінійні рейки": "clean_linear_rails",
+        "Очистити сопло/хотенд": "clean_nozzle",
+        "Перевірити натяг ременів": "check_belt_tension",
+        "Очистити робочий стіл": "clean_build_plate",
+        "Перевірити PTFE-трубку": "check_ptfe_tube",
+    }
+    if await add_column(conn, "maintenance_types", "type_code VARCHAR(50)"):
+        for _name, _code in _name_to_code.items():
+            await conn.execute(
+                text(
+                    "UPDATE maintenance_types SET type_code = :code WHERE name = :name AND type_code IS NULL AND is_system = 1"
+                ),
+                {"code": _code, "name": _name},
+            )
+        await conn.execute(
+            text(
+                "UPDATE maintenance_types SET type_code = 'custom_' || CAST(id AS VARCHAR) WHERE type_code IS NULL AND is_system = 0"
+            )
+        )
+        await conn.execute(
+            text("UPDATE maintenance_types SET type_code = 'system_' || CAST(id AS VARCHAR) WHERE type_code IS NULL")
+        )
+
+    # ── Per-printer plate-clear requirement ──
+    await add_column(conn, "printers", "require_plate_clear BOOLEAN NOT NULL DEFAULT 1")
+
+    # ── Batch grouping for quantity>1 queue items ──
+    if await add_column(conn, "print_queue", "batch_id VARCHAR(36)"):
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_print_queue_batch_id ON print_queue(batch_id)"))
+
+    # ── API key printer_ids: normalize legacy empty array `[]` to NULL ──
+    # `null` = all printers (admin), `[]` = no access. Legacy rows may have `[]`
+    # when they should have `null`. BamDude code already honors the distinction;
+    # this just cleans up pre-fix data rows.
+    from backend.app.core.db_dialect import is_postgres
+
+    if is_postgres():
+        await conn.execute(
+            text(
+                "UPDATE api_keys SET printer_ids = NULL "
+                "WHERE printer_ids IS NOT NULL AND TRIM(printer_ids::text) = '[]'"
+            )
+        )
+    else:
+        await conn.execute(
+            text("UPDATE api_keys SET printer_ids = NULL WHERE printer_ids IS NOT NULL AND TRIM(printer_ids) = '[]'")
+        )
+
+    # ── Persistent per-print energy start (#941) ──
+    # `_print_energy_start` in-memory dict was lost on backend restart mid-print,
+    # silently zeroing per-print energy_kwh. Persisting on the archive row makes
+    # tracking restart-resilient regardless of energy mode.
+    await add_column(conn, "print_archives", "energy_start_kwh REAL")
+
+    # ── Hourly smart plug energy snapshots (#941) ──
+    # Powers date-range "total consumption" queries via per-plug
+    # (last_in_range - last_before_range) deltas. Without this the date-filtered
+    # totals were always zero in total mode.
+    if is_postgres():
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS smart_plug_energy_snapshots (
+                    id SERIAL PRIMARY KEY,
+                    plug_id INTEGER NOT NULL REFERENCES smart_plugs(id) ON DELETE CASCADE,
+                    recorded_at TIMESTAMP NOT NULL,
+                    lifetime_kwh REAL NOT NULL
+                )
+                """
+            )
+        )
+    else:
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS smart_plug_energy_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    plug_id INTEGER NOT NULL REFERENCES smart_plugs(id) ON DELETE CASCADE,
+                    recorded_at DATETIME NOT NULL,
+                    lifetime_kwh REAL NOT NULL
+                )
+                """
+            )
+        )
+    await conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_plug_energy_snapshots_plug_time "
+            "ON smart_plug_energy_snapshots(plug_id, recorded_at)"
+        )
+    )
+
+    # ── Library file notes (gh#3) ──
+    # User-authored notes attached to library files. ON DELETE CASCADE on the
+    # file FK - note dies with its file. ON DELETE SET NULL on user_id - note
+    # survives the author's account deletion (anonymised).
+    if is_postgres():
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS library_file_notes (
+                    id SERIAL PRIMARY KEY,
+                    library_file_id INTEGER NOT NULL REFERENCES library_files(id) ON DELETE CASCADE,
+                    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                    body VARCHAR(1000) NOT NULL,
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+        )
+    else:
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS library_file_notes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    library_file_id INTEGER NOT NULL REFERENCES library_files(id) ON DELETE CASCADE,
+                    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                    body VARCHAR(1000) NOT NULL,
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+        )
+    await conn.execute(
+        text("CREATE INDEX IF NOT EXISTS ix_library_file_notes_file ON library_file_notes(library_file_id)")
+    )
+
+
+async def seed(session_factory):
+    """Seed new data for 3.1.1."""
+    from backend.app.migrations.m001_bamdude_baseline import _seed_default_macros
+
+    await _seed_default_macros(session_factory)

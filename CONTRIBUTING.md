@@ -1,6 +1,6 @@
-# Contributing to Bambuddy HE
+# Contributing to BamDude
 
-Thank you for your interest in contributing! This document provides guidelines for the Bambuddy HE hard fork.
+Thank you for your interest in contributing! This document provides guidelines for BamDude (hard fork of [Bambuddy](https://github.com/maziggy/bambuddy)).
 
 ## Table of Contents
 
@@ -18,8 +18,8 @@ Thank you for your interest in contributing! This document provides guidelines f
 
 1. **Clone the repository**:
    ```bash
-   git clone https://github.com/kainpl/bambuddy-he.git
-   cd bambuddy-he
+   git clone https://github.com/kainpl/bamdude.git
+   cd bamdude
    ```
 
 2. **Create a branch** from `dev`:
@@ -39,7 +39,7 @@ Thank you for your interest in contributing! This document provides guidelines f
 ### Backend
 
 ```bash
-python3 -m venv venv
+python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 pip install -r requirements-dev.txt
@@ -261,4 +261,4 @@ npm run test:coverage
 
 ---
 
-Thank you for contributing to Bambuddy HE!
+Thank you for contributing to BamDude!

@@ -64,8 +64,8 @@ body:
   - type: input
     id: version
     attributes:
-      label: Bambuddy Version
-      description: Which version of Bambuddy are you running? (Check Settings page)
+      label: BamDude Version
+      description: Which version of BamDude are you running? (Check Settings page)
       placeholder: e.g., 0.1.5
     validations:
       required: true
@@ -83,7 +83,7 @@ body:
     id: installation
     attributes:
       label: Installation Method
-      description: How did you install Bambuddy?
+      description: How did you install BamDude?
       options:
         - Manual (git clone)
         - Docker
@@ -95,7 +95,7 @@ body:
     id: os
     attributes:
       label: Operating System
-      description: What OS is Bambuddy running on?
+      description: What OS is BamDude running on?
       options:
         - Linux (Ubuntu/Debian)
         - Linux (Other)
@@ -115,7 +115,7 @@ body:
         For faster debugging, please create and attach a **Support Package** from **Settings → System Info → Download Support Package**.
         This includes logs, system info, and configuration (with sensitive data redacted).
 
-        For detailed instructions on enabling debug logging, see: [Debug Logging Guide](https://wiki.bambuddy.cool/features/system-info/?h=debug#enable-debug-logging)
+        For detailed instructions on enabling debug logging, see: [Debug Logging Guide](https://github.com/kainpl/bamdude/features/system-info/?h=debug#enable-debug-logging)
 
   - type: textarea
     id: logs
@@ -148,7 +148,7 @@ body:
       options:
         - label: I have searched existing issues to ensure this bug hasn't already been reported
           required: true
-        - label: I am using the latest version of Bambuddy
+        - label: I am using the latest version of BamDude
           required: true
         - label: My printer is set to LAN Only mode
           required: true

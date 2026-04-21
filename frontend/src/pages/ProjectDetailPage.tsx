@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import DOMPurify from 'dompurify';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -19,7 +19,6 @@ import {
   Calendar,
   AlertTriangle,
   Save,
-  X,
   Trash2,
   Plus,
   History,
@@ -31,20 +30,30 @@ import {
   FolderOpen,
   Download,
   Pencil,
+  Play,
+  CalendarPlus,
+  FileBox,
 } from 'lucide-react';
 import { api } from '../api/client';
 import { parseUTCDate, formatDateOnly, formatDateTime, formatDurationFromHours, type TimeFormat } from '../utils/date';
-import type { Archive, ProjectUpdate, BOMItem, BOMItemCreate, BOMItemUpdate } from '../api/client';
+import type { Archive, ProjectUpdate, BOMItem, BOMItemCreate, BOMItemUpdate, LibraryFileListItem } from '../api/client';
 import { Card, CardContent } from '../components/Card';
 import { Button } from '../components/Button';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { RichTextEditor } from '../components/RichTextEditor';
 import { ConfirmModal } from '../components/ConfirmModal';
+import { PrintModal } from '../components/PrintModal';
 
 // Project edit modal (reused from ProjectsPage)
 import { ProjectModal } from './ProjectsPage';
 import { getCurrencySymbol } from '../utils/currency';
+
+// Returns true for sliced (printable) files: .gcode and .gcode.3mf
+function isSlicedFilename(filename: string): boolean {
+  const lower = filename.toLowerCase();
+  return lower.endsWith('.gcode') || lower.endsWith('.gcode.3mf');
+}
 
 function formatFilament(grams: number): string {
   if (grams >= 1000) {
@@ -201,6 +210,8 @@ export function ProjectDetailPage() {
   const [showEditModal, setShowEditModal] = useState(false);
   const [editingNotes, setEditingNotes] = useState(false);
   const [notesContent, setNotesContent] = useState('');
+  const [printFile, setPrintFile] = useState<LibraryFileListItem | null>(null);
+  const [scheduleFile, setScheduleFile] = useState<LibraryFileListItem | null>(null);
 
   const projectId = parseInt(id || '0', 10);
 
@@ -238,6 +249,26 @@ export function ProjectDetailPage() {
     queryFn: () => api.getLibraryFoldersByProject(projectId),
     enabled: projectId > 0,
   });
+
+  // Single bulk query - replaces the previous N+1 useQueries pattern
+  const { data: allProjectFiles, isLoading: projectFilesLoading } = useQuery({
+    queryKey: ['project-files', projectId],
+    queryFn: () => api.getLibraryFiles(null, false, projectId),
+    enabled: projectId > 0,
+  });
+
+  // Group files by folder_id for the section-based render
+  const filesByFolder = useMemo(() => {
+    const map = new Map<number, LibraryFileListItem[]>();
+    for (const file of allProjectFiles ?? []) {
+      if (file.folder_id != null) {
+        const arr = map.get(file.folder_id) ?? [];
+        arr.push(file);
+        map.set(file.folder_id, arr);
+      }
+    }
+    return map;
+  }, [allProjectFiles]);
 
   const currency = getCurrencySymbol(settings?.currency || 'USD');
   const timeFormat: TimeFormat = settings?.time_format || 'system';
@@ -438,7 +469,7 @@ export function ProjectDetailPage() {
         <p className="text-bambu-gray">
           {projectError ? `${t('common.error')}: ${(projectError as Error).message}` : t('projectDetail.notFound')}
         </p>
-        <Button variant="secondary" className="mt-4" onClick={() => navigate('/projects')}>
+        <Button variant="outline" className="mt-4" onClick={() => navigate('/projects')}>
           {t('projectDetail.backToProjects')}
         </Button>
       </div>
@@ -452,11 +483,11 @@ export function ProjectDetailPage() {
   const partsProgressPercent = stats?.parts_progress_percent ?? 0;
 
   return (
-    <div className="p-4 md:p-8 space-y-8">
+    <div className="p-4 md:p-6 space-y-4">
       {/* Breadcrumb */}
       <div className="flex items-center gap-2 text-sm text-bambu-gray">
         <Link to="/projects" className="hover:text-white transition-colors">
-          {t('navigation.projects')}
+          {t('projects.title')}
         </Link>
         <ChevronRight className="w-4 h-4" />
         <span className="text-white">{project.name}</span>
@@ -486,8 +517,23 @@ export function ProjectDetailPage() {
           <StatusBadge status={project.status} t={t} />
         </div>
         <div className="flex gap-2">
+          {!project.is_template && (
+            <Button
+              variant="outline"
+              onClick={() => createTemplateMutation.mutate()}
+              disabled={createTemplateMutation.isPending || !hasPermission('projects:create')}
+              title={!hasPermission('projects:create') ? t('projectDetail.template.noCreatePermission') : undefined}
+            >
+              {createTemplateMutation.isPending ? (
+                <Loader2 className="w-4 h-4 animate-spin mr-2" />
+              ) : (
+                <Copy className="w-4 h-4 mr-2" />
+              )}
+              {t('projectDetail.template.saveAsTemplate')}
+            </Button>
+          )}
           <Button
-            variant="secondary"
+            variant="outline"
             onClick={handleExportProject}
             disabled={!hasPermission('projects:read')}
             title={!hasPermission('projects:read') ? t('projectDetail.noExportPermission') : t('projectDetail.exportProject')}
@@ -576,7 +622,7 @@ export function ProjectDetailPage() {
 
       {/* Stats grid */}
       {stats && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
           <Card>
             <CardContent className="p-4">
               <div className="flex items-center gap-3">
@@ -782,7 +828,7 @@ export function ProjectDetailPage() {
             </h2>
             {!editingNotes ? (
               <Button
-                variant="secondary"
+                variant="outline"
                 size="sm"
                 onClick={handleStartEditNotes}
                 disabled={!hasPermission('projects:update')}
@@ -794,12 +840,11 @@ export function ProjectDetailPage() {
             ) : (
               <div className="flex gap-2">
                 <Button
-                  variant="secondary"
+                  variant="outline"
                   size="sm"
                   onClick={handleCancelNotes}
                   disabled={updateMutation.isPending}
                 >
-                  <X className="w-4 h-4 mr-1" />
                   {t('common.cancel')}
                 </Button>
                 <Button
@@ -855,27 +900,102 @@ export function ProjectDetailPage() {
           </p>
 
           {linkedFolders && linkedFolders.length > 0 ? (
-            <div className="space-y-2">
-              {linkedFolders.map((folder) => (
-                <Link
-                  key={folder.id}
-                  to={`/files?folder=${folder.id}`}
-                  className="flex items-center justify-between p-3 bg-bambu-dark rounded-lg hover:bg-bambu-dark-tertiary transition-colors"
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <FolderOpen className="w-5 h-5 text-bambu-green flex-shrink-0" />
-                    <div className="min-w-0">
-                      <p className="text-sm text-white truncate">
-                        {folder.name}
+            <div className="space-y-4">
+              {linkedFolders.map((folder) => {
+                const files = filesByFolder.get(folder.id) ?? [];
+                const isLoading = projectFilesLoading;
+
+                return (
+                  <div key={folder.id}>
+                    {/* Folder header - links to File Manager */}
+                    <Link
+                      to={`/files?folder=${folder.id}`}
+                      className="flex items-center justify-between p-3 bg-bambu-dark rounded-lg hover:bg-bambu-dark-tertiary transition-colors mb-2"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <FolderOpen className="w-5 h-5 text-bambu-green shrink-0" />
+                        <div className="min-w-0">
+                          <p className="text-sm text-white truncate">{folder.name}</p>
+                          <p className="text-xs text-bambu-gray">
+                            {t('projectDetail.files.fileCount', { count: folder.file_count })}
+                          </p>
+                        </div>
+                      </div>
+                      <ChevronRight className="w-4 h-4 text-bambu-gray shrink-0" />
+                    </Link>
+
+                    {/* File list within the folder */}
+                    {isLoading ? (
+                      <div className="flex items-center gap-2 px-3 py-2 text-bambu-gray text-sm">
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      </div>
+                    ) : files.length === 0 ? (
+                      <p className="text-bambu-gray/60 text-xs italic px-3">
+                        {t('projectDetail.files.noFiles')}
                       </p>
-                      <p className="text-xs text-bambu-gray">
-                        {t('projectDetail.files.fileCount', { count: folder.file_count })}
-                      </p>
-                    </div>
+                    ) : (
+                      <div className="space-y-1 pl-3">
+                        {files.map((file) => {
+                          const printable = isSlicedFilename(file.filename);
+                          return (
+                            <div
+                              key={file.id}
+                              className="flex items-center gap-3 p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors"
+                            >
+                              {/* Thumbnail */}
+                              <div className="w-10 h-10 shrink-0 rounded bg-bambu-dark overflow-hidden flex items-center justify-center">
+                                {file.thumbnail_path ? (
+                                  <img
+                                    src={api.getLibraryFileThumbnailUrl(file.id)}
+                                    alt={file.print_name || file.filename}
+                                    className="w-full h-full object-cover"
+                                  />
+                                ) : (
+                                  <FileBox className="w-5 h-5 text-bambu-gray/40" />
+                                )}
+                              </div>
+
+                              {/* Name + type badge */}
+                              <div className="flex-1 min-w-0">
+                                <p className="text-sm text-white truncate" title={file.print_name || file.filename}>
+                                  {file.print_name || file.filename}
+                                </p>
+                                <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
+                                  file.file_type === '3mf' ? 'bg-bambu-green/20 text-bambu-green'
+                                  : file.file_type === 'gcode' ? 'bg-blue-500/20 text-blue-400'
+                                  : 'bg-bambu-gray/20 text-bambu-gray'
+                                }`}>
+                                  {file.file_type.toUpperCase()}
+                                </span>
+                              </div>
+
+                              {/* Print actions for sliced files */}
+                              {printable && (
+                                <div className="flex items-center gap-1 shrink-0">
+                                  <button
+                                    onClick={() => setPrintFile(file)}
+                                    title={t('projectDetail.files.print')}
+                                    className="p-1.5 rounded hover:bg-bambu-green/20 text-bambu-green transition-colors"
+                                  >
+                                    <Play className="w-4 h-4" />
+                                  </button>
+                                  <button
+                                    onClick={() => setScheduleFile(file)}
+                                    title={t('projectDetail.files.addToQueue')}
+                                    className="p-1.5 rounded hover:bg-blue-500/20 text-blue-400 transition-colors"
+                                  >
+                                    <CalendarPlus className="w-4 h-4" />
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
-                  <ChevronRight className="w-4 h-4 text-bambu-gray flex-shrink-0" />
-                </Link>
-              ))}
+                );
+              })}
             </div>
           ) : (
             <p className="text-bambu-gray/70 text-sm italic">
@@ -913,7 +1033,7 @@ export function ProjectDetailPage() {
               )}
               {!showBomForm && (
                 <Button
-                  variant="secondary"
+                  variant="outline"
                   size="sm"
                   onClick={() => setShowBomForm(true)}
                   disabled={!hasPermission('projects:update')}
@@ -972,15 +1092,16 @@ export function ProjectDetailPage() {
                 placeholder={t('projectDetail.bom.remarksPlaceholder')}
               />
               <div className="flex justify-end gap-2">
-                <Button type="button" variant="secondary" size="sm" onClick={() => setShowBomForm(false)}>
+                <Button type="button" variant="outline" size="sm" onClick={() => setShowBomForm(false)}>
                   {t('common.cancel')}
                 </Button>
                 <Button type="submit" size="sm" disabled={!newBomName.trim() || createBomMutation.isPending}>
                   {createBomMutation.isPending ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <Loader2 className="w-4 h-4 animate-spin mr-1" />
                   ) : (
-                    t('projectDetail.bom.addPart')
+                    <Plus className="w-4 h-4 mr-1" />
                   )}
+                  {t('projectDetail.bom.addPart')}
                 </Button>
               </div>
             </form>
@@ -1047,7 +1168,7 @@ export function ProjectDetailPage() {
                         placeholder={t('projectDetail.bom.remarksPlaceholder')}
                       />
                       <div className="flex justify-end gap-2">
-                        <Button type="button" variant="secondary" size="sm" onClick={handleCancelBomEdit}>
+                        <Button type="button" variant="outline" size="sm" onClick={handleCancelBomEdit}>
                           {t('common.cancel')}
                         </Button>
                         <Button type="submit" size="sm" disabled={!editBomName.trim() || updateBomMutation.isPending}>
@@ -1216,25 +1337,6 @@ export function ProjectDetailPage() {
         </CardContent>
       </Card>
 
-      {/* Template action */}
-      {!project.is_template && (
-        <div className="flex justify-end">
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => createTemplateMutation.mutate()}
-            disabled={createTemplateMutation.isPending || !hasPermission('projects:create')}
-            title={!hasPermission('projects:create') ? t('projectDetail.template.noCreatePermission') : undefined}
-          >
-            {createTemplateMutation.isPending ? (
-              <Loader2 className="w-4 h-4 animate-spin mr-2" />
-            ) : (
-              <Copy className="w-4 h-4 mr-2" />
-            )}
-            {t('projectDetail.template.saveAsTemplate')}
-          </Button>
-        </div>
-      )}
 
       {/* Queue section */}
       {stats && (stats.queued_prints > 0 || stats.in_progress_prints > 0) && (
@@ -1315,6 +1417,36 @@ export function ProjectDetailPage() {
           variant="danger"
           onConfirm={confirmModal.onConfirm}
           onCancel={() => setConfirmModal(prev => ({ ...prev, isOpen: false }))}
+        />
+      )}
+
+      {/* Print directly from project - reprint mode (closes #930) */}
+      {printFile && (
+        <PrintModal
+          mode="reprint"
+          libraryFileId={printFile.id}
+          archiveName={printFile.print_name || printFile.filename}
+          projectId={projectId}
+          onClose={() => setPrintFile(null)}
+          onSuccess={() => {
+            setPrintFile(null);
+            queryClient.invalidateQueries({ queryKey: ['archives'] });
+          }}
+        />
+      )}
+
+      {/* Add to queue from project */}
+      {scheduleFile && (
+        <PrintModal
+          mode="add-to-queue"
+          libraryFileId={scheduleFile.id}
+          archiveName={scheduleFile.print_name || scheduleFile.filename}
+          projectId={projectId}
+          onClose={() => setScheduleFile(null)}
+          onSuccess={() => {
+            setScheduleFile(null);
+            queryClient.invalidateQueries({ queryKey: ['queue'] });
+          }}
         />
       )}
     </div>

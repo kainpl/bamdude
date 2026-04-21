@@ -70,7 +70,7 @@ async def render_queue(target, tg_chat: TelegramChat | None = None, offset: int 
         items = list(result.scalars().all())
 
         # Get printer names
-        printer_ids = {i.printer_id for i in items if i.printer_id}
+        printer_ids = {i.queue_id for i in items if i.queue_id}
         printer_names = {}
         if printer_ids:
             printers = await db.execute(select(Printer).where(Printer.id.in_(printer_ids)))
@@ -91,10 +91,8 @@ async def render_queue(target, tg_chat: TelegramChat | None = None, offset: int 
             emoji = QUEUE_STATUS_EMOJIS.get(item.status, "\u2753")
             fname = escape_md(item.file_name or f"Job \\#{item.id}")
             printer_label = ""
-            if item.printer_id and item.printer_id in printer_names:
-                printer_label = f" → {escape_md(printer_names[item.printer_id])}"
-            elif item.target_model:
-                printer_label = f" → {escape_md(item.target_model)}"
+            if item.queue_id and item.queue_id in printer_names:
+                printer_label = f" → {escape_md(printer_names[item.queue_id])}"
 
             lines.append(f"{emoji} *{fname}*{printer_label}")
 
@@ -185,8 +183,8 @@ async def cb_queue_detail(callback: CallbackQuery, tg_chat: TelegramChat | None 
             return
 
         printer_name = None
-        if item.printer_id:
-            p = await db.get(Printer, item.printer_id)
+        if item.queue_id:
+            p = await db.get(Printer, item.queue_id)
             printer_name = p.name if p else None
 
     emoji = QUEUE_STATUS_EMOJIS.get(item.status, "\u2753")
@@ -199,8 +197,6 @@ async def cb_queue_detail(callback: CallbackQuery, tg_chat: TelegramChat | None 
 
     if printer_name:
         lines.append(f"\U0001f5a8 {escape_md(t(lang, NS, 'queue.printer'))}: {escape_md(printer_name)}")
-    elif item.target_model:
-        lines.append(f"\U0001f5a8 {escape_md(t(lang, NS, 'queue.target_model'))}: {escape_md(item.target_model)}")
 
     lines.append(f"{emoji} {escape_md(t(lang, NS, 'queue.status'))}: {escape_md(status_label)}")
     lines.append(f"\U0001f522 {escape_md(t(lang, NS, 'queue.position'))}: {item.position}")

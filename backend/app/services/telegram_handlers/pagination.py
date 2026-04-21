@@ -18,7 +18,7 @@ def build_page_nav(
         total: total number of items
         offset: current offset (0-based)
         page_size: items per page
-        callback_prefix: e.g. "page:queue:" — offset is appended
+        callback_prefix: e.g. "page:queue:" - offset is appended
         lang: language code for i18n
 
     Returns:

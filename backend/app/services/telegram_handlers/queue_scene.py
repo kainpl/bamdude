@@ -1,4 +1,4 @@
-"""Add to Queue scene — select file → select target → confirm."""
+"""Add to Queue scene - select file → select target → confirm."""
 
 from __future__ import annotations
 
@@ -108,7 +108,7 @@ async def cb_qadd_page(callback: CallbackQuery, state: FSMContext, tg_chat: Tele
 
 @router.callback_query(F.data.startswith("qadd:file:"))
 async def cb_qadd_select_file(callback: CallbackQuery, state: FSMContext, tg_chat: TelegramChat | None = None) -> None:
-    """File selected — show target selection."""
+    """File selected - show target selection."""
     lang = await get_language()
     file_id = int(callback.data.split(":")[2])
     await callback.answer()
@@ -251,14 +251,12 @@ async def _show_confirm(callback: CallbackQuery, state: FSMContext, lang: str) -
 
 @router.callback_query(F.data == "qadd:confirm")
 async def cb_qadd_confirm(callback: CallbackQuery, state: FSMContext, tg_chat: TelegramChat | None = None) -> None:
-    """Confirm — create queue item."""
+    """Confirm - create queue item."""
     lang = await get_language()
 
     data = await state.get_data()
     file_id = data.get("file_id")
-    file_name = data.get("file_name")
     printer_id = data.get("printer_id")
-    target_model = data.get("target_model")
 
     await state.clear()
 
@@ -271,11 +269,13 @@ async def cb_qadd_confirm(callback: CallbackQuery, state: FSMContext, tg_chat: T
         async with async_session() as db:
             max_pos = (await db.execute(select(func.max(PrintQueueItem.position)))).scalar() or 0
 
+            if not printer_id:
+                await callback.answer(t(lang, NS, "queue_add.failed"), show_alert=True)
+                return
+
             item = PrintQueueItem(
-                printer_id=printer_id,
-                target_model=target_model,
+                queue_id=printer_id,  # queue_id == printer_id
                 library_file_id=file_id,
-                file_name=file_name,
                 status="pending",
                 position=max_pos + 1,
             )

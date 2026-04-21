@@ -76,18 +76,13 @@
   },
   "test": {
     "name": "Test Notification",
-    "title_template": "Bambuddy HE Test",
+    "title_template": "BamDude Test",
     "body_template": "This is a test notification. If you see this, notifications are working!"
   },
   "queue_job_added": {
     "name": "Queue Job Added",
     "title_template": "Job Queued",
     "body_template": "{job_name} added to queue for {target}"
-  },
-  "queue_job_assigned": {
-    "name": "Queue Job Assigned",
-    "title_template": "Job Assigned",
-    "body_template": "{job_name} assigned to {printer} (from Any {target_model} queue)"
   },
   "queue_job_started": {
     "name": "Queue Job Started",

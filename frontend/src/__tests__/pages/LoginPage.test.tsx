@@ -24,7 +24,7 @@ describe('LoginPage', () => {
       render(<LoginPage />);
 
       await waitFor(() => {
-        expect(screen.getByRole('heading', { name: /Bambuddy Login/i })).toBeInTheDocument();
+        expect(screen.getByRole('heading', { name: /BamDude Login/i })).toBeInTheDocument();
       });
 
       expect(screen.getByLabelText(/Username/i)).toBeInTheDocument();

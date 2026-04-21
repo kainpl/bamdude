@@ -113,7 +113,7 @@ async def get_next_queue_item(printer_id: int) -> str | None:
     async with async_session() as db:
         result = await db.execute(
             select(PrintQueueItem)
-            .where(PrintQueueItem.status == "pending", PrintQueueItem.printer_id == printer_id)
+            .where(PrintQueueItem.status == "pending", PrintQueueItem.queue_id == printer_id)
             .order_by(PrintQueueItem.position)
             .limit(1)
         )

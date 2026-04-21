@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermissionIfAuthEnabled
+from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.user import User
@@ -20,7 +20,7 @@ router = APIRouter(prefix="/user-notifications", tags=["user-notifications"])
 
 @router.get("/preferences", response_model=UserEmailPreferenceResponse)
 async def get_user_email_preferences(
-    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.NOTIFICATIONS_USER_EMAIL),
+    current_user: User | None = RequirePermission(Permission.NOTIFICATIONS_USER_EMAIL),
     db: AsyncSession = Depends(get_db),
 ):
     """Get the current user's email notification preferences.
@@ -54,7 +54,7 @@ async def get_user_email_preferences(
 @router.put("/preferences", response_model=UserEmailPreferenceResponse)
 async def update_user_email_preferences(
     data: UserEmailPreferenceUpdate,
-    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.NOTIFICATIONS_USER_EMAIL),
+    current_user: User | None = RequirePermission(Permission.NOTIFICATIONS_USER_EMAIL),
     db: AsyncSession = Depends(get_db),
 ):
     """Update the current user's email notification preferences."""

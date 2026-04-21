@@ -1,4 +1,4 @@
-"""Add printer scene — enter IP → auto-detect → enter access code → confirm."""
+"""Add printer scene - enter IP → auto-detect → enter access code → confirm."""
 
 from __future__ import annotations
 
@@ -79,7 +79,7 @@ async def cb_add_printer_start(callback: CallbackQuery, state: FSMContext, tg_ch
 
 @router.message(AddPrinterState.entering_ip)
 async def msg_ip(message: Message, state: FSMContext, **kwargs) -> None:
-    """User entered IP — probe the network."""
+    """User entered IP - probe the network."""
     lang = await get_language()
     ip = message.text.strip() if message.text else ""
 
@@ -142,7 +142,7 @@ async def msg_ip(message: Message, state: FSMContext, **kwargs) -> None:
 
 @router.message(AddPrinterState.entering_access_code)
 async def msg_access_code(message: Message, state: FSMContext, **kwargs) -> None:
-    """User entered access code — show confirmation."""
+    """User entered access code - show confirmation."""
     lang = await get_language()
     code = message.text.strip() if message.text else ""
 

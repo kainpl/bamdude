@@ -35,7 +35,7 @@ export function EmailSettings() {
     smtp_security: 'starttls',
     smtp_auth_enabled: true,
     smtp_from_email: '',
-    smtp_from_name: 'BamBuddy',
+    smtp_from_name: 'BamDude',
   });
   const [testEmail, setTestEmail] = useState('');
 
@@ -174,7 +174,7 @@ export function EmailSettings() {
   const disabledInputClasses = "w-full px-4 py-3 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white/40 placeholder-bambu-gray/40 cursor-not-allowed";
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       {/* Advanced Authentication Toggle - Always visible */}
       <Card>
         <CardHeader>
@@ -363,7 +363,7 @@ export function EmailSettings() {
                     type="text"
                     value={smtpSettings.smtp_from_name}
                     onChange={(e) => setSMTPSettings({ ...smtpSettings, smtp_from_name: e.target.value })}
-                    placeholder="Bambuddy HE"
+                    placeholder="BamDude"
                     className={inputClasses}
                   />
                 </div>

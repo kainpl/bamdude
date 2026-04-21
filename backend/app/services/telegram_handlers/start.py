@@ -34,7 +34,7 @@ def _reply_keyboard(lang: str) -> ReplyKeyboardMarkup:
 
 @router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
-    """Handle /start command — welcome message with main menu."""
+    """Handle /start command - welcome message with main menu."""
     lang = await get_language()
 
     inline_keyboard = InlineKeyboardMarkup(
@@ -57,7 +57,7 @@ async def cmd_start(message: Message) -> None:
 
     # Send reply keyboard first (Telegram persists it for the chat)
     await message.answer(
-        "\U0001f44b *Bambuddy HE*",
+        "\U0001f44b *BamDude*",
         reply_markup=_reply_keyboard(lang),
     )
 
@@ -87,14 +87,14 @@ async def cmd_help(message: Message) -> None:
 
 @router.message(Command("status"))
 async def cmd_status(message: Message) -> None:
-    """Handle /status — quick printer status overview."""
+    """Handle /status - quick printer status overview."""
     from backend.app.services.telegram_handlers.printers import show_printer_list
 
     await show_printer_list(message)
 
 
 # === Reply keyboard text handlers ===
-# Match button text from ANY language — check all supported locales
+# Match button text from ANY language - check all supported locales
 
 
 def _matches_reply_button(text: str, key: str) -> bool:
@@ -111,7 +111,7 @@ def _matches_reply_button(text: str, key: str) -> bool:
 
 @router.message(Command("camera"))
 async def cmd_camera(message: Message, tg_chat=None) -> None:
-    """Handle /camera — quick snapshot. If one printer, snapshot directly. If many, show picker."""
+    """Handle /camera - quick snapshot. If one printer, snapshot directly. If many, show picker."""
     lang = await get_language()
     from backend.app.services.telegram_handlers.common import get_printers_data, has_perm
 
@@ -200,7 +200,7 @@ async def reply_library(message: Message, tg_chat=None) -> None:
     if not files:
         await message.answer(escape_md(t(lang, NS, "library.no_files")))
         return
-    # Create a "fake" inline entry — send a new message with file list
+    # Create a "fake" inline entry - send a new message with file list
     lines = [
         f"\U0001f4c2 *{escape_md(t(lang, NS, 'library.title'))}*",
         escape_md(t(lang, NS, "library.select_file")),

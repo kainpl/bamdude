@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermissionIfAuthEnabled
+from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.group import Group
@@ -92,7 +92,6 @@ EVENT_CATEGORIES = {
         "label": "Queue",
         "events": [
             "queue_job_added",
-            "queue_job_assigned",
             "queue_job_started",
             "queue_job_waiting",
             "queue_job_skipped",
@@ -121,7 +120,6 @@ EVENT_LABELS = {
     "bed_cooled": "Bed cooled",
     "first_layer_complete": "First layer complete",
     "queue_job_added": "Queue job added",
-    "queue_job_assigned": "Queue job assigned",
     "queue_job_started": "Queue job started",
     "queue_job_waiting": "Queue job waiting",
     "queue_job_skipped": "Queue job skipped",
@@ -132,7 +130,7 @@ EVENT_LABELS = {
 
 @router.get("/chats", response_model=list[TelegramChatResponse])
 async def list_chats(
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+    _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
     db: AsyncSession = Depends(get_db),
 ):
     """List all registered Telegram chats."""
@@ -144,7 +142,7 @@ async def list_chats(
 @router.post("/chats", response_model=TelegramChatResponse, status_code=201)
 async def create_chat(
     data: TelegramChatCreate,
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+    _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
     db: AsyncSession = Depends(get_db),
 ):
     """Register a new Telegram chat."""
@@ -189,7 +187,7 @@ async def create_chat(
 async def update_chat(
     chat_db_id: int,
     data: TelegramChatUpdate,
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+    _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
     db: AsyncSession = Depends(get_db),
 ):
     """Update a Telegram chat."""
@@ -225,7 +223,7 @@ async def update_chat(
 @router.delete("/chats/{chat_db_id}", status_code=204)
 async def delete_chat(
     chat_db_id: int,
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+    _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
     db: AsyncSession = Depends(get_db),
 ):
     """Remove a Telegram chat."""
@@ -239,7 +237,7 @@ async def delete_chat(
 @router.post("/chats/{chat_db_id}/test")
 async def test_chat(
     chat_db_id: int,
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+    _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
     db: AsyncSession = Depends(get_db),
 ):
     """Send a test message to a Telegram chat."""
@@ -260,7 +258,7 @@ async def test_chat(
 
 @router.get("/events", response_model=list[NotifyEventInfo])
 async def list_events(
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+    _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
     """List all available notification event types with labels and categories."""
     result = []

@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-INSTALL_DIR="${INSTALL_DIR:-/opt/bambuddy}"
-SERVICE_NAME="${SERVICE_NAME:-bambuddy}"
+INSTALL_DIR="${INSTALL_DIR:-/opt/bamdude}"
+SERVICE_NAME="${SERVICE_NAME:-bamdude}"
 BRANCH="${BRANCH:-}"
 VENV_PIP="${VENV_PIP:-$INSTALL_DIR/venv/bin/pip}"
 FRONTEND_DIR="${FRONTEND_DIR:-$INSTALL_DIR/frontend}"
 BACKUP_DIR="${BACKUP_DIR:-$INSTALL_DIR/backups}"
-BAMBUDDY_API_URL="${BAMBUDDY_API_URL:-http://127.0.0.1:8000/api/v1}"
-BAMBUDDY_API_KEY="${BAMBUDDY_API_KEY:-}"
+BAMDUDE_API_URL="${BAMDUDE_API_URL:-http://127.0.0.1:8000/api/v1}"
+BAMDUDE_API_KEY="${BAMDUDE_API_KEY:-}"
 BACKUP_MODE="${BACKUP_MODE:-auto}" # auto|require|skip
 BACKUP_KEEP_COUNT=5
 FORCE="${FORCE:-0}"
@@ -18,15 +18,15 @@ CODE_UPDATED=0
 old_commit=""
 
 log() {
-  printf '[bambuddy-update] %s\n' "$*"
+  printf '[bamdude-update] %s\n' "$*"
 }
 
 warn() {
-  printf '[bambuddy-update] WARNING: %s\n' "$*" >&2
+  printf '[bamdude-update] WARNING: %s\n' "$*" >&2
 }
 
 die() {
-  printf '[bambuddy-update] ERROR: %s\n' "$*" >&2
+  printf '[bamdude-update] ERROR: %s\n' "$*" >&2
   exit 1
 }
 
@@ -40,7 +40,7 @@ cleanup_old_backups() {
 
   [ "$max_count" -gt 0 ] || return 0
 
-  mapfile -t backup_files < <(ls -1t "$BACKUP_DIR"/bambuddy-backup-*.zip 2>/dev/null || true)
+  mapfile -t backup_files < <(ls -1t "$BACKUP_DIR"/bamdude-backup-*.zip 2>/dev/null || true)
   if [ "${#backup_files[@]}" -le "$max_count" ]; then
     return 0
   fi
@@ -88,15 +88,15 @@ create_backup() {
 
   mkdir -p "$BACKUP_DIR"
   ts="$(date +%Y%m%d-%H%M%S)"
-  backup_file="$BACKUP_DIR/bambuddy-backup-$ts.zip"
+  backup_file="$BACKUP_DIR/bamdude-backup-$ts.zip"
 
-  [ -n "$BAMBUDDY_API_KEY" ] && auth_args=(-H "X-API-Key: $BAMBUDDY_API_KEY")
+  [ -n "$BAMDUDE_API_KEY" ] && auth_args=(-H "X-API-Key: $BAMDUDE_API_KEY")
 
   log "Creating built-in backup via API: $backup_file"
   if curl --silent --show-error --fail --location \
     --connect-timeout 5 --max-time 900 \
     "${auth_args[@]}" \
-    "$BAMBUDDY_API_URL/settings/backup" \
+    "$BAMDUDE_API_URL/settings/backup" \
     --output "$backup_file"; then
     log "Backup created successfully"
     cleanup_old_backups "$BACKUP_KEEP_COUNT"
@@ -145,14 +145,14 @@ log "Current commit: ${old_commit:-unknown}"
 log "Remote commit: ${remote_commit:-unknown}"
 
 if git diff --quiet HEAD "origin/$BRANCH"; then
-  log "You are already running the latest version of Bambuddy."
+  log "You are already running the latest version of BamDude."
   read -r -p "Do you want to run the update process anyway? [y/N]: " run_anyway
   case "${run_anyway:-}" in
     y|Y|yes|YES) ;;
     *) exit 0 ;;
   esac
 else
-  read -r -p "An update for Bambuddy is available. Install now? [y/N]: " install_now
+  read -r -p "An update for BamDude is available. Install now? [y/N]: " install_now
   case "${install_now:-}" in
     y|Y|yes|YES) ;;
     *) exit 0 ;;

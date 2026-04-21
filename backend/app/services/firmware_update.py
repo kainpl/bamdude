@@ -165,8 +165,11 @@ class FirmwareUpdateService:
         if not result["update_available"]:
             result["errors"].append("Firmware is already up to date")
 
-        # Get firmware file info
+        # Get firmware file info (requires download URL)
         file_info = await firmware_service.get_firmware_file_info(model)
+        if result["update_available"] and (not file_info or not file_info.get("download_url")):
+            result["update_available"] = False
+            result["errors"].append("Firmware download not yet available from Bambu Lab")
         if file_info:
             result["firmware_filename"] = file_info["filename"]
             # Estimate size (typical firmware is 50-150MB)

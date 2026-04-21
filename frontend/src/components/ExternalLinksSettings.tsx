@@ -87,17 +87,17 @@ export function ExternalLinksSettings() {
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <Link2 className="w-5 h-5 text-bambu-green" />
-              <h2 className="text-lg font-semibold text-white">Sidebar Links</h2>
+              <h2 className="text-lg font-semibold text-white">{t('externalLinks.title')}</h2>
             </div>
             <Button size="sm" onClick={() => setShowAddModal(true)}>
               <Plus className="w-4 h-4" />
-              Add Link
+              {t('externalLinks.addLink')}
             </Button>
           </div>
         </CardHeader>
         <CardContent>
           <p className="text-sm text-bambu-gray mb-4">
-            Add external links to the sidebar navigation. Drag to reorder.
+            {t('externalLinks.description')}
           </p>
 
           {isLoading ? (
@@ -155,7 +155,7 @@ export function ExternalLinksSettings() {
             <div className="text-center py-8 text-bambu-gray">
               <Link2 className="w-8 h-8 mx-auto mb-2 opacity-50" />
               <p>{t('externalLinks.noLinksConfigured')}</p>
-              <p className="text-sm">Click "Add Link" to add one</p>
+              <p className="text-sm">{t('externalLinks.noLinksHint')}</p>
             </div>
           )}
         </CardContent>
@@ -175,10 +175,10 @@ export function ExternalLinksSettings() {
       {/* Delete Confirmation Modal */}
       {deletingLink && (
         <ConfirmModal
-          title="Delete Link"
-          message={`Are you sure you want to delete "${deletingLink.name}"? This action cannot be undone.`}
-          confirmText="Delete"
-          cancelText="Cancel"
+          title={t('externalLinks.deleteLink')}
+          message={t('externalLinks.deleteLinkConfirm', { name: deletingLink.name })}
+          confirmText={t('common.delete')}
+          cancelText={t('common.cancel')}
           variant="danger"
           onConfirm={confirmDelete}
           onCancel={() => setDeletingLink(null)}

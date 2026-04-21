@@ -20,17 +20,43 @@ import pytest
 
 from backend.app.services.bambu_ftp import (
     BambuFTPClient,
+    FileNotOnPrinterError,
     delete_file_async,
     download_file_async,
     download_file_try_paths_async,
     list_files_async,
     upload_file_async,
+    with_ftp_retry,
 )
 
 # Brief delay to allow pyftpdlib to flush uploaded files to disk.
 # Needed because upload_file() skips voidresp() for all models,
 # so the server may still be processing the data channel close event.
 _UPLOAD_FLUSH_DELAY = 0.3
+
+
+def _wait_for_server_file(ftp_server, relative_path: str, expected: bytes, timeout: float = 5.0) -> None:
+    """Poll the mock server's on-disk filesystem until the uploaded file
+    matches the expected bytes (or timeout elapses).
+
+    pyftpdlib uses asynchat to service the data channel and occasionally
+    finishes the control-channel 226 response before the last data buffer
+    has been flushed to the file on disk, especially under test-harness
+    load / xdist parallelism. Polling instead of a fixed sleep keeps the
+    fast path fast while avoiding flaky failures on slower machines.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if ftp_server.file_exists(relative_path):
+            try:
+                on_disk = ftp_server.read_file(relative_path)
+            except OSError:
+                on_disk = None
+            if on_disk == expected:
+                return
+        time.sleep(0.05)
+    # Last-ditch: fall through to the assertion in the caller so we still
+    # get a helpful diff if it never matched.
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +142,7 @@ class TestConnection:
 
 
 # ---------------------------------------------------------------------------
-# TestDisconnectServerGone — isolated class because server.stop() calls
+# TestDisconnectServerGone - isolated class because server.stop() calls
 # close_all() which nukes all asyncore sockets globally.
 # ---------------------------------------------------------------------------
 class TestDisconnectServerGone:
@@ -144,7 +170,7 @@ class TestDisconnectServerGone:
         client.connect()
 
         server.stop()
-        # Should not raise — disconnect() catches all connection errors
+        # Should not raise - disconnect() catches all connection errors
         client.disconnect()
         assert client._ftp is None
 
@@ -265,14 +291,17 @@ class TestDownload:
         assert not local.exists()
         client.disconnect()
 
-    def test_download_to_file_missing_returns_false(self, ftp_client_factory, tmp_path):
-        """Missing file returns False."""
+    def test_download_to_file_missing_raises_not_on_printer(self, ftp_client_factory, tmp_path):
+        """Missing file raises FileNotOnPrinterError so callers can short-circuit
+        the retry loop — 550 means the file isn't there and retrying won't help."""
         local = tmp_path / "missing.bin"
         client = ftp_client_factory()
         client.connect()
-        result = client.download_to_file("/cache/no_such_file.bin", local)
-        assert result is False
-        client.disconnect()
+        try:
+            with pytest.raises(FileNotOnPrinterError):
+                client.download_to_file("/cache/no_such_file.bin", local)
+        finally:
+            client.disconnect()
 
     def test_download_large_file(self, ftp_client_factory, ftp_server):
         """Large file download (>1MB) works correctly."""
@@ -306,9 +335,7 @@ class TestUpload:
         result = client.upload_file(local, "/cache/upload.3mf")
         assert result is True
         client.disconnect()
-        # Verify via fresh connection (upload_file skips voidresp() for all
-        # models, so the original session can't be reused for download)
-        time.sleep(_UPLOAD_FLUSH_DELAY)
+        _wait_for_server_file(ftp_server, "cache/upload.3mf", content)
         client2 = ftp_client_factory()
         client2.connect()
         downloaded = client2.download_file("/cache/upload.3mf")
@@ -383,8 +410,8 @@ class TestUpload:
         result = client.upload_bytes(data, "/cache/bytes.bin")
         assert result is True
         client.disconnect()
-        # Verify via fresh connection
-        time.sleep(_UPLOAD_FLUSH_DELAY)
+        # Verify via fresh connection (poll with backoff - see upload_file test)
+        _wait_for_server_file(ftp_server, "cache/bytes.bin", data)
         client2 = ftp_client_factory()
         client2.connect()
         downloaded = client2.download_file("/cache/bytes.bin")
@@ -888,10 +915,66 @@ class TestFailureScenarios:
             result = client.upload_file(local, "/cache/voidresp_test.3mf")
             assert result is True, f"Upload failed for model={model}"
             client.disconnect()
-            # Verify the file is actually on the server
-            time.sleep(_UPLOAD_FLUSH_DELAY)
+            # Verify the file is actually on the server (poll with backoff)
+            _wait_for_server_file(ftp_server, "cache/voidresp_test.3mf", content)
             client2 = ftp_client_factory()
             client2.connect()
             downloaded = client2.download_file("/cache/voidresp_test.3mf")
             assert downloaded == content, f"Content mismatch for model={model}"
             client2.disconnect()
+
+
+# ---------------------------------------------------------------------------
+# Short-circuit retries on 550 (#972)
+# ---------------------------------------------------------------------------
+class TestFileNotOnPrinterShortCircuit:
+    """FileNotOnPrinterError must bypass the retry budget.
+
+    Before this fix, a 3MF path that wasn't on the printer (550) cost
+    `ftp_retry_count + 1` attempts × `ftp_retry_delay` seconds per candidate
+    path. With ftp_retry_count=10 and four candidate paths, that's ~22 min
+    of dead retries before the real path is tried. #972 in the wild showed
+    48 min of retrying paths that didn't exist.
+    """
+
+    async def test_with_ftp_retry_propagates_file_not_on_printer_without_retrying(self):
+        """with_ftp_retry raises FileNotOnPrinterError on first attempt.
+
+        Verifies non_retry_exceptions short-circuits before the retry loop
+        has a chance to sleep and try again.
+        """
+        attempts = {"n": 0}
+
+        async def always_missing(*_args, **_kwargs):
+            attempts["n"] += 1
+            raise FileNotOnPrinterError("/cache/absent.3mf: 550")
+
+        with pytest.raises(FileNotOnPrinterError):
+            await with_ftp_retry(
+                always_missing,
+                max_retries=10,
+                retry_delay=0.01,
+                operation_name="test 550 short-circuit",
+                non_retry_exceptions=(FileNotOnPrinterError,),
+            )
+
+        assert attempts["n"] == 1, "550 must not trigger any retry"
+
+    async def test_with_ftp_retry_still_retries_transient_errors(self):
+        """Non-550 exceptions continue to retry up to max_retries + 1."""
+        attempts = {"n": 0}
+
+        async def flaky(*_args, **_kwargs):
+            attempts["n"] += 1
+            raise TimeoutError("transient")
+
+        result = await with_ftp_retry(
+            flaky,
+            max_retries=2,
+            retry_delay=0.01,
+            operation_name="test transient retries",
+            non_retry_exceptions=(FileNotOnPrinterError,),
+        )
+
+        assert result is None
+        assert attempts["n"] == 3, "Transient errors should retry to exhaustion"

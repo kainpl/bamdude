@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermissionIfAuthEnabled, generate_api_key
+from backend.app.core.auth import RequirePermission, generate_api_key
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.api_key import APIKey
@@ -24,7 +24,7 @@ router = APIRouter(prefix="/api-keys", tags=["api-keys"])
 @router.get("/", response_model=list[APIKeyResponse])
 async def list_api_keys(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.API_KEYS_READ),
+    _: User | None = RequirePermission(Permission.API_KEYS_READ),
 ):
     """List all API keys (without full key values)."""
     result = await db.execute(select(APIKey).order_by(APIKey.created_at.desc()))
@@ -35,7 +35,7 @@ async def list_api_keys(
 async def create_api_key(
     data: APIKeyCreate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.API_KEYS_CREATE),
+    _: User | None = RequirePermission(Permission.API_KEYS_CREATE),
 ):
     """Create a new API key.
 
@@ -80,7 +80,7 @@ async def create_api_key(
 async def get_api_key(
     key_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.API_KEYS_READ),
+    _: User | None = RequirePermission(Permission.API_KEYS_READ),
 ):
     """Get an API key by ID."""
     result = await db.execute(select(APIKey).where(APIKey.id == key_id))
@@ -97,7 +97,7 @@ async def update_api_key(
     key_id: int,
     data: APIKeyUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.API_KEYS_UPDATE),
+    _: User | None = RequirePermission(Permission.API_KEYS_UPDATE),
 ):
     """Update an API key."""
     result = await db.execute(select(APIKey).where(APIKey.id == key_id))
@@ -132,7 +132,7 @@ async def update_api_key(
 async def delete_api_key(
     key_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.API_KEYS_DELETE),
+    _: User | None = RequirePermission(Permission.API_KEYS_DELETE),
 ):
     """Delete (revoke) an API key."""
     result = await db.execute(select(APIKey).where(APIKey.id == key_id))

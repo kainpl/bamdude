@@ -31,11 +31,11 @@ set -e
 # Configuration
 GHCR_REGISTRY="ghcr.io"
 DOCKERHUB_REGISTRY="docker.io"
-IMAGE_NAME="kainpl/bambuddy-he"
+IMAGE_NAME="kainpl/bamdude"
 GHCR_IMAGE="${GHCR_REGISTRY}/${IMAGE_NAME}"
 DOCKERHUB_IMAGE="${DOCKERHUB_REGISTRY}/${IMAGE_NAME}"
 PLATFORMS="linux/amd64,linux/arm64"
-BUILDER_NAME="bambuddy-he-builder"
+BUILDER_NAME="bamdude-builder"
 
 # Colors for output
 RED='\033[0;31m'

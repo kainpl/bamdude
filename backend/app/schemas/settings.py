@@ -70,6 +70,10 @@ class AppSettings(BaseModel):
     queue_drying_enabled: bool = Field(
         default=False, description="Automatically dry AMS filament between queued prints"
     )
+    prefer_lowest_filament: bool = Field(
+        default=False,
+        description="When multiple AMS trays match, prefer the one with lowest remaining filament",
+    )
     queue_drying_block: bool = Field(
         default=False,
         description="Block queue until drying completes (when disabled, prints take priority over drying)",
@@ -81,6 +85,26 @@ class AppSettings(BaseModel):
     drying_presets: str = Field(
         default="",
         description="JSON blob of drying presets per filament type (empty = use built-in defaults)",
+    )
+
+    # Scheduled local backup (upstream #884)
+    local_backup_enabled: bool = Field(default=False, description="Enable scheduled local backups")
+    local_backup_schedule: str = Field(default="daily", description="Backup frequency: hourly, daily, weekly")
+    local_backup_time: str = Field(default="03:00", description="Time of day for daily/weekly backups (HH:MM, 24h)")
+    local_backup_retention: int = Field(default=5, description="Number of backup files to keep (1-100)")
+    local_backup_path: str = Field(default="", description="Backup output directory (empty = DATA_DIR/backups)")
+
+    # Staggered start settings (electrical load management for farms)
+    stagger_enabled: bool = Field(
+        default=False, description="Enable staggered start to limit concurrent printer heating"
+    )
+    stagger_concurrent: int = Field(default=2, description="Max printers that can be heating simultaneously")
+    stagger_interval_minutes: int = Field(
+        default=5, description="Wait time (minutes) after a slot frees before next start"
+    )
+    stagger_wait_for_bed: bool = Field(
+        default=True,
+        description="Slot frees when bed reaches target temp (±1°C). When off, frees immediately after start.",
     )
 
     # Print modal settings
@@ -185,6 +209,30 @@ class AppSettings(BaseModel):
         description="Enable user email notifications for print job events (requires Advanced Authentication)",
     )
 
+    # LDAP authentication
+    ldap_enabled: bool = Field(default=False, description="Enable LDAP authentication")
+    ldap_server_url: str = Field(default="", description="LDAP server URL (e.g., ldap://ldap.example.com:389)")
+    ldap_bind_dn: str = Field(default="", description="Bind DN for LDAP searches (e.g., cn=admin,dc=example,dc=com)")
+    ldap_bind_password: str = Field(default="", description="Bind password for LDAP searches")
+    ldap_search_base: str = Field(default="", description="Search base DN (e.g., ou=users,dc=example,dc=com)")
+    ldap_user_filter: str = Field(
+        default="(sAMAccountName={username})",
+        description="LDAP user search filter. {username} is replaced with the login username",
+    )
+    ldap_security: str = Field(default="starttls", description="LDAP security: 'starttls' or 'ldaps'")
+    ldap_group_mapping: str = Field(
+        default="",
+        description="JSON: LDAP group to BamDude group mapping {ldap_group_dn: bamdude_group_name}",
+    )
+    ldap_auto_provision: bool = Field(
+        default=False,
+        description="Auto-create BamDude user on first successful LDAP login",
+    )
+    ldap_default_group: str = Field(
+        default="",
+        description="Fallback BamDude group name assigned when an LDAP user authenticates but has no mapped groups. Empty = no fallback.",
+    )
+
     # Default sidebar order (admin-set for all users)
     default_sidebar_order: str = Field(
         default="",
@@ -217,10 +265,15 @@ class AppSettingsUpdate(BaseModel):
     ams_temp_good: float | None = None
     ams_temp_fair: float | None = None
     ams_history_retention_days: int | None = None
+    prefer_lowest_filament: bool | None = None
     queue_drying_enabled: bool | None = None
     queue_drying_block: bool | None = None
     ambient_drying_enabled: bool | None = None
     drying_presets: str | None = None
+    stagger_enabled: bool | None = None
+    stagger_concurrent: int | None = None
+    stagger_interval_minutes: int | None = None
+    stagger_wait_for_bed: bool | None = None
     per_printer_mapping_expanded: bool | None = None
     date_format: str | None = None
     time_format: str | None = None
@@ -257,7 +310,35 @@ class AppSettingsUpdate(BaseModel):
     prometheus_token: str | None = None
     low_stock_threshold: float | None = Field(default=None, ge=0.1, le=99.9)
     user_notifications_enabled: bool | None = None
+    ldap_enabled: bool | None = None
+    ldap_server_url: str | None = None
+    ldap_bind_dn: str | None = None
+    ldap_bind_password: str | None = None
+    ldap_search_base: str | None = None
+    ldap_user_filter: str | None = None
+    ldap_security: str | None = None
+    ldap_group_mapping: str | None = None
+    ldap_auto_provision: bool | None = None
+    ldap_default_group: str | None = None
+    local_backup_enabled: bool | None = None
+    local_backup_schedule: str | None = None
+    local_backup_time: str | None = None
+    local_backup_retention: int | None = None
+    local_backup_path: str | None = None
     default_sidebar_order: str | None = None
+
+    @field_validator("ldap_group_mapping")
+    @classmethod
+    def validate_ldap_group_mapping(cls, v: str | None) -> str | None:
+        if v is None or v == "":
+            return v
+        try:
+            parsed = json.loads(v)
+        except json.JSONDecodeError:
+            raise ValueError("ldap_group_mapping must be valid JSON or empty")
+        if not isinstance(parsed, dict):
+            raise ValueError("ldap_group_mapping must be a JSON object mapping LDAP group DNs to BamDude group names")
+        return v
 
     @field_validator("default_sidebar_order")
     @classmethod

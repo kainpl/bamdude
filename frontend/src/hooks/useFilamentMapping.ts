@@ -103,7 +103,7 @@ export function computeAmsMapping(
     let available = loadedFilaments.filter((f) => !usedTrayIds.has(f.globalTrayId));
 
     // Nozzle-aware filtering: restrict to trays on the correct nozzle.
-    // This is a hard filter — cross-nozzle assignment causes print failures
+    // This is a hard filter - cross-nozzle assignment causes print failures
     // ("position of left hotend is abnormal"), so we never fall back to wrong-nozzle trays.
     if (req.nozzle_id != null) {
       available = available.filter((f) => f.extruderId === req.nozzle_id);
@@ -340,7 +340,7 @@ export function useFilamentMapping(
       let available = loadedFilaments.filter((f) => !usedTrayIds.has(f.globalTrayId));
 
       // Nozzle-aware filtering: restrict to trays on the correct nozzle.
-      // This is a hard filter — cross-nozzle assignment causes print failures.
+      // This is a hard filter - cross-nozzle assignment causes print failures.
       if (req.nozzle_id != null) {
         available = available.filter((f) => f.extruderId === req.nozzle_id);
       }

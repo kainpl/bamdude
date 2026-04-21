@@ -338,7 +338,7 @@ export function ConfigureAmsSlotModal({
       let trayInfoIdx: string;
       let settingId: string;
 
-      // Parsed material from preset name — handles "Support for" patterns correctly.
+      // Parsed material from preset name - handles "Support for" patterns correctly.
       // Prefer this over stored filament_type which may have been parsed with old logic.
       const parsedMat = parsed.material.toUpperCase();
 
@@ -389,7 +389,7 @@ export function ConfigureAmsSlotModal({
         }
       }
 
-      // Default temp range — use local preset core fields if available
+      // Default temp range - use local preset core fields if available
       let tempMin = isLocal && localPreset?.nozzle_temp_min ? localPreset.nozzle_temp_min : 190;
       let tempMax = isLocal && localPreset?.nozzle_temp_max ? localPreset.nozzle_temp_max : 230;
 
@@ -515,7 +515,7 @@ export function ConfigureAmsSlotModal({
         const isSavedPreset = savedId === cp.setting_id;
         const isCurrentPreset = isSavedPreset
           || (trayIdx && (cp.setting_id === trayIdx || convertToTrayInfoIdx(cp.setting_id) === trayIdx));
-        // Search filter applies to ALL presets (including saved) — no bypass
+        // Search filter applies to ALL presets (including saved) - no bypass
         if (query && !cp.name.toLowerCase().includes(query)) continue;
         // Filter by printer model if set (skip for current preset)
         if (!isCurrentPreset && printerModel) {
@@ -526,7 +526,7 @@ export function ConfigureAmsSlotModal({
       }
     }
 
-    // 2. Local presets (always shown — user-imported profiles work on any printer)
+    // 2. Local presets (always shown - user-imported profiles work on any printer)
     if (localPresets?.filament) {
       for (const lp of localPresets.filament) {
         const localId = `local_${lp.id}`;
@@ -535,7 +535,7 @@ export function ConfigureAmsSlotModal({
       }
     }
 
-    // 3. Built-in filament names (fallback — only add entries not already covered)
+    // 3. Built-in filament names (fallback - only add entries not already covered)
     if (builtinFilaments) {
       for (const bf of builtinFilaments) {
         if (coveredIds.has(bf.filament_id)) continue;
@@ -740,7 +740,7 @@ export function ConfigureAmsSlotModal({
         }
       }
 
-      // Pre-populate color from current slot (black is valid — empty slots don't pass trayColor)
+      // Pre-populate color from current slot (black is valid - empty slots don't pass trayColor)
       if (slotInfo.trayColor) {
         const hex = slotInfo.trayColor.slice(0, 6);
         if (hex) {

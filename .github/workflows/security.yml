@@ -8,7 +8,6 @@ on:
     paths:
       - 'backend/**'
       - 'frontend/**'
-      - 'spoolbuddy/**'
       - 'Dockerfile'
       - 'docker-compose*.yml'
       - 'requirements.txt'
@@ -18,7 +17,6 @@ on:
     paths:
       - 'backend/**'
       - 'frontend/**'
-      - 'spoolbuddy/**'
       - 'Dockerfile'
       - 'docker-compose*.yml'
       - 'requirements.txt'
@@ -74,12 +72,12 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build Docker image
-        run: docker build -t bambuddy:security-scan .
+        run: docker build -t bamdude:security-scan .
 
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@v0.35.0
         with:
-          image-ref: 'bambuddy:security-scan'
+          image-ref: 'bamdude:security-scan'
           format: 'sarif'
           output: 'trivy-results.sarif'
           severity: 'CRITICAL,HIGH'

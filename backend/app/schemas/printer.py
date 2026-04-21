@@ -21,6 +21,11 @@ class PrinterBase(BaseModel):
     external_camera_type: str | None = None  # "mjpeg", "rtsp", "snapshot", "usb"
     external_camera_enabled: bool = False
     camera_rotation: int = 0  # 0, 90, 180, 270 degrees
+    stagger_interval_minutes: int = 0
+    swap_mode_enabled: bool = False
+    swap_profile: str | None = None
+    require_plate_clear: bool = True
+    auto_light_off: bool = False
 
 
 class PrinterCreate(PrinterBase):
@@ -57,6 +62,10 @@ class PrinterUpdate(BaseModel):
     camera_rotation: int | None = None  # 0, 90, 180, 270 degrees
     plate_detection_enabled: bool | None = None
     plate_detection_roi: PlateDetectionROI | None = None
+    stagger_interval_minutes: int | None = None
+    swap_mode_enabled: bool | None = None
+    swap_profile: str | None = None
+    require_plate_clear: bool | None = None
 
 
 class PrinterResponse(PrinterBase):
@@ -70,6 +79,9 @@ class PrinterResponse(PrinterBase):
     camera_rotation: int = 0  # 0, 90, 180, 270 degrees
     plate_detection_enabled: bool = False
     plate_detection_roi: PlateDetectionROI | None = None
+    stagger_interval_minutes: int = 0
+    swap_mode_enabled: bool = False
+    swap_profile: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -98,6 +110,10 @@ class PrinterResponse(PrinterBase):
             "nozzle_count": printer.nozzle_count,
             "print_hours_offset": printer.print_hours_offset,
             "plate_detection_enabled": printer.plate_detection_enabled,
+            "stagger_interval_minutes": printer.stagger_interval_minutes,
+            "swap_mode_enabled": printer.swap_mode_enabled,
+            "swap_profile": printer.swap_profile,
+            "require_plate_clear": printer.require_plate_clear,
             "created_at": printer.created_at,
             "updated_at": printer.updated_at,
         }
@@ -273,6 +289,8 @@ class PrinterStatus(BaseModel):
     firmware_version: str | None = None
     # Developer LAN mode: True = enabled, False = disabled (MQTT encryption), None = unknown
     developer_mode: bool | None = None
+    # Currently executing macro name (None = no macro running)
+    macro_executing: str | None = None
     # Queue: user has acknowledged plate is cleared for next queued print
     plate_cleared: bool = False
     # AMS drying support

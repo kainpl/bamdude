@@ -59,7 +59,7 @@ class TestCameraAPI:
         """Verify stop terminates active streams for the printer."""
         printer = await printer_factory()
 
-        # Mock an active stream — wait() must be AsyncMock since it's awaited
+        # Mock an active stream - wait() must be AsyncMock since it's awaited
         mock_process = MagicMock()
         mock_process.returncode = None
         mock_process.pid = 99999
@@ -80,7 +80,7 @@ class TestCameraAPI:
         printer1 = await printer_factory(name="Printer 1")
         printer2 = await printer_factory(name="Printer 2")
 
-        # Mock active streams for both printers — wait() must be AsyncMock since it's awaited
+        # Mock active streams for both printers - wait() must be AsyncMock since it's awaited
         mock_process1 = MagicMock()
         mock_process1.returncode = None
         mock_process1.pid = 99998

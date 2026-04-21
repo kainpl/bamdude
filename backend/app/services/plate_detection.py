@@ -628,12 +628,15 @@ async def capture_camera_image(
 
         # If no buffered frame, try to capture a new one
         if image_data is None:
+            import os
             import tempfile
 
             from backend.app.services.camera import capture_camera_frame
 
-            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
-                tmp_path = Path(tmp.name)
+            fd, tmp_name = tempfile.mkstemp(suffix=".jpg")
+            os.close(fd)
+            tmp_path = Path(tmp_name)
+            tmp_path.chmod(0o600)
 
             try:
                 success = await capture_camera_frame(ip_address, access_code, model, tmp_path, timeout=10)

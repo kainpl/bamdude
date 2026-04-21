@@ -1,7 +1,7 @@
 {
   "id": "/",
-  "name": "Bambuddy HE",
-  "short_name": "Bambuddy HE",
+  "name": "BamDude",
+  "short_name": "BamDude",
   "description": "Monitor and manage your Bambu Lab 3D printers",
   "start_url": "/",
   "display": "standalone",
@@ -51,14 +51,14 @@
       "sizes": "1080x1920",
       "type": "image/png",
       "form_factor": "narrow",
-      "label": "Bambuddy on mobile"
+      "label": "BamDude on mobile"
     },
     {
       "src": "/img/screenshot-desktop.png",
       "sizes": "1920x1080",
       "type": "image/png",
       "form_factor": "wide",
-      "label": "Bambuddy on desktop"
+      "label": "BamDude on desktop"
     }
   ],
   "categories": ["utilities", "productivity"],

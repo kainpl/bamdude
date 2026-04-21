@@ -2,24 +2,26 @@
 
 import json
 import logging
+import uuid
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 import defusedxml.ElementTree as ET
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.app.core.auth import RequirePermissionIfAuthEnabled, require_ownership_permission
+from backend.app.core.auth import RequirePermission, require_ownership_permission
 from backend.app.core.config import settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.archive import PrintArchive
 from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
-from backend.app.models.printer import Printer
+from backend.app.models.printer_queue import PrinterQueue
+from backend.app.models.project import Project
 from backend.app.models.user import User
 from backend.app.schemas.print_queue import (
     PrintQueueBulkUpdate,
@@ -30,7 +32,6 @@ from backend.app.schemas.print_queue import (
     PrintQueueReorder,
 )
 from backend.app.services.notification_service import notification_service
-from backend.app.utils.printer_models import normalize_printer_model, normalize_printer_model_id
 from backend.app.utils.threemf_tools import extract_filament_usage_from_3mf
 
 logger = logging.getLogger(__name__)
@@ -161,51 +162,34 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
         except json.JSONDecodeError:
             ams_mapping_parsed = None
 
-    # Parse required_filament_types from JSON string
-    required_filament_types_parsed = None
-    if item.required_filament_types:
-        try:
-            required_filament_types_parsed = json.loads(item.required_filament_types)
-        except json.JSONDecodeError:
-            required_filament_types_parsed = None
-
-    # Parse filament_overrides from JSON string
-    filament_overrides_parsed = None
-    if item.filament_overrides:
-        try:
-            filament_overrides_parsed = json.loads(item.filament_overrides)
-        except json.JSONDecodeError:
-            filament_overrides_parsed = None
-
     # Create response with parsed ams_mapping
     item_dict = {
         "id": item.id,
-        "printer_id": item.printer_id,
-        "target_model": item.target_model,
-        "target_location": item.target_location,
-        "required_filament_types": required_filament_types_parsed,
-        "filament_overrides": filament_overrides_parsed,
+        "queue_id": item.queue_id,
+        "printer_id": item.printer_id,  # convenience property from queue
         "waiting_reason": item.waiting_reason,
         "archive_id": item.archive_id,
         "library_file_id": item.library_file_id,
         "position": item.position,
         "scheduled_time": item.scheduled_time,
-        "require_previous_success": item.require_previous_success,
         "auto_off_after": item.auto_off_after,
         "manual_start": item.manual_start,
         "ams_mapping": ams_mapping_parsed,
         "plate_id": item.plate_id,
         "bed_levelling": item.bed_levelling,
         "flow_cali": item.flow_cali,
-        "vibration_cali": item.vibration_cali,
         "layer_inspect": item.layer_inspect,
         "timelapse": item.timelapse,
         "use_ams": item.use_ams,
+        "mesh_mode_fast_check": item.mesh_mode_fast_check,
+        "execute_swap_macros": item.execute_swap_macros,
+        "swap_macro_events": json.loads(item.swap_macro_events) if item.swap_macro_events else None,
         "status": item.status,
         "started_at": item.started_at,
         "completed_at": item.completed_at,
         "error_message": item.error_message,
         "created_at": item.created_at,
+        "batch_id": item.batch_id,
         # User tracking (Issue #206)
         "created_by_id": item.created_by_id,
         "created_by_username": item.created_by.username if item.created_by else None,
@@ -258,108 +242,95 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
                     response.print_time_seconds = plate_time
                 if plate_weight > 0:
                     response.filament_used_grams = plate_weight
-    if item.printer:
-        response.printer_name = item.printer.name
+    if item.queue and item.queue.printer:
+        response.printer_name = item.queue.printer.name
     return response
+
+
+@router.get("/stagger-state")
+async def get_stagger_state(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.QUEUE_READ),
+):
+    """Current stagger slot occupancy for the UI diagnostic banner."""
+    from backend.app.services.print_scheduler import scheduler as print_scheduler
+
+    return await print_scheduler.get_stagger_state_snapshot(db)
 
 
 @router.get("/", response_model=list[PrintQueueItemResponse])
 async def list_queue(
-    printer_id: int | None = Query(None, description="Filter by printer (-1 for unassigned)"),
+    queue_id: int | None = Query(None, description="Filter by printer queue"),
     status: str | None = Query(None, description="Filter by status"),
-    target_model: str | None = Query(
-        None, description="Filter by target model (also includes model-based items when combined with printer_id)"
-    ),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.QUEUE_READ),
+    _: User | None = RequirePermission(Permission.QUEUE_READ),
 ):
-    """List all queue items, optionally filtered by printer or status."""
+    """List all queue items, optionally filtered by queue or status."""
     query = (
         select(PrintQueueItem)
         .options(
             selectinload(PrintQueueItem.archive),
-            selectinload(PrintQueueItem.printer),
+            selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
             selectinload(PrintQueueItem.library_file),
             selectinload(PrintQueueItem.created_by),
         )
-        .order_by(PrintQueueItem.printer_id.nulls_first(), PrintQueueItem.position)
+        .order_by(PrintQueueItem.queue_id, PrintQueueItem.position)
     )
 
-    if printer_id is not None:
-        if printer_id == -1:
-            # Special value: filter for unassigned items
-            query = query.where(PrintQueueItem.printer_id.is_(None))
-        else:
-            # Resolve effective model: prefer explicit param, fall back to printer's DB model.
-            # This ensures model-based "Any X" items are returned even when the frontend
-            # doesn't send target_model (e.g. printer.model is NULL on the client side).
-            effective_model = target_model
-            if not effective_model:
-                printer_row = (
-                    await db.execute(select(Printer.model).where(Printer.id == printer_id))
-                ).scalar_one_or_none()
-                effective_model = printer_row
-
-            if effective_model:
-                # Include both printer-specific items AND model-based (unassigned) items
-                query = query.where(
-                    or_(
-                        PrintQueueItem.printer_id == printer_id,
-                        and_(
-                            PrintQueueItem.printer_id.is_(None),
-                            func.lower(PrintQueueItem.target_model) == effective_model.lower(),
-                        ),
-                    )
-                )
-            else:
-                query = query.where(PrintQueueItem.printer_id == printer_id)
-    elif target_model:
-        query = query.where(func.lower(PrintQueueItem.target_model) == target_model.lower())
+    if queue_id is not None:
+        query = query.where(PrintQueueItem.queue_id == queue_id)
     if status:
         query = query.where(PrintQueueItem.status == status)
 
     result = await db.execute(query)
     items = result.scalars().all()
-    return [_enrich_response(item) for item in items]
+    enriched = [_enrich_response(item) for item in items]
+
+    # Augment with virtual current-print items for printers whose queue
+    # doesn't have a printing item but whose printer is actively busy
+    # (external / direct-dispatch prints).  Skipped when the caller
+    # filtered by a specific non-matching status.
+    if not status or status == "printing":
+        from backend.app.services.queue_virtual import build_virtual_current_print
+
+        # Find which queue ids to scan — either the requested one or all
+        # queues that showed up in the result set, plus queues that had
+        # no items at all (need a separate query for those).
+        if queue_id is not None:
+            target_queue_ids = [queue_id]
+        else:
+            all_queues = (await db.execute(select(PrinterQueue))).scalars().all()
+            target_queue_ids = [q.id for q in all_queues]
+
+        for q_id in target_queue_ids:
+            queue_row = (await db.execute(select(PrinterQueue).where(PrinterQueue.id == q_id))).scalar_one_or_none()
+            if queue_row is None:
+                continue
+            virtual = await build_virtual_current_print(db, queue_row.printer_id)
+            if virtual:
+                enriched.insert(0, virtual)
+
+    return enriched
 
 
 @router.post("/", response_model=PrintQueueItemResponse)
 async def add_to_queue(
     data: PrintQueueItemCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.QUEUE_CREATE),
+    current_user: User | None = RequirePermission(Permission.QUEUE_CREATE),
 ):
     """Add an item to the print queue."""
-    # Normalize target_model (e.g., "Bambu Lab X1E" / "C13" -> "X1E")
-    target_model_norm = None
-    if data.target_model:
-        target_model_norm = (
-            normalize_printer_model(data.target_model)
-            or normalize_printer_model_id(data.target_model)
-            or data.target_model
-        )
-
     # Validate that either archive_id or library_file_id is provided
     if not data.archive_id and not data.library_file_id:
         raise HTTPException(400, "Either archive_id or library_file_id must be provided")
 
-    # Cannot specify both printer_id and target_model
-    if data.printer_id and target_model_norm:
-        raise HTTPException(400, "Cannot specify both printer_id and target_model")
-
-    # Validate printer exists (if assigned)
-    if data.printer_id is not None:
-        result = await db.execute(select(Printer).where(Printer.id == data.printer_id))
-        if not result.scalar_one_or_none():
-            raise HTTPException(400, "Printer not found")
-
-    # Validate target_model has active printers
-    if target_model_norm:
-        result = await db.execute(
-            select(Printer).where(Printer.model == target_model_norm).where(Printer.is_active == True)  # noqa: E712
-        )
-        if not result.scalars().first():
-            raise HTTPException(400, f"No active printers for model: {target_model_norm}")
+    # Validate queue exists
+    result = await db.execute(
+        select(PrinterQueue).options(selectinload(PrinterQueue.printer)).where(PrinterQueue.id == data.queue_id)
+    )
+    queue = result.scalar_one_or_none()
+    if not queue:
+        raise HTTPException(400, "Queue not found")
 
     # Validate archive exists (if provided) and get it for filament extraction
     archive = None
@@ -377,85 +348,93 @@ async def add_to_queue(
         if not library_file:
             raise HTTPException(400, "Library file not found")
 
-    # Extract filament types for model-based assignment (used by scheduler for validation)
-    required_filament_types = None
-    if target_model_norm:
-        # Get file path from archive or library file
-        file_path = None
-        if archive:
-            file_path = settings.base_dir / archive.file_path
-        elif library_file:
-            lib_path = Path(library_file.file_path)
-            file_path = lib_path if lib_path.is_absolute() else settings.base_dir / library_file.file_path
-
-        if file_path and file_path.exists():
-            filament_types = _extract_filament_types_from_3mf(file_path, data.plate_id)
-            if filament_types:
-                required_filament_types = json.dumps(filament_types)
-                logger.info("Extracted filament types for model-based queue: %s", filament_types)
-
-    # If filament overrides are provided, update required_filament_types to match override types
-    filament_overrides_json = None
-    if data.filament_overrides and target_model_norm:
-        filament_overrides_json = json.dumps(data.filament_overrides)
-        # Update required_filament_types from overrides so scheduler validates against overridden types
-        override_types = sorted({o["type"] for o in data.filament_overrides if "type" in o})
-        if override_types:
-            # Merge with existing types (overrides may only cover some slots)
-            existing_types = set(json.loads(required_filament_types)) if required_filament_types else set()
-            # Replace types for overridden slots, keep others
-            all_types = existing_types | set(override_types)
-            required_filament_types = json.dumps(sorted(all_types))
-
-    # Get next position for this printer (or for unassigned/model-based items)
-    if data.printer_id is not None:
-        result = await db.execute(
-            select(func.max(PrintQueueItem.position))
-            .where(PrintQueueItem.printer_id == data.printer_id)
-            .where(PrintQueueItem.status == "pending")
-        )
-    else:
-        # For unassigned/model-based items, get max position across all unassigned
-        result = await db.execute(
-            select(func.max(PrintQueueItem.position))
-            .where(PrintQueueItem.printer_id.is_(None))
-            .where(PrintQueueItem.status == "pending")
-        )
+    # Get next position for this queue
+    result = await db.execute(
+        select(func.max(PrintQueueItem.position))
+        .where(PrintQueueItem.queue_id == data.queue_id)
+        .where(PrintQueueItem.status == "pending")
+    )
     max_pos = result.scalar() or 0
 
-    item = PrintQueueItem(
-        printer_id=data.printer_id,
-        target_model=target_model_norm,
-        target_location=data.target_location,
-        required_filament_types=required_filament_types,
-        filament_overrides=filament_overrides_json,
-        archive_id=data.archive_id,
-        library_file_id=data.library_file_id,
-        scheduled_time=data.scheduled_time,
-        require_previous_success=data.require_previous_success,
-        auto_off_after=data.auto_off_after,
-        manual_start=data.manual_start,
-        ams_mapping=json.dumps(data.ams_mapping) if data.ams_mapping else None,
-        plate_id=data.plate_id,
-        bed_levelling=data.bed_levelling,
-        flow_cali=data.flow_cali,
-        vibration_cali=data.vibration_cali,
-        layer_inspect=data.layer_inspect,
-        timelapse=data.timelapse,
-        use_ams=data.use_ams,
-        position=max_pos + 1,
-        status="pending",
-        created_by_id=current_user.id if current_user else None,
-    )
-    db.add(item)
-    await db.commit()
-    await db.refresh(item)
+    # Validate project exists before insert so a bogus ID yields 404, not an FK-constraint 500
+    if data.project_id is not None:
+        project_result = await db.execute(select(Project).where(Project.id == data.project_id))
+        if not project_result.scalar_one_or_none():
+            raise HTTPException(status_code=404, detail="Project not found")
 
-    # Load relationships for response
-    await db.refresh(item, ["archive", "printer", "library_file", "created_by"])
+    # For quantity > 1, group copies under a shared batch_id
+    batch_id = str(uuid.uuid4()) if data.quantity > 1 else None
+    ams_mapping_json = json.dumps(data.ams_mapping) if data.ams_mapping else None
+
+    # Swap-macro execution is only meaningful when (a) the target printer has
+    # swap mode on AND (b) the source file does not already carry swap macros
+    # baked in by third-party tooling (``swap_compatible``). Otherwise force
+    # the feature off so stored state never lies about what fires at dispatch
+    # and we don't double-execute macros.
+    printer_swap_on = bool(queue.printer and queue.printer.swap_mode_enabled)
+    source_has_baked_macros = bool(
+        (archive and getattr(archive, "swap_compatible", False))
+        or (library_file and getattr(library_file, "swap_compatible", False))
+    )
+    execute_swap_macros = bool(data.execute_swap_macros) and printer_swap_on and not source_has_baked_macros
+    swap_macro_events_json = (
+        json.dumps(data.swap_macro_events) if execute_swap_macros and data.swap_macro_events else None
+    )
+
+    items: list[PrintQueueItem] = []
+    for i in range(data.quantity):
+        items.append(
+            PrintQueueItem(
+                queue_id=data.queue_id,
+                archive_id=data.archive_id,
+                library_file_id=data.library_file_id,
+                scheduled_time=data.scheduled_time,
+                auto_off_after=data.auto_off_after,
+                manual_start=data.manual_start,
+                ams_mapping=ams_mapping_json,
+                plate_id=data.plate_id,
+                bed_levelling=data.bed_levelling,
+                flow_cali=data.flow_cali,
+                layer_inspect=data.layer_inspect,
+                timelapse=data.timelapse,
+                use_ams=data.use_ams,
+                mesh_mode_fast_check=data.mesh_mode_fast_check,
+                execute_swap_macros=execute_swap_macros,
+                swap_macro_events=swap_macro_events_json,
+                project_id=data.project_id,
+                position=max_pos + 1 + i,
+                status="pending",
+                batch_id=batch_id,
+                created_by_id=current_user.id if current_user else None,
+            )
+        )
+    db.add_all(items)
+    await db.commit()
+    for it in items:
+        await db.refresh(it)
+    item = items[0]
+
+    # Update queue counters (full recount for accuracy)
+    from backend.app.services.queue_counters import update_queue_counters
+
+    await update_queue_counters(db, data.queue_id)
+    await db.commit()
+
+    # Re-query with full eager loading (queue→printer chain)
+    result = await db.execute(
+        select(PrintQueueItem)
+        .options(
+            selectinload(PrintQueueItem.archive),
+            selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
+            selectinload(PrintQueueItem.library_file),
+            selectinload(PrintQueueItem.created_by),
+        )
+        .where(PrintQueueItem.id == item.id)
+    )
+    item = result.scalar_one()
 
     source_name = f"archive {data.archive_id}" if data.archive_id else f"library file {data.library_file_id}"
-    target_desc = data.printer_id or (f"model {target_model_norm}" if target_model_norm else "unassigned")
+    target_desc = queue.printer.name if queue.printer else f"queue {data.queue_id}"
     logger.info("Added %s to queue for %s", source_name, target_desc)
 
     # MQTT relay - publish queue job added
@@ -466,7 +445,7 @@ async def add_to_queue(
             job_id=item.id,
             filename=item.archive.filename if item.archive else "",
             printer_id=item.printer_id,
-            printer_name=item.printer.name if item.printer else None,
+            printer_name=queue.printer.name if queue.printer else None,
         )
     except Exception:
         pass  # Don't fail queue add if MQTT fails
@@ -481,15 +460,13 @@ async def add_to_queue(
             else f"Job #{item.id}"
         )
         job_name = job_name.replace(".gcode.3mf", "").replace(".3mf", "")
-        target = (
-            item.printer.name if item.printer else (f"Any {item.target_model}" if target_model_norm else "Unassigned")
-        )
+        target = queue.printer.name if queue.printer else f"Queue #{data.queue_id}"
         await notification_service.on_queue_job_added(
             job_name=job_name,
             target=target,
             db=db,
             printer_id=item.printer_id,
-            printer_name=item.printer.name if item.printer else None,
+            printer_name=target,
         )
     except Exception:
         pass  # Don't fail queue add if notification fails
@@ -523,11 +500,11 @@ async def bulk_update_queue_items(
     if not update_data:
         raise HTTPException(400, "No fields to update")
 
-    # Validate printer_id if being changed
-    if "printer_id" in update_data and update_data["printer_id"] is not None:
-        result = await db.execute(select(Printer).where(Printer.id == update_data["printer_id"]))
+    # Validate queue_id if being changed
+    if "queue_id" in update_data and update_data["queue_id"] is not None:
+        result = await db.execute(select(PrinterQueue).where(PrinterQueue.id == update_data["queue_id"]))
         if not result.scalar_one_or_none():
-            raise HTTPException(400, "Printer not found")
+            raise HTTPException(400, "Queue not found")
 
     # Fetch all items
     result = await db.execute(select(PrintQueueItem).where(PrintQueueItem.id.in_(data.item_ids)))
@@ -565,14 +542,14 @@ async def bulk_update_queue_items(
 async def get_queue_item(
     item_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.QUEUE_READ),
+    _: User | None = RequirePermission(Permission.QUEUE_READ),
 ):
     """Get a specific queue item."""
     result = await db.execute(
         select(PrintQueueItem)
         .options(
             selectinload(PrintQueueItem.archive),
-            selectinload(PrintQueueItem.printer),
+            selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
             selectinload(PrintQueueItem.library_file),
             selectinload(PrintQueueItem.created_by),
         )
@@ -614,49 +591,38 @@ async def update_queue_item(
 
     update_data = data.model_dump(exclude_unset=True)
 
-    # Normalize target_model if being updated
-    if "target_model" in update_data and update_data["target_model"]:
-        update_data["target_model"] = (
-            normalize_printer_model(update_data["target_model"])
-            or normalize_printer_model_id(update_data["target_model"])
-            or update_data["target_model"]
-        )
-
-    # Cannot specify both printer_id and target_model
-    new_printer_id = update_data.get("printer_id", item.printer_id)
-    new_target_model = update_data.get("target_model", item.target_model)
-    if new_printer_id and new_target_model:
-        raise HTTPException(400, "Cannot specify both printer_id and target_model")
-
-    # Validate new printer_id if being changed (and not None)
-    if "printer_id" in update_data and update_data["printer_id"] is not None:
-        result = await db.execute(select(Printer).where(Printer.id == update_data["printer_id"]))
+    # Validate new queue_id if being changed
+    if "queue_id" in update_data and update_data["queue_id"] is not None:
+        result = await db.execute(select(PrinterQueue).where(PrinterQueue.id == update_data["queue_id"]))
         if not result.scalar_one_or_none():
-            raise HTTPException(400, "Printer not found")
-
-    # Validate target_model has active printers
-    if "target_model" in update_data and update_data["target_model"]:
-        result = await db.execute(
-            select(Printer).where(Printer.model == update_data["target_model"]).where(Printer.is_active == True)  # noqa: E712
-        )
-        if not result.scalars().first():
-            raise HTTPException(400, f"No active printers for model: {update_data['target_model']}")
+            raise HTTPException(400, "Queue not found")
 
     # Serialize ams_mapping to JSON for TEXT column storage
     if "ams_mapping" in update_data:
         update_data["ams_mapping"] = json.dumps(update_data["ams_mapping"]) if update_data["ams_mapping"] else None
 
-    # Serialize filament_overrides to JSON for TEXT column storage
-    if "filament_overrides" in update_data:
-        update_data["filament_overrides"] = (
-            json.dumps(update_data["filament_overrides"]) if update_data["filament_overrides"] else None
-        )
+    # swap_macro_events is stored as a JSON-encoded TEXT column.
+    if "swap_macro_events" in update_data:
+        events = update_data["swap_macro_events"]
+        update_data["swap_macro_events"] = json.dumps(events) if events else None
 
     for field, value in update_data.items():
         setattr(item, field, value)
 
     await db.commit()
-    await db.refresh(item, ["archive", "printer", "library_file", "created_by"])
+
+    # Re-query with full eager loading (queue→printer chain)
+    result = await db.execute(
+        select(PrintQueueItem)
+        .options(
+            selectinload(PrintQueueItem.archive),
+            selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
+            selectinload(PrintQueueItem.library_file),
+            selectinload(PrintQueueItem.created_by),
+        )
+        .where(PrintQueueItem.id == item_id)
+    )
+    item = result.scalar_one()
 
     logger.info("Updated queue item %s", item_id)
     return _enrich_response(item)
@@ -689,7 +655,12 @@ async def delete_queue_item(
     if item.status == "printing":
         raise HTTPException(400, "Cannot delete item that is currently printing")
 
+    queue_id = item.queue_id
     await db.delete(item)
+
+    from backend.app.services.queue_counters import update_queue_counters
+
+    await update_queue_counters(db, queue_id)
     await db.commit()
 
     logger.info("Deleted queue item %s", item_id)
@@ -700,7 +671,7 @@ async def delete_queue_item(
 async def reorder_queue(
     data: PrintQueueReorder,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.QUEUE_UPDATE_ALL),
+    _: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
 ):
     """Bulk update positions for queue items."""
     for reorder_item in data.items:
@@ -743,6 +714,10 @@ async def cancel_queue_item(
 
     item.status = "cancelled"
     item.completed_at = datetime.now(timezone.utc)
+
+    from backend.app.services.queue_counters import update_queue_counters
+
+    await update_queue_counters(db, item.queue_id)
     await db.commit()
 
     logger.info("Cancelled queue item %s", item_id)
@@ -753,7 +728,7 @@ async def cancel_queue_item(
 async def stop_queue_item(
     item_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.QUEUE_UPDATE_ALL),
+    _: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
 ):
     """Stop an actively printing queue item."""
     import asyncio
@@ -770,8 +745,8 @@ async def stop_queue_item(
     if item.status != "printing":
         raise HTTPException(400, f"Can only stop items that are printing, current status: '{item.status}'")
 
-    # Capture values we need for background task
-    printer_id = item.printer_id
+    # Capture values we need for background task (queue_id == printer_id)
+    printer_id = item.queue_id
     auto_off_after = item.auto_off_after
 
     # re-Connect MQTT if stalled
@@ -804,6 +779,11 @@ async def stop_queue_item(
     item.status = "cancelled"
     item.completed_at = datetime.now(timezone.utc)
     item.error_message = "Stopped by user" if stop_sent else "Stopped by user (printer was offline)"
+
+    from backend.app.services.queue_counters import set_queue_idle, update_queue_counters
+
+    await set_queue_idle(db, item.queue_id)
+    await update_queue_counters(db, item.queue_id)
     await db.commit()
 
     # Get smart plug info if auto-off is enabled
@@ -841,7 +821,7 @@ async def stop_queue_item(
 async def start_queue_item(
     item_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.QUEUE_UPDATE_OWN),
+    _: User | None = RequirePermission(Permission.QUEUE_UPDATE_OWN),
 ):
     """Manually start a staged (manual_start) queue item.
 
@@ -850,7 +830,10 @@ async def start_queue_item(
     """
     result = await db.execute(
         select(PrintQueueItem)
-        .options(selectinload(PrintQueueItem.archive), selectinload(PrintQueueItem.printer))
+        .options(
+            selectinload(PrintQueueItem.archive),
+            selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
+        )
         .where(PrintQueueItem.id == item_id)
     )
     item = result.scalar_one_or_none()
@@ -863,7 +846,447 @@ async def start_queue_item(
     # Clear manual_start flag so scheduler picks it up
     item.manual_start = False
     await db.commit()
-    await db.refresh(item, ["archive", "printer", "library_file", "created_by"])
+
+    # Re-query with full eager loading (queue→printer chain)
+    result = await db.execute(
+        select(PrintQueueItem)
+        .options(
+            selectinload(PrintQueueItem.archive),
+            selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
+            selectinload(PrintQueueItem.library_file),
+            selectinload(PrintQueueItem.created_by),
+        )
+        .where(PrintQueueItem.id == item_id)
+    )
+    item = result.scalar_one()
 
     logger.info("Manually started queue item %s (cleared manual_start flag)", item_id)
     return _enrich_response(item)
+
+
+# ============================================================================
+# Reorder / bump / clone / skip / retry — single-item operations
+# ============================================================================
+
+
+@router.post("/{item_id}/reorder")
+async def reorder_item(
+    item_id: int,
+    direction: str = Query(..., pattern="^(up|down)$"),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
+):
+    """Move a single queue item (or its whole batch) one step up/down.
+
+    Batch cohesion: if the item has a ``batch_id``, the entire block
+    of pending batch siblings moves together.
+    """
+    from backend.app.services.queue_counters import update_queue_counters
+    from backend.app.services.queue_ops import reorder_block, resolve_block_ids
+
+    queue_id, block_ids = await resolve_block_ids(db, item_id)
+    if not block_ids:
+        raise HTTPException(404, "Queue item not found")
+
+    moved = await reorder_block(db, queue_id, block_ids, direction)
+    if moved:
+        await update_queue_counters(db, queue_id)
+        await db.commit()
+    return {"moved": moved, "direction": direction, "block_size": len(block_ids)}
+
+
+@router.post("/{item_id}/bump")
+async def bump_item(
+    item_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
+):
+    """Move an item (and its batch) to the top of its queue."""
+    from backend.app.services.queue_counters import update_queue_counters
+    from backend.app.services.queue_ops import bump_block_to_top, resolve_block_ids
+
+    queue_id, block_ids = await resolve_block_ids(db, item_id)
+    if not block_ids:
+        raise HTTPException(404, "Queue item not found")
+
+    shifted = await bump_block_to_top(db, queue_id, block_ids)
+    if shifted:
+        await update_queue_counters(db, queue_id)
+        await db.commit()
+    return {"shifted": shifted, "block_size": len(block_ids)}
+
+
+@router.post("/{item_id}/bump-bottom")
+async def bump_item_bottom(
+    item_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
+):
+    """Move an item (and its batch) to the bottom of its queue."""
+    from backend.app.services.queue_counters import update_queue_counters
+    from backend.app.services.queue_ops import bump_block_to_bottom, resolve_block_ids
+
+    queue_id, block_ids = await resolve_block_ids(db, item_id)
+    if not block_ids:
+        raise HTTPException(404, "Queue item not found")
+
+    shifted = await bump_block_to_bottom(db, queue_id, block_ids)
+    if shifted:
+        await update_queue_counters(db, queue_id)
+        await db.commit()
+    return {"shifted": shifted, "block_size": len(block_ids)}
+
+
+@router.post("/{item_id}/clone", response_model=PrintQueueItemResponse)
+async def clone_item_endpoint(
+    item_id: int,
+    scope: str = Query("single", pattern="^(single|batch)$"),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.QUEUE_CREATE),
+):
+    """Clone a queue item.
+
+    ``scope='single'`` — insert one duplicate, share ``batch_id`` if
+    source has one (so the new copy becomes a sibling in the same
+    batch).  ``scope='batch'`` — clone the entire batch into a new
+    batch.  Returns the first cloned item.
+    """
+    from backend.app.services.queue_counters import update_queue_counters
+    from backend.app.services.queue_ops import clone_batch, clone_item
+
+    src = (await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == item_id))).scalar_one_or_none()
+    if not src:
+        raise HTTPException(404, "Queue item not found")
+
+    if scope == "batch":
+        if not src.batch_id:
+            raise HTTPException(400, "Item is not part of a batch")
+        clones = await clone_batch(db, src.batch_id)
+        if not clones:
+            raise HTTPException(400, "No pending items in batch to clone")
+        await update_queue_counters(db, clones[0].queue_id)
+        await db.commit()
+        first = clones[0]
+    else:
+        first = await clone_item(db, item_id, keep_batch=True)
+        if first is None:
+            raise HTTPException(500, "Clone failed")
+        await update_queue_counters(db, first.queue_id)
+        await db.commit()
+
+    # Re-fetch with full eager loading for response.
+    result = await db.execute(
+        select(PrintQueueItem)
+        .options(
+            selectinload(PrintQueueItem.archive),
+            selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
+            selectinload(PrintQueueItem.library_file),
+            selectinload(PrintQueueItem.created_by),
+        )
+        .where(PrintQueueItem.id == first.id)
+    )
+    return _enrich_response(result.scalar_one())
+
+
+@router.post("/{item_id}/skip")
+async def skip_item(
+    item_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
+):
+    """Set a pending item's status to ``skipped`` — scheduler won't pick it."""
+    from backend.app.services.queue_counters import update_queue_counters
+    from backend.app.services.queue_ops import set_status
+
+    item = (await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == item_id))).scalar_one_or_none()
+    if not item:
+        raise HTTPException(404, "Queue item not found")
+    if item.status != "pending":
+        raise HTTPException(400, f"Only pending items can be skipped, current status: '{item.status}'")
+
+    await set_status(db, item_id, "skipped")
+    await update_queue_counters(db, item.queue_id)
+    await db.commit()
+    return {"status": "skipped", "item_id": item_id}
+
+
+@router.post("/{item_id}/unskip")
+async def unskip_item(
+    item_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
+):
+    """Revert a skipped item back to pending, appended to end of queue."""
+    from backend.app.services.queue_counters import update_queue_counters
+
+    item = (await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == item_id))).scalar_one_or_none()
+    if not item:
+        raise HTTPException(404, "Queue item not found")
+    if item.status != "skipped":
+        raise HTTPException(400, f"Only skipped items can be unskipped, current status: '{item.status}'")
+
+    max_pos = (
+        await db.execute(
+            select(func.max(PrintQueueItem.position))
+            .where(PrintQueueItem.queue_id == item.queue_id)
+            .where(PrintQueueItem.status == "pending")
+        )
+    ).scalar() or 0
+    item.status = "pending"
+    item.position = max_pos + 1
+    await update_queue_counters(db, item.queue_id)
+    await db.commit()
+    return {"status": "pending", "item_id": item_id}
+
+
+@router.patch("/{item_id}/manual-start")
+async def toggle_manual_start(
+    item_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
+):
+    """Toggle the ``manual_start`` flag on a pending item.
+
+    If the item is part of a batch, toggle is propagated to all pending
+    siblings so the batch behaves consistently.
+    """
+    from backend.app.services.queue_ops import get_batch_pending_items
+
+    item = (await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == item_id))).scalar_one_or_none()
+    if not item:
+        raise HTTPException(404, "Queue item not found")
+    if item.status != "pending":
+        raise HTTPException(400, f"Only pending items can be toggled, current status: '{item.status}'")
+
+    new_value = not item.manual_start
+    if item.batch_id:
+        for sibling in await get_batch_pending_items(db, item.batch_id):
+            sibling.manual_start = new_value
+    else:
+        item.manual_start = new_value
+    await db.commit()
+    return {"manual_start": new_value, "item_id": item_id}
+
+
+@router.post("/{item_id}/retry", response_model=PrintQueueItemResponse)
+async def retry_failed_item(
+    item_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
+):
+    """Put a failed item back into pending status, appended to end of queue."""
+    from backend.app.services.queue_counters import update_queue_counters
+
+    item = (await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == item_id))).scalar_one_or_none()
+    if not item:
+        raise HTTPException(404, "Queue item not found")
+    if item.status != "failed":
+        raise HTTPException(400, f"Only failed items can be retried, current status: '{item.status}'")
+
+    max_pos = (
+        await db.execute(
+            select(func.max(PrintQueueItem.position))
+            .where(PrintQueueItem.queue_id == item.queue_id)
+            .where(PrintQueueItem.status == "pending")
+        )
+    ).scalar() or 0
+    item.status = "pending"
+    item.position = max_pos + 1
+    item.error_message = None
+    item.completed_at = None
+    await update_queue_counters(db, item.queue_id)
+    await db.commit()
+
+    result = await db.execute(
+        select(PrintQueueItem)
+        .options(
+            selectinload(PrintQueueItem.archive),
+            selectinload(PrintQueueItem.queue).selectinload(PrinterQueue.printer),
+            selectinload(PrintQueueItem.library_file),
+            selectinload(PrintQueueItem.created_by),
+        )
+        .where(PrintQueueItem.id == item_id)
+    )
+    return _enrich_response(result.scalar_one())
+
+
+# ============================================================================
+# Batch-level operations
+# ============================================================================
+
+
+@router.post("/batch/{batch_id}/cancel")
+async def cancel_batch(
+    batch_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
+):
+    """Cancel all pending items in a batch.  Active (printing) item is unaffected."""
+    from backend.app.services.queue_counters import update_queue_counters
+    from backend.app.services.queue_ops import get_batch_pending_items, set_status_for_batch
+
+    pending = await get_batch_pending_items(db, batch_id)
+    if not pending:
+        return {"cancelled": 0}
+    queue_id = pending[0].queue_id
+    count = await set_status_for_batch(db, batch_id, "cancelled")
+    await update_queue_counters(db, queue_id)
+    await db.commit()
+    return {"cancelled": count, "batch_id": batch_id}
+
+
+@router.post("/batch/{batch_id}/skip")
+async def skip_batch(
+    batch_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
+):
+    """Skip all pending items in a batch."""
+    from backend.app.services.queue_counters import update_queue_counters
+    from backend.app.services.queue_ops import get_batch_pending_items, set_status_for_batch
+
+    pending = await get_batch_pending_items(db, batch_id)
+    if not pending:
+        return {"skipped": 0}
+    queue_id = pending[0].queue_id
+    count = await set_status_for_batch(db, batch_id, "skipped")
+    await update_queue_counters(db, queue_id)
+    await db.commit()
+    return {"skipped": count, "batch_id": batch_id}
+
+
+@router.post("/batch/{batch_id}/reorder")
+async def reorder_batch(
+    batch_id: str,
+    direction: str = Query(..., pattern="^(up|down)$"),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
+):
+    """Move a whole batch block one step up/down."""
+    from backend.app.services.queue_counters import update_queue_counters
+    from backend.app.services.queue_ops import get_batch_pending_items, reorder_block
+
+    pending = await get_batch_pending_items(db, batch_id)
+    if not pending:
+        raise HTTPException(404, "No pending items in batch")
+    queue_id = pending[0].queue_id
+    block_ids = [i.id for i in pending]
+    moved = await reorder_block(db, queue_id, block_ids, direction)
+    if moved:
+        await update_queue_counters(db, queue_id)
+        await db.commit()
+    return {"moved": moved, "direction": direction, "batch_size": len(block_ids)}
+
+
+@router.post("/batch/{batch_id}/bump")
+async def bump_batch(
+    batch_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
+):
+    """Move a whole batch to the top of its queue."""
+    from backend.app.services.queue_counters import update_queue_counters
+    from backend.app.services.queue_ops import bump_block_to_top, get_batch_pending_items
+
+    pending = await get_batch_pending_items(db, batch_id)
+    if not pending:
+        raise HTTPException(404, "No pending items in batch")
+    queue_id = pending[0].queue_id
+    block_ids = [i.id for i in pending]
+    shifted = await bump_block_to_top(db, queue_id, block_ids)
+    if shifted:
+        await update_queue_counters(db, queue_id)
+        await db.commit()
+    return {"shifted": shifted, "batch_size": len(block_ids)}
+
+
+@router.post("/batch/{batch_id}/bump-bottom")
+async def bump_batch_bottom(
+    batch_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
+):
+    """Move a whole batch to the bottom of its queue."""
+    from backend.app.services.queue_counters import update_queue_counters
+    from backend.app.services.queue_ops import bump_block_to_bottom, get_batch_pending_items
+
+    pending = await get_batch_pending_items(db, batch_id)
+    if not pending:
+        raise HTTPException(404, "No pending items in batch")
+    queue_id = pending[0].queue_id
+    block_ids = [i.id for i in pending]
+    shifted = await bump_block_to_bottom(db, queue_id, block_ids)
+    if shifted:
+        await update_queue_counters(db, queue_id)
+        await db.commit()
+    return {"shifted": shifted, "batch_size": len(block_ids)}
+
+
+@router.patch("/batch/{batch_id}")
+async def update_batch(
+    batch_id: str,
+    data: PrintQueueItemUpdate,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
+):
+    """Apply a partial update to every pending item in the batch."""
+    from backend.app.services.queue_ops import get_batch_pending_items
+
+    pending = await get_batch_pending_items(db, batch_id)
+    if not pending:
+        raise HTTPException(404, "No pending items in batch")
+
+    update_data = data.model_dump(exclude_unset=True)
+    if "ams_mapping" in update_data:
+        update_data["ams_mapping"] = json.dumps(update_data["ams_mapping"]) if update_data["ams_mapping"] else None
+    if "swap_macro_events" in update_data:
+        events = update_data["swap_macro_events"]
+        update_data["swap_macro_events"] = json.dumps(events) if events else None
+
+    for item in pending:
+        for field, value in update_data.items():
+            setattr(item, field, value)
+    await db.commit()
+    return {"updated": len(pending), "batch_id": batch_id, "fields": list(update_data.keys())}
+
+
+@router.post("/batch/{batch_id}/clone")
+async def clone_batch_endpoint(
+    batch_id: str,
+    scope: str = Query("batch", pattern="^(one|batch)$"),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.QUEUE_CREATE),
+):
+    """Clone a batch.
+
+    ``scope='one'`` — add one more copy to the same batch (appended).
+    ``scope='batch'`` — create a whole new batch with the same
+    configuration as the source.
+    """
+    from backend.app.services.queue_counters import update_queue_counters
+    from backend.app.services.queue_ops import clone_batch, clone_item, get_batch_pending_items
+
+    pending = await get_batch_pending_items(db, batch_id)
+    if not pending:
+        raise HTTPException(404, "No pending items in batch")
+    queue_id = pending[0].queue_id
+
+    if scope == "one":
+        new_item = await clone_item(db, pending[0].id, keep_batch=True)
+        if new_item is None:
+            raise HTTPException(500, "Clone failed")
+        await update_queue_counters(db, queue_id)
+        await db.commit()
+        return {"cloned": 1, "scope": "one", "batch_id": batch_id, "new_item_id": new_item.id}
+
+    clones = await clone_batch(db, batch_id)
+    if not clones:
+        raise HTTPException(500, "Clone failed")
+    await update_queue_counters(db, queue_id)
+    await db.commit()
+    return {
+        "cloned": len(clones),
+        "scope": "batch",
+        "source_batch_id": batch_id,
+        "new_batch_id": clones[0].batch_id,
+    }

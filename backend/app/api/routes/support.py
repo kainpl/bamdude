@@ -19,18 +19,18 @@ from pydantic import BaseModel
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermissionIfAuthEnabled
+from backend.app.core.auth import RequirePermission
 from backend.app.core.config import APP_VERSION, settings
 from backend.app.core.database import async_session
 from backend.app.core.permissions import Permission
 from backend.app.core.websocket import ws_manager
 from backend.app.models.archive import PrintArchive
-from backend.app.models.filament import Filament
 from backend.app.models.notification import NotificationProvider
 from backend.app.models.printer import Printer
 from backend.app.models.project import Project
 from backend.app.models.settings import Settings
 from backend.app.models.smart_plug import SmartPlug
+from backend.app.models.spool import Spool
 from backend.app.models.user import User
 from backend.app.services.discovery import is_running_in_docker
 from backend.app.services.network_utils import get_network_interfaces
@@ -107,8 +107,10 @@ def _apply_log_level(debug: bool):
     if debug:
         logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
         logging.getLogger("aiosqlite").setLevel(logging.WARNING)
-        logging.getLogger("httpcore").setLevel(logging.DEBUG)
-        logging.getLogger("httpx").setLevel(logging.DEBUG)
+        # httpx/httpcore pinned to WARNING even in debug mode — at DEBUG they log
+        # full request URLs, which leak bearer tokens in Discord/generic-webhook URLs.
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
+        logging.getLogger("httpx").setLevel(logging.WARNING)
         logging.getLogger("paho.mqtt").setLevel(logging.DEBUG)
     else:
         logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
@@ -121,7 +123,7 @@ def _apply_log_level(debug: bool):
 
 @router.get("/debug-logging", response_model=DebugLoggingState)
 async def get_debug_logging_state(
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_READ),
+    _: User | None = RequirePermission(Permission.SETTINGS_READ),
 ):
     """Get current debug logging state."""
     async with async_session() as db:
@@ -141,7 +143,7 @@ async def get_debug_logging_state(
 @router.post("/debug-logging", response_model=DebugLoggingState)
 async def toggle_debug_logging(
     toggle: DebugLoggingToggle,
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+    _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
     """Enable or disable debug logging."""
     async with async_session() as db:
@@ -200,7 +202,7 @@ def _read_log_entries(
     search: str | None = None,
 ) -> tuple[list[LogEntry], int]:
     """Read and parse log entries from file with optional filtering."""
-    log_file = settings.log_dir / "bambuddy.log"
+    log_file = settings.log_dir / "bamdude.log"
     if not log_file.exists():
         return [], 0
 
@@ -283,7 +285,7 @@ async def get_logs(
     limit: int = Query(200, ge=1, le=1000, description="Maximum number of entries to return"),
     level: str | None = Query(None, description="Filter by log level (DEBUG, INFO, WARNING, ERROR)"),
     search: str | None = Query(None, description="Search in message or logger name"),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_READ),
+    _: User | None = RequirePermission(Permission.SETTINGS_READ),
 ):
     """Get recent application log entries with optional filtering."""
     entries, total_lines = _read_log_entries(limit=limit, level_filter=level, search=search)
@@ -297,10 +299,10 @@ async def get_logs(
 
 @router.delete("/logs")
 async def clear_logs(
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+    _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
     """Clear the application log file."""
-    log_file = settings.log_dir / "bambuddy.log"
+    log_file = settings.log_dir / "bamdude.log"
 
     if log_file.exists():
         try:
@@ -366,7 +368,7 @@ def _anonymize_mqtt_broker(broker: str) -> str:
         ipaddress.ip_address(broker)
         return "[IP]"
     except ValueError:
-        # It's a hostname — show *.domain pattern
+        # It's a hostname - show *.domain pattern
         parts = broker.split(".")
         if len(parts) >= 2:
             return "*." + ".".join(parts[-2:])
@@ -470,8 +472,8 @@ async def _collect_support_info() -> dict:
         result = await db.execute(select(func.count(Printer.id)))
         info["database"]["printers_total"] = result.scalar() or 0
 
-        result = await db.execute(select(func.count(Filament.id)))
-        info["database"]["filaments_total"] = result.scalar() or 0
+        result = await db.execute(select(func.count(Spool.id)))
+        info["database"]["spools_total"] = result.scalar() or 0
 
         result = await db.execute(select(func.count(Project.id)))
         info["database"]["projects_total"] = result.scalar() or 0
@@ -581,6 +583,7 @@ async def _collect_support_info() -> dict:
             "url",
             "path",  # Filesystem paths may contain usernames
             "config",  # URLs may contain IPs, configs may have embedded secrets
+            "_ip",  # IP address fields (e.g. virtual_printer_remote_interface_ip)
         }
         for s in all_settings:
             # Skip sensitive settings
@@ -588,7 +591,7 @@ async def _collect_support_info() -> dict:
                 continue
             info["settings"][s.key] = s.value
 
-        # Notification providers (anonymized — type/enabled/error status only)
+        # Notification providers (anonymized - type/enabled/error status only)
         try:
             result = await db.execute(select(NotificationProvider))
             providers = result.scalars().all()
@@ -690,7 +693,7 @@ async def _collect_support_info() -> dict:
 
     # Log file info
     try:
-        log_file = settings.log_dir / "bambuddy.log"
+        log_file = settings.log_dir / "bamdude.log"
         if log_file.exists():
             size = log_file.stat().st_size
             info["log_file"] = {
@@ -761,7 +764,7 @@ def _sanitize_log_content(content: str, sensitive_strings: dict[str, str] | None
 
 def _get_log_content(max_bytes: int = 10 * 1024 * 1024, sensitive_strings: dict[str, str] | None = None) -> bytes:
     """Get log file content, limited to max_bytes from the end."""
-    log_file = settings.log_dir / "bambuddy.log"
+    log_file = settings.log_dir / "bamdude.log"
     if not log_file.exists():
         return b"Log file not found"
 
@@ -807,7 +810,7 @@ async def _get_recent_sanitized_logs(max_lines: int = 200) -> str:
         if cloud_email:
             sensitive_strings[cloud_email] = "[EMAIL]"
 
-    log_file = settings.log_dir / "bambuddy.log"
+    log_file = settings.log_dir / "bamdude.log"
     if not log_file.exists():
         return ""
 
@@ -824,7 +827,7 @@ async def _get_recent_sanitized_logs(max_lines: int = 200) -> str:
 
 @router.get("/bundle")
 async def generate_support_bundle(
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_READ),
+    _: User | None = RequirePermission(Permission.SETTINGS_READ),
 ):
     """Generate a support bundle ZIP file for issue reporting."""
     # Check if debug logging is enabled and collect sensitive values for redaction
@@ -878,7 +881,7 @@ async def generate_support_bundle(
 
         # Add log file
         log_content = _get_log_content(sensitive_strings=sensitive_strings)
-        zf.writestr("bambuddy.log", log_content)
+        zf.writestr("bamdude.log", log_content)
 
     zip_buffer.seek(0)
 

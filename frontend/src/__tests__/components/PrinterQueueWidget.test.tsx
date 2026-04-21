@@ -42,7 +42,7 @@ describe('PrinterQueueWidget', () => {
     server.use(
       http.get('/api/v1/queue/', ({ request }) => {
         const url = new URL(request.url);
-        const printerId = url.searchParams.get('printer_id');
+        const printerId = url.searchParams.get('queue_id');
         if (printerId === '1') {
           return HttpResponse.json(mockQueueItems);
         }

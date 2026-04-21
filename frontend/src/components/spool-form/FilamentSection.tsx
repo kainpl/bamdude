@@ -135,7 +135,7 @@ export function FilamentSection({
         </div>
       )}
 
-      {/* Slicer Preset (autocomplete) — hidden in quick-add mode */}
+      {/* Slicer Preset (autocomplete) - hidden in quick-add mode */}
       {!quickAdd && (
         <div>
           <label className="block text-sm font-medium text-bambu-gray mb-1">
@@ -411,7 +411,7 @@ export function FilamentSection({
         </div>
       </div>
 
-      {/* Quantity — only in quick-add mode */}
+      {/* Quantity - only in quick-add mode */}
       {quickAdd && (
         <div>
           <label className="block text-sm font-medium text-bambu-gray mb-1">{t('inventory.quantity')}</label>

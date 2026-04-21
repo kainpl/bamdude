@@ -38,7 +38,7 @@ describe('SpoolmanSettings', () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
-    // Default API mocks — Spoolman disabled (Built-in Inventory mode)
+    // Default API mocks - Spoolman disabled (Built-in Inventory mode)
     vi.mocked(api.getSpoolmanSettings).mockResolvedValue({
       spoolman_enabled: 'false',
       spoolman_url: '',

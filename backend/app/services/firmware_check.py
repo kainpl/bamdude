@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
+from curl_cffi.requests import AsyncSession as CurlAsyncSession
 
 from backend.app.core.config import _data_dir
 
@@ -49,7 +50,7 @@ MODEL_TO_API_KEY = {
     "H2D Pro": "h2d-pro",
     "H2D-Pro": "h2d-pro",
     "H2DPRO": "h2d-pro",
-    # SSDP model codes (DevModel header) — in case raw codes are stored
+    # SSDP model codes (DevModel header) - in case raw codes are stored
     "O1D": "h2d",
     "O1E": "h2d-pro",
     "O2D": "h2d-pro",
@@ -114,6 +115,13 @@ class FirmwareCheckService:
         self._build_id_time: float = 0
         self._version_cache: dict[str, FirmwareVersion] = {}
         self._cache_time: float = 0
+        # bambulab.com is behind Cloudflare with TLS fingerprint blocking:
+        # plain httpx → 403 (Cloudflare recognises Python's TLS handshake).
+        # curl_cffi impersonates a real Chrome TLS stack → 200.
+        # Used for the Next.js page + data endpoint.
+        self._cf_client = CurlAsyncSession(timeout=30, impersonate="chrome120")
+        # Wiki (wiki.bambulab.com) doesn't have the same block — plain httpx
+        # works fine and is lighter.
         self._client = httpx.AsyncClient(
             timeout=30.0,
             headers={
@@ -128,7 +136,7 @@ class FirmwareCheckService:
             return self._build_id
 
         try:
-            response = await self._client.get(f"{BAMBU_FIRMWARE_BASE}{FIRMWARE_PAGE}")
+            response = await self._cf_client.get(f"{BAMBU_FIRMWARE_BASE}{FIRMWARE_PAGE}")
             if response.status_code == 200:
                 # Extract buildId from the page
                 match = re.search(r'"buildId":"([^"]+)"', response.text)
@@ -168,61 +176,90 @@ class FirmwareCheckService:
         return None
 
     async def _fetch_from_download_page(self, api_key: str) -> FirmwareVersion | None:
-        """Fetch firmware info from Bambu Lab's download page (has download URLs)."""
-        build_id = await self._get_build_id()
-        if not build_id:
-            return None
+        """Fetch firmware info from Bambu Lab's download page (has download URLs).
 
-        try:
-            url = f"{BAMBU_FIRMWARE_BASE}/_next/data/{build_id}/en/support/firmware-download/{api_key}.json"
-            response = await self._client.get(url)
+        If the data endpoint returns non-200 (stale buildId → Cloudflare challenge
+        with 403, or 404 if the path changed), invalidate the cached buildId and
+        retry once.  Without this, a buildId that rolls over during our 1h cache
+        TTL leaves us stuck until the TTL expires — and the wiki fallback has
+        no download URL, so the UI reports "not yet available" even though the
+        file is listed on the public page.
+        """
+        for attempt in range(2):
+            build_id = await self._get_build_id()
+            if not build_id:
+                return None
 
-            if response.status_code == 200:
-                data = response.json()
-                page_props = data.get("pageProps", {})
-                printer_map = page_props.get("printerMap", {})
-                printer_data = printer_map.get(api_key, {})
-                versions = printer_data.get("versions", [])
+            try:
+                url = f"{BAMBU_FIRMWARE_BASE}/_next/data/{build_id}/en/support/firmware-download/{api_key}.json"
+                response = await self._cf_client.get(url)
 
-                if versions:
-                    latest = versions[0]
-                    return FirmwareVersion(
-                        version=latest.get("version", ""),
-                        download_url=latest.get("url", ""),
-                        release_notes=latest.get("release_notes_en"),
-                        release_time=latest.get("release_time"),
+                if response.status_code == 200:
+                    data = response.json()
+                    page_props = data.get("pageProps", {})
+                    printer_map = page_props.get("printerMap", {})
+                    printer_data = printer_map.get(api_key, {})
+                    versions = printer_data.get("versions", [])
+
+                    if versions:
+                        latest = versions[0]
+                        return FirmwareVersion(
+                            version=latest.get("version", ""),
+                            download_url=latest.get("url", ""),
+                            release_notes=latest.get("release_notes_en"),
+                            release_time=latest.get("release_time"),
+                        )
+                    return None
+
+                # Non-200 (commonly 403 behind Cloudflare when buildId is stale,
+                # or 404 when the path changes).  Invalidate the cached buildId
+                # and try once more with a fresh one.
+                if attempt == 0:
+                    logger.info(
+                        "Download-page data endpoint returned %s for %s — refreshing buildId and retrying",
+                        response.status_code,
+                        api_key,
                     )
-
-        except Exception as e:
-            logger.debug("Error fetching download page firmware for %s: %s", api_key, e)
+                    self._build_id = None
+                    self._build_id_time = 0
+                    continue
+                logger.debug(
+                    "Download-page data endpoint returned %s for %s after buildId refresh",
+                    response.status_code,
+                    api_key,
+                )
+            except Exception as e:
+                logger.debug("Error fetching download page firmware for %s (attempt %d): %s", api_key, attempt + 1, e)
+                if attempt == 0:
+                    self._build_id = None
+                    self._build_id_time = 0
+                    continue
 
         return None
 
     async def _fetch_firmware_versions(self, api_key: str) -> FirmwareVersion | None:
-        """Fetch firmware version info, using wiki as primary source and download page as fallback."""
-        # Try wiki first (always has the latest version)
-        wiki_version = await self._fetch_version_from_wiki(api_key)
+        """Fetch firmware version info, using download page as primary source.
 
-        # Try download page (has download URLs, may lag behind wiki)
+        Only reports versions that have a download URL available, so users
+        are never shown an update they cannot actually install.
+        Wiki is used as a fallback only when the download page is unreachable.
+        """
+        # Try download page first (has download URLs - only show what's downloadable)
         download_info = await self._fetch_from_download_page(api_key)
 
-        if wiki_version:
-            # Wiki has the latest version — use it, attach download URL if available
-            download_url = ""
-            release_notes = None
-            if download_info and download_info.version == wiki_version:
-                download_url = download_info.download_url
-                release_notes = download_info.release_notes
-            return FirmwareVersion(
-                version=wiki_version,
-                download_url=download_url,
-                release_notes=release_notes,
-            )
-
-        if download_info:
+        if download_info and download_info.download_url:
             return download_info
 
-        logger.warning("Could not fetch firmware info for %s from wiki or download page", api_key)
+        # Fallback: wiki (no download URL, but at least shows the version)
+        wiki_version = await self._fetch_version_from_wiki(api_key)
+        if wiki_version:
+            return FirmwareVersion(
+                version=wiki_version,
+                download_url="",
+                release_notes=None,
+            )
+
+        logger.warning("Could not fetch firmware info for %s from download page or wiki", api_key)
         return None
 
     async def get_latest_version(self, model: str) -> FirmwareVersion | None:
@@ -434,8 +471,12 @@ class FirmwareCheckService:
             return None
 
     async def close(self):
-        """Close the HTTP client."""
+        """Close the HTTP clients."""
         await self._client.aclose()
+        try:
+            await self._cf_client.close()
+        except Exception:
+            pass
 
 
 # Singleton instance

@@ -41,13 +41,13 @@
   },
   "plate_not_empty": {
     "name": "Платформа не порожня",
-    "title_template": "Платформа не порожня — друк призупинено",
+    "title_template": "Платформа не порожня - друк призупинено",
     "body_template": "{printer}: На робочому столі виявлено об'єкти. Друк призупинено. Очистіть стіл і відновіть друк."
   },
   "filament_low": {
     "name": "Мало філаменту",
     "title_template": "Мало філаменту",
-    "body_template": "{printer}: Слот {slot} — {remaining_percent}%"
+    "body_template": "{printer}: Слот {slot} - {remaining_percent}%"
   },
   "maintenance_due": {
     "name": "Потрібне обслуговування",
@@ -76,18 +76,13 @@
   },
   "test": {
     "name": "Тестове сповіщення",
-    "title_template": "Тест Bambuddy HE",
-    "body_template": "Це тестове сповіщення. Якщо ви його бачите — сповіщення працюють!"
+    "title_template": "Тест BamDude",
+    "body_template": "Це тестове сповіщення. Якщо ви його бачите - сповіщення працюють!"
   },
   "queue_job_added": {
     "name": "Завдання додано в чергу",
     "title_template": "Завдання в черзі",
     "body_template": "{job_name} додано в чергу для {target}"
-  },
-  "queue_job_assigned": {
-    "name": "Завдання призначено",
-    "title_template": "Завдання призначено",
-    "body_template": "{job_name} призначено на {printer} (з черги «Будь-який {target_model}»)"
   },
   "queue_job_started": {
     "name": "Завдання з черги розпочато",
@@ -121,7 +116,7 @@
   },
   "password_reset": {
     "name": "Скидання пароля",
-    "title_template": "{app_name} — Скидання пароля",
+    "title_template": "{app_name} - Скидання пароля",
     "body_template": "Привіт, {username}!\n\nВаш пароль було скинуто.\nНовий пароль: {password}\n\nУвійти: {login_url}"
   },
   "user_print_start": {

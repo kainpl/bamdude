@@ -1,15 +1,16 @@
 import io
 import logging
+import os
 import zipfile
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, UploadFile
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermissionIfAuthEnabled
+from backend.app.core.auth import RequirePermission
 from backend.app.core.config import settings as app_settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -54,21 +55,17 @@ async def get_external_login_url(db: AsyncSession) -> str:
 
 
 async def set_setting(db: AsyncSession, key: str, value: str) -> None:
-    """Set a single setting value."""
-    from sqlalchemy import func
-    from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+    """Set a single setting value (dialect-aware upsert)."""
+    from backend.app.core.db_dialect import upsert_setting
 
-    # Use upsert (INSERT ... ON CONFLICT UPDATE) for reliability
-    stmt = sqlite_insert(Settings).values(key=key, value=value)
-    stmt = stmt.on_conflict_do_update(index_elements=["key"], set_={"value": value, "updated_at": func.now()})
-    await db.execute(stmt)
+    await upsert_setting(db, Settings, key, value)
 
 
 @router.get("", response_model=AppSettings)
 @router.get("/", response_model=AppSettings)
 async def get_settings(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_READ),
+    _: User | None = RequirePermission(Permission.SETTINGS_READ),
 ):
     """Get all application settings."""
     settings_dict = DEFAULT_SETTINGS.model_dump()
@@ -98,9 +95,15 @@ async def get_settings(
                 "per_printer_mapping_expanded",
                 "prometheus_enabled",
                 "user_notifications_enabled",
+                "prefer_lowest_filament",
                 "queue_drying_enabled",
                 "queue_drying_block",
                 "ambient_drying_enabled",
+                "stagger_enabled",
+                "stagger_wait_for_bed",
+                "stagger_strict_for_direct_dispatch",
+                "ldap_enabled",
+                "ldap_auto_provision",
             ]:
                 settings_dict[setting.key] = setting.value.lower() == "true"
             elif setting.key in [
@@ -120,6 +123,8 @@ async def get_settings(
                 "ftp_retry_delay",
                 "ftp_timeout",
                 "mqtt_port",
+                "stagger_concurrent",
+                "stagger_interval_minutes",
             ]:
                 settings_dict[setting.key] = int(setting.value)
             elif setting.key == "default_printer_id":
@@ -132,6 +137,9 @@ async def get_settings(
     ha_settings = await get_homeassistant_settings(db)
     settings_dict.update(ha_settings)
 
+    # Never return LDAP bind password in API responses
+    settings_dict["ldap_bind_password"] = ""
+
     return AppSettings(**settings_dict)
 
 
@@ -139,7 +147,7 @@ async def get_settings(
 async def update_settings(
     settings_update: AppSettingsUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+    _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
     """Update application settings."""
     update_data = settings_update.model_dump(exclude_unset=True)
@@ -211,7 +219,7 @@ async def update_settings(
 async def patch_settings(
     settings_update: AppSettingsUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+    _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
     """Partially update application settings (same as PUT, for REST compatibility)."""
     return await update_settings(settings_update, db, _)
@@ -220,7 +228,7 @@ async def patch_settings(
 @router.post("/reset", response_model=AppSettings)
 async def reset_settings(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+    _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
     """Reset all settings to defaults."""
     # Delete all settings
@@ -263,7 +271,7 @@ async def check_ffmpeg():
 @router.get("/spoolman")
 async def get_spoolman_settings(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_READ),
+    _: User | None = RequirePermission(Permission.SETTINGS_READ),
 ):
     """Get Spoolman integration settings."""
     spoolman_enabled = await get_setting(db, "spoolman_enabled") or "false"
@@ -285,7 +293,7 @@ async def get_spoolman_settings(
 async def update_spoolman_settings(
     settings: dict,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+    _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
     """Update Spoolman integration settings."""
     if "spoolman_enabled" in settings:
@@ -352,73 +360,93 @@ async def get_homeassistant_settings(db: AsyncSession) -> dict:
     }
 
 
-@router.get("/backup")
-async def create_backup(
-    db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_BACKUP),
-):
-    """Create a complete backup (database + all files) as a ZIP.
+async def create_backup_zip(output_path: Path | None = None) -> tuple[Path, str]:
+    """Create a complete backup ZIP (database + all data directories).
 
-    This is a simplified backup that includes the entire SQLite database
-    and all data directories. It is complete by definition and cannot miss data.
+    If output_path is given, the ZIP is written there.
+    Otherwise a temporary file is created (caller must clean up).
+    Backup is always in portable SQLite format regardless of database backend.
+    Returns (zip_path, filename).
     """
     import shutil
     import tempfile
 
-    from sqlalchemy import text
+    from backend.app.core.database import Base, engine
+    from backend.app.core.db_portable import dump_to_sqlite
 
-    from backend.app.core.database import engine
+    base_dir = app_settings.base_dir
+    filename = f"bamdude-backup-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+
+        # 1. Export database to portable SQLite format
+        await dump_to_sqlite(engine, Base.metadata, temp_path / "bamdude.db")
+
+        # 2. Copy data directories (if they exist)
+        dirs_to_backup = [
+            ("archive", base_dir / "archive"),
+            ("virtual_printer", base_dir / "virtual_printer"),
+            ("plate_calibration", app_settings.plate_calibration_dir),
+            ("icons", base_dir / "icons"),
+            ("projects", base_dir / "projects"),
+        ]
+
+        for name, src_dir in dirs_to_backup:
+            if src_dir.exists() and any(src_dir.iterdir()):
+                try:
+                    shutil.copytree(src_dir, temp_path / name)
+                except shutil.Error as e:
+                    # Some files may have restricted permissions (e.g., SSL keys)
+                    logger.warning("Some files in %s could not be copied: %s", name, e)
+                except PermissionError as e:
+                    logger.warning("Permission denied copying %s: %s", name, e)
+
+        # 3. Create ZIP
+        if output_path is not None:
+            zip_file = output_path / filename
+        else:
+            # mkstemp gives us a unique path that survives the TemporaryDirectory cleanup
+            fd, tmp_path_str = tempfile.mkstemp(suffix=".zip")
+            os.close(fd)
+            zip_file = Path(tmp_path_str)
+
+        with zipfile.ZipFile(zip_file, "w", zipfile.ZIP_DEFLATED) as zf:
+            for file_path in temp_path.rglob("*"):
+                if file_path.is_file():
+                    arcname = file_path.relative_to(temp_path)
+                    zf.write(file_path, arcname)
+
+    return zip_file, filename
+
+
+@router.get("/backup")
+async def create_backup(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.SETTINGS_BACKUP),
+):
+    """Create a complete backup (database + all files) as a ZIP.
+
+    Streams from a temp file rather than loading the whole ZIP into memory,
+    so multi-gigabyte backups don't OOM the process.
+    """
+    import os as _os
+
+    from fastapi import BackgroundTasks
 
     try:
-        base_dir = app_settings.base_dir
-        db_path = Path(app_settings.database_url.replace("sqlite+aiosqlite:///", ""))
+        zip_file, filename = await create_backup_zip()
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+        # Schedule cleanup once the response has been sent
+        bg = BackgroundTasks()
+        bg.add_task(lambda p=zip_file: _os.unlink(p) if p.exists() else None)
 
-            # 1. Checkpoint WAL to ensure all data is in main db file
-            async with engine.begin() as conn:
-                await conn.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
-
-            # 2. Copy database file
-            shutil.copy2(db_path, temp_path / "bambuddy.db")
-
-            # 3. Copy data directories (if they exist)
-            dirs_to_backup = [
-                ("archive", base_dir / "archive"),
-                ("virtual_printer", base_dir / "virtual_printer"),
-                ("plate_calibration", app_settings.plate_calibration_dir),
-                ("icons", base_dir / "icons"),
-                ("projects", base_dir / "projects"),
-            ]
-
-            for name, src_dir in dirs_to_backup:
-                if src_dir.exists() and any(src_dir.iterdir()):
-                    try:
-                        shutil.copytree(src_dir, temp_path / name)
-                    except shutil.Error as e:
-                        # Some files may have restricted permissions (e.g., SSL keys)
-                        # Log the error but continue with partial backup
-                        logger.warning("Some files in %s could not be copied: %s", name, e)
-                    except PermissionError as e:
-                        logger.warning("Permission denied copying %s: %s", name, e)
-
-            # 4. Create ZIP
-            zip_buffer = io.BytesIO()
-            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-                for file_path in temp_path.rglob("*"):
-                    if file_path.is_file():
-                        arcname = file_path.relative_to(temp_path)
-                        zf.write(file_path, arcname)
-
-            zip_buffer.seek(0)
-            filename = f"bambuddy-backup-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
-
-            return StreamingResponse(
-                zip_buffer,
-                media_type="application/zip",
-                headers={"Content-Disposition": f"attachment; filename={filename}"},
-            )
+        return FileResponse(
+            path=str(zip_file),
+            media_type="application/zip",
+            filename=filename,
+            background=bg,
+        )
     except Exception as e:
         logger.error("Backup failed: %s", e, exc_info=True)
         return JSONResponse(
@@ -431,23 +459,21 @@ async def create_backup(
 async def restore_backup(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_RESTORE),
+    _: User | None = RequirePermission(Permission.SETTINGS_RESTORE),
 ):
     """Restore from a complete backup ZIP.
 
-    This is a simplified restore that replaces the database and all data directories
-    from the backup ZIP. Requires a restart after restore.
+    Replaces the database and all data directories from the backup ZIP.
+    Backup format is always portable SQLite - works for both SQLite and PostgreSQL.
     """
     import shutil
     import tempfile
 
-    from fastapi import HTTPException
-
-    from backend.app.core.database import close_all_connections, init_db, reinitialize_database
+    from backend.app.core.database import Base, close_all_connections, init_db, reinitialize_database
+    from backend.app.core.db_dialect import is_sqlite
     from backend.app.services.virtual_printer import virtual_printer_manager
 
     base_dir = app_settings.base_dir
-    db_path = Path(app_settings.database_url.replace("sqlite+aiosqlite:///", ""))
 
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
@@ -465,10 +491,12 @@ async def restore_backup(
         except zipfile.BadZipFile:
             raise HTTPException(400, "Invalid backup file: not a valid ZIP")
 
-        # 2. Validate backup (must have database)
-        backup_db = temp_path / "bambuddy.db"
+        # 2. Validate backup (must have database) - accept both new and legacy names
+        backup_db = temp_path / "bamdude.db"
         if not backup_db.exists():
-            raise HTTPException(400, "Invalid backup: missing bambuddy.db")
+            backup_db = temp_path / "bambuddy.db"
+        if not backup_db.exists():
+            raise HTTPException(400, "Invalid backup: missing database file (bamdude.db or bambuddy.db)")
 
         try:
             import asyncio
@@ -489,7 +517,15 @@ async def restore_backup(
 
             # 5. Replace database
             logger.info("Restoring database from backup...")
-            shutil.copy2(backup_db, db_path)
+            if is_sqlite():
+                db_path = Path(app_settings.database_url.replace("sqlite+aiosqlite:///", ""))
+                shutil.copy2(backup_db, db_path)
+            else:
+                # Import SQLite backup into PostgreSQL
+                from backend.app.core.database import engine as current_engine
+                from backend.app.core.db_portable import import_sqlite_to_postgres
+
+                await import_sqlite_to_postgres(current_engine, Base.metadata, backup_db)
 
             # 6. Replace data directories
             # For Docker compatibility: clear contents then copy (don't delete mount points)
@@ -555,7 +591,7 @@ async def restore_backup(
 
 @router.post("/optimize-db")
 async def optimize_database(
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_BACKUP),
+    _: User | None = RequirePermission(Permission.SETTINGS_BACKUP),
 ):
     """Optimize the SQLite database: ANALYZE + WAL checkpoint + VACUUM."""
     from sqlalchemy import text
@@ -594,7 +630,7 @@ async def optimize_database(
 
 @router.get("/network-interfaces")
 async def get_network_interfaces(
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_READ),
+    _: User | None = RequirePermission(Permission.SETTINGS_READ),
 ):
     """Get available network interfaces with all IPs (primary + aliases)."""
     from backend.app.services.network_utils import get_all_interface_ips
@@ -605,7 +641,7 @@ async def get_network_interfaces(
 
 @router.get("/virtual-printer/models")
 async def get_virtual_printer_models(
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_READ),
+    _: User | None = RequirePermission(Permission.SETTINGS_READ),
 ):
     """Get available virtual printer models."""
     from backend.app.services.virtual_printer import (
@@ -622,7 +658,7 @@ async def get_virtual_printer_models(
 @router.get("/virtual-printer")
 async def get_virtual_printer_settings(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_READ),
+    _: User | None = RequirePermission(Permission.SETTINGS_READ),
 ):
     """Get virtual printer settings and status."""
     from backend.app.services.virtual_printer import (
@@ -657,7 +693,7 @@ async def update_virtual_printer_settings(
     target_printer_id: int = None,
     remote_interface_ip: str = None,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+    _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
     """Update virtual printer settings and restart services if needed.
 
@@ -805,7 +841,7 @@ async def update_virtual_printer_settings(
 
 @router.get("/mqtt/status")
 async def get_mqtt_status(
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_READ),
+    _: User | None = RequirePermission(Permission.SETTINGS_READ),
 ):
     """Get MQTT relay connection status."""
     from backend.app.services.mqtt_relay import mqtt_relay

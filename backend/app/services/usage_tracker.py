@@ -330,8 +330,8 @@ async def on_print_complete(
     """Compute consumption deltas and update spool weight_used/last_used.
 
     Uses two tracking strategies in priority order:
-    1. 3MF per-filament estimates (primary) — precise slicer data for all spools
-    2. AMS remain% delta (fallback) — only for trays not already handled by 3MF
+    1. 3MF per-filament estimates (primary) - precise slicer data for all spools
+    2. AMS remain% delta (fallback) - only for trays not already handled by 3MF
 
     Returns a list of dicts describing what was logged (for WebSocket broadcast).
     """
@@ -624,7 +624,7 @@ async def _track_from_3mf(
         tray_changes = getattr(state, "tray_change_log", []) if state else []
 
         if len(tray_changes) > 1:
-            # Multi-tray usage detected — will split in per-slot loop using per-layer gcode
+            # Multi-tray usage detected - will split in per-slot loop using per-layer gcode
             logger.info("[UsageTracker] 3MF: tray change log: %s (will split weight)", tray_changes)
         elif 0 <= tray_now_at_start <= 254:
             # Try tray_now_at_start first (captured at print start)
@@ -658,7 +658,7 @@ async def _track_from_3mf(
     else:
         state = printer_manager.get_status(printer_id)
         progress = state.progress if state else 0
-        # Firmware resets progress to 0 on cancel — use last valid progress captured during print
+        # Firmware resets progress to 0 on cancel - use last valid progress captured during print
         if progress <= 0 and last_progress > 0:
             progress = last_progress
             logger.info("[UsageTracker] 3MF: using last_progress=%.1f (firmware reset current to 0)", last_progress)
@@ -669,7 +669,7 @@ async def _track_from_3mf(
     if status != "completed":
         state = printer_manager.get_status(printer_id)
         current_layer = state.layer_num if state else 0
-        # Firmware resets layer_num to 0 on cancel — use last valid layer captured during print
+        # Firmware resets layer_num to 0 on cancel - use last valid layer captured during print
         if current_layer <= 0 and last_layer_num > 0:
             current_layer = last_layer_num
             logger.info("[UsageTracker] 3MF: using last_layer_num=%d (firmware reset current to 0)", last_layer_num)
@@ -755,7 +755,7 @@ async def _track_from_3mf(
                     if total_layers > 0:
                         segment_grams = total_weight * (seg_end_layer - seg_start_layer) / total_layers
                     else:
-                        # Can't compute ratio — assign all to last segment
+                        # Can't compute ratio - assign all to last segment
                         segment_grams = 0.0
 
                 sum_previous += segment_grams

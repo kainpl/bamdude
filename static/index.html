@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>Bambuddy HE</title>
+    <title>BamDude</title>
 
     <!-- PWA Meta Tags -->
     <meta name="description" content="Monitor and manage your Bambu Lab 3D printers" />
@@ -11,7 +11,7 @@
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <meta name="apple-mobile-web-app-title" content="Bambuddy HE" />
+    <meta name="apple-mobile-web-app-title" content="BamDude" />
 
     <!-- Manifest -->
     <link rel="manifest" href="/manifest.json" />
@@ -23,36 +23,29 @@
 
     <!-- Splash screens for iOS -->
     <link rel="apple-touch-startup-image" href="/img/android-chrome-512x512.png" />
-    <script type="module" crossorigin src="/assets/index-NngeMDck.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-CGyp4vRx.css">
+    <script type="module" crossorigin src="/assets/index-DGP04Obp.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/vendor-react-GBSg_gdc.js">
+    <link rel="modulepreload" crossorigin href="/assets/locales-u2a8CkRf.js">
+    <link rel="modulepreload" crossorigin href="/assets/vendor-three-D77npTEF.js">
+    <link rel="modulepreload" crossorigin href="/assets/vendor-charts-BrGtH8DJ.js">
+    <link rel="modulepreload" crossorigin href="/assets/vendor-editor-D95gfg1O.js">
+    <link rel="stylesheet" crossorigin href="/assets/index-D9wev4gI.css">
   </head>
   <body>
     <div id="root"></div>
 
-    <!-- Service Worker Registration (skip on SpoolBuddy kiosk) -->
+    <!-- Service Worker Registration -->
     <script>
       if ('serviceWorker' in navigator) {
-        if (location.pathname.startsWith('/spoolbuddy')) {
-          // Kiosk mode — nuke SW and all caches, then reload once to get clean state
-          navigator.serviceWorker.getRegistrations().then((regs) => {
-            if (regs.length > 0) {
-              Promise.all([
-                ...regs.map((r) => r.unregister()),
-                caches.keys().then((names) => Promise.all(names.map((n) => caches.delete(n)))),
-              ]).then(() => location.reload());
-            }
-          });
-        } else {
-          window.addEventListener('load', () => {
-            navigator.serviceWorker.register('/sw.js')
-              .then((registration) => {
-                console.log('SW registered:', registration.scope);
-              })
-              .catch((error) => {
-                console.log('SW registration failed:', error);
-              });
-          });
-        }
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js')
+            .then((registration) => {
+              console.log('SW registered:', registration.scope);
+            })
+            .catch((error) => {
+              console.log('SW registration failed:', error);
+            });
+        });
       }
     </script>
   </body>

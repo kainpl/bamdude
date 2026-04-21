@@ -48,6 +48,10 @@ COPY --from=frontend-builder /app/static ./static
 # chmod 777 allows running as non-root user (e.g., with docker compose user: directive)
 RUN mkdir -p /app/data /app/logs && chmod 777 /app/data /app/logs
 
+# OCI labels — auto-link GHCR package to repo
+LABEL org.opencontainers.image.source="https://github.com/kainpl/bamdude"
+LABEL org.opencontainers.image.description="BamDude — 3D printer management for Bambu Lab"
+
 # Environment variables
 ENV PYTHONUNBUFFERED=1
 ENV DATA_DIR=/app/data

@@ -29,7 +29,7 @@ describe('inventoryFill calculation', () => {
   });
 
   it('returns null for brand new spool with weight_used = null', () => {
-    // weight_used null means "never tracked" — we can't compute fill
+    // weight_used null means "never tracked" - we can't compute fill
     expect(computeInventoryFill({ label_weight: 1000, weight_used: null })).toBeNull();
   });
 
@@ -60,7 +60,7 @@ describe('inventoryFill calculation', () => {
   });
 });
 
-describe('inventoryFill: old bug — weight_used > 0 vs weight_used != null', () => {
+describe('inventoryFill: old bug - weight_used > 0 vs weight_used != null', () => {
   /**
    * The old condition was: sp.weight_used > 0
    * This caused brand-new spools (weight_used=0) to show no fill bar.

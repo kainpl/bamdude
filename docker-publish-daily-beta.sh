@@ -16,7 +16,7 @@
 # previous 'daily' image. A GitHub prerelease is created with a date-stamped tag for history.
 #
 # Users can stay up to date by pulling the 'daily' tag or using Watchtower:
-#   docker pull ghcr.io/kainpl/bambuddy-he:daily
+#   docker pull ghcr.io/kainpl/bamdude:daily
 #
 # Prerequisites:
 #   1. Log in to ghcr.io:
@@ -36,11 +36,11 @@ set -e
 # Configuration
 GHCR_REGISTRY="ghcr.io"
 DOCKERHUB_REGISTRY="docker.io"
-IMAGE_NAME="kainpl/bambuddy-he"
+IMAGE_NAME="kainpl/bamdude"
 GHCR_IMAGE="${GHCR_REGISTRY}/${IMAGE_NAME}"
 DOCKERHUB_IMAGE="${DOCKERHUB_REGISTRY}/${IMAGE_NAME}"
 PLATFORMS="linux/amd64,linux/arm64"
-BUILDER_NAME="bambuddy-he-builder"
+BUILDER_NAME="bamdude-builder"
 CONFIG_FILE="backend/app/core/config.py"
 CHANGELOG_FILE="CHANGELOG.md"
 
@@ -299,15 +299,15 @@ else
     # Build pull commands for the release body
     PULL_COMMANDS=""
     if [ "$PUSH_GHCR" = true ]; then
-        PULL_COMMANDS="docker pull ghcr.io/kainpl/bambuddy-he:daily"
+        PULL_COMMANDS="docker pull ghcr.io/kainpl/bamdude:daily"
     fi
     if [ "$PUSH_DOCKERHUB" = true ]; then
         if [ -n "$PULL_COMMANDS" ]; then
             PULL_COMMANDS="${PULL_COMMANDS}
 # or
-docker pull kainpl/bambuddy-he:daily"
+docker pull kainpl/bamdude:daily"
         else
-            PULL_COMMANDS="docker pull kainpl/bambuddy-he:daily"
+            PULL_COMMANDS="docker pull kainpl/bamdude:daily"
         fi
     fi
 

@@ -605,7 +605,7 @@ class TestCostAggregation:
         assert len(results) == 1
         assert results[0]["cost"] is None
 
-        # Archive cost should NOT have been overwritten — still 5.00
+        # Archive cost should NOT have been overwritten - still 5.00
         assert archive.cost == 5.00
 
     @pytest.mark.asyncio

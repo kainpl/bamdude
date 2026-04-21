@@ -10,18 +10,19 @@ from pathlib import Path
 
 import psutil
 from fastapi import APIRouter, Depends
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermissionIfAuthEnabled
+from backend.app.core.auth import RequirePermission
 from backend.app.core.config import APP_VERSION, settings
 from backend.app.core.database import get_db
+from backend.app.core.db_dialect import is_postgres
 from backend.app.core.permissions import Permission
 from backend.app.models.archive import PrintArchive
-from backend.app.models.filament import Filament
 from backend.app.models.printer import Printer
 from backend.app.models.project import Project
 from backend.app.models.smart_plug import SmartPlug
+from backend.app.models.spool import Spool
 from backend.app.models.user import User
 from backend.app.services.printer_manager import printer_manager
 
@@ -394,14 +395,14 @@ async def _get_storage_usage_cached(refresh: bool, max_age_seconds: int) -> dict
 @router.get("/info")
 async def get_system_info(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SYSTEM_READ),
+    _: User | None = RequirePermission(Permission.SYSTEM_READ),
 ):
     """Get comprehensive system information."""
 
     # Database stats
     archive_count = await db.scalar(select(func.count(PrintArchive.id)))
     printer_count = await db.scalar(select(func.count(Printer.id)))
-    filament_count = await db.scalar(select(func.count(Filament.id)))
+    spool_count = await db.scalar(select(func.count(Spool.id)))
     project_count = await db.scalar(select(func.count(Project.id)))
     smart_plug_count = await db.scalar(select(func.count(SmartPlug.id)))
 
@@ -464,6 +465,16 @@ async def get_system_info(
     # Python and system info
     import sys
 
+    # Database engine + version
+    if is_postgres():
+        engine_name = "PostgreSQL"
+        # SHOW server_version returns a single clean value (e.g. "17.2")
+        db_version_row = await db.execute(sa_text("SHOW server_version"))
+    else:
+        engine_name = "SQLite"
+        db_version_row = await db.execute(sa_text("SELECT sqlite_version()"))
+    db_version = db_version_row.scalar() or ""
+
     return {
         "app": {
             "version": APP_VERSION,
@@ -471,12 +482,14 @@ async def get_system_info(
             "archive_dir": str(archive_dir),
         },
         "database": {
+            "engine": engine_name,
+            "version": db_version,
             "archives": archive_count,
             "archives_completed": completed_count,
             "archives_failed": failed_count,
             "archives_printing": printing_count,
             "printers": printer_count,
-            "filaments": filament_count,
+            "spools": spool_count,
             "projects": project_count,
             "smart_plugs": smart_plug_count,
             "total_print_time_seconds": total_print_time,
@@ -530,11 +543,19 @@ async def get_system_info(
     }
 
 
+@router.get("/printer-models")
+async def get_printer_models():
+    """Get all known printer model codes with display names."""
+    from backend.app.utils.printer_model_names import PRINTER_MODEL_DISPLAY_NAMES
+
+    return PRINTER_MODEL_DISPLAY_NAMES
+
+
 @router.get("/storage-usage")
 async def get_storage_usage(
     refresh: bool = False,
     max_age_seconds: int = STORAGE_USAGE_CACHE_SECONDS,
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SYSTEM_READ),
+    _: User | None = RequirePermission(Permission.SYSTEM_READ),
 ):
     """Get storage usage breakdown for Bambuddy data directories."""
     max_age_seconds = max(0, min(max_age_seconds, 3600))

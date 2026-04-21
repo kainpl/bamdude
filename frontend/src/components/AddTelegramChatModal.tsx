@@ -140,7 +140,6 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
     bed_cooled: 'notifications.bedCooledLabel',
     first_layer_complete: 'notifications.firstLayerCompleteLabel',
     queue_job_added: 'notifications.jobAdded',
-    queue_job_assigned: 'notifications.jobAssigned',
     queue_job_started: 'notifications.jobStarted',
     queue_job_waiting: 'notifications.jobWaiting',
     queue_job_skipped: 'notifications.jobSkipped',

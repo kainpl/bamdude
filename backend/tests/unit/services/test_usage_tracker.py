@@ -61,7 +61,7 @@ def _make_printer_manager(state=None):
 
 
 class TestOnPrintStart:
-    """Tests for on_print_start — capturing AMS remain%."""
+    """Tests for on_print_start - capturing AMS remain%."""
 
     @pytest.fixture(autouse=True)
     def _clear_sessions(self):
@@ -143,7 +143,9 @@ class TestOnPrintCompleteAMSDelta:
         assignment = _make_assignment()
 
         db = AsyncMock()
-        # First execute → assignment, second → spool
+        # on_print_complete without archive_id skips the 3MF path entirely,
+        # so only the AMS-fallback path runs: one lookup for SpoolAssignment
+        # (via _resolve_spool_id_for_tray, snapshot empty) then one for Spool.
         db.execute = AsyncMock(
             side_effect=[
                 MagicMock(scalar_one_or_none=MagicMock(return_value=assignment)),
@@ -474,7 +476,7 @@ class TestSpoolAssignmentSnapshot:
         archive = MagicMock()
         archive.file_path = "archives/test.3mf"
 
-        # db: archive, queue_item(None), spool — NO assignment query needed
+        # db: archive, queue_item(None), spool - NO assignment query needed
         db = AsyncMock()
         db.execute = AsyncMock(
             side_effect=[
@@ -571,11 +573,13 @@ class TestSpoolAssignmentSnapshot:
         ams_data = [{"id": 0, "tray": [{"id": 0, "remain": 70}]}]
         pm = _make_printer_manager(_make_printer_state(ams_data))
 
-        # db returns no live assignment, then spool from snapshot spool_id
+        # archive_id is None so the 3MF path is skipped entirely. Only the AMS
+        # fallback path runs: live-assignment lookup in _resolve_spool_id_for_tray
+        # (returns None -> falls through to snapshot) then spool lookup by snapshot id.
         db = AsyncMock()
         db.execute = AsyncMock(
             side_effect=[
-                MagicMock(scalar_one_or_none=MagicMock(return_value=None)),
+                MagicMock(scalar_one_or_none=MagicMock(return_value=None)),  # live assignment
                 MagicMock(scalar_one_or_none=MagicMock(return_value=spool)),
             ]
         )
@@ -609,7 +613,9 @@ class TestSpoolAssignmentSnapshot:
         ams_data = [{"id": 0, "tray": [{"id": 0, "remain": 70}]}]
         pm = _make_printer_manager(_make_printer_state(ams_data))
 
-        # db returns assignment then spool
+        # archive_id is None so the 3MF path is skipped entirely. Only the AMS
+        # fallback path runs: live SpoolAssignment lookup (empty snapshot falls
+        # back to live query) then Spool lookup.
         db = AsyncMock()
         db.execute = AsyncMock(
             side_effect=[
@@ -661,7 +667,7 @@ class TestSpoolAssignmentSnapshot:
 
         # db: archive, queue_item(None), live assignment(None), spool,
         # then cost aggregation queries
-        # NOTE: No assignment in db — it was deleted by on_ams_change mid-print!
+        # NOTE: No assignment in db - it was deleted by on_ams_change mid-print!
         db = AsyncMock()
         db.execute = AsyncMock(
             side_effect=[

@@ -185,7 +185,7 @@ describe('SpoolFormModal quick-add toggle', () => {
     // PA Profile tab should be visible initially
     expect(screen.getByText('PA Profile')).toBeInTheDocument();
 
-    // Toggle quick-add on — the toggle is a button[role="switch"] sibling of the label
+    // Toggle quick-add on - the toggle is a button[role="switch"] sibling of the label
     const toggleButtons = screen.getAllByRole('button');
     const quickAddToggle = toggleButtons.find(btn =>
       btn.getAttribute('type') === 'button' &&

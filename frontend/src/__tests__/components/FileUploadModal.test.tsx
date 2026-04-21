@@ -564,7 +564,7 @@ describe('FileUploadModal', () => {
       await user.upload(fileInput, badFile);
       expect(screen.getByText('Only .gcode files allowed')).toBeInTheDocument();
 
-      // Then add a valid file — error should clear
+      // Then add a valid file - error should clear
       const goodFile = new File(['content'], 'model.gcode', { type: 'application/octet-stream' });
       await user.upload(fileInput, goodFile);
       expect(screen.queryByText('Only .gcode files allowed')).not.toBeInTheDocument();

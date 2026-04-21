@@ -533,7 +533,7 @@ export function SpoolFormModal({
           </button>
         </div>
 
-        {/* Quick Add toggle — only in create mode */}
+        {/* Quick Add toggle - only in create mode */}
         {!isEditing && (
           <div className="flex items-center justify-between px-4 py-2 border-b border-bambu-dark-tertiary flex-shrink-0">
             <div className="flex items-center gap-2">

@@ -1,12 +1,12 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, Unlock, ChevronDown, Save, Mail, Flame } from 'lucide-react';
+import { Loader2, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, ChevronDown, Save, Mail, Flame, Code, Pencil } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { api } from '../api/client';
+import { api, macrosApi } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import { formatDateOnly } from '../utils/date';
 import { getCurrencySymbol, SUPPORTED_CURRENCIES } from '../utils/currency';
-import type { AppSettings, AppSettingsUpdate, SmartPlug, SmartPlugStatus, NotificationProvider, NotificationTemplate, UpdateStatus, GitHubBackupStatus, CloudAuthStatus, UserCreate, UserUpdate, UserResponse, StorageUsageResponse } from '../api/client';
+import type { AppSettings, AppSettingsUpdate, SmartPlug, SmartPlugStatus, NotificationProvider, NotificationTemplate, UpdateStatus, GitBackupStatus, CloudAuthStatus, UserCreate, UserUpdate, UserResponse, StorageUsageResponse, Macro, MacroCreate, MacroUpdate } from '../api/client';
 import { Card, CardContent, CardHeader } from '../components/Card';
 import { Button } from '../components/Button';
 import { SmartPlugCard } from '../components/SmartPlugCard';
@@ -16,14 +16,16 @@ import { AddNotificationModal } from '../components/AddNotificationModal';
 import { NotificationTemplateEditor } from '../components/NotificationTemplateEditor';
 import { NotificationLogViewer } from '../components/NotificationLogViewer';
 import { ConfirmModal } from '../components/ConfirmModal';
+import { GcodeEditor } from '../components/GcodeEditor';
 import { CreateUserAdvancedAuthModal } from '../components/CreateUserAdvancedAuthModal';
 import { SpoolmanSettings } from '../components/SpoolmanSettings';
 import { SpoolCatalogSettings } from '../components/SpoolCatalogSettings';
 import { ColorCatalogSettings } from '../components/ColorCatalogSettings';
 import { ExternalLinksSettings } from '../components/ExternalLinksSettings';
 import { VirtualPrinterList } from '../components/VirtualPrinterList';
-import { GitHubBackupSettings } from '../components/GitHubBackupSettings';
+import { GitBackupSettings } from '../components/GitBackupSettings';
 import { EmailSettings } from '../components/EmailSettings';
+import { LDAPSettings } from '../components/LDAPSettings';
 import { APIBrowser } from '../components/APIBrowser';
 import { Toggle } from '../components/Toggle';
 import { getGroupName, getGroupDescription } from '../utils/groupI18n';
@@ -35,9 +37,9 @@ import { useTheme, type ThemeStyle, type DarkBackground, type LightBackground, t
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Palette } from 'lucide-react';
 
-const validTabs = ['general', 'network', 'plugs', 'notifications', 'filament', 'apikeys', 'virtual-printer', 'users', 'backup'] as const;
+const validTabs = ['general', 'printing', 'filament', 'notifications', 'plugs', 'network', 'virtual-printer', 'apikeys', 'users', 'backup'] as const;
 type TabType = typeof validTabs[number];
-type UsersSubTab = 'users' | 'email';
+type UsersSubTab = 'users' | 'email' | 'ldap';
 
 const STORAGE_CATEGORY_COLORS: Record<string, string> = {
   database: 'bg-blue-600',
@@ -77,7 +79,7 @@ export function SettingsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { t, i18n } = useTranslation();
   const { showToast } = useToast();
-  const { authEnabled, user, refreshAuth, hasPermission } = useAuth();
+  const { authEnabled, user, hasPermission } = useAuth();
   const {
     mode,
     darkStyle, darkBackground, darkAccent,
@@ -131,7 +133,6 @@ export function SettingsPage() {
   const [showClearStorageConfirm, setShowClearStorageConfirm] = useState(false);
   const [showBulkPlugConfirm, setShowBulkPlugConfirm] = useState<'on' | 'off' | null>(null);
   const [showReleaseNotes, setShowReleaseNotes] = useState(false);
-  const [showDisableAuthConfirm, setShowDisableAuthConfirm] = useState(false);
   const [showChangePasswordModal, setShowChangePasswordModal] = useState(false);
   const [changePasswordData, setChangePasswordData] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' });
   const [changePasswordLoading, setChangePasswordLoading] = useState(false);
@@ -170,6 +171,21 @@ export function SettingsPage() {
   // External camera test state
   const [extCameraTestResults, setExtCameraTestResults] = useState<Record<number, { success: boolean; error?: string; resolution?: string } | null>>({});
   const [extCameraTestLoading, setExtCameraTestLoading] = useState<Record<number, boolean>>({});
+
+  // Macro management state
+  const [showMacroModal, setShowMacroModal] = useState(false);
+  const [editingMacro, setEditingMacro] = useState<Macro | null>(null);
+  const [macroForm, setMacroForm] = useState<MacroCreate>({
+    name: '',
+    description: null,
+    printer_models: ['*'],
+    swap_mode_only: false,
+    swap_profile: null,
+    event: 'swap_mode_start',
+    gcode: '',
+    enabled: true,
+  });
+  const [deleteMacroId, setDeleteMacroId] = useState<number | null>(null);
 
   const handleDefaultViewChange = (path: string) => {
     setDefaultViewState(path);
@@ -217,6 +233,17 @@ export function SettingsPage() {
     queryKey: ['settings'],
     queryFn: api.getSettings,
   });
+
+  // Only used to hide SQLite-specific actions (VACUUM) when the deployment
+  // runs on PostgreSQL. Cached for the session - the engine doesn't change
+  // at runtime.
+  const { data: systemInfo } = useQuery({
+    queryKey: ['system-info'],
+    queryFn: api.getSystemInfo,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+  });
+  const dbIsSqlite = systemInfo?.database.engine !== 'PostgreSQL';
 
   const {
     data: storageUsage,
@@ -336,6 +363,94 @@ export function SettingsPage() {
     },
   });
 
+  // Macros
+  const { data: macros } = useQuery({
+    queryKey: ['macros'],
+    queryFn: macrosApi.getMacros,
+    enabled: activeTab === 'printing',
+  });
+
+  const { data: macroMeta } = useQuery({
+    queryKey: ['macroMeta'],
+    queryFn: macrosApi.getMacroMeta,
+    enabled: activeTab === 'printing',
+  });
+
+  const createMacroMutation = useMutation({
+    mutationFn: (data: MacroCreate) => macrosApi.createMacro(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['macros'] });
+      setShowMacroModal(false);
+      showToast(t('settings.toast.settingsSaved'), 'success');
+    },
+    onError: (error: Error) => {
+      showToast(error.message, 'error');
+    },
+  });
+
+  const updateMacroMutation = useMutation({
+    mutationFn: ({ id, data }: { id: number; data: MacroUpdate }) => macrosApi.updateMacro(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['macros'] });
+      setShowMacroModal(false);
+      setEditingMacro(null);
+      showToast(t('settings.toast.settingsSaved'), 'success');
+    },
+    onError: (error: Error) => {
+      showToast(error.message, 'error');
+    },
+  });
+
+  const deleteMacroMutation = useMutation({
+    mutationFn: (id: number) => macrosApi.deleteMacro(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['macros'] });
+      setDeleteMacroId(null);
+      showToast(t('settings.toast.settingsSaved'), 'success');
+    },
+    onError: (error: Error) => {
+      showToast(error.message, 'error');
+    },
+  });
+
+  const handleOpenAddMacro = () => {
+    setEditingMacro(null);
+    setMacroForm({
+      name: '',
+      description: null,
+      printer_models: ['*'],
+      swap_mode_only: false,
+      swap_profile: null,
+      event: 'swap_mode_start',
+      gcode: '',
+      enabled: true,
+    });
+    setShowMacroModal(true);
+  };
+
+  const handleOpenEditMacro = (macro: Macro) => {
+    setEditingMacro(macro);
+    setMacroForm({
+      name: macro.name,
+      description: macro.description,
+      printer_models: macro.printer_models,
+      swap_mode_only: macro.swap_mode_only,
+      swap_profile: macro.swap_profile,
+      event: macro.event,
+      gcode: macro.gcode,
+      enabled: macro.enabled,
+    });
+    setShowMacroModal(true);
+  };
+
+  const handleSaveMacro = () => {
+    if (editingMacro) {
+      updateMacroMutation.mutate({ id: editingMacro.id, data: macroForm });
+    } else {
+      createMacroMutation.mutate(macroForm);
+    }
+  };
+
   const { data: printers } = useQuery({
     queryKey: ['printers'],
     queryFn: api.getPrinters,
@@ -391,10 +506,10 @@ export function SettingsPage() {
     refetchInterval: activeTab === 'network' ? 5000 : false, // Poll every 5s when on Network tab
   });
 
-  // GitHub backup status for Backup tab indicator
-  const { data: githubBackupStatus } = useQuery<GitHubBackupStatus>({
-    queryKey: ['github-backup-status'],
-    queryFn: api.getGitHubBackupStatus,
+  // Git backup status for Backup tab indicator
+  const { data: gitBackupStatus } = useQuery<GitBackupStatus>({
+    queryKey: ['git-backup-status'],
+    queryFn: api.getGitBackupStatus,
   });
 
   // Cloud auth status for Backup tab indicator
@@ -407,6 +522,11 @@ export function SettingsPage() {
   const { data: advancedAuthStatus = { advanced_auth_enabled: false, smtp_configured: false } } = useQuery({
     queryKey: ['advancedAuthStatus'],
     queryFn: () => api.getAdvancedAuthStatus(),
+  });
+
+  const { data: ldapStatus } = useQuery({
+    queryKey: ['ldapStatus'],
+    queryFn: () => api.getLDAPStatus(),
   });
 
   // User management queries and mutations
@@ -687,7 +807,7 @@ export function SettingsPage() {
     mutationFn: api.updateSettings,
     onSuccess: (data) => {
       queryClient.setQueryData(['settings'], data);
-      // Don't call setLocalSettings(data) here — it would overwrite in-progress
+      // Don't call setLocalSettings(data) here - it would overwrite in-progress
       // user input (e.g. typing a hostname) with the stale saved snapshot,
       // causing the text field to reset mid-typing. Instead, let the useEffect
       // re-compare the updated `settings` with current `localSettings` and
@@ -745,6 +865,11 @@ export function SettingsPage() {
       (settings.queue_drying_block ?? false) !== (localSettings.queue_drying_block ?? false) ||
       (settings.ambient_drying_enabled ?? false) !== (localSettings.ambient_drying_enabled ?? false) ||
       (settings.drying_presets ?? '') !== (localSettings.drying_presets ?? '') ||
+      (settings.stagger_enabled ?? false) !== (localSettings.stagger_enabled ?? false) ||
+      (settings.stagger_concurrent ?? 2) !== (localSettings.stagger_concurrent ?? 2) ||
+      (settings.stagger_interval_minutes ?? 5) !== (localSettings.stagger_interval_minutes ?? 5) ||
+      (settings.stagger_wait_for_bed ?? true) !== (localSettings.stagger_wait_for_bed ?? true) ||
+      (settings.stagger_strict_for_direct_dispatch ?? false) !== (localSettings.stagger_strict_for_direct_dispatch ?? false) ||
       settings.per_printer_mapping_expanded !== localSettings.per_printer_mapping_expanded ||
       settings.date_format !== localSettings.date_format ||
       settings.time_format !== localSettings.time_format ||
@@ -814,6 +939,11 @@ export function SettingsPage() {
         queue_drying_block: localSettings.queue_drying_block,
         ambient_drying_enabled: localSettings.ambient_drying_enabled,
         drying_presets: localSettings.drying_presets,
+        stagger_enabled: localSettings.stagger_enabled,
+        stagger_concurrent: localSettings.stagger_concurrent,
+        stagger_interval_minutes: localSettings.stagger_interval_minutes,
+        stagger_wait_for_bed: localSettings.stagger_wait_for_bed,
+        stagger_strict_for_direct_dispatch: localSettings.stagger_strict_for_direct_dispatch,
         per_printer_mapping_expanded: localSettings.per_printer_mapping_expanded,
         date_format: localSettings.date_format,
         time_format: localSettings.time_format,
@@ -935,14 +1065,17 @@ export function SettingsPage() {
   }
 
   return (
-    <div className="p-4 md:p-8">
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold text-white">{t('settings.title')}</h1>
-        <p className="text-bambu-gray">{t('settings.configureBambuddy')}</p>
+    <div className="p-4 md:p-6">
+      <div className="mb-4">
+        <div className="flex items-center gap-3">
+          {/*<Disc3 className="w-6 h-6 text-bambu-green" />*/}
+          <h1 className="text-2xl font-bold text-white">{t('settings.title')}</h1>
+        </div>
+        <p className="text-sm text-bambu-gray">{t('settings.configureBamdude')}</p>
       </div>
 
       {/* Tab Navigation */}
-      <div className="flex flex-wrap gap-1 mb-6 border-b border-bambu-dark-tertiary">
+      <div className="flex flex-wrap gap-1 mb-4 border-b border-bambu-dark-tertiary">
         <button
           onClick={() => handleTabChange('general')}
           className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px ${
@@ -954,20 +1087,26 @@ export function SettingsPage() {
           {t('settings.tabs.general')}
         </button>
         <button
-          onClick={() => handleTabChange('plugs')}
+          onClick={() => handleTabChange('printing')}
           className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
-            activeTab === 'plugs'
+            activeTab === 'printing'
               ? 'text-bambu-green border-bambu-green'
               : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
           }`}
         >
-          <Plug className="w-4 h-4" />
-          {t('settings.tabs.smartPlugs')}
-          {smartPlugs && smartPlugs.length > 0 && (
-            <span className="text-xs bg-bambu-dark-tertiary px-1.5 py-0.5 rounded-full">
-              {smartPlugs.length}
-            </span>
-          )}
+          <Printer className="w-4 h-4" />
+          {t('settings.tabs.printing')}
+        </button>
+        <button
+          onClick={() => handleTabChange('filament')}
+          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+            activeTab === 'filament'
+              ? 'text-bambu-green border-bambu-green'
+              : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+          }`}
+        >
+          <Cylinder className="w-4 h-4" />
+          {t('settings.tabs.filament')}
         </button>
         <button
           onClick={() => handleTabChange('notifications')}
@@ -986,15 +1125,20 @@ export function SettingsPage() {
           )}
         </button>
         <button
-          onClick={() => handleTabChange('filament')}
+          onClick={() => handleTabChange('plugs')}
           className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
-            activeTab === 'filament'
+            activeTab === 'plugs'
               ? 'text-bambu-green border-bambu-green'
               : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
           }`}
         >
-          <Cylinder className="w-4 h-4" />
-          {t('settings.tabs.filament')}
+          <Plug className="w-4 h-4" />
+          {t('settings.tabs.smartPlugs')}
+          {smartPlugs && smartPlugs.length > 0 && (
+            <span className="text-xs bg-bambu-dark-tertiary px-1.5 py-0.5 rounded-full">
+              {smartPlugs.length}
+            </span>
+          )}
         </button>
         <button
           onClick={() => handleTabChange('network')}
@@ -1007,6 +1151,18 @@ export function SettingsPage() {
           <Wifi className="w-4 h-4" />
           {t('settings.tabs.network')}
           <span className={`w-2 h-2 rounded-full ${mqttStatus?.enabled ? 'bg-green-400' : 'bg-gray-500'}`} />
+        </button>
+        <button
+          onClick={() => handleTabChange('virtual-printer')}
+          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+            activeTab === 'virtual-printer'
+              ? 'text-bambu-green border-bambu-green'
+              : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+          }`}
+        >
+          <Printer className="w-4 h-4" />
+          {t('settings.tabs.virtualPrinter')}
+          <span className={`w-2 h-2 rounded-full ${virtualPrinterRunning ? 'bg-green-400' : 'bg-gray-500'}`} />
         </button>
         <button
           onClick={() => handleTabChange('apikeys')}
@@ -1023,18 +1179,6 @@ export function SettingsPage() {
               {apiKeys.length}
             </span>
           )}
-        </button>
-        <button
-          onClick={() => handleTabChange('virtual-printer')}
-          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
-            activeTab === 'virtual-printer'
-              ? 'text-bambu-green border-bambu-green'
-              : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
-          }`}
-        >
-          <Printer className="w-4 h-4" />
-          {t('settings.tabs.virtualPrinter')}
-          <span className={`w-2 h-2 rounded-full ${virtualPrinterRunning ? 'bg-green-400' : 'bg-gray-500'}`} />
         </button>
         <button
           onClick={() => handleTabChange('users')}
@@ -1060,13 +1204,14 @@ export function SettingsPage() {
         >
           <Database className="w-4 h-4" />
           {t('settings.tabs.backup')}
-          <span className={`w-2 h-2 rounded-full ${cloudAuthStatus?.is_authenticated && githubBackupStatus?.configured && githubBackupStatus?.enabled ? 'bg-green-400' : 'bg-gray-500'}`} />
+          <span className={`w-2 h-2 rounded-full ${cloudAuthStatus?.is_authenticated && gitBackupStatus?.configured && gitBackupStatus?.enabled ? 'bg-green-400' : 'bg-gray-500'}`} />
         </button>
       </div>
+      {/* ══════ GENERAL TAB ══════ */}
       {activeTab === 'general' && (
-      <div className="flex flex-col lg:flex-row gap-6 lg:gap-8">
-        {/* Left Column - General Settings */}
-        <div className="space-y-6 flex-1 lg:max-w-xl">
+      <div className="flex flex-col lg:flex-row gap-4">
+        {/* ── Left Column ── */}
+        <div className="space-y-4 lg:w-1/2">
           <Card>
             <CardHeader>
               <h2 className="text-lg font-semibold text-white">{t('settings.general')}</h2>
@@ -1105,11 +1250,13 @@ export function SettingsPage() {
                     onChange={(e) => handleDefaultViewChange(e.target.value)}
                     className="w-full px-3 py-2 pr-10 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none appearance-none cursor-pointer"
                   >
-                    {defaultNavItems.map((item) => (
-                      <option key={item.id} value={item.to}>
-                        {t(item.labelKey)}
-                      </option>
-                    ))}
+                    {defaultNavItems
+                      .filter((item) => ['printers', 'archives', 'queue', 'stats', 'maintenance', 'projects', 'inventory', 'files'].includes(item.id))
+                      .map((item) => (
+                        <option key={item.id} value={item.to}>
+                          {t(item.labelKey)}
+                        </option>
+                      ))}
                   </select>
                   <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
                 </div>
@@ -1196,35 +1343,6 @@ export function SettingsPage() {
                   {t('settings.preferredSlicerDescription')}
                 </p>
               </div>
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-white">{t('settings.sidebarOrder')}</p>
-                  <p className="text-sm text-bambu-gray">
-                    {t('settings.sidebarOrderDescription')}
-                    {authEnabled && hasPermission('settings:update') && ` ${t('settings.sidebarOrderSetDefaultHint')}`}
-                  </p>
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={handleResetSidebarOrder}
-                  >
-                    <RotateCcw className="w-4 h-4" />
-                    {t('settings.reset')}
-                  </Button>
-                  {authEnabled && hasPermission('settings:update') && (
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm text-bambu-gray whitespace-nowrap">{t('settings.setDefault')}</span>
-                      <Toggle
-                        checked={isDefaultSidebarEnabled}
-                        onChange={handleToggleDefaultSidebarOrder}
-                        disabled={isLoading}
-                      />
-                    </div>
-                  )}
-                </div>
-              </div>
             </CardContent>
           </Card>
 
@@ -1235,7 +1353,7 @@ export function SettingsPage() {
                 {t('settings.appearance')}
               </h2>
             </CardHeader>
-            <CardContent className="space-y-6">
+            <CardContent className="space-y-4">
               {/* Dark Mode Settings */}
               <div className={`space-y-3 p-4 rounded-lg border ${mode === 'dark' ? 'border-bambu-green bg-bambu-green/5' : 'border-bambu-dark-tertiary'}`}>
                 <h3 className="text-sm font-medium text-white flex items-center gap-2">
@@ -1343,63 +1461,424 @@ export function SettingsPage() {
             </CardContent>
           </Card>
 
+          {/* Sidebar Links */}
+          <ExternalLinksSettings />
+
+          {/* Sidebar Order */}
           <Card>
             <CardHeader>
-              <h2 className="text-lg font-semibold text-white">{t('settings.archiveSettings')}</h2>
+              <h2 className="text-lg font-semibold text-white">{t('settings.sidebar')}</h2>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-white">{t('settings.saveThumbnails')}</p>
+                  <p className="text-white">{t('settings.sidebarOrder')}</p>
                   <p className="text-sm text-bambu-gray">
-                    {t('settings.saveThumbnailsDescription')}
+                    {t('settings.sidebarOrderDescription')}
+                    {authEnabled && hasPermission('settings:update') && ` ${t('settings.sidebarOrderSetDefaultHint')}`}
                   </p>
                 </div>
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={localSettings.save_thumbnails}
-                    onChange={(e) => updateSetting('save_thumbnails', e.target.checked)}
-                    className="sr-only peer"
-                  />
-                  <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
-                </label>
-              </div>
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-white">{t('settings.captureFinishPhoto')}</p>
-                  <p className="text-sm text-bambu-gray">
-                    {t('settings.captureFinishPhotoDescription')}
-                  </p>
+                <div className="flex items-center gap-2 shrink-0">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleResetSidebarOrder}
+                  >
+                    <RotateCcw className="w-4 h-4" />
+                    {t('settings.reset')}
+                  </Button>
+                  {authEnabled && hasPermission('settings:update') && (
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-bambu-gray whitespace-nowrap">{t('settings.setDefault')}</span>
+                      <Toggle
+                        checked={isDefaultSidebarEnabled}
+                        onChange={handleToggleDefaultSidebarOrder}
+                        disabled={isLoading}
+                      />
+                    </div>
+                  )}
                 </div>
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={localSettings.capture_finish_photo}
-                    onChange={(e) => updateSetting('capture_finish_photo', e.target.checked)}
-                    className="sr-only peer"
-                  />
-                  <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
-                </label>
               </div>
-              {localSettings.capture_finish_photo && ffmpegStatus && !ffmpegStatus.installed && (
-                <div className="flex items-start gap-2 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
-                  <AlertTriangle className="w-5 h-5 text-yellow-500 flex-shrink-0 mt-0.5" />
-                  <div className="text-sm">
-                    <p className="text-yellow-500 font-medium">{t('settings.ffmpegNotInstalled')}</p>
-                    <p className="text-bambu-gray mt-1">
-                      {t('settings.ffmpegRequired')}
-                    </p>
-                  </div>
-                </div>
-              )}
             </CardContent>
           </Card>
 
         </div>
 
-        {/* Second Column - Camera, Cost, AMS & Spoolman */}
-        <div className="space-y-6 flex-1 lg:max-w-md">
+        {/* ── /Left Column ── */}
+
+        {/* ── Right Column ── */}
+        <div className="space-y-4 lg:w-1/2">
+
+          <Card>
+            <CardHeader>
+              <h2 className="text-lg font-semibold text-white">{t('settings.updates')}</h2>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <p className="text-xs font-medium text-bambu-gray uppercase tracking-wider">{t('settings.printerFirmware')}</p>
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-white">{t('settings.checkPrinterFirmware')}</p>
+                  <p className="text-sm text-bambu-gray">
+                    {t('settings.checkFirmwareDescription')}
+                  </p>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={localSettings.check_printer_firmware ?? true}
+                    onChange={(e) => updateSetting('check_printer_firmware', e.target.checked)}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                </label>
+              </div>
+              <div className="border-t border-bambu-dark-tertiary pt-4">
+                <p className="text-xs font-medium text-bambu-gray uppercase tracking-wider mb-4">{t('settings.bamdudeSoftware')}</p>
+              </div>
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-white">{t('settings.checkForUpdatesLabel')}</p>
+                  <p className="text-sm text-bambu-gray">
+                    {t('settings.autoCheckDescription')}
+                  </p>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={localSettings.check_updates}
+                    onChange={(e) => updateSetting('check_updates', e.target.checked)}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                </label>
+              </div>
+              <div className={`flex items-center justify-between ${!localSettings.check_updates ? 'opacity-50' : ''}`}>
+                <div>
+                  <p className="text-white">{t('settings.includeBetaUpdates')}</p>
+                  <p className="text-sm text-bambu-gray">
+                    {t('settings.includeBetaUpdatesDesc')}
+                  </p>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={localSettings.include_beta_updates ?? false}
+                    onChange={(e) => updateSetting('include_beta_updates', e.target.checked)}
+                    disabled={!localSettings.check_updates}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                </label>
+              </div>
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <div>
+                    <p className="text-white">{t('settings.currentVersion')}</p>
+                    <p className="text-sm text-bambu-gray">v{versionInfo?.version || '...'}</p>
+                  </div>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => refetchUpdateCheck()}
+                    disabled={isCheckingUpdate}
+                  >
+                    {isCheckingUpdate ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <RefreshCw className="w-4 h-4" />
+                    )}
+                    {t('settings.checkNow')}
+                  </Button>
+                </div>
+
+                {updateCheck?.update_available ? (
+                  <div className="mt-4 p-3 bg-bambu-green/10 border border-bambu-green/30 rounded-lg">
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <p className="text-bambu-green font-medium">
+                          Update available: v{updateCheck.latest_version}
+                        </p>
+                        {updateCheck.release_name && updateCheck.release_name !== updateCheck.latest_version && (
+                          <p className="text-sm text-bambu-gray">{updateCheck.release_name}</p>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {updateCheck.release_notes && (
+                          <button
+                            onClick={() => setShowReleaseNotes(true)}
+                            className="text-bambu-gray hover:text-white transition-colors text-sm underline"
+                          >
+                            {t('settings.releaseNotes')}
+                          </button>
+                        )}
+                        {updateCheck.release_url && (
+                          <a
+                            href={updateCheck.release_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-bambu-gray hover:text-white transition-colors"
+                            title={t('settings.viewReleaseOnGitHub')}
+                          >
+                            <ExternalLink className="w-4 h-4" />
+                          </a>
+                        )}
+                      </div>
+                    </div>
+
+                    {updateStatus?.status === 'downloading' || updateStatus?.status === 'installing' ? (
+                      <div className="mt-3">
+                        <div className="flex items-center gap-2 text-sm text-bambu-gray">
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          <span>{updateStatus.message}</span>
+                        </div>
+                        <div className="mt-2 w-full bg-bambu-dark-tertiary rounded-full h-2">
+                          <div
+                            className="bg-bambu-green h-2 rounded-full transition-all duration-300"
+                            style={{ width: `${updateStatus.progress}%` }}
+                          />
+                        </div>
+                      </div>
+                    ) : updateStatus?.status === 'complete' ? (
+                      <div className="mt-3 p-2 bg-bambu-green/20 rounded text-sm text-bambu-green">
+                        {updateStatus.message}
+                      </div>
+                    ) : updateStatus?.status === 'error' ? (
+                      <div className="mt-3 p-2 bg-red-500/20 rounded text-sm text-red-400">
+                        {updateStatus.error || updateStatus.message}
+                      </div>
+                    ) : updateCheck?.is_docker ? (
+                      <div className="mt-3 p-3 bg-bambu-dark-tertiary rounded-lg">
+                        <p className="text-sm text-bambu-gray mb-2">
+                          {t('settings.updateViaDocker')}
+                        </p>
+                        <code className="block text-xs bg-bambu-dark p-2 rounded text-bambu-green font-mono">
+                          docker compose pull && docker compose up -d
+                        </code>
+                      </div>
+                    ) : (
+                      <Button
+                        className="mt-3"
+                        onClick={() => applyUpdateMutation.mutate()}
+                        disabled={applyUpdateMutation.isPending}
+                      >
+                        {applyUpdateMutation.isPending ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Download className="w-4 h-4" />
+                        )}
+                        {t('settings.installUpdate')}
+                      </Button>
+                    )}
+                  </div>
+                ) : updateCheck?.error ? (
+                  <div className="mt-2 p-2 bg-red-500/10 border border-red-500/30 rounded text-sm text-red-400">
+                    {t('settings.failedToCheckUpdates', { error: updateCheck.error })}
+                  </div>
+                ) : updateCheck && !updateCheck.update_available ? (
+                  <p className="mt-2 text-sm text-bambu-gray">
+                    {t('settings.latestVersionRunning')}
+                  </p>
+                ) : null}
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Data Management */}
+          <Card>
+            <CardHeader>
+              <h2 className="text-lg font-semibold text-white">{t('settings.dataManagement')}</h2>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-white">{t('settings.clearNotificationLogs')}</p>
+                  <p className="text-sm text-bambu-gray">
+                    {t('settings.clearNotificationLogsDescription')}
+                  </p>
+                </div>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setShowClearLogsConfirm(true)}
+                >
+                  <Trash2 className="w-4 h-4" />
+                  {t('common.clear')}
+                </Button>
+              </div>
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-white">{t('settings.resetUiPreferences')}</p>
+                  <p className="text-sm text-bambu-gray">
+                    {t('settings.resetUiPreferencesDescription')}
+                  </p>
+                </div>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setShowClearStorageConfirm(true)}
+                >
+                  <Trash2 className="w-4 h-4" />
+                  {t('settings.reset')}
+                </Button>
+              </div>
+              {dbIsSqlite && (
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-white">{t('settings.optimizeDatabase')}</p>
+                    <p className="text-sm text-bambu-gray">
+                      {t('settings.optimizeDatabaseDescription')}
+                    </p>
+                  </div>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={async () => {
+                      try {
+                        const result = await api.optimizeDatabase();
+                        if (result.success) {
+                          const sizeMb = (result.db_size / 1024 / 1024).toFixed(1);
+                          showToast(t('settings.toast.databaseOptimized', { size: sizeMb }));
+                        }
+                      } catch {
+                        showToast(t('settings.toast.databaseOptimizeFailed'), 'error');
+                      }
+                    }}
+                  >
+                    <Database className="w-4 h-4" />
+                    {t('settings.optimize')}
+                  </Button>
+                </div>
+              )}
+              <div className="pt-4 border-t border-bambu-dark-tertiary">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-white">{t('settings.storageUsage', 'Storage Usage')}</p>
+                    <p className="text-sm text-bambu-gray">
+                      {t('settings.storageUsageDescription', 'Breakdown of data usage by category')}
+                    </p>
+                  </div>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleStorageUsageRefresh}
+                    disabled={storageUsageFetching || storageUsageRefreshing}
+                  >
+                    <RefreshCw
+                      className={`w-4 h-4 ${storageUsageFetching || storageUsageRefreshing ? 'animate-spin' : ''}`}
+                    />
+                    {t('common.refresh', 'Refresh')}
+                  </Button>
+                </div>
+                <div className="mt-3">
+                  {storageUsageLoading ? (
+                    <div className="flex items-center gap-2 text-sm text-bambu-gray">
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      {t('common.loading', 'Loading')}
+                    </div>
+                  ) : storageUsage ? (
+                    <>
+                      <div className="w-full h-3 bg-bambu-dark rounded-full overflow-hidden flex">
+                        {storageUsage.categories
+                          .filter((category) => category.bytes > 0)
+                          .map((category, index) => (
+                            <div
+                              key={category.key}
+                              className={`${getStorageColor(category.key, index)} h-full`}
+                              style={{ width: `${category.percent_of_total}%` }}
+                              title={`${category.label}: ${category.formatted}`}
+                            />
+                          ))}
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-3">
+                        {storageUsage.categories
+                          .filter((category) => category.bytes > 0)
+                          .map((category, index) => (
+                            <div key={category.key} className="flex items-center gap-2 text-xs">
+                              <span
+                                className={`w-3 h-3 rounded-full ${getStorageColor(category.key, index)}`}
+                              />
+                              <span className="text-bambu-gray">{category.label}</span>
+                              <span className="text-white">{category.formatted}</span>
+                              <span className="text-bambu-gray">({category.percent_of_total.toFixed(1)}%)</span>
+                            </div>
+                          ))}
+                      </div>
+                      <div className="mt-2 text-xs text-bambu-gray">
+                        {t('settings.storageUsageTotal', 'Total')}: <span className="text-white">{storageUsage.total_formatted}</span>
+                        {storageUsage.scan_errors > 0 && (
+                          <span className="ml-2 text-amber-400">
+                            {t('settings.storageUsageErrors', 'Scan errors')}: {storageUsage.scan_errors}
+                          </span>
+                        )}
+                      </div>
+                      {storageUsage.other_breakdown?.length > 0 && (
+                        <div className="mt-4">
+                          <p className="text-xs text-bambu-gray mb-2">
+                            {t('settings.storageUsageOtherBreakdown', 'Other breakdown')}
+                          </p>
+                          <div className="space-y-2">
+                            {storageUsage.other_breakdown.map((item) => (
+                              <div key={`${item.bucket}-${item.kind}`} className="flex items-center justify-between text-xs">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-white">{item.label}</span>
+                                  <span
+                                    className={`px-2 py-0.5 rounded-full border ${
+                                      item.kind === 'system'
+                                        ? 'border-slate-500 text-slate-300'
+                                        : 'border-bambu-green text-bambu-green'
+                                    }`}
+                                  >
+                                    {item.kind === 'system'
+                                      ? t('settings.storageUsageSystem', 'System')
+                                      : t('settings.storageUsageData', 'Data')}
+                                  </span>
+                                </div>
+                                <div className="flex items-center gap-2 text-bambu-gray">
+                                  <span className="text-white">{item.formatted}</span>
+                                  <span>({item.percent_of_total.toFixed(1)}%)</span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <p className="text-sm text-bambu-gray">
+                      {t('settings.storageUsageUnavailable', 'Storage usage data is unavailable')}
+                    </p>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center justify-between pt-4 border-t border-bambu-dark-tertiary">
+                <div>
+                  <p className="text-white">{t('settings.backupRestore')}</p>
+                  <p className="text-sm text-bambu-gray">
+                    {t('settings.backupRestoreDescription')}
+                  </p>
+                </div>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => handleTabChange('backup')}
+                >
+                  <Database className="w-4 h-4" />
+                  {t('settings.goToBackup')}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+        {/* ── /Right Column ── */}
+      </div>
+      )}
+      {/* ══════ /GENERAL TAB ══════ */}
+
+      {/* ══════ PRINTING TAB ══════ */}
+      {activeTab === 'printing' && localSettings && (
+      <div className="flex flex-col lg:flex-row gap-4">
+        {/* ── Left Column ── */}
+        <div className="space-y-4 lg:w-1/2">
           {/* Camera Settings */}
           <Card>
             <CardHeader>
@@ -1525,7 +2004,7 @@ export function SettingsPage() {
             </CardContent>
           </Card>
 
-
+          {/* Cost Tracking */}
           <Card>
             <CardHeader>
               <h2 className="text-lg font-semibold text-white">{t('settings.costTracking')}</h2>
@@ -1605,8 +2084,300 @@ export function SettingsPage() {
               </div>
             </CardContent>
           </Card>
+        </div>
 
-          {/* File Manager Settings */}
+        {/* ── /Left Column ── */}
+
+        {/* ── Right Column ── */}
+        <div className="space-y-4 lg:w-1/2">
+          {/* Macros */}
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+                  <Code className="w-5 h-5 text-amber-400" />
+                  {t('settings.macros')}
+                </h2>
+                <Button size="sm" onClick={handleOpenAddMacro}>
+                  <Plus className="w-4 h-4" />
+                  {t('settings.addMacro')}
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {!macros || macros.length === 0 ? (
+                <p className="text-sm text-bambu-gray">{t('settings.macros')} - none configured</p>
+              ) : (
+                <div className="space-y-2">
+                  {macros.map((macro) => (
+                    <div
+                      key={macro.id}
+                      className="flex items-center justify-between p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-medium text-white text-sm">{macro.name}</span>
+                            <span className="text-xs px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-400 border border-amber-800/50">
+                              {t(`settings.macroEvents.${macro.event}` as const) || macro.event}
+                            </span>
+                            {!(macro.printer_models.length === 1 && macro.printer_models[0] === '*') && (
+                              <span className="text-xs px-1.5 py-0.5 rounded bg-bambu-dark-tertiary text-bambu-gray">
+                                {macro.printer_models.map(code => macroMeta?.printer_models?.[code] || code).join(', ')}
+                              </span>
+                            )}
+                            {macro.swap_mode_only && (
+                              <span className="text-xs px-1.5 py-0.5 rounded bg-purple-900/40 text-purple-400 border border-purple-800/50">Swap</span>
+                            )}
+                            {macro.gcode && <span className="text-xs text-bambu-gray" title="Has G-code"><Code className="w-3 h-3 inline" /></span>}
+                            {!macro.is_custom && <span className="text-xs text-bambu-gray" title={t('settings.macroBuiltIn')}><Lock className="w-3 h-3 inline" /></span>}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 flex-shrink-0 ml-3">
+                        <Toggle checked={macro.enabled} onChange={(checked) => updateMacroMutation.mutate({ id: macro.id, data: { enabled: checked } })} />
+                        <button onClick={() => handleOpenEditMacro(macro)} className="p-1.5 text-bambu-gray hover:text-white transition-colors" title={t('settings.editMacro')}><Pencil className="w-4 h-4" /></button>
+                        {macro.is_custom ? (
+                          <button onClick={() => setDeleteMacroId(macro.id)} className="p-1.5 text-bambu-gray hover:text-red-400 transition-colors"><Trash2 className="w-4 h-4" /></button>
+                        ) : (
+                          <span className="p-1.5 text-bambu-dark-tertiary"><Lock className="w-4 h-4" /></span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Queue & Scheduling */}
+          <Card>
+            <CardHeader>
+              <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+                <Calendar className="w-5 h-5 text-bambu-green" />
+                {t('settings.queueAndScheduling')}
+              </h2>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {/* Staggered Start */}
+              <div className="space-y-3">
+                <div className="flex items-center gap-2 text-white">
+                  <Zap className="w-4 h-4 text-yellow-400" />
+                  <span className="font-medium">{t('settings.staggeredStart')}</span>
+                </div>
+                <p className="text-xs text-bambu-gray">
+                  {t('settings.staggeredStartDescription')}
+                </p>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <label className="block text-sm text-white">
+                      {t('settings.staggerEnabled')}
+                    </label>
+                    <p className="text-xs text-bambu-gray mt-0.5">
+                      {t('settings.staggerEnabledDescription')}
+                    </p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={localSettings.stagger_enabled ?? false}
+                      onChange={(e) => updateSetting('stagger_enabled', e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                  </label>
+                </div>
+                {localSettings.stagger_enabled && (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <label className="block text-sm text-white">
+                          {t('settings.staggerConcurrent')}
+                        </label>
+                        <p className="text-xs text-bambu-gray mt-0.5">
+                          {t('settings.staggerConcurrentDescription')}
+                        </p>
+                      </div>
+                      <input
+                        type="number"
+                        min="1"
+                        max="50"
+                        step="1"
+                        value={localSettings.stagger_concurrent ?? 2}
+                        onChange={(e) => updateSetting('stagger_concurrent', Math.max(1, parseInt(e.target.value) || 2))}
+                        className="w-20 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-center"
+                      />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <label className="block text-sm text-white">
+                          {t('settings.staggerInterval')}
+                        </label>
+                        <p className="text-xs text-bambu-gray mt-0.5">
+                          {t('settings.staggerIntervalDescription')}
+                        </p>
+                      </div>
+                      <input
+                        type="number"
+                        min="1"
+                        max="60"
+                        step="1"
+                        value={localSettings.stagger_interval_minutes ?? 5}
+                        onChange={(e) => updateSetting('stagger_interval_minutes', Math.max(1, parseInt(e.target.value) || 5))}
+                        className="w-20 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-center"
+                      />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <label className="block text-sm text-white">
+                          {t('settings.staggerWaitForBed')}
+                        </label>
+                        <p className="text-xs text-bambu-gray mt-0.5">
+                          {t('settings.staggerWaitForBedDescription')}
+                        </p>
+                      </div>
+                      <label className="relative inline-flex items-center cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={localSettings.stagger_wait_for_bed ?? true}
+                          onChange={(e) => updateSetting('stagger_wait_for_bed', e.target.checked)}
+                          className="sr-only peer"
+                        />
+                        <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                      </label>
+                    </div>
+
+                    {/* Strict mode for direct dispatches — block Print Now if no slot */}
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <label className="block text-sm text-white">
+                          {t('settings.staggerStrictForDirect')}
+                        </label>
+                        <p className="text-xs text-bambu-gray mt-0.5">
+                          {t('settings.staggerStrictForDirectDescription')}
+                        </p>
+                      </div>
+                      <label className="relative inline-flex items-center cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={localSettings.stagger_strict_for_direct_dispatch ?? false}
+                          onChange={(e) => updateSetting('stagger_strict_for_direct_dispatch', e.target.checked)}
+                          className="sr-only peer"
+                        />
+                        <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                      </label>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* Per-Printer Mapping Default (Print Modal) */}
+              <div className="space-y-3 pt-4 border-t border-bambu-dark-tertiary">
+                <div className="flex items-center gap-2 text-white">
+                  <Printer className="w-4 h-4 text-bambu-green" />
+                  <span className="font-medium">{t('settings.printModal')}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <label className="block text-sm text-white">
+                      {t('settings.expandCustomMapping')}
+                    </label>
+                    <p className="text-xs text-bambu-gray mt-0.5">
+                      {t('settings.expandCustomMappingDescription')}
+                    </p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={localSettings.per_printer_mapping_expanded ?? false}
+                      onChange={(e) => updateSetting('per_printer_mapping_expanded', e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                  </label>
+                </div>
+              </div>
+
+              {/* Bed Cooled Threshold */}
+              <div className="space-y-3 pt-4 border-t border-bambu-dark-tertiary">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <label className="block text-sm text-white">
+                      {t('settings.bedCooledThreshold')}
+                    </label>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="number"
+                      min={20}
+                      max={80}
+                      step={1}
+                      value={localSettings.bed_cooled_threshold ?? 35}
+                      onChange={(e) => updateSetting('bed_cooled_threshold', Number(e.target.value))}
+                      className="w-20 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-center"
+                    />
+                    <span className="text-bambu-gray">°C</span>
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Archive Settings */}
+          <Card>
+            <CardHeader>
+              <h2 className="text-lg font-semibold text-white">{t('settings.archiveSettings')}</h2>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-white">{t('settings.saveThumbnails')}</p>
+                  <p className="text-sm text-bambu-gray">
+                    {t('settings.saveThumbnailsDescription')}
+                  </p>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={localSettings.save_thumbnails}
+                    onChange={(e) => updateSetting('save_thumbnails', e.target.checked)}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                </label>
+              </div>
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-white">{t('settings.captureFinishPhoto')}</p>
+                  <p className="text-sm text-bambu-gray">
+                    {t('settings.captureFinishPhotoDescription')}
+                  </p>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={localSettings.capture_finish_photo}
+                    onChange={(e) => updateSetting('capture_finish_photo', e.target.checked)}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                </label>
+              </div>
+              {localSettings.capture_finish_photo && ffmpegStatus && !ffmpegStatus.installed && (
+                <div className="flex items-start gap-2 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
+                  <AlertTriangle className="w-5 h-5 text-yellow-500 flex-shrink-0 mt-0.5" />
+                  <div className="text-sm">
+                    <p className="text-yellow-500 font-medium">{t('settings.ffmpegNotInstalled')}</p>
+                    <p className="text-bambu-gray mt-1">
+                      {t('settings.ffmpegRequired')}
+                    </p>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* File Manager */}
           <Card>
             <CardHeader>
               <h2 className="text-lg font-semibold text-white flex items-center gap-2">
@@ -1615,7 +2386,6 @@ export function SettingsPage() {
               </h2>
             </CardHeader>
             <CardContent className="space-y-4">
-              {/* Disk Space Warning Threshold */}
               <div>
                 <label className="block text-sm text-bambu-gray mb-1">
                   {t('settings.lowDiskSpaceWarning')}
@@ -1639,376 +2409,14 @@ export function SettingsPage() {
             </CardContent>
           </Card>
         </div>
-
-        {/* Third Column - Sidebar Links & Updates */}
-        <div className="space-y-6 flex-1 lg:max-w-sm">
-          {/* Sidebar Links */}
-          <ExternalLinksSettings />
-
-          <Card>
-            <CardHeader>
-              <h2 className="text-lg font-semibold text-white">{t('settings.updates')}</h2>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <p className="text-xs font-medium text-bambu-gray uppercase tracking-wider">{t('settings.printerFirmware')}</p>
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-white">{t('settings.checkPrinterFirmware')}</p>
-                  <p className="text-sm text-bambu-gray">
-                    {t('settings.checkFirmwareDescription')}
-                  </p>
-                </div>
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={localSettings.check_printer_firmware ?? true}
-                    onChange={(e) => updateSetting('check_printer_firmware', e.target.checked)}
-                    className="sr-only peer"
-                  />
-                  <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
-                </label>
-              </div>
-              <div className="border-t border-bambu-dark-tertiary pt-4">
-                <p className="text-xs font-medium text-bambu-gray uppercase tracking-wider mb-4">{t('settings.bambuddySoftware')}</p>
-              </div>
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-white">{t('settings.checkForUpdatesLabel')}</p>
-                  <p className="text-sm text-bambu-gray">
-                    {t('settings.autoCheckDescription')}
-                  </p>
-                </div>
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={localSettings.check_updates}
-                    onChange={(e) => updateSetting('check_updates', e.target.checked)}
-                    className="sr-only peer"
-                  />
-                  <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
-                </label>
-              </div>
-              <div className={`flex items-center justify-between ${!localSettings.check_updates ? 'opacity-50' : ''}`}>
-                <div>
-                  <p className="text-white">{t('settings.includeBetaUpdates')}</p>
-                  <p className="text-sm text-bambu-gray">
-                    {t('settings.includeBetaUpdatesDesc')}
-                  </p>
-                </div>
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={localSettings.include_beta_updates ?? false}
-                    onChange={(e) => updateSetting('include_beta_updates', e.target.checked)}
-                    disabled={!localSettings.check_updates}
-                    className="sr-only peer"
-                  />
-                  <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
-                </label>
-              </div>
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <div>
-                    <p className="text-white">{t('settings.currentVersion')}</p>
-                    <p className="text-sm text-bambu-gray">v{versionInfo?.version || '...'}</p>
-                  </div>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => refetchUpdateCheck()}
-                    disabled={isCheckingUpdate}
-                  >
-                    {isCheckingUpdate ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <RefreshCw className="w-4 h-4" />
-                    )}
-                    {t('settings.checkNow')}
-                  </Button>
-                </div>
-
-                {updateCheck?.update_available ? (
-                  <div className="mt-4 p-3 bg-bambu-green/10 border border-bambu-green/30 rounded-lg">
-                    <div className="flex items-start justify-between">
-                      <div>
-                        <p className="text-bambu-green font-medium">
-                          Update available: v{updateCheck.latest_version}
-                        </p>
-                        {updateCheck.release_name && updateCheck.release_name !== updateCheck.latest_version && (
-                          <p className="text-sm text-bambu-gray mt-1">{updateCheck.release_name}</p>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {updateCheck.release_notes && (
-                          <button
-                            onClick={() => setShowReleaseNotes(true)}
-                            className="text-bambu-gray hover:text-white transition-colors text-sm underline"
-                          >
-                            {t('settings.releaseNotes')}
-                          </button>
-                        )}
-                        {updateCheck.release_url && (
-                          <a
-                            href={updateCheck.release_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-bambu-gray hover:text-white transition-colors"
-                            title={t('settings.viewReleaseOnGitHub')}
-                          >
-                            <ExternalLink className="w-4 h-4" />
-                          </a>
-                        )}
-                      </div>
-                    </div>
-
-                    {updateStatus?.status === 'downloading' || updateStatus?.status === 'installing' ? (
-                      <div className="mt-3">
-                        <div className="flex items-center gap-2 text-sm text-bambu-gray">
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                          <span>{updateStatus.message}</span>
-                        </div>
-                        <div className="mt-2 w-full bg-bambu-dark-tertiary rounded-full h-2">
-                          <div
-                            className="bg-bambu-green h-2 rounded-full transition-all duration-300"
-                            style={{ width: `${updateStatus.progress}%` }}
-                          />
-                        </div>
-                      </div>
-                    ) : updateStatus?.status === 'complete' ? (
-                      <div className="mt-3 p-2 bg-bambu-green/20 rounded text-sm text-bambu-green">
-                        {updateStatus.message}
-                      </div>
-                    ) : updateStatus?.status === 'error' ? (
-                      <div className="mt-3 p-2 bg-red-500/20 rounded text-sm text-red-400">
-                        {updateStatus.error || updateStatus.message}
-                      </div>
-                    ) : updateCheck?.is_docker ? (
-                      <div className="mt-3 p-3 bg-bambu-dark-tertiary rounded-lg">
-                        <p className="text-sm text-bambu-gray mb-2">
-                          {t('settings.updateViaDocker')}
-                        </p>
-                        <code className="block text-xs bg-bambu-dark p-2 rounded text-bambu-green font-mono">
-                          docker compose pull && docker compose up -d
-                        </code>
-                      </div>
-                    ) : (
-                      <Button
-                        className="mt-3"
-                        onClick={() => applyUpdateMutation.mutate()}
-                        disabled={applyUpdateMutation.isPending}
-                      >
-                        {applyUpdateMutation.isPending ? (
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                        ) : (
-                          <Download className="w-4 h-4" />
-                        )}
-                        {t('settings.installUpdate')}
-                      </Button>
-                    )}
-                  </div>
-                ) : updateCheck?.error ? (
-                  <div className="mt-2 p-2 bg-red-500/10 border border-red-500/30 rounded text-sm text-red-400">
-                    {t('settings.failedToCheckUpdates', { error: updateCheck.error })}
-                  </div>
-                ) : updateCheck && !updateCheck.update_available ? (
-                  <p className="mt-2 text-sm text-bambu-gray">
-                    {t('settings.latestVersionRunning')}
-                  </p>
-                ) : null}
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Data Management */}
-          <Card>
-            <CardHeader>
-              <h2 className="text-lg font-semibold text-white">{t('settings.dataManagement')}</h2>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-white">{t('settings.clearNotificationLogs')}</p>
-                  <p className="text-sm text-bambu-gray">
-                    {t('settings.clearNotificationLogsDescription')}
-                  </p>
-                </div>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => setShowClearLogsConfirm(true)}
-                >
-                  <Trash2 className="w-4 h-4" />
-                  {t('common.clear')}
-                </Button>
-              </div>
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-white">{t('settings.resetUiPreferences')}</p>
-                  <p className="text-sm text-bambu-gray">
-                    {t('settings.resetUiPreferencesDescription')}
-                  </p>
-                </div>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => setShowClearStorageConfirm(true)}
-                >
-                  <Trash2 className="w-4 h-4" />
-                  {t('settings.reset')}
-                </Button>
-              </div>
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-white">{t('settings.optimizeDatabase')}</p>
-                  <p className="text-sm text-bambu-gray">
-                    {t('settings.optimizeDatabaseDescription')}
-                  </p>
-                </div>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={async () => {
-                    try {
-                      const result = await api.optimizeDatabase();
-                      if (result.success) {
-                        const sizeMb = (result.db_size / 1024 / 1024).toFixed(1);
-                        showToast(t('settings.toast.databaseOptimized', { size: sizeMb }));
-                      }
-                    } catch {
-                      showToast(t('settings.toast.databaseOptimizeFailed'), 'error');
-                    }
-                  }}
-                >
-                  <Database className="w-4 h-4" />
-                  {t('settings.optimize')}
-                </Button>
-              </div>
-              <div className="pt-4 border-t border-bambu-dark-tertiary">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-white">{t('settings.storageUsage', 'Storage Usage')}</p>
-                    <p className="text-sm text-bambu-gray">
-                      {t('settings.storageUsageDescription', 'Breakdown of data usage by category')}
-                    </p>
-                  </div>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={handleStorageUsageRefresh}
-                    disabled={storageUsageFetching || storageUsageRefreshing}
-                  >
-                    <RefreshCw
-                      className={`w-4 h-4 ${storageUsageFetching || storageUsageRefreshing ? 'animate-spin' : ''}`}
-                    />
-                    {t('common.refresh', 'Refresh')}
-                  </Button>
-                </div>
-                <div className="mt-3">
-                  {storageUsageLoading ? (
-                    <div className="flex items-center gap-2 text-sm text-bambu-gray">
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      {t('common.loading', 'Loading')}
-                    </div>
-                  ) : storageUsage ? (
-                    <>
-                      <div className="w-full h-3 bg-bambu-dark rounded-full overflow-hidden flex">
-                        {storageUsage.categories
-                          .filter((category) => category.bytes > 0)
-                          .map((category, index) => (
-                            <div
-                              key={category.key}
-                              className={`${getStorageColor(category.key, index)} h-full`}
-                              style={{ width: `${category.percent_of_total}%` }}
-                              title={`${category.label}: ${category.formatted}`}
-                            />
-                          ))}
-                      </div>
-                      <div className="mt-3 flex flex-wrap gap-3">
-                        {storageUsage.categories
-                          .filter((category) => category.bytes > 0)
-                          .map((category, index) => (
-                            <div key={category.key} className="flex items-center gap-2 text-xs">
-                              <span
-                                className={`w-3 h-3 rounded-full ${getStorageColor(category.key, index)}`}
-                              />
-                              <span className="text-bambu-gray">{category.label}</span>
-                              <span className="text-white">{category.formatted}</span>
-                              <span className="text-bambu-gray">({category.percent_of_total.toFixed(1)}%)</span>
-                            </div>
-                          ))}
-                      </div>
-                      <div className="mt-2 text-xs text-bambu-gray">
-                        {t('settings.storageUsageTotal', 'Total')}: <span className="text-white">{storageUsage.total_formatted}</span>
-                        {storageUsage.scan_errors > 0 && (
-                          <span className="ml-2 text-amber-400">
-                            {t('settings.storageUsageErrors', 'Scan errors')}: {storageUsage.scan_errors}
-                          </span>
-                        )}
-                      </div>
-                      {storageUsage.other_breakdown?.length > 0 && (
-                        <div className="mt-4">
-                          <p className="text-xs text-bambu-gray mb-2">
-                            {t('settings.storageUsageOtherBreakdown', 'Other breakdown')}
-                          </p>
-                          <div className="space-y-2">
-                            {storageUsage.other_breakdown.map((item) => (
-                              <div key={`${item.bucket}-${item.kind}`} className="flex items-center justify-between text-xs">
-                                <div className="flex items-center gap-2">
-                                  <span className="text-white">{item.label}</span>
-                                  <span
-                                    className={`px-2 py-0.5 rounded-full border ${
-                                      item.kind === 'system'
-                                        ? 'border-slate-500 text-slate-300'
-                                        : 'border-bambu-green text-bambu-green'
-                                    }`}
-                                  >
-                                    {item.kind === 'system'
-                                      ? t('settings.storageUsageSystem', 'System')
-                                      : t('settings.storageUsageData', 'Data')}
-                                  </span>
-                                </div>
-                                <div className="flex items-center gap-2 text-bambu-gray">
-                                  <span className="text-white">{item.formatted}</span>
-                                  <span>({item.percent_of_total.toFixed(1)}%)</span>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </>
-                  ) : (
-                    <p className="text-sm text-bambu-gray">
-                      {t('settings.storageUsageUnavailable', 'Storage usage data is unavailable')}
-                    </p>
-                  )}
-                </div>
-              </div>
-              <div className="flex items-center justify-between pt-4 border-t border-bambu-dark-tertiary">
-                <div>
-                  <p className="text-white">{t('settings.backupRestore')}</p>
-                  <p className="text-sm text-bambu-gray">
-                    {t('settings.backupRestoreDescription')}
-                  </p>
-                </div>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => handleTabChange('backup')}
-                >
-                  <Database className="w-4 h-4" />
-                  {t('settings.goToBackup')}
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
+        {/* ── /Right Column ── */}
       </div>
       )}
+      {/* ══════ /PRINTING TAB ══════ */}
 
-      {/* Network Tab */}
+      {/* ══════ NETWORK TAB ══════ */}
       {activeTab === 'network' && localSettings && (
-      <div className="flex flex-col lg:flex-row gap-6">
+      <div className="flex flex-col lg:flex-row gap-4">
         {/* Left Column - External URL & FTP Retry */}
         <div className="flex-1 lg:max-w-xl space-y-4">
           {/* External URL */}
@@ -2025,7 +2433,7 @@ export function SettingsPage() {
               </p>
               <div>
                 <label className="block text-sm text-bambu-gray mb-1">
-                  {t('settings.bambuddyUrl')}
+                  {t('settings.bamdudeUrl')}
                 </label>
                 <input
                   type="text"
@@ -2410,13 +2818,13 @@ export function SettingsPage() {
                     </label>
                     <input
                       type="text"
-                      value={localSettings.mqtt_topic_prefix ?? 'bambuddy'}
+                      value={localSettings.mqtt_topic_prefix ?? 'bamdude'}
                       onChange={(e) => updateSetting('mqtt_topic_prefix', e.target.value)}
-                      placeholder="bambuddy"
+                      placeholder="bamdude"
                       className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                     />
                     <p className="text-xs text-bambu-gray mt-1">
-                      {t('settings.topicPrefixHint', { prefix: localSettings.mqtt_topic_prefix || 'bambuddy' })}
+                      {t('settings.topicPrefixHint', { prefix: localSettings.mqtt_topic_prefix || 'bamdude' })}
                     </p>
                   </div>
 
@@ -2492,12 +2900,12 @@ export function SettingsPage() {
                   <div className="pt-2 border-t border-bambu-dark-tertiary">
                     <p className="text-sm text-white mb-2">{t('settings.availableMetrics')}</p>
                     <div className="text-xs text-bambu-gray space-y-1">
-                      <p><code className="text-orange-400">bambuddy_printer_connected</code> - {t('settings.metricsConnectionStatus')}</p>
-                      <p><code className="text-orange-400">bambuddy_printer_state</code> - {t('settings.metricsPrinterState')}</p>
-                      <p><code className="text-orange-400">bambuddy_print_progress</code> - {t('settings.metricsPrintProgress')}</p>
-                      <p><code className="text-orange-400">bambuddy_bed_temp_celsius</code> - {t('settings.metricsBedTemp')}</p>
-                      <p><code className="text-orange-400">bambuddy_nozzle_temp_celsius</code> - {t('settings.metricsNozzleTemp')}</p>
-                      <p><code className="text-orange-400">bambuddy_prints_total</code> - {t('settings.metricsPrintsTotal')}</p>
+                      <p><code className="text-orange-400">bamdude_printer_connected</code> - {t('settings.metricsConnectionStatus')}</p>
+                      <p><code className="text-orange-400">bamdude_printer_state</code> - {t('settings.metricsPrinterState')}</p>
+                      <p><code className="text-orange-400">bamdude_print_progress</code> - {t('settings.metricsPrintProgress')}</p>
+                      <p><code className="text-orange-400">bamdude_bed_temp_celsius</code> - {t('settings.metricsBedTemp')}</p>
+                      <p><code className="text-orange-400">bamdude_nozzle_temp_celsius</code> - {t('settings.metricsNozzleTemp')}</p>
+                      <p><code className="text-orange-400">bamdude_prints_total</code> - {t('settings.metricsPrintsTotal')}</p>
                       <p className="text-bambu-gray/70 italic">{t('settings.metricsMore')}</p>
                     </div>
                   </div>
@@ -2508,6 +2916,7 @@ export function SettingsPage() {
         </div>
       </div>
       )}
+      {/* ══════ /NETWORK TAB ══════ */}
 
       {/* Home Assistant Test Connection Modal */}
       {haTestResult && (
@@ -2540,16 +2949,16 @@ export function SettingsPage() {
         </div>
       )}
 
-      {/* Smart Plugs Tab */}
+      {/* ══════ SMART PLUGS TAB ══════ */}
       {activeTab === 'plugs' && (
-        <div className="max-w-4xl">
+        <div>
           <div className="flex items-start justify-between mb-6">
             <div>
               <h2 className="text-lg font-semibold text-white flex items-center gap-2">
                 <Plug className="w-5 h-5 text-bambu-green" />
                 {t('settings.smartPlugs')}
               </h2>
-              <p className="text-sm text-bambu-gray mt-1">
+              <p className="text-sm text-bambu-gray">
                 {t('settings.smartPlugsDescription')}
               </p>
             </div>
@@ -2730,8 +3139,9 @@ export function SettingsPage() {
           )}
         </div>
       )}
+      {/* ══════ /SMART PLUGS TAB ══════ */}
 
-      {/* Notifications Tab */}
+      {/* ══════ NOTIFICATIONS TAB ══════ */}
       {activeTab === 'notifications' && (<>
         {/* Sub-tabs */}
         <div className="flex gap-1 mb-6 border-b border-bambu-dark-tertiary">
@@ -2755,25 +3165,7 @@ export function SettingsPage() {
         {notifSubTab === 'providers' && (
           <div>
             {/* Settings + Actions bar */}
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-3">
-                {/* Bed Cooled Threshold - compact inline */}
-                <div className="flex items-center gap-2 text-sm">
-                  <span className="text-bambu-gray">{t('settings.bedCooledThreshold')}:</span>
-                  <div className="flex items-center gap-1">
-                    <input
-                      type="number"
-                      min={20}
-                      max={80}
-                      step={1}
-                      value={localSettings.bed_cooled_threshold ?? 35}
-                      onChange={(e) => updateSetting('bed_cooled_threshold', Number(e.target.value))}
-                      className="w-14 px-2 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-sm text-center focus:outline-none focus:ring-1 focus:ring-bambu-green"
-                    />
-                    <span className="text-bambu-gray">°C</span>
-                  </div>
-                </div>
-              </div>
+            <div className="flex items-center justify-end mb-4">
               <div className="flex items-center gap-2">
                 <Button size="sm" variant="secondary" onClick={() => setShowLogViewer(true)}>
                   <History className="w-4 h-4" />
@@ -2850,7 +3242,7 @@ export function SettingsPage() {
               </Card>
             )}
 
-            {/* Provider list — full width, vertical stack */}
+            {/* Provider list - full width, vertical stack */}
             {providersLoading ? (
               <div className="flex justify-center py-12">
                 <Loader2 className="w-6 h-6 text-bambu-green animate-spin" />
@@ -2932,19 +3324,20 @@ export function SettingsPage() {
           </div>
         )}
       </>)}
+      {/* ══════ /NOTIFICATIONS TAB ══════ */}
 
-      {/* API Keys Tab */}
+      {/* ══════ API KEYS TAB ══════ */}
       {activeTab === 'apikeys' && (
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
           {/* Left Column - API Keys Management */}
           <div>
-            <div className="flex items-start justify-between gap-4 mb-6">
+            <div className="flex items-start justify-between gap-4 mb-4">
               <div className="flex-1">
                 <h2 className="text-lg font-semibold text-white flex items-center gap-2">
                   <Key className="w-5 h-5 text-bambu-green" />
                   {t('settings.apiKeys')}
                 </h2>
-                <p className="text-sm text-bambu-gray mt-1">
+                <p className="text-sm text-bambu-gray">
                   {t('settings.apiKeysDescription')}
                 </p>
               </div>
@@ -3164,7 +3557,7 @@ export function SettingsPage() {
             )}
 
             {/* Webhook Documentation */}
-            <Card className="mt-6">
+            <Card className="mt-4">
               <CardHeader>
                 <h3 className="text-base font-semibold text-white">{t('settings.webhookEndpoints')}</h3>
               </CardHeader>
@@ -3210,12 +3603,12 @@ export function SettingsPage() {
 
           {/* Right Column - API Browser */}
           <div>
-            <div className="mb-6">
+            <div className="mb-4">
               <h2 className="text-lg font-semibold text-white flex items-center gap-2">
                 <Globe className="w-5 h-5 text-bambu-green" />
                 {t('settings.apiBrowser')}
               </h2>
-              <p className="text-sm text-bambu-gray mt-1">
+              <p className="text-sm text-bambu-gray">
                 {t('settings.apiBrowserDescription')}
               </p>
             </div>
@@ -3241,18 +3634,20 @@ export function SettingsPage() {
           </div>
         </div>
       )}
+      {/* ══════ /API KEYS TAB ══════ */}
 
-      {/* Virtual Printer Tab */}
+      {/* ══════ VIRTUAL PRINTER TAB ══════ */}
       {activeTab === 'virtual-printer' && (
         <VirtualPrinterList />
       )}
+      {/* ══════ /VIRTUAL PRINTER TAB ══════ */}
 
-      {/* Filament Tab */}
+      {/* ══════ FILAMENT TAB ══════ */}
       {activeTab === 'filament' && localSettings && (
         <>
-        <div className="flex flex-col lg:flex-row gap-6 lg:gap-8">
+        <div className="flex flex-col lg:flex-row gap-4">
           {/* Left Column (1/3) - Mode Selector + AMS Thresholds */}
-          <div className="lg:w-1/3 space-y-6">
+          <div className="lg:w-1/3 space-y-4">
             <SpoolmanSettings />
 
             <Card>
@@ -3481,7 +3876,7 @@ export function SettingsPage() {
                       <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
                     </label>
                   </div>
-                  {/* Drying Presets Table — always visible since manual drying also uses these */}
+                  {/* Drying Presets Table - always visible since manual drying also uses these */}
                   <div className="space-y-2">
                     <p className="text-sm text-white font-medium">{t('settings.dryingPresets')}</p>
                     <p className="text-xs text-bambu-gray">{t('settings.dryingPresetsDescription')}</p>
@@ -3585,44 +3980,19 @@ export function SettingsPage() {
                   </div>
                 </div>
 
-                {/* Per-Printer Mapping Default */}
-                <div className="space-y-3 pt-4 border-t border-bambu-dark-tertiary">
-                  <div className="flex items-center gap-2 text-white">
-                    <Printer className="w-4 h-4 text-bambu-green" />
-                    <span className="font-medium">{t('settings.printModal')}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <label className="block text-sm text-white">
-                        {t('settings.expandCustomMapping')}
-                      </label>
-                      <p className="text-xs text-bambu-gray mt-0.5">
-                        {t('settings.expandCustomMappingDescription')}
-                      </p>
-                    </div>
-                    <label className="relative inline-flex items-center cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={localSettings.per_printer_mapping_expanded ?? false}
-                        onChange={(e) => updateSetting('per_printer_mapping_expanded', e.target.checked)}
-                        className="sr-only peer"
-                      />
-                      <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
-                    </label>
-                  </div>
-                </div>
               </CardContent>
             </Card>
           </div>
 
           {/* Right Column (2/3) - Spool Catalog + Color Catalog */}
-          <div className="lg:w-2/3 space-y-6">
+          <div className="lg:w-2/3 space-y-4">
             <SpoolCatalogSettings />
             <ColorCatalogSettings />
           </div>
         </div>
         </>
       )}
+      {/* ══════ /FILAMENT TAB ══════ */}
 
       {/* Delete API Key Confirmation */}
       {showDeleteAPIKeyConfirm !== null && (
@@ -3782,9 +4152,9 @@ export function SettingsPage() {
         </div>
       )}
 
-      {/* Users Tab */}
+      {/* ══════ USERS TAB ══════ */}
       {activeTab === 'users' && (
-        <div className="space-y-6">
+        <div className="space-y-4">
           {/* Sub-tab Navigation */}
           <div className="flex gap-1 border-b border-bambu-dark-tertiary">
             <button
@@ -3812,43 +4182,38 @@ export function SettingsPage() {
                 <span className="w-2 h-2 rounded-full bg-green-400" />
               )}
             </button>
+            <button
+              onClick={() => setUsersSubTab('ldap')}
+              className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+                usersSubTab === 'ldap'
+                  ? 'text-bambu-green border-bambu-green'
+                  : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+              }`}
+            >
+              <Shield className="w-4 h-4" />
+              {t('settings.tabs.ldap') || 'LDAP'}
+              {ldapStatus?.ldap_enabled && (
+                <span className="w-2 h-2 rounded-full bg-green-400" />
+              )}
+            </button>
           </div>
 
           {/* Users Sub-tab */}
           {usersSubTab === 'users' && (
           <>
-          {/* Auth Toggle Header */}
+          {/* Auth status header - auth is always on since the opt-in mode was removed. */}
           <Card>
             <CardContent className="py-4">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className={`w-10 h-10 rounded-full flex items-center justify-center ${authEnabled ? 'bg-green-500/20' : 'bg-gray-500/20'}`}>
-                    {authEnabled ? (
-                      <Lock className="w-5 h-5 text-green-400" />
-                    ) : (
-                      <Unlock className="w-5 h-5 text-gray-400" />
-                    )}
-                  </div>
-                  <div>
-                    <h3 className="text-white font-medium">{t('settings.authentication')}</h3>
-                    <p className="text-sm text-bambu-gray">
-                      {authEnabled
-                        ? t('settings.authEnabledDescription')
-                        : t('settings.authDisabledDescription')}
-                    </p>
-                  </div>
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full flex items-center justify-center bg-green-500/20">
+                  <Lock className="w-5 h-5 text-green-400" />
                 </div>
-                {!authEnabled ? (
-                  <Button onClick={() => navigate('/setup')}>
-                    <Lock className="w-4 h-4" />
-                    {t('common.enable')}
-                  </Button>
-                ) : user?.is_admin && (
-                  <Button variant="secondary" onClick={() => setShowDisableAuthConfirm(true)}>
-                    <Unlock className="w-4 h-4" />
-                    {t('common.disable')}
-                  </Button>
-                )}
+                <div>
+                  <h3 className="text-white font-medium">{t('settings.authentication')}</h3>
+                  <p className="text-sm text-bambu-gray">
+                    {t('settings.authEnabledDescription')}
+                  </p>
+                </div>
               </div>
             </CardContent>
           </Card>
@@ -3863,7 +4228,7 @@ export function SettingsPage() {
                   </div>
                   <div>
                     <h3 className="text-white font-medium">{t('settings.email.advancedAuthEnabled')}</h3>
-                    <p className="text-sm text-bambu-gray mt-1">
+                    <p className="text-sm text-bambu-gray">
                       {t('settings.email.advancedAuthEnabledDesc')}
                     </p>
                   </div>
@@ -3873,9 +4238,9 @@ export function SettingsPage() {
           )}
 
           {authEnabled && (
-            <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
               {/* Left Column: Current User + User List */}
-              <div className="space-y-6">
+              <div className="space-y-4">
                 {/* Current User Card */}
                 {user && (
                   <Card>
@@ -3885,10 +4250,12 @@ export function SettingsPage() {
                           <Users className="w-5 h-5 text-bambu-green" />
                           {t('settings.currentUser')}
                         </h3>
+                        {user.auth_source !== 'ldap' && (
                         <Button size="sm" variant="ghost" onClick={() => setShowChangePasswordModal(true)}>
                           <Key className="w-4 h-4" />
                           {t('settings.changePassword')}
                         </Button>
+                        )}
                       </div>
                     </CardHeader>
                     <CardContent>
@@ -3960,6 +4327,11 @@ export function SettingsPage() {
                             <div className="flex-1 min-w-0">
                               <p className="text-white font-medium truncate">{userItem.username}</p>
                               <div className="flex flex-wrap gap-1 mt-1">
+                                {userItem.auth_source === 'ldap' && (
+                                  <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-cyan-500/20 text-cyan-300">
+                                    LDAP
+                                  </span>
+                                )}
                                 {userItem.is_admin && (
                                   <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-purple-500/20 text-purple-300">
                                     {t('settings.admin')}
@@ -4067,7 +4439,7 @@ export function SettingsPage() {
                                 )}
                               </div>
                             </div>
-                            <p className="text-sm text-bambu-gray mt-1 ml-6">
+                            <p className="text-sm text-bambu-gray ml-6">
                               {getGroupDescription(group.name, group.description, t) || t('settings.noDescription')}
                             </p>
                             <div className="flex items-center gap-4 mt-2 ml-6 text-xs text-bambu-gray">
@@ -4084,38 +4456,6 @@ export function SettingsPage() {
             </div>
           )}
 
-          {/* Auth Disabled Info */}
-          {!authEnabled && (
-            <Card>
-              <CardContent className="py-6">
-                <div className="text-center">
-                  <Unlock className="w-12 h-12 text-bambu-gray mx-auto mb-4" />
-                  <h3 className="text-lg font-medium text-white mb-2">{t('settings.authDisabledTitle')}</h3>
-                  <p className="text-sm text-bambu-gray mb-4 max-w-md mx-auto">
-                    {t('settings.authDisabledMessage')}
-                  </p>
-                  <ul className="space-y-2 text-sm text-bambu-gray mb-6 text-left max-w-xs mx-auto">
-                    <li className="flex items-start gap-2">
-                      <CheckCircle className="w-4 h-4 text-bambu-green mt-0.5 flex-shrink-0" />
-                      <span>{t('settings.authDisabledFeature1')}</span>
-                    </li>
-                    <li className="flex items-start gap-2">
-                      <CheckCircle className="w-4 h-4 text-bambu-green mt-0.5 flex-shrink-0" />
-                      <span>{t('settings.authDisabledFeature2')}</span>
-                    </li>
-                    <li className="flex items-start gap-2">
-                      <CheckCircle className="w-4 h-4 text-bambu-green mt-0.5 flex-shrink-0" />
-                      <span>{t('settings.authDisabledFeature3')}</span>
-                    </li>
-                  </ul>
-                  <Button onClick={() => navigate('/setup')}>
-                    <Lock className="w-4 h-4" />
-                    {t('settings.enableAuthentication')}
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-          )}
           </>
           )}
 
@@ -4125,8 +4465,15 @@ export function SettingsPage() {
               <EmailSettings />
             </div>
           )}
+
+          {usersSubTab === 'ldap' && (
+            <div className="max-w-2xl">
+              <LDAPSettings />
+            </div>
+          )}
         </div>
       )}
+      {/* ══════ /USERS TAB ══════ */}
 
       {/* Create User Modal */}
       {showCreateUserModal && !advancedAuthStatus?.advanced_auth_enabled && (
@@ -4587,36 +4934,218 @@ export function SettingsPage() {
         />
       )}
 
-      {/* Backup Tab */}
+      {/* ══════ BACKUP TAB ══════ */}
       {activeTab === 'backup' && (
-        <GitHubBackupSettings />
+        <GitBackupSettings />
+      )}
+      {/* ══════ /BACKUP TAB ══════ */}
+
+      {/* Change Password Modal */}
+      {/* Macro Add/Edit Modal */}
+      {showMacroModal && (
+        <div
+          className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
+          onClick={() => { setShowMacroModal(false); setEditingMacro(null); }}
+        >
+          <Card
+            className="w-full max-w-5xl"
+            onClick={(e: React.MouseEvent) => e.stopPropagation()}
+          >
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Code className="w-5 h-5 text-amber-400" />
+                  <h2 className="text-lg font-semibold text-white">
+                    {editingMacro ? t('settings.editMacro') : t('settings.addMacro')}
+                  </h2>
+                  {editingMacro && !editingMacro.is_custom && (
+                    <span className="text-xs text-bambu-gray flex items-center gap-1">
+                      <Lock className="w-3 h-3" />
+                      {t('settings.macroBuiltIn')}
+                    </span>
+                  )}
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => { setShowMacroModal(false); setEditingMacro(null); }}
+                >
+                  <X className="w-5 h-5" />
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="flex flex-col lg:flex-row gap-4">
+                {/* Left - metadata */}
+                <div className="lg:w-1/4 space-y-3">
+                  <div>
+                    <label className="block text-sm text-bambu-gray mb-1">{t('settings.macroName')}</label>
+                    <input
+                      type="text"
+                      value={macroForm.name}
+                      onChange={(e) => setMacroForm(prev => ({ ...prev, name: e.target.value }))}
+                      className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm text-bambu-gray mb-1">{t('settings.macroDescription')}</label>
+                    <textarea
+                      value={macroForm.description ?? ''}
+                      onChange={(e) => setMacroForm(prev => ({ ...prev, description: e.target.value || null }))}
+                      rows={3}
+                      placeholder={t('settings.macroDescriptionPlaceholder')}
+                      className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm resize-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm text-bambu-gray mb-1">{t('settings.macroEvent')}</label>
+                    <select
+                      value={macroForm.event}
+                      onChange={(e) => setMacroForm(prev => ({ ...prev, event: e.target.value }))}
+                      className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
+                    >
+                      {macroMeta?.events ? (
+                        Object.entries(macroMeta.events).map(([code, label]) => (
+                          <option key={code} value={code}>{label}</option>
+                        ))
+                      ) : (
+                        <>
+                          <option value="swap_mode_start">{t('settings.macroEvents.swap_mode_start')}</option>
+                          <option value="swap_mode_change_table">{t('settings.macroEvents.swap_mode_change_table')}</option>
+                        </>
+                      )}
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="block text-sm text-bambu-gray">{t('settings.macroModel')}</label>
+                    <div className="flex flex-wrap gap-1 mb-1.5">
+                      {macroForm.printer_models.map(code => (
+                        <span key={code} className="text-xs px-1.5 py-0.5 bg-bambu-dark-tertiary text-white rounded flex items-center gap-1">
+                          {code === '*' ? t('settings.macroAllModels') : (macroMeta?.printer_models?.[code] || code)}
+                          <button
+                            type="button"
+                            onClick={() => setMacroForm(prev => ({
+                              ...prev,
+                              printer_models: prev.printer_models.filter(m => m !== code),
+                            }))}
+                            className="hover:text-red-400 transition-colors"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                    <select
+                      value=""
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (!val) return;
+                        setMacroForm(prev => {
+                          if (val === '*') return { ...prev, printer_models: ['*'] };
+                          const without_wildcard = prev.printer_models.filter(m => m !== '*');
+                          if (without_wildcard.includes(val)) return prev;
+                          return { ...prev, printer_models: [...without_wildcard, val] };
+                        });
+                      }}
+                      className="w-full px-2 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
+                    >
+                      <option value="">{t('settings.macroAddModel')}</option>
+                      <option value="*" disabled={macroForm.printer_models.includes('*')}>{t('settings.macroAllModels')}</option>
+                      {macroMeta?.printer_models && Object.entries(macroMeta.printer_models).filter(([code]) => code !== '*').map(([code, name]) => (
+                        <option key={code} value={code} disabled={macroForm.printer_models.includes(code) || macroForm.printer_models.includes('*')}>
+                          {name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <label className="text-sm text-white">{t('settings.macroSwapOnly')}</label>
+                    <Toggle
+                      checked={macroForm.swap_mode_only}
+                      onChange={(checked) => setMacroForm(prev => ({ ...prev, swap_mode_only: checked }))}
+                    />
+                  </div>
+                  {/* Swap profile binding - only relevant for the two swap events.
+                      Dropdown options are filtered by the printer_models already
+                      selected (a profile's "models" must intersect). Value "" = generic. */}
+                  {macroMeta?.swap_events?.includes(macroForm.event) && (
+                    <div>
+                      <label className="block text-sm text-bambu-gray mb-1">
+                        {t('settings.macroSwapProfile')}
+                      </label>
+                      <select
+                        value={macroForm.swap_profile ?? ''}
+                        onChange={(e) => setMacroForm(prev => ({ ...prev, swap_profile: e.target.value || null }))}
+                        className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
+                      >
+                        <option value="">{t('settings.macroSwapProfileGeneric')}</option>
+                        {(macroMeta?.swap_profiles ?? [])
+                          .filter((p) =>
+                            macroForm.printer_models.includes('*') ||
+                            p.models.some((m) => macroForm.printer_models.includes(m))
+                          )
+                          .map((p) => (
+                            <option key={p.id} value={p.id}>{p.label}</option>
+                          ))}
+                      </select>
+                      {macroForm.swap_profile && (
+                        <p className="text-xs text-bambu-gray mt-1">
+                          {macroMeta?.swap_profiles?.find((p) => p.id === macroForm.swap_profile)?.description}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                  <div className="flex items-center justify-between">
+                    <label className="text-sm text-white">{t('settings.macroEnabled')}</label>
+                    <Toggle
+                      checked={macroForm.enabled}
+                      onChange={(checked) => setMacroForm(prev => ({ ...prev, enabled: checked }))}
+                    />
+                  </div>
+                </div>
+                {/* Right - G-code editor */}
+                <div className="lg:w-3/4 flex flex-col">
+                  <label className="block text-sm text-bambu-gray mb-1">{t('settings.macroGcode')}</label>
+                  <GcodeEditor
+                    value={macroForm.gcode}
+                    onChange={(val) => setMacroForm(prev => ({ ...prev, gcode: val }))}
+                  />
+                </div>
+              </div>
+              <div className="flex justify-end gap-2 pt-4">
+                <Button
+                  variant="ghost"
+                  onClick={() => { setShowMacroModal(false); setEditingMacro(null); }}
+                >
+                  {t('common.cancel')}
+                </Button>
+                <Button
+                  onClick={handleSaveMacro}
+                  disabled={createMacroMutation.isPending || updateMacroMutation.isPending}
+                >
+                  {(createMacroMutation.isPending || updateMacroMutation.isPending) && (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  )}
+                  {t('common.save')}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
       )}
 
-      {/* Disable Authentication Confirmation Modal */}
-      {showDisableAuthConfirm && (
+      {/* Delete Macro Confirm */}
+      {deleteMacroId !== null && (
         <ConfirmModal
-          title={t('settings.disableAuthenticationTitle')}
-          message={t('settings.disableAuthenticationMessage')}
-          confirmText={t('settings.disableAuthentication')}
+          title={t('settings.macroDeleteConfirm')}
+          message={t('settings.macroDeleteConfirm')}
+          confirmText={t('common.delete')}
           variant="danger"
-          onConfirm={async () => {
-            try {
-              await api.disableAuth();
-              showToast(t('settings.toast.authDisabled'), 'success');
-              await refreshAuth();
-              setShowDisableAuthConfirm(false);
-              // Refresh the page to ensure all protected routes are accessible
-              window.location.href = '/';
-            } catch (error: unknown) {
-              const message = error instanceof Error ? error.message : t('settings.toast.authDisableFailed');
-              showToast(message, 'error');
-            }
-          }}
-          onCancel={() => setShowDisableAuthConfirm(false)}
+          onConfirm={() => deleteMacroMutation.mutate(deleteMacroId)}
+          onCancel={() => setDeleteMacroId(null)}
         />
       )}
 
-      {/* Change Password Modal */}
       {showChangePasswordModal && (
         <div
           className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"

@@ -1,14 +1,13 @@
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, PlainSerializer
+from pydantic import BaseModel, Field, PlainSerializer
 
 
 # Custom serializer to ensure UTC datetimes have Z suffix
 def serialize_utc_datetime(dt: datetime | None) -> str | None:
     if dt is None:
         return None
-    # Add Z suffix to indicate UTC
     return dt.isoformat() + "Z"
 
 
@@ -16,40 +15,34 @@ UTCDatetime = Annotated[datetime | None, PlainSerializer(serialize_utc_datetime)
 
 
 class PrintQueueItemCreate(BaseModel):
-    printer_id: int | None = None  # None = unassigned, user assigns later
-    target_model: str | None = None  # Target printer model (mutually exclusive with printer_id)
-    target_location: str | None = None  # Target location filter (only used with target_model)
-    required_filament_types: list[str] | None = None  # Required filament types for model-based assignment
-    filament_overrides: list[dict] | None = None  # Filament overrides for model-based assignment
+    queue_id: int  # Required - which printer's queue to add to
     # Either archive_id OR library_file_id must be provided
     archive_id: int | None = None
     library_file_id: int | None = None
-    scheduled_time: datetime | None = None  # None = ASAP (next when idle)
-    require_previous_success: bool = False
-    auto_off_after: bool = False  # Power off printer after print completes
-    manual_start: bool = False  # Requires manual trigger to start (staged)
-    # AMS mapping: list of global tray IDs for each filament slot
-    # Format: [5, -1, 2, -1] where position = slot_id-1, value = global tray ID (-1 = unused)
+    scheduled_time: datetime | None = None  # None = ASAP
+    auto_off_after: bool = False
+    manual_start: bool = False
     ams_mapping: list[int] | None = None
-    # Plate ID for multi-plate 3MF files (1-indexed, None = auto-detect/plate 1)
     plate_id: int | None = None
     # Print options
     bed_levelling: bool = True
-    flow_cali: bool = False
-    vibration_cali: bool = True
+    flow_cali: bool = True
     layer_inspect: bool = False
     timelapse: bool = False
     use_ams: bool = True
+    mesh_mode_fast_check: bool = True
+    execute_swap_macros: bool = True
+    swap_macro_events: list[str] | None = None
+    # Batch: create N identical items sharing a batch_id (1..50)
+    quantity: int = Field(default=1, ge=1, le=50)
+    # Project to associate the resulting archive with (when triggered from project view)
+    project_id: int | None = None
 
 
 class PrintQueueItemUpdate(BaseModel):
-    printer_id: int | None = None
-    target_model: str | None = None  # Target printer model (mutually exclusive with printer_id)
-    target_location: str | None = None  # Target location filter (only used with target_model)
-    filament_overrides: list[dict] | None = None  # Filament overrides for model-based assignment
+    queue_id: int | None = None  # Move to different printer's queue
     position: int | None = None
     scheduled_time: datetime | None = None
-    require_previous_success: bool | None = None
     auto_off_after: bool | None = None
     manual_start: bool | None = None
     ams_mapping: list[int] | None = None
@@ -57,59 +50,66 @@ class PrintQueueItemUpdate(BaseModel):
     # Print options
     bed_levelling: bool | None = None
     flow_cali: bool | None = None
-    vibration_cali: bool | None = None
     layer_inspect: bool | None = None
     timelapse: bool | None = None
     use_ams: bool | None = None
+    mesh_mode_fast_check: bool | None = None
+    execute_swap_macros: bool | None = None
+    swap_macro_events: list[str] | None = None
 
 
 class PrintQueueItemResponse(BaseModel):
     id: int
-    printer_id: int | None  # None = unassigned
-    target_model: str | None = None  # Target printer model for model-based assignment
-    target_location: str | None = None  # Target location filter for model-based assignment
-    required_filament_types: list[str] | None = None  # Required filament types for model-based assignment
-    filament_overrides: list[dict] | None = None  # Filament overrides for model-based assignment
-    waiting_reason: str | None = None  # Why a model-based job hasn't started yet
-    archive_id: int | None  # None if library_file_id is set (archive created at print start)
-    library_file_id: int | None  # For queue items from library files
+    queue_id: int
+    printer_id: int | None = None  # Convenience - resolved from queue
+    waiting_reason: str | None = None
+    archive_id: int | None
+    library_file_id: int | None
     position: int
     scheduled_time: UTCDatetime
-    require_previous_success: bool
     auto_off_after: bool
     manual_start: bool
     ams_mapping: list[int] | None = None
-    plate_id: int | None = None  # Plate ID for multi-plate 3MF files
+    plate_id: int | None = None
     # Print options
     bed_levelling: bool = True
-    flow_cali: bool = False
-    vibration_cali: bool = True
+    flow_cali: bool = True
     layer_inspect: bool = False
     timelapse: bool = False
     use_ams: bool = True
+    mesh_mode_fast_check: bool = True
+    execute_swap_macros: bool = True
+    swap_macro_events: list[str] | None = None
     status: Literal["pending", "printing", "completed", "failed", "skipped", "cancelled"]
     started_at: UTCDatetime
     completed_at: UTCDatetime
     error_message: str | None
     created_at: UTCDatetime
+    batch_id: str | None = None
 
-    # Nested info for UI (populated in route)
+    # Nested info for UI
     archive_name: str | None = None
     archive_thumbnail: str | None = None
-    library_file_name: str | None = None  # Name of library file (if library_file_id is set)
-    library_file_thumbnail: str | None = None  # Thumbnail of library file
+    library_file_name: str | None = None
+    library_file_thumbnail: str | None = None
     printer_name: str | None = None
-    print_time_seconds: int | None = None  # Estimated print time from archive or library file
-    filament_used_grams: float | None = None  # Estimated print weight from archive or library file
-    filament_type: str | None = None  # e.g. "PLA", "PETG" (from archive/library file)
-    filament_color: str | None = None  # e.g. "#FFFFFF" (from archive/library file)
-    layer_height: float | None = None  # e.g. 0.2 (from archive/library file)
-    nozzle_diameter: float | None = None  # e.g. 0.4 (from archive/library file)
-    sliced_for_model: str | None = None  # e.g. "P1S" (from archive/library file)
+    print_time_seconds: int | None = None
+    filament_used_grams: float | None = None
+    filament_type: str | None = None
+    filament_color: str | None = None
+    layer_height: float | None = None
+    nozzle_diameter: float | None = None
+    sliced_for_model: str | None = None
 
-    # User tracking (Issue #206)
+    # User tracking
     created_by_id: int | None = None
     created_by_username: str | None = None
+
+    # Virtual-item fields (set by ``build_virtual_current_print`` for
+    # external / direct-dispatch prints that have no DB row).  Real
+    # queue items default to False + None.
+    is_virtual: bool = False
+    source: str | None = None  # 'external' | 'bamdude_direct' | 'bamdude_queue' (real items)
 
     class Config:
         from_attributes = True
@@ -128,24 +128,24 @@ class PrintQueueBulkUpdate(BaseModel):
     """Bulk update multiple queue items with the same values."""
 
     item_ids: list[int]
-    # Fields to update (all optional - only set fields are applied)
-    printer_id: int | None = None
+    queue_id: int | None = None  # Move all to different queue
     scheduled_time: datetime | None = None
-    require_previous_success: bool | None = None
     auto_off_after: bool | None = None
     manual_start: bool | None = None
     # Print options
     bed_levelling: bool | None = None
     flow_cali: bool | None = None
-    vibration_cali: bool | None = None
     layer_inspect: bool | None = None
     timelapse: bool | None = None
     use_ams: bool | None = None
+    mesh_mode_fast_check: bool | None = None
+    execute_swap_macros: bool | None = None
+    swap_macro_events: list[str] | None = None
 
 
 class PrintQueueBulkUpdateResponse(BaseModel):
     """Response for bulk update operation."""
 
     updated_count: int
-    skipped_count: int  # Items that were not pending
+    skipped_count: int
     message: str

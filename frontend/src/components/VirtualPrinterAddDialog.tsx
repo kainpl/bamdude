@@ -7,11 +7,9 @@ import { Card, CardContent } from './Card';
 import { Button } from './Button';
 import { useToast } from '../contexts/ToastContext';
 
-type Mode = 'immediate' | 'review' | 'print_queue' | 'file_manager' | 'proxy';
+type Mode = 'print_queue' | 'file_manager' | 'proxy';
 
 const MODE_LABELS: Record<string, string> = {
-  immediate: 'archive',
-  review: 'review',
   print_queue: 'queue',
   file_manager: 'fileManager',
   proxy: 'proxy',
@@ -27,7 +25,7 @@ export function VirtualPrinterAddDialog({ onClose }: VirtualPrinterAddDialogProp
   const { showToast } = useToast();
 
   const [name, setName] = useState('');
-  const [mode, setMode] = useState<Mode>('immediate');
+  const [mode, setMode] = useState<Mode>('file_manager');
   const [targetPrinterId, setTargetPrinterId] = useState<number | null>(null);
 
   const { data: printers } = useQuery({
@@ -38,7 +36,7 @@ export function VirtualPrinterAddDialog({ onClose }: VirtualPrinterAddDialogProp
   const createMutation = useMutation({
     mutationFn: () =>
       multiVirtualPrinterApi.create({
-        name: name.trim() || 'Bambuddy',
+        name: name.trim() || 'BamDude',
         mode,
         target_printer_id: mode === 'proxy' ? (targetPrinterId ?? undefined) : undefined,
       }),
@@ -71,7 +69,7 @@ export function VirtualPrinterAddDialog({ onClose }: VirtualPrinterAddDialogProp
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="Bambuddy HE"
+              placeholder="BamDude"
               className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-md px-3 py-2 text-white text-sm placeholder-bambu-gray"
               autoFocus
             />
@@ -81,7 +79,7 @@ export function VirtualPrinterAddDialog({ onClose }: VirtualPrinterAddDialogProp
           <div>
             <label className="text-sm text-white font-medium block mb-1">{t('virtualPrinter.mode.title')}</label>
             <div className="grid grid-cols-2 gap-2">
-              {(['immediate', 'review', 'print_queue', 'file_manager', 'proxy'] as const).map((m) => (
+              {(['print_queue', 'file_manager', 'proxy'] as const).map((m) => (
                 <button
                   key={m}
                   onClick={() => setMode(m)}

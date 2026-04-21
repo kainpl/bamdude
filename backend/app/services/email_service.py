@@ -556,7 +556,7 @@ async def send_user_print_notification(
     subject = render_template(template.title_template, all_variables)
     text_body = render_template(template.body_template, all_variables)
 
-    # Build HTML body — content comes entirely from the database template
+    # Build HTML body - content comes entirely from the database template
     escaped_text_body = html.escape(text_body).replace("\n", "<br>\n")
     html_body = f"""<!DOCTYPE html>
 <html>

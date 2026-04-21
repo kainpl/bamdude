@@ -2,7 +2,7 @@
 
 ## Reporting a Vulnerability
 
-The Bambuddy team takes security seriously. We appreciate your efforts to responsibly disclose your findings.
+The BamDude team takes security seriously. We appreciate your efforts to responsibly disclose your findings.
 
 ### How to Report
 
@@ -10,10 +10,10 @@ The Bambuddy team takes security seriously. We appreciate your efforts to respon
 
 Instead, please report them via email to:
 
-**security@bambuddy.cool**
+**security@bamdude.cool**
 
 Or use GitHub's private vulnerability reporting feature:
-1. Go to the [Security tab](https://github.com/kainpl/bambuddy-he/security)
+1. Go to the [Security tab](https://github.com/kainpl/bamdude/security)
 2. Click "Report a vulnerability"
 3. Fill out the form with details
 
@@ -23,7 +23,7 @@ Please include the following information in your report:
 
 - **Description** of the vulnerability
 - **Steps to reproduce** the issue
-- **Affected versions** of Bambuddy
+- **Affected versions** of BamDude
 - **Potential impact** of the vulnerability
 - **Any suggested fixes** (if you have them)
 
@@ -46,14 +46,14 @@ Please include the following information in your report:
 
 ### Network Security
 
-Bambuddy communicates with your printers over your local network using:
+BamDude communicates with your printers over your local network using:
 
 - **MQTT over TLS** (port 8883) - Encrypted printer communication
 - **FTPS** (port 990) - Encrypted file transfers
 
 ### Recommendations
 
-1. **Run on trusted network**: Bambuddy should only be accessible on your local network
+1. **Run on trusted network**: BamDude should only be accessible on your local network
 2. **Use reverse proxy**: If exposing to the internet, use a reverse proxy with HTTPS
 3. **Keep updated**: Always run the latest version for security patches
 4. **Secure API keys**: Treat API keys like passwords; don't share them publicly
@@ -94,4 +94,4 @@ We thank the following individuals for responsibly disclosing security issues:
 
 ---
 
-Thank you for helping keep Bambuddy and its users safe!
+Thank you for helping keep BamDude and its users safe!

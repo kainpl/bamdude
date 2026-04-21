@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # Maintenance Type schemas
@@ -14,6 +14,7 @@ class MaintenanceTypeBase(BaseModel):
     interval_type: str = Field(default="hours", pattern="^(hours|days)$")
     icon: str | None = None
     wiki_url: str | None = None  # Documentation link for custom types
+    printer_models: list[str] = Field(default=["*"])
 
 
 class MaintenanceTypeCreate(MaintenanceTypeBase):
@@ -27,12 +28,26 @@ class MaintenanceTypeUpdate(BaseModel):
     interval_type: str | None = Field(default=None, pattern="^(hours|days)$")
     icon: str | None = None
     wiki_url: str | None = None
+    printer_models: list[str] | None = None
 
 
 class MaintenanceTypeResponse(MaintenanceTypeBase):
     id: int
+    type_code: str | None = None
     is_system: bool
     created_at: datetime
+
+    @field_validator("printer_models", mode="before")
+    @classmethod
+    def parse_printer_models(cls, v: str | list) -> list[str]:
+        if isinstance(v, str):
+            try:
+                import json
+
+                return json.loads(v)
+            except (json.JSONDecodeError, TypeError):
+                return [v] if v else ["*"]
+        return v
 
     class Config:
         from_attributes = True
@@ -86,6 +101,11 @@ class MaintenanceHistoryResponse(MaintenanceHistoryBase):
     printer_maintenance_id: int
     performed_at: datetime
     hours_at_maintenance: float
+    # Who performed
+    performed_by_user_id: int | None = None
+    performed_by_username: str | None = None
+    performed_by_chat_id: int | None = None
+    performed_by_chat_label: str | None = None
 
     class Config:
         from_attributes = True
@@ -101,6 +121,7 @@ class MaintenanceStatus(BaseModel):
     printer_model: str | None  # For model-specific documentation links
     maintenance_type_id: int
     maintenance_type_name: str
+    maintenance_type_code: str | None = None
     maintenance_type_icon: str | None
     maintenance_type_wiki_url: str | None  # Custom wiki URL for the type
     enabled: bool

@@ -219,7 +219,7 @@ describe('computeDisplayItems', () => {
     expect(items[0].type).toBe('single');
   });
 
-  it('preserves order — group appears at first member position', () => {
+  it('preserves order - group appears at first member position', () => {
     const spools = [
       makeSpool({ id: 1, material: 'PETG' }), // unique
       makeSpool({ id: 2, material: 'PLA' }),   // group member

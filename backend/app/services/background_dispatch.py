@@ -55,6 +55,7 @@ class PrintDispatchJob:
     options: dict[str, Any] = field(default_factory=dict)
     requested_by_user_id: int | None = None
     requested_by_username: str | None = None
+    project_id: int | None = None
 
 
 @dataclass(slots=True)
@@ -161,6 +162,7 @@ class BackgroundDispatchService:
         options: dict[str, Any],
         requested_by_user_id: int | None,
         requested_by_username: str | None,
+        project_id: int | None = None,
     ) -> dict[str, Any]:
         return await self._dispatch(
             kind="print_library_file",
@@ -171,6 +173,7 @@ class BackgroundDispatchService:
             options=options,
             requested_by_user_id=requested_by_user_id,
             requested_by_username=requested_by_username,
+            project_id=project_id,
         )
 
     async def cancel_job(self, job_id: int) -> dict[str, Any]:
@@ -258,6 +261,7 @@ class BackgroundDispatchService:
         options: dict[str, Any],
         requested_by_user_id: int | None,
         requested_by_username: str | None,
+        project_id: int | None = None,
     ) -> dict[str, Any]:
         async with self._lock:
             has_pending_for_printer = any(job.printer_id == printer_id for job in self._queued_jobs)
@@ -280,6 +284,7 @@ class BackgroundDispatchService:
                 options=options,
                 requested_by_user_id=requested_by_user_id,
                 requested_by_username=requested_by_username,
+                project_id=project_id,
             )
             self._next_job_id += 1
             self._batch_total += 1
@@ -564,6 +569,23 @@ class BackgroundDispatchService:
             if not file_path.exists():
                 raise RuntimeError("Archive file not found")
 
+            # Gcode post-processing: patch 3MF if the operator toggled off
+            # the vibration fast-check.  The patcher works on a temp copy
+            # and returns the original path unchanged if nothing needed.
+            upload_file_path = file_path
+            _patch_cleanup_dir = None
+            if not job.options.get("mesh_mode_fast_check", True):
+                from backend.app.services.gcode_patcher import patch_mesh_mode_fast_check
+
+                patched_path, patches = await asyncio.to_thread(patch_mesh_mode_fast_check, file_path)
+                if patches:
+                    upload_file_path = patched_path
+                    _patch_cleanup_dir = patched_path.parent
+                    # Merge into applied_patches so archive_print persists the chain.
+                    existing_patches = job.options.get("applied_patches") or []
+                    job.options["applied_patches"] = existing_patches + patches
+                    logger.info("Dispatch job %s: 3MF patched (%s)", job.id, patches)
+
             base_name = archive.filename
             if base_name.endswith(".gcode.3mf"):
                 base_name = base_name[:-10]
@@ -586,7 +608,7 @@ class BackgroundDispatchService:
                 printer_model=printer_model,
             )
 
-            # Clean up /cache/ — delete stale .3mf and .bbl files from previous prints
+            # Clean up /cache/ - delete stale .3mf and .bbl files from previous prints
             sanitized_base = remote_filename[:-4] if remote_filename.endswith(".3mf") else remote_filename
             try:
                 cache_files = await list_files_async(
@@ -645,7 +667,7 @@ class BackgroundDispatchService:
                         upload_file_async,
                         printer_ip,
                         printer_access_code,
-                        file_path,
+                        upload_file_path,
                         remote_path,
                         progress_callback=upload_progress_callback,
                         socket_timeout=ftp_timeout,
@@ -659,12 +681,19 @@ class BackgroundDispatchService:
                     uploaded = await upload_file_async(
                         printer_ip,
                         printer_access_code,
-                        file_path,
+                        upload_file_path,
                         remote_path,
                         progress_callback=upload_progress_callback,
                         socket_timeout=ftp_timeout,
                         printer_model=printer_model,
                     )
+
+                # Clean up patched temp file after upload (original stays intact).
+                if _patch_cleanup_dir:
+                    import shutil
+
+                    shutil.rmtree(_patch_cleanup_dir, ignore_errors=True)
+                    _patch_cleanup_dir = None
 
                 if uploaded:
                     await self._set_active_upload_progress(job, 1, 1)
@@ -685,6 +714,34 @@ class BackgroundDispatchService:
 
                 self._raise_if_cancel_requested(job)
 
+                # Strict stagger check (optional, off by default): if enabled,
+                # refuse to start if no free slot, so Print Now respects the
+                # grid-load cap just like queue-driven dispatches.
+                try:
+                    from backend.app.api.routes.settings import get_setting
+                    from backend.app.services.print_scheduler import scheduler as print_scheduler
+
+                    async with async_session() as _sdb:
+                        _strict_raw = await get_setting(_sdb, "stagger_strict_for_direct_dispatch")
+                        _stagger_enabled, _stagger_concurrent, _, _ = await print_scheduler._get_stagger_settings(_sdb)
+                    if (
+                        _stagger_enabled
+                        and (_strict_raw or "false").lower() == "true"
+                        and not print_scheduler._can_start_staggered(_stagger_concurrent)
+                    ):
+                        raise RuntimeError(
+                            "Stagger cap reached — wait for a free slot or disable stagger_strict_for_direct_dispatch"
+                        )
+                except RuntimeError:
+                    raise
+                except Exception as _e:
+                    logger.debug("Strict stagger check failed (non-fatal): %s", _e)
+
+                # Swap-mode start macro — fires before the print starts.
+                await self._run_swap_macro_if_needed(
+                    job, printer, "swap_mode_start", f"Running swap start macro on {printer_name}..."
+                )
+
                 await self._set_active_message(job, f"Starting print on {printer_name}...")
                 started = printer_manager.start_print(
                     job.printer_id,
@@ -694,7 +751,6 @@ class BackgroundDispatchService:
                     timelapse=job.options.get("timelapse", False),
                     bed_levelling=job.options.get("bed_levelling", True),
                     flow_cali=job.options.get("flow_cali", False),
-                    vibration_cali=job.options.get("vibration_cali", False),
                     layer_inspect=job.options.get("layer_inspect", False),
                     use_ams=job.options.get("use_ams", True),
                 )
@@ -712,6 +768,24 @@ class BackgroundDispatchService:
                 if pre_state:
                     asyncio.create_task(self._verify_print_response(job.printer_id, printer_name, pre_state))
 
+                # Register swap config for on_print_complete to pick up.
+                from backend.app.main import register_swap_config
+
+                register_swap_config(job.printer_id, job.options if isinstance(job.options, dict) else {})
+
+                # Register stagger slot so subsequent queue-driven
+                # dispatches respect the grid-load cap.  Uses system-wide
+                # default interval; per-printer override is queue-only.
+                try:
+                    from backend.app.services.print_scheduler import scheduler as print_scheduler
+
+                    async with async_session() as _sdb:
+                        _stagger_enabled, _, _stagger_interval, _ = await print_scheduler._get_stagger_settings(_sdb)
+                    if _stagger_enabled:
+                        print_scheduler._register_stagger_start(job.printer_id, _stagger_interval)
+                except Exception as _e:
+                    logger.debug("Stagger registration for direct dispatch failed: %s", _e)
+
                 if job.requested_by_user_id and job.requested_by_username:
                     printer_manager.set_current_print_user(
                         job.printer_id,
@@ -721,6 +795,44 @@ class BackgroundDispatchService:
             except DispatchJobCancelled:
                 await self._set_active_message(job, f"Cancelled upload on {printer_name}.")
                 raise
+
+    async def _run_swap_macro_if_needed(
+        self,
+        job: PrintDispatchJob,
+        printer,
+        event: str,
+        status_message: str,
+    ):
+        """Execute a swap macro if the job's options request it for *event*.
+
+        Raises ``RuntimeError`` on failure so the dispatch job aborts.
+        """
+        opts = job.options if isinstance(job.options, dict) else {}
+        if not opts.get("execute_swap_macros"):
+            return
+        events = opts.get("swap_macro_events") or []
+        if event not in events:
+            return
+
+        from backend.app.core.database import async_session
+        from backend.app.services.macro_executor import find_swap_macro
+
+        async with async_session() as db:
+            macro = await find_swap_macro(db, event, printer)
+
+        if not macro or not macro.gcode:
+            logger.info(
+                "Dispatch job %s: no gcode for swap event '%s' on printer %s — skipping",
+                job.id,
+                event,
+                printer.name,
+            )
+            return
+
+        await self._set_active_message(job, status_message)
+        success, msg = await printer_manager.execute_macro_and_wait(job.printer_id, macro.gcode, macro.name)
+        if not success:
+            raise RuntimeError(f"Swap macro '{macro.name}' failed: {msg}")
 
     async def _run_print_library_file(self, job: PrintDispatchJob):
         from backend.app.main import register_expected_print
@@ -754,12 +866,36 @@ class BackgroundDispatchService:
             if not await printer_manager.ensure_fresh_connection_for_printer(printer):
                 raise RuntimeError("Can`t re-connect printer MQTT")
 
+            # Gcode post-processing: patch 3MF if the operator toggled off
+            # the vibration fast-check.
+            upload_file_path = file_path
+            _patch_cleanup_dir_lib = None
+            if not job.options.get("mesh_mode_fast_check", True):
+                from backend.app.services.gcode_patcher import patch_mesh_mode_fast_check
+
+                patched_path, patches = await asyncio.to_thread(patch_mesh_mode_fast_check, file_path)
+                if patches:
+                    upload_file_path = patched_path
+                    _patch_cleanup_dir_lib = patched_path.parent
+                    existing_patches = job.options.get("applied_patches") or []
+                    job.options["applied_patches"] = existing_patches + patches
+                    logger.info("Dispatch job %s: 3MF patched (%s)", job.id, patches)
+
             await self._set_active_message(job, f"Creating archive for {lib_file.filename}...")
             archive_service = ArchiveService(db)
+            applied_patches = job.options.get("applied_patches") if isinstance(job.options, dict) else None
+            # Archive the file that will ACTUALLY be sent to the printer
+            # (patched or original). content_hash will match what lands on
+            # SD so on_print_complete chain-lookup works even if
+            # _expected_prints misses.  source_content_hash stays the
+            # library's original hash for design-level dedup.
             archive = await archive_service.archive_print(
                 printer_id=job.printer_id,
-                source_file=file_path,
+                source_file=upload_file_path,
                 original_filename=lib_file.filename,
+                project_id=job.project_id,
+                source_content_hash=lib_file.file_hash,
+                applied_patches=applied_patches or None,
             )
             if not archive:
                 raise RuntimeError("Failed to create archive")
@@ -788,7 +924,7 @@ class BackgroundDispatchService:
                 printer_model=printer_model,
             )
 
-            # Clean up /cache/ — delete stale .3mf and .bbl files from previous prints
+            # Clean up /cache/ - delete stale .3mf and .bbl files from previous prints
             sanitized_base = remote_filename[:-4] if remote_filename.endswith(".3mf") else remote_filename
             try:
                 cache_files = await list_files_async(
@@ -847,7 +983,7 @@ class BackgroundDispatchService:
                         upload_file_async,
                         printer_ip,
                         printer_access_code,
-                        file_path,
+                        upload_file_path,
                         remote_path,
                         progress_callback=upload_progress_callback,
                         socket_timeout=ftp_timeout,
@@ -861,12 +997,19 @@ class BackgroundDispatchService:
                     uploaded = await upload_file_async(
                         printer_ip,
                         printer_access_code,
-                        file_path,
+                        upload_file_path,
                         remote_path,
                         progress_callback=upload_progress_callback,
                         socket_timeout=ftp_timeout,
                         printer_model=printer_model,
                     )
+
+                # Clean up patched temp file after upload.
+                if _patch_cleanup_dir_lib:
+                    import shutil
+
+                    shutil.rmtree(_patch_cleanup_dir_lib, ignore_errors=True)
+                    _patch_cleanup_dir_lib = None
 
                 if uploaded:
                     await self._set_active_upload_progress(job, 1, 1)
@@ -888,6 +1031,34 @@ class BackgroundDispatchService:
 
                 self._raise_if_cancel_requested(job)
 
+                # Strict stagger check (optional, off by default): if enabled,
+                # refuse to start if no free slot, so Print Now respects the
+                # grid-load cap just like queue-driven dispatches.
+                try:
+                    from backend.app.api.routes.settings import get_setting
+                    from backend.app.services.print_scheduler import scheduler as print_scheduler
+
+                    async with async_session() as _sdb:
+                        _strict_raw = await get_setting(_sdb, "stagger_strict_for_direct_dispatch")
+                        _stagger_enabled, _stagger_concurrent, _, _ = await print_scheduler._get_stagger_settings(_sdb)
+                    if (
+                        _stagger_enabled
+                        and (_strict_raw or "false").lower() == "true"
+                        and not print_scheduler._can_start_staggered(_stagger_concurrent)
+                    ):
+                        raise RuntimeError(
+                            "Stagger cap reached — wait for a free slot or disable stagger_strict_for_direct_dispatch"
+                        )
+                except RuntimeError:
+                    raise
+                except Exception as _e:
+                    logger.debug("Strict stagger check failed (non-fatal): %s", _e)
+
+                # Swap-mode start macro — fires before the print starts.
+                await self._run_swap_macro_if_needed(
+                    job, printer, "swap_mode_start", f"Running swap start macro on {printer_name}..."
+                )
+
                 await self._set_active_message(job, f"Starting print on {printer_name}...")
                 started = printer_manager.start_print(
                     job.printer_id,
@@ -897,7 +1068,6 @@ class BackgroundDispatchService:
                     timelapse=job.options.get("timelapse", False),
                     bed_levelling=job.options.get("bed_levelling", True),
                     flow_cali=job.options.get("flow_cali", False),
-                    vibration_cali=job.options.get("vibration_cali", False),
                     layer_inspect=job.options.get("layer_inspect", False),
                     use_ams=job.options.get("use_ams", True),
                 )
@@ -911,6 +1081,24 @@ class BackgroundDispatchService:
                     )
                     await db.rollback()
                     raise RuntimeError("Failed to start print")
+
+                # Register swap config for on_print_complete to pick up.
+                from backend.app.main import register_swap_config
+
+                register_swap_config(job.printer_id, job.options if isinstance(job.options, dict) else {})
+
+                # Register stagger slot so subsequent queue-driven
+                # dispatches respect the grid-load cap.  Uses system-wide
+                # default interval; per-printer override is queue-only.
+                try:
+                    from backend.app.services.print_scheduler import scheduler as print_scheduler
+
+                    async with async_session() as _sdb:
+                        _stagger_enabled, _, _stagger_interval, _ = await print_scheduler._get_stagger_settings(_sdb)
+                    if _stagger_enabled:
+                        print_scheduler._register_stagger_start(job.printer_id, _stagger_interval)
+                except Exception as _e:
+                    logger.debug("Stagger registration for direct dispatch failed: %s", _e)
 
                 pre_state = getattr(printer_manager.get_status(job.printer_id), "state", None)
                 if pre_state:
@@ -945,7 +1133,7 @@ class BackgroundDispatchService:
             if state.state != pre_state:
                 return  # Printer responded
         logger.warning(
-            "Printer %s (%d) did not respond to print command within %.0fs (state still %s) — printer may need restart",
+            "Printer %s (%d) did not respond to print command within %.0fs (state still %s) - printer may need restart",
             printer_name,
             printer_id,
             timeout,
@@ -963,7 +1151,7 @@ class BackgroundDispatchService:
         try:
             await delete_file_async(printer_ip, access_code, remote_path, printer_model=printer_model)
         except Exception:
-            pass  # Best-effort — don't fail the error handler
+            pass  # Best-effort - don't fail the error handler
 
     @staticmethod
     def _resolve_plate_id(file_path: Path, requested_plate_id: int | None) -> int:

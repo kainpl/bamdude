@@ -1,4 +1,4 @@
-"""Unit tests for usage_tracker.py — 3MF-primary filament tracking.
+"""Unit tests for usage_tracker.py - 3MF-primary filament tracking.
 
 Tests the unified tracking logic: 3MF slicer estimates as primary path,
 AMS remain% delta as fallback, per-layer gcode for partial prints,
@@ -163,7 +163,7 @@ class TestOnPrintStart:
 
 
 class TestOnPrintComplete:
-    """Tests for on_print_complete() — path ordering and interaction."""
+    """Tests for on_print_complete() - path ordering and interaction."""
 
     @pytest.fixture(autouse=True)
     def _clear_sessions(self):
@@ -325,7 +325,7 @@ class TestOnPrintComplete:
 
 
 class TestTrackFrom3mf:
-    """Tests for _track_from_3mf() — per-layer, linear scaling, and slot mapping."""
+    """Tests for _track_from_3mf() - per-layer, linear scaling, and slot mapping."""
 
     @pytest.mark.asyncio
     async def test_prefers_live_assignment_when_reassigned_mid_print(self):
@@ -609,7 +609,7 @@ class TestTrackFrom3mf:
             tray_now=7,
         )
 
-        # 3MF has slot_id=12 (would default-map to ams_id=2, tray_id=3 — WRONG)
+        # 3MF has slot_id=12 (would default-map to ams_id=2, tray_id=3 - WRONG)
         filament_usage = [{"slot_id": 12, "used_g": 10.6, "type": "PLA", "color": "#FF0000"}]
         handled_trays: set[tuple[int, int]] = set()
 
@@ -818,7 +818,7 @@ class TestTrackFrom3mf:
         printer_manager.get_status.return_value = SimpleNamespace(
             progress=100,
             layer_num=50,
-            tray_now=0,  # Different from mapped tray — should be ignored
+            tray_now=0,  # Different from mapped tray - should be ignored
             last_loaded_tray=0,
         )
 
@@ -915,7 +915,7 @@ class TestTrackFrom3mf:
 
         db = _mock_db_sequential([archive, None, assignment, spool])
 
-        # tray_now_at_start=5 (valid), last_loaded_tray=9 (different) — should use 5
+        # tray_now_at_start=5 (valid), last_loaded_tray=9 (different) - should use 5
         printer_manager = MagicMock()
         printer_manager.get_status.return_value = SimpleNamespace(
             progress=100,
@@ -1336,7 +1336,7 @@ class TestTrayChangeSplit:
 
 
 class TestDecodeMqttMapping:
-    """Tests for _decode_mqtt_mapping() — snow-encoded MQTT mapping to global tray IDs."""
+    """Tests for _decode_mqtt_mapping() - snow-encoded MQTT mapping to global tray IDs."""
 
     def test_none_input(self):
         assert _decode_mqtt_mapping(None) is None
@@ -1382,7 +1382,7 @@ class TestDecodeMqttMapping:
 
 
 class TestMatchSlotsByColor:
-    """Tests for _match_slots_by_color() — color-based filament slot to AMS tray matching."""
+    """Tests for _match_slots_by_color() - color-based filament slot to AMS tray matching."""
 
     def _ams(self, trays):
         """Build AMS data from list of (ams_id, tray_id, color_hex, tray_type) tuples."""
@@ -1523,7 +1523,7 @@ class TestMatchSlotsByColor:
                 (0, 1, "FF0000FF", "PLA"),
             ]
         )
-        # Two slots both wanting red — first gets tray 0, second gets tray 1? No.
+        # Two slots both wanting red - first gets tray 0, second gets tray 1? No.
         # When first slot takes the only available, second has 1 left → should work
         usage = self._usage([(1, "#FF0000"), (2, "#FF0000")])
         # First slot: candidates=[0,1], available=[0,1], len!=1 → None

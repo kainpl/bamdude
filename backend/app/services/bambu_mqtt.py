@@ -139,7 +139,7 @@ class PrinterState:
     active_extruder: int = 0
     # Currently loaded tray (global ID): 254/255 = external spools, 255 = no filament on legacy printers
     tray_now: int = 255
-    # Last valid tray_now (0-253) — survives unload (255) for usage tracking after print completes
+    # Last valid tray_now (0-253) - survives unload (255) for usage tracking after print completes
     last_loaded_tray: int = -1
     # Pending load target - used to track what tray we're loading for H2D disambiguation
     pending_tray_target: int | None = None
@@ -180,6 +180,8 @@ class PrinterState:
     # Developer LAN mode: parsed from MQTT "fun" field bit 0x20000000
     # True = dev mode ON (no encryption), False = dev mode OFF (encryption required), None = unknown
     developer_mode: bool | None = None
+    # Currently executing macro name (set by macro execute endpoint, cleared on stg_cur 11→0)
+    macro_executing: str | None = None
 
 
 # Stage name mapping from BambuStudio DeviceManager.cpp
@@ -283,6 +285,7 @@ class BambuMQTTClient:
         on_print_complete: Callable[[dict], None] | None = None,
         on_ams_change: Callable[[list], None] | None = None,
         on_layer_change: Callable[[int], None] | None = None,
+        on_macro_complete: Callable[[str, str], None] | None = None,
     ):
         self.ip_address = ip_address
         self.serial_number = serial_number
@@ -293,6 +296,7 @@ class BambuMQTTClient:
         self.on_print_complete = on_print_complete
         self.on_ams_change = on_ams_change
         self.on_layer_change = on_layer_change
+        self.on_macro_complete = on_macro_complete
 
         self.state = PrinterState()
         self._client: mqtt.Client | None = None
@@ -324,6 +328,10 @@ class BambuMQTTClient:
         self._pending_kprofile_response: asyncio.Event | None = None
         self._kprofile_response_data: list | None = None
 
+        # GCode ACK listeners: sequence_id -> (threading.Event, result_dict)
+        # Used by macro execute to wait for printer ACK before returning HTTP response
+        self._ack_listeners: dict[str, tuple[threading.Event, dict]] = {}
+
         # Xcam hold timers - OrcaSlicer pattern: ignore incoming data for 3 seconds after command
         # Key: module_name, Value: timestamp when command was sent
         self._xcam_hold_start: dict[str, float] = {}
@@ -347,10 +355,20 @@ class BambuMQTTClient:
         self._request_topic_sub_time: float = 0.0
         self._request_topic_confirmed: bool = False
 
+        # Developer mode probe: two-phase detection to avoid false negatives.
+        # Phase 1: wait for a "large" status push (len > 30) to confirm printer is ready.
+        # Phase 2: wait 5s after connect before sending the probe request.
+        self._dev_mode_probed: bool = False
+        self._dev_mode_needs_probe: bool = False
+        self._dev_mode_probe_seq: str | None = None
+        self._dev_mode_probe_time: float = 0.0
+        self._dev_mode_probe_failures: int = 0
+        self._connect_time: float = 0.0
+
         # Set when check_staleness() force-closes the socket to trigger reconnect.
         # Prevents _on_disconnect from redundantly broadcasting state (already done).
         self._stale_reconnecting: bool = False
-        # Timestamp of last stale reconnect — prevents rapid-fire socket closes
+        # Timestamp of last stale reconnect - prevents rapid-fire socket closes
         # when the frontend polls status faster than paho can reconnect.
         self._last_stale_reconnect: float = 0.0
 
@@ -373,14 +391,14 @@ class BambuMQTTClient:
         return time_since_last > self.STALE_TIMEOUT
 
     # Minimum seconds between stale reconnect attempts.  Frontend polls
-    # status every few seconds — without a cooldown, each poll would
+    # status every few seconds - without a cooldown, each poll would
     # force-close the socket before paho has time to reconnect.
     STALE_RECONNECT_COOLDOWN = 30.0
 
     def check_staleness(self) -> bool:
         """Check staleness and update connected state if stale. Returns True if connected."""
         if self.state.connected and self.is_stale():
-            # Don't force-close again if we already did recently — give paho
+            # Don't force-close again if we already did recently - give paho
             # time to reconnect and the printer time to send its first message.
             now = time.time()
             if now - self._last_stale_reconnect < self.STALE_RECONNECT_COOLDOWN:
@@ -415,6 +433,14 @@ class BambuMQTTClient:
             self._stale_reconnecting = False  # Clear stale-reconnect flag on successful connect
             # Reset per-connection warning state so warnings fire once per (re)connection
             self._ams_version_warned = set()
+            # Reset developer mode probe tracking (don't clear developer_mode itself -
+            # it may still be valid from a previous connection, avoids reprobe loop #887)
+            self._dev_mode_probed = False
+            self._dev_mode_needs_probe = False
+            self._dev_mode_probe_seq = None
+            self._dev_mode_probe_time = 0.0
+            self._dev_mode_probe_failures = 0
+            self._connect_time = time.monotonic()
             client.subscribe(self.topic_subscribe)
             # Subscribe to request topic for ams_mapping capture (if supported by broker)
             if self._request_topic_supported:
@@ -472,12 +498,12 @@ class BambuMQTTClient:
     def _on_disconnect(self, client, userdata, disconnect_flags=None, rc=None, properties=None):
         # Always unblock disconnect() callers, regardless of whether we suppress
         # the state broadcast below.  disconnect() sets _disconnection_event and
-        # waits on it — every callback path must fire it.
+        # waits on it - every callback path must fire it.
         if self._disconnection_event:
             self._disconnection_event.set()
 
         # If we intentionally closed the socket for stale reconnect, don't broadcast
-        # another state change — check_staleness() already set connected=False and
+        # another state change - check_staleness() already set connected=False and
         # notified the UI.  Just log and let paho auto-reconnect.
         if self._stale_reconnecting:
             logger.info(
@@ -490,7 +516,7 @@ class BambuMQTTClient:
         # Ignore spurious disconnect callbacks if we've received a message recently
         # Paho-mqtt sometimes fires disconnect callbacks while the connection is still active.
         # BUT: never suppress error disconnects (keepalive timeout, connection lost, etc.)
-        # — only suppress when rc indicates a clean/normal disconnect.
+        # - only suppress when rc indicates a clean/normal disconnect.
         is_error_disconnect = rc is not None and hasattr(rc, "is_failure") and rc.is_failure
         time_since_last_message = time.time() - self._last_message_time
         if not is_error_disconnect and time_since_last_message < 10.0 and self._last_message_time > 0:
@@ -628,12 +654,43 @@ class BambuMQTTClient:
             try:
                 fun_val = payload["fun"]
                 fun_int = fun_val if isinstance(fun_val, int) else int(fun_val, 16)
-                self.state.developer_mode = (fun_int & 0x20000000) == 0
+                new_dev_mode = (fun_int & 0x20000000) == 0
+                if new_dev_mode != self.state.developer_mode:
+                    self.state.developer_mode = new_dev_mode
+                    if self.on_state_change:
+                        self.on_state_change(self.state)
             except (ValueError, TypeError):
                 pass
 
         if "print" in payload:
             print_data = payload["print"]
+            # Handle gcode_line ACK - resolve ACK listener for HTTP wait
+            if isinstance(print_data, dict) and print_data.get("command") == "gcode_line" and "result" in print_data:
+                seq_id = print_data.get("sequence_id")
+                result = print_data.get("result", "")
+                reason = print_data.get("reason", "")
+                logger.info(
+                    "[%s][MACRO] gcode_line ACK: seq=%s, result=%s, reason=%s, macro=%s",
+                    self.serial_number,
+                    seq_id,
+                    result,
+                    reason,
+                    self.state.macro_executing,
+                )
+                if seq_id and seq_id in self._ack_listeners:
+                    event, result_dict = self._ack_listeners.pop(seq_id)
+                    result_dict["success"] = result == "success"
+                    result_dict["reason"] = reason
+                    event.set()
+                    # If ACK failed, clear macro state immediately
+                    if result != "success" and self.state.macro_executing:
+                        macro_name = self.state.macro_executing
+                        self.state.macro_executing = None
+                        logger.warning(
+                            "[%s][MACRO] Printer rejected GCode, macro '%s' failed", self.serial_number, macro_name
+                        )
+                        if self.on_macro_complete:
+                            self.on_macro_complete(macro_name, "failed")
 
             # Check if xcam is nested inside print data
             if "xcam" in print_data:
@@ -664,7 +721,7 @@ class BambuMQTTClient:
                 except Exception as e:
                     logger.error("[%s] Error handling AMS data from print: %s", self.serial_number, e)
 
-            # Handle vir_slot (H2-series external spool data) — list of external trays
+            # Handle vir_slot (H2-series external spool data) - list of external trays
             # Process vir_slot FIRST so it takes priority over vt_tray
             if "vir_slot" in print_data:
                 vir_slot = print_data["vir_slot"]
@@ -722,6 +779,13 @@ class BambuMQTTClient:
                 logger.debug("[%s] Received command response: %s", self.serial_number, cmd)
                 if cmd in ("extrusion_cali_sel", "extrusion_cali_set", "extrusion_cali_del", "ams_filament_setting"):
                     logger.debug("[%s] %s response: %s", self.serial_number, cmd, print_data)
+                # Check for developer mode probe response
+                if (
+                    cmd == "ams_filament_setting"
+                    and self._dev_mode_probe_seq is not None
+                    and print_data.get("sequence_id") == self._dev_mode_probe_seq
+                ):
+                    self._handle_dev_mode_probe_response(print_data)
             if "command" in print_data and print_data.get("command") == "extrusion_cali_get":
                 self._handle_kprofile_response(print_data)
 
@@ -789,7 +853,7 @@ class BambuMQTTClient:
 
         # Extract AMS unit firmware versions from AMS modules.
         # See module-level _AMS_MODULE_PREFIXES for supported naming conventions.
-        # Always cache regardless of whether AMS data has arrived yet — get_version
+        # Always cache regardless of whether AMS data has arrived yet - get_version
         # often arrives before the first push_status, so caching must be unconditional.
         ams_raw = self.state.raw_data.get("ams")
         for module in modules:
@@ -1193,7 +1257,7 @@ class BambuMQTTClient:
                 # H2D dual-nozzle printers report only slot number (0-3), not global tray ID
                 # Use active_extruder + ams_extruder_map to determine which AMS the slot belongs to
                 # Single-nozzle printers with multiple AMS (e.g. P2S) also report local slot IDs (#420)
-                # — disambiguated below using MQTT mapping field
+                # - disambiguated below using MQTT mapping field
                 ams_map = self.state.ams_extruder_map
                 if self._is_dual_nozzle and 0 <= parsed_tray_now <= 3:
                     # First, check if we have a pending target that matches this slot
@@ -1328,7 +1392,7 @@ class BambuMQTTClient:
                     num_ams = bin(ams_exist).count("1")
 
                     if num_ams > 1:
-                        # Multiple AMS on single-nozzle — tray_now is likely a local slot ID.
+                        # Multiple AMS on single-nozzle - tray_now is likely a local slot ID.
                         # Cross-reference with MQTT mapping field to find the correct AMS unit.
                         mapping_raw = self.state.raw_data.get("mapping")
                         resolved = self._resolve_local_slot_from_mapping(parsed_tray_now, mapping_raw)
@@ -1340,11 +1404,11 @@ class BambuMQTTClient:
                                 )
                             self.state.tray_now = resolved
                         else:
-                            # No mapping available (not printing, or ambiguous) — use as-is.
+                            # No mapping available (not printing, or ambiguous) - use as-is.
                             # This matches the old behavior and is correct for AMS 0.
                             self.state.tray_now = parsed_tray_now
                     else:
-                        # Single AMS — local slot 0-3 equals global ID
+                        # Single AMS - local slot 0-3 equals global ID
                         self.state.tray_now = parsed_tray_now
                 else:
                     # tray_now > 3 means it's already a global ID, or 255 means unloaded
@@ -1423,14 +1487,14 @@ class BambuMQTTClient:
                                 and merged_tray.get("tray_type")
                             ):
                                 logger.info(
-                                    "[%s] AMS %s tray %s: state=%s (not loaded) — clearing stale tray data",
+                                    "[%s] AMS %s tray %s: state=%s (not loaded) - clearing stale tray data",
                                     self.serial_number,
                                     ams_id,
                                     tray_id,
                                     tray_state,
                                 )
                                 slot_clearing = True
-                                # The incremental update only has {id, state} — inject
+                                # The incremental update only has {id, state} - inject
                                 # empty values for all content fields so the merge loop
                                 # below clears the stale data from merged_tray.
                                 new_tray.update(
@@ -1550,7 +1614,7 @@ class BambuMQTTClient:
         # BambuStudio DevFilaSystem.cpp parses info as hex string:
         #   type_id    = get_flag_bits(info, 0, 4)   // bits 0-3: AMS type
         #   extruder_id = get_flag_bits(info, 8, 4)  // bits 8-11: extruder assignment
-        # where get_flag_bits uses std::stoull(str, nullptr, 16) — hex parsing.
+        # where get_flag_bits uses std::stoull(str, nullptr, 16) - hex parsing.
         # extruder_id: 0=right/main, 1=left/deputy, 0xE=uninitialized (skip)
         #
         # Use merged_ams (not ams_list) to avoid partial MQTT updates overwriting
@@ -1620,7 +1684,7 @@ class BambuMQTTClient:
             self._previous_ams_hash = ams_hash
             if self.on_ams_change:
                 logger.debug("[%s] AMS data changed, triggering sync callback", self.serial_number)
-                # Pass merged AMS data (not raw ams_list) — partial MQTT updates
+                # Pass merged AMS data (not raw ams_list) - partial MQTT updates
                 # may lack fields like 'remain' that the merged state preserves
                 self.on_ams_change(merged_ams)
 
@@ -1706,12 +1770,51 @@ class BambuMQTTClient:
         # Calibration stage tracking
         if "stg_cur" in data:
             new_stg = data["stg_cur"]
-            # Always log ANY stg_cur change for debugging filament operations
             if new_stg != self.state.stg_cur:
                 logger.debug(
-                    f"[{self.serial_number}] stg_cur changed: {self.state.stg_cur} -> {new_stg} ({get_stage_name(new_stg)})"
+                    "[%s] stg_cur: %s (%s) -> %s (%s)",
+                    self.serial_number,
+                    self.state.stg_cur,
+                    get_stage_name(self.state.stg_cur),
+                    new_stg,
+                    get_stage_name(new_stg),
                 )
-            self.state.stg_cur = new_stg
+
+            # Macro execution tracking via stg_cur transitions
+            # Start marker: stg_cur becomes 0 ("Printing") via claim_action:0
+            # End marker: stg_cur becomes -1 or 255 (idle) via claim_action:{idle_stg}
+            if self.state.macro_executing:
+                if self.state.stg_cur != 0 and new_stg == 0:
+                    # Macro started executing - push state to frontend
+                    logger.info(
+                        "[%s][MACRO] Execution started - stg_cur %s->0, macro='%s'",
+                        self.serial_number,
+                        self.state.stg_cur,
+                        self.state.macro_executing,
+                    )
+                    self.state.stg_cur = new_stg
+                    if self.on_state_change:
+                        self.on_state_change(self.state)
+                elif self.state.stg_cur == 0 and new_stg != 0:
+                    # Macro completed - stg_cur left 0 (goes to -1 or 255 = idle)
+                    macro_name = self.state.macro_executing
+                    self.state.macro_executing = None
+                    self.state.stg_cur = new_stg
+                    logger.info(
+                        "[%s][MACRO] Execution completed - stg_cur 0->%s, macro='%s'",
+                        self.serial_number,
+                        new_stg,
+                        macro_name,
+                    )
+                    if self.on_macro_complete:
+                        self.on_macro_complete(macro_name, "completed")
+                    if self.on_state_change:
+                        self.on_state_change(self.state)
+                    # Skip normal stg_cur assignment below - already set
+                    new_stg = None
+
+            if new_stg is not None:
+                self.state.stg_cur = new_stg
         if "stg" in data:
             self.state.stg = data["stg"] if isinstance(data["stg"], list) else []
 
@@ -2142,7 +2245,7 @@ class BambuMQTTClient:
                         severity = (attr >> 8) & 0xF
                         # Module is in attr byte 3 (bits 24-31)
                         module = (attr >> 24) & 0xFF
-                        # Skip non-error status codes — all real HMS errors
+                        # Skip non-error status codes - all real HMS errors
                         # have code >= 0x4000. Lower values are status/phase
                         # indicators that some firmware sends during normal printing.
                         if code < 0x4000:
@@ -2172,7 +2275,7 @@ class BambuMQTTClient:
                 # All known HMS errors use 0x4xxx (fatal), 0x8xxx (warning), 0xCxxx (prompt).
                 # Some firmware sends low values like 0x0002 during normal printing.
                 if error < 0x4000:
-                    pass  # Skip — not a real error
+                    pass  # Skip - not a real error
                 else:
                     # Store in a format that matches the community error database
                     # attr stores the full 32-bit value for reconstruction
@@ -2378,6 +2481,10 @@ class BambuMQTTClient:
                         if "diameter" in nozzle:
                             self.state.nozzles[idx].nozzle_diameter = str(nozzle["diameter"])
 
+        # Normalize vt_tray to list before storing (some firmware sends a dict)
+        if "vt_tray" in data and isinstance(data["vt_tray"], dict):
+            data["vt_tray"] = [data["vt_tray"]]
+
         # Preserve AMS, vt_tray, ams_extruder_map, and mapping data when updating raw_data
         # (these fields aren't sent in every MQTT push, only when changed)
         ams_data = self.state.raw_data.get("ams")
@@ -2386,14 +2493,7 @@ class BambuMQTTClient:
         mapping_data = self.state.raw_data.get("mapping")
         self.state.raw_data = data
 
-        # Parse developer LAN mode from "fun" field
-        if "fun" in data:
-            try:
-                fun_val = data["fun"]
-                fun_int = fun_val if isinstance(fun_val, int) else int(fun_val, 16)
-                self.state.developer_mode = (fun_int & 0x20000000) == 0
-            except (ValueError, TypeError):
-                pass
+        # Restore preserved fields immediately after raw_data assignment
         if ams_data is not None:
             self.state.raw_data["ams"] = ams_data
         if vt_tray_data is not None:
@@ -2403,12 +2503,69 @@ class BambuMQTTClient:
         if mapping_data is not None and "mapping" not in data:
             self.state.raw_data["mapping"] = mapping_data
 
+        # Parse developer LAN mode from "fun" field
+        if "fun" in data:
+            try:
+                fun_val = data["fun"]
+                fun_int = fun_val if isinstance(fun_val, int) else int(fun_val, 16)
+                new_dev_mode = (fun_int & 0x20000000) == 0
+                if new_dev_mode != self.state.developer_mode:
+                    self.state.developer_mode = new_dev_mode
+                    if self.on_state_change:
+                        self.on_state_change(self.state)
+            except (ValueError, TypeError):
+                pass
+        elif self.state.developer_mode is None and not self._dev_mode_probed:
+            # Two-phase developer mode probe:
+            # 1) Wait for a "large" status push (len > 30) confirming printer is streaming
+            # 2) Wait at least 5s after connect so the printer has time to send "fun" naturally
+            if not self._dev_mode_needs_probe and len(data) > 30:
+                self._dev_mode_needs_probe = True
+            if self._dev_mode_needs_probe and time.monotonic() - self._connect_time >= 5.0:
+                self._probe_developer_mode()
+            elif self._dev_mode_needs_probe:
+                logger.debug(
+                    "[%s] Deferring developer mode probe (%.1fs since connect, need 5s)",
+                    self.serial_number,
+                    time.monotonic() - self._connect_time,
+                )
+        elif self._dev_mode_probed and self._dev_mode_probe_seq is not None:
+            # Probe sent but no response yet - check for timeout
+            elapsed = time.monotonic() - self._dev_mode_probe_time
+            if elapsed > 10.0:
+                self._dev_mode_probe_failures += 1
+                logger.warning(
+                    "[%s] Developer mode probe timed out after %.0fs (attempt %d)",
+                    self.serial_number,
+                    elapsed,
+                    self._dev_mode_probe_failures,
+                )
+                self._dev_mode_probe_seq = None
+                if self._dev_mode_probe_failures >= 2:
+                    logger.warning(
+                        "[%s] MQTT session appears broken (commands ignored), forcing reconnect",
+                        self.serial_number,
+                    )
+                    self._stale_reconnecting = True
+                    self.state.connected = False
+                    if self.on_state_change:
+                        self.on_state_change(self.state)
+                    if self._client:
+                        try:
+                            sock = self._client.socket()
+                            if sock:
+                                sock.close()
+                        except Exception:
+                            pass
+                else:
+                    self._dev_mode_probed = False  # Allow retry
+
         # Log mapping data when received (for usage tracking debugging)
         if "mapping" in data:
             logger.debug("[%s] MQTT mapping field: %s", self.serial_number, data["mapping"])
 
         # Log state transitions for debugging
-        if "gcode_state" in data:
+        if "gcode_state" in data and self.state.state != self._previous_gcode_state:
             logger.debug(
                 f"[{self.serial_number}] gcode_state: {self._previous_gcode_state} -> {self.state.state}, "
                 f"file: {self.state.gcode_file}, subtask: {self.state.subtask_name}"
@@ -2569,6 +2726,68 @@ class BambuMQTTClient:
         if self.on_state_change:
             self.on_state_change(self.state)
 
+    def _probe_developer_mode(self):
+        """Probe developer mode by sending an ams_filament_setting for the external slot.
+
+        Some printers (A1/P1 series) never send the "fun" field in MQTT status.
+        We detect developer mode by sending a harmless command and checking the response:
+        - result="success" → developer mode ON (commands accepted)
+        - result="failed", reason="mqtt message verify failed" → developer mode OFF
+
+        The probe re-sends the current external slot config so it's a no-op on success.
+        """
+        if not self._client or not self.state.connected:
+            return
+        self._dev_mode_probed = True
+        self._dev_mode_needs_probe = False
+        self._dev_mode_probe_time = time.monotonic()
+        self._sequence_id += 1
+        seq = str(self._sequence_id)
+        self._dev_mode_probe_seq = seq
+
+        # Build probe command: re-send current external slot config (no-op on success)
+        vt_tray = self.state.raw_data.get("vt_tray", []) if self.state.raw_data else []
+        current = vt_tray[0] if vt_tray else {}
+
+        command = {
+            "print": {
+                "command": "ams_filament_setting",
+                "ams_id": 255,
+                "tray_id": 0,
+                "slot_id": 0,
+                "tray_info_idx": current.get("tray_info_idx", ""),
+                "tray_type": current.get("tray_type", ""),
+                "tray_sub_brands": current.get("tray_sub_brands", ""),
+                "tray_color": current.get("tray_color", "00000000"),
+                "nozzle_temp_min": current.get("nozzle_temp_min", 0),
+                "nozzle_temp_max": current.get("nozzle_temp_max", 0),
+                "sequence_id": seq,
+            }
+        }
+        setting_id = current.get("setting_id")
+        if setting_id:
+            command["print"]["setting_id"] = setting_id
+
+        logger.info("[%s] Probing developer mode via ams_filament_setting (seq=%s)", self.serial_number, seq)
+        self._client.publish(self.topic_publish, json.dumps(command), qos=1)
+
+    def _handle_dev_mode_probe_response(self, data: dict):
+        """Handle response to the developer mode probe command."""
+        self._dev_mode_probe_seq = None
+        self._dev_mode_probe_failures = 0
+        result = data.get("result", "")
+        reason = data.get("reason", "")
+
+        if result == "failed" and "verify failed" in reason:
+            self.state.developer_mode = False
+            logger.info("[%s] Developer mode probe: DISABLED (reason=%r)", self.serial_number, reason)
+        else:
+            self.state.developer_mode = True
+            logger.info("[%s] Developer mode probe: ENABLED (result=%r)", self.serial_number, result)
+
+        if self.on_state_change:
+            self.on_state_change(self.state)
+
     def _request_push_all(self):
         """Request full status update from printer."""
         if self._client:
@@ -2671,7 +2890,7 @@ class BambuMQTTClient:
         self._client.reconnect_delay_set(min_delay=1, max_delay=30)
 
         # Keepalive: paho sends PINGREQs at this interval, broker considers
-        # client dead at 1.5x.  30s is a good balance — fast enough to detect
+        # client dead at 1.5x.  30s is a good balance - fast enough to detect
         # real network loss (45s), not so aggressive that transient hiccups
         # trigger false disconnects.  Stale detection (60s no messages) handles
         # the P1S/P1P firmware bug where the broker stops publishing but the
@@ -2686,7 +2905,6 @@ class BambuMQTTClient:
         ams_mapping: list[int] | None = None,
         bed_levelling: bool = True,
         flow_cali: bool = False,
-        vibration_cali: bool = True,
         layer_inspect: bool = False,
         timelapse: bool = False,
         use_ams: bool = True,
@@ -2703,9 +2921,14 @@ class BambuMQTTClient:
             timelapse: Record timelapse video
             bed_levelling: Auto bed levelling before print
             flow_cali: Flow/pressure advance calibration
-            vibration_cali: Vibration compensation calibration
             layer_inspect: First layer AI inspection
             use_ams: Use AMS for automatic filament changes
+
+        Note: the ``vibration_cali`` field in the MQTT payload is kept for
+        firmware compatibility but hardcoded to False. Upstream Bambu Studio
+        also hardcodes it off for every model (per-print vibration calibration
+        was removed from the Studio UI); the standalone calibration wizard
+        remains the only way to run it.
         """
         if self._client and self.state.connected:
             # Bambu print command format - matches Bambu Studio's format
@@ -2729,9 +2952,19 @@ class BambuMQTTClient:
                         # with a single slot (slot 0). BambuStudio convention:
                         #   255 = VIRTUAL_TRAY_MAIN_ID (main/left nozzle)
                         #   254 = VIRTUAL_TRAY_DEPUTY_ID (deputy/right nozzle)
+                        # Single-nozzle printers (P1S, A1, X1C) always need ams_id=255.
+                        # Only H2D series uses the actual tray_id (254 for deputy nozzle).
                         # Flat mapping must use -1 (firmware doesn't accept raw 254/255).
+                        _is_h2d = self.model and self.model.upper().strip() in (
+                            "H2D",
+                            "H2D PRO",
+                            "H2DPRO",
+                            "H2C",
+                            "H2S",
+                        )
+                        ext_ams_id = tray_id if _is_h2d else 255
                         flat_ams_mapping.append(-1)
-                        ams_mapping2.append({"ams_id": tray_id, "slot_id": 0})
+                        ams_mapping2.append({"ams_id": ext_ams_id, "slot_id": 0})
                     elif tray_id >= 128:
                         # AMS-HT: global tray ID IS the ams_id (single tray per unit)
                         flat_ams_mapping.append(tray_id)
@@ -2744,7 +2977,7 @@ class BambuMQTTClient:
                         ams_mapping2.append({"ams_id": ams_id, "slot_id": slot_id})
 
             # H2D series requires integer values (0/1) for calibration/leveling fields
-            # but use_ams MUST remain boolean — H2D Pro firmware interprets integer
+            # but use_ams MUST remain boolean - H2D Pro firmware interprets integer
             # values as nozzle index (1 = deputy nozzle), causing wrong extruder routing
             # Other printers (X1C, P1S, A1, etc.) require actual booleans for all fields
             is_h2d = self.model and self.model.upper().strip() in ("H2D", "H2D PRO", "H2DPRO", "H2C", "H2S")
@@ -2760,6 +2993,20 @@ class BambuMQTTClient:
                         self.serial_number,
                     )
 
+            # No-AMS external spool fix (PR #2 by latsss):
+            # On printers without a physical AMS, firmware rejects -1 (unmapped)
+            # and 254 (virtual tray) in ams_mapping with 0700_8012 "Failed to get
+            # AMS mapping table". Fix: remap -1→0 and omit ams_mapping2 entirely.
+            # H2D excluded — use_ams controls nozzle routing on those.
+            no_ams_printer = not use_ams and not is_h2d and not self.state.raw_data.get("ams")
+            if no_ams_printer and flat_ams_mapping:
+                flat_ams_mapping = [0 if v == -1 else v for v in flat_ams_mapping]
+                logger.info(
+                    "[%s] No AMS detected — remapped external spool: ams_mapping=%s, omitting ams_mapping2",
+                    self.serial_number,
+                    flat_ams_mapping,
+                )
+
             command = {
                 "print": {
                     "sequence_id": "20000",
@@ -2773,7 +3020,11 @@ class BambuMQTTClient:
                     "bed_leveling": (1 if bed_levelling else 0) if is_h2d else bed_levelling,
                     "auto_bed_leveling": 1 if bed_levelling else 0,
                     "flow_cali": (1 if flow_cali else 0) if is_h2d else flow_cali,
-                    "vibration_cali": (1 if vibration_cali else 0) if is_h2d else vibration_cali,
+                    # Hardcoded off — upstream Bambu Studio does the same for
+                    # every model. Kept in the payload only because older
+                    # firmware versions reject the command if the key is
+                    # missing.
+                    "vibration_cali": 0 if is_h2d else False,
                     "layer_inspect": (1 if layer_inspect else 0) if is_h2d else layer_inspect,
                     "use_ams": use_ams,
                     "cfg": "0",
@@ -2794,16 +3045,11 @@ class BambuMQTTClient:
                     self.serial_number,
                 )
 
-            # P2S-specific parameter adjustments
-            # P2S printer doesn't support vibration calibration like X1/P1 series
-            if self.model and self.model.upper().strip() in ("P2S", "N7"):
-                command["print"]["vibration_cali"] = False
-                logger.debug("[%s] P2S detected: disabling vibration_cali", self.serial_number)
-
             # Add AMS mapping if provided
             if ams_mapping is not None:
                 command["print"]["ams_mapping"] = flat_ams_mapping
-                command["print"]["ams_mapping2"] = ams_mapping2
+                if not no_ams_printer:
+                    command["print"]["ams_mapping2"] = ams_mapping2
 
             logger.info("[%s] Sending print command: %s", self.serial_number, json.dumps(command))
             self._client.publish(self.topic_publish, json.dumps(command), qos=1)
@@ -3604,10 +3850,17 @@ class BambuMQTTClient:
 
         self._sequence_id += 1
         command = {"print": {"command": "gcode_line", "param": gcode, "sequence_id": str(self._sequence_id)}}
-        # Use QoS 1 for reliable delivery (at least once)
-        self._client.publish(self.topic_publish, json.dumps(command), qos=1)
-        logger.debug("[%s] Sent G-code: %s...", self.serial_number, gcode[:50])
+        self.send_command(command)
+        logger.debug("[%s] Sent G-code (seq=%d): %s...", self.serial_number, self._sequence_id, gcode[:50])
         return True
+
+    def register_ack_listener(self, seq_id: str, event: threading.Event, result: dict):
+        """Register a one-shot ACK listener for a gcode_line command.
+
+        When the printer responds with result for this sequence_id,
+        result["success"] and result["reason"] are set and event is signaled.
+        """
+        self._ack_listeners[seq_id] = (event, result)
 
     def set_bed_temperature(self, target: int) -> bool:
         """Set the bed target temperature.
@@ -4178,7 +4431,7 @@ class BambuMQTTClient:
         This command selects a K profile from the printer's calibration list.
         Use cali_idx=-1 to use the default K value (0.020).
 
-        Note: Do NOT send setting_id in this command — BambuStudio never includes
+        Note: Do NOT send setting_id in this command - BambuStudio never includes
         it, and adding it causes the firmware to mislink the profile on X1C/P1S.
 
         Args:

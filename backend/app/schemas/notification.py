@@ -67,7 +67,6 @@ class NotificationProviderBase(BaseModel):
 
     # Event triggers - Print queue
     on_queue_job_added: bool = Field(default=False, description="Notify when job is added to queue")
-    on_queue_job_assigned: bool = Field(default=False, description="Notify when model-based job is assigned to printer")
     on_queue_job_started: bool = Field(default=False, description="Notify when queue job starts printing")
     on_queue_job_waiting: bool = Field(default=True, description="Notify when job is waiting for filament or printer")
     on_queue_job_skipped: bool = Field(default=True, description="Notify when job is skipped")
@@ -150,7 +149,6 @@ class NotificationProviderUpdate(BaseModel):
 
     # Event triggers - Print queue
     on_queue_job_added: bool | None = None
-    on_queue_job_assigned: bool | None = None
     on_queue_job_started: bool | None = None
     on_queue_job_waiting: bool | None = None
     on_queue_job_skipped: bool | None = None

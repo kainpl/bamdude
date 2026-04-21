@@ -1,13 +1,13 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
 
 
 class SmartPlug(Base):
-    """Smart plug for printer power control (Tasmota, Home Assistant, or MQTT)."""
+    """Smart plug for printer power control (Tasmota, Home Assistant, MQTT, or REST)."""
 
     __tablename__ = "smart_plugs"
 
@@ -15,7 +15,7 @@ class SmartPlug(Base):
     name: Mapped[str] = mapped_column(String(100))
     ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)  # IPv4/IPv6 (required for Tasmota)
 
-    # Plug type: "tasmota" (default), "homeassistant", or "mqtt"
+    # Plug type: "tasmota" (default), "homeassistant", "mqtt", or "rest"
     plug_type: Mapped[str] = mapped_column(String(20), default="tasmota")
     # Home Assistant entity ID (e.g., "switch.printer_plug")
     ha_entity_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
@@ -49,6 +49,28 @@ class SmartPlug(Base):
 
     # Legacy multiplier - kept for backward compatibility
     mqtt_multiplier: Mapped[float] = mapped_column(Float, default=1.0)  # Deprecated, use mqtt_power_multiplier
+
+    # REST/Webhook plug fields (required when plug_type="rest")
+    # Control URLs
+    rest_on_url: Mapped[str | None] = mapped_column(String(500), nullable=True)  # Full URL to turn ON
+    rest_on_body: Mapped[str | None] = mapped_column(Text, nullable=True)  # Request body for ON
+    rest_off_url: Mapped[str | None] = mapped_column(String(500), nullable=True)  # Full URL to turn OFF
+    rest_off_body: Mapped[str | None] = mapped_column(Text, nullable=True)  # Request body for OFF
+    rest_method: Mapped[str | None] = mapped_column(String(10), nullable=True)  # HTTP method: POST, PUT, GET
+    rest_headers: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON string of custom headers
+    # Status polling (optional)
+    rest_status_url: Mapped[str | None] = mapped_column(String(500), nullable=True)  # GET endpoint for state
+    rest_status_path: Mapped[str | None] = mapped_column(String(200), nullable=True)  # JSON path to state value
+    rest_status_on_value: Mapped[str | None] = mapped_column(String(50), nullable=True)  # What value means ON
+    # Energy monitoring (optional - can use separate URLs or extract from status response)
+    rest_power_url: Mapped[str | None] = mapped_column(String(500), nullable=True)  # Separate URL for power data
+    rest_power_path: Mapped[str | None] = mapped_column(String(200), nullable=True)  # JSON path for power (watts)
+    rest_power_multiplier: Mapped[float] = mapped_column(Float, default=1.0)  # Unit conversion for power
+    rest_energy_url: Mapped[str | None] = mapped_column(String(500), nullable=True)  # Separate URL for energy data
+    rest_energy_path: Mapped[str | None] = mapped_column(String(200), nullable=True)  # JSON path for energy (kWh)
+    rest_energy_multiplier: Mapped[float] = mapped_column(
+        Float, default=1.0
+    )  # Unit conversion (e.g., 0.001 for Wh→kWh)
 
     # Link to printer (multiple plugs/scripts can be linked to one printer)
     printer_id: Mapped[int | None] = mapped_column(ForeignKey("printers.id", ondelete="SET NULL"), nullable=True)

@@ -1,6 +1,6 @@
-# BamBuddy Installation Scripts
+# BamDude Installation Scripts
 
-Interactive installation scripts for BamBuddy with support for both native and Docker deployments.
+Interactive installation scripts for BamDude with support for both native and Docker deployments.
 
 ## Quick Start
 
@@ -8,14 +8,14 @@ Interactive installation scripts for BamBuddy with support for both native and D
 
 **Linux/macOS:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/kainpl/bambuddy-he/main/install/docker-install.sh -o docker-install.sh && chmod +x docker-install.sh && ./docker-install.sh
+curl -fsSL https://raw.githubusercontent.com/kainpl/bamdude/main/install/docker-install.sh -o docker-install.sh && chmod +x docker-install.sh && ./docker-install.sh
 ```
 
 ### Native Installation
 
 **Linux/macOS:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/kainpl/bambuddy-he/main/install/install.sh -o install.sh && chmod +x install.sh && ./install.sh
+curl -fsSL https://raw.githubusercontent.com/kainpl/bamdude/main/install/install.sh -o install.sh && chmod +x install.sh && ./install.sh
 ```
 
 ---
@@ -34,7 +34,7 @@ curl -fsSL https://raw.githubusercontent.com/kainpl/bambuddy-he/main/install/ins
 
 ### `install.sh` (Linux/macOS)
 
-Installs BamBuddy with Python virtual environment and optional systemd/launchd service.
+Installs BamDude with Python virtual environment and optional systemd/launchd service.
 
 **Supported Systems:**
 - Debian/Ubuntu (apt)
@@ -45,7 +45,7 @@ Installs BamBuddy with Python virtual environment and optional systemd/launchd s
 
 **Options:**
 ```
---path PATH        Installation directory (default: /opt/bambuddy)
+--path PATH        Installation directory (default: /opt/bamdude)
 --port PORT        Port to listen on (default: 8000)
 --tz TIMEZONE      Timezone (default: system timezone)
 --data-dir PATH    Data directory (default: INSTALL_PATH/data)
@@ -62,7 +62,7 @@ Installs BamBuddy with Python virtual environment and optional systemd/launchd s
 ./install.sh
 
 # Unattended with custom settings
-./install.sh --path /srv/bambuddy --port 3000 --tz America/New_York --yes
+./install.sh --path /srv/bamdude --port 3000 --tz America/New_York --yes
 
 # Minimal unattended
 ./install.sh -y
@@ -77,11 +77,11 @@ Installs BamBuddy with Python virtual environment and optional systemd/launchd s
 
 ### `docker-install.sh` (Linux/macOS)
 
-Installs BamBuddy using Docker containers.
+Installs BamDude using Docker containers.
 
 **Options:**
 ```
---path PATH        Installation directory (default: ~/bambuddy)
+--path PATH        Installation directory (default: ~/bamdude)
 --port PORT        Port to expose (default: 8000)
 --tz TIMEZONE      Timezone (default: system timezone)
 --build            Build from source instead of using pre-built image
@@ -94,7 +94,7 @@ Installs BamBuddy using Docker containers.
 ./docker-install.sh
 
 # Unattended with custom settings
-./docker-install.sh --path /srv/bambuddy --port 3000 --tz Europe/Berlin --yes
+./docker-install.sh --path /srv/bamdude --port 3000 --tz Europe/Berlin --yes
 
 # Build from source
 ./docker-install.sh --build --yes
@@ -108,7 +108,7 @@ All scripts support these configuration options:
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| Install Path | Where BamBuddy is installed | `/opt/bambuddy` (Linux/Docker) |
+| Install Path | Where BamDude is installed | `/opt/bamdude` (Linux/Docker) |
 | Port | HTTP port for web interface | `8000` |
 | Timezone | Server timezone | System timezone or `UTC` |
 | Data Directory | Database and archives | `INSTALL_PATH/data` |
@@ -120,7 +120,7 @@ All scripts support these configuration options:
 
 ## Post-Installation
 
-### Accessing BamBuddy
+### Accessing BamDude
 
 After installation, open your browser to:
 ```
@@ -133,18 +133,18 @@ Or use the port you specified during installation.
 
 **Linux (systemd):**
 ```bash
-sudo systemctl status bambuddy    # Check status
-sudo systemctl start bambuddy     # Start
-sudo systemctl stop bambuddy      # Stop
-sudo systemctl restart bambuddy   # Restart
-sudo journalctl -u bambuddy -f    # View logs
+sudo systemctl status bamdude    # Check status
+sudo systemctl start bamdude     # Start
+sudo systemctl stop bamdude      # Stop
+sudo systemctl restart bamdude   # Restart
+sudo journalctl -u bamdude -f    # View logs
 ```
 
 **macOS (launchd):**
 ```bash
-launchctl list | grep bambuddy                              # Check status
-launchctl load ~/Library/LaunchAgents/com.bambuddy.app.plist    # Start
-launchctl unload ~/Library/LaunchAgents/com.bambuddy.app.plist  # Stop
+launchctl list | grep bamdude                              # Check status
+launchctl load ~/Library/LaunchAgents/com.bamdude.app.plist    # Start
+launchctl unload ~/Library/LaunchAgents/com.bamdude.app.plist  # Stop
 ```
 
 **Docker:**
@@ -160,7 +160,7 @@ docker compose logs -f      # View logs
 
 **Native installation:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/kainpl/bambuddy-he/main/install/update.sh -o update.sh
+curl -fsSL https://raw.githubusercontent.com/kainpl/bamdude/main/install/update.sh -o update.sh
 chmod +x update.sh
 sudo ./update.sh
 ```
@@ -176,7 +176,7 @@ The updater performs:
 Useful environment overrides:
 ```bash
 # Typical native install defaults
-INSTALL_DIR=/opt/bambuddy SERVICE_NAME=bambuddy sudo ./update.sh
+INSTALL_DIR=/opt/bamdude SERVICE_NAME=bamdude sudo ./update.sh
 
 # Require backup to succeed (abort update if backup fails)
 BACKUP_MODE=require sudo ./update.sh
@@ -185,19 +185,19 @@ BACKUP_MODE=require sudo ./update.sh
 BACKUP_MODE=skip sudo ./update.sh
 
 # Auth-enabled instances: provide API key for backup endpoint
-BAMBUDDY_API_KEY=bb_xxx BACKUP_MODE=require sudo ./update.sh
+BAMDUDE_API_KEY=bb_xxx BACKUP_MODE=require sudo ./update.sh
 ```
 
 **Docker (pre-built image):**
 ```bash
-cd ~/bambuddy
+cd ~/bamdude
 docker compose pull
 docker compose up -d
 ```
 
 **Docker (from source):**
 ```bash
-cd ~/bambuddy
+cd ~/bamdude
 git pull
 docker compose up -d --build
 ```
@@ -213,16 +213,16 @@ sudo ./install.sh
 ```
 
 ### Docker: Printer Discovery Not Working
-Docker Desktop for macOS doesn't support host networking. Add printers manually by IP address in the BamBuddy web interface.
+Docker Desktop for macOS doesn't support host networking. Add printers manually by IP address in the BamDude web interface.
 
 ### Service Won't Start
 Check logs for errors:
 ```bash
 # Linux
-sudo journalctl -u bambuddy -n 50
+sudo journalctl -u bamdude -n 50
 
 # Docker
-docker compose logs bambuddy
+docker compose logs bamdude
 ```
 
 ### Port Already in Use
@@ -250,6 +250,6 @@ sudo lsof -i :8000  # Linux/macOS
 
 ## Support
 
-- **Documentation:** https://wiki.bambuddy.cool
+- **Documentation:** https://wiki.bamdude.cool
 - **Discord:** https://discord.gg/aFS3ZfScHM
-- **Issues:** https://github.com/kainpl/bambuddy-he/issues
+- **Issues:** https://github.com/kainpl/bamdude/issues

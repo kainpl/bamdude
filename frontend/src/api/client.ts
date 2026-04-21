@@ -104,6 +104,11 @@ export interface Printer {
   camera_rotation: number;  // 0, 90, 180, 270 degrees
   plate_detection_enabled: boolean;  // Check plate before print
   plate_detection_roi?: PlateDetectionROI;  // ROI for plate detection
+  stagger_interval_minutes: number;  // Per-printer stagger interval override (0 = system default)
+  swap_mode_enabled: boolean;  // A1 Mini plate swapper
+  swap_profile: string | null;  // Active swap-mode variant (see /macros/swap-profiles)
+  require_plate_clear: boolean;  // Require plate-clear confirmation before next queued print
+  auto_light_off: boolean;  // Turn off chamber light after print starts
   created_at: string;
   updated_at: string;
 }
@@ -266,6 +271,8 @@ export interface PrinterStatus {
   firmware_version: string | null;   // Firmware version from MQTT
   // Developer LAN mode: true = enabled, false = disabled, null = unknown
   developer_mode: boolean | null;
+  // Currently executing macro name (null = no macro running)
+  macro_executing: string | null;
   // Queue: user has acknowledged plate is cleared for next queued print
   plate_cleared: boolean;
   // AMS drying support
@@ -288,6 +295,11 @@ export interface PrinterCreate {
   camera_rotation?: number;
   plate_detection_enabled?: boolean;
   plate_detection_roi?: PlateDetectionROI;
+  stagger_interval_minutes?: number;
+  swap_mode_enabled?: boolean;
+  swap_profile?: string | null;
+  require_plate_clear?: boolean;
+  auto_light_off?: boolean;
 }
 
 // Plate Detection
@@ -350,6 +362,13 @@ export interface Archive {
   file_path: string;
   file_size: number;
   content_hash: string | null;
+  // Hash of the UNPATCHED source (library file or prior archive) when known.
+  // NULL for external prints. Dedup groups by `effective_hash`.
+  source_content_hash: string | null;
+  // Patch identifiers applied before upload (v1: informational).
+  applied_patches: string[] | null;
+  // Group key for duplicate detection: source_content_hash ?? content_hash.
+  effective_hash: string | null;
   thumbnail_path: string | null;
   timelapse_path: string | null;
   source_3mf_path: string | null;
@@ -388,6 +407,7 @@ export interface Archive {
   quantity: number;
   energy_kwh: number | null;
   energy_cost: number | null;
+  swap_compatible: boolean;
   created_at: string;
   // User tracking (Issue #206)
   created_by_id: number | null;
@@ -451,27 +471,6 @@ export interface ArchiveListParams {
   sort_by?: string;
 }
 
-export interface PrintLogEntry {
-  id: number;
-  print_name: string | null;
-  printer_name: string | null;
-  printer_id: number | null;
-  status: string;
-  started_at: string | null;
-  completed_at: string | null;
-  duration_seconds: number | null;
-  filament_type: string | null;
-  filament_color: string | null;
-  filament_used_grams: number | null;
-  thumbnail_path: string | null;
-  created_by_username: string | null;
-  created_at: string;
-}
-
-export interface PrintLogResponse {
-  items: PrintLogEntry[];
-  total: number;
-}
 
 export interface ArchiveStats {
   total_prints: number;
@@ -486,6 +485,10 @@ export interface ArchiveStats {
   time_accuracy_by_printer: Record<string, number> | null;
   total_energy_kwh: number;
   total_energy_cost: number;
+  // True when a date-filtered total-consumption query is running on incomplete
+  // snapshot history (e.g. right after upgrade, before hourly snapshots have
+  // a baseline). UI should explain why the number may undercount.
+  energy_data_warming_up?: boolean;
 }
 
 export interface TagInfo {
@@ -913,6 +916,29 @@ export interface AppSettings {
   user_notifications_enabled: boolean;
   // Default sidebar order (admin-set for all users)
   default_sidebar_order: string;
+  // Staggered start settings (electrical load management for farms)
+  stagger_enabled: boolean;
+  stagger_concurrent: number;
+  stagger_interval_minutes: number;
+  stagger_wait_for_bed: boolean;
+  stagger_strict_for_direct_dispatch: boolean;
+  // LDAP authentication
+  ldap_enabled: boolean;
+  ldap_server_url: string;
+  ldap_bind_dn: string;
+  ldap_bind_password: string;
+  ldap_search_base: string;
+  ldap_user_filter: string;
+  ldap_security: string;
+  ldap_group_mapping: string;
+  ldap_auto_provision: boolean;
+  ldap_default_group: string;
+  // Scheduled local backup (#884)
+  local_backup_enabled: boolean;
+  local_backup_schedule: string;
+  local_backup_time: string;
+  local_backup_retention: number;
+  local_backup_path: string;
 }
 
 export type AppSettingsUpdate = Partial<AppSettings>;
@@ -1091,7 +1117,7 @@ export interface CloudDevice {
 export interface SmartPlug {
   id: number;
   name: string;
-  plug_type: 'tasmota' | 'homeassistant' | 'mqtt';
+  plug_type: 'tasmota' | 'homeassistant' | 'mqtt' | 'rest';
   ip_address: string | null;  // Required for Tasmota
   ha_entity_id: string | null;  // Required for Home Assistant (e.g., "switch.printer_plug", "script.turn_on_printer")
   // Home Assistant energy sensor entities (optional)
@@ -1114,6 +1140,22 @@ export interface SmartPlug {
   mqtt_state_topic: string | null;  // Topic for state data
   mqtt_state_path: string | null;  // e.g., "state_l1" for ON/OFF
   mqtt_state_on_value: string | null;  // What value means "ON" (e.g., "ON", "true", "1")
+  // REST/Webhook fields (required when plug_type="rest")
+  rest_on_url: string | null;
+  rest_on_body: string | null;
+  rest_off_url: string | null;
+  rest_off_body: string | null;
+  rest_method: string | null;
+  rest_headers: string | null;
+  rest_status_url: string | null;
+  rest_status_path: string | null;
+  rest_status_on_value: string | null;
+  rest_power_url: string | null;
+  rest_power_path: string | null;
+  rest_power_multiplier: number;
+  rest_energy_url: string | null;
+  rest_energy_path: string | null;
+  rest_energy_multiplier: number;
   printer_id: number | null;
   enabled: boolean;
   auto_on: boolean;
@@ -1146,7 +1188,7 @@ export interface SmartPlug {
 
 export interface SmartPlugCreate {
   name: string;
-  plug_type?: 'tasmota' | 'homeassistant' | 'mqtt';
+  plug_type?: 'tasmota' | 'homeassistant' | 'mqtt' | 'rest';
   ip_address?: string | null;  // Required for Tasmota
   ha_entity_id?: string | null;  // Required for Home Assistant
   // Home Assistant energy sensor entities (optional)
@@ -1169,6 +1211,22 @@ export interface SmartPlugCreate {
   mqtt_state_topic?: string | null;
   mqtt_state_path?: string | null;
   mqtt_state_on_value?: string | null;
+  // REST fields
+  rest_on_url?: string | null;
+  rest_on_body?: string | null;
+  rest_off_url?: string | null;
+  rest_off_body?: string | null;
+  rest_method?: string | null;
+  rest_headers?: string | null;
+  rest_status_url?: string | null;
+  rest_status_path?: string | null;
+  rest_status_on_value?: string | null;
+  rest_power_url?: string | null;
+  rest_power_path?: string | null;
+  rest_power_multiplier?: number;
+  rest_energy_url?: string | null;
+  rest_energy_path?: string | null;
+  rest_energy_multiplier?: number;
   printer_id?: number | null;
   enabled?: boolean;
   auto_on?: boolean;
@@ -1194,7 +1252,7 @@ export interface SmartPlugCreate {
 
 export interface SmartPlugUpdate {
   name?: string;
-  plug_type?: 'tasmota' | 'homeassistant' | 'mqtt';
+  plug_type?: 'tasmota' | 'homeassistant' | 'mqtt' | 'rest';
   ip_address?: string | null;
   ha_entity_id?: string | null;
   // Home Assistant energy sensor entities (optional)
@@ -1216,6 +1274,22 @@ export interface SmartPlugUpdate {
   mqtt_state_topic?: string | null;
   mqtt_state_path?: string | null;
   mqtt_state_on_value?: string | null;
+  // REST fields
+  rest_on_url?: string | null;
+  rest_on_body?: string | null;
+  rest_off_url?: string | null;
+  rest_off_body?: string | null;
+  rest_method?: string | null;
+  rest_headers?: string | null;
+  rest_status_url?: string | null;
+  rest_status_path?: string | null;
+  rest_status_on_value?: string | null;
+  rest_power_url?: string | null;
+  rest_power_path?: string | null;
+  rest_power_multiplier?: number;
+  rest_energy_url?: string | null;
+  rest_energy_path?: string | null;
+  rest_energy_multiplier?: number;
   printer_id?: number | null;
   enabled?: boolean;
   auto_on?: boolean;
@@ -1304,103 +1378,145 @@ export interface DiscoveredTasmotaDevice {
 // Print Queue types
 export interface PrintQueueItem {
   id: number;
-  printer_id: number | null;  // null = unassigned
-  target_model: string | null;  // Target printer model for model-based assignment
-  target_location: string | null;  // Target location filter for model-based assignment
-  required_filament_types: string[] | null;  // Required filament types for model-based assignment
-  waiting_reason: string | null;  // Why a model-based job hasn't started yet
-  // Either archive_id OR library_file_id must be set (archive created at print start)
+  queue_id: number;
+  printer_id?: number | null;  // Convenience - resolved from queue
+  waiting_reason: string | null;
   archive_id: number | null;
   library_file_id: number | null;
   position: number;
   scheduled_time: string | null;
-  require_previous_success: boolean;
   auto_off_after: boolean;
-  manual_start: boolean;  // Requires manual trigger to start (staged)
-  ams_mapping: number[] | null;  // AMS slot mapping for multi-color prints
-  filament_overrides: Array<{ slot_id: number; type: string; color: string; color_name?: string; force_color_match?: boolean }> | null;  // Filament overrides for model-based assignment
-  plate_id: number | null;  // Plate ID for multi-plate 3MF files
+  manual_start: boolean;
+  ams_mapping: number[] | null;
+  plate_id: number | null;
   // Print options
   bed_levelling: boolean;
   flow_cali: boolean;
-  vibration_cali: boolean;
   layer_inspect: boolean;
   timelapse: boolean;
   use_ams: boolean;
+  mesh_mode_fast_check: boolean;
+  execute_swap_macros: boolean;
+  swap_macro_events: string[] | null;
   status: 'pending' | 'printing' | 'completed' | 'failed' | 'skipped' | 'cancelled';
   started_at: string | null;
   completed_at: string | null;
   error_message: string | null;
   created_at: string;
+  batch_id?: string | null;
   archive_name?: string | null;
   archive_thumbnail?: string | null;
   library_file_name?: string | null;
   library_file_thumbnail?: string | null;
   printer_name?: string | null;
-  print_time_seconds?: number | null;  // Estimated print time from archive or library file
-  filament_used_grams?: number | null;  // Estimated print weight from archive or library file
-  // User tracking (Issue #206)
+  print_time_seconds?: number | null;
+  filament_used_grams?: number | null;
+  filament_type?: string | null;
+  filament_color?: string | null;
+  sliced_for_model?: string | null;
   created_by_id?: number | null;
   created_by_username?: string | null;
+  // Virtual-item markers set by the backend for external / direct-dispatch
+  // prints that have no DB row.  Real queue items leave these at
+  // is_virtual=false / source=null.
+  is_virtual?: boolean;
+  source?: 'external' | 'bamdude_direct' | 'bamdude_queue' | null;
+}
+
+export interface StaggerSlotInfo {
+  printer_id: number;
+  printer_name: string;
+  started_at: number;
+  temp_reached_at: number | null;
+  state: 'heating' | 'interval_wait';
+  seconds_to_free: number;
+  interval_seconds: number;
+}
+
+export interface StaggerState {
+  enabled: boolean;
+  concurrent: number;
+  interval_minutes: number;
+  wait_for_bed: boolean;
+  slots: StaggerSlotInfo[];
+  free_slots: number;
+  next_free_in_seconds: number | null;
 }
 
 export interface PrintQueueItemCreate {
-  printer_id?: number | null;  // null = unassigned
-  target_model?: string | null;  // Target printer model (mutually exclusive with printer_id)
-  target_location?: string | null;  // Target location filter (only used with target_model)
-  filament_overrides?: Array<{ slot_id: number; type: string; color: string; color_name?: string; force_color_match?: boolean }> | null;
+  queue_id: number;  // Required - which printer's queue
   archive_id?: number | null;
   library_file_id?: number | null;
   scheduled_time?: string | null;
-  require_previous_success?: boolean;
   auto_off_after?: boolean;
-  manual_start?: boolean;  // Requires manual trigger to start (staged)
-  ams_mapping?: number[] | null;  // AMS slot mapping for multi-color prints
-  plate_id?: number | null;  // Plate ID for multi-plate 3MF files
-  // Print options
+  manual_start?: boolean;
+  ams_mapping?: number[] | null;
+  plate_id?: number | null;
   bed_levelling?: boolean;
   flow_cali?: boolean;
-  vibration_cali?: boolean;
   layer_inspect?: boolean;
   timelapse?: boolean;
   use_ams?: boolean;
+  mesh_mode_fast_check?: boolean;
+  execute_swap_macros?: boolean;
+  swap_macro_events?: string[] | null;
+  quantity?: number;
+  // Project to associate the resulting archive with
+  project_id?: number;
 }
 
 export interface PrintQueueItemUpdate {
-  printer_id?: number | null;  // null = unassign
-  target_model?: string | null;  // Target printer model (mutually exclusive with printer_id)
-  target_location?: string | null;  // Target location filter (only used with target_model)
-  filament_overrides?: Array<{ slot_id: number; type: string; color: string; color_name?: string; force_color_match?: boolean }> | null;
+  queue_id?: number | null;  // Move to different queue
   position?: number;
   scheduled_time?: string | null;
-  require_previous_success?: boolean;
   auto_off_after?: boolean;
   manual_start?: boolean;
   ams_mapping?: number[];
-  plate_id?: number | null;  // Plate ID for multi-plate 3MF files
-  // Print options
+  plate_id?: number | null;
   bed_levelling?: boolean;
   flow_cali?: boolean;
-  vibration_cali?: boolean;
   layer_inspect?: boolean;
   timelapse?: boolean;
   use_ams?: boolean;
+  mesh_mode_fast_check?: boolean;
+  execute_swap_macros?: boolean;
+  swap_macro_events?: string[] | null;
+}
+
+export interface PrinterQueue {
+  id: number;
+  printer_id: number;
+  printer_name?: string | null;
+  printer_model?: string | null;
+  printer_location?: string | null;
+  status: 'idle' | 'printing' | 'paused' | 'error';
+  last_activity_at: string | null;
+  current_item_id: number | null;
+  pending_count: number;
+  completed_count: number;
+  failed_count: number;
+  cancelled_count: number;
+  skipped_count: number;
+  total_count: number;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface PrintQueueBulkUpdate {
   item_ids: number[];
-  printer_id?: number | null;
+  queue_id?: number | null;
   scheduled_time?: string | null;
-  require_previous_success?: boolean;
   auto_off_after?: boolean;
   manual_start?: boolean;
   // Print options
   bed_levelling?: boolean;
   flow_cali?: boolean;
-  vibration_cali?: boolean;
   layer_inspect?: boolean;
   timelapse?: boolean;
   use_ams?: boolean;
+  mesh_mode_fast_check?: boolean;
+  execute_swap_macros?: boolean;
+  swap_macro_events?: string[] | null;
 }
 
 export interface PrintQueueBulkUpdateResponse {
@@ -1482,25 +1598,6 @@ export interface SlotPresetMapping {
   preset_name: string;
 }
 
-// Filament types
-export interface Filament {
-  id: number;
-  name: string;
-  type: string;  // PLA, PETG, ABS, etc.
-  brand: string | null;
-  color: string | null;
-  color_hex: string | null;
-  cost_per_kg: number;
-  spool_weight_g: number;
-  currency: string;
-  density: number | null;
-  print_temp_min: number | null;
-  print_temp_max: number | null;
-  bed_temp_min: number | null;
-  bed_temp_max: number | null;
-  created_at: string;
-  updated_at: string;
-}
 
 // Notification Provider types
 export type ProviderType = 'callmebot' | 'ntfy' | 'pushover' | 'telegram' | 'email' | 'discord' | 'webhook' | 'homeassistant';
@@ -1537,7 +1634,6 @@ export interface NotificationProvider {
   on_first_layer_complete: boolean;
   // Print queue events
   on_queue_job_added: boolean;
-  on_queue_job_assigned: boolean;
   on_queue_job_started: boolean;
   on_queue_job_waiting: boolean;
   on_queue_job_skipped: boolean;
@@ -1592,7 +1688,7 @@ export interface NotificationProviderCreate {
   on_first_layer_complete?: boolean;
   // Print queue events
   on_queue_job_added?: boolean;
-  on_queue_job_assigned?: boolean;
+
   on_queue_job_started?: boolean;
   on_queue_job_waiting?: boolean;
   on_queue_job_skipped?: boolean;
@@ -1640,7 +1736,7 @@ export interface NotificationProviderUpdate {
   on_first_layer_complete?: boolean;
   // Print queue events
   on_queue_job_added?: boolean;
-  on_queue_job_assigned?: boolean;
+
   on_queue_job_started?: boolean;
   on_queue_job_waiting?: boolean;
   on_queue_job_skipped?: boolean;
@@ -1657,10 +1753,10 @@ export interface NotificationProviderUpdate {
   printer_id?: number | null;
 }
 
-// GitHub Backup types
+// Git Backup types
 export type ScheduleType = 'hourly' | 'daily' | 'weekly';
 
-export interface GitHubBackupConfig {
+export interface GitBackupConfig {
   id: number;
   repository_url: string;
   has_token: boolean;
@@ -1670,7 +1766,11 @@ export interface GitHubBackupConfig {
   backup_kprofiles: boolean;
   backup_cloud_profiles: boolean;
   backup_settings: boolean;
+  backup_spools: boolean;
+  backup_archives: boolean;
   enabled: boolean;
+  provider: string;
+  api_base_url: string | null;
   last_backup_at: string | null;
   last_backup_status: string | null;
   last_backup_message: string | null;
@@ -1680,7 +1780,7 @@ export interface GitHubBackupConfig {
   updated_at: string;
 }
 
-export interface GitHubBackupConfigCreate {
+export interface GitBackupConfigCreate {
   repository_url: string;
   access_token: string;
   branch?: string;
@@ -1689,10 +1789,14 @@ export interface GitHubBackupConfigCreate {
   backup_kprofiles?: boolean;
   backup_cloud_profiles?: boolean;
   backup_settings?: boolean;
+  backup_spools?: boolean;
+  backup_archives?: boolean;
   enabled?: boolean;
+  provider?: string;
+  api_base_url?: string | null;
 }
 
-export interface GitHubBackupLog {
+export interface GitBackupLog {
   id: number;
   config_id: number;
   started_at: string;
@@ -1704,7 +1808,7 @@ export interface GitHubBackupLog {
   error_message: string | null;
 }
 
-export interface GitHubBackupStatus {
+export interface GitBackupStatus {
   configured: boolean;
   enabled: boolean;
   is_running: boolean;
@@ -1714,19 +1818,51 @@ export interface GitHubBackupStatus {
   next_scheduled_run: string | null;
 }
 
-export interface GitHubTestConnectionResponse {
+export interface GitTestConnectionResponse {
   success: boolean;
   message: string;
   repo_name: string | null;
   permissions: Record<string, boolean> | null;
 }
 
-export interface GitHubBackupTriggerResponse {
+export interface GitBackupTriggerResponse {
   success: boolean;
   message: string;
   log_id: number | null;
   commit_sha: string | null;
   files_changed: number;
+}
+
+// Scheduled local backup (#884)
+export interface LocalBackupStatus {
+  enabled: boolean;
+  schedule: 'hourly' | 'daily' | 'weekly';
+  time: string;            // "HH:MM"
+  retention: number;
+  path: string;            // empty string = use default_path
+  default_path: string;
+  is_running: boolean;
+  last_backup_at: string | null;
+  last_status: 'success' | 'failed' | null;
+  last_message: string | null;
+  next_run: string | null;
+}
+
+export interface LocalBackupFile {
+  filename: string;
+  size: number;            // bytes
+  created_at: string;
+}
+
+export interface LocalBackupRunResponse {
+  success: boolean;
+  message: string;
+  filename?: string;
+}
+
+export interface LocalBackupDeleteResponse {
+  success: boolean;
+  message: string;
 }
 
 export interface NotificationTestRequest {
@@ -1865,6 +2001,7 @@ export interface UnlinkedSpool {
   id: number;
   filament_name: string | null;
   filament_material: string | null;
+  filament_vendor: string | null;
   filament_color_hex: string | null;
   remaining_weight: number | null;
   location: string | null;
@@ -1996,11 +2133,13 @@ export interface UpdateStatus {
 export interface MaintenanceType {
   id: number;
   name: string;
+  type_code: string | null;
   description: string | null;
   default_interval_hours: number;
   interval_type: 'hours' | 'days';  // "hours" = print hours, "days" = calendar days
   icon: string | null;
   wiki_url: string | null;  // Documentation link
+  printer_models: string[];  // ["*"] = all models, or specific model codes
   is_system: boolean;
   created_at: string;
 }
@@ -2012,6 +2151,7 @@ export interface MaintenanceTypeCreate {
   interval_type?: 'hours' | 'days';
   icon?: string | null;
   wiki_url?: string | null;
+  printer_models?: string[];
 }
 
 export interface MaintenanceStatus {
@@ -2021,6 +2161,7 @@ export interface MaintenanceStatus {
   printer_model: string | null;
   maintenance_type_id: number;
   maintenance_type_name: string;
+  maintenance_type_code: string | null;
   maintenance_type_icon: string | null;
   maintenance_type_wiki_url: string | null;  // Custom wiki URL from type
   enabled: boolean;
@@ -2052,6 +2193,27 @@ export interface MaintenanceHistory {
   performed_at: string;
   hours_at_maintenance: number;
   notes: string | null;
+}
+
+export interface MaintenanceHistoryEntry {
+  id: number;
+  performed_at: string;
+  hours_at_maintenance: number;
+  notes: string | null;
+  printer_name: string | null;
+  maintenance_type_name: string | null;
+  performed_by_user_id: number | null;
+  performed_by_username: string | null;
+  performed_by_chat_id: number | null;
+  performed_by_chat_label: string | null;
+}
+
+export interface MaintenanceHistoryPage {
+  items: MaintenanceHistoryEntry[];
+  total: number;
+  page: number;
+  per_page: number;
+  last_page: number;
 }
 
 export interface MaintenanceSummary {
@@ -2119,7 +2281,7 @@ export type Permission =
   | 'stats:read'
   | 'system:read'
   | 'settings:read' | 'settings:update' | 'settings:backup' | 'settings:restore'
-  | 'github:backup' | 'github:restore'
+  | 'git:backup' | 'git:restore'
   | 'cloud:auth'
   | 'api_keys:read' | 'api_keys:create' | 'api_keys:update' | 'api_keys:delete'
   | 'users:read' | 'users:create' | 'users:update' | 'users:delete'
@@ -2201,6 +2363,7 @@ export interface UserResponse {
   role: string;  // Deprecated, kept for backward compatibility
   is_active: boolean;
   is_admin: boolean;  // Computed from role and group membership
+  auth_source: string;  // "local" or "ldap"
   groups: GroupBrief[];
   permissions: Permission[];  // All permissions from groups
   created_at: string;
@@ -2224,9 +2387,9 @@ export interface UserUpdate {
 }
 
 export interface SetupRequest {
-  auth_enabled: boolean;
-  admin_username?: string;
-  admin_password?: string;
+  admin_username: string;
+  admin_password: string;
+  admin_email?: string;
 }
 
 export interface ForgotPasswordRequest {
@@ -2270,12 +2433,28 @@ export interface AdvancedAuthStatus {
   smtp_configured: boolean;
 }
 
+export interface LDAPStatus {
+  ldap_enabled: boolean;
+  ldap_configured: boolean;
+}
+
+export interface LDAPTestResponse {
+  success: boolean;
+  message: string;
+}
+
 export interface SetupResponse {
-  auth_enabled: boolean;
-  admin_created?: boolean;
+  admin_created: boolean;
+  access_token: string;
+  token_type: string;
+  user: UserResponse;
 }
 
 export interface AuthStatus {
+  /**
+   * Legacy field. Kept for backward compatibility with older clients; the
+   * opt-in auth mode has been removed and the backend always returns ``true``.
+   */
   auth_enabled: boolean;
   requires_setup: boolean;
 }
@@ -2299,10 +2478,6 @@ export const api = {
       method: 'POST',
     }),
   getCurrentUser: () => request<UserResponse>('/auth/me'),
-  disableAuth: () =>
-    request<{ message: string; auth_enabled: boolean }>('/auth/disable', {
-      method: 'POST',
-    }),
 
   // Advanced Authentication
   testSMTP: (data: TestSMTPRequest) =>
@@ -2325,6 +2500,12 @@ export const api = {
       method: 'POST',
     }),
   getAdvancedAuthStatus: () => request<AdvancedAuthStatus>('/auth/advanced-auth/status'),
+  // LDAP Authentication
+  getLDAPStatus: () => request<LDAPStatus>('/auth/ldap/status'),
+  testLDAP: () =>
+    request<LDAPTestResponse>('/auth/ldap/test', {
+      method: 'POST',
+    }),
   forgotPassword: (data: ForgotPasswordRequest) =>
     request<ForgotPasswordResponse>('/auth/forgot-password', {
       method: 'POST',
@@ -3141,6 +3322,12 @@ export const api = {
         used_meters: number;
       }>;
     }>(`/archives/${archiveId}/filament-requirements${plateId !== undefined ? `?plate_id=${plateId}` : ''}`),
+  retryArchiveDownload: (archiveId: number) =>
+    request<{
+      status: 'recovered' | 'already_has_file' | 'in_progress' | 'failed' | 'error';
+      recovered: boolean;
+      message: string;
+    }>(`/archives/${archiveId}/retry-download`, { method: 'POST' }),
   reprintArchive: (
     archiveId: number,
     printerId: number,
@@ -3151,9 +3338,12 @@ export const api = {
       timelapse?: boolean;
       bed_levelling?: boolean;
       flow_cali?: boolean;
-      vibration_cali?: boolean;
       layer_inspect?: boolean;
       use_ams?: boolean;
+      mesh_mode_fast_check?: boolean;
+      execute_swap_macros?: boolean;
+      swap_macro_events?: string[] | null;
+      quantity?: number;
     }
   ) =>
     request<BackgroundDispatchResponse>(
@@ -3207,31 +3397,6 @@ export const api = {
     return response.json();
   },
 
-  // Print Log
-  getPrintLog: (params?: {
-    search?: string;
-    printerId?: number;
-    username?: string;
-    status?: string;
-    dateFrom?: string;
-    dateTo?: string;
-    limit?: number;
-    offset?: number;
-  }) => {
-    const searchParams = new URLSearchParams();
-    if (params?.search) searchParams.set('search', params.search);
-    if (params?.printerId) searchParams.set('printer_id', String(params.printerId));
-    if (params?.username) searchParams.set('created_by_username', params.username);
-    if (params?.status) searchParams.set('status', params.status);
-    if (params?.dateFrom) searchParams.set('date_from', params.dateFrom);
-    if (params?.dateTo) searchParams.set('date_to', params.dateTo);
-    if (params?.limit) searchParams.set('limit', String(params.limit));
-    if (params?.offset !== undefined) searchParams.set('offset', String(params.offset));
-    return request<PrintLogResponse>(`/print-log/?${searchParams}`);
-  },
-  getPrintLogThumbnail: (id: number) => `${API_BASE}/print-log/${id}/thumbnail`,
-  clearPrintLog: () =>
-    request<{ deleted: number }>('/print-log/', { method: 'DELETE' }),
 
   // Settings
   getSettings: () => request<AppSettings>('/settings/'),
@@ -3261,7 +3426,7 @@ export const api = {
 
     // Get filename from Content-Disposition header
     const contentDisposition = response.headers.get('Content-Disposition');
-    let filename = 'bambuddy-backup.zip';
+    let filename = 'bamdude-backup.zip';
     if (contentDisposition) {
       const match = contentDisposition.match(/filename=([^;]+)/);
       if (match) filename = match[1].trim();
@@ -3401,12 +3566,18 @@ export const api = {
   getHASensorEntities: () =>
     request<HASensorEntity[]>('/smart-plugs/ha/sensors'),
 
+  // REST smart plug
+  testRESTConnection: (url: string, method: string = 'GET', headers?: string | null) =>
+    request<{ success: boolean; error: string | null }>('/smart-plugs/rest/test-connection', {
+      method: 'POST',
+      body: JSON.stringify({ url, method, headers }),
+    }),
+
   // Print Queue
-  getQueue: (printerId?: number, status?: string, targetModel?: string) => {
+  getQueue: (queueId?: number, status?: string) => {
     const params = new URLSearchParams();
-    if (printerId) params.set('printer_id', String(printerId));
+    if (queueId) params.set('queue_id', String(queueId));
     if (status) params.set('status', status);
-    if (targetModel) params.set('target_model', targetModel);
     return request<PrintQueueItem[]>(`/queue/?${params}`);
   },
   getQueueItem: (id: number) => request<PrintQueueItem>(`/queue/${id}`),
@@ -3422,6 +3593,51 @@ export const api = {
     }),
   removeFromQueue: (id: number) =>
     request<{ message: string }>(`/queue/${id}`, { method: 'DELETE' }),
+  getStaggerState: () => request<StaggerState>('/queue/stagger-state'),
+  // Queue item commands
+  reorderQueueItem: (id: number, direction: 'up' | 'down') =>
+    request<{ moved: number; direction: string; block_size: number }>(
+      `/queue/${id}/reorder?direction=${direction}`,
+      { method: 'POST' }
+    ),
+  bumpQueueItem: (id: number) =>
+    request<{ shifted: number; block_size: number }>(`/queue/${id}/bump`, { method: 'POST' }),
+  bumpQueueItemBottom: (id: number) =>
+    request<{ shifted: number; block_size: number }>(`/queue/${id}/bump-bottom`, { method: 'POST' }),
+  cloneQueueItem: (id: number, scope: 'single' | 'batch' = 'single') =>
+    request<PrintQueueItem>(`/queue/${id}/clone?scope=${scope}`, { method: 'POST' }),
+  skipQueueItem: (id: number) =>
+    request<{ status: string; item_id: number }>(`/queue/${id}/skip`, { method: 'POST' }),
+  unskipQueueItem: (id: number) =>
+    request<{ status: string; item_id: number }>(`/queue/${id}/unskip`, { method: 'POST' }),
+  toggleManualStart: (id: number) =>
+    request<{ manual_start: boolean; item_id: number }>(`/queue/${id}/manual-start`, { method: 'PATCH' }),
+  retryQueueItem: (id: number) =>
+    request<PrintQueueItem>(`/queue/${id}/retry`, { method: 'POST' }),
+  // Batch operations
+  cancelBatch: (batchId: string) =>
+    request<{ cancelled: number; batch_id: string }>(`/queue/batch/${batchId}/cancel`, { method: 'POST' }),
+  skipBatch: (batchId: string) =>
+    request<{ skipped: number; batch_id: string }>(`/queue/batch/${batchId}/skip`, { method: 'POST' }),
+  reorderBatch: (batchId: string, direction: 'up' | 'down') =>
+    request<{ moved: number; direction: string; batch_size: number }>(
+      `/queue/batch/${batchId}/reorder?direction=${direction}`,
+      { method: 'POST' }
+    ),
+  bumpBatch: (batchId: string) =>
+    request<{ shifted: number; batch_size: number }>(`/queue/batch/${batchId}/bump`, { method: 'POST' }),
+  bumpBatchBottom: (batchId: string) =>
+    request<{ shifted: number; batch_size: number }>(`/queue/batch/${batchId}/bump-bottom`, { method: 'POST' }),
+  updateBatch: (batchId: string, data: PrintQueueItemUpdate) =>
+    request<{ updated: number; batch_id: string; fields: string[] }>(`/queue/batch/${batchId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  cloneBatch: (batchId: string, scope: 'one' | 'batch' = 'batch') =>
+    request<{ cloned: number; scope: string; source_batch_id?: string; new_batch_id?: string; new_item_id?: number }>(
+      `/queue/batch/${batchId}/clone?scope=${scope}`,
+      { method: 'POST' }
+    ),
   reorderQueue: (items: { id: number; position: number }[]) =>
     request<{ message: string }>('/queue/reorder', {
       method: 'POST',
@@ -3435,6 +3651,15 @@ export const api = {
     request<PrintQueueItem>(`/queue/${id}/start`, { method: 'POST' }),
   bulkUpdateQueue: (data: PrintQueueBulkUpdate) =>
     request<PrintQueueBulkUpdateResponse>('/queue/bulk', {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+
+  // Printer Queues (queue-level operations)
+  getQueues: () =>
+    request<PrinterQueue[]>('/queues/'),
+  updateQueue: (queueId: number, data: { status: 'idle' | 'paused' }) =>
+    request<PrinterQueue>(`/queues/${queueId}`, {
       method: 'PATCH',
       body: JSON.stringify(data),
     }),
@@ -3553,10 +3778,6 @@ export const api = {
       { method: 'POST' }
     ),
 
-  // Filament Catalog (material types with cost/temp data)
-  listFilaments: () => request<Filament[]>('/filament-catalog/'),
-  getFilament: (id: number) => request<Filament>(`/filament-catalog/${id}`),
-  getFilamentsByType: (type: string) => request<Filament[]>(`/filament-catalog/by-type/${type}`),
 
   // Notification Providers
   getNotificationProviders: () => request<NotificationProvider[]>('/notifications/'),
@@ -3750,6 +3971,8 @@ export const api = {
     request<{ status: string }>('/inventory/catalog/reset', { method: 'POST' }),
   getColorCatalog: () =>
     request<ColorCatalogEntry[]>('/inventory/colors'),
+  getColorNameMap: () =>
+    request<{ colors: Record<string, string> }>('/inventory/colors/map'),
   addColorEntry: (data: { manufacturer: string; color_name: string; hex_color: string; material: string | null }) =>
     request<ColorCatalogEntry>('/inventory/colors', { method: 'POST', body: JSON.stringify(data) }),
   updateColorEntry: (id: number, data: { manufacturer: string; color_name: string; hex_color: string; material: string | null }) =>
@@ -3820,6 +4043,15 @@ export const api = {
     }),
   getMaintenanceHistory: (itemId: number) =>
     request<MaintenanceHistory[]>(`/maintenance/items/${itemId}/history`),
+  getAllMaintenanceHistory: (page?: number, perPage?: number, sortBy?: string, sortDir?: string, printerId?: number) => {
+    const params = new URLSearchParams();
+    if (page) params.set('page', String(page));
+    if (perPage) params.set('per_page', String(perPage));
+    if (sortBy) params.set('sort_by', sortBy);
+    if (sortDir) params.set('sort_dir', sortDir);
+    if (printerId) params.set('printer_id', String(printerId));
+    return request<MaintenanceHistoryPage>(`/maintenance/history?${params}`);
+  },
   getMaintenanceSummary: () => request<MaintenanceSummary>('/maintenance/summary'),
   setPrinterHours: (printerId: number, totalHours: number) =>
     request<{ printer_id: number; total_hours: number; archive_hours: number; offset_hours: number }>(
@@ -4028,7 +4260,7 @@ export const api = {
     }),
 
   // Templates
-  getTemplates: () => request<ProjectListItem[]>('/projects/templates/'),
+  getTemplates: () => request<ProjectListItem[]>('/projects/templates'),
   createTemplateFromProject: (projectId: number) =>
     request<Project>(`/projects/${projectId}/create-template`, { method: 'POST' }),
   createProjectFromTemplate: (templateId: number, name?: string) =>
@@ -4142,10 +4374,13 @@ export const api = {
   getLibraryFoldersByArchive: (archiveId: number) =>
     request<LibraryFolder[]>(`/library/folders/by-archive/${archiveId}`),
 
-  getLibraryFiles: (folderId?: number | null, includeRoot = true) => {
+  getLibraryFiles: (folderId?: number | null, includeRoot = true, projectId?: number) => {
     const params = new URLSearchParams();
     if (folderId !== undefined && folderId !== null) {
       params.set('folder_id', String(folderId));
+    }
+    if (projectId !== undefined) {
+      params.set('project_id', String(projectId));
     }
     params.set('include_root', String(includeRoot));
     return request<LibraryFileListItem[]>(`/library/files?${params}`);
@@ -4212,6 +4447,23 @@ export const api = {
     }),
   deleteLibraryFile: (id: number) =>
     request<{ status: string; message: string }>(`/library/files/${id}`, { method: 'DELETE' }),
+
+  // Library file notes (gh#3)
+  getLibraryFileNotes: (fileId: number) =>
+    request<LibraryFileNote[]>(`/library/files/${fileId}/notes`),
+  createLibraryFileNote: (fileId: number, body: string) =>
+    request<LibraryFileNote>(`/library/files/${fileId}/notes`, {
+      method: 'POST',
+      body: JSON.stringify({ body }),
+    }),
+  updateLibraryFileNote: (noteId: number, body: string) =>
+    request<LibraryFileNote>(`/library/notes/${noteId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ body }),
+    }),
+  deleteLibraryFileNote: (noteId: number) =>
+    request<{ success: boolean }>(`/library/notes/${noteId}`, { method: 'DELETE' }),
+
   getLibraryFileDownloadUrl: (id: number) => `${API_BASE}/library/files/${id}/download`,
   createLibrarySlicerToken: (fileId: number) =>
     request<{ token: string }>(`/library/files/${fileId}/slicer-token`, { method: 'POST' }),
@@ -4277,10 +4529,14 @@ export const api = {
       ams_mapping?: number[];
       bed_levelling?: boolean;
       flow_cali?: boolean;
-      vibration_cali?: boolean;
       layer_inspect?: boolean;
       timelapse?: boolean;
       use_ams?: boolean;
+      mesh_mode_fast_check?: boolean;
+      execute_swap_macros?: boolean;
+      swap_macro_events?: string[] | null;
+      quantity?: number;
+      project_id?: number;
     }
   ) =>
     request<BackgroundDispatchResponse>(
@@ -4315,45 +4571,69 @@ export const api = {
       }>;
     }>(`/library/files/${fileId}/filament-requirements${plateId !== undefined ? `?plate_id=${plateId}` : ''}`),
 
-  // GitHub Backup
-  getGitHubBackupConfig: () =>
-    request<GitHubBackupConfig | null>('/github-backup/config'),
+  // Git Backup
+  getGitBackupConfig: () =>
+    request<GitBackupConfig | null>('/git-backup/config'),
 
-  saveGitHubBackupConfig: (config: GitHubBackupConfigCreate) =>
-    request<GitHubBackupConfig>('/github-backup/config', {
+  saveGitBackupConfig: (config: GitBackupConfigCreate) =>
+    request<GitBackupConfig>('/git-backup/config', {
       method: 'POST',
       body: JSON.stringify(config),
     }),
 
-  updateGitHubBackupConfig: (config: Partial<GitHubBackupConfigCreate>) =>
-    request<GitHubBackupConfig>('/github-backup/config', {
+  updateGitBackupConfig: (config: Partial<GitBackupConfigCreate>) =>
+    request<GitBackupConfig>('/git-backup/config', {
       method: 'PATCH',
       body: JSON.stringify(config),
     }),
 
-  deleteGitHubBackupConfig: () =>
-    request<{ message: string }>('/github-backup/config', { method: 'DELETE' }),
+  deleteGitBackupConfig: () =>
+    request<{ message: string }>('/git-backup/config', { method: 'DELETE' }),
 
-  testGitHubConnection: (repoUrl: string, token: string) =>
-    request<GitHubTestConnectionResponse>(
-      `/github-backup/test?repo_url=${encodeURIComponent(repoUrl)}&token=${encodeURIComponent(token)}`,
+  testGitConnection: (repoUrl: string, token: string, provider?: string, apiBaseUrl?: string) => {
+    const params = new URLSearchParams({ repo_url: repoUrl, token });
+    if (provider) params.set('provider', provider);
+    if (apiBaseUrl) params.set('api_base_url', apiBaseUrl);
+    return request<GitTestConnectionResponse>(
+      `/git-backup/test?${params.toString()}`,
+      { method: 'POST' }
+    );
+  },
+
+  testStoredGitConnection: () =>
+    request<GitTestConnectionResponse>('/git-backup/test-stored', { method: 'POST' }),
+
+  triggerGitBackup: () =>
+    request<GitBackupTriggerResponse>('/git-backup/run', { method: 'POST' }),
+
+  getGitBackupStatus: () =>
+    request<GitBackupStatus>('/git-backup/status'),
+
+  getGitBackupLogs: (limit: number = 50) =>
+    request<GitBackupLog[]>(`/git-backup/logs?limit=${limit}`),
+
+  clearGitBackupLogs: (keepLast: number = 10) =>
+    request<{ deleted: number; message: string }>(`/git-backup/logs?keep_last=${keepLast}`, { method: 'DELETE' }),
+
+  // Scheduled Local Backup (#884)
+  getLocalBackupStatus: () =>
+    request<LocalBackupStatus>('/local-backup/status'),
+  triggerLocalBackup: () =>
+    request<LocalBackupRunResponse>('/local-backup/run', { method: 'POST' }),
+  listLocalBackups: () =>
+    request<LocalBackupFile[]>('/local-backup/backups'),
+  getLocalBackupDownloadUrl: (filename: string) =>
+    `${API_BASE}/local-backup/backups/${encodeURIComponent(filename)}/download`,
+  restoreLocalBackup: (filename: string) =>
+    request<{ success?: boolean; message?: string }>(
+      `/local-backup/backups/${encodeURIComponent(filename)}/restore`,
       { method: 'POST' }
     ),
-
-  testGitHubStoredConnection: () =>
-    request<GitHubTestConnectionResponse>('/github-backup/test-stored', { method: 'POST' }),
-
-  triggerGitHubBackup: () =>
-    request<GitHubBackupTriggerResponse>('/github-backup/run', { method: 'POST' }),
-
-  getGitHubBackupStatus: () =>
-    request<GitHubBackupStatus>('/github-backup/status'),
-
-  getGitHubBackupLogs: (limit: number = 50) =>
-    request<GitHubBackupLog[]>(`/github-backup/logs?limit=${limit}`),
-
-  clearGitHubBackupLogs: (keepLast: number = 10) =>
-    request<{ deleted: number; message: string }>(`/github-backup/logs?keep_last=${keepLast}`, { method: 'DELETE' }),
+  deleteLocalBackup: (filename: string) =>
+    request<LocalBackupDeleteResponse>(
+      `/local-backup/backups/${encodeURIComponent(filename)}`,
+      { method: 'DELETE' }
+    ),
 
   // Local Presets (OrcaSlicer imports)
   getLocalPresets: () =>
@@ -4479,6 +4759,8 @@ export interface SystemInfo {
     archive_dir: string;
   };
   database: {
+    engine: 'SQLite' | 'PostgreSQL';
+    version: string;
     archives: number;
     archives_completed: number;
     archives_failed: number;
@@ -4666,6 +4948,7 @@ export interface LibraryFile {
   print_time_seconds: number | null;
   filament_used_grams: number | null;
   sliced_for_model: string | null;
+  swap_compatible: boolean;
 }
 
 export interface LibraryFileListItem {
@@ -4685,7 +4968,23 @@ export interface LibraryFileListItem {
   print_time_seconds: number | null;
   filament_used_grams: number | null;
   sliced_for_model: string | null;
+  swap_compatible: boolean;
+  notes_count: number;
 }
+
+// gh#3 - User-authored notes attached to library files
+export interface LibraryFileNote {
+  id: number;
+  library_file_id: number;
+  user_id: number | null;
+  user_username: string | null;
+  body: string;
+  created_at: string;
+  updated_at: string;
+  can_edit: boolean;
+}
+
+export const LIBRARY_FILE_NOTE_MAX_LENGTH = 1000;
 
 export interface LibraryFileUpdate {
   filename?: string;
@@ -5096,7 +5395,7 @@ export const supportApi = {
     }
     // Get filename from Content-Disposition header or use default
     const disposition = response.headers.get('Content-Disposition');
-    const filename = parseContentDispositionFilename(disposition) || 'bambuddy-support.zip';
+    const filename = parseContentDispositionFilename(disposition) || 'bamdude-support.zip';
 
     // Download the blob
     const blob = await response.blob();
@@ -5123,120 +5422,73 @@ export const supportApi = {
     request<{ message: string }>('/support/logs', { method: 'DELETE' }),
 };
 
-// SpoolBuddy types
-export interface SpoolBuddyDevice {
+// Macros
+export interface SwapProfile {
+  id: string;
+  label: string;
+  description?: string | null;
+  models: string[];
+}
+
+export interface Macro {
   id: number;
-  device_id: string;
-  hostname: string;
-  ip_address: string;
-  backend_url?: string | null;
-  firmware_version: string | null;
-  has_nfc: boolean;
-  has_scale: boolean;
-  tare_offset: number;
-  calibration_factor: number;
-  nfc_reader_type: string | null;
-  nfc_connection: string | null;
-  display_brightness: number;
-  display_blank_timeout: number;
-  has_backlight: boolean;
-  last_calibrated_at: string | null;
-  last_seen: string | null;
-  pending_command: string | null;
-  nfc_ok: boolean;
-  scale_ok: boolean;
-  uptime_s: number;
-  update_status: string | null;
-  update_message: string | null;
-  system_stats: {
-    os?: { os?: string; kernel?: string; arch?: string; python?: string };
-    cpu_temp_c?: number;
-    cpu_count?: number;
-    load_avg?: number[];
-    memory?: { total_mb?: number; available_mb?: number; used_mb?: number; percent?: number };
-    disk?: { total_gb?: number; used_gb?: number; free_gb?: number; percent?: number };
-    system_uptime_s?: number;
-  } | null;
-  online: boolean;
+  name: string;
+  description: string | null;
+  printer_models: string[];
+  swap_mode_only: boolean;
+  swap_profile: string | null;
+  event: string;
+  gcode: string;
+  is_custom: boolean;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
 }
 
-export interface DaemonUpdateCheck {
-  current_version: string;
-  latest_version: string | null;
-  update_available: boolean;
+export interface MacroCreate {
+  name: string;
+  description?: string | null;
+  printer_models: string[];
+  swap_mode_only: boolean;
+  swap_profile?: string | null;
+  event: string;
+  gcode: string;
+  enabled: boolean;
 }
 
-// SpoolBuddy API
-export const spoolbuddyApi = {
-  getDevices: () =>
-    request<SpoolBuddyDevice[]>('/spoolbuddy/devices'),
+export interface MacroUpdate {
+  name?: string;
+  description?: string | null;
+  printer_models?: string[];
+  swap_mode_only?: boolean;
+  swap_profile?: string | null;
+  event?: string;
+  gcode?: string;
+  enabled?: boolean;
+}
 
-  tare: (deviceId: string) =>
-    request<{ status: string }>(`/spoolbuddy/devices/${deviceId}/calibration/tare`, {
-      method: 'POST',
-      body: '{}',
-    }),
+export interface MacroMeta {
+  events: Record<string, string>;
+  // Events for which the "Swap profile" picker is relevant.
+  swap_events: string[];
+  printer_models: Record<string, string>;
+  swap_profiles: SwapProfile[];
+}
 
-  getCalibration: (deviceId: string) =>
-    request<{ tare_offset: number; calibration_factor: number }>(`/spoolbuddy/devices/${deviceId}/calibration`),
+export interface MacroExecuteResponse {
+  success: boolean;
+  message: string;
+  sequence_id: number | null;
+}
 
-  setCalibrationFactor: (deviceId: string, knownWeightGrams: number, rawAdc: number, tareRawAdc?: number) =>
-    request<{ tare_offset: number; calibration_factor: number }>(`/spoolbuddy/devices/${deviceId}/calibration/set-factor`, {
-      method: 'POST',
-      body: JSON.stringify({ known_weight_grams: knownWeightGrams, raw_adc: rawAdc, tare_raw_adc: tareRawAdc }),
-    }),
-
-  updateSpoolWeight: (spoolId: number, weightGrams: number) =>
-    request<{ status: string; weight_used: number }>('/spoolbuddy/scale/update-spool-weight', {
-      method: 'POST',
-      body: JSON.stringify({ spool_id: spoolId, weight_grams: weightGrams }),
-    }),
-
-  updateDisplay: (deviceId: string, brightness: number, blankTimeout: number) =>
-    request<{ status: string }>(`/spoolbuddy/devices/${deviceId}/display`, {
-      method: 'PUT',
-      body: JSON.stringify({ brightness, blank_timeout: blankTimeout }),
-    }),
-
-  updateSystemConfig: (deviceId: string, backendUrl: string, apiKey?: string) =>
-    request<{ status: string; message: string }>(`/spoolbuddy/devices/${deviceId}/system/config`, {
-      method: 'POST',
-      body: JSON.stringify({ backend_url: backendUrl, ...(apiKey ? { api_key: apiKey } : {}) }),
-    }),
-
-  checkDaemonUpdate: (deviceId: string) =>
-    request<DaemonUpdateCheck>(`/spoolbuddy/devices/${deviceId}/update-check`),
-
-  triggerUpdate: (deviceId: string) =>
-    request<{ status: string; message: string }>(`/spoolbuddy/devices/${deviceId}/update`, {
-      method: 'POST',
-      body: '{}',
-    }),
-
-  getSSHPublicKey: () =>
-    request<{ public_key: string }>('/spoolbuddy/ssh/public-key'),
-
-  writeTag: (deviceId: string, spoolId: number) =>
-    request<{ status: string }>('/spoolbuddy/nfc/write-tag', {
-      method: 'POST',
-      body: JSON.stringify({ device_id: deviceId, spool_id: spoolId }),
-    }),
-
-  cancelWrite: (deviceId: string) =>
-    request<{ status: string }>(`/spoolbuddy/devices/${deviceId}/cancel-write`, {
-      method: 'POST',
-      body: '{}',
-    }),
-
-  queueDiagnostics: (deviceId: string, type: 'nfc' | 'scale' | 'read_tag') =>
-    request<{ status: string; diagnostic: string; message: string }>(
-      `/spoolbuddy/diagnostics/${deviceId}/run?diagnostic=${type}`,
-      { method: 'POST', body: '{}' }
-    ),
-
-  getDiagnosticResult: (deviceId: string, type: 'nfc' | 'scale' | 'read_tag') =>
-    request<{ diagnostic: string; success: boolean; output: string; exit_code: number }>(
-      `/spoolbuddy/diagnostics/${deviceId}/result?diagnostic=${type}`,
-      { method: 'GET' }
-    ),
+// Macros API
+export const macrosApi = {
+  getMacros: () => request<Macro[]>('/macros/'),
+  getMacroMeta: () => request<MacroMeta>('/macros/meta'),
+  getSwapProfiles: () => request<SwapProfile[]>('/macros/swap-profiles'),
+  createMacro: (data: MacroCreate) => request<Macro>('/macros/', { method: 'POST', body: JSON.stringify(data) }),
+  updateMacro: (id: number, data: MacroUpdate) => request<Macro>('/macros/' + id, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteMacro: (id: number) => request<{ message: string }>('/macros/' + id, { method: 'DELETE' }),
+  executeMacro: (macroId: number, printerId: number) =>
+    request<MacroExecuteResponse>(`/macros/${macroId}/execute?printer_id=${printerId}`, { method: 'POST' }),
 };

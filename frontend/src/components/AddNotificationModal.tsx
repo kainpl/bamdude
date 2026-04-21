@@ -165,7 +165,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
       case 'ntfy':
         return [
           { key: 'server', label: 'Server URL', placeholder: 'https://ntfy.sh', type: 'text', required: false },
-          { key: 'topic', label: 'Topic', placeholder: 'my-bambuddy', type: 'text', required: true },
+          { key: 'topic', label: 'Topic', placeholder: 'my-bamdude', type: 'text', required: true },
           { key: 'auth_token', label: 'Auth Token', placeholder: 'Optional authentication', type: 'password', required: false },
         ];
       case 'pushover':
@@ -333,26 +333,28 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
             ))}
           </div>
 
-          {/* Test Button */}
-          <div className="flex gap-2">
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={() => {
-                setTestResult(null);
-                testMutation.mutate();
-              }}
-              disabled={testMutation.isPending || (getRequiredFields(providerType).length > 0 && !config[getRequiredFields(providerType)[0]?.key])}
-              className="flex-1"
-            >
-              {testMutation.isPending ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <Send className="w-4 h-4" />
-              )}
-              {t('notifications.testConfiguration')}
-            </Button>
-          </div>
+          {/* Test Button (not shown for Telegram - bot restarts automatically) */}
+          {providerType !== 'telegram' && (
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => {
+                  setTestResult(null);
+                  testMutation.mutate();
+                }}
+                disabled={testMutation.isPending || (getRequiredFields(providerType).length > 0 && !config[getRequiredFields(providerType)[0]?.key])}
+                className="flex-1"
+              >
+                {testMutation.isPending ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Send className="w-4 h-4" />
+                )}
+                {t('notifications.testConfiguration')}
+              </Button>
+            </div>
+          )}
 
           {/* Test Result */}
           {testResult && (

@@ -914,7 +914,7 @@ class TestLibraryPermissions:
         operator_user = auth_setup["operator_user"]
         lib_file = LibraryFile(
             filename="test.txt",
-            file_path="data/archive/library/files/test.txt",
+            file_path="archive/library/files/test.txt",
             file_type="txt",
             file_size=100,
             created_by_id=operator_user.id,
@@ -945,8 +945,13 @@ class TestLibraryPermissions:
         db_session.add(settings)
         await db_session.commit()
 
-        # Request without token should fail
-        response = await async_client.get("/api/v1/library/files")
+        # Request without token should fail. async_client carries a default
+        # admin bearer token from conftest; explicitly clear it to exercise
+        # the unauthenticated path.
+        response = await async_client.get(
+            "/api/v1/library/files",
+            headers={"Authorization": ""},
+        )
         assert response.status_code == 401
 
     @pytest.mark.asyncio
@@ -994,7 +999,7 @@ class TestLibraryPermissions:
         # Create file owned by other user
         other_file = LibraryFile(
             filename="other.txt",
-            file_path="data/archive/library/files/other.txt",
+            file_path="archive/library/files/other.txt",
             file_type="txt",
             file_size=100,
             created_by_id=other_user.id,
@@ -1024,7 +1029,7 @@ class TestLibraryPermissions:
         operator_user = auth_setup["operator_user"]
         lib_file = LibraryFile(
             filename="admin_can_delete.txt",
-            file_path="data/archive/library/files/admin_can_delete.txt",
+            file_path="archive/library/files/admin_can_delete.txt",
             file_type="txt",
             file_size=100,
             created_by_id=operator_user.id,

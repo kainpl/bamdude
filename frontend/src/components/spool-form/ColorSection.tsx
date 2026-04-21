@@ -210,7 +210,7 @@ export function ColorSection({
                 style={{ backgroundColor: `#${color.hex}` }}
                 title={
                   color.manufacturer && color.material
-                    ? `${color.name} (${color.manufacturer} — ${color.material})`
+                    ? `${color.name} (${color.manufacturer} - ${color.material})`
                     : color.manufacturer
                     ? `${color.name} (${color.manufacturer})`
                     : color.name
@@ -218,7 +218,7 @@ export function ColorSection({
               >
                 <span className="absolute -bottom-7 left-1/2 -translate-x-1/2 px-2 py-0.5 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-xs whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-20 shadow-lg text-white">
                   {color.manufacturer && color.material
-                    ? `${color.name} (${color.manufacturer} — ${color.material})`
+                    ? `${color.name} (${color.manufacturer} - ${color.material})`
                     : color.manufacturer
                     ? `${color.name} (${color.manufacturer})`
                     : color.name}

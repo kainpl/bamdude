@@ -1,37 +1,37 @@
 {
-  "Clean Carbon Rods": {
+  "clean_carbon_rods": {
     "name": "Clean Carbon Rods",
     "description": "Wipe carbon rods with a dry cloth"
   },
-  "Lubricate Steel Rods": {
+  "lubricate_steel_rods": {
     "name": "Lubricate Steel Rods",
     "description": "Apply lubricant to steel rods for smooth motion"
   },
-  "Clean Steel Rods": {
+  "clean_steel_rods": {
     "name": "Clean Steel Rods",
     "description": "Wipe steel rods with a dry cloth"
   },
-  "Lubricate Linear Rails": {
+  "lubricate_linear_rails": {
     "name": "Lubricate Linear Rails",
     "description": "Apply lubricant to linear rails for smooth motion"
   },
-  "Clean Linear Rails": {
+  "clean_linear_rails": {
     "name": "Clean Linear Rails",
     "description": "Wipe linear rails with a dry cloth to remove dust and debris"
   },
-  "Clean Nozzle/Hotend": {
+  "clean_nozzle": {
     "name": "Clean Nozzle/Hotend",
     "description": "Clean nozzle exterior and perform cold pull if needed"
   },
-  "Check Belt Tension": {
+  "check_belt_tension": {
     "name": "Check Belt Tension",
     "description": "Verify and adjust belt tension for X/Y axes"
   },
-  "Clean Build Plate": {
+  "clean_build_plate": {
     "name": "Clean Build Plate",
     "description": "Deep clean build plate with IPA or soap"
   },
-  "Check PTFE Tube": {
+  "check_ptfe_tube": {
     "name": "Check PTFE Tube",
     "description": "Inspect PTFE tube for wear or discoloration"
   }

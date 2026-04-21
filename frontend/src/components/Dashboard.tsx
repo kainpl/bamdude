@@ -358,7 +358,7 @@ export function Dashboard({ widgets, storageKey, columns = 4, stackBelow, hideCo
       >
         <SortableContext items={visibleWidgets.map((w) => w.id)} strategy={rectSortingStrategy}>
           <div
-            className="grid gap-6"
+            className="grid gap-4"
             style={{
               gridTemplateColumns: `repeat(${effectiveColumns}, minmax(0, 1fr))`,
             }}

@@ -35,15 +35,21 @@ class TestApplyLogLevel:
 
         assert logging.getLogger("aiosqlite").level == logging.WARNING
 
-    def test_debug_mode_enables_httpcore_debug(self):
-        """Verify httpcore stays at DEBUG in debug mode."""
+    def test_debug_mode_pins_httpcore_and_httpx_to_warning(self):
+        """Verify httpcore + httpx stay at WARNING even in debug mode.
+
+        At DEBUG level httpx logs full request URLs, which leak bearer tokens
+        embedded in Discord / generic-webhook URL paths. Pin-to-WARNING is a
+        deliberate security trade-off — see fix `d48157f`.
+        """
         import logging
 
         from backend.app.api.routes.support import _apply_log_level
 
         _apply_log_level(True)
 
-        assert logging.getLogger("httpcore").level == logging.DEBUG
+        assert logging.getLogger("httpcore").level == logging.WARNING
+        assert logging.getLogger("httpx").level == logging.WARNING
 
     def test_non_debug_mode_suppresses_all_noisy_loggers(self):
         """Verify all noisy loggers are set to WARNING in non-debug mode."""
@@ -544,7 +550,9 @@ class TestCollectSupportInfo:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             log_dir = Path(tmpdir)
-            log_file = log_dir / "bambuddy.log"
+            # Log filename was renamed from bambuddy.log -> bamdude.log
+            # on fork; _collect_support_info reads settings.log_dir / "bamdude.log".
+            log_file = log_dir / "bamdude.log"
             log_file.write_text("some log content\n" * 100)
 
             with (

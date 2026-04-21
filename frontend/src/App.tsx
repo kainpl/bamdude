@@ -1,5 +1,8 @@
+import React, { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
+import { api } from './api/client';
 import { Layout } from './components/Layout';
 import { PrintersPage } from './pages/PrintersPage';
 import { ArchivesPage } from './pages/ArchivesPage';
@@ -24,13 +27,7 @@ import { useWebSocket } from './hooks/useWebSocket';
 import { ThemeProvider } from './contexts/ThemeContext';
 import { ToastProvider } from './contexts/ToastContext';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
-import { SpoolBuddyLayout } from './components/spoolbuddy/SpoolBuddyLayout';
-import { SpoolBuddyDashboard } from './pages/spoolbuddy/SpoolBuddyDashboard';
-import { SpoolBuddyAmsPage } from './pages/spoolbuddy/SpoolBuddyAmsPage';
-import { SpoolBuddySettingsPage } from './pages/spoolbuddy/SpoolBuddySettingsPage';
-import { SpoolBuddyCalibrationPage } from './pages/spoolbuddy/SpoolBuddyCalibrationPage';
-import { SpoolBuddyWriteTagPage } from './pages/spoolbuddy/SpoolBuddyWriteTagPage';
-import { SpoolBuddyInventoryPage } from './pages/spoolbuddy/SpoolBuddyInventoryPage';
+import { ColorCatalogProvider } from './contexts/ColorCatalogContext';
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -42,6 +39,41 @@ const queryClient = new QueryClient({
 
 function WebSocketProvider({ children }: { children: React.ReactNode }) {
   useWebSocket();
+  return <>{children}</>;
+}
+
+/**
+ * Pulls the authoritative system language from the server on first mount
+ * after auth and forces i18n to match.  Server-side `settings.language`
+ * is the source of truth because it also drives backend outputs
+ * (notification templates, maintenance-type names, Telegram bot),
+ * and the farm operator configures it once for the whole install —
+ * individual browsers shouldn't override that via auto-detection.
+ *
+ * User-driven picks in Settings UI still write to the server (that's
+ * the intentional override path); this effect only corrects cases
+ * where the browser auto-detected a different language than configured.
+ */
+function LanguageSync({ children }: { children: React.ReactNode }) {
+  const { i18n } = useTranslation();
+  const syncedRef = React.useRef(false);
+
+  useEffect(() => {
+    if (syncedRef.current) return;
+    syncedRef.current = true;
+    (async () => {
+      try {
+        const settings = await api.getSettings();
+        const serverLang = settings.language;
+        if (serverLang && serverLang !== i18n.language) {
+          await i18n.changeLanguage(serverLang);
+        }
+      } catch {
+        // Best-effort — if /settings fails we leave i18n on its detected value.
+      }
+    })();
+  }, [i18n]);
+
   return <>{children}</>;
 }
 
@@ -101,12 +133,57 @@ function SetupRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+class ErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean; error: Error | null }
+> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-bambu-dark p-8">
+          <div className="max-w-lg w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl p-6 text-center">
+            <h1 className="text-xl font-bold text-white mb-2">Something went wrong</h1>
+            <p className="text-bambu-gray text-sm mb-4">{this.state.error?.message}</p>
+            <details className="text-left mb-4">
+              <summary className="text-xs text-bambu-gray cursor-pointer">Stack trace</summary>
+              <pre className="mt-2 text-xs text-red-400 overflow-auto max-h-48 p-2 bg-bambu-dark rounded">
+                {this.state.error?.stack}
+              </pre>
+            </details>
+            <button
+              className="px-4 py-2 bg-bambu-green hover:bg-bambu-green-light text-white rounded-lg text-sm"
+              onClick={() => {
+                this.setState({ hasError: false, error: null });
+                window.location.href = '/';
+              }}
+            >
+              Reload
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 function App() {
   return (
+    <ErrorBoundary>
     <ThemeProvider>
       <ToastProvider>
         <QueryClientProvider client={queryClient}>
           <AuthProvider>
+            <ColorCatalogProvider>
             <BrowserRouter>
               <Routes>
                 {/* Setup page - only accessible if auth not enabled */}
@@ -121,18 +198,8 @@ function App() {
                 {/* Stream overlay page - standalone for OBS/streaming embeds, no auth required */}
                 <Route path="/overlay/:printerId" element={<StreamOverlayPage />} />
 
-                {/* SpoolBuddy kiosk UI */}
-                <Route element={<ProtectedRoute><WebSocketProvider><SpoolBuddyLayout /></WebSocketProvider></ProtectedRoute>}>
-                  <Route path="spoolbuddy" element={<SpoolBuddyDashboard />} />
-                  <Route path="spoolbuddy/ams" element={<SpoolBuddyAmsPage />} />
-                  <Route path="spoolbuddy/write-tag" element={<SpoolBuddyWriteTagPage />} />
-                  <Route path="spoolbuddy/inventory" element={<SpoolBuddyInventoryPage />} />
-                  <Route path="spoolbuddy/settings" element={<SpoolBuddySettingsPage />} />
-                  <Route path="spoolbuddy/calibration" element={<SpoolBuddyCalibrationPage />} />
-                </Route>
-
                 {/* Main app with WebSocket for real-time updates */}
-                <Route element={<ProtectedRoute><WebSocketProvider><Layout /></WebSocketProvider></ProtectedRoute>}>
+                <Route element={<ProtectedRoute><LanguageSync><WebSocketProvider><Layout /></WebSocketProvider></LanguageSync></ProtectedRoute>}>
                   <Route index element={<PrintersPage />} />
                   <Route path="archives" element={<ArchivesPage />} />
                   <Route path="queue" element={<QueuePage />} />
@@ -154,10 +221,12 @@ function App() {
                 </Route>
               </Routes>
             </BrowserRouter>
+            </ColorCatalogProvider>
           </AuthProvider>
         </QueryClientProvider>
       </ToastProvider>
     </ThemeProvider>
+    </ErrorBoundary>
   );
 }
 

@@ -13,7 +13,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermissionIfAuthEnabled
+from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.settings import Settings
@@ -114,7 +114,7 @@ async def clear_token(db: AsyncSession, user: User | None = None) -> None:
 @router.get("/status", response_model=CloudAuthStatus)
 async def get_auth_status(
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.CLOUD_AUTH),
+    current_user: User | None = RequirePermission(Permission.CLOUD_AUTH),
 ):
     """Get current cloud authentication status."""
     token, email = await get_stored_token(db, current_user)
@@ -133,7 +133,7 @@ async def get_auth_status(
 async def login(
     request: CloudLoginRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.CLOUD_AUTH),
+    current_user: User | None = RequirePermission(Permission.CLOUD_AUTH),
 ):
     """
     Initiate login to Bambu Cloud.
@@ -171,7 +171,7 @@ async def login(
 async def verify_code(
     request: CloudVerifyRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.CLOUD_AUTH),
+    current_user: User | None = RequirePermission(Permission.CLOUD_AUTH),
 ):
     """
     Complete login with verification code (email or TOTP).
@@ -211,7 +211,7 @@ async def verify_code(
 async def set_token(
     request: CloudTokenRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.CLOUD_AUTH),
+    current_user: User | None = RequirePermission(Permission.CLOUD_AUTH),
 ):
     """
     Set access token directly.
@@ -234,7 +234,7 @@ async def set_token(
 @router.post("/logout")
 async def logout(
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.CLOUD_AUTH),
+    current_user: User | None = RequirePermission(Permission.CLOUD_AUTH),
 ):
     """Log out of Bambu Cloud."""
     cloud = get_cloud_service()
@@ -247,7 +247,7 @@ async def logout(
 async def get_slicer_settings(
     version: str = "02.04.00.70",
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.CLOUD_AUTH),
+    current_user: User | None = RequirePermission(Permission.CLOUD_AUTH),
 ):
     """
     Get all slicer settings (filament, printer, process presets).
@@ -322,7 +322,7 @@ async def get_slicer_settings(
 async def get_setting_detail(
     setting_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.CLOUD_AUTH),
+    current_user: User | None = RequirePermission(Permission.CLOUD_AUTH),
 ):
     """
     Get detailed information for a specific setting/preset.
@@ -353,7 +353,7 @@ async def get_setting_detail(
 async def get_filament_presets(
     version: str = "02.04.00.70",
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.FILAMENTS_READ),
+    current_user: User | None = RequirePermission(Permission.INVENTORY_READ),
 ):
     """
     Get just filament presets (convenience endpoint).
@@ -543,7 +543,7 @@ _filament_id_to_setting_id = filament_id_to_setting_id
 async def get_filament_info(
     setting_ids: list[str] = Body(...),
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.FILAMENTS_READ),
+    current_user: User | None = RequirePermission(Permission.INVENTORY_READ),
 ):
     """
     Get filament preset info (name and K value) for multiple setting IDs.
@@ -621,7 +621,7 @@ async def get_filament_info(
 @router.get("/devices", response_model=list[CloudDevice])
 async def get_devices(
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.PRINTERS_READ),
+    current_user: User | None = RequirePermission(Permission.PRINTERS_READ),
 ):
     """
     Get list of bound printer devices.
@@ -662,7 +662,7 @@ async def get_devices(
 @router.get("/firmware-updates", response_model=FirmwareUpdatesResponse)
 async def get_firmware_updates(
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.FIRMWARE_READ),
+    current_user: User | None = RequirePermission(Permission.FIRMWARE_READ),
 ):
     """
     Check for firmware updates for all bound devices.
@@ -742,7 +742,7 @@ async def get_firmware_updates(
 async def create_setting(
     request: SlicerSettingCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.CLOUD_AUTH),
+    current_user: User | None = RequirePermission(Permission.CLOUD_AUTH),
 ):
     """
     Create a new slicer preset/setting.
@@ -783,7 +783,7 @@ async def update_setting(
     setting_id: str,
     request: SlicerSettingUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.CLOUD_AUTH),
+    current_user: User | None = RequirePermission(Permission.CLOUD_AUTH),
 ):
     """
     Update an existing slicer preset/setting.
@@ -818,7 +818,7 @@ async def update_setting(
 async def delete_setting(
     setting_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.CLOUD_AUTH),
+    current_user: User | None = RequirePermission(Permission.CLOUD_AUTH),
 ):
     """
     Delete a slicer preset/setting.
@@ -885,7 +885,7 @@ def _load_fields(preset_type: str) -> dict:
 
 @router.get("/builtin-filaments")
 async def get_builtin_filaments(
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.FILAMENTS_READ),
+    _: User | None = RequirePermission(Permission.INVENTORY_READ),
 ):
     """
     Get built-in filament names as a fallback source.
@@ -905,7 +905,7 @@ _filament_id_name_cache_time: float = 0
 @router.get("/filament-id-map")
 async def get_filament_id_map(
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.FILAMENTS_READ),
+    current_user: User | None = RequirePermission(Permission.INVENTORY_READ),
 ):
     """
     Get filament_id → name mapping for user cloud presets.
@@ -961,7 +961,7 @@ async def get_filament_id_map(
 @router.get("/fields/{preset_type}")
 async def get_preset_fields(
     preset_type: Literal["filament", "print", "process", "printer"],
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.CLOUD_AUTH),
+    _: User | None = RequirePermission(Permission.CLOUD_AUTH),
 ):
     """
     Get field definitions for a preset type.
@@ -982,7 +982,7 @@ async def get_preset_fields(
 
 @router.get("/fields")
 async def get_all_preset_fields(
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.CLOUD_AUTH),
+    _: User | None = RequirePermission(Permission.CLOUD_AUTH),
 ):
     """
     Get all field definitions for all preset types.

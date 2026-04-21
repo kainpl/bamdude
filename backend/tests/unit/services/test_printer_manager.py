@@ -373,7 +373,6 @@ class TestPrinterManager:
             timelapse=False,
             bed_levelling=True,
             flow_cali=False,
-            vibration_cali=True,
             layer_inspect=False,
             use_ams=True,
         )
@@ -782,6 +781,37 @@ class TestPrinterStateToDict:
         assert result["vt_tray"][0]["tray_color"] == "00FF00"
         assert result["vt_tray"][0]["tray_type"] == "PETG"
 
+    def test_vt_tray_dict_normalized_to_list(self, mock_state):
+        """Verify vt_tray as a raw dict (from MQTT) is normalized to a list."""
+        mock_state.raw_data = {
+            "vt_tray": {
+                "id": "254",
+                "tray_color": "FF0000",
+                "tray_type": "PLA",
+                "tray_sub_brands": "Generic",
+                "tag_uid": "0000000000000000",
+                "tray_uuid": "00000000000000000000000000000000",
+                "remain": 0,
+            }
+        }
+
+        result = printer_state_to_dict(mock_state)
+
+        assert isinstance(result["vt_tray"], list)
+        assert len(result["vt_tray"]) == 1
+        assert result["vt_tray"][0]["tray_color"] == "FF0000"
+        assert result["vt_tray"][0]["tray_type"] == "PLA"
+        assert result["vt_tray"][0]["tag_uid"] is None
+        assert result["vt_tray"][0]["tray_uuid"] is None
+
+    def test_vt_tray_non_list_non_dict_ignored(self, mock_state):
+        """Verify unexpected vt_tray types (e.g. string) produce empty list."""
+        mock_state.raw_data = {"vt_tray": "unexpected_string"}
+
+        result = printer_state_to_dict(mock_state)
+
+        assert result["vt_tray"] == []
+
     def test_hms_errors_conversion(self, mock_state):
         """Verify HMS errors are converted correctly."""
         error = MagicMock()
@@ -955,7 +985,7 @@ class TestStatusKeyDryingDedup:
         state.raw_data = {"ams": [{"id": 0, "dry_time": 29, "module_type": "n3f", "tray": [{"id": 0}]}]}
         result2 = printer_state_to_dict(state)
 
-        # The dicts should differ — dry_time changed
+        # The dicts should differ - dry_time changed
         assert result1["ams"][0]["dry_time"] == 30
         assert result2["ams"][0]["dry_time"] == 29
         assert result1["ams"] != result2["ams"]
@@ -1038,11 +1068,16 @@ class TestSupportsDrying:
         assert supports_drying("X1C", "01.09.00.00") is True
         assert supports_drying("P1S", "01.08.00.00") is True
         assert supports_drying("H2D", "01.02.30.00") is True
+        assert supports_drying("H2S", "01.02.00.00") is True
+        assert supports_drying("P2S", "01.02.00.00") is True
+        assert supports_drying("N7", "01.02.00.00") is True
 
     def test_known_supported_old_firmware(self):
         """Verify known models with old firmware return False."""
         assert supports_drying("X1C", "01.08.00.00") is False
         assert supports_drying("P1S", "01.07.00.00") is False
+        assert supports_drying("H2S", "01.01.00.00") is False
+        assert supports_drying("P2S", "01.01.99.99") is False
 
     def test_known_supported_no_firmware(self):
         """Verify known models with no firmware return False."""
@@ -1050,7 +1085,7 @@ class TestSupportsDrying:
 
     def test_unsupported_models(self):
         """Verify models without AMS drying support return False regardless of firmware."""
-        for model in ["P2S", "A1", "A1MINI", "A1-MINI", "H2S", "H2C", "N7", "N1", "N2S"]:
+        for model in ["A1", "A1MINI", "A1-MINI", "H2C", "N1", "N2S"]:
             assert supports_drying(model, "99.99.99.99") is False, f"Expected False for {model}"
 
     def test_unknown_models_allowed(self):
@@ -1074,7 +1109,8 @@ class TestSupportsDrying:
     def test_case_insensitive(self):
         """Verify model matching is case-insensitive."""
         assert supports_drying("x1c", "01.09.00.00") is True
-        assert supports_drying("p2s", "99.99.99.99") is False
+        assert supports_drying("p2s", "01.02.00.00") is True
+        assert supports_drying("h2c", "99.99.99.99") is False
 
 
 class TestGetDerivedStatusName:
@@ -1113,6 +1149,7 @@ class TestGetDerivedStatusName:
         """Verify stg_cur=0 returns 'Printing' when no model specified."""
         state = MagicMock()
         state.stg_cur = 0
+        state.macro_executing = None  # not executing a macro
 
         result = get_derived_status_name(state)
 
@@ -1123,6 +1160,7 @@ class TestGetDerivedStatusName:
         state = MagicMock()
         state.stg_cur = 0
         state.state = "IDLE"
+        state.macro_executing = None  # not executing a macro
 
         # Test various A1 model names
         for model in ["A1", "A1 Mini", "A1-Mini", "A1MINI", "N1", "N2S"]:
@@ -1134,6 +1172,7 @@ class TestGetDerivedStatusName:
         state = MagicMock()
         state.stg_cur = 0
         state.state = "RUNNING"
+        state.macro_executing = None  # not executing a macro
 
         result = get_derived_status_name(state, "A1")
 
@@ -1144,6 +1183,7 @@ class TestGetDerivedStatusName:
         state = MagicMock()
         state.stg_cur = 0
         state.state = "IDLE"
+        state.macro_executing = None  # not executing a macro
 
         # X1C should not get the workaround
         result = get_derived_status_name(state, "X1C")

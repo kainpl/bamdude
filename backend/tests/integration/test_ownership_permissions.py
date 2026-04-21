@@ -15,24 +15,12 @@ class TestOwnershipPermissionsSetup:
 
     @pytest.fixture
     async def auth_setup(self, async_client: AsyncClient):
-        """Setup auth with admin, create test users with different permission levels."""
-        # Enable auth with admin user
-        await async_client.post(
-            "/api/v1/auth/setup",
-            json={
-                "auth_enabled": True,
-                "admin_username": "ownershipadmin",
-                "admin_password": "adminpassword123",
-            },
-        )
+        """Create test users with different permission levels using the pre-seeded admin."""
+        from backend.app.core.auth import create_access_token
 
-        # Login as admin
-        admin_login = await async_client.post(
-            "/api/v1/auth/login",
-            json={"username": "ownershipadmin", "password": "adminpassword123"},
-        )
-        admin_token = admin_login.json()["access_token"]
-        admin_user = admin_login.json()["user"]
+        admin_token = create_access_token(data={"sub": "test_admin"})
+        # /auth/me returns the admin record we need for the return payload.
+        admin_user = (await async_client.get("/api/v1/auth/me")).json()
 
         # Get group IDs
         groups_response = await async_client.get(
@@ -319,13 +307,20 @@ class TestQueueOwnershipPermissions(TestOwnershipPermissionsSetup):
 
         async def _create_item(**kwargs):
             from backend.app.models.print_queue import PrintQueueItem
+            from backend.app.models.printer_queue import PrinterQueue
 
             printer = await printer_factory()
+            # Create printer queue (queue_id == printer_id)
+            queue = PrinterQueue(printer_id=printer.id)
+            db_session.add(queue)
+            await db_session.commit()
+            await db_session.refresh(queue)
+
             # Create an archive to link to the queue item
             archive = await archive_factory(printer.id)
 
             defaults = {
-                "printer_id": printer.id,
+                "queue_id": queue.id,
                 "archive_id": archive.id,
                 "status": "pending",
                 "position": 0,

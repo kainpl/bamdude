@@ -24,7 +24,6 @@ class QueueAddRequest(BaseModel):
     printer_id: int
     project_id: int | None = None
     scheduled_time: str | None = None  # ISO format datetime
-    require_previous_success: bool = False
     auto_off_after: bool = False
 
 
@@ -87,7 +86,7 @@ async def webhook_add_to_queue(
     result = await db.execute(
         select(PrintQueueItem.position)
         .where(
-            PrintQueueItem.printer_id == data.printer_id,
+            PrintQueueItem.queue_id == data.printer_id,
             PrintQueueItem.status == "pending",
         )
         .order_by(PrintQueueItem.position.desc())
@@ -108,12 +107,11 @@ async def webhook_add_to_queue(
 
     # Create queue item
     queue_item = PrintQueueItem(
-        printer_id=data.printer_id,
+        queue_id=data.printer_id,  # queue_id == printer_id
         archive_id=data.archive_id,
         project_id=data.project_id,
         position=next_position,
         scheduled_time=scheduled_time,
-        require_previous_success=data.require_previous_success,
         auto_off_after=data.auto_off_after,
     )
     db.add(queue_item)
@@ -123,7 +121,7 @@ async def webhook_add_to_queue(
     return QueueAddResponse(
         id=queue_item.id,
         archive_id=queue_item.archive_id,
-        printer_id=queue_item.printer_id,
+        printer_id=queue_item.queue_id,
         position=queue_item.position,
         status=queue_item.status,
         message=f"Added to queue at position {queue_item.position}",
@@ -153,7 +151,7 @@ async def webhook_start_print(
     result = await db.execute(
         select(PrintQueueItem)
         .where(
-            PrintQueueItem.printer_id == printer_id,
+            PrintQueueItem.queue_id == printer_id,
             PrintQueueItem.status == "pending",
         )
         .order_by(PrintQueueItem.position)
@@ -314,7 +312,7 @@ async def webhook_get_queue_status(
         result = await db.execute(select(Printer))
         printers = result.scalars().all()
         # Filter by allowed printers if limited
-        if api_key.printer_ids:
+        if api_key.printer_ids is not None:
             printers = [p for p in printers if p.id in api_key.printer_ids]
 
     response = []
@@ -323,7 +321,7 @@ async def webhook_get_queue_status(
         result = await db.execute(
             select(PrintQueueItem)
             .where(
-                PrintQueueItem.printer_id == printer.id,
+                PrintQueueItem.queue_id == printer.id,
                 PrintQueueItem.status.in_(["pending", "printing"]),
             )
             .order_by(PrintQueueItem.position)

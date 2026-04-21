@@ -189,6 +189,13 @@ class TestVirtualPrinterInstance:
         mock_db.add = MagicMock(side_effect=capture_add)
         mock_db.commit = AsyncMock()
 
+        # Mock the PrinterQueue lookup
+        mock_queue = MagicMock()
+        mock_queue.id = 1
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = mock_queue
+        mock_db.execute = AsyncMock(return_value=mock_result)
+
         mock_session_factory = MagicMock()
         mock_session_ctx = AsyncMock()
         mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_db)
@@ -202,10 +209,15 @@ class TestVirtualPrinterInstance:
             model="C11",
             access_code="12345678",
             serial_suffix="391800011",
+            target_printer_id=1,
             auto_dispatch=True,
             base_dir=tmp_path,
             session_factory=mock_session_factory,
         )
+        # Short-circuit the online-printer lookup so the archive path runs
+        # instead of falling through to _save_to_library (which would add a
+        # LibraryFile without manual_start to mock_db).
+        inst._find_best_queue = AsyncMock(return_value=mock_queue)
 
         # Create a temp 3mf file
         file_path = tmp_path / "test.3mf"
@@ -240,6 +252,13 @@ class TestVirtualPrinterInstance:
         mock_db.add = MagicMock(side_effect=capture_add)
         mock_db.commit = AsyncMock()
 
+        # Mock the PrinterQueue lookup
+        mock_queue = MagicMock()
+        mock_queue.id = 1
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = mock_queue
+        mock_db.execute = AsyncMock(return_value=mock_result)
+
         mock_session_factory = MagicMock()
         mock_session_ctx = AsyncMock()
         mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_db)
@@ -253,10 +272,13 @@ class TestVirtualPrinterInstance:
             model="C11",
             access_code="12345678",
             serial_suffix="391800012",
+            target_printer_id=1,
             auto_dispatch=False,
             base_dir=tmp_path,
             session_factory=mock_session_factory,
         )
+        # Short-circuit the online-printer lookup (see sibling test for why).
+        inst._find_best_queue = AsyncMock(return_value=mock_queue)
 
         # Create a temp 3mf file
         file_path = tmp_path / "test.3mf"
@@ -1146,7 +1168,7 @@ class TestSlicerProxyManager:
             patch.object(SlicerProxyManager, "_log_activity"),
         ):
             mock_create_task.return_value = MagicMock()
-            # start() will create proxies then try to gather tasks — we just
+            # start() will create proxies then try to gather tasks - we just
             # need to verify the proxy types after creation.
             # Trigger start but let gather return immediately.
             await mgr.start()
@@ -1198,7 +1220,7 @@ class TestSlicerProxyManager:
             bind_address="10.0.0.1",
         )
 
-        # Before start, proxies are None — verify constructor stores rewrite config
+        # Before start, proxies are None - verify constructor stores rewrite config
         assert mgr.bind_address == "10.0.0.1"
         assert mgr.target_host == "192.168.1.100"
 

@@ -76,7 +76,7 @@ export function PlateSelector({
               {plate.has_thumbnail && plate.thumbnail_url != null ? (
                 <img
                   src={plate.thumbnail_url}
-                  alt={`Plate ${plate.index}`}
+                  alt={t('printModal.plateNFallback', { index: plate.index })}
                   className="w-10 h-10 rounded object-cover bg-bambu-dark-tertiary"
                 />
               ) : (
@@ -86,7 +86,7 @@ export function PlateSelector({
               )}
               <div className="min-w-0 flex-1">
                 <p className="text-sm text-white font-medium truncate">
-                  {plate.name || `Plate ${plate.index}`}
+                  {plate.name || t('printModal.plateNFallback', { index: plate.index })}
                 </p>
                 <p className="text-xs text-bambu-gray truncate">
                   {plate.objects.length > 0

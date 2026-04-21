@@ -44,7 +44,7 @@ describe('PrinterQueueWidget - Clear Plate', () => {
     server.use(
       http.get('/api/v1/queue/', ({ request }) => {
         const url = new URL(request.url);
-        const printerId = url.searchParams.get('printer_id');
+        const printerId = url.searchParams.get('queue_id');
         if (printerId === '1') {
           return HttpResponse.json(mockQueueItems);
         }
@@ -123,6 +123,17 @@ describe('PrinterQueueWidget - Clear Plate', () => {
 
       expect(screen.queryByText('Clear Plate & Start Next')).not.toBeInTheDocument();
     });
+
+    it('shows passive link when FINISH but requirePlateClear is false', async () => {
+      render(<PrinterQueueWidget printerId={1} printerState="FINISH" requirePlateClear={false} />);
+
+      await waitFor(() => {
+        const link = screen.getByRole('link');
+        expect(link).toHaveAttribute('href', '/queue');
+      });
+
+      expect(screen.queryByText('Clear Plate & Start Next')).not.toBeInTheDocument();
+    });
   });
 
   describe('clear plate button shows queue info', () => {
@@ -156,8 +167,34 @@ describe('PrinterQueueWidget - Clear Plate', () => {
 
       await waitFor(() => {
         // Both the widget confirmation and the toast show this text
-        const elements = screen.getAllByText('Plate cleared — ready for next print');
+        const elements = screen.getAllByText('Plate cleared - ready for next print');
         expect(elements.length).toBeGreaterThanOrEqual(1);
+      });
+    });
+
+    // Regression test for upstream #912: mutation state must reset between print cycles
+    it('resets mutation state when printer leaves FINISH so the next cycle is clickable', async () => {
+      const { rerender } = render(<PrinterQueueWidget printerId={1} printerState="FINISH" />);
+      const user = userEvent.setup();
+
+      // First cycle: click button → confirmation rendered
+      await waitFor(() => {
+        expect(screen.getByText('Clear Plate & Start Next')).toBeInTheDocument();
+      });
+      await user.click(screen.getByText('Clear Plate & Start Next'));
+      await waitFor(() => {
+        const confirmations = screen.getAllByText('Plate cleared - ready for next print');
+        expect(confirmations.length).toBeGreaterThanOrEqual(1);
+      });
+
+      // Printer transitions to RUNNING (next print starts) - then back to FINISH.
+      // The useEffect must have called mutation.reset(), so the button is rendered
+      // again instead of the sticky "Plate Ready" confirmation.
+      rerender(<PrinterQueueWidget printerId={1} printerState="RUNNING" />);
+      rerender(<PrinterQueueWidget printerId={1} printerState="FINISH" />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Clear Plate & Start Next')).toBeInTheDocument();
       });
     });
 
@@ -213,24 +250,22 @@ describe('PrinterQueueWidget - Clear Plate', () => {
       },
     ];
 
-    it('hides widget when queue item requires filament not loaded on printer', async () => {
+    it('shows widget even when queue item requires filament not loaded on printer (per-printer queues)', async () => {
       server.use(
         http.get('/api/v1/queue/', () => HttpResponse.json(petgQueueItems))
       );
 
-      const { container } = render(
+      render(
         <PrinterQueueWidget
           printerId={1}
           printerState="FINISH"
-          loadedFilamentTypes={new Set(['PLA'])}
         />
       );
 
-      // Wait for query to settle, then confirm widget is not rendered
+      // Per-printer queues no longer filter by filament compatibility
       await waitFor(() => {
-        expect(container.querySelector('button')).not.toBeInTheDocument();
+        expect(screen.getByText('PETG Print')).toBeInTheDocument();
       });
-      expect(screen.queryByText('PETG Print')).not.toBeInTheDocument();
     });
 
     it('shows widget when queue item required filaments match loaded', async () => {
@@ -242,7 +277,6 @@ describe('PrinterQueueWidget - Clear Plate', () => {
         <PrinterQueueWidget
           printerId={1}
           printerState="FINISH"
-          loadedFilamentTypes={new Set(['PLA', 'PETG'])}
         />
       );
 
@@ -258,7 +292,6 @@ describe('PrinterQueueWidget - Clear Plate', () => {
         <PrinterQueueWidget
           printerId={1}
           printerState="FINISH"
-          loadedFilamentTypes={new Set(['PLA'])}
         />
       );
 
@@ -283,7 +316,7 @@ describe('PrinterQueueWidget - Clear Plate', () => {
       });
     });
 
-    it('skips incompatible first item and shows compatible second item', async () => {
+    it('shows first item regardless of filament compatibility (per-printer queues)', async () => {
       const mixedQueue = [
         {
           id: 10,
@@ -319,14 +352,13 @@ describe('PrinterQueueWidget - Clear Plate', () => {
         <PrinterQueueWidget
           printerId={1}
           printerState="FINISH"
-          loadedFilamentTypes={new Set(['PLA'])}
         />
       );
 
+      // Per-printer queues show items in order without filament filtering
       await waitFor(() => {
-        expect(screen.getByText('PLA Print')).toBeInTheDocument();
+        expect(screen.getByText('PETG Print')).toBeInTheDocument();
       });
-      expect(screen.queryByText('PETG Print')).not.toBeInTheDocument();
     });
 
     it('matches filament types case-insensitively', async () => {
@@ -353,7 +385,6 @@ describe('PrinterQueueWidget - Clear Plate', () => {
         <PrinterQueueWidget
           printerId={1}
           printerState="FINISH"
-          loadedFilamentTypes={new Set(['PETG'])}
         />
       );
 
@@ -381,24 +412,22 @@ describe('PrinterQueueWidget - Clear Plate', () => {
       },
     ];
 
-    it('hides widget when override color does not match loaded filaments', async () => {
+    it('shows widget even when override color does not match loaded filaments (per-printer queues)', async () => {
       server.use(
         http.get('/api/v1/queue/', () => HttpResponse.json(whitePetgOverrideItem))
       );
 
-      const { container } = render(
+      render(
         <PrinterQueueWidget
           printerId={1}
           printerState="FINISH"
-          loadedFilamentTypes={new Set(['PETG'])}
-          loadedFilaments={new Set(['PETG:0000ff'])}
         />
       );
 
+      // Per-printer queues no longer filter by filament color compatibility
       await waitFor(() => {
-        expect(container.querySelector('button')).not.toBeInTheDocument();
+        expect(screen.getByText('White PETG Print')).toBeInTheDocument();
       });
-      expect(screen.queryByText('White PETG Print')).not.toBeInTheDocument();
     });
 
     it('shows widget when override color matches loaded filaments', async () => {
@@ -410,8 +439,6 @@ describe('PrinterQueueWidget - Clear Plate', () => {
         <PrinterQueueWidget
           printerId={1}
           printerState="FINISH"
-          loadedFilamentTypes={new Set(['PETG'])}
-          loadedFilaments={new Set(['PETG:ffffff'])}
         />
       );
 
@@ -446,8 +473,6 @@ describe('PrinterQueueWidget - Clear Plate', () => {
         <PrinterQueueWidget
           printerId={1}
           printerState="FINISH"
-          loadedFilamentTypes={new Set(['PLA'])}
-          loadedFilaments={new Set(['PLA:ff0000'])}
         />
       );
 
@@ -465,7 +490,6 @@ describe('PrinterQueueWidget - Clear Plate', () => {
         <PrinterQueueWidget
           printerId={1}
           printerState="FINISH"
-          loadedFilamentTypes={new Set(['PETG'])}
         />
       );
 
@@ -480,7 +504,6 @@ describe('PrinterQueueWidget - Clear Plate', () => {
         <PrinterQueueWidget
           printerId={1}
           printerState="FINISH"
-          loadedFilaments={new Set(['PLA:000000'])}
         />
       );
 
@@ -513,13 +536,11 @@ describe('PrinterQueueWidget - Clear Plate', () => {
         http.get('/api/v1/queue/', () => HttpResponse.json(multiOverrideItem))
       );
 
-      // Printer has green PLA but not red — should still match (at least one override)
+      // Printer has green PLA but not red - should still match (at least one override)
       render(
         <PrinterQueueWidget
           printerId={1}
           printerState="FINISH"
-          loadedFilamentTypes={new Set(['PLA'])}
-          loadedFilaments={new Set(['PLA:00ff00'])}
         />
       );
 

@@ -139,7 +139,6 @@
     "item_detail": "Queue Job",
     "file": "File",
     "printer": "Printer",
-    "target_model": "Target model",
     "position": "Position",
     "status": "Status",
     "scheduled": "Scheduled",

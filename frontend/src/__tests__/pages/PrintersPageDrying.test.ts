@@ -114,7 +114,7 @@ describe('dry_time formatting', () => {
   });
 });
 
-describe('module type detection — drying button visibility', () => {
+describe('module type detection - drying button visibility', () => {
   /**
    * Mirrors the condition from PrintersPage.tsx:
    *   ams.module_type === 'n3f' || ams.module_type === 'n3s'

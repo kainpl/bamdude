@@ -7,27 +7,20 @@ from backend.app.core.database import Base
 
 
 class PrintQueueItem(Base):
-    """Print queue item for scheduled/queued prints."""
+    """Print queue item - always assigned to a specific printer's queue."""
 
     __tablename__ = "print_queue"
 
     id: Mapped[int] = mapped_column(primary_key=True)
 
-    # Links
-    printer_id: Mapped[int | None] = mapped_column(ForeignKey("printers.id", ondelete="CASCADE"), nullable=True)
-    # Target printer model for model-based assignment (mutually exclusive with printer_id)
-    # When set, scheduler assigns to any idle printer of matching model
-    target_model: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    # Target location filter for model-based assignment (only used with target_model)
-    # When set, only printers in this location are considered
-    target_location: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    # Required filament types for model-based assignment (JSON array, e.g., '["PLA", "PETG"]')
-    # Used by scheduler to validate printer has compatible filaments loaded
-    required_filament_types: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # Waiting reason - explains why a model-based job hasn't started yet
-    # Set by scheduler when no matching printer is available
+    # Queue assignment (required - every item belongs to a printer's queue)
+    queue_id: Mapped[int] = mapped_column(ForeignKey("printer_queues.id"), nullable=False)
+
+    # Waiting reason - why this pending item hasn't started yet
+    # e.g. "Plate not cleared", "Printer offline", "Drying in progress", "Previous print failed"
     waiting_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # Either archive_id OR library_file_id must be set (archive created at print start from library file)
+
+    # Source file (either archive_id OR library_file_id; archive created at print start from library file)
     archive_id: Mapped[int | None] = mapped_column(ForeignKey("print_archives.id", ondelete="CASCADE"), nullable=True)
     library_file_id: Mapped[int | None] = mapped_column(
         ForeignKey("library_files.id", ondelete="CASCADE"), nullable=True
@@ -35,38 +28,44 @@ class PrintQueueItem(Base):
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
 
     # Scheduling
-    position: Mapped[int] = mapped_column(Integer, default=0)  # Queue order
+    position: Mapped[int] = mapped_column(Integer, default=0)
     scheduled_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # None = ASAP
-    manual_start: Mapped[bool] = mapped_column(Boolean, default=False)  # Requires manual trigger to start
-
-    # Conditions
-    require_previous_success: Mapped[bool] = mapped_column(Boolean, default=False)
+    manual_start: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Power management
-    auto_off_after: Mapped[bool] = mapped_column(Boolean, default=False)  # Power off printer after print
+    auto_off_after: Mapped[bool] = mapped_column(Boolean, default=False)
 
-    # AMS mapping: JSON array of global tray IDs for each filament slot
-    # Format: "[5, -1, 2, -1]" where position = slot_id-1, value = global tray ID (-1 = unused)
+    # AMS mapping: JSON array of global tray IDs per filament slot
+    # Format: "[5, -1, 2, -1]" - position=slot_id-1, value=global tray ID, -1=unused
     ams_mapping: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # Filament overrides for model-based assignment: JSON array of override objects
-    # Format: '[{"slot_id": 1, "type": "PLA", "color": "#FFFFFF"}]'
-    # Only slots with overrides are included (sparse). null = use original 3MF values.
-    filament_overrides: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-    # Plate ID for multi-plate 3MF files (1-indexed, None = auto-detect/plate 1)
+    # Plate ID for multi-plate 3MF files (1-indexed, None = plate 1)
     plate_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # Print options
     bed_levelling: Mapped[bool] = mapped_column(Boolean, default=True)
-    flow_cali: Mapped[bool] = mapped_column(Boolean, default=False)
-    vibration_cali: Mapped[bool] = mapped_column(Boolean, default=True)
+    flow_cali: Mapped[bool] = mapped_column(Boolean, default=True)
     layer_inspect: Mapped[bool] = mapped_column(Boolean, default=False)
     timelapse: Mapped[bool] = mapped_column(Boolean, default=False)
     use_ams: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Mesh-mode fast check — operator intent only, processing to be wired up
+    # later (unpacking → gcode patching → repacking on dispatch).
+    mesh_mode_fast_check: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Swap-mode macro execution intent. Paired with ``swap_macro_events`` (JSON
+    # array of event keys, e.g. ["swap_mode_start","swap_mode_change_table"])
+    # so the operator can disable individual events while keeping the feature
+    # on. Only honoured for printers that have swap mode enabled; on non-swap
+    # printers the API route stores ``execute_swap_macros=False`` regardless
+    # of what the client sent. Dispatch-side logic TBD.
+    execute_swap_macros: Mapped[bool] = mapped_column(Boolean, default=True)
+    swap_macro_events: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Status: pending, printing, completed, failed, skipped, cancelled
     status: Mapped[str] = mapped_column(String(20), default="pending")
+
+    # Batch grouping - UUID string shared by all items created together via quantity>1.
+    # Nullable: single-copy adds (quantity=1) leave this unset.
+    batch_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
 
     # Tracking
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -76,19 +75,25 @@ class PrintQueueItem(Base):
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
-    # User tracking (who added this to the queue)
+    # User tracking
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
     # Relationships
-    printer: Mapped["Printer"] = relationship()
+    queue: Mapped["PrinterQueue"] = relationship(back_populates="items")
     archive: Mapped["PrintArchive | None"] = relationship()
     library_file: Mapped["LibraryFile | None"] = relationship()
     project: Mapped["Project | None"] = relationship(back_populates="queue_items")
     created_by: Mapped["User | None"] = relationship()
 
+    # Convenience property to get printer_id via queue
+    @property
+    def printer_id(self) -> int | None:
+        """Get printer_id from the queue relationship."""
+        return self.queue.printer_id if self.queue else None
+
 
 from backend.app.models.archive import PrintArchive  # noqa: E402
 from backend.app.models.library import LibraryFile  # noqa: E402
-from backend.app.models.printer import Printer  # noqa: E402
+from backend.app.models.printer_queue import PrinterQueue  # noqa: E402
 from backend.app.models.project import Project  # noqa: E402
 from backend.app.models.user import User  # noqa: E402

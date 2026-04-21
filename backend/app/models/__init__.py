@@ -3,37 +3,40 @@ from backend.app.models.ams_label import AmsLabel
 from backend.app.models.api_key import APIKey
 from backend.app.models.archive import PrintArchive
 from backend.app.models.color_catalog import ColorCatalogEntry
-from backend.app.models.filament import Filament
-from backend.app.models.github_backup import GitHubBackupConfig, GitHubBackupLog
+from backend.app.models.git_backup import GitBackupConfig, GitBackupLog
 from backend.app.models.group import Group, user_groups
 from backend.app.models.kprofile_note import KProfileNote
 from backend.app.models.library import LibraryFile, LibraryFolder
+from backend.app.models.library_file_note import LibraryFileNote
 from backend.app.models.local_preset import LocalPreset
+from backend.app.models.macro import Macro
 from backend.app.models.maintenance import MaintenanceHistory, MaintenanceType, PrinterMaintenance
 from backend.app.models.notification import NotificationLog
 from backend.app.models.notification_template import NotificationTemplate
 from backend.app.models.orca_base_cache import OrcaBaseProfile
 from backend.app.models.pending_upload import PendingUpload
 from backend.app.models.printer import Printer
+from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.project import Project
 from backend.app.models.settings import Settings
 from backend.app.models.smart_plug import SmartPlug
+from backend.app.models.smart_plug_energy_snapshot import SmartPlugEnergySnapshot
 from backend.app.models.spool import Spool
 from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.models.spool_catalog import SpoolCatalogEntry
 from backend.app.models.spool_k_profile import SpoolKProfile
 from backend.app.models.spool_usage_history import SpoolUsageHistory
-from backend.app.models.spoolbuddy_device import SpoolBuddyDevice
 from backend.app.models.telegram_chat import TelegramChat
 from backend.app.models.user import User
 from backend.app.models.user_email_pref import UserEmailPreference
 
 __all__ = [
+    "Macro",
     "Printer",
     "PrintArchive",
-    "Filament",
     "Settings",
     "SmartPlug",
+    "SmartPlugEnergySnapshot",
     "MaintenanceType",
     "PrinterMaintenance",
     "MaintenanceHistory",
@@ -46,12 +49,13 @@ __all__ = [
     "AmsLabel",
     "PendingUpload",
     "LibraryFolder",
+    "LibraryFileNote",
     "LibraryFile",
     "User",
     "Group",
     "user_groups",
-    "GitHubBackupConfig",
-    "GitHubBackupLog",
+    "GitBackupConfig",
+    "GitBackupLog",
     "LocalPreset",
     "OrcaBaseProfile",
     "Spool",
@@ -60,7 +64,7 @@ __all__ = [
     "SpoolCatalogEntry",
     "SpoolUsageHistory",
     "ColorCatalogEntry",
-    "SpoolBuddyDevice",
     "UserEmailPreference",
     "TelegramChat",
+    "PrinterQueue",
 ]

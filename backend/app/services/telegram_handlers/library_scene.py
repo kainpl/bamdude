@@ -1,4 +1,4 @@
-"""Print from Library scene — select file → select printer → confirm → start."""
+"""Print from Library scene - select file → select printer → confirm → start."""
 
 from __future__ import annotations
 
@@ -132,7 +132,7 @@ async def cb_library_page(callback: CallbackQuery, state: FSMContext, tg_chat: T
 async def cb_library_select_file(
     callback: CallbackQuery, state: FSMContext, tg_chat: TelegramChat | None = None
 ) -> None:
-    """File selected — show printer list."""
+    """File selected - show printer list."""
     lang = await get_language()
     file_id = int(callback.data.split(":")[2])
     await callback.answer()
@@ -219,7 +219,7 @@ async def cb_library_select_file(
 async def cb_library_select_printer(
     callback: CallbackQuery, state: FSMContext, tg_chat: TelegramChat | None = None
 ) -> None:
-    """Printer selected — show confirmation."""
+    """Printer selected - show confirmation."""
     lang = await get_language()
     printer_id = int(callback.data.split(":")[2])
     await callback.answer()
@@ -262,7 +262,7 @@ async def cb_library_select_printer(
 
 @router.callback_query(F.data == "lib:print_now")
 async def cb_library_print_now(callback: CallbackQuery, state: FSMContext, tg_chat: TelegramChat | None = None) -> None:
-    """Print now — dispatch via background_dispatch (FTP upload + start)."""
+    """Print now - dispatch via background_dispatch (FTP upload + start)."""
     lang = await get_language()
 
     data = await state.get_data()
@@ -306,7 +306,6 @@ async def cb_library_add_queue(callback: CallbackQuery, state: FSMContext, tg_ch
 
     data = await state.get_data()
     file_id = data.get("file_id")
-    file_name = data.get("file_name")
     printer_id = data.get("printer_id")
 
     await state.clear()
@@ -324,9 +323,8 @@ async def cb_library_add_queue(callback: CallbackQuery, state: FSMContext, tg_ch
         async with async_session() as db:
             max_pos = (await db.execute(select(func.max(PrintQueueItem.position)))).scalar() or 0
             item = PrintQueueItem(
-                printer_id=printer_id,
+                queue_id=printer_id,  # queue_id == printer_id
                 library_file_id=file_id,
-                file_name=file_name,
                 status="pending",
                 position=max_pos + 1,
             )

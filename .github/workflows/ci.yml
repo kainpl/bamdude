@@ -256,13 +256,13 @@ jobs:
 
       # Test 1: Docker Build
       - name: Build production image
-        run: docker build -t bambuddy:test .
+        run: docker build -t bamdude:test .
 
       - name: Verify backend imports
-        run: docker run --rm bambuddy:test python -c "import backend.app.main; print('Backend imports OK')"
+        run: docker run --rm bamdude:test python -c "import backend.app.main; print('Backend imports OK')"
 
       - name: Verify static files exist
-        run: docker run --rm bambuddy:test test -d /app/static
+        run: docker run --rm bamdude:test test -d /app/static
 
       # Test 2: Backend Unit Tests in Docker
       - name: Build backend test image

@@ -1,4 +1,4 @@
-"""Integration tests for inventory spool assignment — tray_info_idx resolution.
+"""Integration tests for inventory spool assignment - tray_info_idx resolution.
 
 Tests that the spool's own slicer_filament (including PFUS* cloud-synced
 custom presets) takes priority, with slot reuse and generic fallback as
@@ -277,7 +277,7 @@ class TestAssignSpoolTrayInfoIdx:
 
             assert response.status_code == 200
             call_kwargs = mock_client.ams_set_filament_setting.call_args
-            # Spool's preset wins — generic on slot must not be sticky
+            # Spool's preset wins - generic on slot must not be sticky
             assert call_kwargs.kwargs["tray_info_idx"] == "PFUScda4c46fc9031"
 
     @pytest.mark.asyncio
@@ -309,7 +309,7 @@ class TestAssignSpoolTrayInfoIdx:
 
             assert response.status_code == 200
             call_kwargs = mock_client.ams_set_filament_setting.call_args
-            # Still gets generic, but via fallback — not via sticky reuse
+            # Still gets generic, but via fallback - not via sticky reuse
             assert call_kwargs.kwargs["tray_info_idx"] == "GFB99"
 
     @pytest.mark.asyncio
@@ -384,7 +384,7 @@ class TestAssignSpoolPresetMapping:
         presets_resp = await async_client.get(f"/api/v1/printers/{printer.id}/slot-presets")
         assert presets_resp.status_code == 200
         presets = presets_resp.json()
-        # Key is str(ams_id * 4 + tray_id) — ams 0, tray 1 → "1"
+        # Key is str(ams_id * 4 + tray_id) - ams 0, tray 1 → "1"
         assert "1" in presets
         # Must use slicer_filament_name, NOT "PLA Silk" from material+subtype
         assert presets["1"]["preset_name"] == "Bambu PLA Silk"
@@ -440,7 +440,7 @@ class TestAssignSpoolPresetMapping:
         presets_resp = await async_client.get(f"/api/v1/printers/{printer.id}/slot-presets")
         assert presets_resp.status_code == 200
         presets = presets_resp.json()
-        # Key is str(ams_id * 4 + tray_id) — ams 0, tray 2 → "2"
+        # Key is str(ams_id * 4 + tray_id) - ams 0, tray 2 → "2"
         assert "2" in presets
         # Old "Bambu PLA Matte" must be overwritten
         assert presets["2"]["preset_name"] == "Generic PLA Silk"
@@ -483,7 +483,7 @@ class TestAssignSpoolPresetMapping:
         presets_resp = await async_client.get(f"/api/v1/printers/{printer.id}/slot-presets")
         assert presets_resp.status_code == 200
         presets = presets_resp.json()
-        # Key is str(ams_id * 4 + tray_id) — ams 0, tray 0 → "0"
+        # Key is str(ams_id * 4 + tray_id) - ams 0, tray 0 → "0"
         assert "0" in presets
         # Falls back to tray_sub_brands ("Overture PLA Matte")
         assert presets["0"]["preset_name"] == "Overture PLA Matte"

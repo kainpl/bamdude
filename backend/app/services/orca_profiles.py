@@ -123,7 +123,7 @@ async def resolve_preset(preset_data: dict, profile_type: str, db: AsyncSession,
     # Fetch the base profile
     base = await fetch_and_cache_base_profile(inherits, profile_type, db)
     if base is None:
-        logger.warning("Cannot resolve inherits='%s' — base profile not found", inherits)
+        logger.warning("Cannot resolve inherits='%s' - base profile not found", inherits)
         return preset_data
 
     # Recursively resolve the base first
@@ -138,7 +138,7 @@ def extract_core_fields(data: dict) -> dict:
     """Extract commonly needed fields from a resolved preset for quick access."""
     fields: dict = {}
 
-    # filament_type — often a single-element array like ["PLA"]
+    # filament_type - often a single-element array like ["PLA"]
     ft = data.get("filament_type")
     if isinstance(ft, list) and ft:
         fields["filament_type"] = str(ft[0])
@@ -152,7 +152,7 @@ def extract_core_fields(data: dict) -> dict:
     elif isinstance(fv, str):
         fields["filament_vendor"] = fv
 
-    # nozzle_temp_min / max — from nozzle_temperature array or range fields
+    # nozzle_temp_min / max - from nozzle_temperature array or range fields
     nozzle_temp = data.get("nozzle_temperature")
     if isinstance(nozzle_temp, list) and nozzle_temp:
         try:
@@ -177,7 +177,7 @@ def extract_core_fields(data: dict) -> dict:
         except (ValueError, TypeError):
             pass
 
-    # pressure_advance — store as JSON string if it's an array
+    # pressure_advance - store as JSON string if it's an array
     pa = data.get("pressure_advance")
     if pa is not None:
         fields["pressure_advance"] = json.dumps(pa) if isinstance(pa, list) else str(pa)
@@ -301,7 +301,7 @@ def _guess_profile_type(data: dict, path_hint: str | None = None) -> str:
         if from_path:
             return from_path
 
-    # 3. Strong ID-based heuristics — *_settings_id is definitive
+    # 3. Strong ID-based heuristics - *_settings_id is definitive
     if "print_settings_id" in data:
         return "process"
     if "filament_settings_id" in data:
@@ -309,7 +309,7 @@ def _guess_profile_type(data: dict, path_hint: str | None = None) -> str:
     if "printer_settings_id" in data:
         return "printer"
 
-    # 4. Content-based heuristics — check process BEFORE filament because
+    # 4. Content-based heuristics - check process BEFORE filament because
     #    resolved process presets can inherit filament_type from their base
     process_keys = {
         "layer_height",
@@ -368,7 +368,7 @@ async def import_orca_file(filename: str, content: bytes, db: AsyncSession) -> d
         except json.JSONDecodeError as e:
             errors.append(f"Invalid JSON: {e}")
     elif lower_name.endswith((".orca_filament", ".zip", ".bbscfg", ".bbsflmt")):
-        # ZIP archive — extract and parse each JSON
+        # ZIP archive - extract and parse each JSON
         try:
             with zipfile.ZipFile(io.BytesIO(content)) as zf:
                 for entry in zf.namelist():

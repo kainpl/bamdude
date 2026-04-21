@@ -1,6 +1,6 @@
-// Bambuddy Service Worker
-const CACHE_NAME = 'bambuddy-v25';
-const STATIC_CACHE = 'bambuddy-static-v25';
+// BamDude Service Worker
+const CACHE_NAME = 'bamdude-v1';
+const STATIC_CACHE = 'bamdude-static-v1';
 
 // Static assets to cache on install
 const STATIC_ASSETS = [
@@ -12,7 +12,7 @@ const STATIC_ASSETS = [
   '/img/android-chrome-192x192.png',
   '/img/android-chrome-512x512.png',
   '/img/apple-touch-icon.png',
-  '/img/bambuddy_logo_dark.png',
+  '/img/bamdude_logo_dark.png',
 ];
 
 // Install event - cache static assets

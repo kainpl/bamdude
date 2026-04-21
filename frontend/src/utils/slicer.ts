@@ -52,7 +52,7 @@ export function openInSlicer(downloadUrl: string, slicer: SlicerType = 'bambu_st
   let url: string;
 
   if (slicer === 'orcaslicer') {
-    // OrcaSlicer: ?file= query format — http:// preserved in query string
+    // OrcaSlicer: ?file= query format - http:// preserved in query string
     url = `orcaslicer://open?file=${downloadUrl}`;
   } else {
     const platform = detectPlatform();
@@ -64,7 +64,7 @@ export function openInSlicer(downloadUrl: string, slicer: SlicerType = 'bambu_st
     } else {
       // Windows/Linux: bambustudio://open?file= via post_init() CLI args.
       // The ?file= query format preserves http:// without encoding.
-      // IMPORTANT: On Linux, BS only handles "bambustudio://open" prefix —
+      // IMPORTANT: On Linux, BS only handles "bambustudio://open" prefix -
       // it does NOT process "bambustudioopen://" (that's macOS-only).
       url = `bambustudio://open?file=${downloadUrl}`;
     }

@@ -17,7 +17,7 @@ SUPPORTED_LOCALES = {"en", "uk"}
 async def update_locale_data(db: AsyncSession, language: str) -> dict:
     """Update notification templates and maintenance types for the given language.
 
-    Only updates records marked as default/system — user-customized ones are not touched.
+    Only updates records marked as default/system - user-customized ones are not touched.
     Returns counts of updated records.
     """
     lang = language if language in SUPPORTED_LOCALES else "en"

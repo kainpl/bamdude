@@ -12,7 +12,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermissionIfAuthEnabled
+from backend.app.core.auth import RequirePermission
 from backend.app.core.config import APP_VERSION, GITHUB_REPO, settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -33,7 +33,7 @@ _update_status = {
 
 
 def _is_docker_environment() -> bool:
-    """Detect if running inside a Docker container."""
+    """Detect if running inside a Docker/Podman/OCI container."""
     if os.path.exists("/.dockerenv"):
         return True
     try:
@@ -42,8 +42,14 @@ def _is_docker_environment() -> bool:
                 return True
     except (FileNotFoundError, PermissionError):
         pass  # cgroup file unavailable; continue with other detection methods
-    git_dir = settings.base_dir / ".git"
-    return not git_dir.exists()
+    # Check systemd container type (avoids false positive on Proxmox LXC)
+    try:
+        with open("/run/systemd/container") as f:
+            container_type = f.read().strip()
+            return container_type in ("docker", "podman", "oci")
+    except (FileNotFoundError, PermissionError):
+        pass
+    return False
 
 
 def _find_executable(name: str) -> str | None:
@@ -176,7 +182,7 @@ async def get_version():
 @router.get("/check")
 async def check_for_updates(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SYSTEM_READ),
+    _: User | None = RequirePermission(Permission.SYSTEM_READ),
 ):
     """Check GitHub for available updates."""
     global _update_status
@@ -205,7 +211,13 @@ async def check_for_updates(
     }
 
     try:
-        async with httpx.AsyncClient() as client:
+        # follow_redirects=True so that users still installed from an older
+        # repo URL (e.g. the pre-rename kainpl/bambutrack) are transparently
+        # forwarded to the renamed repo via GitHub's 301 Moved Permanently
+        # response. Without this, the 301 is returned as-is, the JSON body
+        # is a redirect message instead of a releases array, and the update
+        # check silently breaks with an AttributeError.
+        async with httpx.AsyncClient(follow_redirects=True) as client:
             response = await client.get(
                 f"https://api.github.com/repos/{GITHUB_REPO}/releases?per_page=20",
                 headers={"Accept": "application/vnd.github.v3+json"},
@@ -495,7 +507,7 @@ async def _perform_update():
 @router.post("/apply")
 async def apply_update(
     background_tasks: BackgroundTasks,
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+    _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
     """Apply available update (git pull + rebuild)."""
     global _update_status
@@ -538,7 +550,7 @@ async def apply_update(
 
 @router.get("/status")
 async def get_update_status(
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.SYSTEM_READ),
+    _: User | None = RequirePermission(Permission.SYSTEM_READ),
 ):
     """Get current update status."""
     return _update_status

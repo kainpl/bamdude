@@ -5,7 +5,7 @@ services:
       context: .
       dockerfile: Dockerfile.test
       target: backend-test
-    container_name: bambuddy-backend-test
+    container_name: bamdude-backend-test
     volumes:
       - ./backend:/app/backend:ro
     environment:
@@ -18,7 +18,7 @@ services:
       context: .
       dockerfile: Dockerfile.test
       target: frontend-test
-    container_name: bambuddy-frontend-test
+    container_name: bamdude-frontend-test
     volumes:
       - ./frontend/src:/app/frontend/src:ro
       - ./frontend/tests:/app/frontend/tests:ro
@@ -28,7 +28,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: bambuddy-integration-test
+    container_name: bamdude-integration-test
     ports:
       - "8001:8000"
     environment:
@@ -49,12 +49,12 @@ services:
       context: .
       dockerfile: Dockerfile.test
       target: backend-test
-    container_name: bambuddy-integration-runner
+    container_name: bamdude-integration-runner
     depends_on:
       integration:
         condition: service_healthy
     environment:
-      - BAMBUDDY_TEST_URL=http://integration:8000
+      - BAMDUDE_TEST_URL=http://integration:8000
       - TESTING=1
     command: ["pytest", "backend/tests/integration/", "-v", "--tb=short", "-p", "no:cacheprovider", "-n", "auto"]
     volumes:
