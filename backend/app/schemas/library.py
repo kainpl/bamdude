@@ -133,6 +133,7 @@ class FileResponse(BaseModel):
     metadata: dict | None
 
     last_printed_at: datetime | None
+    print_count: int = 0
 
     notes: str | None
 

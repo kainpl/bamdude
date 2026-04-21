@@ -13,8 +13,9 @@ RUN --mount=type=cache,target=/root/.npm \
 COPY frontend/ ./
 RUN npm run build
 
-# Production image
-FROM python:3.13-slim
+# Production image — Debian Trixie picks up ffmpeg 5→7 and OpenSSL 3.0→3.3.
+# Frontend-builder above stays on Bookworm until Node.js publishes Trixie variants.
+FROM python:3.13-slim-trixie
 
 WORKDIR /app
 

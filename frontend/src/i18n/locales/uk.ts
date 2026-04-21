@@ -385,6 +385,12 @@ export default {
       connected: 'Підключено',
       offline: 'Офлайн',
     },
+    plateStatus: {
+      markCleared: 'Позначити плиту як очищену',
+      cleared: 'Плита чиста',
+      notCleared: 'Плита не очищена',
+      inUse: 'Плита в роботі',
+    },
     // Queue info
     queue: {
       inQueue_one: '{{count}} друк у черзі',
@@ -3129,6 +3135,9 @@ export default {
     wrap: 'Перенос',
     enableTextWrapping: 'Увімкнути перенос тексту',
     disableTextWrapping: 'Вимкнути перенос тексту',
+    collapse: 'Згорнути',
+    collapseFoldersByDefault: 'Згортати папки за замовчуванням',
+    expandFoldersByDefault: 'Розгортати папки за замовчуванням',
     dragToResizeTooltip: 'Перетягніть для зміни розміру, подвійний клік для скидання',
     searchFiles: 'Пошук файлів...',
     allTypes: 'Усі типи',

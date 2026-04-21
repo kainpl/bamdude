@@ -377,6 +377,12 @@ export default {
       connected: 'Connected',
       offline: 'Offline',
     },
+    plateStatus: {
+      markCleared: 'Mark plate as cleared',
+      cleared: 'Plate Clear',
+      notCleared: 'Plate not Clear',
+      inUse: 'Plate in Use',
+    },
     // Queue info
     queue: {
       inQueue_one: '{{count}} print in queue',
@@ -3122,6 +3128,9 @@ export default {
     wrap: 'Wrap',
     enableTextWrapping: 'Enable text wrapping',
     disableTextWrapping: 'Disable text wrapping',
+    collapse: 'Collapse',
+    collapseFoldersByDefault: 'Collapse folders by default',
+    expandFoldersByDefault: 'Expand folders by default',
     dragToResizeTooltip: 'Drag to resize, double-click to reset',
     searchFiles: 'Search files...',
     allTypes: 'All types',

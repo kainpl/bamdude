@@ -3095,7 +3095,14 @@ class BambuMQTTClient:
             # of the prior task when project_id/subtask_id/task_id were hardcoded
             # "0"; the printer kept broadcasting the old gcode_start_time and
             # observers accumulated compounding durations (#1011).
-            submission_id = str(int(time.time() * 1000))
+            # Cap at signed int32 max: P1S firmware (01.10.00.00) clamps oversized
+            # task identity fields to 2**31-1, so raw epoch-ms (13 digits, ~1.7e12)
+            # overflows and every submission ends up with the same task_id from
+            # the printer's perspective — the printer then treats a fresh dispatch
+            # as a continuation of the last FAILED job and never leaves IDLE (#1042).
+            # Modulo keeps uniqueness within a ~24-day wrap window; `or 1` guards
+            # the (astronomically unlikely) zero case since task_id=0 is rejected.
+            submission_id = str(int(time.time() * 1000) % 2_147_483_647 or 1)
 
             command = {
                 "print": {

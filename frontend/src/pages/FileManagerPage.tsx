@@ -41,6 +41,7 @@ import {
   Lock,
   FolderSymlink,
   WrapText,
+  ListCollapse,
 } from 'lucide-react';
 import { api } from '../api/client';
 import type {
@@ -527,12 +528,13 @@ interface FolderTreeItemProps {
   onRename: (folder: LibraryFolderTree) => void;
   depth?: number;
   wrapNames?: boolean;
+  defaultExpanded?: boolean;
   hasPermission: (permission: Permission) => boolean;
   t: TFunction;
 }
 
-function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, onRename, depth = 0, wrapNames = false, hasPermission, t }: FolderTreeItemProps) {
-  const [expanded, setExpanded] = useState(true);
+function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, onRename, depth = 0, wrapNames = false, defaultExpanded = true, hasPermission, t }: FolderTreeItemProps) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
   const [showActions, setShowActions] = useState(false);
   const hasChildren = folder.children.length > 0;
   const isLinked = folder.project_id || folder.archive_id;
@@ -666,6 +668,7 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
               onRename={onRename}
               depth={depth + 1}
               wrapNames={wrapNames}
+              defaultExpanded={defaultExpanded}
               hasPermission={hasPermission}
               t={t}
             />
@@ -1061,6 +1064,9 @@ export function FileManagerPage() {
   });
   const [wrapFolderNames, setWrapFolderNames] = useState(() => {
     return localStorage.getItem('library-wrap-folders') === 'true';
+  });
+  const [collapseFoldersByDefault, setCollapseFoldersByDefault] = useState(() => {
+    return localStorage.getItem('library-collapse-folders') === 'true';
   });
 
   // Resizable sidebar state
@@ -1684,22 +1690,40 @@ export function FileManagerPage() {
           </div>
           <div className="p-3 border-b border-bambu-dark-tertiary flex items-center justify-between">
             <h2 className="text-sm font-medium text-white">{t('fileManager.folders')}</h2>
-            <button
-              onClick={() => {
-                const newValue = !wrapFolderNames;
-                setWrapFolderNames(newValue);
-                localStorage.setItem('library-wrap-folders', String(newValue));
-              }}
-              className={`p-1.5 rounded transition-colors ${
-                wrapFolderNames
-                  ? 'bg-bambu-green/20 text-bambu-green'
-                  : 'text-bambu-gray hover:text-white hover:bg-bambu-dark'
-              }`}
-              title={wrapFolderNames ? t('fileManager.disableTextWrapping') : t('fileManager.enableTextWrapping')}
-              aria-label={wrapFolderNames ? t('fileManager.disableTextWrapping') : t('fileManager.enableTextWrapping')}
-            >
-              <WrapText className="w-4 h-4" />
-            </button>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => {
+                  const newValue = !collapseFoldersByDefault;
+                  setCollapseFoldersByDefault(newValue);
+                  localStorage.setItem('library-collapse-folders', String(newValue));
+                }}
+                className={`p-1.5 rounded transition-colors ${
+                  collapseFoldersByDefault
+                    ? 'bg-bambu-green/20 text-bambu-green'
+                    : 'text-bambu-gray hover:text-white hover:bg-bambu-dark'
+                }`}
+                title={collapseFoldersByDefault ? t('fileManager.expandFoldersByDefault') : t('fileManager.collapseFoldersByDefault')}
+                aria-label={collapseFoldersByDefault ? t('fileManager.expandFoldersByDefault') : t('fileManager.collapseFoldersByDefault')}
+              >
+                <ListCollapse className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => {
+                  const newValue = !wrapFolderNames;
+                  setWrapFolderNames(newValue);
+                  localStorage.setItem('library-wrap-folders', String(newValue));
+                }}
+                className={`p-1.5 rounded transition-colors ${
+                  wrapFolderNames
+                    ? 'bg-bambu-green/20 text-bambu-green'
+                    : 'text-bambu-gray hover:text-white hover:bg-bambu-dark'
+                }`}
+                title={wrapFolderNames ? t('fileManager.disableTextWrapping') : t('fileManager.enableTextWrapping')}
+                aria-label={wrapFolderNames ? t('fileManager.disableTextWrapping') : t('fileManager.enableTextWrapping')}
+              >
+                <WrapText className="w-4 h-4" />
+              </button>
+            </div>
           </div>
           <div className="flex-1 overflow-y-auto p-2">
             {/* All Files (root) */}
@@ -1715,10 +1739,12 @@ export function FileManagerPage() {
               <span className="text-sm">{t('fileManager.allFiles')}</span>
             </div>
 
-            {/* Folder tree */}
+            {/* Folder tree — re-key on the collapse toggle so flipping it
+                remounts every FolderTreeItem, which re-reads defaultExpanded
+                and makes the preference take effect immediately. */}
             {folders?.map((folder) => (
               <FolderTreeItem
-                key={folder.id}
+                key={`${folder.id}-${collapseFoldersByDefault ? 'c' : 'e'}`}
                 folder={folder}
                 selectedFolderId={selectedFolderId}
                 onSelect={setSelectedFolderId}
@@ -1726,6 +1752,7 @@ export function FileManagerPage() {
                 onLink={setLinkFolder}
                 onRename={(f) => setRenameItem({ type: 'folder', id: f.id, name: f.name })}
                 wrapNames={wrapFolderNames}
+                defaultExpanded={!collapseFoldersByDefault}
                 hasPermission={hasPermission}
                 t={t}
               />

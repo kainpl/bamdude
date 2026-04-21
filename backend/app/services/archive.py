@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+import os
 import re
 import shutil
 import zipfile
@@ -16,6 +17,27 @@ from backend.app.models.archive import PrintArchive
 from backend.app.models.printer import Printer
 
 logger = logging.getLogger(__name__)
+
+
+def _copy_and_fsync(src: Path, dst: Path, chunk_size: int = 1024 * 1024) -> None:
+    """Copy ``src`` to ``dst`` with an explicit chunked read/write and fsync the dst.
+
+    Replacement for ``shutil.copy2`` in the archive pipeline. ``shutil.copy2``
+    uses Linux ``sendfile()``, which on some kernels/filesystems has returned
+    a short count on the first call and truncated the destination for larger
+    3MF uploads (#1032, observed on Raspberry Pi OS bookworm / armv7l). An
+    explicit loop with ``fsync`` avoids that path and guarantees the dest
+    bytes are on disk before the caller inspects them as a ZIP.
+    """
+    with src.open("rb") as rf, dst.open("wb") as wf:
+        while True:
+            buf = rf.read(chunk_size)
+            if not buf:
+                break
+            wf.write(buf)
+        wf.flush()
+        os.fsync(wf.fileno())
+    shutil.copystat(src, dst)
 
 
 class ThreeMFParser:
@@ -55,8 +77,16 @@ class ThreeMFParser:
                 self.metadata.pop("_slice_filament_type", None)
                 self.metadata.pop("_slice_filament_color", None)
                 self.metadata.pop("_plate_index", None)
-        except Exception:
-            pass  # Return whatever metadata was extracted before the error
+        except Exception as e:
+            # Return whatever metadata was extracted before the error, but
+            # surface the failure so corrupted / truncated 3MF archives are
+            # visible in support bundles (#1032).
+            logger.warning(
+                "ThreeMFParser: failed to parse %s: %s(%s) — returning partial metadata",
+                self.file_path,
+                type(e).__name__,
+                e,
+            )
         return self.metadata
 
     def _parse_slice_info(self, zf: zipfile.ZipFile):
@@ -941,7 +971,46 @@ class ArchiveService:
             archive_dir = settings.archive_dir / printer_folder / archive_name
             archive_dir.mkdir(parents=True, exist_ok=True)
             dest_file = archive_dir / source_file.name
-            shutil.copy2(source_file, dest_file)
+            # Explicit fsync'd loop avoids the shutil.copy2 → sendfile short-read
+            # quirk that silently truncated 3MF archives on some platforms (#1032).
+            _copy_and_fsync(source_file, dest_file)
+
+            # Verify the dest is a valid ZIP before going any further. Staying
+            # quiet here is how #1032 escaped review — the archive row was
+            # written but every later zipfile.ZipFile() call on the dest failed
+            # with "File is not a zip file".
+            if (
+                source_file.suffix.lower() == ".3mf"
+                and zipfile.is_zipfile(source_file)
+                and not zipfile.is_zipfile(dest_file)
+            ):
+                try:
+                    src_size = source_file.stat().st_size
+                    dst_size = dest_file.stat().st_size
+                except OSError:
+                    src_size = dst_size = -1
+                logger.error(
+                    "Archive copy corrupted 3MF: src=%s (%s bytes, valid ZIP) -> dst=%s "
+                    "(%s bytes, NOT a ZIP). Refusing to create archive row.",
+                    source_file,
+                    src_size,
+                    dest_file,
+                    dst_size,
+                )
+                # Narrow cleanup: remove only the truncated file and the archive
+                # directory if it's now empty. archive_dir was created with
+                # exist_ok=True so it could in theory pre-date this call (e.g.
+                # same-second same-filename collision); rmtree would be too broad.
+                try:
+                    dest_file.unlink()
+                except OSError:
+                    pass
+                try:
+                    archive_dir.rmdir()
+                except OSError:
+                    pass  # directory not empty — leave untouched
+                return None
+
             thumbnail_reuse = None
 
         # Extract plate number from filename (e.g., "plate_5" from "/data/Metadata/plate_5.gcode")
@@ -1075,7 +1144,27 @@ class ArchiveService:
             # endpoint's temp download).
             dest_name = original_filename or source_file.name
             dest_file = archive_dir / dest_name
-            shutil.copy2(source_file, dest_file)
+            # Same fsync'd loop as archive_print (#1032).
+            _copy_and_fsync(source_file, dest_file)
+
+            if (
+                source_file.suffix.lower() == ".3mf"
+                and zipfile.is_zipfile(source_file)
+                and not zipfile.is_zipfile(dest_file)
+            ):
+                logger.error(
+                    "attach_3mf_to_archive: copy corrupted 3MF for archive %s — refusing to attach",
+                    archive_id,
+                )
+                try:
+                    dest_file.unlink()
+                except OSError:
+                    pass
+                try:
+                    archive_dir.rmdir()
+                except OSError:
+                    pass
+                return False
 
             # Parse 3MF metadata (reuse the same parser as archive_print).
             parser = ThreeMFParser(dest_file)

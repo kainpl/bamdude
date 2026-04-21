@@ -77,6 +77,9 @@ class LibraryFile(Base):
 
     # Usage tracking
     last_printed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Increment on successful queue completion only (failed/cancelled don't count)
+    # so the field reflects successful usage rather than attempt count (#1008).
+    print_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
     # User notes
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
