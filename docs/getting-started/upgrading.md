@@ -157,7 +157,16 @@ sudo journalctl -u bamdude -f
 
 ## :material-swap-horizontal: Scenario 2 — Migrating from Bambuddy-HE / BamDude 0.2.x
 
-Bambuddy-HE was the earlier name of this fork. At the 0.3.0.1 rebrand the Docker volumes were renamed from `bambuddy_he_*` to `bamdude_*`, and the SQLite file from `bambuddy.db` to `bamdude.db`. The schema itself is continuous — no data import is needed, just a rename.
+Bambuddy-HE was the earlier name of this fork. At the 0.3.0.1 rebrand three things changed in parallel:
+
+| Artifact | Before | After |
+|---|---|---|
+| Docker image (Docker Hub) | `kainpl/bambuddy-he` | `kainpl/bamdude` |
+| Docker image (GHCR) | `ghcr.io/kainpl/bambuddy-he` | `ghcr.io/kainpl/bamdude` |
+| Docker volumes | `bambuddy_he_data` / `bambuddy_he_logs` | `bamdude_data` / `bamdude_logs` |
+| SQLite file | `bambuddy.db` | `bamdude.db` |
+
+The **schema itself is continuous** — no data import is needed, just renames. The old `kainpl/bambuddy-he` images stay published at their last tag (`v0.3.0.1`) as a frozen artifact; no further releases will land there.
 
 ### via Docker Compose — automated
 
@@ -200,6 +209,66 @@ sudo ./install/install.sh --data-dir /path/to/existing/data --yes
 # 3. Start — the boot-time detector renames bambuddy.db → bamdude.db in place
 sudo systemctl start bamdude
 ```
+
+### Updating a pinned `kainpl/bambuddy-he` Docker deployment
+
+If your `docker-compose.yml` or `docker run` command still references the old image name, you need to swap **two** things: the image reference, and the volume names. The upstream Docker Hub / GHCR `bambuddy-he` repos are frozen — `latest` there will never move past `v0.3.0.1`, so any compose file pinned to it effectively stopped receiving updates after the rebrand.
+
+**docker-compose.yml** — before:
+
+```yaml
+services:
+  bambuddy-he:
+    image: kainpl/bambuddy-he:latest          # or ghcr.io/kainpl/bambuddy-he:latest
+    container_name: bambuddy-he
+    volumes:
+      - bambuddy_he_data:/app/data
+      - bambuddy_he_logs:/app/logs
+    ...
+
+volumes:
+  bambuddy_he_data:
+  bambuddy_he_logs:
+```
+
+**docker-compose.yml** — after:
+
+```yaml
+services:
+  bamdude:
+    image: ghcr.io/kainpl/bamdude:latest      # or kainpl/bamdude:latest
+    container_name: bamdude
+    volumes:
+      - bamdude_data:/app/data
+      - bamdude_logs:/app/logs
+    ...
+
+volumes:
+  bamdude_data:
+  bamdude_logs:
+```
+
+Then copy your existing volumes over (or use `install/migrate-volumes.sh` from the cloned repo):
+
+```bash
+docker compose -f /path/to/old/docker-compose.yml down
+docker volume create bamdude_data
+docker volume create bamdude_logs
+docker run --rm -v bambuddy_he_data:/from -v bamdude_data:/to alpine cp -a /from/. /to/
+docker run --rm -v bambuddy_he_logs:/from -v bamdude_logs:/to alpine cp -a /from/. /to/
+docker compose up -d                          # from the new docker-compose.yml
+```
+
+Verify the new image is running:
+
+```bash
+docker compose ps
+# NAME     IMAGE                              STATUS
+# bamdude  ghcr.io/kainpl/bamdude:latest      Up ...
+```
+
+!!! note "Both registries publish the same image"
+    `kainpl/bamdude` (Docker Hub) and `ghcr.io/kainpl/bamdude` (GHCR) are mirrored — same digest, same tags. GHCR is the CI-built origin; Docker Hub is the mirror. Pick whichever your deployment prefers.
 
 ---
 

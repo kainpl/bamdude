@@ -2,10 +2,10 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
-    # Run on PRs targeting main, but skip for repo owner (runs local tests)
+    branches: [main, dev]
+    # Run on PRs targeting main or dev, but skip for repo owner (runs local tests)
 
 # Skip CI for PRs authored by repo owner (they run tests locally)
 # Uses PR author instead of triggering actor so rebasing by owner doesn't skip CI
