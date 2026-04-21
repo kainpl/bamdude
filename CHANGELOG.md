@@ -16,7 +16,7 @@ All notable changes to BamDude will be documented in this file.
 ### CI / Tests
 
 - **CI now also triggers on `dev`** (`push` + `pull_request`). Previously the workflow ran only on `main`, which silently accumulated stale-assertion failures in the frontend test suite — they weren't noticed until the next merge into main. Covers pushes to the dev working branch and PRs targeting it.
-- **10 stale frontend test files marked `describe.skip`** while they pile up fixes (see `temp/stale-frontend-tests-followup.md`). Affected files: `AddPrinterDiscovery`, `FileManagerExternalFolder`, `FileManagerPage`, `Layout`, `LocalProfilesView`, `PrinterQueueWidgetClearPlate`, `PrintersPage`, `PrintersPageSpeed`, `ProjectsPage`, `QueuePage`. 148 tests move to skipped (was: 39 hard failures + 109 silently passing). Production code is unchanged — assertions expect UI text/structure from earlier component revisions. Re-enable iteratively in a follow-up cycle.
+- **10 stale frontend test files marked `describe.skip`** while they pile up fixes (see `temp/post-release-0.3.2-followup.md`). Affected files: `AddPrinterDiscovery`, `FileManagerExternalFolder`, `FileManagerPage`, `Layout`, `LocalProfilesView`, `PrinterQueueWidgetClearPlate`, `PrintersPage`, `PrintersPageSpeed`, `ProjectsPage`, `QueuePage`. 148 tests move to skipped (was: 39 hard failures + 109 silently passing). Production code is unchanged — assertions expect UI text/structure from earlier component revisions. Re-enable iteratively in a follow-up cycle.
 
 ### Security
 
