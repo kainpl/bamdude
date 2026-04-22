@@ -1010,6 +1010,41 @@ function InventoryPage() {
             <Group className="w-4 h-4" />
             <span className="hidden sm:inline">{t('inventory.groupSimilar')}</span>
           </button>
+          {/* Sort by Name — accessible even when the Name column isn't visible.
+              Mirrors column-header click semantics: first click sorts asc,
+              second flips to desc, third clears. */}
+          <button
+            onClick={() => {
+              setSortState((prev) => {
+                let next: SortState;
+                if (prev?.column !== 'display_name') {
+                  next = { column: 'display_name', direction: 'asc' };
+                } else if (prev.direction === 'asc') {
+                  next = { column: 'display_name', direction: 'desc' };
+                } else {
+                  next = null;
+                }
+                saveSortState(next);
+                return next;
+              });
+              resetPage();
+            }}
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium border rounded-lg transition-colors ${
+              sortState?.column === 'display_name'
+                ? 'bg-bambu-green/20 text-bambu-green border-bambu-green/30'
+                : 'text-bambu-gray border-bambu-dark-tertiary hover:bg-bambu-dark-tertiary'
+            }`}
+            title={t('inventory.sortByName')}
+          >
+            {sortState?.column === 'display_name' && sortState.direction === 'asc' ? (
+              <ArrowUp className="w-4 h-4" />
+            ) : sortState?.column === 'display_name' && sortState.direction === 'desc' ? (
+              <ArrowDown className="w-4 h-4" />
+            ) : (
+              <ArrowUpDown className="w-4 h-4" />
+            )}
+            <span className="hidden sm:inline">{t('inventory.sortByName')}</span>
+          </button>
           {/* Table / Cards toggle */}
           <div className="flex bg-bambu-dark-primary border border-bambu-dark-tertiary rounded-lg overflow-hidden">
             <button

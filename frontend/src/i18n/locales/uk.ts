@@ -3674,6 +3674,7 @@ export default {
     net: 'Нетто',
     // Grouping
     groupSimilar: 'Групувати',
+    sortByName: 'Назва',
     groupedSpools: '{{count}} однакових котушок',
     groupedRows: 'рядків',
     // Column config
