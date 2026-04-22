@@ -17,6 +17,27 @@ export function getPrinterImage(model: string | null | undefined): string {
   return '/img/printers/default.png';
 }
 
+// Models with a confirmed door-open sensor exposed via MQTT.
+// Mirrors backend/app/utils/printer_models.py::DOOR_SENSOR_MODELS — only X1
+// family has a reverse-engineered signal on home_flag bit 23. Bit 23 of
+// `stat` on other enclosed models (P1S/P2S/H2*) is undocumented and
+// unreliable, so we don't show a door badge there (it would either flap or
+// stay stuck on "Closed", misleading the operator).
+//
+// Open-frame models (P1P, A1, A1 Mini) MUST NOT appear here — they have no
+// door hardware at all.
+//
+// To add a model: verify on a real printer that the bit actually flips when
+// the enclosure opens/closes, then update both this set AND the backend
+// counterpart. Never add on protocol speculation.
+const DOOR_SENSOR_MODELS = new Set(['X1', 'X1C', 'X1E']);
+
+export function hasDoorSensor(model: string | null | undefined): boolean {
+  if (!model) return false;
+  const normalized = model.trim().toUpperCase().replace(/[\s-]/g, '');
+  return DOOR_SENSOR_MODELS.has(normalized);
+}
+
 export function getWifiStrength(rssi: number): { labelKey: string; color: string; bars: number } {
   if (rssi >= -50) return { labelKey: 'printers.wifiSignal.excellent', color: 'text-bambu-green', bars: 4 };
   if (rssi >= -60) return { labelKey: 'printers.wifiSignal.good', color: 'text-bambu-green', bars: 3 };

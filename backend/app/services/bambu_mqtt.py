@@ -2368,13 +2368,19 @@ class BambuMQTTClient:
                 )
             self.state.store_to_sdcard = store_to_sdcard
 
-        # Door open detection — source depends on printer family:
-        #   X1 series (X1, X1C, X1E): home_flag bit 23
-        #   All others (P1/P2/H2/A1/N-series): top-level `stat` field (hex string), bit 23
-        # Both share the same bitmask (0x00800000) but live in different fields.
-        model_upper = (self.model or "").upper().strip()
-        is_x1_family = model_upper in ("X1", "X1C", "X1E")
-        if is_x1_family and home_flag is not None:
+        # Door open detection — only X1 series (X1, X1C, X1E) has a
+        # reverse-engineered door-sensor signal on home_flag bit 23. Bit 23
+        # of ``stat`` on other enclosed models (P1S/P2S/H2*) is undocumented
+        # and unreliable — previously parsed blindly on all non-X1 models,
+        # which surfaced misleading "Door Closed/Open" badges on:
+        #   * P1P (open-frame, no door exists — always shows Closed)
+        #   * P1S / P2S (enclosure without exposed sensor in current firmware)
+        #   * A1 / A1 Mini (open-frame)
+        # The ``has_door_sensor`` helper centralises the whitelist for both
+        # parser gate here and the frontend badge visibility.
+        from backend.app.utils.printer_models import has_door_sensor
+
+        if has_door_sensor(self.model) and home_flag is not None:
             door_open = (home_flag & 0x00800000) != 0
             if door_open != self.state.door_open:
                 logger.debug(
@@ -2385,21 +2391,6 @@ class BambuMQTTClient:
                     home_flag,
                 )
             self.state.door_open = door_open
-        elif not is_x1_family and "stat" in data:
-            try:
-                stat_value = int(data["stat"], 16) if isinstance(data["stat"], str) else int(data["stat"])
-                door_open = (stat_value & 0x00800000) != 0
-                if door_open != self.state.door_open:
-                    logger.debug(
-                        "[%s] door_open changed: %s -> %s (stat=0x%08X)",
-                        self.serial_number,
-                        self.state.door_open,
-                        door_open,
-                        stat_value,
-                    )
-                self.state.door_open = door_open
-            except (ValueError, TypeError):
-                logger.debug("[%s] could not parse stat field: %r", self.serial_number, data["stat"])
 
         # Parse timelapse status (recording active during print)
         if "timelapse" in data:

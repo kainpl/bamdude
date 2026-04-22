@@ -3527,7 +3527,16 @@ class TestStaleReconnect:
 
 
 class TestDoorOpenParsing:
-    """Tests for enclosure door state parsing (X1 home_flag bit 23 vs others stat bit 23)."""
+    """Door-open parsing is gated by ``has_door_sensor()``.
+
+    Only X1 family (X1, X1C, X1E) has a reverse-engineered sensor signal on
+    home_flag bit 23. Bit 23 of ``stat`` on other enclosed models (P1S/P2S/H2*)
+    was previously parsed but is undocumented and unreliable — observed to
+    flap or stay pinned in ways unrelated to the physical door. The parser
+    now ignores ``stat`` entirely and only consumes home_flag on whitelisted
+    models, so downstream consumers (UI badge, notifications) never surface
+    misleading door state.
+    """
 
     def _make_client(self, model: str):
         from backend.app.services.bambu_mqtt import BambuMQTTClient
@@ -3557,26 +3566,35 @@ class TestDoorOpenParsing:
         client._update_state({"home_flag": 0xC065CD98, "stat": "47A58000"})
         assert client.state.door_open is False  # home_flag wins
 
-    def test_h2d_door_open_from_stat(self):
-        client = self._make_client("H2D")
-        client._update_state({"stat": "640A58000"})  # bit 23 set
-        assert client.state.door_open is True
-
-    def test_h2d_door_closed_from_stat(self):
-        client = self._make_client("H2D")
-        client.state.door_open = True
-        client._update_state({"stat": "640258000"})  # bit 23 cleared
+    def test_p1p_open_frame_never_parses_door(self):
+        # P1P has no enclosure and no door hardware — must never flip.
+        client = self._make_client("P1P")
+        client._update_state({"home_flag": 0xC0E5CD98, "stat": "640A58000"})
         assert client.state.door_open is False
 
-    def test_h2d_ignores_home_flag(self):
-        # Non-X1 must NOT consume home_flag for door state
-        client = self._make_client("H2D")
-        client._update_state({"home_flag": 0xC0E5CD98, "stat": "640258000"})
-        assert client.state.door_open is False  # stat wins
+    def test_p1s_ignored_despite_enclosure(self):
+        # P1S has an enclosure but no trusted door sensor in firmware — we
+        # deliberately skip parsing to avoid misleading "Door Closed" state.
+        client = self._make_client("P1S")
+        client._update_state({"home_flag": 0xC0E5CD98, "stat": "640A58000"})
+        assert client.state.door_open is False
 
-    def test_invalid_stat_does_not_raise(self):
+    def test_h2d_ignored_pending_verification(self):
+        # H2D enclosure has no reverse-engineered door signal yet; parsing
+        # was previously speculative. Until confirmed on hardware, skip.
         client = self._make_client("H2D")
-        client._update_state({"stat": "not-hex"})
+        client._update_state({"home_flag": 0xC0E5CD98, "stat": "640A58000"})
+        assert client.state.door_open is False
+
+    def test_a1_mini_open_frame_never_parses_door(self):
+        # A1 Mini is open-frame, same reasoning as P1P.
+        client = self._make_client("A1 Mini")
+        client._update_state({"home_flag": 0xC0E5CD98, "stat": "640A58000"})
+        assert client.state.door_open is False
+
+    def test_unknown_model_defaults_to_no_sensor(self):
+        client = self._make_client("SomeNewModel")
+        client._update_state({"home_flag": 0xC0E5CD98})
         assert client.state.door_open is False
 
 

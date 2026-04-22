@@ -84,7 +84,7 @@ import { FileUploadModal } from '../components/FileUploadModal';
 import { PrintModal } from '../components/PrintModal';
 import { PrinterInfoModal } from '../components/PrinterInfoModal';
 import { getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag } from '../utils/amsHelpers';
-import { getPrinterImage, getWifiStrength } from '../utils/printer';
+import { getPrinterImage, getWifiStrength, hasDoorSensor } from '../utils/printer';
 import { compareFwVersions } from '../utils/firmwareVersion';
 import { FilamentSlotCircle } from '../components/FilamentSlotCircle';
 import { getColorName, parseFilamentColor, isLightColor } from '../utils/colors';
@@ -2485,10 +2485,13 @@ function PrinterCard({
                   {t('printers.noSd')}
                 </button>
               )}
-              {/* Enclosure door badge — only for printers with an actual enclosure.
-                  Open = yellow warning (firmware may pause the print on open), closed = green OK.
-                  Backend parses the bit from home_flag (X1 family) or stat (P1/P2/H2/A1). */}
-              {status?.connected && ['X1C', 'X1', 'X1E', 'P1S', 'P1P', 'P2S', 'H2D', 'H2D Pro', 'H2C', 'H2S'].includes(printer.model ?? '') && (
+              {/* Enclosure door badge — rendered only for printers with a
+                  confirmed door-open sensor exposed via MQTT (X1 family only).
+                  Open = yellow warning (firmware may pause the print), closed
+                  = green OK. See utils/printer.ts::hasDoorSensor for the
+                  whitelist + rationale; keep it in sync with the backend
+                  counterpart in utils/printer_models.py. */}
+              {status?.connected && hasDoorSensor(printer.model) && (
                 <span
                   className={`flex items-center px-2 py-1 rounded-full text-xs ${
                     status.door_open
