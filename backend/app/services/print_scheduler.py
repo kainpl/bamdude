@@ -138,8 +138,25 @@ class PrintScheduler:
                 [(i.id, i.queue_id, i.archive_id, i.library_file_id) for i in items],
             )
 
-            # Track busy printers to avoid assigning multiple items to same printer
-            busy_printers: set[int] = set()
+            # Seed busy_printers from PrinterQueue.status='printing'. This is
+            # the authoritative "this printer is currently dispatched" marker —
+            # set_queue_busy() atomically flips queue.status='printing' at
+            # dispatch time (whether item, external, or direct-print). Without
+            # this guard the H2D / P1 IDLE→RUNNING MQTT transition lag made the
+            # next check_queue tick see IDLE via _is_printer_idle() and double-
+            # dispatch onto the already-running printer (upstream #950286ad /
+            # v0.2.3.2 re-release). Queue-per-printer architecture — reading
+            # PrinterQueue directly is simpler than joining through
+            # PrintQueueItem and also catches external / direct prints that
+            # don't have a corresponding item row.
+            from backend.app.models.print_queue import PrinterQueue
+
+            busy_result = await db.execute(
+                select(PrinterQueue.printer_id)
+                .where(PrinterQueue.status == "printing")
+                .where(PrinterQueue.printer_id.is_not(None))
+            )
+            busy_printers: set[int] = {pid for (pid,) in busy_result.all() if pid is not None}
 
             # Cache per-printer require_plate_clear setting
             _plate_clear_cache: dict[int, bool] = {}
@@ -1660,14 +1677,25 @@ class PrintScheduler:
             # task that reverts the item back to pending and force-reconnects
             # the MQTT session. The swap-mode branch skips the revert to avoid
             # re-firing swap_mode_start on the next dispatch — see below.
+            #
+            # H2D Pro firmware (01.01.00.00) keeps state=FINISH for 48-55 s
+            # after accepting project_file before transitioning to PREPARE —
+            # longer than our old 45 s timeout — so we also capture
+            # pre_subtask_id as a second "command landed" signal: the printer
+            # echoes the submission_id we minted in bambu_mqtt._publish_project
+            # back in its next push_status.subtask_id, well before gcode_state
+            # changes on slow models. Watchdog exits early on EITHER a state
+            # change OR a subtask_id advance. Upstream #1078.
             _post_status = printer_manager.get_status(item.printer_id)
             _pre_state = _post_status.state if _post_status else None
+            _pre_subtask_id = _post_status.subtask_id if _post_status else None
             if _pre_state:
                 asyncio.create_task(
                     self._watchdog_print_start(
                         item.id,
                         item.printer_id,
                         _pre_state,
+                        _pre_subtask_id,
                         swap_start_fired="swap_mode_start" in swap_events,
                     )
                 )
@@ -1738,8 +1766,9 @@ class PrintScheduler:
         queue_item_id: int,
         printer_id: int,
         pre_state: str,
+        pre_subtask_id: str | None = None,
         swap_start_fired: bool = False,
-        timeout: float = 45.0,
+        timeout: float = 90.0,
         poll_interval: float = 3.0,
     ) -> None:
         """Revert a queue item if the printer never acknowledges the start command.
@@ -1749,6 +1778,23 @@ class PrintScheduler:
         command (half-broken MQTT session — #887/#936), the state never
         transitions and the item would otherwise stay stuck in "printing"
         forever (#967).
+
+        Watchdog exits early on EITHER of two "command landed" signals:
+          * ``gcode_state`` advances past ``pre_state`` — the classic signal.
+          * ``subtask_id`` advances past ``pre_subtask_id`` — the printer
+            echoes the submission_id we minted (``bambu_mqtt._publish_project``,
+            #1042) in its next push_status.subtask_id. On H2D Pro firmware
+            01.01.00.00 the state stays at FINISH 48–55 s after accepting
+            the command, but subtask_id echoes back within the first push —
+            without this guard the old 45 s timeout reverted items the
+            printer had already started physically printing, which then
+            re-dispatched on the next scheduler tick and looked like a
+            reprint (upstream #1078).
+
+        ``timeout`` bumped to 90 s (was 45 s) as belt-and-braces for printers
+        that neither flip state nor echo subtask_id inside the window —
+        genuinely half-broken sessions still revert + force-reconnect as
+        before, just a bit later.
 
         ``swap_start_fired`` is the BamDude-specific guard: when a swap_mode_start
         macro already ran successfully on the real printer before start_print,
@@ -1764,7 +1810,9 @@ class PrintScheduler:
             if not status:
                 return  # Printer disconnected — don't mess with the DB
             if status.state != pre_state:
-                return  # Printer picked up the job
+                return  # Printer picked up the job (state change)
+            if pre_subtask_id and status.subtask_id and status.subtask_id != pre_subtask_id:
+                return  # subtask_id advanced — command landed even though state hasn't flipped yet
 
         if swap_start_fired:
             logger.error(

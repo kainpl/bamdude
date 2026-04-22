@@ -12,6 +12,14 @@ class PrintArchive(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     printer_id: Mapped[int | None] = mapped_column(ForeignKey("printers.id"), nullable=True)
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
+    # Link back to the library_files row this archive was dispatched from.
+    # Populated at dispatch time (see background_dispatch.py) so library
+    # usage stats (print_count, last_printed_at) can be driven off the
+    # archive history instead of only live-tracked at queue completion.
+    # NULL for external/manual prints or archives created before m014.
+    library_file_id: Mapped[int | None] = mapped_column(
+        ForeignKey("library_files.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
     # File info
     filename: Mapped[str] = mapped_column(String(255))

@@ -884,6 +884,7 @@ class ArchiveService:
         source_content_hash: str | None = None,
         applied_patches: list[str] | None = None,
         subtask_id: str | None = None,
+        library_file_id: int | None = None,
     ) -> PrintArchive | None:
         """Archive a 3MF file with metadata.
 
@@ -901,6 +902,10 @@ class ArchiveService:
             subtask_id: Printer-assigned subtask identifier from MQTT push_status,
                 captured by on_print_start when available. Advisory pre-check
                 key in later resume attempts (#972).
+            library_file_id: ID of the ``library_files`` row this print was
+                dispatched from, when BamDude drove the dispatch. None for
+                external / direct SD / reprint-from-archive paths; m014 later
+                backfills those by hash where possible.
         """
         # Verify printer exists if specified
         if printer_id is not None:
@@ -1096,6 +1101,7 @@ class ArchiveService:
             created_by_id=created_by_id,
             project_id=project_id,
             subtask_id=subtask_id,
+            library_file_id=library_file_id,
         )
 
         self.db.add(archive)
@@ -1233,6 +1239,25 @@ class ArchiveService:
             fname_lower = (original_filename or source_file.name).lower()
             if fname_lower.endswith((".swap.3mf", ".swaps.3mf")) or ".swap." in fname_lower or ".swaps." in fname_lower:
                 archive.swap_compatible = True
+
+            # Link to the originating library file by content hash when we
+            # didn't know it at fallback-creation time (on_print_start's FTP
+            # miss path has no dispatch context). Mirrors m014's backfill
+            # logic — oldest matching library row wins.
+            if archive.library_file_id is None:
+                from backend.app.models.library import LibraryFile
+
+                match_hash = archive.source_content_hash or content_hash
+                if match_hash:
+                    lib_match = await self.db.execute(
+                        select(LibraryFile.id)
+                        .where(LibraryFile.file_hash == match_hash)
+                        .order_by(LibraryFile.created_at.asc(), LibraryFile.id.asc())
+                        .limit(1)
+                    )
+                    matched_id = lib_match.scalar_one_or_none()
+                    if matched_id is not None:
+                        archive.library_file_id = matched_id
 
             await self.db.commit()
             await self.db.refresh(archive)

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 import time
 import traceback
 from collections.abc import Callable
@@ -803,6 +804,22 @@ def get_derived_status_name(state: PrinterState, model: str | None = None) -> st
     return None
 
 
+_PLATE_ID_RE = re.compile(r"plate_(\d+)\.gcode")
+
+
+def parse_plate_id(gcode_file: str | None) -> int | None:
+    """Extract the 1-indexed plate number from a Bambu gcode_file path.
+
+    Returns None when the path is missing or has no ``plate_N.gcode`` segment.
+    Shared by the REST status route and the WebSocket push path so both agree
+    on the value sent to the frontend (upstream #881 follow-up).
+    """
+    if not gcode_file:
+        return None
+    match = _PLATE_ID_RE.search(gcode_file)
+    return int(match.group(1)) if match else None
+
+
 def printer_state_to_dict(state: PrinterState, printer_id: int | None = None, model: str | None = None) -> dict:
     """Convert PrinterState to a JSON-serializable dict.
 
@@ -1015,6 +1032,21 @@ def printer_state_to_dict(state: PrinterState, printer_id: int | None = None, mo
         ],
         # AMS drying support
         "supports_drying": supports_drying(model, state.firmware_version),
+        # 1-indexed plate number parsed from gcode_file (e.g. /Metadata/plate_2.gcode).
+        # Pushed via WebSocket so the printer card picks up plate transitions in a
+        # multi-plate 3MF without waiting for the 30 s REST poll (upstream #881
+        # follow-up). current_archive_id is intentionally REST-only — it's stable
+        # for the life of a print and needs a DB lookup the WS path shouldn't pay for.
+        "current_plate_id": parse_plate_id(state.gcode_file),
+        # Queue plate-clear gate (#961): surfaces the same value the REST /status
+        # route returns so frontend WS merge reflects transitions within ~100 ms
+        # instead of waiting for the 30 s REST poll — without this the "Mark plate
+        # as cleared" button appeared 30 s–5 min late (upstream #939 follow-up).
+        # Sourced from the authoritative in-memory + DB-backed accessor on the
+        # manager singleton, which mirrors print_queue.awaiting_plate_clear (m010).
+        "awaiting_plate_clear": (
+            printer_manager.is_awaiting_plate_clear(printer_id) if printer_id is not None else False
+        ),
     }
     # Add cover URL if there's an active print and printer_id is provided
     # Include PAUSE state so skip objects modal can show cover

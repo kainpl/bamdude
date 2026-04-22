@@ -896,6 +896,12 @@ class BackgroundDispatchService:
                 project_id=job.project_id,
                 source_content_hash=lib_file.file_hash,
                 applied_patches=applied_patches or None,
+                library_file_id=lib_file.id,
+                # Forward the requesting user so per-user stats filter sees this
+                # archive and the post-print notification has a recipient. Prior
+                # to upstream #276a1db3 all library-print archives landed with
+                # created_by_id=NULL regardless of who clicked Print.
+                created_by_id=job.requested_by_user_id,
             )
             if not archive:
                 raise RuntimeError("Failed to create archive")
@@ -1103,6 +1109,18 @@ class BackgroundDispatchService:
                 pre_state = getattr(printer_manager.get_status(job.printer_id), "state", None)
                 if pre_state:
                     asyncio.create_task(self._verify_print_response(job.printer_id, printer_name, pre_state))
+
+                # Register the requesting user so per-user stats filter sees
+                # this print and the post-print notification has a recipient.
+                # Mirrors the reprint path above — prior to upstream #276a1db3
+                # the library-print branch skipped this call even though the
+                # user was plumbed into the job object.
+                if job.requested_by_user_id and job.requested_by_username:
+                    printer_manager.set_current_print_user(
+                        job.printer_id,
+                        job.requested_by_user_id,
+                        job.requested_by_username,
+                    )
 
                 await db.commit()
             except DispatchJobCancelled:

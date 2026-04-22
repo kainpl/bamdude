@@ -85,6 +85,7 @@ import { PrintModal } from '../components/PrintModal';
 import { PrinterInfoModal } from '../components/PrinterInfoModal';
 import { getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag } from '../utils/amsHelpers';
 import { getPrinterImage, getWifiStrength, hasDoorSensor } from '../utils/printer';
+import { formatPrintName } from '../utils/printName';
 import { compareFwVersions } from '../utils/firmwareVersion';
 import { FilamentSlotCircle } from '../components/FilamentSlotCircle';
 import { getColorName, parseFilamentColor, isLightColor } from '../utils/colors';
@@ -95,21 +96,9 @@ import { getColorName, parseFilamentColor, isLightColor } from '../utils/colors'
 // names for any color the hand-maintained list didn't cover (upstream #857).
 
 
-// Extract plate number from gcode_file path and append to print name
-function formatPrintName(
-  printName: string | null | undefined,
-  gcodeFile: string | null | undefined,
-  t: (key: string, opts?: Record<string, unknown>) => string,
-): string {
-  if (!printName) return '';
-  if (!gcodeFile) return printName;
-  // Match plate_N.gcode (e.g. "Metadata/plate_3.gcode")
-  const match = gcodeFile.match(/plate_(\d+)\.gcode/i);
-  if (match && match[1] !== '1') {
-    return `${printName} - ${t('printers.plateNumber', { number: match[1] })}`;
-  }
-  return printName;
-}
+// formatPrintName extracted to utils/printName.ts so PrintersPage.tsx can
+// keep react-refresh/only-export-components happy when the helper is imported
+// by tests — upstream move for upstream #881 / #730 follow-ups.
 
 // Format K value with 3 decimal places, default to 0.020 if null
 function formatKValue(k: number | null | undefined): string {
@@ -1488,6 +1477,23 @@ function PrinterCard({
     staleTime: 2 * 60 * 1000, // 2 minutes
   });
 
+  // Fetch plate list for the archive linked to the active print (upstream #881
+  // follow-up). Only queried when there's a running print backed by an archive;
+  // shared React Query cache with the Queue / Archives pages keeps it cheap.
+  const activeArchiveId =
+    (status?.state === 'RUNNING' || status?.state === 'PAUSE') ? status?.current_archive_id ?? null : null;
+  const { data: activeArchivePlates } = useQuery({
+    queryKey: ['archive-plates', activeArchiveId],
+    queryFn: () => api.getArchivePlates(activeArchiveId!),
+    enabled: activeArchiveId != null,
+    staleTime: 5 * 60 * 1000,
+  });
+  const activePlateLabel = (() => {
+    if (!activeArchivePlates?.is_multi_plate || status?.current_plate_id == null) return null;
+    const plate = activeArchivePlates.plates.find(p => p.index === status.current_plate_id);
+    return plate?.name || t('printers.plateNumber', { number: status.current_plate_id });
+  })();
+
   // Fetch user-defined AMS friendly names from the database
   const { data: amsLabels, refetch: refetchAmsLabels } = useQuery({
     queryKey: ['amsLabels', printer.id],
@@ -2713,7 +2719,7 @@ function PrinterCard({
                     {/* Cover Image */}
                     <CoverImage
                       url={(status.state === 'RUNNING' || status.state === 'PAUSE') ? status.cover_url : null}
-                      printName={(status.state === 'RUNNING' || status.state === 'PAUSE') ? (status.subtask_name || status.current_print || undefined) : undefined}
+                      printName={(status.state === 'RUNNING' || status.state === 'PAUSE') ? (formatPrintName(status.subtask_name || status.current_print, status.gcode_file, t, activePlateLabel) || undefined) : undefined}
                     />
                     {/* Print Info */}
                     <div className="flex-1 min-w-0">
@@ -2724,7 +2730,7 @@ function PrinterCard({
                             {plateStatusPill}
                           </div>
                           <p className="text-white text-sm mb-2 truncate">
-                            {formatPrintName(status.subtask_name || status.current_print, status.gcode_file, t)}
+                            {formatPrintName(status.subtask_name || status.current_print, status.gcode_file, t, activePlateLabel)}
                           </p>
                           <div className="flex items-center justify-between text-sm">
                             <div className="flex-1 bg-bambu-dark-tertiary rounded-full h-2 mr-3">

@@ -6,6 +6,52 @@ All notable changes to BamDude will be documented in this file.
 
 ---
 
+## [Unreleased]
+
+Interim work on `feature/swap-mode` — partial upstream Bambuddy v0.2.3.2 port and BamDude-native features layered on top of 0.4.0.
+
+### Queue Reliability
+
+- **H2D false-reprint fix** (upstream #1078). The scheduler watchdog reverted queue items to `pending` at 45 s if `gcode_state` hadn't transitioned — on H2D Pro firmware 01.01.00.00 the state stays at `FINISH` for 48–55 s after the printer accepts `project_file` but before `PREPARE`, so the watchdog kept reverting items the printer had already started physically printing, and the next scheduler tick re-dispatched them as a reprint. `_watchdog_print_start` now also exits early when `subtask_id` advances past the pre-dispatch value (the printer echoes the `submission_id` we minted back in its next `push_status` — the signal lands long before `gcode_state` does on slow firmware). Timeout bumped 45 s → 90 s as belt-and-braces for printers that neither flip state nor echo `subtask_id` inside the window.
+- **Batch double-dispatch fix** (upstream `950286ad` / v0.2.3.2 re-release). When an ASAP print with `quantity > 1` landed on an H2D or P1-series, the scheduler's next tick saw MQTT `IDLE` (state lagging the accepted command) and dispatched the second batch item onto the already-running printer — surfaced via the "BUG: Multiple queue items in 'printing' status" log. `check_queue` now seeds `busy_printers` from `PrinterQueue.status='printing'` before iterating, so any printer with an outstanding dispatch is excluded regardless of what MQTT currently reports. Also catches external / direct prints that don't have a corresponding queue item row.
+- **Clear-Plate button latency fix** (upstream #939 follow-up, `4e86e8cb`). The card-level "Mark plate as cleared" button appeared 30 s – 5 min late because the WebSocket `printer_status` payload didn't carry `awaiting_plate_clear` — the frontend merged the stale `false` until the next 30 s REST poll refreshed it. `printer_state_to_dict` now emits the flag from the authoritative in-memory + DB-backed accessor so the button appears within ~100 ms of the gate being armed.
+
+### Printer UI
+
+- **Per-card plate name for multi-plate prints** (upstream #881, `fa1c46d9`). When two printers run different plates of the same multi-plate 3MF, the Printers page cards now show the actual plate name (or "Plate N" fallback) instead of just the 3MF filename — no more guessing which printer is on which plate. Sourced via `current_archive_id` (resolved from MQTT `subtask_id`) + `current_plate_id` (parsed from `gcode_file` path). Plate transitions reflect within ~100 ms via WebSocket push; single-plate prints stay clean.
+- **Queue-card progress no longer flashes stale 100%** (upstream `950286ad`). Right after dispatch, the per-queue-card progress bar briefly showed the previous print's final `mc_percent` before snapping to 0% once the new print started ticking. Progress / ETA / layer fields are now gated on `status.state ∈ {RUNNING, PAUSE}` — in any other state (FINISH from the prior print, IDLE, PREPARE while heating) the bar renders at 0% with no stale ETA or layer count.
+
+### AMS / Filament
+
+- **AMS-HT slot shows saved preset after Configure** (upstream #1053, `87a5aa36`). `GET /printers/{id}/slot-presets` keyed AMS-HT entries at `ams_id * 4 + tray_id = 512`, but frontend lookups use `ams_id` directly for HT (single-slot units share their global tray id with the unit id). Regular AMS worked because all three formulas agreed; HT always fell through to `tray.tray_type` ("Generic PLA") even after a custom preset was saved. Backend now keys via a helper that mirrors frontend `getGlobalTrayId`.
+- **Configure AMS slot preserves PFUS preset id** (upstream #1053, `28f80f94`). When Bambu Cloud returned `filament_id=null` for a user preset that inherits from a generic base (e.g. "Sting3D ABS" on "Generic ABS @BBL H2D"), the modal fell back to `convertToTrayInfoIdx(base_id)` — which collapsed the slot's filament identity to the generic's `filament_id`. OrcaSlicer / BambuStudio Sync Filaments then resolved the slot to "Generic ABS" and the custom preset never appeared on the printer LCD. The `base_id` fallback is removed: when the cloud detail has a distinct `filament_id` we still prefer it; otherwise the `setting_id` default (`PFUS…` / `PFSP…`) stands untouched.
+- **Malformed rgba no longer bricks the Filaments page** (upstream #1055, `bf5135cb`). A single legacy spool with a 7-char rgba (`FFFFFFF`, one `F` missing) caused `GET /api/v1/inventory/spools` to 500 with a pydantic validation error, leaving the Filaments page blank and "Add Spool" silently failing. Three layers fixed: (1) the spool update schema now enforces the same `^[0-9A-Fa-f]{8}$` pattern the create schema had, so PATCH can't plant malformed values; (2) the hex input on the spool form normalises to a full 8-char `RRGGBBAA` on every keystroke — 8-char paste passes through, 7-char drops the stray, shorter input right-pads with `0` + `FF` alpha; (3) the response schema drops the pattern so a single bad legacy row renders with a default color instead of 500'ing the whole list endpoint.
+
+### Authentication / Security
+
+- **Spoolman iframe on plain-HTTP LAN hosts** (upstream #1054, `07ef0427`). The strict CSP shipped in 0.4.0 whitelisted only `https:` for `frame-src`, so the Filament tab's Spoolman iframe was blocked on the typical self-host setup where Spoolman runs on plain HTTP on a LAN. Now `frame-src 'self' http: https:` — `frame-ancestors 'none'` still prevents BamDude itself from being framed cross-origin (the defence that actually matters for clickjacking).
+- **python-dotenv floor-pinned ≥ 1.2.2 for CVE-2026-28684**. Transitive via `pydantic-settings`; explicit pin with inline comment in `requirements.txt`.
+- **Library-print archive tracks the user who clicked Print** (upstream #730 follow-up, `276a1db3`). Previously archives created by the printer-card "Print" button, File Manager prints, and Library-file prints all landed with `created_by_id=NULL` — invisible to the per-user statistics filter, and the post-print user-targeted notification had no recipient. `archive_print()` now receives `created_by_id` through the dispatch job, and `set_current_print_user` is called after `start_print` success so the rest of the pipeline sees the right user.
+
+### Library / Archives
+
+- **Archive ↔ library-file link + usage stats backfill** (BamDude-native). New `print_archives.library_file_id` column — populated at dispatch time when printing from the Library, fills in retroactively when the 3MF download recovery path attaches a file by hash match. The `library_files.print_count` + `last_printed_at` columns are backfilled from the archive history on migration (completed prints only, matching the live-update policy), and the live-update path now also fires for direct library-file prints, not just queue-driven ones. New migration `m014`.
+
+### Documentation / Install
+
+- **Root-level `UPDATING.md`** added — GitHub-visible landing doc with short-form update flow (backup → pull → verify) pointing at the full guide in `docs/getting-started/upgrading.md`. Covers Docker, scripted native (`install/update.sh`), and manual native paths.
+- **Upgrading docs now recommend UI Local Backup** (upstream `66d65f42`). `Settings → Backup → Local Backup → Create Backup` → `Download Backup` is the preferred path on native / self-install — captures the SQLite DB, archives, thumbnails, uploads, and config in one zip. Shell `tar czf` documented as fallback for CI automation. Rollback flow updated to prefer the matching UI Restore.
+
+### Tooling / CI
+
+- **i18n parity gate** (adapted from upstream `c894899b`). New `frontend/scripts/check-i18n-parity.mjs` — parses `en.ts` and `uk.ts` via the TypeScript compiler API, validates key-set equality, per-leaf `{{placeholder}}` consistency, and plural-suffix integrity. Ukrainian CLDR categories (`_one` / `_few` / `_many` / `_other`) are whitelisted as legitimate additions vs English (`_one` / `_other`) as long as the matching `_one` counterpart exists in the same locale. Wired into `test_frontend.sh` and the `frontend-lint` CI job. Caught one real missing key on the first run (`printers.queue.inQueue_other`) — added.
+
+### Internal
+
+- **Door-open badge scoped to X1-family only**. `home_flag` bit 23 is reliably reverse-engineered on X1, X1C, and X1E; on P1S / P2S / H2-series the same bit is undocumented and observed permanently 0 on some firmwares, so the badge was misleading. Open-frame models (P1P, A1, A1 Mini) never had a door to begin with. A new `DOOR_SENSOR_MODELS` set in `backend/app/utils/printer_models.py` mirrored by a frontend `hasDoorSensor()` helper gates both the MQTT parser and the UI badge; only the three X1 models surface a door state now.
+
+---
+
 ## [0.4.0] - 2026-04-20
 
 Upstream Bambuddy v0.2.3 sync. Fifteen commits covering queue-reliability (#887/#936/#961/#967/#972), drying gate (#971), FTP salvage & short-circuit, camera snapshot cleanup (#979), SD/door telemetry, and a half-dozen smaller fixes. New migration `m010` adds `subtask_id` (archives) + `awaiting_plate_clear` (printers).

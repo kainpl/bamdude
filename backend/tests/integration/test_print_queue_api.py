@@ -1332,3 +1332,55 @@ class TestAbortedStatusNormalisation:
 
         # Must not raise.
         await _bump_library_file_usage_if_completed(db_session, item, "completed")
+
+    # ------------------------------------------------------------------
+    # Direct-by-id helper (m014 — also used by the on_print_complete
+    # external/direct-print branch, which has no queue_item to consult).
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_bump_library_file_usage_direct_by_id_increments(self, db_session):
+        """_bump_library_file_usage(db, id) bumps the row without needing a queue item."""
+        from datetime import datetime, timezone
+
+        from backend.app.main import _bump_library_file_usage
+        from backend.app.models.library import LibraryFile
+
+        lib_file = LibraryFile(
+            filename="direct.3mf",
+            file_path="/data/library/direct.3mf",
+            file_type="3mf",
+            file_size=1024,
+            print_count=0,
+            last_printed_at=None,
+        )
+        db_session.add(lib_file)
+        await db_session.commit()
+        await db_session.refresh(lib_file)
+
+        before = datetime.now(timezone.utc).replace(tzinfo=None)
+        await _bump_library_file_usage(db_session, lib_file.id)
+        await db_session.commit()
+        await db_session.refresh(lib_file)
+
+        assert lib_file.print_count == 1
+        assert lib_file.last_printed_at is not None
+        assert lib_file.last_printed_at >= before
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_bump_library_file_usage_direct_by_id_noop_on_none(self, db_session):
+        """Passing None is a safe no-op (external prints with no library link)."""
+        from backend.app.main import _bump_library_file_usage
+
+        # Must not raise.
+        await _bump_library_file_usage(db_session, None)
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_bump_library_file_usage_direct_by_id_noop_on_missing(self, db_session):
+        """Deleted library file id is a safe no-op."""
+        from backend.app.main import _bump_library_file_usage
+
+        await _bump_library_file_usage(db_session, 999_999)

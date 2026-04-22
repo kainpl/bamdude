@@ -218,6 +218,8 @@ export interface PrinterStatus {
   state: string | null;
   current_print: string | null;
   subtask_name: string | null;
+  current_archive_id: number | null;
+  current_plate_id: number | null;
   gcode_file: string | null;
   progress: number | null;
   remaining_time: number | null;

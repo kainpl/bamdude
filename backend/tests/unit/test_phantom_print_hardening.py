@@ -209,3 +209,109 @@ class TestMultiplePrintingQueueItemsWarning:
         bug_warnings = [r for r in caplog.records if "BUG: Multiple queue items" in r.message]
         assert len(bug_warnings) == 1
         assert "printer 7" in bug_warnings[0].message
+
+
+class TestBusyPrinterSeedingFromPrintingItems:
+    """Regression coverage for upstream #950286ad / v0.2.3.2 re-release.
+
+    ``check_queue`` must seed its ``busy_printers`` set from every queue row
+    already in ``status='printing'`` before iterating pending items. Without
+    this guard, the H2D / P1 state-transition lag (IDLE → RUNNING can take
+    several seconds after the printer accepts the project_file) made the
+    next scheduler tick see IDLE via MQTT and double-dispatch onto a printer
+    that was already running a batch sibling.
+    """
+
+    def _build_busy_seed_query(self) -> ClauseElement:
+        """Build the seed query check_queue uses before iterating pending items.
+
+        Reads ``PrinterQueue.status='printing'`` directly — ``set_queue_busy``
+        flips that atomically at dispatch time and it's the single marker that
+        also covers external / direct prints without a corresponding
+        ``PrintQueueItem`` row. Queue-per-printer, so ``printer_id`` uniquely
+        identifies a printer's busy state.
+        """
+        from backend.app.models.print_queue import PrinterQueue
+
+        return (
+            select(PrinterQueue.printer_id)
+            .where(PrinterQueue.status == "printing")
+            .where(PrinterQueue.printer_id.is_not(None))
+        )
+
+    def test_seed_query_filters_to_printing_status(self):
+        """The seed query must restrict to status='printing' — 'idle', 'paused',
+        or 'error' queues don't hold the printer.
+        """
+        compiled = str(self._build_busy_seed_query().compile(compile_kwargs={"literal_binds": True}))
+        assert "status = 'printing'" in compiled.lower() or "status='printing'" in compiled.lower()
+
+    def test_seed_query_excludes_null_printer_id(self):
+        """Rows with printer_id=NULL on the queue (unassigned / global) must
+        never be seeded into the busy set — would skip every printer on the
+        next tick.
+        """
+        compiled = str(self._build_busy_seed_query().compile(compile_kwargs={"literal_binds": True}))
+        assert "is not null" in compiled.lower()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_seed_returns_only_printers_with_printing_queue(self, db_session, printer_factory):
+        """End-to-end: only queues with status='printing' contribute to the
+        busy set. Covers the batch-dispatch race and external-print cases
+        (external prints also flip queue.status='printing' but without an
+        item row, so an item-join query would miss them).
+        """
+        from backend.app.models.print_queue import PrinterQueue, PrintQueueItem
+
+        printer1 = await printer_factory()
+        printer2 = await printer_factory()
+        printer3 = await printer_factory()
+
+        # printer1: queue printing + pending sibling (batch quantity>1 case)
+        # printer2: queue idle + pending item
+        # printer3: queue printing with NO item (external / direct-print)
+        queue1 = PrinterQueue(printer_id=printer1.id, status="printing")
+        queue2 = PrinterQueue(printer_id=printer2.id, status="idle")
+        queue3 = PrinterQueue(printer_id=printer3.id, status="printing")
+        db_session.add_all([queue1, queue2, queue3])
+        await db_session.commit()
+        for q in (queue1, queue2, queue3):
+            await db_session.refresh(q)
+
+        db_session.add_all(
+            [
+                PrintQueueItem(queue_id=queue1.id, status="printing", position=1),
+                PrintQueueItem(queue_id=queue1.id, status="pending", position=2),
+                PrintQueueItem(queue_id=queue2.id, status="pending", position=1),
+                # intentionally no item for queue3 — external/direct print case
+            ]
+        )
+        await db_session.commit()
+
+        result = await db_session.execute(self._build_busy_seed_query())
+        busy = {pid for (pid,) in result.all() if pid is not None}
+
+        assert busy == {printer1.id, printer3.id}, (
+            f"Expected printer1 (batch) + printer3 (external, no item); got {busy}. Printer2 is idle — must not appear."
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_seed_empty_when_no_printing_queues(self, db_session, printer_factory):
+        """Sanity: idle scheduler tick — seed query returns empty."""
+        from backend.app.models.print_queue import PrinterQueue, PrintQueueItem
+
+        printer = await printer_factory()
+        queue = PrinterQueue(printer_id=printer.id, status="idle")
+        db_session.add(queue)
+        await db_session.commit()
+        await db_session.refresh(queue)
+
+        db_session.add(PrintQueueItem(queue_id=queue.id, status="pending", position=1))
+        await db_session.commit()
+
+        result = await db_session.execute(self._build_busy_seed_query())
+        busy = {pid for (pid,) in result.all() if pid is not None}
+
+        assert busy == set()

@@ -493,22 +493,34 @@ def _get_start_ams_mapping(data: dict, archive_id: int | None) -> list[int] | No
     return stored_ams_mapping
 
 
-async def _bump_library_file_usage_if_completed(db, item, queue_status: str) -> None:
-    """Increment LibraryFile.print_count and stamp last_printed_at when a queued
-    print completes successfully. Gated to status=='completed': failed, cancelled
-    and aborted prints do not count as usage. Caller is responsible for committing
-    the session. No-op when the queue item has no linked library file (e.g. reprints
-    from an archive). See #1008.
+async def _bump_library_file_usage(db, library_file_id: int | None) -> None:
+    """Increment LibraryFile.print_count and stamp last_printed_at.
+
+    Call this on successful print completion only (caller gates on status).
+    Caller is responsible for committing the session. No-op when there's no
+    linked library file (e.g. external prints or reprints from archive) or
+    the library row has since been deleted. See #1008.
     """
-    if queue_status != "completed" or item.library_file_id is None:
+    if library_file_id is None:
         return
     from backend.app.models.library import LibraryFile
 
-    lib_file = await db.scalar(select(LibraryFile).where(LibraryFile.id == item.library_file_id))
+    lib_file = await db.scalar(select(LibraryFile).where(LibraryFile.id == library_file_id))
     if lib_file is None:
         return
     lib_file.print_count = (lib_file.print_count or 0) + 1
     lib_file.last_printed_at = datetime.now(timezone.utc)
+
+
+async def _bump_library_file_usage_if_completed(db, item, queue_status: str) -> None:
+    """Queue-branch wrapper: bump usage only for status='completed' items with
+    a library_file_id. Preserved so the on_print_complete queue branch reads
+    naturally; new direct-print path calls ``_bump_library_file_usage``
+    directly after resolving the archive's ``library_file_id``.
+    """
+    if queue_status != "completed":
+        return
+    await _bump_library_file_usage(db, item.library_file_id)
 
 
 def mark_printer_stopped_by_user(printer_id: int) -> None:
@@ -2881,6 +2893,23 @@ async def on_print_complete(printer_id: int, data: dict):
                         _pq.status,
                     )
 
+                # Direct-dispatch / external prints also count toward
+                # LibraryFile usage when we can trace the archive back to a
+                # library file. Queue-less reprints, direct library prints,
+                # and external prints whose archive got backfilled via
+                # attach_3mf_to_archive all land here. Gated on
+                # status=='completed' to match the queue branch.
+                direct_status = data.get("status", "completed")
+                if direct_status == "aborted":
+                    direct_status = "cancelled"
+                if direct_status == "completed" and archive_id:
+                    from backend.app.models.archive import PrintArchive as _PaLib
+
+                    lib_id = await db.scalar(select(_PaLib.library_file_id).where(_PaLib.id == archive_id))
+                    if lib_id is not None:
+                        await _bump_library_file_usage(db, lib_id)
+                        await db.commit()
+
                 # Check if queue is now empty and send notification
                 try:
                     from sqlalchemy import func as sa_func
@@ -4619,9 +4648,12 @@ async def security_headers_middleware(request, call_next):
       the explicit scheme allow.
     - ``img-src``/``media-src`` accept ``data:``/``blob:`` for base64
       thumbnails and Blob-URL timelapse previews.
-    - ``frame-src 'self' https:``: BamDude embeds Spoolman via
-      reverse-proxy (same origin) and arbitrary HTTPS external links from
-      the sidebar — both stay allowed.
+    - ``frame-src 'self' http: https:``: BamDude embeds Spoolman via
+      reverse-proxy (same origin) and arbitrary external links from the
+      sidebar. ``http:`` is allowed because self-hosted Spoolman typically
+      runs on plain HTTP on a LAN address (upstream #1054). ``frame-ancestors
+      'none'`` below still blocks BamDude being framed cross-origin — that's
+      the clickjacking defense that actually matters.
     - ``frame-ancestors 'none'``: nobody may embed BamDude. This is the
       modern equivalent of ``X-Frame-Options: DENY``; the SAMEORIGIN value
       we keep on ``X-Frame-Options`` is for legacy browsers only — modern
@@ -4641,7 +4673,7 @@ async def security_headers_middleware(request, call_next):
         "font-src 'self' data: https://fonts.gstatic.com; "
         "object-src 'none'; "
         "base-uri 'self'; "
-        "frame-src 'self' https:; "
+        "frame-src 'self' http: https:; "
         "frame-ancestors 'none';"
     )
     if request.url.scheme == "https":
