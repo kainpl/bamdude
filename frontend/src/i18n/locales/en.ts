@@ -3674,7 +3674,6 @@ export default {
     net: 'Net',
     // Grouping
     groupSimilar: 'Group',
-    sortByName: 'Name',
     groupedSpools: '{{count}} identical spools',
     groupedRows: 'rows',
     // Column config

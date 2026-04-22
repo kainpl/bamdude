@@ -43,7 +43,7 @@ const COLUMN_CONFIG_KEY = 'bamdude-inventory-columns';
 
 const DEFAULT_COLUMNS: ColumnConfig[] = [
   { id: 'id', label: '#', visible: true },
-  { id: 'display_name', label: 'Name', visible: false },
+  { id: 'display_name', label: 'Name', visible: true },
   { id: 'added_time', label: 'Added', visible: true },
   { id: 'encode_time', label: 'Encoded', visible: false },
   { id: 'last_used_time', label: 'Last Used', visible: false },
@@ -366,6 +366,11 @@ const columnCells: Record<string, (ctx: CellCtx) => ReactNode> = {
 // Sort value extractors - return a comparable value for each sortable column
 const columnSortValues: Record<string, (spool: InventorySpool, assignmentMap: Record<number, SpoolAssignment>) => string | number> = {
   id: (s) => s.id,
+  // display_name is sortable — the real comparison lives in the sortedSpools
+  // memo (it needs the user's configurable template which module scope can't
+  // see). This stub only marks the column as sortable so handleSort accepts
+  // header clicks and the ArrowUpDown affordance renders.
+  display_name: () => 0,
   added_time: (s) => s.created_at || '',
   encode_time: (s) => s.encode_time || '',
   last_used_time: (s) => s.last_used || '',
@@ -1009,41 +1014,6 @@ function InventoryPage() {
           >
             <Group className="w-4 h-4" />
             <span className="hidden sm:inline">{t('inventory.groupSimilar')}</span>
-          </button>
-          {/* Sort by Name — accessible even when the Name column isn't visible.
-              Mirrors column-header click semantics: first click sorts asc,
-              second flips to desc, third clears. */}
-          <button
-            onClick={() => {
-              setSortState((prev) => {
-                let next: SortState;
-                if (prev?.column !== 'display_name') {
-                  next = { column: 'display_name', direction: 'asc' };
-                } else if (prev.direction === 'asc') {
-                  next = { column: 'display_name', direction: 'desc' };
-                } else {
-                  next = null;
-                }
-                saveSortState(next);
-                return next;
-              });
-              resetPage();
-            }}
-            className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium border rounded-lg transition-colors ${
-              sortState?.column === 'display_name'
-                ? 'bg-bambu-green/20 text-bambu-green border-bambu-green/30'
-                : 'text-bambu-gray border-bambu-dark-tertiary hover:bg-bambu-dark-tertiary'
-            }`}
-            title={t('inventory.sortByName')}
-          >
-            {sortState?.column === 'display_name' && sortState.direction === 'asc' ? (
-              <ArrowUp className="w-4 h-4" />
-            ) : sortState?.column === 'display_name' && sortState.direction === 'desc' ? (
-              <ArrowDown className="w-4 h-4" />
-            ) : (
-              <ArrowUpDown className="w-4 h-4" />
-            )}
-            <span className="hidden sm:inline">{t('inventory.sortByName')}</span>
           </button>
           {/* Table / Cards toggle */}
           <div className="flex bg-bambu-dark-primary border border-bambu-dark-tertiary rounded-lg overflow-hidden">
