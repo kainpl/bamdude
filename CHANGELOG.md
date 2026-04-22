@@ -6,9 +6,11 @@ All notable changes to BamDude will be documented in this file.
 
 ---
 
-## [Unreleased]
+## [0.4.0] - Unreleased
 
-Interim work on `feature/upstream-v0.2.3` — partial upstream Bambuddy v0.2.3.2 port and BamDude-native features layered on top of 0.4.0.
+Collects the upstream Bambuddy v0.2.3 → v0.2.3.2 port chain (three upstream releases in one BamDude cycle), three BamDude-native features (`m010` queue-reliability, `m012` MFA cluster, `m013` LibraryFile usage columns, `m014` archive↔library link), and a handful of safety / security / UX fixes. See [`UPDATING.md`](UPDATING.md) for the backup-first upgrade flow.
+
+### v0.2.3.2 port — safety, queue reliability, AMS UX
 
 ### Safety
 
@@ -60,7 +62,7 @@ Interim work on `feature/upstream-v0.2.3` — partial upstream Bambuddy v0.2.3.2
 
 ---
 
-## [0.4.0] - 2026-04-20
+### v0.2.3 + v0.2.3.1 port — baseline for 0.4.0
 
 Upstream Bambuddy v0.2.3 sync. Fifteen commits covering queue-reliability (#887/#936/#961/#967/#972), drying gate (#971), FTP salvage & short-circuit, camera snapshot cleanup (#979), SD/door telemetry, and a half-dozen smaller fixes. New migration `m010` adds `subtask_id` (archives) + `awaiting_plate_clear` (printers).
 
