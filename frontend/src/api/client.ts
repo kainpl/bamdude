@@ -890,6 +890,7 @@ export interface AppSettings {
   time_format: 'system' | '12h' | '24h';
   // Filament tracking
   disable_filament_warnings: boolean;  // Disable filament warnings (print insufficiency and assignment mismatch)
+  spool_display_template: string;  // Template for the synthesised spool display name (see utils/spoolName.ts)
   // Default printer
   default_printer_id: number | null;
   // Dark mode theme settings

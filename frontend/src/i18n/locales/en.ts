@@ -1695,6 +1695,19 @@ export default {
     filamentTracking: 'Filament Tracking',
     filamentTrackingDesc: 'Choose how to track your filament spools. You can use the built-in inventory or connect an external Spoolman server.',
     filamentChecks: 'Filament checks',
+    spoolDisplayName: {
+      title: 'Spool display name',
+      description: 'Template used to build a searchable "Name" column on the Filaments page. Search accepts partial tokens — typing "SUN Bl" finds "SUNLU PETG Black".',
+      templateLabel: 'Template',
+      templateHint: 'Use {placeholder} tokens from the reference below. Unknown placeholders stay visible so typos surface in the preview.',
+      previewLabel: 'Preview',
+      previewFallback: '(no spools in inventory — using sample data)',
+      placeholdersLabel: 'Available placeholders (click to append)',
+      save: 'Save template',
+      resetDefault: 'Reset to default',
+      saved: 'Template saved',
+      saveFailed: 'Failed to save template',
+    },
     disableFilamentWarnings: 'Disable filament warnings',
     disableFilamentWarningsDesc: 'Don\'t show warnings about insufficient filament when printing or queueing',
     trackingModeBuiltIn: 'Built-in Inventory',
@@ -3666,6 +3679,7 @@ export default {
     // Column config
     columns: {
       id: '#',
+      display_name: 'Name',
       added_time: 'Added',
       encode_time: 'Encoded',
       last_used_time: 'Last Used',

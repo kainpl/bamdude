@@ -19,6 +19,7 @@ import { ConfirmModal } from '../components/ConfirmModal';
 import { GcodeEditor } from '../components/GcodeEditor';
 import { CreateUserAdvancedAuthModal } from '../components/CreateUserAdvancedAuthModal';
 import { SpoolmanSettings } from '../components/SpoolmanSettings';
+import { SpoolDisplayNameSettings } from '../components/SpoolDisplayNameSettings';
 import { SpoolCatalogSettings } from '../components/SpoolCatalogSettings';
 import { ColorCatalogSettings } from '../components/ColorCatalogSettings';
 import { ExternalLinksSettings } from '../components/ExternalLinksSettings';
@@ -3803,6 +3804,8 @@ export function SettingsPage() {
           {/* Left Column (1/3) - Mode Selector + AMS Thresholds */}
           <div className="lg:w-1/3 space-y-4">
             <SpoolmanSettings />
+
+            <SpoolDisplayNameSettings />
 
             <Card>
               <CardHeader>

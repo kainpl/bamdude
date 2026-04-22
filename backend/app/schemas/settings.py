@@ -37,6 +37,18 @@ class AppSettings(BaseModel):
         description="Disable insufficient filament warnings when printing or queueing prints",
     )
 
+    # Virtual spool display name — composed per-request on the frontend from the
+    # Spool's columns + computed fields. Available placeholders: {brand},
+    # {material}, {subtype}, {color_name}, {slicer_filament_name}, {note},
+    # {label_weight_g}, {label_weight_kg}, {remaining_g}, {remaining_kg},
+    # {remaining_pct}, {color_hex}, {cost_per_kg}. Unknown placeholders are
+    # kept verbatim so typos surface instead of silently collapsing. Used by
+    # the Filaments page for tokenised substring search and sort-by-name.
+    spool_display_template: str = Field(
+        default="{brand} {material} {color_name}",
+        description="Template for the synthesised spool display name",
+    )
+
     # Updates
     check_updates: bool = Field(default=True, description="Automatically check for updates on startup")
     check_printer_firmware: bool = Field(default=True, description="Check for printer firmware updates from Bambu Lab")
@@ -280,6 +292,7 @@ class AppSettingsUpdate(BaseModel):
     spoolman_disable_weight_sync: bool | None = None
     spoolman_report_partial_usage: bool | None = None
     disable_filament_warnings: bool | None = None
+    spool_display_template: str | None = None
     check_updates: bool | None = None
     check_printer_firmware: bool | None = None
     include_beta_updates: bool | None = None

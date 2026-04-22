@@ -1701,6 +1701,19 @@ export default {
     filamentTracking: 'Відстеження філаменту',
     filamentTrackingDesc: 'Оберіть спосіб відстеження котушок. Можна використовувати вбудований інвентар або підключити зовнішній сервер Spoolman.',
     filamentChecks: 'Перевірки філаменту',
+    spoolDisplayName: {
+      title: 'Відображувана назва котушки',
+      description: 'Шаблон для побудови пошукової колонки "Назва" на сторінці філаменту. Пошук приймає часткові токени — "SUN Bl" знаходить "SUNLU PETG Black".',
+      templateLabel: 'Шаблон',
+      templateHint: 'Використовуйте токени {placeholder} зі списку нижче. Невідомі placeholder\'и залишаються видимими — одруківки буде видно у прев\'ю.',
+      previewLabel: 'Прев\'ю',
+      previewFallback: '(у інвентарі немає котушок — показано приклад)',
+      placeholdersLabel: 'Доступні placeholder\'и (клікніть, щоб додати)',
+      save: 'Зберегти шаблон',
+      resetDefault: 'Скинути до типового',
+      saved: 'Шаблон збережено',
+      saveFailed: 'Не вдалось зберегти шаблон',
+    },
     disableFilamentWarnings: 'Вимкнути попередження про філамент',
     disableFilamentWarningsDesc: 'Не показувати попередження про недостатню кількість філаменту при друку або додаванні в чергу',
     trackingModeBuiltIn: 'Вбудований інвентар',
@@ -3666,6 +3679,7 @@ export default {
     // Column config
     columns: {
       id: '#',
+      display_name: 'Назва',
       added_time: 'Додано',
       encode_time: 'Закодовано',
       last_used_time: 'Останнє використання',
