@@ -396,6 +396,7 @@ export default {
       inQueue_one: '{{count}} друк у черзі',
       inQueue_few: '{{count}} друки у черзі',
       inQueue_many: '{{count}} друків у черзі',
+      inQueue_other: '{{count}} друків у черзі',
     },
     // Controls section
     controls: 'Керування',

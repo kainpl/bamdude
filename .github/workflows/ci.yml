@@ -133,6 +133,10 @@ jobs:
         working-directory: frontend
         run: npm run lint
 
+      - name: Check i18n parity (en/uk)
+        working-directory: frontend
+        run: npm run i18n:check
+
   frontend-security:
     name: Frontend Security
     runs-on: ubuntu-latest

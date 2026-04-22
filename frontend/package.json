@@ -11,7 +11,8 @@
     "test": "vitest",
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "test:ui": "vitest --ui"
+    "test:ui": "vitest --ui",
+    "i18n:check": "node scripts/check-i18n-parity.mjs"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
