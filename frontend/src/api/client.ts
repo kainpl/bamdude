@@ -4755,6 +4755,7 @@ export const api = {
       swap_macro_events?: string[] | null;
       quantity?: number;
       project_id?: number;
+      cleanup_library_after_dispatch?: boolean;
     }
   ) =>
     request<BackgroundDispatchResponse>(

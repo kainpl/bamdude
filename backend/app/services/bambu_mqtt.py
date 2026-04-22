@@ -4149,17 +4149,15 @@ class BambuMQTTClient:
         return True
 
     def home_axes(self, axes: str = "XYZ") -> bool:
-        """Home the specified axes.
+        """Run the printer's full auto-home sequence.
 
-        Args:
-            axes: Axes to home (e.g., "XYZ", "X", "XY", "Z")
-
-        Returns:
-            True if command was sent, False otherwise
+        The ``axes`` argument is ignored: a bare ``G28`` is always sent so
+        Bambu firmware runs its safe multi-step routine (park toolhead →
+        home XY → home Z). Partial-axis variants like ``G28 Z`` skip the
+        toolhead-park step and can crash the bed into the toolhead on H2C
+        / H2D / H2S / X1 where Z-home moves the bed UP — upstream #1052.
         """
-        # G28 homes all axes, G28 X Y Z homes specific axes
-        axes_param = " ".join(axes.upper())
-        return self.send_gcode(f"G28 {axes_param}")
+        return self.send_gcode("G28")
 
     def move_axis(self, axis: str, distance: float, speed: int = 3000) -> bool:
         """Move an axis by a relative distance.

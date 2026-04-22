@@ -1813,7 +1813,19 @@ function PrinterCard({
 
   const homeAxesMutation = useMutation({
     mutationFn: (axes: 'z' | 'xy' | 'all') => api.homeAxes(printer.id, axes),
-    onSuccess: () => showToast(t('printers.bedJog.homingStarted')),
+    onSuccess: () => {
+      showToast(t('printers.bedJog.homingStarted'));
+      // Suppress the "not homed" re-prompt for this printer in the current
+      // session — Auto Home just put the printer in a homed state, so the
+      // next jog click shouldn't re-open the warning modal. Mirrors the flag
+      // set by "Move anyway" so either path closes the modal for the session
+      // (upstream #1052 follow-up).
+      try {
+        sessionStorage.setItem(`bamdude.bedJog.warned.${printer.id}`, '1');
+      } catch {
+        /* ignore */
+      }
+    },
     onError: (error: Error) =>
       showToast(error.message || t('printers.toast.failedToSendCommand'), 'error'),
   });
@@ -3514,7 +3526,7 @@ function PrinterCard({
                                       </FilamentHoverCard>
                                     ) : (
                                       <EmptySlotHoverCard
-                                        configureSlot={tray?.state === 10 ? {
+                                        configureSlot={{
                                           enabled: hasPermission('printers:control'),
                                           onConfigure: () => setConfigureSlotModal({
                                             amsId: ams.id,
@@ -3522,8 +3534,8 @@ function PrinterCard({
                                             trayCount: ams.tray.length,
                                             extruderId: mappedExtruderId,
                                           }),
-                                        } : undefined}
-                                        inventory={tray?.state === 10 && !spoolmanEnabled ? {
+                                        }}
+                                        inventory={spoolmanEnabled ? undefined : {
                                           onAssignSpool: () => setAssignSpoolModal({
                                             printerId: printer.id,
                                             amsId: ams.id,
@@ -3534,7 +3546,7 @@ function PrinterCard({
                                               location: `${getAmsLabel(ams.id, ams.tray.length)} Slot ${slotIdx + 1}`,
                                             },
                                           }),
-                                        } : undefined}
+                                        }}
                                       >
                                         {slotVisual}
                                       </EmptySlotHoverCard>
@@ -3832,7 +3844,7 @@ function PrinterCard({
                                   </FilamentHoverCard>
                                 ) : (
                                   <EmptySlotHoverCard
-                                    configureSlot={tray?.state === 10 ? {
+                                    configureSlot={{
                                       enabled: hasPermission('printers:control'),
                                       onConfigure: () => setConfigureSlotModal({
                                         amsId: ams.id,
@@ -3840,8 +3852,8 @@ function PrinterCard({
                                         trayCount: ams.tray.length,
                                         extruderId: mappedExtruderId,
                                       }),
-                                    } : undefined}
-                                    inventory={tray?.state === 10 && !spoolmanEnabled ? {
+                                    }}
+                                    inventory={spoolmanEnabled ? undefined : {
                                       onAssignSpool: () => setAssignSpoolModal({
                                         printerId: printer.id,
                                         amsId: ams.id,
@@ -3852,7 +3864,7 @@ function PrinterCard({
                                           location: getAmsLabel(ams.id, ams.tray.length),
                                         },
                                       }),
-                                    } : undefined}
+                                    }}
                                   >
                                     {slotVisual}
                                   </EmptySlotHoverCard>
@@ -4335,7 +4347,10 @@ function PrinterCard({
         />
       )}
 
-      {/* Print Modal (after upload) */}
+      {/* Print Modal (after upload) — Direct-Print flow: the upload is transient,
+          so the library row + disk file get deleted after the print dispatches
+          (upstream #730 / #1682b695). Every other api.printLibraryFile caller
+          (File Manager Print, Project Detail Print) leaves the flag unset. */}
       {printAfterUpload && (
         <PrintModal
           mode="reprint"
@@ -4344,6 +4359,7 @@ function PrinterCard({
           initialSelectedPrinterIds={[printer.id]}
           onClose={() => setPrintAfterUpload(null)}
           onSuccess={() => setPrintAfterUpload(null)}
+          cleanupLibraryAfterDispatch
         />
       )}
 
@@ -4749,7 +4765,7 @@ function PrinterCard({
             <div className="flex flex-col gap-2">
               <button
                 onClick={() => {
-                  homeAxesMutation.mutate('z');
+                  homeAxesMutation.mutate('all');
                   setShowNotHomedModal(null);
                 }}
                 className="w-full px-3 py-2 rounded-lg text-xs font-medium bg-bambu-green/20 text-bambu-green hover:bg-bambu-green/30 transition-colors"
@@ -6878,7 +6894,11 @@ export function PrintersPage() {
           <div className="relative w-full sm:w-[28rem] h-9">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray/50" />
             <input
-              type="text"
+              type="search"
+              name="printer-search"
+              autoComplete="off"
+              data-1p-ignore
+              data-lpignore="true"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder={t('printers.search')}

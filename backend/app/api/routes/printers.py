@@ -2442,19 +2442,33 @@ async def bed_jog(
 @router.post("/{printer_id}/home-axes")
 async def home_axes(
     printer_id: int,
-    axes: str = Query("z", description="Axes to home: 'z', 'xy', or 'all'"),
+    axes: str = Query(
+        "all",
+        description=(
+            "Legacy; accepted values are 'z' | 'xy' | 'all'. Always runs the "
+            "printer's full auto-home sequence — see below."
+        ),
+    ),
     _=RequirePermission(Permission.PRINTERS_CONTROL),
     db: AsyncSession = Depends(get_db),
 ):
-    """Home one or more axes via G28."""
+    """Run the printer's full auto-home sequence via bare ``G28``.
+
+    Bambu printers (H2C / H2D / H2S / X1 family) home the Z axis by moving
+    the BED UP toward an endstop at the top of travel. If the toolhead is
+    not already parked out of the way, a bare ``G28 Z`` will crash the bed
+    into the toolhead — upstream #1052 reported exactly that on H2C: the
+    bed rose without stopping because ``G28 Z`` skipped the toolhead-park
+    step that a full ``G28`` runs first.
+
+    The endpoint therefore ignores the ``axes`` argument and always sends
+    a bare ``G28``, which the firmware expands into a safe multi-step
+    sequence (park toolhead → home XY → home Z). The argument is kept
+    only for backward-compat with existing clients; sending an invalid
+    value still returns 400 so typos surface instead of silently proceeding.
+    """
     axes = axes.lower()
-    if axes == "z":
-        gcode = "G28 Z"
-    elif axes == "xy":
-        gcode = "G28 X Y"
-    elif axes == "all":
-        gcode = "G28"
-    else:
+    if axes not in ("z", "xy", "all"):
         raise HTTPException(400, "axes must be 'z', 'xy', or 'all'")
 
     result = await db.execute(select(Printer).where(Printer.id == printer_id))
@@ -2466,10 +2480,10 @@ async def home_axes(
     if not client:
         raise HTTPException(400, "Printer not connected")
 
-    if not client.send_gcode(gcode):
+    if not client.send_gcode("G28"):
         raise HTTPException(500, "Failed to send home command")
 
-    return {"success": True, "message": f"Home {axes} command sent"}
+    return {"success": True, "message": "Full auto-home sequence sent"}
 
 
 @router.post("/{printer_id}/chamber-light")

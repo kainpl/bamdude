@@ -402,10 +402,10 @@ export default {
       down: 'Move plate down',
       disabledWhilePrinting: 'Disabled while printing',
       notHomedTitle: 'Printer is not homed',
-      notHomedMessage: 'The Z axis has not been homed since the last print. Home Z first for safe positioning, or move anyway — soft endstops will be bypassed.',
-      homeZ: 'Home Z',
+      notHomedMessage: 'The printer has not been homed since the last print. Run auto-home first for safe positioning (parks the toolhead, then homes X, Y, and Z), or move anyway — soft endstops will be bypassed.',
+      homeZ: 'Auto Home',
       moveAnyway: 'Move anyway',
-      homingStarted: 'Homing Z axis…',
+      homingStarted: 'Auto-homing printer…',
     },
     // Permissions
     permission: {

@@ -114,12 +114,19 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
     return 'none';
   };
 
+  // Bambu Studio / OrcaSlicer profile names carry a printer/nozzle/variant qualifier
+  // after `@` (e.g. "Devil Design PLA Basic @Bambu Lab H2D 0.4 nozzle (Custom)"),
+  // while the tray's profile is typically the bare base name. Strip the qualifier
+  // before comparing so identical base profiles don't trigger a mismatch warning
+  // (upstream #1047).
+  const stripProfileQualifier = (value: string) => value.split('@')[0].trim();
+
   const checkProfileMatch = (
     spoolProfile: string | undefined | null,
     trayProfile: string | undefined | null
   ): boolean => {
-    const normalizedSpoolProfile = normalizeValue(spoolProfile);
-    const normalizedTrayProfile = normalizeValue(trayProfile);
+    const normalizedSpoolProfile = stripProfileQualifier(normalizeValue(spoolProfile));
+    const normalizedTrayProfile = stripProfileQualifier(normalizeValue(trayProfile));
 
     if (!normalizedSpoolProfile || !normalizedTrayProfile) return false;
 
@@ -141,12 +148,30 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
     !assignedSpoolIds.has(spool.id) && (isExternalSlot || (!spool.tag_uid && !spool.tray_uuid))
   );
 
-  // Stage 1: Filter by tray profile match (unless disabled)
-  const profileFilteredSpools = (!disableFiltering && trayInfo?.profile)
+  // Stage 1: Filter by tray profile match (unless disabled).
+  // Show a spool if EITHER the slicer profile matches exactly (qualifier stripped)
+  // OR the material overlaps with the tray's material (partial-match both directions
+  // — "PLA" spool accepts a "PLA Basic" slot and vice versa). Manually-added inventory
+  // spools typically have no slicer_filament_name; gating on strict profile equality
+  // alone hid them even when the material matched (upstream #1047).
+  const profileFilteredSpools = (!disableFiltering && (trayInfo?.profile || trayInfo?.type))
     ? manualSpools?.filter((spool: InventorySpool) => {
-        const spoolProfile = normalizeValue(spool.slicer_filament_name) || normalizeValue(spool.slicer_filament);
-        const trayProfile = normalizeValue(trayInfo.profile);
-        return spoolProfile === trayProfile;
+        const spoolProfile = stripProfileQualifier(
+          normalizeValue(spool.slicer_filament_name) || normalizeValue(spool.slicer_filament)
+        );
+        const trayProfile = stripProfileQualifier(normalizeValue(trayInfo?.profile));
+        const spoolMaterial = normalizeValue(spool.material);
+        const trayMaterial = normalizeValue(trayInfo?.type);
+        if (trayProfile && spoolProfile && spoolProfile === trayProfile) return true;
+        if (trayMaterial && spoolMaterial) {
+          return (
+            spoolMaterial === trayMaterial ||
+            trayMaterial.includes(spoolMaterial) ||
+            spoolMaterial.includes(trayMaterial)
+          );
+        }
+        // Neither side has filterable info on whatever dimension remains — show it.
+        return !spoolProfile && !spoolMaterial;
       })
     : manualSpools;
 
