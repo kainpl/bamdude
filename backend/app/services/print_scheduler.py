@@ -7,6 +7,7 @@ import time
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Literal
 
 import defusedxml.ElementTree as ET
 from sqlalchemy import select
@@ -20,13 +21,6 @@ from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
 from backend.app.models.settings import Settings
 from backend.app.models.smart_plug import SmartPlug
-from backend.app.services.bambu_ftp import (
-    delete_file_async,
-    get_ftp_retry_settings,
-    list_files_async,
-    upload_file_async,
-    with_ftp_retry,
-)
 from backend.app.services.notification_service import notification_service
 from backend.app.services.printer_manager import (
     first_drying_blocking_reason,
@@ -1352,14 +1346,13 @@ class PrintScheduler:
             await self._power_off_if_needed(db, item)
             return
 
-        # Determine source: archive or library file
+        # Determine source: archive or library file. file_path is kept so we
+        # can still do the "file exists on disk" guard before delegating.
         archive = None
         library_file = None
-        file_path = None
-        filename = None
+        file_path: Path | None = None
 
         if item.archive_id:
-            # Print from archive
             result = await db.execute(select(PrintArchive).where(PrintArchive.id == item.archive_id))
             archive = result.scalar_one_or_none()
             if not archive:
@@ -1369,10 +1362,8 @@ class PrintScheduler:
                 return
 
             file_path = settings.base_dir / archive.file_path
-            filename = archive.filename
 
         elif item.library_file_id:
-            # Print from library file (file manager)
             result = await db.execute(select(LibraryFile).where(LibraryFile.id == item.library_file_id))
             library_file = result.scalar_one_or_none()
             if not library_file:
@@ -1380,10 +1371,8 @@ class PrintScheduler:
                 logger.error("Queue item %s: Library file %s not found", item.id, item.library_file_id)
                 await self._power_off_if_needed(db, item)
                 return
-            # Library files store absolute paths
             lib_path = Path(library_file.file_path)
             file_path = lib_path if lib_path.is_absolute() else settings.base_dir / library_file.file_path
-            filename = library_file.filename
 
         else:
             # Neither archive nor library file specified
@@ -1392,217 +1381,16 @@ class PrintScheduler:
             await self._power_off_if_needed(db, item)
             return
 
-        # Check file exists on disk
+        # Check file exists on disk (fast fail before any dispatch work).
         if not file_path.exists():
             await self._fail_item(db, item, "Source file not found on disk")
             logger.error("Queue item %s: File not found: %s", item.id, file_path)
             await self._power_off_if_needed(db, item)
             return
 
-        # Gcode post-processing: patch 3MF if the operator toggled off
-        # the vibration fast-check for this queue item.  Must run BEFORE
-        # archive_print so the archive stores the patched file (its
-        # content_hash matches what will land on SD — important for
-        # on_print_complete chain-lookup when _expected_prints misses).
-        upload_file_path = file_path
-        _patch_cleanup_dir = None
-        _applied_patches: list[str] | None = None
-        if not item.mesh_mode_fast_check:
-            import asyncio as _asyncio
-
-            from backend.app.services.gcode_patcher import patch_mesh_mode_fast_check
-
-            patched_path, patches = await _asyncio.to_thread(patch_mesh_mode_fast_check, file_path)
-            if patches:
-                upload_file_path = patched_path
-                _patch_cleanup_dir = patched_path.parent
-                _applied_patches = patches
-                logger.info("Queue item %s: 3MF patched (%s)", item.id, patches)
-
-        # Create archive from the file that will ACTUALLY be sent to the
-        # printer (patched or original).  content_hash must match what lands
-        # on SD so on_print_complete chain-lookup works even if
-        # _expected_prints misses.
-        if library_file:
-            try:
-                from backend.app.services.archive import ArchiveService
-
-                archive_service = ArchiveService(db)
-                archive = await archive_service.archive_print(
-                    printer_id=item.queue_id,
-                    source_file=upload_file_path,
-                    original_filename=filename,
-                    created_by_id=item.created_by_id,
-                    project_id=item.project_id,
-                    source_content_hash=library_file.file_hash,
-                    applied_patches=_applied_patches,
-                )
-                if archive:
-                    if library_file.swap_compatible:
-                        archive.swap_compatible = True
-                    item.archive_id = archive.id
-                    await db.flush()
-                    logger.info(
-                        "Queue item %s: Created archive %s from library file %s",
-                        item.id,
-                        archive.id,
-                        item.library_file_id,
-                    )
-            except Exception as e:
-                logger.warning("Queue item %s: Failed to create archive from library file: %s", item.id, e)
-
-        # Upload file to printer via FTP
-        # Use a clean filename to avoid issues with double extensions like .gcode.3mf
-        base_name = filename
-        if base_name.endswith(".gcode.3mf"):
-            base_name = base_name[:-10]  # Remove .gcode.3mf
-        elif base_name.endswith(".3mf"):
-            base_name = base_name[:-4]  # Remove .3mf
-        remote_filename = f"{base_name}.3mf"
-        # Sanitize: firmware parses ftp://{filename} as a URL, spaces break it
-        remote_filename = remote_filename.replace(" ", "_")
-        # Upload to root directory (not /cache/) - the start_print command references
-        # files by name only (ftp://{filename}), so they must be in the root
-        remote_path = f"/{remote_filename}"
-
-        # Get FTP retry settings
-        ftp_retry_enabled, ftp_retry_count, ftp_retry_delay, ftp_timeout = await get_ftp_retry_settings()
-
-        logger.info(
-            f"Queue item {item.id}: FTP upload starting - printer={printer.name} ({printer.model}), "
-            f"ip={printer.ip_address}, file={remote_filename}, local_path={file_path}, "
-            f"retry_enabled={ftp_retry_enabled}, retry_count={ftp_retry_count}, timeout={ftp_timeout}"
-        )
-
-        # Delete existing file from root (avoids 553 error on overwrite)
-        try:
-            logger.debug("Queue item %s: Deleting existing file %s if present...", item.id, remote_path)
-            delete_result = await delete_file_async(
-                printer.ip_address,
-                printer.access_code,
-                remote_path,
-                socket_timeout=ftp_timeout,
-                printer_model=printer.model,
-            )
-            logger.debug("Queue item %s: Delete result: %s", item.id, delete_result)
-        except Exception as e:
-            logger.debug("Queue item %s: Delete failed (may not exist): %s", item.id, e)
-
-        # Clean up /cache/ - delete stale .3mf and .bbl files from previous prints
-        # The printer unpacks 3MF into /cache/ as {plate_id}_{base_name}.bbl
-        sanitized_base = remote_filename[:-4] if remote_filename.endswith(".3mf") else remote_filename  # strip .3mf
-        try:
-            cache_files = await list_files_async(
-                printer.ip_address,
-                printer.access_code,
-                "/cache",
-                socket_timeout=ftp_timeout,
-                printer_model=printer.model,
-            )
-            for f in cache_files:
-                fname = f.get("name", "")
-                if f.get("is_dir"):
-                    continue
-                # Match: same-name .3mf or {plate_id}_{base_name}.bbl
-                is_matching_3mf = fname == remote_filename
-                is_matching_bbl = fname.endswith(f"_{sanitized_base}.bbl")
-                if is_matching_3mf or is_matching_bbl:
-                    try:
-                        await delete_file_async(
-                            printer.ip_address,
-                            printer.access_code,
-                            f"/cache/{fname}",
-                            socket_timeout=ftp_timeout,
-                            printer_model=printer.model,
-                        )
-                        logger.info("Queue item %s: Deleted /cache/%s", item.id, fname)
-                    except Exception:
-                        pass
-        except Exception as e:
-            logger.debug("Queue item %s: Cache cleanup failed (non-critical): %s", item.id, e)
-
-        try:
-            if ftp_retry_enabled:
-                uploaded = await with_ftp_retry(
-                    upload_file_async,
-                    printer.ip_address,
-                    printer.access_code,
-                    upload_file_path,
-                    remote_path,
-                    socket_timeout=ftp_timeout,
-                    printer_model=printer.model,
-                    max_retries=ftp_retry_count,
-                    retry_delay=ftp_retry_delay,
-                    operation_name=f"Upload print to {printer.name}",
-                )
-            else:
-                uploaded = await upload_file_async(
-                    printer.ip_address,
-                    printer.access_code,
-                    upload_file_path,
-                    remote_path,
-                    socket_timeout=ftp_timeout,
-                    printer_model=printer.model,
-                )
-        except Exception as e:
-            uploaded = False
-            logger.error("Queue item %s: FTP error: %s (type: %s)", item.id, e, type(e).__name__)
-        finally:
-            # Clean up patched temp file after upload (original stays intact).
-            if _patch_cleanup_dir:
-                import shutil
-
-                shutil.rmtree(_patch_cleanup_dir, ignore_errors=True)
-
-        if not uploaded:
-            error_msg = (
-                "Failed to upload file to printer. Check if SD card is inserted and properly formatted (FAT32/exFAT). "
-                "See server logs for detailed diagnostics."
-            )
-            await self._fail_item(db, item, error_msg)
-            logger.error(
-                f"Queue item {item.id}: FTP upload failed - printer={printer.name}, model={printer.model}, "
-                f"ip={printer.ip_address}. Check logs above for storage diagnostics and specific error codes."
-            )
-
-            # Send failure notification
-            await notification_service.on_queue_job_failed(
-                job_name=filename.replace(".gcode.3mf", "").replace(".3mf", ""),
-                printer_id=printer.id,
-                printer_name=printer.name,
-                reason="Failed to upload file to printer",
-                db=db,
-            )
-            await self._power_off_if_needed(db, item)
-            return
-
-        # Parse AMS mapping if stored
-        ams_mapping = None
-        if item.ams_mapping:
-            try:
-                ams_mapping = json.loads(item.ams_mapping)
-            except json.JSONDecodeError:
-                logger.warning("Queue item %s: Invalid AMS mapping JSON, ignoring", item.id)
-
-        # Register as expected print so we don't create a duplicate archive
-        # Only applicable for archive-based prints
-        if archive:
-            from backend.app.main import register_expected_print
-
-            register_expected_print(
-                item.queue_id,
-                remote_filename,
-                archive.id,
-                ams_mapping=ams_mapping,
-                created_by_id=item.created_by_id,
-            )
-
-        # IMPORTANT: Set status to "printing" BEFORE sending the print command.
-        # This prevents phantom reprints if the backend crashes/restarts after the
-        # print command is sent but before the status update is committed.
-        # If we crash after this commit but before start_print(), the item will be
-        # in "printing" status without actually printing - but that's safer than
-        # accidentally reprinting the same file hours later.
+        # Flip item to "printing" BEFORE dispatch starts so that a crash
+        # mid-FTP doesn't leave the item re-dispatchable. Backed by
+        # set_queue_printing to keep the printer_queues counters in lockstep.
         from backend.app.services.queue_counters import set_queue_printing, update_queue_counters
 
         item.status = "printing"
@@ -1611,155 +1399,143 @@ class PrintScheduler:
         await update_queue_counters(db, item.queue_id)
         await db.commit()
 
-        # No need to consume a plate-cleared flag here — in the new awaiting-based
-        # model the gate was released when the user confirmed (or by the clear-plate
-        # endpoint / swap macro). If we reached this dispatch point, is_awaiting was
-        # already False (see _is_printer_idle gate).
-        logger.info("Queue item %s: Status set to 'printing', sending print command...", item.id)
-
-        # Swap-mode start macro — fires before the print starts.
-        swap_events = []
-        if item.execute_swap_macros and item.swap_macro_events:
-            import json as _json
-
+        # Parse per-item options into the shape background_dispatch expects.
+        ams_mapping: list[int] | None = None
+        if item.ams_mapping:
             try:
-                swap_events = _json.loads(item.swap_macro_events) if isinstance(item.swap_macro_events, str) else []
+                ams_mapping = json.loads(item.ams_mapping)
+            except json.JSONDecodeError:
+                logger.warning("Queue item %s: Invalid AMS mapping JSON, ignoring", item.id)
+
+        swap_events: list[str] = []
+        if item.execute_swap_macros and item.swap_macro_events:
+            try:
+                swap_events = json.loads(item.swap_macro_events) if isinstance(item.swap_macro_events, str) else []
             except (ValueError, TypeError):
                 swap_events = []
 
-        if item.execute_swap_macros and "swap_mode_start" in swap_events:
-            from backend.app.services.macro_executor import find_swap_macro
+        options: dict[str, Any] = {
+            "mesh_mode_fast_check": item.mesh_mode_fast_check,
+            "ams_mapping": ams_mapping,
+            "plate_id": item.plate_id or 1,
+            "bed_levelling": item.bed_levelling,
+            "flow_cali": item.flow_cali,
+            "layer_inspect": item.layer_inspect,
+            "timelapse": item.timelapse,
+            "use_ams": item.use_ams,
+            "execute_swap_macros": item.execute_swap_macros,
+            "swap_macro_events": swap_events,
+        }
 
-            macro = await find_swap_macro(db, "swap_mode_start", printer)
-            if macro and macro.gcode:
-                logger.info(
-                    "Queue item %s: Running swap start macro '%s' on %s...",
+        if archive:
+            dispatch_kind: Literal["reprint_archive", "print_library_file"] = "reprint_archive"
+            dispatch_source_id = archive.id
+            dispatch_source_name = archive.filename
+        elif library_file:
+            dispatch_kind = "print_library_file"
+            dispatch_source_id = library_file.id
+            dispatch_source_name = library_file.filename
+        else:
+            # Should have been caught above, but belt-and-braces.
+            await self._fail_item(db, item, "No source file specified")
+            await self._power_off_if_needed(db, item)
+            return
+
+        # Delegate the full patch → archive → FTP → register_expected → MQTT
+        # start pipeline to the background-dispatch runner. It sets
+        # ``job.outcome`` before returning. Queue-item awareness wires
+        # ``item.archive_id`` inside the same txn as archive creation, so the
+        # row we already flipped to "printing" has a valid archive_id before
+        # the printer actually reports RUNNING.
+        # Lazy import — background_dispatch + print_scheduler have a two-way
+        # relationship (dispatcher calls back into scheduler's stagger helper).
+        from backend.app.services.background_dispatch import background_dispatch
+
+        job_name_short = dispatch_source_name.replace(".gcode.3mf", "").replace(".3mf", "")
+
+        try:
+            outcome = await background_dispatch.run_from_queue_item(
+                kind=dispatch_kind,
+                source_id=dispatch_source_id,
+                source_name=dispatch_source_name,
+                printer_id=item.queue_id,
+                printer_name=printer.name,
+                options=options,
+                requested_by_user_id=item.created_by_id,
+                requested_by_username=None,
+                project_id=item.project_id,
+                queue_item_id=item.id,
+            )
+        except Exception as e:  # pragma: no cover — belt-and-braces
+            logger.exception("Queue item %s: run_from_queue_item raised: %s", item.id, e)
+            await self._fail_item(db, item, f"Dispatch error: {e}")
+            await self._power_off_if_needed(db, item)
+            return
+
+        if not outcome.get("success"):
+            err = outcome.get("error") or "Dispatch failed"
+            await self._fail_item(db, item, err)
+            await notification_service.on_queue_job_failed(
+                job_name=job_name_short,
+                printer_id=printer.id,
+                printer_name=printer.name,
+                reason=err,
+                db=db,
+            )
+            await self._power_off_if_needed(db, item)
+            return
+
+        # Refresh the item so scheduler sees the archive_id the dispatcher
+        # just assigned (for library_file dispatches).
+        await db.refresh(item)
+        logger.info("Queue item %s: Dispatch succeeded — archive_id=%s", item.id, item.archive_id)
+
+        # Watchdog for pre_state → transition, swap-aware. Upstream #1078 —
+        # see the big comment block that was here in the pre-refactor code.
+        _post_status = printer_manager.get_status(item.queue_id)
+        _pre_state = _post_status.state if _post_status else None
+        _pre_subtask_id = _post_status.subtask_id if _post_status else None
+        if _pre_state:
+            asyncio.create_task(
+                self._watchdog_print_start(
                     item.id,
-                    macro.name,
-                    printer.name,
+                    item.queue_id,
+                    _pre_state,
+                    _pre_subtask_id,
+                    swap_start_fired="swap_mode_start" in swap_events,
                 )
-                success, msg = await printer_manager.execute_macro_and_wait(item.queue_id, macro.gcode, macro.name)
-                if not success:
-                    logger.error("Queue item %s: Swap start macro failed: %s — failing item", item.id, msg)
-                    await self._fail_item(db, item, f"Swap start macro failed: {msg}")
-                    return
+            )
 
-        # Start the print with AMS mapping, plate_id and print options
-        started = printer_manager.start_print(
-            item.queue_id,
-            remote_filename,
-            plate_id=item.plate_id or 1,
-            ams_mapping=ams_mapping,
-            bed_levelling=item.bed_levelling,
-            flow_cali=item.flow_cali,
-            layer_inspect=item.layer_inspect,
-            timelapse=item.timelapse,
-            use_ams=item.use_ams,
+        # Estimated time for the notification — prefer archive metadata,
+        # fall back to library_file.
+        estimated_time = None
+        if item.archive_id:
+            arch_row = await db.get(PrintArchive, item.archive_id)
+            if arch_row is not None and arch_row.print_time_seconds:
+                estimated_time = arch_row.print_time_seconds
+        if estimated_time is None and library_file and library_file.print_time_seconds:
+            estimated_time = library_file.print_time_seconds
+
+        await notification_service.on_queue_job_started(
+            job_name=job_name_short,
+            printer_id=printer.id,
+            printer_name=printer.name,
+            db=db,
+            estimated_time=estimated_time,
         )
 
-        if started:
-            # Register swap config for on_print_complete to pick up.
-            if swap_events:
-                from backend.app.main import register_swap_config
+        try:
+            from backend.app.services.mqtt_relay import mqtt_relay
 
-                register_swap_config(
-                    item.queue_id,
-                    {
-                        "execute_swap_macros": True,
-                        "swap_macro_events": swap_events,
-                    },
-                )
-            logger.info("Queue item %s: Print started successfully - %s", item.id, filename)
-
-            # Watchdog: if the printer never transitions out of pre_state, the
-            # MQTT publish was accepted locally but didn't reach the printer
-            # (half-broken session — #887/#936 / #967). Schedule a background
-            # task that reverts the item back to pending and force-reconnects
-            # the MQTT session. The swap-mode branch skips the revert to avoid
-            # re-firing swap_mode_start on the next dispatch — see below.
-            #
-            # H2D Pro firmware (01.01.00.00) keeps state=FINISH for 48-55 s
-            # after accepting project_file before transitioning to PREPARE —
-            # longer than our old 45 s timeout — so we also capture
-            # pre_subtask_id as a second "command landed" signal: the printer
-            # echoes the submission_id we minted in bambu_mqtt._publish_project
-            # back in its next push_status.subtask_id, well before gcode_state
-            # changes on slow models. Watchdog exits early on EITHER a state
-            # change OR a subtask_id advance. Upstream #1078.
-            _post_status = printer_manager.get_status(item.printer_id)
-            _pre_state = _post_status.state if _post_status else None
-            _pre_subtask_id = _post_status.subtask_id if _post_status else None
-            if _pre_state:
-                asyncio.create_task(
-                    self._watchdog_print_start(
-                        item.id,
-                        item.printer_id,
-                        _pre_state,
-                        _pre_subtask_id,
-                        swap_start_fired="swap_mode_start" in swap_events,
-                    )
-                )
-
-            # Get estimated time for notification
-            estimated_time = None
-            if archive and archive.print_time_seconds:
-                estimated_time = archive.print_time_seconds
-            elif library_file and library_file.print_time_seconds:
-                estimated_time = library_file.print_time_seconds
-
-            # Send job started notification
-            await notification_service.on_queue_job_started(
-                job_name=filename.replace(".gcode.3mf", "").replace(".3mf", ""),
+            await mqtt_relay.on_queue_job_started(
+                job_id=item.id,
+                filename=dispatch_source_name,
                 printer_id=printer.id,
                 printer_name=printer.name,
-                db=db,
-                estimated_time=estimated_time,
+                printer_serial=printer.serial_number,
             )
-
-            # MQTT relay - publish queue job started
-            try:
-                from backend.app.services.mqtt_relay import mqtt_relay
-
-                await mqtt_relay.on_queue_job_started(
-                    job_id=item.id,
-                    filename=filename,
-                    printer_id=printer.id,
-                    printer_name=printer.name,
-                    printer_serial=printer.serial_number,
-                )
-            except Exception:
-                pass  # Don't fail if MQTT fails
-        else:
-            # Clean up uploaded file from SD card to prevent phantom prints
-            try:
-                await delete_file_async(
-                    printer.ip_address,
-                    printer.access_code,
-                    remote_path,
-                    printer_model=printer.model,
-                )
-            except Exception:
-                pass  # Best-effort - don't fail the error handler
-
-            # Print command failed - revert status
-            await self._fail_item(db, item, "Failed to send print command to printer")
-            logger.error(
-                f"Queue item {item.id}: Failed to start print on {printer.name} ({printer.model}) - "
-                f"printer_manager.start_print() returned False. "
-                f"This may indicate: printer not connected, MQTT error, unsupported model configuration, or firmware issue. "
-                f"Check printer status and backend logs for details."
-            )
-
-            # Send failure notification
-            await notification_service.on_queue_job_failed(
-                job_name=filename.replace(".gcode.3mf", "").replace(".3mf", ""),
-                printer_id=printer.id,
-                printer_name=printer.name,
-                reason="Failed to send print command to printer - check printer connection and status",
-                db=db,
-            )
-
-            await self._power_off_if_needed(db, item)
+        except Exception:
+            pass  # Don't fail the scheduler if the relay misbehaves.
 
     @staticmethod
     async def _watchdog_print_start(

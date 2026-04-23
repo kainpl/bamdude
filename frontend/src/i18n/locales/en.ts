@@ -1968,6 +1968,18 @@ export default {
     macroEvents: {
       swap_mode_start: 'Swap Mode. Start',
       swap_mode_change_table: 'Swap Mode. Change Table',
+      print_started: 'Print started',
+    },
+    macroActionType: 'Action type',
+    macroActionTypeGcode: 'G-code',
+    macroActionTypeMqtt: 'MQTT action',
+    macroMqttAction: 'MQTT action',
+    macroMqttActionDescription: 'This macro invokes a named printer command over MQTT (no G-code is sent).',
+    macroDelaySeconds: 'Delay before firing (seconds)',
+    macroDelayHint: '0 = fire immediately on event. Useful for letting heat-up / PREPARE finish first.',
+    mqttActions: {
+      chamberLightOff: 'Chamber light — off',
+      chamberLightOn: 'Chamber light — on',
     },
     newWindow: 'New Window',
     embeddedOverlay: 'Embedded Overlay',

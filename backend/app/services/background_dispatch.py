@@ -57,6 +57,17 @@ class PrintDispatchJob:
     requested_by_username: str | None = None
     project_id: int | None = None
     cleanup_library_after_dispatch: bool = False
+    # Link back to a ``print_queue.id`` when the dispatch was requested by
+    # the scheduler for a queue item.  The runner updates the queue item's
+    # ``archive_id`` once the archive row is created so the two FSMs stay
+    # in sync without a second DB round-trip from the scheduler.
+    queue_item_id: int | None = None
+    # Signalled at the very end of ``_run_*`` (success / failure / cancel)
+    # so ``run_from_queue_item`` callers can await the outcome.
+    completion_event: asyncio.Event = field(default_factory=asyncio.Event)
+    # Populated by the runner before it sets ``completion_event``.  Shape:
+    # ``{"success": bool, "archive_id": int | None, "error": str | None, "cancelled": bool}``.
+    outcome: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -152,6 +163,81 @@ class BackgroundDispatchService:
         """Get current dispatch queue state snapshot for newly connected clients."""
         async with self._lock:
             return self._build_state_payload_unlocked()
+
+    async def run_from_queue_item(
+        self,
+        *,
+        kind: Literal["reprint_archive", "print_library_file"],
+        source_id: int,
+        source_name: str,
+        printer_id: int,
+        printer_name: str,
+        options: dict[str, Any],
+        requested_by_user_id: int | None,
+        requested_by_username: str | None,
+        project_id: int | None = None,
+        queue_item_id: int,
+    ) -> dict[str, Any]:
+        """Run a dispatch inline (bypass queue) on behalf of the scheduler.
+
+        The scheduler already gates on stagger + printer-idle, so we don't
+        need to re-enqueue through the BackgroundDispatch queue here — we
+        run the job directly, still registering it as "active" so the UI
+        shows it while the FTP upload and print-start happen. Returns the
+        job's ``outcome`` dict once ``_run_*`` signals completion.
+        """
+        async with self._lock:
+            job = PrintDispatchJob(
+                id=self._next_job_id,
+                kind=kind,
+                source_id=source_id,
+                source_name=source_name,
+                printer_id=printer_id,
+                printer_name=printer_name,
+                options=options,
+                requested_by_user_id=requested_by_user_id,
+                requested_by_username=requested_by_username,
+                project_id=project_id,
+                queue_item_id=queue_item_id,
+            )
+            self._next_job_id += 1
+            self._active_jobs[job.id] = ActiveDispatchState(job=job, message=f"Queue dispatch to {printer_name}...")
+            payload = self._build_state_payload_unlocked(
+                recent_event={
+                    "status": "dispatched",
+                    "job_id": job.id,
+                    "source_name": source_name,
+                    "printer_id": printer_id,
+                    "printer_name": printer_name,
+                    "message": f"Queue dispatching to {printer_name}",
+                }
+            )
+
+        await ws_manager.broadcast({"type": "background_dispatch", "data": payload})
+
+        try:
+            await self._process_job(job)
+        except DispatchJobCancelled:
+            pass  # outcome.cancelled already set by the runner
+        except Exception:
+            # outcome.error already set; logged inside runner
+            pass
+        finally:
+            async with self._lock:
+                self._active_jobs.pop(job.id, None)
+                done_payload = self._build_state_payload_unlocked(
+                    recent_event={
+                        "status": "completed" if job.outcome.get("success") else "failed",
+                        "job_id": job.id,
+                        "source_name": source_name,
+                        "printer_id": printer_id,
+                        "printer_name": printer_name,
+                        "message": job.outcome.get("error") or "done",
+                    }
+                )
+            await ws_manager.broadcast({"type": "background_dispatch", "data": done_payload})
+
+        return dict(job.outcome)
 
     async def dispatch_print_library_file(
         self,
@@ -547,6 +633,8 @@ class BackgroundDispatchService:
     async def _run_reprint_archive(self, job: PrintDispatchJob):
         from backend.app.main import register_expected_print
 
+        job.outcome = {"success": False, "archive_id": None, "error": None, "cancelled": False}
+
         async with async_session() as db:
             service = ArchiveService(db)
             archive = await service.get_archive(job.source_id)
@@ -797,9 +885,17 @@ class BackgroundDispatchService:
                         job.requested_by_user_id,
                         job.requested_by_username,
                     )
+
+                job.outcome = {"success": True, "archive_id": archive.id, "error": None, "cancelled": False}
             except DispatchJobCancelled:
                 await self._set_active_message(job, f"Cancelled upload on {printer_name}.")
+                job.outcome = {"success": False, "archive_id": None, "error": "Cancelled", "cancelled": True}
                 raise
+            except Exception as e:
+                job.outcome = {"success": False, "archive_id": None, "error": str(e), "cancelled": False}
+                raise
+            finally:
+                job.completion_event.set()
 
     async def _run_swap_macro_if_needed(
         self,
@@ -841,6 +937,10 @@ class BackgroundDispatchService:
 
     async def _run_print_library_file(self, job: PrintDispatchJob):
         from backend.app.main import register_expected_print
+
+        # Seeded in case any early branch raises — keeps the outcome shape
+        # consistent for queue-item callers awaiting completion_event.
+        job.outcome = {"success": False, "archive_id": None, "error": None, "cancelled": False}
 
         async with async_session() as db:
             lib_file = await db.scalar(select(LibraryFile).where(LibraryFile.id == job.source_id))
@@ -910,6 +1010,16 @@ class BackgroundDispatchService:
             )
             if not archive:
                 raise RuntimeError("Failed to create archive")
+
+            # Queue-item dispatches need their archive_id updated in the same
+            # txn so the scheduler's follow-up logic (status flip, WS push,
+            # notification) sees a consistent row.
+            if job.queue_item_id:
+                from backend.app.models.print_queue import PrintQueueItem
+
+                q_item = await db.get(PrintQueueItem, job.queue_item_id)
+                if q_item is not None:
+                    q_item.archive_id = archive.id
 
             await db.flush()
 
@@ -1158,10 +1268,18 @@ class BackgroundDispatchService:
                             cleanup_path,
                             cleanup_err,
                         )
+
+                job.outcome = {"success": True, "archive_id": archive.id, "error": None, "cancelled": False}
             except DispatchJobCancelled:
                 await db.rollback()
                 await self._set_active_message(job, f"Cancelled upload on {printer_name}.")
+                job.outcome = {"success": False, "archive_id": None, "error": "Cancelled", "cancelled": True}
                 raise
+            except Exception as e:
+                job.outcome = {"success": False, "archive_id": None, "error": str(e), "cancelled": False}
+                raise
+            finally:
+                job.completion_event.set()
 
     @staticmethod
     async def _verify_print_response(

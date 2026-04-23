@@ -25,17 +25,20 @@ router = APIRouter(prefix="/macros", tags=["macros"])
 MACRO_EVENTS = {
     "swap_mode_start": "Swap Mode - Start Sequence",
     "swap_mode_change_table": "Swap Mode - Change Table",
+    "print_started": "Print Started (gcode_state → RUNNING)",
 }
 
 
 @router.get("/meta")
 async def get_macro_meta():
-    """Get metadata for macro UI: events, printer models, swap profiles."""
+    """Get metadata for macro UI: events, printer models, swap profiles, mqtt actions."""
+    from backend.app.core.mqtt_macro_actions import catalog_for_meta
     from backend.app.core.swap_profiles import SWAP_PROFILES
     from backend.app.utils.printer_model_names import PRINTER_MODEL_DISPLAY_NAMES
 
     # Events that are meaningful only in swap-mode context - frontend uses
-    # this list to decide when to show the "Swap profile" picker.
+    # this list to decide when to show the "Swap profile" picker and to
+    # hide swap_mode_only for non-swap events.
     swap_events = ["swap_mode_start", "swap_mode_change_table"]
 
     return {
@@ -43,6 +46,7 @@ async def get_macro_meta():
         "swap_events": swap_events,
         "printer_models": PRINTER_MODEL_DISPLAY_NAMES,
         "swap_profiles": [{"id": pid, **profile} for pid, profile in SWAP_PROFILES.items()],
+        "mqtt_actions": catalog_for_meta(),
     }
 
 
@@ -97,6 +101,27 @@ async def get_macro(
     return macro
 
 
+def _validate_macro_action(action_type: str, mqtt_action: str | None, gcode: str | None) -> None:
+    """Cross-field validation for action_type + mqtt_action + gcode.
+
+    Reused by create and patch paths so errors stay consistent.
+    Raises ``HTTPException`` on mismatch.
+    """
+    from backend.app.core.mqtt_macro_actions import MQTT_MACRO_ACTIONS
+
+    if action_type not in ("gcode", "mqtt_action"):
+        raise HTTPException(400, f"Unknown action_type '{action_type}'")
+
+    if action_type == "mqtt_action":
+        if not mqtt_action:
+            raise HTTPException(400, "action_type='mqtt_action' requires mqtt_action to be set")
+        if mqtt_action not in MQTT_MACRO_ACTIONS:
+            raise HTTPException(
+                400,
+                f"Unknown mqtt_action '{mqtt_action}'. Valid options: {sorted(MQTT_MACRO_ACTIONS)}",
+            )
+
+
 @router.post("/", response_model=MacroResponse)
 async def create_macro(
     data: MacroCreate,
@@ -104,6 +129,8 @@ async def create_macro(
     _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
     """Create a custom macro."""
+    _validate_macro_action(data.action_type, data.mqtt_action, data.gcode)
+
     macro = Macro(
         name=data.name,
         description=data.description,
@@ -111,6 +138,9 @@ async def create_macro(
         swap_mode_only=data.swap_mode_only,
         swap_profile=(data.swap_profile or None),
         event=data.event,
+        action_type=data.action_type,
+        mqtt_action=data.mqtt_action if data.action_type == "mqtt_action" else None,
+        delay_seconds=data.delay_seconds,
         gcode=data.gcode,
         enabled=data.enabled,
         is_custom=True,
@@ -118,7 +148,7 @@ async def create_macro(
     db.add(macro)
     await db.commit()
     await db.refresh(macro)
-    logger.info("Created custom macro: %s (event=%s)", macro.name, macro.event)
+    logger.info("Created custom macro: %s (event=%s, type=%s)", macro.name, macro.event, macro.action_type)
     return macro
 
 
@@ -144,6 +174,18 @@ async def update_macro(
     # Treat empty-string swap_profile from the client as "clear binding".
     if update_data.get("swap_profile") == "":
         update_data["swap_profile"] = None
+
+    # Validate action_type / mqtt_action pair against the catalog. Use the
+    # incoming update when present, else fall back to the stored row.
+    if "action_type" in update_data or "mqtt_action" in update_data:
+        next_action_type = update_data.get("action_type", macro.action_type)
+        next_mqtt_action = update_data.get("mqtt_action", macro.mqtt_action)
+        next_gcode = update_data.get("gcode", macro.gcode)
+        _validate_macro_action(next_action_type, next_mqtt_action, next_gcode)
+        # Clear mqtt_action when switching back to gcode so we don't carry
+        # stale bindings.
+        if next_action_type == "gcode":
+            update_data["mqtt_action"] = None
 
     for field, value in update_data.items():
         setattr(macro, field, value)
@@ -198,8 +240,17 @@ async def execute_macro(
     if not macro.enabled:
         raise HTTPException(400, "Macro is disabled")
 
-    if not macro.gcode or not macro.gcode.strip():
-        raise HTTPException(400, "Macro has no GCode content")
+    # Content guard depends on action_type: gcode needs non-empty gcode;
+    # mqtt_action needs a valid catalog entry (validated at create/patch time
+    # but we re-check here in case of stale rows from before migration m017).
+    if macro.action_type == "gcode":
+        if not macro.gcode or not macro.gcode.strip():
+            raise HTTPException(400, "Macro has no GCode content")
+    else:
+        from backend.app.core.mqtt_macro_actions import get_action
+
+        if not macro.mqtt_action or get_action(macro.mqtt_action) is None:
+            raise HTTPException(400, f"Macro mqtt_action '{macro.mqtt_action}' is unknown")
 
     # Get printer
     result = await db.execute(select(Printer).where(Printer.id == printer_id))
@@ -234,22 +285,25 @@ async def execute_macro(
     if not client or not client.state or not client.state.connected:
         raise HTTPException(400, "Printer is not connected")
 
-    from backend.app.services.macro_executor import send_macro_and_await_ack
-
-    logger.info(
-        "[MACRO] Sending macro '%s' to printer '%s' (id=%d): "
-        "gcode_lines=%d, swap_mode=%s, event=%s, printer_state=%s, stg_cur=%s",
-        macro.name,
-        printer.name,
-        printer.id,
-        macro.gcode.strip().count("\n") + 1,
-        macro.swap_mode_only,
-        macro.event,
-        client.state.state,
-        client.state.stg_cur,
+    from backend.app.services.macro_executor import (
+        dispatch_mqtt_action,
+        send_macro_and_await_ack,
     )
 
-    success, error_msg = await send_macro_and_await_ack(client, macro.gcode, macro.name, printer.model)
+    logger.info(
+        "[MACRO] Executing macro '%s' (type=%s) on '%s' (id=%d): event=%s, printer_state=%s",
+        macro.name,
+        macro.action_type,
+        printer.name,
+        printer.id,
+        macro.event,
+        client.state.state,
+    )
+
+    if macro.action_type == "mqtt_action":
+        success, error_msg = dispatch_mqtt_action(client, macro.mqtt_action or "", macro.name)
+    else:
+        success, error_msg = await send_macro_and_await_ack(client, macro.gcode, macro.name, printer.model)
 
     if not success:
         if "acknowledge" in error_msg.lower():

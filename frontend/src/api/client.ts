@@ -5802,6 +5802,14 @@ export interface SwapProfile {
   models: string[];
 }
 
+export type MacroActionType = 'gcode' | 'mqtt_action';
+
+export interface MqttMacroAction {
+  id: string;
+  label: string;
+  i18n_key: string;
+}
+
 export interface Macro {
   id: number;
   name: string;
@@ -5810,6 +5818,9 @@ export interface Macro {
   swap_mode_only: boolean;
   swap_profile: string | null;
   event: string;
+  action_type: MacroActionType;
+  mqtt_action: string | null;
+  delay_seconds: number;
   gcode: string;
   is_custom: boolean;
   enabled: boolean;
@@ -5824,6 +5835,9 @@ export interface MacroCreate {
   swap_mode_only: boolean;
   swap_profile?: string | null;
   event: string;
+  action_type?: MacroActionType;
+  mqtt_action?: string | null;
+  delay_seconds?: number;
   gcode: string;
   enabled: boolean;
 }
@@ -5835,6 +5849,9 @@ export interface MacroUpdate {
   swap_mode_only?: boolean;
   swap_profile?: string | null;
   event?: string;
+  action_type?: MacroActionType;
+  mqtt_action?: string | null;
+  delay_seconds?: number;
   gcode?: string;
   enabled?: boolean;
 }
@@ -5845,6 +5862,7 @@ export interface MacroMeta {
   swap_events: string[];
   printer_models: Record<string, string>;
   swap_profiles: SwapProfile[];
+  mqtt_actions: MqttMacroAction[];
 }
 
 export interface MacroExecuteResponse {

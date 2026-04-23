@@ -1414,6 +1414,16 @@ async def on_print_start(printer_id: int, data: dict):
 
     await ws_manager.send_print_start(printer_id, data)
 
+    # Fire any user-defined ``print_started`` macros (MQTT-action type today —
+    # e.g. "turn chamber light off when print starts"). Fire-and-forget so
+    # macro delay_seconds doesn't stall this handler.
+    try:
+        from backend.app.services.macro_trigger import fire_event_macros
+
+        await fire_event_macros("print_started", printer_id, async_session, printer_manager)
+    except Exception as e:
+        logger.warning("print_started macros failed to schedule: %s", e)
+
     # Notify when the print-start AMS mapping references tray slots without spool assignments.
     await notify_missing_spool_assignments_on_print_start(printer_id, data, logger)
 

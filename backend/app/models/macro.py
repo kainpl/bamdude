@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, String, Text, func
+from sqlalchemy import Boolean, DateTime, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.core.database import Base
@@ -39,7 +39,24 @@ class Macro(Base):
     # Event/action trigger
     # swap_mode_start - injected before first print in swap sequence
     # swap_mode_change_table - injected between plates (table swap)
+    # print_started - fires on gcode_state PREPARE→RUNNING transition
     event: Mapped[str] = mapped_column(String(50))
+
+    # What kind of action this macro performs:
+    # - ``gcode`` (default, legacy): send the ``gcode`` field as printer gcode
+    # - ``mqtt_action``: invoke a named MQTT-level printer command
+    #   (``chamber_light_off`` / ``chamber_light_on`` on MVP). ``gcode`` field
+    #   is ignored for this type; the command code lives in ``mqtt_action``.
+    action_type: Mapped[str] = mapped_column(String(20), default="gcode", server_default="gcode")
+
+    # Named command from the MQTT-action catalog (core/mqtt_macro_actions.py).
+    # Only meaningful when ``action_type='mqtt_action'``. Null for gcode macros.
+    mqtt_action: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+    # Optional delay before firing the action, in seconds. 0 = fire immediately
+    # on the event. Useful for e.g. "turn light off 30s after print_started"
+    # to let heat-up phase finish first.
+    delay_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
     # G-code content
     gcode: Mapped[str] = mapped_column(Text, default="")

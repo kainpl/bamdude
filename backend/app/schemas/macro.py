@@ -16,6 +16,9 @@ class MacroResponse(BaseModel):
     swap_mode_only: bool
     swap_profile: str | None = None
     event: str
+    action_type: str = "gcode"
+    mqtt_action: str | None = None
+    delay_seconds: int = 0
     gcode: str
     is_custom: bool
     enabled: bool
@@ -44,6 +47,9 @@ class MacroCreate(BaseModel):
     swap_mode_only: bool = False
     swap_profile: str | None = Field(default=None, max_length=50)
     event: str = Field(max_length=50)
+    action_type: str = Field(default="gcode", max_length=20)
+    mqtt_action: str | None = Field(default=None, max_length=50)
+    delay_seconds: int = Field(default=0, ge=0, le=3600)
     gcode: str = ""
     enabled: bool = True
 
@@ -59,5 +65,8 @@ class MacroUpdate(BaseModel):
     # the distinction between "omitted" (do-not-change) and "null" (clear).
     swap_profile: str | None = Field(default=None, max_length=50)
     event: str | None = Field(default=None, max_length=50)
+    action_type: str | None = Field(default=None, max_length=20)
+    mqtt_action: str | None = Field(default=None, max_length=50)
+    delay_seconds: int | None = Field(default=None, ge=0, le=3600)
     gcode: str | None = None
     enabled: bool | None = None

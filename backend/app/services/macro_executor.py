@@ -103,6 +103,41 @@ async def send_macro_and_await_ack(
     return True, ""
 
 
+def dispatch_mqtt_action(
+    client: BambuMQTTClient,
+    mqtt_action: str,
+    macro_name: str,
+) -> tuple[bool, str]:
+    """Execute a named MQTT action (e.g. ``chamber_light_off``) for a macro.
+
+    Synchronous — MQTT command methods themselves publish-and-forget over
+    MQTT, so there's nothing to await. Unlike gcode macros we don't wrap
+    with M1002 markers (the printer doesn't ACK these).
+
+    Returns ``(success, error_message)``.
+    """
+    from backend.app.core.mqtt_macro_actions import get_action
+
+    if not client or not client.state or not client.state.connected:
+        return False, "Printer is not connected"
+
+    action = get_action(mqtt_action)
+    if action is None:
+        return False, f"Unknown mqtt_action: {mqtt_action}"
+
+    try:
+        ok = action.dispatch(client)
+    except Exception as e:  # pragma: no cover — dispatcher is a thin adapter
+        logger.exception("[MACRO-EXEC] mqtt_action '%s' for macro '%s' raised: %s", mqtt_action, macro_name, e)
+        return False, f"Dispatch error: {e}"
+
+    if not ok:
+        return False, f"Printer rejected mqtt_action '{mqtt_action}'"
+
+    logger.info("[MACRO-EXEC] mqtt_action '%s' dispatched for macro '%s'", mqtt_action, macro_name)
+    return True, ""
+
+
 async def find_swap_macro(
     db: AsyncSession,
     event: str,

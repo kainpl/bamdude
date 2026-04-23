@@ -311,6 +311,9 @@ export function SettingsPage() {
     swap_mode_only: false,
     swap_profile: null,
     event: 'swap_mode_start',
+    action_type: 'gcode',
+    mqtt_action: null,
+    delay_seconds: 0,
     gcode: '',
     enabled: true,
   });
@@ -551,6 +554,9 @@ export function SettingsPage() {
       swap_mode_only: false,
       swap_profile: null,
       event: 'swap_mode_start',
+      action_type: 'gcode',
+      mqtt_action: null,
+      delay_seconds: 0,
       gcode: '',
       enabled: true,
     });
@@ -566,6 +572,9 @@ export function SettingsPage() {
       swap_mode_only: macro.swap_mode_only,
       swap_profile: macro.swap_profile,
       event: macro.event,
+      action_type: macro.action_type,
+      mqtt_action: macro.mqtt_action,
+      delay_seconds: macro.delay_seconds,
       gcode: macro.gcode,
       enabled: macro.enabled,
     });
@@ -2284,7 +2293,15 @@ export function SettingsPage() {
                             {macro.swap_mode_only && (
                               <span className="text-xs px-1.5 py-0.5 rounded bg-purple-900/40 text-purple-400 border border-purple-800/50">Swap</span>
                             )}
-                            {macro.gcode && <span className="text-xs text-bambu-gray" title="Has G-code"><Code className="w-3 h-3 inline" /></span>}
+                            {macro.action_type === 'mqtt_action' && (
+                              <span
+                                className="text-xs px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-400 border border-amber-800/50"
+                                title={macro.mqtt_action ?? ''}
+                              >
+                                MQTT
+                              </span>
+                            )}
+                            {macro.action_type !== 'mqtt_action' && macro.gcode && <span className="text-xs text-bambu-gray" title="Has G-code"><Code className="w-3 h-3 inline" /></span>}
                             {!macro.is_custom && <span className="text-xs text-bambu-gray" title={t('settings.macroBuiltIn')}><Lock className="w-3 h-3 inline" /></span>}
                           </div>
                         </div>
@@ -5216,6 +5233,76 @@ export function SettingsPage() {
                       )}
                     </select>
                   </div>
+                  {/* Action-type selector: gcode (default, sends gcode to printer) vs
+                      mqtt_action (invokes a named MQTT command like chamber_light_off). */}
+                  <div>
+                    <label className="block text-sm text-bambu-gray mb-1">{t('settings.macroActionType')}</label>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setMacroForm(prev => ({
+                          ...prev,
+                          action_type: 'gcode',
+                          mqtt_action: null,
+                        }))}
+                        className={`flex-1 px-3 py-2 rounded-lg border text-sm transition-colors ${
+                          (macroForm.action_type ?? 'gcode') === 'gcode'
+                            ? 'border-bambu-green bg-bambu-green/10 text-bambu-green'
+                            : 'border-bambu-dark-tertiary text-bambu-gray hover:text-white'
+                        }`}
+                      >
+                        {t('settings.macroActionTypeGcode')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setMacroForm(prev => ({
+                          ...prev,
+                          action_type: 'mqtt_action',
+                          mqtt_action: prev.mqtt_action ?? (macroMeta?.mqtt_actions?.[0]?.id ?? null),
+                        }))}
+                        className={`flex-1 px-3 py-2 rounded-lg border text-sm transition-colors ${
+                          macroForm.action_type === 'mqtt_action'
+                            ? 'border-bambu-green bg-bambu-green/10 text-bambu-green'
+                            : 'border-bambu-dark-tertiary text-bambu-gray hover:text-white'
+                        }`}
+                      >
+                        {t('settings.macroActionTypeMqtt')}
+                      </button>
+                    </div>
+                  </div>
+                  {macroForm.action_type === 'mqtt_action' && (
+                    <div>
+                      <label className="block text-sm text-bambu-gray mb-1">{t('settings.macroMqttAction')}</label>
+                      <select
+                        value={macroForm.mqtt_action ?? ''}
+                        onChange={(e) => setMacroForm(prev => ({ ...prev, mqtt_action: e.target.value || null }))}
+                        className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
+                      >
+                        {(macroMeta?.mqtt_actions ?? []).map((a) => (
+                          <option key={a.id} value={a.id}>
+                            {t(`settings.mqttActions.${a.i18n_key}`, { defaultValue: a.label })}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                  <div>
+                    <label className="block text-sm text-bambu-gray mb-1">
+                      {t('settings.macroDelaySeconds')}
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={3600}
+                      value={macroForm.delay_seconds ?? 0}
+                      onChange={(e) => setMacroForm(prev => ({
+                        ...prev,
+                        delay_seconds: Math.max(0, Math.min(3600, parseInt(e.target.value, 10) || 0)),
+                      }))}
+                      className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
+                    />
+                    <p className="text-xs text-bambu-gray mt-1">{t('settings.macroDelayHint')}</p>
+                  </div>
                   <div className="space-y-1">
                     <label className="block text-sm text-bambu-gray">{t('settings.macroModel')}</label>
                     <div className="flex flex-wrap gap-1 mb-1.5">
@@ -5258,13 +5345,18 @@ export function SettingsPage() {
                       ))}
                     </select>
                   </div>
-                  <div className="flex items-center justify-between">
-                    <label className="text-sm text-white">{t('settings.macroSwapOnly')}</label>
-                    <Toggle
-                      checked={macroForm.swap_mode_only}
-                      onChange={(checked) => setMacroForm(prev => ({ ...prev, swap_mode_only: checked }))}
-                    />
-                  </div>
+                  {/* Swap-only toggle is only relevant for swap events. Other
+                      event types (e.g. print_started) get their own trigger path
+                      and should not be gated on swap mode. */}
+                  {macroMeta?.swap_events?.includes(macroForm.event) && (
+                    <div className="flex items-center justify-between">
+                      <label className="text-sm text-white">{t('settings.macroSwapOnly')}</label>
+                      <Toggle
+                        checked={macroForm.swap_mode_only}
+                        onChange={(checked) => setMacroForm(prev => ({ ...prev, swap_mode_only: checked }))}
+                      />
+                    </div>
+                  )}
                   {/* Swap profile binding - only relevant for the two swap events.
                       Dropdown options are filtered by the printer_models already
                       selected (a profile's "models" must intersect). Value "" = generic. */}
@@ -5303,13 +5395,22 @@ export function SettingsPage() {
                     />
                   </div>
                 </div>
-                {/* Right - G-code editor */}
+                {/* Right - G-code editor (only for action_type='gcode'; mqtt_action
+                    macros have no gcode body, so we show a placeholder panel instead). */}
                 <div className="lg:w-3/4 flex flex-col">
-                  <label className="block text-sm text-bambu-gray mb-1">{t('settings.macroGcode')}</label>
-                  <GcodeEditor
-                    value={macroForm.gcode}
-                    onChange={(val) => setMacroForm(prev => ({ ...prev, gcode: val }))}
-                  />
+                  {macroForm.action_type === 'mqtt_action' ? (
+                    <div className="flex-1 flex items-center justify-center p-8 border border-dashed border-bambu-dark-tertiary rounded-lg text-sm text-bambu-gray text-center">
+                      {t('settings.macroMqttActionDescription')}
+                    </div>
+                  ) : (
+                    <>
+                      <label className="block text-sm text-bambu-gray mb-1">{t('settings.macroGcode')}</label>
+                      <GcodeEditor
+                        value={macroForm.gcode}
+                        onChange={(val) => setMacroForm(prev => ({ ...prev, gcode: val }))}
+                      />
+                    </>
+                  )}
                 </div>
               </div>
               <div className="flex justify-end gap-2 pt-4">

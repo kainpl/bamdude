@@ -1974,6 +1974,18 @@ export default {
     macroEvents: {
       swap_mode_start: 'Swap Mode. Старт',
       swap_mode_change_table: 'Swap Mode. Зміна столу',
+      print_started: 'Старт друку',
+    },
+    macroActionType: 'Тип дії',
+    macroActionTypeGcode: 'G-код',
+    macroActionTypeMqtt: 'MQTT-команда',
+    macroMqttAction: 'MQTT-команда',
+    macroMqttActionDescription: 'Цей макрос викликає іменовану MQTT-команду принтера (G-код не надсилається).',
+    macroDelaySeconds: 'Затримка перед виконанням (сек)',
+    macroDelayHint: '0 = виконати одразу при події. Корисно щоб пропустити фазу прогріву.',
+    mqttActions: {
+      chamberLightOff: 'Вимкнути світло камери',
+      chamberLightOn: 'Увімкнути світло камери',
     },
     newWindow: 'Нове вікно',
     embeddedOverlay: 'Вбудоване накладання',
