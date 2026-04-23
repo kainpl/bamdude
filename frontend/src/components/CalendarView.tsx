@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import type { ArchiveSlim } from '../api/client';
 import { api } from '../api/client';
 import { parseUTCDate } from '../utils/date';
+import { getArchiveStatusBadge, isFailureStatus } from '../utils/archiveStatus';
 
 interface CalendarViewProps {
   archives: ArchiveSlim[];
@@ -47,7 +48,7 @@ export function CalendarView({ archives, printerMap }: CalendarViewProps) {
   // Stats for the 30-day period
   const totalPrints = archives.length;
   const successCount = archives.filter(a => a.status === 'completed').length;
-  const failedCount = archives.filter(a => a.status === 'failed' || a.status === 'aborted').length;
+  const failedCount = archives.filter(a => isFailureStatus(a.status)).length;
 
   // Find max prints per day for scaling
   const maxPerDay = useMemo(() => {
@@ -106,7 +107,7 @@ export function CalendarView({ archives, printerMap }: CalendarViewProps) {
             const isToday = day.getTime() === today.getTime();
             const isSelected = dateKey === selectedDate;
             const daySuccess = dayArchives.filter(a => a.status === 'completed').length;
-            const dayFailed = dayArchives.filter(a => a.status === 'failed' || a.status === 'aborted').length;
+            const dayFailed = dayArchives.filter(a => isFailureStatus(a.status)).length;
 
             // Intensity based on count relative to max
             const intensity = count > 0 ? Math.max(0.15, count / maxPerDay) : 0;
@@ -186,9 +187,20 @@ export function CalendarView({ archives, printerMap }: CalendarViewProps) {
                         {archive.print_name || archive.filename}
                       </p>
                       <div className="flex items-center gap-2 text-xs text-bambu-gray">
-                        <span className={archive.status === 'failed' || archive.status === 'aborted' ? 'text-red-400' : 'text-green-400'}>
-                          {archive.status === 'failed' || archive.status === 'aborted' ? t('archives.calendar.failed', 'Failed') : t('archives.calendar.successful', 'Successful')}
-                        </span>
+                        {(() => {
+                          // Use the shared status-badge util so calendar state
+                          // labels match the archives grid/list verbatim
+                          // (printing, archived, cancelled, stopped, etc. —
+                          // not just "Failed" vs "Successful").
+                          const badge = getArchiveStatusBadge(archive.status);
+                          if (badge) {
+                            const color = archive.status === 'printing'
+                              ? 'text-bambu-blue'
+                              : (isFailureStatus(archive.status) ? 'text-red-400' : 'text-bambu-gray');
+                            return <span className={color}>{t(badge.labelKey)}</span>;
+                          }
+                          return <span className="text-green-400">{t('archives.calendar.successful', 'Successful')}</span>;
+                        })()}
                         <span>
                           {(() => {
                             const d = parseUTCDate(archive.created_at);

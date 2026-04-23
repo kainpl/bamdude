@@ -57,6 +57,7 @@ import {
 } from 'lucide-react';
 import { api } from '../api/client';
 import { openInSlicer, type SlicerType } from '../utils/slicer';
+import { getArchiveStatusBadge } from '../utils/archiveStatus';
 import { formatDateTime, formatDateOnly, type TimeFormat, type DateFormat, formatDuration } from '../utils/date';
 import { getCurrencySymbol } from '../utils/currency';
 import { useIsMobile } from '../hooks/useIsMobile';
@@ -789,11 +790,32 @@ function ArchiveCard({
             className={`w-5 h-5 ${archive.is_favorite ? 'text-yellow-400 fill-yellow-400' : 'text-white'} ${!canModify('archives', 'update', archive.created_by_id) ? 'opacity-50' : ''}`}
           />
         </button>
-        {(archive.status === 'failed' || archive.status === 'aborted') && (
-          <div className="absolute top-2 left-12 px-2 py-1 rounded text-xs bg-status-error/80 text-white">
-            {archive.status === 'aborted' ? t('archives.card.cancelled') : t('archives.card.failed')}
-          </div>
-        )}
+        {(() => {
+          const badge = getArchiveStatusBadge(archive.status);
+          if (!badge) return null;
+          const isPrinting = archive.status === 'printing';
+          const base = `absolute top-2 left-12 px-2 py-1 rounded text-xs flex items-center gap-1 ${badge.className}`;
+          const pulseCls = badge.pulse ? 'animate-pulse' : '';
+          if (isPrinting && archive.printer_id) {
+            return (
+              <Link
+                to={`/printers/${archive.printer_id}`}
+                onClick={(e) => e.stopPropagation()}
+                className={`${base} ${pulseCls} hover:brightness-125 transition`}
+                title={t('archives.card.printingClickHint')}
+              >
+                <Loader2 className="w-3 h-3 animate-spin" />
+                {t(badge.labelKey)}
+              </Link>
+            );
+          }
+          return (
+            <div className={`${base} ${pulseCls}`}>
+              {isPrinting && <Loader2 className="w-3 h-3 animate-spin" />}
+              {t(badge.labelKey)}
+            </div>
+          );
+        })()}
         {/* Duplicate badge */}
         {archive.duplicate_count > 0 && duplicateSequence > 0 && originalArchiveId && (
           <button
@@ -1939,11 +1961,32 @@ function ArchiveListRow({
         <div className="col-span-4">
           <div className="flex items-center gap-2">
             <p className="text-white text-sm truncate">{archive.print_name || archive.filename}</p>
-            {(archive.status === 'failed' || archive.status === 'aborted') && (
-              <span className="px-1.5 py-0.5 rounded text-[10px] leading-tight bg-status-error/80 text-white flex-shrink-0">
-                {archive.status === 'aborted' ? t('archives.card.cancelled') : t('archives.card.failed')}
-              </span>
-            )}
+            {(() => {
+              const badge = getArchiveStatusBadge(archive.status);
+              if (!badge) return null;
+              const isPrinting = archive.status === 'printing';
+              const base = `px-1.5 py-0.5 rounded text-[10px] leading-tight flex-shrink-0 flex items-center gap-1 ${badge.className}`;
+              const pulseCls = badge.pulse ? 'animate-pulse' : '';
+              if (isPrinting && archive.printer_id) {
+                return (
+                  <Link
+                    to={`/printers/${archive.printer_id}`}
+                    onClick={(e) => e.stopPropagation()}
+                    className={`${base} ${pulseCls} hover:brightness-125 transition`}
+                    title={t('archives.card.printingClickHint')}
+                  >
+                    <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                    {t(badge.labelKey)}
+                  </Link>
+                );
+              }
+              return (
+                <span className={`${base} ${pulseCls}`}>
+                  {isPrinting && <Loader2 className="w-2.5 h-2.5 animate-spin" />}
+                  {t(badge.labelKey)}
+                </span>
+              );
+            })()}
             {archive.duplicate_count > 0 && duplicateSequence > 0 && originalArchiveId && (
               <button
                 onClick={(e) => {
