@@ -95,7 +95,26 @@ def _get_jwt_secret() -> str:
 # JWT settings
 SECRET_KEY = _get_jwt_secret()
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours (§18.4 M-2: reduced from 7 days)
+
+# Access token TTL — short by design. Sliding-session refresh tokens cover the
+# "stay logged in" UX so reducing the access-token exposure window is free.
+# Previously 60 * 24 (24h, §18.4 M-2); dropped to 60 min once /auth/refresh
+# landed (§18.14 sliding session) because a leaked access token now expires
+# within an hour instead of a day.
+ACCESS_TOKEN_EXPIRE_MINUTES = 60
+
+# Refresh token TTL — picks between two values based on the login-time
+# `remember_me` flag. Without remember-me the refresh is a session cookie
+# (no cookie Max-Age → dies when the browser closes), capped on the DB side
+# to 12 h so an overnight closed-but-resumed session still needs re-login.
+# With remember-me, 30 days matches OWASP recommended refresh TTL and both
+# the cookie Max-Age and DB exp stretch to that.
+REFRESH_TOKEN_EXPIRE_DAYS_REMEMBER = 30
+REFRESH_TOKEN_EXPIRE_HOURS_SESSION = 12
+REFRESH_TOKEN_COOKIE_NAME = "bamdude_refresh"
+# The refresh cookie is only ever sent on these paths — narrows the CSRF
+# surface and keeps unrelated routes from seeing the cookie in their logs.
+REFRESH_TOKEN_COOKIE_PATH = "/api/v1/auth"
 
 # HTTP Bearer token
 security = HTTPBearer(auto_error=False)
@@ -235,6 +254,215 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None) -> s
     to_encode.update({"exp": expire, "jti": jti, "iat": now})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
+
+
+# ---------------------------------------------------------------------------
+# Refresh tokens (§18.14 sliding session)
+# ---------------------------------------------------------------------------
+
+
+def _hash_refresh_token(raw: str) -> str:
+    """SHA-256 hex of the raw cookie value.
+
+    Raw refresh tokens never touch the DB — only their hash. Stolen DB → rows
+    can't be replayed against /auth/refresh because the raw value was only
+    ever in the client's cookie. Uses hashlib (stdlib) intentionally — the
+    existing MFA module uses the same primitive for TOTP shared-secret
+    fingerprints, so dev dependencies stay flat.
+    """
+    import hashlib
+
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def refresh_token_ttl(remember_me: bool) -> timedelta:
+    """Absolute DB-side TTL for a refresh token.
+
+    Without ``remember_me`` the cookie is a session cookie (closes with the
+    browser), but a session-cookie alone doesn't stop a server-side replay
+    if the user just locks the screen and leaves the tab open — hence the
+    separate 12 h DB-cap that kicks in even if the browser stays open.
+    """
+    if remember_me:
+        return timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS_REMEMBER)
+    return timedelta(hours=REFRESH_TOKEN_EXPIRE_HOURS_SESSION)
+
+
+async def create_refresh_token(
+    db,
+    *,
+    username: str,
+    remember_me: bool,
+    family_id: str | None = None,
+) -> tuple[str, str, datetime]:
+    """Mint a refresh token and persist its hash.
+
+    Returns ``(raw_token, family_id, expires_at)``. Caller is responsible
+    for committing the session and setting the cookie on the response.
+
+    ``family_id`` links every rotation descended from one /login. Pass the
+    existing id when rotating (so reuse detection can see the lineage);
+    leave it None for fresh logins so a new family is created.
+    """
+    from backend.app.models.auth_ephemeral import AuthEphemeralToken
+
+    raw_token = secrets.token_urlsafe(48)
+    token_hash = _hash_refresh_token(raw_token)
+    if family_id is None:
+        family_id = secrets.token_hex(16)
+    expires_at = datetime.now(timezone.utc) + refresh_token_ttl(remember_me)
+
+    row = AuthEphemeralToken.new_refresh(
+        token_hash=token_hash,
+        username=username,
+        family_id=family_id,
+        expires_at=expires_at,
+    )
+    db.add(row)
+    await db.flush()
+    return raw_token, family_id, expires_at
+
+
+async def verify_and_consume_refresh_token(
+    db,
+    raw_token: str,
+) -> tuple[str | None, str | None, str]:
+    """Validate + mark-used in one atomic step.
+
+    Returns ``(username, family_id, status)`` where ``status`` is:
+
+    - ``"ok"`` — token valid + rotated. ``username`` + ``family_id`` populated;
+      caller issues a new access + a new refresh inside the same family.
+    - ``"reuse"`` — token already consumed before. Whole family revoked as a
+      side effect; ``username`` + ``family_id`` populated so the caller can
+      log + return a descriptive 401.
+    - ``"invalid"`` — token not found or expired. ``username`` / ``family_id``
+      are None. Returned as 401 by the caller without a side effect.
+
+    The ``ok`` case flips ``used_at`` via an UPDATE … WHERE used_at IS NULL
+    so two concurrent /auth/refresh hits on the same token can't both get
+    ``ok`` — exactly one wins; the loser reads back ``used_at`` non-null and
+    gets ``reuse`` (which is correct — that second request IS a replay, even
+    if it's the same legit client racing itself).
+    """
+    from sqlalchemy import select, update
+
+    from backend.app.models.auth_ephemeral import AuthEphemeralToken, TokenType
+
+    token_hash = _hash_refresh_token(raw_token)
+    row = (
+        await db.execute(
+            select(AuthEphemeralToken)
+            .where(AuthEphemeralToken.token == token_hash)
+            .where(AuthEphemeralToken.token_type == TokenType.REFRESH)
+        )
+    ).scalar_one_or_none()
+
+    if row is None:
+        return None, None, "invalid"
+
+    # Expiry check first — expired rows are just stale, not hostile.
+    now = datetime.now(timezone.utc)
+    expires_at = row.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at < now:
+        return None, None, "invalid"
+
+    # Reuse detection: if used_at already set, this is a replay. Collapse
+    # the whole family so a stolen cookie can't survive past the first
+    # legitimate refresh.
+    if row.used_at is not None:
+        if row.family_id:
+            await revoke_refresh_family(db, row.family_id)
+        return row.username, row.family_id, "reuse"
+
+    # Race-proof consume: only one concurrent request flips used_at from
+    # NULL → now. The loser will re-select the row and hit the reuse path.
+    result = await db.execute(
+        update(AuthEphemeralToken)
+        .where(AuthEphemeralToken.id == row.id)
+        .where(AuthEphemeralToken.used_at.is_(None))
+        .values(used_at=now)
+    )
+    if result.rowcount == 0:
+        # Lost the race — another request just consumed it. Same as reuse.
+        if row.family_id:
+            await revoke_refresh_family(db, row.family_id)
+        return row.username, row.family_id, "reuse"
+
+    return row.username, row.family_id, "ok"
+
+
+async def revoke_refresh_family(db, family_id: str) -> None:
+    """Delete every refresh-token row for a family_id.
+
+    Called on: (1) detected reuse — all siblings of the replayed token die;
+    (2) explicit logout — the current family is cleaned up; (3) chaining
+    from ``revoke_all_refresh_tokens_for_user`` below.
+    """
+    from sqlalchemy import delete
+
+    from backend.app.models.auth_ephemeral import AuthEphemeralToken, TokenType
+
+    await db.execute(
+        delete(AuthEphemeralToken)
+        .where(AuthEphemeralToken.token_type == TokenType.REFRESH)
+        .where(AuthEphemeralToken.family_id == family_id)
+    )
+
+
+def refresh_cookie_secure_flag(request) -> bool:
+    """Resolve the ``Secure`` flag for the refresh-token cookie.
+
+    Auto-detect by default so the same binary runs seamlessly on plain-HTTP
+    LAN installs and HTTPS prod deployments. The operator can force either
+    polarity via ``AUTH_REFRESH_COOKIE_SECURE`` (hard override).
+
+    Auto rules:
+
+    - ``request.url.scheme == 'https'`` → Secure=True.
+    - When behind a reverse proxy listed in ``TRUSTED_PROXY_IPS`` (existing
+      §18.5 env var), honour ``X-Forwarded-Proto`` so Caddy / nginx /
+      Traefik terminating TLS upstream of BamDude still produces Secure
+      cookies.
+    - Anything else → Secure=False. The cookie still gets set on plain
+      HTTP, but browsers won't upgrade it to HTTPS-only; acceptable for
+      LAN deployments where HTTPS isn't on the table.
+    """
+    from backend.app.core.config import settings
+
+    if settings.auth_refresh_cookie_secure is not None:
+        return settings.auth_refresh_cookie_secure
+
+    scheme = request.url.scheme
+    client_host = request.client.host if request.client else None
+    if client_host:
+        trusted = frozenset(ip.strip() for ip in os.environ.get("TRUSTED_PROXY_IPS", "").split(",") if ip.strip())
+        if client_host in trusted:
+            xfp = request.headers.get("X-Forwarded-Proto", "").lower()
+            if xfp:
+                scheme = xfp.split(",")[0].strip()
+    return scheme == "https"
+
+
+async def revoke_all_refresh_tokens_for_user(db, username: str) -> None:
+    """Hard-revoke every active refresh token for a user.
+
+    Called on password change + admin-initiated session kill. All the user's
+    devices are forced through /auth/refresh once, which 401s, which drops
+    them to /login. Access tokens issued before this call still die naturally
+    via the ``iat`` freshness check against ``password_changed_at``.
+    """
+    from sqlalchemy import delete
+
+    from backend.app.models.auth_ephemeral import AuthEphemeralToken, TokenType
+
+    await db.execute(
+        delete(AuthEphemeralToken)
+        .where(AuthEphemeralToken.token_type == TokenType.REFRESH)
+        .where(AuthEphemeralToken.username == username)
+    )
 
 
 def _is_token_fresh(iat: int | float | None, user: User) -> bool:

@@ -837,6 +837,7 @@ async def send_email_otp(
 @router.post("/2fa/verify", response_model=TwoFAVerifyResponse)
 async def verify_2fa(
     request: Request,
+    response: Response,
     body: TwoFAVerifyRequest,
     db: AsyncSession = Depends(get_db),
 ) -> TwoFAVerifyResponse:
@@ -966,6 +967,20 @@ async def verify_2fa(
     result = await db.execute(select(User).where(User.id == user.id).options(selectinload(User.groups)))
     user = result.scalar_one()
 
+    # §18.14: sliding-session refresh cookie issued on the same conditions as
+    # password-only login — 2FA-gated logins shouldn't be forced through the
+    # /login flow every hour any more than plain-password logins.
+    from backend.app.api.routes.auth import _issue_refresh_cookie
+
+    await _issue_refresh_cookie(
+        db,
+        response,
+        request,
+        username=user.username,
+        remember_me=body.remember_me,
+    )
+    await db.commit()
+
     return TwoFAVerifyResponse(
         access_token=access_token,
         token_type="bearer",
@@ -1005,10 +1020,15 @@ async def admin_disable_2fa(
     )
 
     # I2: Invalidate existing JWTs for the target user by bumping password_changed_at.
-    # Without this, a stolen token remains valid after 2FA removal.
+    # Without this, a stolen token remains valid after 2FA removal. §18.14 extension:
+    # sliding-session refresh tokens are revoked too so a stolen cookie can't keep
+    # refreshing access tokens after an admin nuked 2FA.
+    from backend.app.core.auth import revoke_all_refresh_tokens_for_user
+
     target_user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if target_user:
         target_user.password_changed_at = datetime.now(timezone.utc)
+        await revoke_all_refresh_tokens_for_user(db, target_user.username)
 
     await db.commit()
     actor = current_user.username if current_user else "anonymous"
@@ -1631,6 +1651,21 @@ async def oidc_exchange(
         data={"sub": user.username},
         expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
     )
+
+    # §18.14: OIDC-authenticated users also get a sliding-session refresh
+    # cookie. Remember-me defaults to False for this path — the OIDC popup
+    # /redirect flow has no obvious place to surface a checkbox yet, and
+    # provider-level "remember this device" is a better fit anyway.
+    from backend.app.api.routes.auth import _issue_refresh_cookie
+
+    await _issue_refresh_cookie(
+        db,
+        response,
+        raw_request,
+        username=user.username,
+        remember_me=False,
+    )
+    await db.commit()
 
     return LoginResponse(
         access_token=access_token,

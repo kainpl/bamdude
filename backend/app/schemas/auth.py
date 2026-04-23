@@ -36,6 +36,10 @@ class GroupBrief(BaseModel):
 class LoginRequest(BaseModel):
     username: str = Field(..., max_length=150)
     password: str = Field(..., max_length=256)  # M-NEW-4: cap before pbkdf2
+    # Sliding-session refresh token TTL. False (default) → 12 h DB cap + session
+    # cookie (dies when the browser closes). True → 30 d DB cap + 30 d cookie
+    # Max-Age ("Remember me" checkbox on the login page).
+    remember_me: bool = False
 
 
 class LoginResponse(BaseModel):
@@ -228,6 +232,11 @@ class TwoFAVerifyRequest(BaseModel):
     # max_length=8 prevents excessively long inputs from reaching pbkdf2/pyotp.
     code: str = Field(..., min_length=6, max_length=8)
     method: Literal["totp", "email", "backup"] = "totp"
+    # Mirror of LoginRequest.remember_me so the 2-step login flow (password →
+    # 2FA → full JWT) can propagate the user's choice to the sliding-session
+    # refresh cookie issued on successful verification. Default False matches
+    # LoginRequest.
+    remember_me: bool = False
 
     @field_validator("code")
     @classmethod

@@ -57,6 +57,14 @@ class Settings(BaseSettings):
     # API
     api_prefix: str = "/api/v1"
 
+    # Auth — sliding-session refresh cookie Secure attribute. ``None`` (default)
+    # = auto-detect from request scheme / ``X-Forwarded-Proto``: if the user is
+    # on HTTPS the cookie is Secure, if they're on plain HTTP (local LAN dev)
+    # the cookie is not Secure so the browser actually stores it. Set True to
+    # force Secure (paranoid; breaks LAN HTTP deployments). Set False to force
+    # non-Secure (defeats MITM protection on real HTTPS deploys — dev only).
+    auth_refresh_cookie_secure: bool | None = None
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

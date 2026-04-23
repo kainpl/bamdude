@@ -14,6 +14,11 @@ Collects the upstream Bambuddy v0.2.3 → v0.2.3.2 port chain (three upstream re
 
 First beta milestone of the 0.4.0 cycle. Everything listed below is in this image (`ghcr.io/kainpl/bamdude:0.4.0b1` / `kainpl/bamdude:0.4.0b1`). Intended for early testers — pin the exact tag, don't use `:latest` yet (still points at 0.3.2).
 
+### Authentication (post-b1)
+
+- **Sliding-session refresh tokens** (§18.14). Access-token TTL drops from 24 h to 1 h, but no one has to re-log in every hour — a new rotating refresh cookie transparently refreshes the access JWT in the background. Leaving a tab open for a week keeps you signed in; closing the browser without the Remember-me checkbox logs you out (12 h DB cap regardless). **Remember me for 30 days** checkbox on the login form opts into persistent sessions — cookie survives browser restarts. Cookie is HttpOnly + SameSite=Lax + Path=/api/v1/auth so XSS can't exfiltrate it and non-auth endpoints never see it. `Secure` attribute auto-detects from request scheme (reverse-proxy `X-Forwarded-Proto` aware) so the same image works on LAN HTTP and HTTPS production without config; `AUTH_REFRESH_COOKIE_SECURE=true|false` env forces the polarity if needed. Refresh-token rotation + reuse detection (OWASP) — a replayed cookie collapses the whole family across devices. Logout / password change / admin 2FA kill all revoke the user's refresh tokens. Frontend retries failed 401s transparently through /auth/refresh, with promise-coalescing so a wave of parallel queries spawns exactly one refresh call. New migration `m015` adds `used_at` + `family_id` to `auth_ephemeral_tokens`.
+- **Silent-logout UI redirect** — complementary to the sliding session. If refresh ALSO fails (refresh token expired, revoked, or never issued), a global `bamdude:auth-invalidated` event clears React state and hard-redirects to `/login` instead of sitting on stale UI with every background poll 401'ing into a void. Visibility-change handler triggers proactive `/auth/me` revalidation when a hidden tab regains focus, surfacing an expired session in under a second instead of waiting for a manual action.
+
 ### v0.2.3.2 port — safety, queue reliability, AMS UX
 
 ### Safety

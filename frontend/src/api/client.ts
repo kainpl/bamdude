@@ -49,9 +49,64 @@ function parseContentDispositionFilename(header: string | null): string | null {
   return standardMatch?.[1] || null;
 }
 
+// Sliding-session refresh plumbing. When the server rejects an access token
+// with "Token has expired" / "Could not validate credentials", we try
+// POST /auth/refresh once (the HttpOnly refresh cookie flows automatically
+// because credentials: 'include' is set below). On success we replace the
+// stored access token and retry the original request — transparent to the
+// caller. Only when refresh ALSO fails do we dispatch the auth-invalidated
+// event that redirects to /login.
+//
+// Concurrent 401s (typical on tab-refocus when 4–5 queries fire in parallel
+// and the old access token is dead for all of them) coalesce onto a single
+// /auth/refresh call via this module-level promise singleton — without it
+// each query would spawn its own refresh, racing against rotation and
+// tripping the backend's reuse-detection on the second one in.
+const REFRESH_ERROR_MESSAGES = [
+  'Could not validate credentials',
+  'Token has expired',
+];
+// Messages that mean the user is really logged out (account deactivated,
+// etc.) — these skip the refresh attempt and fall straight through to the
+// invalidation event.
+const NON_REFRESHABLE_401_MESSAGES = [
+  'User not found or inactive',
+  'Invalid API key',
+  'API key has expired',
+];
+let refreshAccessTokenPromise: Promise<boolean> | null = null;
+
+async function refreshAccessToken(): Promise<boolean> {
+  if (refreshAccessTokenPromise) return refreshAccessTokenPromise;
+  refreshAccessTokenPromise = (async () => {
+    try {
+      const response = await fetch(`${API_BASE}/auth/refresh`, {
+        method: 'POST',
+        cache: 'no-store',
+        credentials: 'include',
+      });
+      if (!response.ok) return false;
+      const body = await response.json().catch(() => null);
+      if (body?.access_token) {
+        setAuthToken(body.access_token);
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    } finally {
+      // Null-out only after the awaiting callers resolve so every queued
+      // consumer sees the same outcome. Next 401 wave starts fresh.
+      refreshAccessTokenPromise = null;
+    }
+  })();
+  return refreshAccessTokenPromise;
+}
+
 async function request<T>(
   endpoint: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
+  __isRetry = false,
 ): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -66,6 +121,12 @@ async function request<T>(
   const response = await fetch(`${API_BASE}${endpoint}`, {
     ...options,
     cache: 'no-store', // Prevent browser caching of API responses
+    // credentials: 'include' lets the refresh cookie flow on any auth-path
+    // request the browser happens to make (logout, /auth/me, etc.) and is
+    // the prerequisite for /auth/refresh to see the cookie when we retry.
+    // Safe on other endpoints — there's no non-auth cookie for the app
+    // that we'd care about leaking.
+    credentials: 'include',
     headers,
   });
 
@@ -76,25 +137,28 @@ async function request<T>(
       ? detail
       : (detail ? JSON.stringify(detail) : `HTTP ${response.status}`);
 
-    // Handle 401 Unauthorized - only clear token if it's actually invalid
-    // Don't clear on "Authentication required" which might be a timing issue
     if (response.status === 401) {
-      const invalidTokenMessages = [
-        'Could not validate credentials',
-        'Token has expired',
-        'User not found or inactive',
-        'Invalid API key',
-        'API key has expired',
-      ];
-      if (invalidTokenMessages.some(m => message.includes(m))) {
+      const refreshable =
+        !__isRetry &&
+        REFRESH_ERROR_MESSAGES.some(m => message.includes(m));
+      if (refreshable) {
+        // Try to refresh once. Coalesced across concurrent 401s.
+        const ok = await refreshAccessToken();
+        if (ok) {
+          return request<T>(endpoint, options, true);
+        }
+        // Refresh failed (no cookie, replay detected, refresh expired, etc.)
+        // — fall through to the invalidated-session path below.
+      }
+      const terminal =
+        REFRESH_ERROR_MESSAGES.some(m => message.includes(m)) ||
+        NON_REFRESHABLE_401_MESSAGES.some(m => message.includes(m));
+      if (terminal) {
         setAuthToken(null);
         // Broadcast so AuthContext can clear React state and redirect to
-        // /login. Before this, clearing the token only wiped localStorage —
-        // React's `user` state stayed populated from the last /auth/me
-        // hydration, so the UI sat there looking logged-in while every
-        // background poll 401'd into a void. Leaving the tab idle overnight
-        // (>24 h, which is the backend ACCESS_TOKEN_EXPIRE_MINUTES) would
-        // reliably reproduce it.
+        // /login. Before sliding-session (§18.14) this was the first line
+        // of defence; after sliding-session it's the last resort — refresh
+        // was already attempted and failed.
         window.dispatchEvent(
           new CustomEvent('bamdude:auth-invalidated', { detail: { reason: 'token-expired', message } }),
         );
@@ -2422,6 +2486,10 @@ export interface UserEmailPreferences {
 export interface LoginRequest {
   username: string;
   password: string;
+  // Sliding-session: when true the refresh token cookie gets Max-Age=30d and
+  // the backing DB row lives that long; when false (default) the cookie is
+  // session-scoped and the DB row caps at 12h (§18.14).
+  remember_me?: boolean;
 }
 
 export interface LoginResponse {
@@ -2461,6 +2529,10 @@ export interface TwoFAVerifyRequest {
   pre_auth_token: string;
   code: string;
   method: 'totp' | 'email' | 'backup';
+  // Propagated from the step-1 Remember-me checkbox so the sliding-session
+  // refresh cookie issued on successful 2FA matches the user's choice
+  // (§18.14). Default false.
+  remember_me?: boolean;
 }
 
 // OIDC interfaces (§18.2)

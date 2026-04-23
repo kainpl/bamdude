@@ -23,6 +23,10 @@ export function LoginPage() {
   // Credentials step state
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  // Sliding-session remember-me (§18.14). Default unchecked — standard web
+  // UX expects a deliberate opt-in for 30-day persistence. Unchecked maps
+  // to a session cookie that dies with the browser + 12 h DB cap.
+  const [rememberMe, setRememberMe] = useState(false);
   const [showForgotPassword, setShowForgotPassword] = useState(false);
   const [forgotEmail, setForgotEmail] = useState('');
 
@@ -132,7 +136,7 @@ export function LoginPage() {
 
   // --- Step 1: Credentials login ---
   const loginMutation = useMutation({
-    mutationFn: () => login(username, password),
+    mutationFn: () => login(username, password, rememberMe),
     onSuccess: (resp: LoginResponse) => {
       if (resp.requires_2fa && resp.pre_auth_token) {
         // 2FA required — switch to verification step
@@ -197,7 +201,7 @@ export function LoginPage() {
 
   const verify2FAMutation = useMutation({
     mutationFn: () =>
-      api.verify2FA({ pre_auth_token: preAuthToken, code: twoFACode, method: twoFAMethod }),
+      api.verify2FA({ pre_auth_token: preAuthToken, code: twoFACode, method: twoFAMethod, remember_me: rememberMe }),
     onSuccess: (resp: LoginResponse) => {
       if (resp.access_token && resp.user) {
         loginWithToken(resp.access_token, resp.user);
@@ -565,6 +569,20 @@ export function LoginPage() {
                 placeholder={t('login.passwordPlaceholder')}
                 autoComplete="current-password"
               />
+            </div>
+
+            {/* Remember-me — sliding-session opt-in for 30-day persistence. */}
+            <div className="flex items-center gap-2">
+              <input
+                id="rememberMe"
+                type="checkbox"
+                checked={rememberMe}
+                onChange={(e) => setRememberMe(e.target.checked)}
+                className="h-4 w-4 rounded border-bambu-dark-tertiary bg-bambu-dark-secondary text-bambu-green focus:ring-bambu-green/50 focus:ring-2 focus:ring-offset-0 cursor-pointer"
+              />
+              <label htmlFor="rememberMe" className="text-sm text-bambu-gray cursor-pointer select-none">
+                {t('login.rememberMe')}
+              </label>
             </div>
           </div>
 

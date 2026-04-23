@@ -2468,6 +2468,7 @@ export default {
     usernameOrEmailPlaceholder: 'Username or @ Email',
     password: 'Password',
     passwordPlaceholder: 'Enter your password',
+    rememberMe: 'Remember me for 30 days',
     signIn: 'Sign in',
     signingIn: 'Logging in...',
     forgotPassword: 'Forgot your password?',

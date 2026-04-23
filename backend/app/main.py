@@ -4421,6 +4421,10 @@ PUBLIC_API_ROUTES = {
     "/api/v1/auth/status",
     "/api/v1/auth/login",
     "/api/v1/auth/setup",  # Needed for initial setup and recovery
+    # Sliding-session refresh (§18.14): gated by the HttpOnly refresh cookie,
+    # not by bearer; /login→/refresh must not be bounced by the middleware
+    # when the access token has already expired (that's the whole point).
+    "/api/v1/auth/refresh",
     # Advanced auth status needed for login page
     "/api/v1/auth/advanced-auth/status",
     "/api/v1/auth/forgot-password",  # Password reset for advanced auth

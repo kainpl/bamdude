@@ -444,11 +444,16 @@ async def change_own_password(
         )
 
     # Update password. password_changed_at invalidates all JWTs issued before
-    # this moment (§18.4 I2 — freshness check in get_current_user).
+    # this moment (§18.4 I2 — freshness check in get_current_user). §18.14
+    # extension: sliding-session refresh tokens are also revoked so other
+    # devices can't keep refreshing access tokens against a rotated password.
     from datetime import datetime, timezone
+
+    from backend.app.core.auth import revoke_all_refresh_tokens_for_user
 
     user.password_hash = get_password_hash(password_data.new_password)
     user.password_changed_at = datetime.now(timezone.utc)
+    await revoke_all_refresh_tokens_for_user(db, user.username)
     await db.commit()
 
     return {"message": "Password changed successfully"}

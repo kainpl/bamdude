@@ -2476,6 +2476,7 @@ export default {
     usernameOrEmailPlaceholder: "Ім'я або @ Email",
     password: 'Пароль',
     passwordPlaceholder: 'Введіть пароль',
+    rememberMe: 'Запам\'ятати мене на 30 днів',
     signIn: 'Увійти',
     signingIn: 'Вхід...',
     forgotPassword: 'Забули пароль?',

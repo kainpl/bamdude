@@ -13,7 +13,7 @@ interface AuthContextType {
   requiresSetup: boolean;
   loading: boolean;
   isAdmin: boolean;
-  login: (username: string, password: string) => Promise<import('../api/client').LoginResponse>;
+  login: (username: string, password: string, rememberMe?: boolean) => Promise<import('../api/client').LoginResponse>;
   loginWithToken: (token: string, user: UserResponse) => void;
   logout: () => void;
   refreshUser: () => Promise<void>;
@@ -152,8 +152,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [loading, requiresSetup]);
 
-  const login = async (username: string, password: string) => {
-    const response = await api.login({ username, password });
+  const login = async (username: string, password: string, rememberMe: boolean = false) => {
+    const response = await api.login({ username, password, remember_me: rememberMe });
     // When the server signals 2FA is required, the caller (LoginPage step
     // machine, §18.11) takes over with the pre_auth_token — do NOT set a
     // bearer token in that branch. Only set the token + refresh the user

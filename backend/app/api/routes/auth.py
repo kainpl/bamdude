@@ -15,6 +15,9 @@ from backend.app.api.routes.settings import get_external_login_url
 from backend.app.core.auth import (
     ACCESS_TOKEN_EXPIRE_MINUTES,
     ALGORITHM,
+    REFRESH_TOKEN_COOKIE_NAME,
+    REFRESH_TOKEN_COOKIE_PATH,
+    REFRESH_TOKEN_EXPIRE_DAYS_REMEMBER,
     SECRET_KEY,
     Permission,
     RequirePermission,
@@ -23,14 +26,19 @@ from backend.app.core.auth import (
     authenticate_user,
     authenticate_user_by_email,
     create_access_token,
+    create_refresh_token,
     get_current_active_user,
     get_password_hash,
     get_user_by_email,
     get_user_by_username,
     has_any_admin,
     is_jti_revoked,
+    refresh_cookie_secure_flag,
+    revoke_all_refresh_tokens_for_user,
     revoke_jti,
+    revoke_refresh_family,
     security,
+    verify_and_consume_refresh_token,
 )
 from backend.app.core.database import get_db
 from backend.app.core.permissions import ALL_PERMISSIONS, DEFAULT_GROUPS
@@ -74,6 +82,71 @@ def _user_to_response(user: User) -> UserResponse:
         groups=[GroupBrief(id=g.id, name=g.name) for g in user.groups],
         permissions=sorted(user.get_permissions()),
         created_at=user.created_at.isoformat(),
+    )
+
+
+async def _issue_refresh_cookie(
+    db: AsyncSession,
+    response: Response,
+    request: Request,
+    *,
+    username: str,
+    remember_me: bool,
+    family_id: str | None = None,
+) -> None:
+    """Mint + persist a refresh token and set the cookie on ``response``.
+
+    ``family_id=None`` creates a fresh family (new /login). Pass the existing
+    family when rotating inside /auth/refresh so reuse detection sees the
+    whole lineage.
+
+    Cookie shape (§18.14):
+
+    - ``HttpOnly`` — refresh token invisible to JS; XSS can't exfiltrate.
+    - ``SameSite=Lax`` — sent on same-site navigations + same-site POSTs,
+      blocks cross-origin form submissions which is enough for a
+      non-preflighted POST /auth/refresh.
+    - ``Secure`` — auto-detected by ``refresh_cookie_secure_flag`` (HTTPS
+      vs plain HTTP, with X-Forwarded-Proto awareness) unless
+      ``AUTH_REFRESH_COOKIE_SECURE`` env forces the polarity.
+    - ``Path=/api/v1/auth`` — cookie is only transmitted to auth endpoints,
+      trimming the attack surface against CSRF on unrelated routes.
+    - ``Max-Age`` — set only when ``remember_me=True`` (30 d). Without it
+      the cookie is a session cookie that dies with the browser process.
+    """
+    raw_refresh, resolved_family, expires_at = await create_refresh_token(
+        db,
+        username=username,
+        remember_me=remember_me,
+        family_id=family_id,
+    )
+    cookie_kwargs: dict = {
+        "key": REFRESH_TOKEN_COOKIE_NAME,
+        "value": raw_refresh,
+        "httponly": True,
+        "secure": refresh_cookie_secure_flag(request),
+        "samesite": "lax",
+        "path": REFRESH_TOKEN_COOKIE_PATH,
+    }
+    if remember_me:
+        # 30 d in seconds. Browser persists across restarts; matches DB TTL.
+        cookie_kwargs["max_age"] = REFRESH_TOKEN_EXPIRE_DAYS_REMEMBER * 24 * 3600
+    response.set_cookie(**cookie_kwargs)
+    _ = resolved_family, expires_at  # logged by the helpers; not needed here
+
+
+def _clear_refresh_cookie(response: Response, request: Request) -> None:
+    """Match ``_issue_refresh_cookie`` attributes so the browser recognises
+    this as the same cookie and evicts it (cookie identity = name + path +
+    domain). Missing ``Secure`` / ``SameSite`` on the clear would leave the
+    original sitting in the jar on some browsers.
+    """
+    response.delete_cookie(
+        key=REFRESH_TOKEN_COOKIE_NAME,
+        path=REFRESH_TOKEN_COOKIE_PATH,
+        httponly=True,
+        secure=refresh_cookie_secure_flag(request),
+        samesite="lax",
     )
 
 
@@ -437,10 +510,145 @@ async def login(
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(data={"sub": user.username}, expires_delta=access_token_expires)
 
+    # Sliding-session refresh cookie — §18.14. Issued alongside every access
+    # token from a password login so the frontend can transparently refresh
+    # the short-lived JWT without bouncing the operator through /login
+    # every hour. Explicit commit — the test harness's get_db override
+    # doesn't auto-commit, so flushing alone would roll back on session close.
+    await _issue_refresh_cookie(
+        db,
+        response,
+        raw_request,
+        username=user.username,
+        remember_me=request.remember_me,
+    )
+    await db.commit()
+
     return LoginResponse(
         access_token=access_token,
         token_type="bearer",
         user=_user_to_response(user),
+    )
+
+
+@router.post("/refresh", response_model=LoginResponse)
+async def refresh_access_token(
+    request: Request,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+):
+    """Sliding-session refresh (§18.14).
+
+    Reads the ``bamdude_refresh`` HttpOnly cookie, validates it, and if OK
+    rotates: the old refresh row is marked ``used_at=now`` and a new refresh
+    is issued inside the same family. The new refresh is set as the cookie
+    on the response; a freshly-minted access token is returned in the JSON
+    body.
+
+    Reuse detection — if the incoming token is already-used, it's a replay
+    (stolen cookie or a race condition in the client that survived through
+    the coalescing guard). The whole family is revoked so every sibling
+    refresh dies at once; caller gets a 401 and the frontend drops to
+    /login. OWASP refresh-token rotation.
+
+    Invalid / expired / missing cookies → 401 without family side effects.
+
+    Remember-me is preserved across rotations: if the original login had a
+    30-day cookie, each rotation keeps the ``remember_me=True`` behaviour;
+    otherwise both the DB TTL (12 h) and the cookie (session) stay short.
+    Detection heuristic: a cookie that still carries a ``Max-Age`` attribute
+    tells the browser it's a persistent cookie, and the original request
+    gets a ``max_age`` resolved from the current session's DB expiry — if
+    the DB-side expiry of the CURRENT refresh token is more than the
+    session TTL, treat as remember-me. Simpler than round-tripping a flag.
+    """
+    from backend.app.core.auth import REFRESH_TOKEN_EXPIRE_HOURS_SESSION
+
+    raw_refresh = request.cookies.get(REFRESH_TOKEN_COOKIE_NAME)
+    if not raw_refresh:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No refresh token",
+        )
+
+    # We need the current row's expires_at BEFORE it gets mutated to decide
+    # whether this session is "remember-me" or not. The verify-and-consume
+    # path doesn't return the expiry, so peek first via the same hash.
+    from backend.app.core.auth import _hash_refresh_token
+    from backend.app.models.auth_ephemeral import AuthEphemeralToken, TokenType
+
+    peeked = (
+        await db.execute(
+            select(AuthEphemeralToken)
+            .where(AuthEphemeralToken.token == _hash_refresh_token(raw_refresh))
+            .where(AuthEphemeralToken.token_type == TokenType.REFRESH)
+        )
+    ).scalar_one_or_none()
+    was_remember_me = False
+    if peeked is not None:
+        # Inherit remember-me from the original login: if the refresh row
+        # lives longer than the session-cookie TTL, it was created via
+        # remember_me=True. Exact-match comparison would break the moment
+        # we tweak TTL constants, hence the >-with-slack guard (any refresh
+        # with > session TTL + 1 h headroom is definitely a remember-me row).
+        session_secs = REFRESH_TOKEN_EXPIRE_HOURS_SESSION * 3600
+        lifespan_secs = (peeked.expires_at - peeked.created_at).total_seconds()
+        was_remember_me = lifespan_secs > session_secs + 3600
+
+    username, family_id, result_status = await verify_and_consume_refresh_token(db, raw_refresh)
+
+    if result_status == "reuse":
+        # Belt-and-braces: even though verify_and_consume_refresh_token
+        # already revoked the family, clear the cookie so the client stops
+        # resending a dead token on every subsequent call.
+        _clear_refresh_cookie(response, request)
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token replay detected; session revoked",
+        )
+    if result_status == "invalid" or not username:
+        _clear_refresh_cookie(response, request)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired refresh token",
+        )
+
+    # Load the user to mint a fresh access token — and so the response body
+    # can carry a current snapshot of the user's permissions (UI may refresh
+    # stale permission caches on sliding-refresh, not just on login).
+    user_row = (
+        await db.execute(select(User).where(User.username == username).options(selectinload(User.groups)))
+    ).scalar_one_or_none()
+    if user_row is None or not user_row.is_active:
+        _clear_refresh_cookie(response, request)
+        if family_id:
+            await revoke_refresh_family(db, family_id)
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User account unavailable",
+        )
+
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    new_access = create_access_token(data={"sub": user_row.username}, expires_delta=access_token_expires)
+
+    # Rotate within the same family so reuse detection sees the lineage.
+    await _issue_refresh_cookie(
+        db,
+        response,
+        request,
+        username=user_row.username,
+        remember_me=was_remember_me,
+        family_id=family_id,
+    )
+
+    await db.commit()
+
+    return LoginResponse(
+        access_token=new_access,
+        token_type="bearer",
+        user=_user_to_response(user_row),
     )
 
 
@@ -532,14 +740,22 @@ async def get_current_user_info(
 
 @router.post("/logout")
 async def logout(
+    request: Request,
+    response: Response,
     authorization: str | None = Header(default=None, alias="Authorization"),
+    db: AsyncSession = Depends(get_db),
 ):
-    """Logout — revoke the caller's JWT ``jti`` so it can't be reused (§18.4).
+    """Logout — revoke the caller's JWT ``jti`` + refresh-token family (§18.4 + §18.14).
 
     Accepts the bearer token via the standard ``Authorization`` header. Validates
     the signature without enforcing ``exp`` (expired tokens still get their jti
     blacklisted) so a user who logs out after their token expired can't have
     anyone replay that token within our revocation window.
+
+    Since §18.14 the logout also clears the sliding-session refresh cookie and
+    revokes every sibling token in the same family so a stolen cookie can't
+    outlive the click-to-logout moment. Other devices logged in under
+    different ``family_id``s stay alive — logout is single-session by design.
     """
     if authorization and authorization.startswith("Bearer "):
         token = authorization[len("Bearer ") :]
@@ -564,6 +780,26 @@ async def logout(
         except JWTError:
             # Malformed / signature-invalid token — nothing to revoke.
             pass
+
+    # Revoke the current refresh family + clear the cookie. Only touches the
+    # family whose token the browser is holding; leaves other devices alone.
+    raw_refresh = request.cookies.get(REFRESH_TOKEN_COOKIE_NAME)
+    if raw_refresh:
+        from backend.app.core.auth import _hash_refresh_token
+        from backend.app.models.auth_ephemeral import AuthEphemeralToken, TokenType
+
+        row = (
+            await db.execute(
+                select(AuthEphemeralToken)
+                .where(AuthEphemeralToken.token == _hash_refresh_token(raw_refresh))
+                .where(AuthEphemeralToken.token_type == TokenType.REFRESH)
+            )
+        ).scalar_one_or_none()
+        if row is not None and row.family_id:
+            await revoke_refresh_family(db, row.family_id)
+        await db.commit()
+    _clear_refresh_cookie(response, request)
+
     return {"message": "Logged out successfully"}
 
 
@@ -796,6 +1032,11 @@ async def forgot_password(
             new_password = generate_secure_password()
             user.password_hash = get_password_hash(new_password)
             user.password_changed_at = datetime.now(timezone.utc)  # §18.4: invalidate existing JWTs
+            # §18.14: all sliding-session refresh tokens for this user die too,
+            # so every other device the user was logged in on bounces to /login
+            # after the next refresh attempt. Without this the old refresh cookie
+            # would keep minting fresh access tokens against a rotated password.
+            await revoke_all_refresh_tokens_for_user(db, user.username)
             await db.commit()
 
             login_url = await get_external_login_url(db)
@@ -879,6 +1120,9 @@ async def reset_user_password(
         new_password = generate_secure_password()
         user.password_hash = get_password_hash(new_password)
         user.password_changed_at = datetime.now(timezone.utc)  # §18.4: invalidate existing JWTs
+        # §18.14: kill all the user's sliding-session refresh tokens too (same
+        # reasoning as the forgot-password branch above).
+        await revoke_all_refresh_tokens_for_user(db, user.username)
         await db.commit()
 
         login_url = await get_external_login_url(db)

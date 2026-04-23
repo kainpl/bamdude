@@ -44,6 +44,7 @@ class TokenType(str, Enum):
     SLICER_DOWNLOAD = "slicer_download"
     CAMERA_STREAM = "camera_stream"
     REVOKED_JTI = "revoked_jti"
+    REFRESH = "refresh"  # m015 — sliding-session refresh token (rotated per /auth/refresh)
 
 
 class EventType(str, Enum):
@@ -85,6 +86,17 @@ class AuthEphemeralToken(Base):
     # pre_auth: HttpOnly cookie value bound to this token to prevent token theft
     # (XSS can read JS memory but cannot read HttpOnly cookies).
     challenge_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    # refresh (m015): timestamp when a refresh token was consumed by /auth/refresh.
+    # Kept for reuse detection — an already-used refresh token coming back in is
+    # treated as a replay / stolen-cookie attack and collapses the whole family.
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # refresh (m015): common identifier for the entire rotation chain from a
+    # single /login. Reuse detection revokes every sibling token with the same
+    # family_id in one DELETE. Indexed because revocation-on-reuse is on the
+    # hot path of any 401 where the client attempts to refresh.
+    family_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
 
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -161,6 +173,28 @@ class AuthEphemeralToken(Base):
             token=token,
             token_type=TokenType.PASSWORD_RESET,
             username=username,
+            expires_at=expires_at,
+        )
+
+    @classmethod
+    def new_refresh(
+        cls,
+        token_hash: str,
+        username: str,
+        family_id: str,
+        expires_at: datetime,
+    ) -> AuthEphemeralToken:
+        """Create a refresh token row (m015 sliding session).
+
+        ``token_hash`` is SHA-256(raw cookie value) — plaintext never touches
+        the DB. ``family_id`` groups every rotation descended from one /login
+        so reuse detection can collapse the whole chain at once.
+        """
+        return cls(
+            token=token_hash,
+            token_type=TokenType.REFRESH,
+            username=username,
+            family_id=family_id,
             expires_at=expires_at,
         )
 
