@@ -9,9 +9,7 @@ import { Layout } from '../../components/Layout';
 import { http, HttpResponse } from 'msw';
 import { server } from '../mocks/server';
 
-// TODO(#stale-tests): re-enable once assertions are updated to match current component output.
-// See https://github.com/kainpl/bamdude/issues for the tracking ticket.
-describe.skip('Layout', () => {
+describe('Layout', () => {
   beforeEach(() => {
     server.use(
       http.get('/api/v1/printers/', () => {
@@ -132,6 +130,12 @@ describe.skip('Layout', () => {
     it('shows modal when plate-not-empty event is dispatched', async () => {
       render(<Layout />);
 
+      // Wait for AuthContext to finish loading the admin user so the listener's
+      // hasPermission('printers:control') guard sees a real user instead of null.
+      await waitFor(() => {
+        expect(document.querySelector('a[href="/settings"]')).toBeInTheDocument();
+      });
+
       // Dispatch the plate-not-empty event
       window.dispatchEvent(
         new CustomEvent('plate-not-empty', {
@@ -152,6 +156,10 @@ describe.skip('Layout', () => {
 
     it('closes modal when I Understand button is clicked', async () => {
       render(<Layout />);
+
+      await waitFor(() => {
+        expect(document.querySelector('a[href="/settings"]')).toBeInTheDocument();
+      });
 
       // Dispatch the plate-not-empty event
       window.dispatchEvent(

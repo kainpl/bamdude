@@ -122,6 +122,7 @@ class PrinterState:
     ipcam: bool = False  # Live view / camera streaming enabled
     wifi_signal: int | None = None  # WiFi signal strength in dBm
     wired_network: bool = False  # Ethernet connection detected (home_flag bit 18)
+    door_open: bool = False  # Enclosure door open (home_flag bit 23 on X1*, stat bit 23 elsewhere)
     # Nozzle hardware info (for dual nozzle printers, index 0 = left, 1 = right)
     nozzles: list = field(default_factory=lambda: [NozzleInfo(), NozzleInfo()])
     # AI detection and print options
@@ -372,6 +373,12 @@ class BambuMQTTClient:
         # when the frontend polls status faster than paho can reconnect.
         self._last_stale_reconnect: float = 0.0
 
+        # Zombie session detection via ams_filament_setting response tracking (#887).
+        # The dev-mode probe only runs on first connect; this catches zombie sessions
+        # that develop later (telemetry flows but publishes silently fail).
+        self._last_ams_cmd_time: float = 0.0  # monotonic time of last published command
+        self._ams_cmd_unanswered: int = 0  # consecutive commands with no response
+
     @property
     def topic_subscribe(self) -> str:
         return f"device/{self.serial_number}/report"
@@ -427,6 +434,23 @@ class BambuMQTTClient:
                     pass  # Best-effort; paho loop will reconnect on next iteration
         return self.state.connected
 
+    def force_reconnect_stale_session(self, reason: str) -> None:
+        """Heal #887 half-broken session: telemetry keeps arriving but our
+        publishes no longer reach the printer. Closing the socket makes paho
+        drop and re-establish with a fresh session."""
+        logger.warning("[%s] Forcing MQTT reconnect: %s", self.serial_number, reason)
+        self._stale_reconnecting = True
+        self.state.connected = False
+        if self.on_state_change:
+            self.on_state_change(self.state)
+        if self._client:
+            try:
+                sock = self._client.socket()
+                if sock:
+                    sock.close()
+            except Exception:
+                pass
+
     def _on_connect(self, client, userdata, flags, rc, properties=None):
         if rc == 0:
             self.state.connected = True
@@ -441,6 +465,9 @@ class BambuMQTTClient:
             self._dev_mode_probe_time = 0.0
             self._dev_mode_probe_failures = 0
             self._connect_time = time.monotonic()
+            # Reset zombie session detection — fresh session means no commands pending
+            self._last_ams_cmd_time = 0.0
+            self._ams_cmd_unanswered = 0
             client.subscribe(self.topic_subscribe)
             # Subscribe to request topic for ams_mapping capture (if supported by broker)
             if self._request_topic_supported:
@@ -786,6 +813,10 @@ class BambuMQTTClient:
                     and print_data.get("sequence_id") == self._dev_mode_probe_seq
                 ):
                     self._handle_dev_mode_probe_response(print_data)
+                # Track user-initiated ams_filament_setting responses (#887 zombie detection)
+                elif cmd == "ams_filament_setting" and self._last_ams_cmd_time > 0:
+                    self._last_ams_cmd_time = 0.0
+                    self._ams_cmd_unanswered = 0
             if "command" in print_data and print_data.get("command") == "extrusion_cali_get":
                 self._handle_kprofile_response(print_data)
 
@@ -2304,23 +2335,62 @@ class BambuMQTTClient:
                             )
                         )
 
-        # Parse SD card status
-        if "sdcard" in data:
-            self.state.sdcard = data["sdcard"] is True
-
-        # Parse home_flag for "Store Sent Files on External Storage" setting (bit 11)
+        # Parse home_flag first so SD-card / door detection below can use it.
+        # Bit 8 = HAS_SDCARD_NORMAL, bit 9 = HAS_SDCARD_ABNORMAL, bit 11 = store-to-SD,
+        # bit 18 = wired network, bit 23 = door-open (X1 family only).
+        home_flag = None
         if "home_flag" in data:
             home_flag = data["home_flag"]
-            # Bit 11 controls "Store Sent Files on External Storage"
             # Convert to unsigned 32-bit if negative
             if home_flag < 0:
                 home_flag = home_flag & 0xFFFFFFFF
+
+        # SD card presence.
+        # Use the top-level `sdcard` field with a permissive truthy check covering
+        # the bool / int / "HAS_SDCARD_NORMAL" variants that different firmware
+        # revisions emit. We do NOT derive it from home_flag — heartbeat pushes
+        # clear bits 8-9 even when a card is inserted, which made the UI badge
+        # flap. The only remaining consumer is the firmware-update precondition
+        # check in firmware_update.py; other callers were removed upstream.
+        if "sdcard" in data:
+            raw_sdcard = data["sdcard"]
+            if isinstance(raw_sdcard, str):
+                self.state.sdcard = "HAS_SDCARD" in raw_sdcard.upper() or raw_sdcard.lower() in ("true", "normal", "1")
+            else:
+                self.state.sdcard = bool(raw_sdcard)
+
+        # Store-sent-files-to-SD toggle (home_flag bit 11).
+        if home_flag is not None:
             store_to_sdcard = bool((home_flag >> 11) & 1)
             if store_to_sdcard != self.state.store_to_sdcard:
                 logger.debug(
                     f"[{self.serial_number}] store_to_sdcard changed: {self.state.store_to_sdcard} -> {store_to_sdcard}"
                 )
             self.state.store_to_sdcard = store_to_sdcard
+
+        # Door open detection — only X1 series (X1, X1C, X1E) has a
+        # reverse-engineered door-sensor signal on home_flag bit 23. Bit 23
+        # of ``stat`` on other enclosed models (P1S/P2S/H2*) is undocumented
+        # and unreliable — previously parsed blindly on all non-X1 models,
+        # which surfaced misleading "Door Closed/Open" badges on:
+        #   * P1P (open-frame, no door exists — always shows Closed)
+        #   * P1S / P2S (enclosure without exposed sensor in current firmware)
+        #   * A1 / A1 Mini (open-frame)
+        # The ``has_door_sensor`` helper centralises the whitelist for both
+        # parser gate here and the frontend badge visibility.
+        from backend.app.utils.printer_models import has_door_sensor
+
+        if has_door_sensor(self.model) and home_flag is not None:
+            door_open = (home_flag & 0x00800000) != 0
+            if door_open != self.state.door_open:
+                logger.debug(
+                    "[%s] door_open changed: %s -> %s (home_flag=0x%08X)",
+                    self.serial_number,
+                    self.state.door_open,
+                    door_open,
+                    home_flag,
+                )
+            self.state.door_open = door_open
 
         # Parse timelapse status (recording active during print)
         if "timelapse" in data:
@@ -2542,23 +2612,26 @@ class BambuMQTTClient:
                 )
                 self._dev_mode_probe_seq = None
                 if self._dev_mode_probe_failures >= 2:
-                    logger.warning(
-                        "[%s] MQTT session appears broken (commands ignored), forcing reconnect",
-                        self.serial_number,
-                    )
-                    self._stale_reconnecting = True
-                    self.state.connected = False
-                    if self.on_state_change:
-                        self.on_state_change(self.state)
-                    if self._client:
-                        try:
-                            sock = self._client.socket()
-                            if sock:
-                                sock.close()
-                        except Exception:
-                            pass
+                    self.force_reconnect_stale_session("developer mode probe unanswered 2×")
                 else:
                     self._dev_mode_probed = False  # Allow retry
+
+        # Zombie session detection: if an ams_filament_setting command has been
+        # pending for >10s with no response, the publish path is likely dead (#887).
+        if self._last_ams_cmd_time > 0:
+            elapsed = time.monotonic() - self._last_ams_cmd_time
+            if elapsed > 10.0:
+                self._ams_cmd_unanswered += 1
+                logger.warning(
+                    "[%s] ams_filament_setting unanswered for %.0fs (count=%d)",
+                    self.serial_number,
+                    elapsed,
+                    self._ams_cmd_unanswered,
+                )
+                self._last_ams_cmd_time = 0.0  # don't re-trigger on next push_status
+                if self._ams_cmd_unanswered >= 2:
+                    self.force_reconnect_stale_session("ams_filament_setting unanswered 2×")
+                    self._ams_cmd_unanswered = 0
 
         # Log mapping data when received (for usage tracking debugging)
         if "mapping" in data:
@@ -2961,6 +3034,7 @@ class BambuMQTTClient:
                             "H2DPRO",
                             "H2C",
                             "H2S",
+                            "X2D",
                         )
                         ext_ams_id = tray_id if _is_h2d else 255
                         flat_ams_mapping.append(-1)
@@ -2980,7 +3054,7 @@ class BambuMQTTClient:
             # but use_ams MUST remain boolean - H2D Pro firmware interprets integer
             # values as nozzle index (1 = deputy nozzle), causing wrong extruder routing
             # Other printers (X1C, P1S, A1, etc.) require actual booleans for all fields
-            is_h2d = self.model and self.model.upper().strip() in ("H2D", "H2D PRO", "H2DPRO", "H2C", "H2S")
+            is_h2d = self.model and self.model.upper().strip() in ("H2D", "H2D PRO", "H2DPRO", "H2C", "H2S", "X2D")
 
             # If all mapped slots are external spool (no real AMS trays), force use_ams=False.
             # P1S/P1P with no AMS rejects use_ams=True with "Failed to get AMS mapping table".
@@ -3006,6 +3080,20 @@ class BambuMQTTClient:
                     self.serial_number,
                     flat_ams_mapping,
                 )
+
+            # Unique submission ID per invocation. Third-party MQTT observers
+            # (OctoEverywhere, etc.) were treating every reprint as a continuation
+            # of the prior task when project_id/subtask_id/task_id were hardcoded
+            # "0"; the printer kept broadcasting the old gcode_start_time and
+            # observers accumulated compounding durations (#1011).
+            # Cap at signed int32 max: P1S firmware (01.10.00.00) clamps oversized
+            # task identity fields to 2**31-1, so raw epoch-ms (13 digits, ~1.7e12)
+            # overflows and every submission ends up with the same task_id from
+            # the printer's perspective — the printer then treats a fresh dispatch
+            # as a continuation of the last FAILED job and never leaves IDLE (#1042).
+            # Modulo keeps uniqueness within a ~24-day wrap window; `or 1` guards
+            # the (astronomically unlikely) zero case since task_id=0 is rejected.
+            submission_id = str(int(time.time() * 1000) % 2_147_483_647 or 1)
 
             command = {
                 "print": {
@@ -3033,9 +3121,9 @@ class BambuMQTTClient:
                     "nozzle_offset_cali": 2,
                     "subtask_name": filename.replace(".3mf", "").replace(".gcode", ""),
                     "profile_id": "0",
-                    "project_id": "0",
-                    "subtask_id": "0",
-                    "task_id": "0",
+                    "project_id": submission_id,
+                    "subtask_id": submission_id,
+                    "task_id": submission_id,
                 }
             }
 
@@ -3708,9 +3796,9 @@ class BambuMQTTClient:
 
         self._sequence_id += 1
 
-        # Detect printer type by serial number prefix
-        # H2D series (dual nozzle): serial starts with "094"
-        is_dual_nozzle = self.serial_number.startswith("094")
+        # Detect printer type by serial number prefix.
+        # Dual-nozzle families: H2D family ("094") and X2D ("20P9", #988).
+        is_dual_nozzle = self.serial_number.startswith(("094", "20P9"))
 
         if is_dual_nozzle:
             # H2D format: uses extruder_id, nozzle_id, nozzle_diameter
@@ -4061,17 +4149,15 @@ class BambuMQTTClient:
         return True
 
     def home_axes(self, axes: str = "XYZ") -> bool:
-        """Home the specified axes.
+        """Run the printer's full auto-home sequence.
 
-        Args:
-            axes: Axes to home (e.g., "XYZ", "X", "XY", "Z")
-
-        Returns:
-            True if command was sent, False otherwise
+        The ``axes`` argument is ignored: a bare ``G28`` is always sent so
+        Bambu firmware runs its safe multi-step routine (park toolhead →
+        home XY → home Z). Partial-axis variants like ``G28 Z`` skip the
+        toolhead-park step and can crash the bed into the toolhead on H2C
+        / H2D / H2S / X1 where Z-home moves the bed UP — upstream #1052.
         """
-        # G28 homes all axes, G28 X Y Z homes specific axes
-        axes_param = " ".join(axes.upper())
-        return self.send_gcode(f"G28 {axes_param}")
+        return self.send_gcode("G28")
 
     def move_axis(self, axis: str, distance: float, speed: int = 3000) -> bool:
         """Move an axis by a relative distance.
@@ -4358,6 +4444,7 @@ class BambuMQTTClient:
             f"[{self.serial_number}] Publishing ams_filament_setting: AMS {ams_id}, tray {tray_id}, tray_info_idx={tray_info_idx}, setting_id={setting_id}"
         )
         logger.debug("[%s] ams_filament_setting command: %s", self.serial_number, command_json)
+        self._last_ams_cmd_time = time.monotonic()  # zombie detection (#887)
         self._client.publish(self.topic_publish, command_json, qos=1)
         return True
 
@@ -4415,6 +4502,7 @@ class BambuMQTTClient:
         command_json = json.dumps(command)
         logger.info("[%s] Resetting AMS slot: AMS %s, tray %s", self.serial_number, ams_id, tray_id)
         logger.debug("[%s] reset_ams_slot command: %s", self.serial_number, command_json)
+        self._last_ams_cmd_time = time.monotonic()  # zombie detection (#887)
         self._client.publish(self.topic_publish, command_json, qos=1)
         return True
 

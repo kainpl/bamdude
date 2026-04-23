@@ -3524,3 +3524,344 @@ class TestStaleReconnect:
 
         assert state_changes == [False]
         assert mqtt_client.state.connected is False
+
+
+class TestDoorOpenParsing:
+    """Door-open parsing is gated by ``has_door_sensor()``.
+
+    Only X1 family (X1, X1C, X1E) has a reverse-engineered sensor signal on
+    home_flag bit 23. Bit 23 of ``stat`` on other enclosed models (P1S/P2S/H2*)
+    was previously parsed but is undocumented and unreliable — observed to
+    flap or stay pinned in ways unrelated to the physical door. The parser
+    now ignores ``stat`` entirely and only consumes home_flag on whitelisted
+    models, so downstream consumers (UI badge, notifications) never surface
+    misleading door state.
+    """
+
+    def _make_client(self, model: str):
+        from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+        return BambuMQTTClient(
+            ip_address="192.168.1.100",
+            serial_number="TEST",
+            access_code="12345678",
+            model=model,
+        )
+
+    def test_x1c_door_open_from_home_flag(self):
+        client = self._make_client("X1C")
+        # bit 23 set
+        client._update_state({"home_flag": 0xC0E5CD98})
+        assert client.state.door_open is True
+
+    def test_x1c_door_closed_from_home_flag(self):
+        client = self._make_client("X1C")
+        client.state.door_open = True  # start "open"
+        client._update_state({"home_flag": 0xC065CD98})
+        assert client.state.door_open is False
+
+    def test_x1c_ignores_stat_field(self):
+        # X1C must NOT use stat (bit 23 in stat is unrelated for X1)
+        client = self._make_client("X1C")
+        client._update_state({"home_flag": 0xC065CD98, "stat": "47A58000"})
+        assert client.state.door_open is False  # home_flag wins
+
+    def test_p1p_open_frame_never_parses_door(self):
+        # P1P has no enclosure and no door hardware — must never flip.
+        client = self._make_client("P1P")
+        client._update_state({"home_flag": 0xC0E5CD98, "stat": "640A58000"})
+        assert client.state.door_open is False
+
+    def test_p1s_ignored_despite_enclosure(self):
+        # P1S has an enclosure but no trusted door sensor in firmware — we
+        # deliberately skip parsing to avoid misleading "Door Closed" state.
+        client = self._make_client("P1S")
+        client._update_state({"home_flag": 0xC0E5CD98, "stat": "640A58000"})
+        assert client.state.door_open is False
+
+    def test_h2d_ignored_pending_verification(self):
+        # H2D enclosure has no reverse-engineered door signal yet; parsing
+        # was previously speculative. Until confirmed on hardware, skip.
+        client = self._make_client("H2D")
+        client._update_state({"home_flag": 0xC0E5CD98, "stat": "640A58000"})
+        assert client.state.door_open is False
+
+    def test_a1_mini_open_frame_never_parses_door(self):
+        # A1 Mini is open-frame, same reasoning as P1P.
+        client = self._make_client("A1 Mini")
+        client._update_state({"home_flag": 0xC0E5CD98, "stat": "640A58000"})
+        assert client.state.door_open is False
+
+    def test_unknown_model_defaults_to_no_sensor(self):
+        client = self._make_client("SomeNewModel")
+        client._update_state({"home_flag": 0xC0E5CD98})
+        assert client.state.door_open is False
+
+
+class TestSdCardParsing:
+    """SD-card state is only set from the top-level `sdcard` field (bool/int/
+    string variants). home_flag is NOT consulted — heartbeat pushes clear those
+    bits even when a card is inserted, which caused the badge to flap."""
+
+    def _make_client(self, model: str = "H2D"):
+        from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+        return BambuMQTTClient(
+            ip_address="192.168.1.100",
+            serial_number="TEST",
+            access_code="12345678",
+            model=model,
+        )
+
+    def test_home_flag_alone_does_not_touch_sdcard(self):
+        client = self._make_client()
+        client.state.sdcard = True
+        for home_flag in (0x00000000, 0x00000100, 0x00000200):
+            client._update_state({"home_flag": home_flag})
+        assert client.state.sdcard is True
+
+    def test_sdcard_string_fallback_when_no_home_flag(self):
+        client = self._make_client()
+        client._update_state({"sdcard": "HAS_SDCARD_NORMAL"})
+        assert client.state.sdcard is True
+
+    def test_sdcard_int_fallback_when_no_home_flag(self):
+        # `1 is True` is False — the old strict check flapped here.
+        client = self._make_client()
+        client._update_state({"sdcard": 1})
+        assert client.state.sdcard is True
+
+    def test_sdcard_bool_fallback_when_no_home_flag(self):
+        client = self._make_client()
+        client._update_state({"sdcard": True})
+        assert client.state.sdcard is True
+        client._update_state({"sdcard": False})
+        assert client.state.sdcard is False
+
+
+class TestZombieSessionDetection:
+    """Tests for ams_filament_setting response tracking (#887).
+
+    When a printer's MQTT session degrades so that telemetry flows but
+    published commands never reach the printer, the zombie detector
+    counts consecutive unanswered ams_filament_setting commands and
+    force-reconnects after two.
+    """
+
+    @pytest.fixture
+    def mqtt_client(self):
+        import time
+        from unittest.mock import MagicMock
+
+        from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+        client = BambuMQTTClient(
+            ip_address="192.168.1.100",
+            serial_number="TEST123",
+            access_code="12345678",
+        )
+        client.state.connected = True
+        mock_paho = MagicMock()
+        mock_paho.socket.return_value = MagicMock()
+        client._client = mock_paho
+        client._connect_time = time.monotonic() - 10.0
+        # Set developer_mode so the dev-mode probe branch doesn't interfere
+        client.state.developer_mode = True
+        return client
+
+    def test_initial_state_is_clean(self, mqtt_client):
+        """Tracking fields start at zero / no pending command."""
+        assert mqtt_client._last_ams_cmd_time == 0.0
+        assert mqtt_client._ams_cmd_unanswered == 0
+
+    def test_publish_sets_pending_time(self, mqtt_client):
+        """ams_set_filament_setting records the publish timestamp."""
+        import time
+
+        before = time.monotonic()
+        mqtt_client.ams_set_filament_setting(
+            ams_id=0,
+            tray_id=0,
+            tray_info_idx="GFL99",
+            tray_type="PLA",
+            tray_sub_brands="",
+            tray_color="FF0000FF",
+            nozzle_temp_min=190,
+            nozzle_temp_max=230,
+        )
+        assert mqtt_client._last_ams_cmd_time >= before
+
+    def test_reset_slot_sets_pending_time(self, mqtt_client):
+        """reset_ams_slot also records the publish timestamp."""
+        import time
+
+        before = time.monotonic()
+        mqtt_client.reset_ams_slot(ams_id=0, tray_id=0)
+        assert mqtt_client._last_ams_cmd_time >= before
+
+    def test_response_clears_pending(self, mqtt_client):
+        """An ams_filament_setting response clears the pending state."""
+        import time
+
+        mqtt_client._last_ams_cmd_time = time.monotonic()
+        mqtt_client._ams_cmd_unanswered = 1
+
+        # Walk the elif branch in _handle_print_response
+        cmd = "ams_filament_setting"
+        if cmd == "ams_filament_setting" and mqtt_client._last_ams_cmd_time > 0:
+            mqtt_client._last_ams_cmd_time = 0.0
+            mqtt_client._ams_cmd_unanswered = 0
+
+        assert mqtt_client._last_ams_cmd_time == 0.0
+        assert mqtt_client._ams_cmd_unanswered == 0
+
+    def test_single_timeout_increments_counter(self, mqtt_client):
+        """One unanswered command increments the counter but does not reconnect."""
+        import time
+
+        mqtt_client._last_ams_cmd_time = time.monotonic() - 11.0
+
+        mqtt_client._update_state({"gcode_state": "IDLE"})
+
+        assert mqtt_client._ams_cmd_unanswered == 1
+        assert mqtt_client._last_ams_cmd_time == 0.0
+        # Should NOT force-reconnect after just one
+        assert mqtt_client.state.connected is True
+
+    def test_two_timeouts_force_reconnect(self, mqtt_client):
+        """Two consecutive unanswered commands trigger force_reconnect."""
+        import time
+
+        state_change_called = []
+        mqtt_client.on_state_change = lambda s: state_change_called.append(True)
+
+        # First unanswered command
+        mqtt_client._last_ams_cmd_time = time.monotonic() - 11.0
+        mqtt_client._update_state({"gcode_state": "IDLE"})
+        assert mqtt_client._ams_cmd_unanswered == 1
+        assert mqtt_client.state.connected is True
+
+        # Second unanswered command
+        mqtt_client._last_ams_cmd_time = time.monotonic() - 11.0
+        mqtt_client._update_state({"gcode_state": "IDLE"})
+
+        assert mqtt_client._ams_cmd_unanswered == 0  # reset after reconnect
+        assert mqtt_client.state.connected is False
+        assert mqtt_client._stale_reconnecting is True
+        mqtt_client._client.socket().close.assert_called()
+        assert len(state_change_called) > 0
+
+    def test_response_between_timeouts_resets_counter(self, mqtt_client):
+        """A successful response after one timeout resets the counter."""
+        import time
+
+        # First unanswered command
+        mqtt_client._last_ams_cmd_time = time.monotonic() - 11.0
+        mqtt_client._update_state({"gcode_state": "IDLE"})
+        assert mqtt_client._ams_cmd_unanswered == 1
+
+        # Now a response arrives — clear pending
+        mqtt_client._last_ams_cmd_time = 0.0
+        mqtt_client._ams_cmd_unanswered = 0
+
+        # Next unanswered command should be count=1, not count=2
+        mqtt_client._last_ams_cmd_time = time.monotonic() - 11.0
+        mqtt_client._update_state({"gcode_state": "IDLE"})
+        assert mqtt_client._ams_cmd_unanswered == 1
+        assert mqtt_client.state.connected is True  # no reconnect
+
+    def test_on_connect_resets_tracking(self, mqtt_client):
+        """_on_connect resets zombie tracking fields."""
+        import time
+
+        mqtt_client._last_ams_cmd_time = time.monotonic()
+        mqtt_client._ams_cmd_unanswered = 5
+
+        # subscribe() must return (result, mid) tuple
+        mqtt_client._client.subscribe.return_value = (0, 1)
+        mqtt_client._on_connect(mqtt_client._client, None, None, 0)
+
+        assert mqtt_client._last_ams_cmd_time == 0.0
+        assert mqtt_client._ams_cmd_unanswered == 0
+
+    def test_no_check_when_no_command_pending(self, mqtt_client):
+        """If no command was published, push_status does not trigger detection."""
+        assert mqtt_client._last_ams_cmd_time == 0.0
+        mqtt_client._update_state({"gcode_state": "IDLE"})
+        assert mqtt_client._ams_cmd_unanswered == 0
+
+    def test_no_timeout_within_window(self, mqtt_client):
+        """A command published <10s ago should not trigger a timeout."""
+        import time
+
+        mqtt_client._last_ams_cmd_time = time.monotonic() - 5.0
+        mqtt_client._update_state({"gcode_state": "IDLE"})
+        assert mqtt_client._ams_cmd_unanswered == 0
+        assert mqtt_client._last_ams_cmd_time > 0  # still pending
+
+
+class TestDeleteKProfileDualNozzleDetection:
+    """Regression guard: dual-nozzle detection by serial prefix (#988).
+
+    ``delete_kprofile`` branches on serial-prefix-derived dual-nozzle status.
+    H2D family serials start with "094"; X2D serials start with "20P9".
+    Non-dual families (X1C "00M", P1S "01P", P2S "22E", A1 "039", etc.)
+    must take the single-nozzle branch.
+    """
+
+    def _make_client(self, serial: str):
+        from unittest.mock import MagicMock
+
+        from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+        client = BambuMQTTClient(
+            ip_address="192.168.1.100",
+            serial_number=serial,
+            access_code="12345678",
+        )
+        client._client = MagicMock()
+        client.state.connected = True
+        return client
+
+    def _published(self, client):
+        return json.loads(client._client.publish.call_args[0][1])["print"]
+
+    def test_h2d_serial_uses_dual_nozzle_format(self):
+        client = self._make_client("09400A000000001")
+        client.delete_kprofile(cali_idx=1, filament_id="GFA00", nozzle_id="HH00-0.4")
+        cmd = self._published(client)
+        # Dual-nozzle command omits setting_id.
+        assert "setting_id" not in cmd
+        assert cmd["extruder_id"] == 0
+
+    def test_x2d_serial_uses_dual_nozzle_format(self):
+        """X2D prefix "20P9" must take the same dual-nozzle branch as H2D (#988)."""
+        client = self._make_client("20P90A000000001")
+        client.delete_kprofile(cali_idx=1, filament_id="GFA00", nozzle_id="HH00-0.4")
+        cmd = self._published(client)
+        assert "setting_id" not in cmd
+        assert cmd["extruder_id"] == 0
+
+    def test_p2s_serial_uses_single_nozzle_format(self):
+        """P2S is single-nozzle — must NOT take the dual-nozzle branch."""
+        client = self._make_client("22E00A000000001")
+        client.delete_kprofile(
+            cali_idx=1,
+            filament_id="GFA00",
+            nozzle_id="HH00-0.4",
+            setting_id="PFB123",
+        )
+        cmd = self._published(client)
+        # Single-nozzle command includes setting_id.
+        assert cmd["setting_id"] == "PFB123"
+
+    def test_x1c_serial_uses_single_nozzle_format(self):
+        client = self._make_client("00M00A000000001")
+        client.delete_kprofile(
+            cali_idx=1,
+            filament_id="GFA00",
+            nozzle_id="HH00-0.4",
+            setting_id="PFB123",
+        )
+        cmd = self._published(client)
+        assert cmd["setting_id"] == "PFB123"

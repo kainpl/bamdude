@@ -13,6 +13,7 @@ from backend.app.services.printer_manager import (
     get_derived_status_name,
     has_stg_cur_idle_bug,
     init_printer_connections,
+    parse_plate_id,
     printer_state_to_dict,
     supports_chamber_temp,
     supports_drying,
@@ -833,6 +834,48 @@ class TestPrinterStateToDict:
 
         assert result["cover_url"] == "/api/v1/printers/1/cover"
 
+    def test_current_plate_id_extracted_from_gcode_file(self, mock_state):
+        """Verify current_plate_id is parsed from a Bambu plate path (upstream #881)."""
+        mock_state.gcode_file = "/Metadata/plate_3.gcode"
+
+        result = printer_state_to_dict(mock_state)
+
+        assert result["current_plate_id"] == 3
+
+    def test_current_plate_id_none_when_no_plate_segment(self, mock_state):
+        """Verify current_plate_id stays None when gcode_file has no plate marker."""
+        mock_state.gcode_file = "/sdcard/test.gcode"
+
+        result = printer_state_to_dict(mock_state)
+
+        assert result["current_plate_id"] is None
+
+    def test_awaiting_plate_clear_surfaced_from_manager(self, mock_state):
+        """WS dict must carry the current plate-clear gate so the frontend sees
+        transitions within ~100 ms instead of the 30 s REST poll (upstream #939
+        follow-up). Prior bug: `awaiting_plate_clear` was absent from the dict,
+        frontend WS merge preserved stale False, Clear-Plate button appeared
+        30 s–5 min late.
+        """
+        from unittest.mock import patch
+
+        from backend.app.services import printer_manager as pm_module
+
+        with patch.object(pm_module.printer_manager, "is_awaiting_plate_clear", return_value=True):
+            result = printer_state_to_dict(mock_state, printer_id=1)
+            assert result["awaiting_plate_clear"] is True
+
+        with patch.object(pm_module.printer_manager, "is_awaiting_plate_clear", return_value=False):
+            result = printer_state_to_dict(mock_state, printer_id=1)
+            assert result["awaiting_plate_clear"] is False
+
+    def test_awaiting_plate_clear_defaults_false_without_printer_id(self, mock_state):
+        """When printer_id isn't passed (e.g. test / generic serialize path) we
+        have no printer to consult — default to False, never call the manager.
+        """
+        result = printer_state_to_dict(mock_state)
+        assert result["awaiting_plate_clear"] is False
+
     def test_cover_url_none_when_not_running(self, mock_state):
         """Verify cover_url is None when not printing."""
         mock_state.state = "IDLE"
@@ -1296,3 +1339,115 @@ class TestAmsChangeCallback:
         # This tests the callback signature
         assert manager._on_ams_change is not None
         assert callable(manager._on_ams_change)
+
+
+class TestDryingBlockingReasons:
+    """Tests for first_drying_blocking_reason / find_ams_unit helpers (#971)."""
+
+    def test_no_reasons_returns_none(self):
+        from backend.app.services.printer_manager import first_drying_blocking_reason
+
+        assert first_drying_blocking_reason({}) is None
+        assert first_drying_blocking_reason({"dry_sf_reason": []}) is None
+
+    def test_first_known_code_wins(self):
+        from backend.app.services.printer_manager import first_drying_blocking_reason
+
+        # Code 2 = "AMS is busy" — first in the list
+        result = first_drying_blocking_reason({"dry_sf_reason": [2, 6]})
+        assert result is not None
+        assert result[0] == 2
+        assert "busy" in result[1].lower()
+
+    def test_code_coerces_from_string(self):
+        """Real firmware occasionally stringifies numeric codes."""
+        from backend.app.services.printer_manager import first_drying_blocking_reason
+
+        result = first_drying_blocking_reason({"dry_sf_reason": ["3"]})
+        assert result is not None
+        assert result[0] == 3
+
+    def test_unknown_codes_skipped(self):
+        """Future firmware codes we haven't mapped yet are fail-open."""
+        from backend.app.services.printer_manager import first_drying_blocking_reason
+
+        assert first_drying_blocking_reason({"dry_sf_reason": [99]}) is None
+        # Mix unknown + known → known wins
+        result = first_drying_blocking_reason({"dry_sf_reason": [99, 1]})
+        assert result is not None
+        assert result[0] == 1
+
+    def test_malformed_entries_skipped(self):
+        from backend.app.services.printer_manager import first_drying_blocking_reason
+
+        assert first_drying_blocking_reason({"dry_sf_reason": [None, "abc", {}]}) is None
+
+    def test_none_input_is_none(self):
+        from backend.app.services.printer_manager import first_drying_blocking_reason
+
+        assert first_drying_blocking_reason(None) is None
+
+    def test_find_ams_unit_matches_by_id(self):
+        from backend.app.services.printer_manager import find_ams_unit
+
+        raw = {"ams": [{"id": 0, "tray": []}, {"id": 1, "tray": [{}]}]}
+        result = find_ams_unit(raw, 1)
+        assert result is not None
+        assert result["id"] == 1
+
+    def test_find_ams_unit_missing_returns_none(self):
+        from backend.app.services.printer_manager import find_ams_unit
+
+        assert find_ams_unit({"ams": [{"id": 0}]}, 7) is None
+        assert find_ams_unit(None, 0) is None
+        assert find_ams_unit({}, 0) is None
+
+    def test_find_ams_unit_coerces_string_id(self):
+        """Some firmware emits the id as a string."""
+        from backend.app.services.printer_manager import find_ams_unit
+
+        raw = {"ams": [{"id": "2", "tray": []}]}
+        result = find_ams_unit(raw, 2)
+        assert result is not None
+        assert result["id"] == "2"
+
+
+class TestParsePlateId:
+    """Tests for parse_plate_id() — active-print plate extraction from gcode paths.
+
+    Regression coverage for upstream #881 follow-up: the REST /status endpoint
+    and the WebSocket push path both use this helper, so they must agree on
+    the plate number the frontend sees.
+    """
+
+    def test_bambu_metadata_path(self):
+        # Canonical path that Bambu Studio / OrcaSlicer stamp into the 3MF.
+        assert parse_plate_id("/Metadata/plate_2.gcode") == 2
+
+    def test_plate_one(self):
+        assert parse_plate_id("/Metadata/plate_1.gcode") == 1
+
+    def test_double_digit_plate(self):
+        assert parse_plate_id("/Metadata/plate_12.gcode") == 12
+
+    def test_none_input(self):
+        assert parse_plate_id(None) is None
+
+    def test_empty_string(self):
+        assert parse_plate_id("") is None
+
+    def test_path_without_plate_segment(self):
+        # Some firmware / slicers report a bare filename without the plate marker.
+        assert parse_plate_id("/upload/my-model.gcode") is None
+
+    def test_similar_but_non_matching_names(self):
+        # "plate.gcode" (no number) must not be mistaken for a real plate marker.
+        # The regex anchors on `plate_<num>`.
+        assert parse_plate_id("/Metadata/plate.gcode") is None
+        assert parse_plate_id("/plates/3.gcode") is None
+
+    def test_substring_match_still_extracts(self):
+        # The regex isn't anchored to the start of a segment — any occurrence
+        # wins. Matches real Bambu paths where the segment is preceded by
+        # arbitrary directory noise, and mirrors the equivalent frontend regex.
+        assert parse_plate_id("/uploads/project/plate_5.gcode.md5") == 5

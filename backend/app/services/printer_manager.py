@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 import time
 import traceback
 from collections.abc import Callable
@@ -22,6 +23,7 @@ CHAMBER_TEMP_SUPPORTED_MODELS = frozenset(
         "X1",
         "X1C",
         "X1E",  # X1 series
+        "X2D",  # X2 series
         "P2S",  # P2 series
         "H2C",
         "H2D",
@@ -30,6 +32,7 @@ CHAMBER_TEMP_SUPPORTED_MODELS = frozenset(
         # Internal codes (from MQTT/SSDP)
         "BL-P001",  # X1/X1C
         "C13",  # X1E
+        "N6",  # X2D
         "O1D",  # H2D
         "O1C",  # H2C
         "O1C2",  # H2C (dual nozzle variant)
@@ -132,6 +135,58 @@ def supports_drying(model: str | None, firmware: str | None) -> bool:
     return True
 
 
+# AMS ``dry_sf_reason`` codes → human-readable blockers. Sourced from firmware
+# observations in upstream #971. When one of these codes is present in an AMS
+# push_status the firmware silently drops the drying command, so we surface
+# them explicitly on the API route instead of returning a fake success.
+DRYING_BLOCKING_REASONS: dict[int, str] = {
+    0: "Printer is busy",
+    1: "Insufficient power — too many AMS drying or external PSU required",
+    2: "AMS is busy",
+    3: "Filament is at the AMS outlet — retract it first",
+    4: "AMS is already starting a drying cycle",
+    5: "Not supported in 2D mode",
+    6: "AMS is already drying",
+    7: "AMS firmware is upgrading",
+    8: "Plug in the external AMS power adapter to start drying",
+}
+
+
+def first_drying_blocking_reason(ams_unit: dict | None) -> tuple[int, str] | None:
+    """Return the first blocking reason in an AMS unit's ``dry_sf_reason`` list.
+
+    Returns ``(code, message)`` when at least one known blocker code is present,
+    or ``None`` when the AMS is free to start drying. Unknown / malformed codes
+    are skipped (fail-open) so a future firmware addition doesn't break existing
+    clients that haven't been updated — they'll just see a regular drying-start
+    error instead of a human-readable one.
+    """
+    if not ams_unit:
+        return None
+    for raw in ams_unit.get("dry_sf_reason") or []:
+        try:
+            code = int(raw)
+        except (TypeError, ValueError):
+            continue
+        message = DRYING_BLOCKING_REASONS.get(code)
+        if message:
+            return code, message
+    return None
+
+
+def find_ams_unit(raw_data: dict | None, ams_id: int) -> dict | None:
+    """Locate an AMS unit dict inside a printer push_status payload by id."""
+    if not raw_data:
+        return None
+    for unit in raw_data.get("ams") or []:
+        try:
+            if int(unit.get("id", -1)) == ams_id:
+                return unit
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 class PrinterInfo:
     """Basic printer info for callbacks."""
 
@@ -156,8 +211,12 @@ class PrinterManager:
         self._loop: asyncio.AbstractEventLoop | None = None
         # Track who started the current print (Issue #206)
         self._current_print_user: dict[int, dict] = {}  # {printer_id: {"user_id": int, "username": str}}
-        # Track plate-cleared acknowledgments for queue flow
-        self._plate_cleared: set[int] = set()  # printer_ids where user confirmed plate is cleared
+        # Plate-clear gate for queue flow, persisted to Printer.awaiting_plate_clear (m010, #961).
+        # Semantically INVERTED vs the old _plate_cleared set: presence means the printer is
+        # WAITING for user confirmation (blocked from auto-dispatch). Absence means the gate is
+        # clear and the scheduler may proceed. Rehydrated from DB at startup so an Auto Off
+        # power cycle can't silently bypass a pending confirmation.
+        self._awaiting_plate_clear: set[int] = set()
         # Macro completion waiters: dispatch pipeline registers an Event here,
         # _broadcast_macro_complete sets it when stg_cur transitions to idle.
         self._macro_waiters: dict[int, tuple[asyncio.Event, dict]] = {}
@@ -178,17 +237,44 @@ class PrinterManager:
         """Clear the current print user when print completes (Issue #206)."""
         self._current_print_user.pop(printer_id, None)
 
-    def set_plate_cleared(self, printer_id: int):
-        """Mark that user has cleared the build plate for this printer."""
-        self._plate_cleared.add(printer_id)
+    def is_awaiting_plate_clear(self, printer_id: int) -> bool:
+        """Returns True when the printer's queue is blocked on user plate-clear confirmation."""
+        return printer_id in self._awaiting_plate_clear
 
-    def is_plate_cleared(self, printer_id: int) -> bool:
-        """Check if user has confirmed the plate is cleared."""
-        return printer_id in self._plate_cleared
+    def set_awaiting_plate_clear(self, printer_id: int, awaiting: bool) -> None:
+        """Arm or release the plate-clear gate. Persists to Printer.awaiting_plate_clear
+        asynchronously so an Auto Off power cycle can't drop the flag (#961)."""
+        if awaiting:
+            self._awaiting_plate_clear.add(printer_id)
+        else:
+            self._awaiting_plate_clear.discard(printer_id)
+        self._schedule_async(self._persist_awaiting_plate_clear(printer_id, awaiting))
 
-    def consume_plate_cleared(self, printer_id: int):
-        """Clear the plate-cleared flag (called when scheduler starts next print)."""
-        self._plate_cleared.discard(printer_id)
+    async def _persist_awaiting_plate_clear(self, printer_id: int, awaiting: bool) -> None:
+        """Best-effort DB write for the awaiting-plate-clear flag. Swallows errors
+        (connection issues shouldn't break the in-memory scheduler gate)."""
+        try:
+            from backend.app.core.database import async_session
+
+            async with async_session() as db:
+                result = await db.execute(select(Printer).where(Printer.id == printer_id))
+                printer = result.scalar_one_or_none()
+                if printer and printer.awaiting_plate_clear != awaiting:
+                    printer.awaiting_plate_clear = awaiting
+                    await db.commit()
+        except Exception as e:  # pragma: no cover — persistence is best-effort
+            logger.warning("Failed to persist awaiting_plate_clear for printer %s: %s", printer_id, e)
+
+    async def load_awaiting_plate_clear_from_db(self) -> None:
+        """Rehydrate the in-memory set from Printer.awaiting_plate_clear at startup (#961)."""
+        from backend.app.core.database import async_session
+
+        async with async_session() as db:
+            result = await db.execute(select(Printer.id).where(Printer.awaiting_plate_clear.is_(True)))
+            ids = [row[0] for row in result.all()]
+        self._awaiting_plate_clear = set(ids)
+        if ids:
+            logger.info("Restored awaiting_plate_clear gate for %d printer(s): %s", len(ids), ids)
 
     def set_event_loop(self, loop: asyncio.AbstractEventLoop):
         """Set the event loop for async callbacks."""
@@ -718,6 +804,22 @@ def get_derived_status_name(state: PrinterState, model: str | None = None) -> st
     return None
 
 
+_PLATE_ID_RE = re.compile(r"plate_(\d+)\.gcode")
+
+
+def parse_plate_id(gcode_file: str | None) -> int | None:
+    """Extract the 1-indexed plate number from a Bambu gcode_file path.
+
+    Returns None when the path is missing or has no ``plate_N.gcode`` segment.
+    Shared by the REST status route and the WebSocket push path so both agree
+    on the value sent to the frontend (upstream #881 follow-up).
+    """
+    if not gcode_file:
+        return None
+    match = _PLATE_ID_RE.search(gcode_file)
+    return int(match.group(1)) if match else None
+
+
 def printer_state_to_dict(state: PrinterState, printer_id: int | None = None, model: str | None = None) -> dict:
     """Convert PrinterState to a JSON-serializable dict.
 
@@ -930,6 +1032,21 @@ def printer_state_to_dict(state: PrinterState, printer_id: int | None = None, mo
         ],
         # AMS drying support
         "supports_drying": supports_drying(model, state.firmware_version),
+        # 1-indexed plate number parsed from gcode_file (e.g. /Metadata/plate_2.gcode).
+        # Pushed via WebSocket so the printer card picks up plate transitions in a
+        # multi-plate 3MF without waiting for the 30 s REST poll (upstream #881
+        # follow-up). current_archive_id is intentionally REST-only — it's stable
+        # for the life of a print and needs a DB lookup the WS path shouldn't pay for.
+        "current_plate_id": parse_plate_id(state.gcode_file),
+        # Queue plate-clear gate (#961): surfaces the same value the REST /status
+        # route returns so frontend WS merge reflects transitions within ~100 ms
+        # instead of waiting for the 30 s REST poll — without this the "Mark plate
+        # as cleared" button appeared 30 s–5 min late (upstream #939 follow-up).
+        # Sourced from the authoritative in-memory + DB-backed accessor on the
+        # manager singleton, which mirrors print_queue.awaiting_plate_clear (m010).
+        "awaiting_plate_clear": (
+            printer_manager.is_awaiting_plate_clear(printer_id) if printer_id is not None else False
+        ),
     }
     # Add cover URL if there's an active print and printer_id is provided
     # Include PAUSE state so skip objects modal can show cover

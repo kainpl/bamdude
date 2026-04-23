@@ -8,7 +8,7 @@ from fastapi.responses import Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermission
+from backend.app.core.auth import RequireCameraStreamToken, RequirePermission
 from backend.app.core.config import settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -35,7 +35,10 @@ from backend.app.services.bambu_ftp import (
     list_files_async,
 )
 from backend.app.services.printer_manager import (
+    find_ams_unit,
+    first_drying_blocking_reason,
     get_derived_status_name,
+    parse_plate_id,
     printer_manager,
     supports_chamber_temp,
     supports_drying,
@@ -565,6 +568,26 @@ async def get_printer_status(
             k: v for k, v in temperatures.items() if k not in ("chamber", "chamber_target", "chamber_heating")
         }
 
+    # Resolve the active print's archive + plate (upstream #881 follow-up): lets
+    # the printer card show the plate name for multi-plate 3MFs instead of just
+    # the 3MF filename. Only attempted for active prints, since subtask_id is
+    # only meaningful then.
+    current_archive_id: int | None = None
+    current_plate_id: int | None = None
+    if state.state in ("RUNNING", "PAUSE"):
+        current_plate_id = parse_plate_id(state.gcode_file)
+        if state.subtask_id:
+            from backend.app.models.archive import PrintArchive
+
+            archive_row = await db.execute(
+                select(PrintArchive.id)
+                .where(PrintArchive.subtask_id == state.subtask_id)
+                .where(PrintArchive.printer_id == printer_id)
+                .order_by(PrintArchive.created_at.desc())
+                .limit(1)
+            )
+            current_archive_id = archive_row.scalar_one_or_none()
+
     return PrinterStatus(
         id=printer_id,
         name=printer.name,
@@ -589,6 +612,7 @@ async def get_printer_status(
         ipcam=state.ipcam,
         wifi_signal=state.wifi_signal,
         wired_network=state.wired_network,
+        door_open=state.door_open,
         nozzles=nozzles,
         nozzle_rack=nozzle_rack,
         print_options=print_options,
@@ -614,8 +638,10 @@ async def get_printer_status(
         firmware_version=state.firmware_version,
         developer_mode=state.developer_mode if state else None,
         macro_executing=state.macro_executing if state else None,
-        plate_cleared=printer_manager.is_plate_cleared(printer_id),
+        awaiting_plate_clear=printer_manager.is_awaiting_plate_clear(printer_id),
         supports_drying=supports_drying(printer.model, state.firmware_version),
+        current_archive_id=current_archive_id,
+        current_plate_id=current_plate_id,
     )
 
 
@@ -721,9 +747,12 @@ async def get_printer_cover(
     printer_id: int,
     view: str | None = None,
     db: AsyncSession = Depends(get_db),
+    _token: None = RequireCameraStreamToken,
 ):
-    # Note: No auth required - this is an image asset loaded via <img src> which can't send auth headers
     """Get the cover image for the current print job.
+
+    Gated by ``?token=...`` query param (short-lived camera-stream token)
+    since ``<img src>`` cannot send Authorization headers.
 
     Serves the thumbnail from a local archive (DB-tracked).  Does NOT
     initiate an FTP download from the printer — that would:
@@ -1457,6 +1486,26 @@ async def start_drying(
     if duration < 1 or duration > 24:
         raise HTTPException(400, "Duration must be 1-24 hours")
 
+    # Inspect the live AMS unit: surface blocking dry_sf_reasons (otherwise the
+    # firmware silently ignores the command — #971) and backfill an empty
+    # filament field from the first loaded tray so the printer doesn't reject
+    # the payload.
+    target_ams = find_ams_unit(live_state.raw_data if live_state else None, ams_id)
+    if target_ams is not None:
+        blocker = first_drying_blocking_reason(target_ams)
+        if blocker is not None:
+            raise HTTPException(409, blocker[1])
+
+        if not filament:
+            for tray in target_ams.get("tray") or []:
+                tray_type = tray.get("tray_type")
+                if tray_type:
+                    filament = str(tray_type)
+                    break
+
+    if not filament:
+        filament = "PLA"
+
     success = printer_manager.send_drying_command(
         printer_id, ams_id, temp, duration, mode=1, filament=filament, rotate_tray=rotate_tray
     )
@@ -1630,6 +1679,21 @@ async def start_calibration(
 # ============================================================================
 
 
+def _slot_preset_key(ams_id: int, tray_id: int) -> int:
+    """Mirrors frontend ``getGlobalTrayId`` (amsHelpers.ts).
+
+    AMS-HT (ams_id 128-135) is single-slot and shares its global tray id with
+    the unit id itself — keying by ``ams_id * 4 + tray_id`` would put every HT
+    unit at offset 512+ and silently miss the frontend lookup, making the
+    Configure modal show "Generic" after a custom preset was saved. Regular
+    AMS and external (255) use the classic ``ams_id * 4 + tray_id`` formula.
+    Upstream #1053.
+    """
+    if 128 <= ams_id <= 135:
+        return ams_id
+    return ams_id * 4 + tray_id
+
+
 @router.get("/{printer_id}/slot-presets")
 async def get_slot_presets(
     printer_id: int,
@@ -1641,7 +1705,7 @@ async def get_slot_presets(
     mappings = result.scalars().all()
 
     return {
-        mapping.ams_id * 4 + mapping.tray_id: {
+        _slot_preset_key(mapping.ams_id, mapping.tray_id): {
             "ams_id": mapping.ams_id,
             "tray_id": mapping.tray_id,
             "preset_id": mapping.preset_id,
@@ -2236,12 +2300,16 @@ async def clear_plate(
         raise HTTPException(400, "Printer not connected")
 
     state = printer_manager.get_status(printer_id)
-    if not state or state.state not in ("FINISH", "FAILED"):
+    # Accept the ACK in IDLE too — after an Auto Off power cycle the printer
+    # boots straight into IDLE, and the awaiting_plate_clear gate (persisted
+    # from before the cycle) still needs releasing.
+    if not state or state.state not in ("FINISH", "FAILED", "IDLE"):
         raise HTTPException(
-            400, f"Printer is not in FINISH or FAILED state (current: {state.state if state else 'unknown'})"
+            400,
+            f"Printer is not in FINISH, FAILED, or IDLE state (current: {state.state if state else 'unknown'})",
         )
 
-    printer_manager.set_plate_cleared(printer_id)
+    printer_manager.set_awaiting_plate_clear(printer_id, False)
 
     return {"success": True, "message": "Plate cleared, next print will start shortly"}
 
@@ -2327,6 +2395,95 @@ async def set_print_speed(
 
     speed_names = {1: "Silent", 2: "Standard", 3: "Sport", 4: "Ludicrous"}
     return {"success": True, "message": f"Print speed set to {speed_names.get(mode, 'Unknown')}"}
+
+
+@router.post("/{printer_id}/bed-jog")
+async def bed_jog(
+    printer_id: int,
+    distance: float = Query(
+        ..., description="Relative Z distance in mm (positive = bed down / nozzle further away, negative = bed up)"
+    ),
+    force: bool = Query(False, description="If true, bypass soft endstops via M211 (for use when Z is not homed)"),
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Move the build plate along the Z axis by a relative distance.
+
+    Emits a short G-code sequence via MQTT. When ``force`` is true the soft
+    endstops are disabled for the duration of the move, matching the
+    "ignore and move anyway" option Bambu Studio offers when the printer
+    is not homed.
+    """
+    if distance == 0 or abs(distance) > 200:
+        raise HTTPException(400, "Distance must be non-zero and <= 200 mm")
+
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    client = printer_manager.get_client(printer_id)
+    if not client:
+        raise HTTPException(400, "Printer not connected")
+
+    lines = []
+    if force:
+        lines.append("M211 S0")
+    lines += ["G91", f"G1 Z{distance:.2f} F600", "G90"]
+    if force:
+        lines.append("M211 S1")
+
+    if not client.send_gcode("\n".join(lines)):
+        raise HTTPException(500, "Failed to send bed-jog command")
+
+    return {"success": True, "message": f"Bed jog {distance:+.1f} mm sent"}
+
+
+@router.post("/{printer_id}/home-axes")
+async def home_axes(
+    printer_id: int,
+    axes: str = Query(
+        "all",
+        description=(
+            "Legacy; accepted values are 'z' | 'xy' | 'all'. Always runs the "
+            "printer's full auto-home sequence — see below."
+        ),
+    ),
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Run the printer's full auto-home sequence via bare ``G28``.
+
+    Bambu printers (H2C / H2D / H2S / X1 family) home the Z axis by moving
+    the BED UP toward an endstop at the top of travel. If the toolhead is
+    not already parked out of the way, a bare ``G28 Z`` will crash the bed
+    into the toolhead — upstream #1052 reported exactly that on H2C: the
+    bed rose without stopping because ``G28 Z`` skipped the toolhead-park
+    step that a full ``G28`` runs first.
+
+    The endpoint therefore ignores the ``axes`` argument and always sends
+    a bare ``G28``, which the firmware expands into a safe multi-step
+    sequence (park toolhead → home XY → home Z). The argument is kept
+    only for backward-compat with existing clients; sending an invalid
+    value still returns 400 so typos surface instead of silently proceeding.
+    """
+    axes = axes.lower()
+    if axes not in ("z", "xy", "all"):
+        raise HTTPException(400, "axes must be 'z', 'xy', or 'all'")
+
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    client = printer_manager.get_client(printer_id)
+    if not client:
+        raise HTTPException(400, "Printer not connected")
+
+    if not client.send_gcode("G28"):
+        raise HTTPException(500, "Failed to send home command")
+
+    return {"success": True, "message": "Full auto-home sequence sent"}
 
 
 @router.post("/{printer_id}/chamber-light")

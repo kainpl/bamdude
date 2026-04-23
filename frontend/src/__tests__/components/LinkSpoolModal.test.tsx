@@ -15,6 +15,8 @@ import { LinkSpoolModal } from '../../components/LinkSpoolModal';
 
 // Mock the API client
 vi.mock('../../api/client', () => ({
+  setAuthToken: vi.fn(),
+  getAuthToken: vi.fn(() => 'test-admin-token'),
   api: {
     getUnlinkedSpools: vi.fn(),
     linkSpool: vi.fn(),

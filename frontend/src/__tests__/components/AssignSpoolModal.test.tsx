@@ -5,6 +5,8 @@ import { AssignSpoolModal } from '../../components/AssignSpoolModal';
 import { api } from '../../api/client';
 
 vi.mock('../../api/client', () => ({
+  setAuthToken: vi.fn(),
+  getAuthToken: vi.fn(() => 'test-admin-token'),
   api: {
     getSpools: vi.fn(),
     getAssignments: vi.fn(),

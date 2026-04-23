@@ -18,6 +18,25 @@ export function getAuthToken(): string | null {
   return authToken;
 }
 
+// Stream token for image/video URLs loaded via <img>/<video> tags
+// (these can't send Authorization headers, so a query param token is used)
+let streamToken: string | null = null;
+
+export function setStreamToken(token: string | null) {
+  streamToken = token;
+}
+
+export function getStreamToken(): string | null {
+  return streamToken;
+}
+
+/** Append the stream token to a URL if available (for <img>/<video> src). */
+export function withStreamToken(url: string): string {
+  if (!streamToken) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}token=${encodeURIComponent(streamToken)}`;
+}
+
 function parseContentDispositionFilename(header: string | null): string | null {
   if (!header) return null;
   // RFC 5987: filename*=utf-8''percent-encoded-name
@@ -199,6 +218,8 @@ export interface PrinterStatus {
   state: string | null;
   current_print: string | null;
   subtask_name: string | null;
+  current_archive_id: number | null;
+  current_plate_id: number | null;
   gcode_file: string | null;
   progress: number | null;
   remaining_time: number | null;
@@ -229,6 +250,7 @@ export interface PrinterStatus {
   ipcam: boolean;  // Live view enabled
   wifi_signal: number | null;  // WiFi signal strength in dBm
   wired_network: boolean;  // Ethernet connection detected
+  door_open: boolean;  // Enclosure door open (backend parses X1 family via home_flag, others via stat)
   nozzles: NozzleInfo[];  // Nozzle hardware info (index 0=left/primary, 1=right)
   nozzle_rack: NozzleRackSlot[];  // H2C 6-nozzle tool-changer rack
   print_options: PrintOptions | null;  // AI detection and print options
@@ -273,8 +295,9 @@ export interface PrinterStatus {
   developer_mode: boolean | null;
   // Currently executing macro name (null = no macro running)
   macro_executing: string | null;
-  // Queue: user has acknowledged plate is cleared for next queued print
-  plate_cleared: boolean;
+  // Queue plate-clear gate (#961): true means the printer is waiting on user
+  // confirmation before the next auto-dispatch; false means the gate is released.
+  awaiting_plate_clear: boolean;
   // AMS drying support
   supports_drying: boolean;
 }
@@ -867,6 +890,7 @@ export interface AppSettings {
   time_format: 'system' | '12h' | '24h';
   // Filament tracking
   disable_filament_warnings: boolean;  // Disable filament warnings (print insufficiency and assignment mismatch)
+  spool_display_template: string;  // Template for the synthesised spool display name (see utils/spoolName.ts)
   // Default printer
   default_printer_id: number | null;
   // Dark mode theme settings
@@ -939,9 +963,48 @@ export interface AppSettings {
   local_backup_time: string;
   local_backup_retention: number;
   local_backup_path: string;
+  // Obico AI failure detection (#172)
+  obico_enabled: boolean;
+  obico_ml_url: string;
+  obico_sensitivity: 'low' | 'medium' | 'high';
+  obico_action: 'notify' | 'pause' | 'pause_and_off';
+  obico_poll_interval: number;
+  obico_enabled_printers: string;
 }
 
 export type AppSettingsUpdate = Partial<AppSettings>;
+
+// Obico AI failure detection (#172)
+export interface ObicoDetectionEvent {
+  printer_id: number;
+  task_name: string;
+  timestamp: string;
+  current_p: number;
+  score: number;
+  class: 'safe' | 'warning' | 'failure';
+  detections: number;
+}
+
+export interface ObicoStatus {
+  is_running: boolean;
+  last_error: string | null;
+  per_printer: Record<string, { class: string; frame_count: number; score: number }>;
+  thresholds: { low: number; high: number };
+  history: ObicoDetectionEvent[];
+  enabled: boolean;
+  ml_url: string;
+  sensitivity: 'low' | 'medium' | 'high';
+  action: 'notify' | 'pause' | 'pause_and_off';
+  poll_interval: number;
+  external_url_configured: boolean;
+}
+
+export interface ObicoTestConnection {
+  ok: boolean;
+  status_code: number | null;
+  body: string | null;
+  error: string | null;
+}
 
 // MQTT relay status
 export interface MQTTStatus {
@@ -956,6 +1019,7 @@ export interface MQTTStatus {
 export interface CloudAuthStatus {
   is_authenticated: boolean;
   email: string | null;
+  region?: 'global' | 'china' | null;
 }
 
 export interface CloudLoginResponse {
@@ -2351,9 +2415,75 @@ export interface LoginRequest {
 }
 
 export interface LoginResponse {
-  access_token: string;
-  token_type: string;
-  user: UserResponse;
+  access_token?: string;
+  token_type?: string;
+  user?: UserResponse;
+  /** Set when 2FA verification is required before a full token is issued. */
+  requires_2fa?: boolean;
+  pre_auth_token?: string;
+  two_fa_methods?: string[];
+}
+
+// 2FA / MFA interfaces (§18.1)
+export interface TwoFAStatus {
+  totp_enabled: boolean;
+  email_otp_enabled: boolean;
+  backup_codes_remaining: number;
+}
+
+export interface TOTPSetupResponse {
+  secret: string;
+  qr_code_b64: string;
+  issuer: string;
+}
+
+export interface TOTPEnableResponse {
+  message: string;
+  backup_codes: string[];
+}
+
+export interface BackupCodesResponse {
+  backup_codes: string[];
+  message: string;
+}
+
+export interface TwoFAVerifyRequest {
+  pre_auth_token: string;
+  code: string;
+  method: 'totp' | 'email' | 'backup';
+}
+
+// OIDC interfaces (§18.2)
+export interface OIDCProvider {
+  id: number;
+  name: string;
+  issuer_url: string;
+  client_id: string;
+  scopes: string;
+  is_enabled: boolean;
+  auto_create_users: boolean;
+  auto_link_existing_accounts: boolean;
+  icon_url?: string | null;
+}
+
+export interface OIDCProviderCreate {
+  name: string;
+  issuer_url: string;
+  client_id: string;
+  client_secret: string;
+  scopes?: string;
+  is_enabled?: boolean;
+  auto_create_users?: boolean;
+  auto_link_existing_accounts?: boolean;
+  icon_url?: string | null;
+}
+
+export interface OIDCLink {
+  id: number;
+  provider_id: number;
+  provider_name: string;
+  provider_email?: string | null;
+  created_at: string;
 }
 
 export interface UserResponse {
@@ -2511,11 +2641,86 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+  // H-6: confirm password reset using the token from the emailed link
+  forgotPasswordConfirm: (token: string, newPassword: string) =>
+    request<ForgotPasswordResponse>('/auth/forgot-password/confirm', {
+      method: 'POST',
+      body: JSON.stringify({ token, new_password: newPassword }),
+    }),
   resetUserPassword: (data: ResetPasswordRequest) =>
     request<ResetPasswordResponse>('/auth/reset-password', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+
+  // 2FA (§18.1)
+  get2FAStatus: () => request<TwoFAStatus>('/auth/2fa/status'),
+  setupTOTP: () => request<TOTPSetupResponse>('/auth/2fa/totp/setup', { method: 'POST' }),
+  enableTOTP: (code: string) =>
+    request<TOTPEnableResponse>('/auth/2fa/totp/enable', {
+      method: 'POST',
+      body: JSON.stringify({ code }),
+    }),
+  disableTOTP: (code: string) =>
+    request<{ message: string }>('/auth/2fa/totp/disable', {
+      method: 'POST',
+      body: JSON.stringify({ code }),
+    }),
+  regenerateBackupCodes: (code: string) =>
+    request<BackupCodesResponse>('/auth/2fa/totp/regenerate-backup-codes', {
+      method: 'POST',
+      body: JSON.stringify({ code }),
+    }),
+  enableEmailOTP: () =>
+    request<{ message: string; setup_token: string }>('/auth/2fa/email/enable', { method: 'POST' }),
+  confirmEnableEmailOTP: (setup_token: string, code: string) =>
+    request<{ message: string }>('/auth/2fa/email/enable/confirm', {
+      method: 'POST',
+      body: JSON.stringify({ setup_token, code }),
+    }),
+  disableEmailOTP: (password: string) =>
+    request<{ message: string }>('/auth/2fa/email/disable', {
+      method: 'POST',
+      body: JSON.stringify({ password }),
+    }),
+  sendEmailOTP: (preAuthToken: string) =>
+    request<{ message: string; pre_auth_token?: string }>('/auth/2fa/email/send', {
+      method: 'POST',
+      body: JSON.stringify({ pre_auth_token: preAuthToken }),
+    }),
+  verify2FA: (data: TwoFAVerifyRequest) =>
+    request<LoginResponse>('/auth/2fa/verify', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  admin2FADisable: (userId: number) =>
+    request<{ message: string }>(`/auth/2fa/admin/${userId}`, { method: 'DELETE' }),
+
+  // OIDC (§18.2)
+  getOIDCProviders: () => request<OIDCProvider[]>('/auth/oidc/providers'),
+  getOIDCProvidersAll: () => request<OIDCProvider[]>('/auth/oidc/providers/all'),
+  createOIDCProvider: (data: OIDCProviderCreate) =>
+    request<OIDCProvider>('/auth/oidc/providers', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updateOIDCProvider: (id: number, data: Partial<OIDCProviderCreate>) =>
+    request<OIDCProvider>(`/auth/oidc/providers/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  deleteOIDCProvider: (id: number) =>
+    request<{ message: string }>(`/auth/oidc/providers/${id}`, { method: 'DELETE' }),
+  getOIDCAuthorizeUrl: (providerId: number) =>
+    request<{ auth_url: string }>(`/auth/oidc/authorize/${providerId}`),
+  exchangeOIDCToken: (oidcToken: string) =>
+    request<LoginResponse>('/auth/oidc/exchange', {
+      method: 'POST',
+      body: JSON.stringify({ oidc_token: oidcToken }),
+    }),
+  getOIDCLinks: () => request<OIDCLink[]>('/auth/oidc/links'),
+  deleteOIDCLink: (providerId: number) =>
+    request<{ message: string }>(`/auth/oidc/links/${providerId}`, { method: 'DELETE' }),
 
   // Users
   getUsers: () => request<UserResponse[]>('/users/'),
@@ -2661,6 +2866,18 @@ export const api = {
     request<{ success: boolean; message: string }>(`/printers/${printerId}/print-speed?mode=${mode}`, {
       method: 'POST',
     }),
+
+  // Bed (Z-axis) jog
+  bedJog: (printerId: number, distance: number, force: boolean = false) =>
+    request<{ success: boolean; message: string }>(
+      `/printers/${printerId}/bed-jog?distance=${distance}&force=${force}`,
+      { method: 'POST' },
+    ),
+  homeAxes: (printerId: number, axes: 'z' | 'xy' | 'all' = 'z') =>
+    request<{ success: boolean; message: string }>(
+      `/printers/${printerId}/home-axes?axes=${axes}`,
+      { method: 'POST' },
+    ),
 
   // Chamber Light Control
   setChamberLight: (printerId: number, on: boolean) =>
@@ -3468,15 +3685,15 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ email, password, region }),
     }),
-  cloudVerify: (email: string, code: string, tfaKey?: string) =>
+  cloudVerify: (email: string, code: string, tfaKey?: string, region: string = 'global') =>
     request<CloudLoginResponse>('/cloud/verify', {
       method: 'POST',
-      body: JSON.stringify({ email, code, tfa_key: tfaKey }),
+      body: JSON.stringify({ email, code, tfa_key: tfaKey, region }),
     }),
-  cloudSetToken: (access_token: string) =>
+  cloudSetToken: (access_token: string, region: string = 'global') =>
     request<CloudAuthStatus>('/cloud/token', {
       method: 'POST',
-      body: JSON.stringify({ access_token }),
+      body: JSON.stringify({ access_token, region }),
     }),
   cloudLogout: () =>
     request<{ success: boolean }>('/cloud/logout', { method: 'POST' }),
@@ -4068,10 +4285,12 @@ export const api = {
     }),
 
   // Camera
+  getCameraStreamToken: () =>
+    request<{ token: string }>('/printers/camera/stream-token', { method: 'POST' }),
   getCameraStreamUrl: (printerId: number, fps = 10) =>
-    `${API_BASE}/printers/${printerId}/camera/stream?fps=${fps}`,
+    withStreamToken(`${API_BASE}/printers/${printerId}/camera/stream?fps=${fps}`),
   getCameraSnapshotUrl: (printerId: number) =>
-    `${API_BASE}/printers/${printerId}/camera/snapshot`,
+    withStreamToken(`${API_BASE}/printers/${printerId}/camera/snapshot`),
   testCameraConnection: (printerId: number) =>
     request<{ success: boolean; message?: string; error?: string }>(`/printers/${printerId}/camera/test`),
   getCameraStatus: (printerId: number) =>
@@ -4113,7 +4332,7 @@ export const api = {
     }>(`/printers/${printerId}/camera/plate-detection/references`);
   },
   getPlateReferenceThumbnailUrl: (printerId: number, index: number) => {
-    return `${API_BASE}/printers/${printerId}/camera/plate-detection/references/${index}/thumbnail`;
+    return withStreamToken(`${API_BASE}/printers/${printerId}/camera/plate-detection/references/${index}/thumbnail`);
   },
   updatePlateReferenceLabel: (printerId: number, index: number, label: string) => {
     const params = new URLSearchParams();
@@ -4537,6 +4756,7 @@ export const api = {
       swap_macro_events?: string[] | null;
       quantity?: number;
       project_id?: number;
+      cleanup_library_after_dispatch?: boolean;
     }
   ) =>
     request<BackgroundDispatchResponse>(
@@ -4634,6 +4854,16 @@ export const api = {
       `/local-backup/backups/${encodeURIComponent(filename)}`,
       { method: 'DELETE' }
     ),
+
+  // Obico AI failure detection (#172)
+  getObicoStatus: () =>
+    request<ObicoStatus>('/obico/status'),
+
+  testObicoConnection: (url: string) =>
+    request<ObicoTestConnection>('/obico/test-connection', {
+      method: 'POST',
+      body: JSON.stringify({ url }),
+    }),
 
   // Local Presets (OrcaSlicer imports)
   getLocalPresets: () =>
@@ -5299,6 +5529,14 @@ export const pendingUploadsApi = {
 };
 
 // Firmware API Types
+export interface AvailableFirmwareVersion {
+  version: string;
+  file_available: boolean;
+  download_url: string | null;
+  release_notes: string | null;
+  release_time: string | null;
+}
+
 export interface FirmwareUpdateInfo {
   printer_id: number;
   printer_name: string;
@@ -5308,6 +5546,7 @@ export interface FirmwareUpdateInfo {
   update_available: boolean;
   download_url: string | null;
   release_notes: string | null;
+  available_versions: AvailableFirmwareVersion[];
 }
 
 export interface FirmwareUploadPrepare {
@@ -5319,6 +5558,7 @@ export interface FirmwareUploadPrepare {
   update_available: boolean;
   current_version: string | null;
   latest_version: string | null;
+  target_version: string | null;
   firmware_filename: string | null;
   errors: string[];
 }
@@ -5340,13 +5580,16 @@ export const firmwareApi = {
   checkPrinterUpdate: (printerId: number) =>
     request<FirmwareUpdateInfo>(`/firmware/updates/${printerId}`),
 
-  prepareUpload: (printerId: number) =>
-    request<FirmwareUploadPrepare>(`/firmware/updates/${printerId}/prepare`),
+  prepareUpload: (printerId: number, version?: string) =>
+    request<FirmwareUploadPrepare>(
+      `/firmware/updates/${printerId}/prepare${version ? `?version=${encodeURIComponent(version)}` : ''}`,
+    ),
 
-  startUpload: (printerId: number) =>
-    request<{ started: boolean; message: string }>(`/firmware/updates/${printerId}/upload`, {
-      method: 'POST',
-    }),
+  startUpload: (printerId: number, version?: string) =>
+    request<{ started: boolean; message: string }>(
+      `/firmware/updates/${printerId}/upload${version ? `?version=${encodeURIComponent(version)}` : ''}`,
+      { method: 'POST' },
+    ),
 
   getUploadStatus: (printerId: number) =>
     request<FirmwareUploadStatus>(`/firmware/updates/${printerId}/upload/status`),

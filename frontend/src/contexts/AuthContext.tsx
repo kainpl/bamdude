@@ -13,7 +13,8 @@ interface AuthContextType {
   requiresSetup: boolean;
   loading: boolean;
   isAdmin: boolean;
-  login: (username: string, password: string) => Promise<void>;
+  login: (username: string, password: string) => Promise<import('../api/client').LoginResponse>;
+  loginWithToken: (token: string, user: UserResponse) => void;
   logout: () => void;
   refreshUser: () => Promise<void>;
   refreshAuth: () => Promise<void>;
@@ -102,8 +103,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const login = async (username: string, password: string) => {
     const response = await api.login({ username, password });
-    setAuthToken(response.access_token);
-    await checkAuthStatus();
+    // When the server signals 2FA is required, the caller (LoginPage step
+    // machine, §18.11) takes over with the pre_auth_token — do NOT set a
+    // bearer token in that branch. Only set the token + refresh the user
+    // when the server returned a fully-authenticated session.
+    if (response.access_token && response.user) {
+      setAuthToken(response.access_token);
+      await checkAuthStatus();
+    }
+    return response;
+  };
+
+  const loginWithToken = (token: string, nextUser: UserResponse) => {
+    // Called by LoginPage after /auth/2fa/verify or /auth/oidc/exchange —
+    // at that point the server has already issued a full JWT, so we just
+    // persist it and hydrate the user immediately without another round
+    // trip to /auth/me.
+    setAuthToken(token);
+    if (mountedRef.current) {
+      setUser(nextUser);
+      setRequiresSetup(false);
+    }
   };
 
   const logout = () => {
@@ -192,6 +212,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         loading,
         isAdmin,
         login,
+        loginWithToken,
         logout,
         refreshUser,
         refreshAuth,

@@ -4,6 +4,7 @@ import logging
 import os
 import socket
 import ssl
+import threading
 import time
 from collections.abc import Awaitable, Callable
 from ftplib import FTP, FTP_TLS  # nosec B402
@@ -678,48 +679,93 @@ async def download_file_async(
     loop = asyncio.get_event_loop()
     is_a1 = printer_model in BambuFTPClient.A1_MODELS if printer_model else False
 
-    def _download(force_prot_c: bool = False) -> bool:
+    # Per-attempt completion state: asyncio.wait_for cannot cancel
+    # run_in_executor threads, so on timeout the executor may still complete
+    # the download after we stop waiting. The thread flips ``success`` to True
+    # ONLY after the file is fully written — a post-timeout check lets us
+    # salvage the download without mistaking an in-progress partial write
+    # for a completed one. Each attempt gets its own dict and event so a
+    # zombie from an earlier attempt can't flip the flag for a later one
+    # (#972 upstream 1b434880 + #1014 upstream d3425c7f: zombie-thread wait).
+    # The event is set in ``_download``'s finally block so the post-timeout
+    # path can wait for genuine thread completion instead of a fixed sleep.
+
+    def _download(force_prot_c: bool, completion: dict, done: threading.Event) -> bool:
         mode_str = "prot_c" if force_prot_c else "prot_p"
-        client = BambuFTPClient(
-            ip_address, access_code, timeout=socket_timeout, printer_model=printer_model, force_prot_c=force_prot_c
-        )
-        if client.connect():
-            try:
-                result = client.download_to_file(remote_path, local_path)
-                if result:
-                    # Cache the working mode
-                    BambuFTPClient.cache_mode(ip_address, mode_str)
-                return result
-            finally:
-                client.disconnect()
-        return False
+        try:
+            client = BambuFTPClient(
+                ip_address,
+                access_code,
+                timeout=socket_timeout,
+                printer_model=printer_model,
+                force_prot_c=force_prot_c,
+            )
+            if client.connect():
+                try:
+                    result = client.download_to_file(remote_path, local_path)
+                    if result:
+                        BambuFTPClient.cache_mode(ip_address, mode_str)
+                        completion["success"] = True
+                    return result
+                finally:
+                    client.disconnect()
+            return False
+        finally:
+            done.set()
 
-    try:
-        # Check if we have a cached mode for this printer
-        cached_mode = BambuFTPClient._mode_cache.get(ip_address)
+    async def _run(force_prot_c: bool) -> bool:
+        completion = {"success": False}
+        done = threading.Event()
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(None, _download, force_prot_c, completion, done), timeout=timeout
+            )
+        except TimeoutError:
+            # Slow WiFi links commonly overshoot ftp_timeout by 10–30 s without
+            # actually being stuck, so starting attempt 2 now would just contend
+            # with the still-progressing RETR on attempt 1 and produce the
+            # zombie-write race reported in #1014 (file landed on disk minutes
+            # after the retry loop had already given up). Wait for the worker
+            # thread to genuinely finish — capped at 30 s so a truly stuck
+            # connection can't stall a whole attempt indefinitely, with a 0.5 s
+            # floor so artificially small test timeouts still give zombies a
+            # realistic window to finish.
+            grace = max(min(timeout, 30.0), 0.5)
+            await loop.run_in_executor(None, done.wait, grace)
+            if completion["success"] and local_path.exists() and local_path.stat().st_size > 0:
+                logger.info(
+                    "FTP download wait_for timed out after %ss for %s, but thread completed within %ss grace (%s bytes) — salvaging",
+                    timeout,
+                    remote_path,
+                    grace,
+                    local_path.stat().st_size,
+                )
+                return True
+            logger.warning(
+                "FTP download timed out after %ss (plus %ss grace) for %s",
+                timeout,
+                grace,
+                remote_path,
+            )
+            return False
 
-        if cached_mode:
-            # Use cached mode
-            force_prot_c = cached_mode == "prot_c"
-            return await asyncio.wait_for(loop.run_in_executor(None, lambda: _download(force_prot_c)), timeout=timeout)
+    # Check if we have a cached mode for this printer
+    cached_mode = BambuFTPClient._mode_cache.get(ip_address)
 
-        # No cached mode - try prot_p first
-        result = await asyncio.wait_for(loop.run_in_executor(None, lambda: _download(False)), timeout=timeout)
+    if cached_mode:
+        force_prot_c = cached_mode == "prot_c"
+        return await _run(force_prot_c)
 
-        if result:
-            return True
+    # No cached mode - try prot_p first
+    if await _run(False):
+        return True
 
-        # Download failed - for A1 models, try prot_c fallback
-        if is_a1:
-            logger.info("FTP download failed with prot_p for A1 model, trying prot_c fallback...")
-            result = await asyncio.wait_for(loop.run_in_executor(None, lambda: _download(True)), timeout=timeout)
-            return result
+    # Download failed - for A1 models, try prot_c fallback
+    if is_a1:
+        logger.info("FTP download failed with prot_p for A1 model, trying prot_c fallback...")
+        return await _run(True)
 
-        return False
-
-    except TimeoutError:
-        logger.warning("FTP download timed out after %ss for %s", timeout, remote_path)
-        return False
+    return False
 
 
 async def download_file_try_paths_async(

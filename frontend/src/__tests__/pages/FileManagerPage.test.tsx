@@ -98,9 +98,7 @@ const mockStats = {
   disk_total_bytes: 107374182400,
 };
 
-// TODO(#stale-tests): re-enable once assertions are updated to match current component output.
-// See https://github.com/kainpl/bamdude/issues for the tracking ticket.
-describe.skip('FileManagerPage', () => {
+describe('FileManagerPage', () => {
   beforeEach(() => {
     // Clear localStorage to ensure consistent view mode
     localStorage.clear();
@@ -741,8 +739,11 @@ describe.skip('FileManagerPage', () => {
   });
 
   describe('authentication-based UI changes', () => {
-    it('hides "Uploaded By" column and user filter when auth is disabled', async () => {
-      // Mock auth disabled (default)
+    it.skip('hides "Uploaded By" column and user filter when auth is disabled (obsolete — BamDude has always-on auth)', async () => {
+      // BamDude's auth is always-on (see CLAUDE.md + AuthContext.authEnabled: true).
+      // The "auth disabled" UI mode this test exercised no longer exists in the
+      // product. Kept as `.skip` so the intent is preserved in git history for
+      // anyone who wonders why the "Uploaded By" column is unconditional now.
       server.use(
         http.get('*/api/v1/auth/status', () => {
           return HttpResponse.json({

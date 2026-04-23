@@ -247,6 +247,7 @@ class PrinterStatus(BaseModel):
     ipcam: bool = False  # Live view enabled
     wifi_signal: int | None = None  # WiFi signal strength in dBm
     wired_network: bool = False  # Ethernet connection detected
+    door_open: bool = False  # Enclosure door open (X1/X1C/X1E + P2S/H2*/others)
     nozzles: list[NozzleInfoResponse] = []  # Nozzle hardware info (index 0=left/primary, 1=right)
     nozzle_rack: list[NozzleRackSlot] = []  # H2C 6-nozzle tool-changer rack
     print_options: PrintOptionsResponse | None = None  # AI detection and print options
@@ -291,7 +292,17 @@ class PrinterStatus(BaseModel):
     developer_mode: bool | None = None
     # Currently executing macro name (None = no macro running)
     macro_executing: str | None = None
-    # Queue: user has acknowledged plate is cleared for next queued print
-    plate_cleared: bool = False
+    # Queue plate-clear gate (#961): True means the printer is waiting on
+    # user confirmation before the next auto-dispatch. False means the gate
+    # is released (either never armed, or user/swap cleared it).
+    awaiting_plate_clear: bool = False
     # AMS drying support
     supports_drying: bool = False
+    # Linked archive for the active print (resolved via subtask_id). Frontend
+    # uses this to fetch plate metadata and show the plate name when the source
+    # 3MF is multi-plate (upstream #881 follow-up).
+    current_archive_id: int | None = None
+    # 1-indexed plate number parsed from gcode_file (e.g. /Metadata/plate_2.gcode).
+    # Set for every active print regardless of plate count; the frontend decides
+    # whether to render it based on current_archive_id's is_multi_plate flag.
+    current_plate_id: int | None = None

@@ -116,6 +116,7 @@ async def init_db():
         ams_label,
         api_key,
         archive,
+        auth_ephemeral,
         color_catalog,
         external_link,
         git_backup,
@@ -128,6 +129,7 @@ async def init_db():
         maintenance,
         notification,
         notification_template,
+        oidc_provider,
         orca_base_cache,
         pending_upload,
         print_queue,
@@ -147,6 +149,8 @@ async def init_db():
         telegram_chat,
         user,
         user_email_pref,
+        user_otp_code,
+        user_totp,
         virtual_printer,
     )
 

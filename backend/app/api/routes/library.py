@@ -2201,10 +2201,11 @@ async def print_library_file(
             filename=dispatch_source_name,
             printer_id=printer_id,
             printer_name=printer.name,
-            options=body.model_dump(exclude_none=True),
+            options=body.model_dump(exclude_none=True, exclude={"cleanup_library_after_dispatch"}),
             project_id=body.project_id,
             requested_by_user_id=current_user.id if current_user else None,
             requested_by_username=current_user.username if current_user else None,
+            cleanup_library_after_dispatch=body.cleanup_library_after_dispatch,
         )
     except DispatchEnqueueRejected as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
@@ -2488,7 +2489,7 @@ async def create_library_slicer_token(
     if not file:
         raise HTTPException(status_code=404, detail="File not found")
 
-    token = create_slicer_download_token("library", file_id)
+    token = await create_slicer_download_token("library", file_id)
     return {"token": token}
 
 
@@ -2507,7 +2508,7 @@ async def download_library_file_for_slicer(
     """
     from backend.app.core.auth import verify_slicer_download_token
 
-    if not verify_slicer_download_token(token, "library", file_id):
+    if not await verify_slicer_download_token(token, "library", file_id):
         raise HTTPException(status_code=403, detail="Invalid or expired download token")
 
     result = await db.execute(select(LibraryFile).where(LibraryFile.id == file_id))

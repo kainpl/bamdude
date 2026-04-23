@@ -18,6 +18,11 @@ import { resolveSpoolColorName } from '../utils/colors';
 import { getCurrencySymbol } from '../utils/currency';
 import { formatDateInput, parseUTCDate, type DateFormat } from '../utils/date';
 import { formatSlotLabel } from '../utils/amsHelpers';
+import {
+  DEFAULT_SPOOL_DISPLAY_TEMPLATE,
+  formatSpoolDisplayName,
+  spoolDisplayNameMatches,
+} from '../utils/spoolName';
 
 type ArchiveFilter = 'active' | 'archived';
 type UsageFilter = 'all' | 'used' | 'new' | 'lowstock';
@@ -38,6 +43,7 @@ const COLUMN_CONFIG_KEY = 'bamdude-inventory-columns';
 
 const DEFAULT_COLUMNS: ColumnConfig[] = [
   { id: 'id', label: '#', visible: true },
+  { id: 'display_name', label: 'Name', visible: true },
   { id: 'added_time', label: 'Added', visible: true },
   { id: 'encode_time', label: 'Encoded', visible: false },
   { id: 'last_used_time', label: 'Last Used', visible: false },
@@ -130,11 +136,13 @@ type CellCtx = {
   dateFormat: DateFormat;
   t: TFn;
   onSyncWeight?: (spool: InventorySpool) => void;
+  spoolDisplayTemplate?: string;
 };
 
 // Column header labels (25 columns)
 const columnHeaders: Record<string, (t: TFn) => string> = {
   id: (t) => t('inventory.columns.id'),
+  display_name: (t) => t('inventory.columns.display_name'),
   added_time: (t) => t('inventory.columns.added_time'),
   encode_time: (t) => t('inventory.columns.encode_time'),
   last_used_time: (t) => t('inventory.columns.last_used_time'),
@@ -168,6 +176,11 @@ const columnHeaders: Record<string, (t: TFn) => string> = {
 const columnCells: Record<string, (ctx: CellCtx) => ReactNode> = {
   id: ({ spool }) => (
     <span className="text-sm font-medium text-white">{spool.id}</span>
+  ),
+  display_name: ({ spool, spoolDisplayTemplate }) => (
+    <span className="text-sm text-white truncate">
+      {formatSpoolDisplayName(spool, spoolDisplayTemplate)}
+    </span>
   ),
   added_time: ({ spool, dateFormat }) => (
     <span className="text-sm text-bambu-gray">{formatInventoryDate(spool.created_at, dateFormat)}</span>
@@ -353,6 +366,11 @@ const columnCells: Record<string, (ctx: CellCtx) => ReactNode> = {
 // Sort value extractors - return a comparable value for each sortable column
 const columnSortValues: Record<string, (spool: InventorySpool, assignmentMap: Record<number, SpoolAssignment>) => string | number> = {
   id: (s) => s.id,
+  // display_name is sortable — the real comparison lives in the sortedSpools
+  // memo (it needs the user's configurable template which module scope can't
+  // see). This stub only marks the column as sortable so handleSort accepts
+  // header clicks and the ArrowUpDown affordance renders.
+  display_name: () => 0,
   added_time: (s) => s.created_at || '',
   encode_time: (s) => s.encode_time || '',
   last_used_time: (s) => s.last_used || '',
@@ -474,6 +492,7 @@ function InventoryPage() {
   });
 
   const dateFormat: DateFormat = settings?.date_format || 'system';
+  const spoolDisplayTemplate = settings?.spool_display_template || DEFAULT_SPOOL_DISPLAY_TEMPLATE;
 
   const { data: spools, isLoading } = useQuery({
     queryKey: ['inventory-spools'],
@@ -641,21 +660,29 @@ function InventoryPage() {
       filtered = filtered.filter((s) => !!s.slicer_filament);
     }
 
-    // Global search
+    // Global search — tokenised substring match against the synthesised display
+    // name so queries like "SUN Bl" find "SUNLU PETG Black". Also keeps the
+    // prior per-column fallbacks so a free-text search still hits note /
+    // slicer_filament_name / subtype fields that aren't always folded into
+    // the template.
     if (search) {
       const q = search.toLowerCase();
-      filtered = filtered.filter((s) =>
-        s.brand?.toLowerCase().includes(q) ||
-        s.material.toLowerCase().includes(q) ||
-        s.color_name?.toLowerCase().includes(q) ||
-        s.subtype?.toLowerCase().includes(q) ||
-        s.note?.toLowerCase().includes(q) ||
-        s.slicer_filament_name?.toLowerCase().includes(q)
-      );
+      filtered = filtered.filter((s) => {
+        const displayName = formatSpoolDisplayName(s, spoolDisplayTemplate);
+        if (spoolDisplayNameMatches(displayName, search)) return true;
+        return (
+          s.brand?.toLowerCase().includes(q) ||
+          s.material.toLowerCase().includes(q) ||
+          s.color_name?.toLowerCase().includes(q) ||
+          s.subtype?.toLowerCase().includes(q) ||
+          s.note?.toLowerCase().includes(q) ||
+          s.slicer_filament_name?.toLowerCase().includes(q)
+        );
+      });
     }
 
     return filtered;
-  }, [spools, archiveFilter, usageFilter, materialFilter, brandFilter, spoolFilter, stockFilter, search, lowStockThreshold]);
+  }, [spools, archiveFilter, usageFilter, materialFilter, brandFilter, spoolFilter, stockFilter, search, spoolDisplayTemplate, lowStockThreshold]);
 
   // Reset page on filter changes
   const resetPage = () => setPageIndex(0);
@@ -702,6 +729,19 @@ function InventoryPage() {
   // Sort filtered spools
   const sortedSpools = useMemo(() => {
     if (!sortState) return filteredSpools;
+    // display_name sorts via the synthesised name (user-configurable template)
+    // rather than any raw column — locale-aware so "Ясен" sorts cyrillically
+    // and digits within a name (e.g. "100% PLA") compare numerically where
+    // numeric flag is available.
+    if (sortState.column === 'display_name') {
+      const nameFor = (s: InventorySpool) =>
+        formatSpoolDisplayName(s, spoolDisplayTemplate).toLowerCase();
+      const sorted = [...filteredSpools].sort((a, b) => {
+        const cmp = nameFor(a).localeCompare(nameFor(b), undefined, { numeric: true });
+        return sortState.direction === 'asc' ? cmp : -cmp;
+      });
+      return sorted;
+    }
     const extractor = columnSortValues[sortState.column];
     if (!extractor) return filteredSpools;
     const sorted = [...filteredSpools].sort((a, b) => {
@@ -712,7 +752,7 @@ function InventoryPage() {
       return 0;
     });
     return sorted;
-  }, [filteredSpools, sortState, assignmentMap]);
+  }, [filteredSpools, sortState, assignmentMap, spoolDisplayTemplate]);
 
   // Group similar spools when toggle is active
   const displayItems = useMemo((): DisplayItem[] => {
@@ -1348,6 +1388,7 @@ function InventoryPage() {
                           currencySymbol={currencySymbol}
                           dateFormat={dateFormat}
                           t={t}
+                          spoolDisplayTemplate={spoolDisplayTemplate}
                         />
                       );
                     }
@@ -1370,6 +1411,7 @@ function InventoryPage() {
                         currencySymbol={currencySymbol}
                         dateFormat={dateFormat}
                         t={t}
+                        spoolDisplayTemplate={spoolDisplayTemplate}
                       />
                     );
                   })}
@@ -1647,6 +1689,7 @@ function SpoolCard({
 function SpoolTableRow({
   spool, remaining, pct, onEdit, onRestore, onArchive, onDelete,
   visibleColumns, assignmentMap, catalogMap, currencySymbol, dateFormat, t, onSyncWeight,
+  spoolDisplayTemplate,
 }: {
   spool: InventorySpool;
   remaining: number;
@@ -1662,6 +1705,7 @@ function SpoolTableRow({
   dateFormat: DateFormat;
   t: TFn;
   onSyncWeight?: (spool: InventorySpool) => void;
+  spoolDisplayTemplate: string;
 }) {
   return (
     <tr
@@ -1672,7 +1716,7 @@ function SpoolTableRow({
     >
       {visibleColumns.map((colId) => (
         <td key={colId} className="py-3 px-4">
-          {columnCells[colId]?.({ spool, remaining, pct, assignmentMap, catalogMap, currencySymbol, dateFormat, t, onSyncWeight })}
+          {columnCells[colId]?.({ spool, remaining, pct, assignmentMap, catalogMap, currencySymbol, dateFormat, t, onSyncWeight, spoolDisplayTemplate })}
         </td>
       ))}
       <td className="py-3 px-4">
@@ -1703,6 +1747,7 @@ function SpoolTableGroup({
   spools, representative, remaining, pct, isExpanded, onToggle,
   onEdit, onArchive, onDelete,
   visibleColumns, assignmentMap, catalogMap, currencySymbol, dateFormat, t, onSyncWeight,
+  spoolDisplayTemplate,
 }: {
   spools: InventorySpool[];
   representative: InventorySpool;
@@ -1720,6 +1765,7 @@ function SpoolTableGroup({
   dateFormat: DateFormat;
   t: TFn;
   onSyncWeight?: (spool: InventorySpool) => void;
+  spoolDisplayTemplate: string;
 }) {
   return (
     <>
@@ -1733,14 +1779,14 @@ function SpoolTableGroup({
             {idx === 0 ? (
               <div className="flex items-center gap-2">
                 <ChevronDown className={`w-4 h-4 text-bambu-gray transition-transform ${isExpanded ? '' : '-rotate-90'}`} />
-                {columnCells[colId]?.({ spool: representative, remaining, pct, assignmentMap, catalogMap, currencySymbol, dateFormat, t, onSyncWeight })}
+                {columnCells[colId]?.({ spool: representative, remaining, pct, assignmentMap, catalogMap, currencySymbol, dateFormat, t, onSyncWeight, spoolDisplayTemplate })}
               </div>
             ) : colId === 'id' ? (
               <span className="text-xs font-medium bg-bambu-green/20 text-bambu-green px-2 py-0.5 rounded-full">
                 {t('inventory.groupedSpools', { count: spools.length })}
               </span>
             ) : (
-              columnCells[colId]?.({ spool: representative, remaining, pct, assignmentMap, catalogMap, currencySymbol, dateFormat, t, onSyncWeight })
+              columnCells[colId]?.({ spool: representative, remaining, pct, assignmentMap, catalogMap, currencySymbol, dateFormat, t, onSyncWeight, spoolDisplayTemplate })
             )}
           </td>
         ))}
@@ -1771,6 +1817,7 @@ function SpoolTableGroup({
             dateFormat={dateFormat}
             t={t}
             onSyncWeight={onSyncWeight}
+            spoolDisplayTemplate={spoolDisplayTemplate}
           />
         );
       })}

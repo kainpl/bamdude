@@ -23,6 +23,8 @@ import type { InventorySpool } from '../../api/client';
 
 // Mock the API client
 vi.mock('../../api/client', () => ({
+  setAuthToken: vi.fn(),
+  getAuthToken: vi.fn(() => 'test-admin-token'),
   api: {
     getSettings: vi.fn().mockResolvedValue({}),
     getAuthStatus: vi.fn().mockResolvedValue({ auth_enabled: false }),

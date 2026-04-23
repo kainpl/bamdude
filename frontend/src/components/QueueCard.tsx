@@ -22,7 +22,7 @@ import {
   MoreVertical,
 } from 'lucide-react';
 import { BatchActionDialog } from './Queue/BatchActionDialog';
-import { api } from '../api/client';
+import { api, withStreamToken } from '../api/client';
 import type { PrinterQueue, PrintQueueItem, Permission } from '../api/client';
 import { Card, CardContent } from './Card';
 import { useAuth } from '../contexts/AuthContext';
@@ -296,7 +296,8 @@ export function QueueCard({ queue, compact = false, onEditItem }: QueueCardProps
             </span>
             <div className="flex items-center gap-2 flex-shrink-0">
               <StatusBadge status={queue.status} t={t} />
-              {queue.status === 'printing' && status?.progress != null && (
+              {queue.status === 'printing' && status?.progress != null &&
+                (status.state === 'RUNNING' || status.state === 'PAUSE') && (
                 <span className="text-xs text-blue-400 font-medium">{status.progress}%</span>
               )}
               {pendingCount > 0 && (
@@ -316,7 +317,7 @@ export function QueueCard({ queue, compact = false, onEditItem }: QueueCardProps
   const hasAutoDispatchItems = pendingItems?.some(item => !item.manual_start) ?? false;
   const needsClearPlate =
     (status?.state === 'FINISH' || status?.state === 'FAILED') &&
-    !status?.plate_cleared &&
+    !!status?.awaiting_plate_clear &&
     hasAutoDispatchItems;
 
   // Find the current printing item (first printing-status item from pending query, or use status info)
@@ -393,7 +394,7 @@ export function QueueCard({ queue, compact = false, onEditItem }: QueueCardProps
             <div className="flex items-start gap-3">
               {currentThumbnail ? (
                 <img
-                  src={currentThumbnail}
+                  src={withStreamToken(currentThumbnail)}
                   alt=""
                   className="w-20 h-20 rounded-lg object-cover flex-shrink-0 bg-bambu-dark-tertiary"
                 />
@@ -410,39 +411,53 @@ export function QueueCard({ queue, compact = false, onEditItem }: QueueCardProps
                   )}
                 </div>
                 <p className="text-sm text-white truncate mb-2">{currentPrintName}</p>
-                {/* Progress bar */}
-                <div className="flex items-center gap-2">
-                  <div className="flex-1 bg-bambu-dark-tertiary rounded-full h-2">
-                    <div
-                      className="bg-blue-400 h-2 rounded-full transition-all"
-                      style={{ width: `${status.progress || 0}%` }}
-                    />
+                {/* Progress / ETA / layer fields are only live while the printer
+                    is actually RUNNING or PAUSE. Between dispatch and the first
+                    push_status tick (FINISH from the prior print, or PREPARE
+                    while heating) the stale mc_percent would otherwise flash —
+                    100% from the previous job for a few seconds before snapping
+                    back to 0 (upstream #950286ad). */}
+                {(status.state === 'RUNNING' || status.state === 'PAUSE') ? (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1 bg-bambu-dark-tertiary rounded-full h-2">
+                        <div
+                          className="bg-blue-400 h-2 rounded-full transition-all"
+                          style={{ width: `${status.progress || 0}%` }}
+                        />
+                      </div>
+                      <span className="text-sm text-white font-medium flex-shrink-0">
+                        {Math.round(status.progress ?? 0)}%
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-3 mt-2 text-xs text-bambu-gray">
+                      {status.remaining_time != null && status.remaining_time > 0 && (
+                        <>
+                          <span className="flex items-center gap-1">
+                            <Clock className="w-3 h-3" />
+                            {formatDuration(status.remaining_time * 60)}
+                          </span>
+                          <span className="text-bambu-green font-medium">
+                            ETA {formatETA(status.remaining_time)}
+                          </span>
+                        </>
+                      )}
+                      {status.layer_num != null && status.total_layers != null && status.total_layers > 0 && (
+                        <span className="flex items-center gap-1">
+                          <Layers className="w-3 h-3" />
+                          {status.layer_num}/{status.total_layers}
+                        </span>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 bg-bambu-dark-tertiary rounded-full h-2">
+                      <div className="bg-blue-400 h-2 rounded-full" style={{ width: '0%' }} />
+                    </div>
+                    <span className="text-sm text-white font-medium flex-shrink-0">0%</span>
                   </div>
-                  <span className="text-sm text-white font-medium flex-shrink-0">
-                    {Math.round(status.progress ?? 0)}%
-                  </span>
-                </div>
-                {/* Remaining duration · ETA · layer progress — matches
-                    the printer-card row so both views stay consistent. */}
-                <div className="flex items-center gap-3 mt-2 text-xs text-bambu-gray">
-                  {status.remaining_time != null && status.remaining_time > 0 && (
-                    <>
-                      <span className="flex items-center gap-1">
-                        <Clock className="w-3 h-3" />
-                        {formatDuration(status.remaining_time * 60)}
-                      </span>
-                      <span className="text-bambu-green font-medium">
-                        ETA {formatETA(status.remaining_time)}
-                      </span>
-                    </>
-                  )}
-                  {status.layer_num != null && status.total_layers != null && status.total_layers > 0 && (
-                    <span className="flex items-center gap-1">
-                      <Layers className="w-3 h-3" />
-                      {status.layer_num}/{status.total_layers}
-                    </span>
-                  )}
-                </div>
+                )}
               </div>
             </div>
 

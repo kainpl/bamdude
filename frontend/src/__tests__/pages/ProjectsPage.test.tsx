@@ -16,6 +16,7 @@ const mockProjects = [
     name: 'Functional Parts',
     description: 'Useful household items',
     color: '#00ae42',
+    status: 'active',
     archive_count: 10,
     total_print_time_seconds: 36000,
     total_filament_grams: 500,
@@ -27,6 +28,7 @@ const mockProjects = [
     name: 'Art Collection',
     description: 'Decorative prints',
     color: '#ff5500',
+    status: 'active',
     archive_count: 5,
     total_print_time_seconds: 18000,
     total_filament_grams: 200,
@@ -35,9 +37,7 @@ const mockProjects = [
   },
 ];
 
-// TODO(#stale-tests): re-enable once assertions are updated to match current component output.
-// See https://github.com/kainpl/bamdude/issues for the tracking ticket.
-describe.skip('ProjectsPage', () => {
+describe('ProjectsPage', () => {
   beforeEach(() => {
     server.use(
       http.get('/api/v1/projects/', () => {

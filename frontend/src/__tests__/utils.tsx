@@ -10,6 +10,21 @@ import { BrowserRouter } from 'react-router-dom';
 import { ThemeProvider } from '../contexts/ThemeContext';
 import { ToastProvider } from '../contexts/ToastContext';
 import { AuthProvider } from '../contexts/AuthContext';
+import { setAuthToken } from '../api/client';
+
+// BamDude has always-on auth (see CLAUDE.md). AuthContext will not load a user
+// unless a token is already present when checkAuthStatus runs — otherwise every
+// hasPermission call falls through to `permissionSet.has(...)` on an empty set
+// and everything that uses `hasPermission(...)` as a gate (most nav items,
+// many UI actions) disappears from the DOM. Seed a synthetic token via the
+// canonical setter so api/client's module-level cache stays consistent with
+// localStorage. Test files that vi.mock '../api/client' need to include
+// setAuthToken in their mock factory — see utils.tsx guard below.
+if (typeof setAuthToken === 'function') {
+  setAuthToken('test-admin-token');
+} else if (typeof localStorage !== 'undefined') {
+  localStorage.setItem('auth_token', 'test-admin-token');
+}
 
 // Create a new QueryClient for each test
 function createTestQueryClient() {

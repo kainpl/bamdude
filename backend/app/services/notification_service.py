@@ -776,7 +776,7 @@ class NotificationService:
                         from backend.app.models.print_queue import PrintQueueItem
                         from backend.app.services.printer_manager import printer_manager
 
-                        if not printer_manager.is_plate_cleared(printer_id):
+                        if printer_manager.is_awaiting_plate_clear(printer_id):
                             pending = (
                                 await db.execute(
                                     select(func.count(PrintQueueItem.id)).where(

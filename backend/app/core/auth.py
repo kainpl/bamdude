@@ -12,13 +12,15 @@ from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt.exceptions import PyJWTError as JWTError
 from passlib.context import CryptContext
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.app.core.database import async_session, get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.api_key import APIKey
+from backend.app.models.auth_ephemeral import AuthEphemeralToken, TokenType
 from backend.app.models.group import Group, user_groups
 from backend.app.models.user import User
 
@@ -93,47 +95,116 @@ def _get_jwt_secret() -> str:
 # JWT settings
 SECRET_KEY = _get_jwt_secret()
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours (§18.4 M-2: reduced from 7 days)
 
 # HTTP Bearer token
 security = HTTPBearer(auto_error=False)
 
 # --- Slicer download tokens ---
-# Short-lived tokens for slicer protocol handlers that can't send auth headers.
-# Maps token → (resource_key, expiry). resource_key = "archive:{id}" or "library:{id}".
-_slicer_tokens: dict[str, tuple[str, datetime]] = {}
+# Short-lived, single-use tokens for slicer protocol handlers that can't send
+# auth headers. Stored in AuthEphemeralToken (token_type=SLICER_DOWNLOAD) so
+# they survive server restarts and work in multi-worker deployments (§18.4 M-3).
 SLICER_TOKEN_EXPIRE_MINUTES = 5
 
 
-def create_slicer_download_token(resource_type: str, resource_id: int) -> str:
-    """Create a short-lived download token for slicer protocol handlers."""
-    # Cleanup expired tokens
+async def create_slicer_download_token(resource_type: str, resource_id: int) -> str:
+    """Create a short-lived, single-use download token for slicer protocol handlers."""
     now = datetime.now(timezone.utc)
-    expired = [k for k, (_, exp) in _slicer_tokens.items() if exp < now]
-    for k in expired:
-        del _slicer_tokens[k]
-
+    expires_at = now + timedelta(minutes=SLICER_TOKEN_EXPIRE_MINUTES)
     token = secrets.token_urlsafe(24)
     resource_key = f"{resource_type}:{resource_id}"
-    _slicer_tokens[token] = (resource_key, now + timedelta(minutes=SLICER_TOKEN_EXPIRE_MINUTES))
+    async with async_session() as db:
+        # Prune expired tokens opportunistically.
+        await db.execute(
+            delete(AuthEphemeralToken).where(
+                AuthEphemeralToken.token_type == TokenType.SLICER_DOWNLOAD,
+                AuthEphemeralToken.expires_at < now,
+            )
+        )
+        db.add(
+            AuthEphemeralToken(
+                token=token,
+                token_type=TokenType.SLICER_DOWNLOAD,
+                nonce=resource_key,
+                expires_at=expires_at,
+            )
+        )
+        await db.commit()
     return token
 
 
-def verify_slicer_download_token(token: str, resource_type: str, resource_id: int) -> bool:
-    """Verify a slicer download token is valid for the given resource."""
-    entry = _slicer_tokens.get(token)
-    if not entry:
-        return False
-    resource_key, expiry = entry
-    if datetime.now(timezone.utc) > expiry:
-        del _slicer_tokens[token]
-        return False
+async def verify_slicer_download_token(token: str, resource_type: str, resource_id: int) -> bool:
+    """Verify and atomically consume a slicer download token.
+
+    DELETE…RETURNING ensures the token is single-use even under concurrent
+    requests. M-NEW-1 fix: ``nonce`` (resource key) is in the WHERE clause so
+    the DELETE only succeeds for the correct resource — earlier versions
+    consumed the row even on resource-mismatch, permanently invalidating it.
+    """
     expected_key = f"{resource_type}:{resource_id}"
-    if resource_key != expected_key:
-        return False
-    # Token is single-use
-    del _slicer_tokens[token]
-    return True
+    now = datetime.now(timezone.utc)
+    async with async_session() as db:
+        result = await db.execute(
+            delete(AuthEphemeralToken)
+            .where(
+                AuthEphemeralToken.token == token,
+                AuthEphemeralToken.token_type == TokenType.SLICER_DOWNLOAD,
+                AuthEphemeralToken.nonce == expected_key,
+                AuthEphemeralToken.expires_at > now,
+            )
+            .returning(AuthEphemeralToken.id)
+        )
+        if result.one_or_none() is None:
+            return False
+        await db.commit()
+        return True
+
+
+# --- Camera stream tokens ---
+# Reusable (not single-use) tokens for MJPEG stream / snapshot endpoints that
+# are loaded by <img>/<video> tags — those can't send Authorization headers,
+# so the frontend obtains a token and appends ?token=... to the URL. Stored
+# in AuthEphemeralToken (token_type=CAMERA_STREAM) for multi-worker safety
+# and restart persistence (§18.4 M-3).
+CAMERA_STREAM_TOKEN_EXPIRE_MINUTES = 60
+
+
+async def create_camera_stream_token() -> str:
+    """Create a reusable camera-stream token (valid for CAMERA_STREAM_TOKEN_EXPIRE_MINUTES)."""
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(minutes=CAMERA_STREAM_TOKEN_EXPIRE_MINUTES)
+    token = secrets.token_urlsafe(24)
+    async with async_session() as db:
+        # Prune expired tokens opportunistically.
+        await db.execute(
+            delete(AuthEphemeralToken).where(
+                AuthEphemeralToken.token_type == TokenType.CAMERA_STREAM,
+                AuthEphemeralToken.expires_at < now,
+            )
+        )
+        db.add(
+            AuthEphemeralToken(
+                token=token,
+                token_type=TokenType.CAMERA_STREAM,
+                expires_at=expires_at,
+            )
+        )
+        await db.commit()
+    return token
+
+
+async def verify_camera_stream_token(token: str) -> bool:
+    """Verify a camera stream token is valid (reusable — does not consume it)."""
+    now = datetime.now(timezone.utc)
+    async with async_session() as db:
+        result = await db.execute(
+            select(AuthEphemeralToken).where(
+                AuthEphemeralToken.token == token,
+                AuthEphemeralToken.token_type == TokenType.CAMERA_STREAM,
+                AuthEphemeralToken.expires_at > now,
+            )
+        )
+        return result.scalar_one_or_none() is not None
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -153,15 +224,73 @@ def get_password_hash(password: str) -> str:
 
 
 def create_access_token(data: dict, expires_delta: timedelta | None = None) -> str:
-    """Create a JWT access token."""
+    """Create a JWT access token with ``jti`` (revocation) and ``iat`` (freshness) claims."""
     to_encode = data.copy()
+    now = datetime.now(timezone.utc)
     if expires_delta:
-        expire = datetime.now(timezone.utc) + expires_delta
+        expire = now + expires_delta
     else:
-        expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire})
+        expire = now + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    jti = secrets.token_hex(16)
+    to_encode.update({"exp": expire, "jti": jti, "iat": now})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
+
+
+def _is_token_fresh(iat: int | float | None, user: User) -> bool:
+    """Return False if the token was issued before the user's last password change.
+
+    Used to invalidate all sessions after a password reset/change (§18.4 M-R7-B / I2).
+    Tokens without an ``iat`` claim are rejected unconditionally — every token
+    issued by this server carries ``iat`` since §18.4 landed, and any pre-§18.4
+    token whose max TTL (24 h) has since expired would already be rejected by
+    the ``exp`` check. Legacy tokens without ``iat`` but still valid by ``exp``
+    would be the only loss here, and that window closes automatically as they
+    time out.
+    """
+    if iat is None:
+        return False
+    if not hasattr(user, "password_changed_at") or user.password_changed_at is None:
+        # No password change recorded — treat as "no freshness floor", pre-m012 rows.
+        return True
+    token_issued_at = datetime.fromtimestamp(iat, tz=timezone.utc)
+    pca = user.password_changed_at
+    if pca.tzinfo is None:
+        pca = pca.replace(tzinfo=timezone.utc)
+    # JWT iat is whole seconds; truncate pca so tokens issued in the same second pass.
+    pca = pca.replace(microsecond=0)
+    return token_issued_at >= pca
+
+
+async def revoke_jti(jti: str, expires_at: datetime, username: str | None = None) -> None:
+    """Store a revoked JWT ``jti`` so it is rejected on future requests.
+
+    Silently ignores duplicate inserts (e.g. double-logout replaying the same token).
+    """
+    async with async_session() as db:
+        revoked = AuthEphemeralToken(
+            token=jti,
+            token_type=TokenType.REVOKED_JTI,
+            username=username,
+            expires_at=expires_at,
+        )
+        db.add(revoked)
+        try:
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()  # jti already revoked — desired state, ignore
+
+
+async def is_jti_revoked(jti: str) -> bool:
+    """Return True if the given ``jti`` has been revoked."""
+    async with async_session() as db:
+        result = await db.execute(
+            select(AuthEphemeralToken).where(
+                AuthEphemeralToken.token == jti,
+                AuthEphemeralToken.token_type == TokenType.REVOKED_JTI,
+            )
+        )
+        return result.scalar_one_or_none() is not None
 
 
 async def get_user_by_username(db: AsyncSession, username: str) -> User | None:
@@ -188,8 +317,8 @@ async def authenticate_user(db: AsyncSession, username: str, password: str) -> U
     user = await get_user_by_username(db, username)
     if not user:
         return None
-    if getattr(user, "auth_source", "local") == "ldap":
-        return None  # LDAP users authenticate via LDAP, not local password
+    if getattr(user, "auth_source", "local") in ("ldap", "oidc"):
+        return None  # LDAP/OIDC users must authenticate via their provider, not local password
     if not user.password_hash or not verify_password(password, user.password_hash):
         return None
     if not user.is_active:
@@ -205,8 +334,8 @@ async def authenticate_user_by_email(db: AsyncSession, email: str, password: str
     user = await get_user_by_email(db, email)
     if not user:
         return None
-    if getattr(user, "auth_source", "local") == "ldap":
-        return None
+    if getattr(user, "auth_source", "local") in ("ldap", "oidc"):
+        return None  # LDAP/OIDC users must authenticate via their provider
     if not user.password_hash or not verify_password(password, user.password_hash):
         return None
     if not user.is_active:
@@ -280,7 +409,12 @@ async def _validate_api_key(db: AsyncSession, api_key_value: str) -> APIKey | No
 async def get_current_user_optional(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)] = None,
 ) -> User | None:
-    """Get the current authenticated user from JWT token, or None if not authenticated."""
+    """Get the current authenticated user from JWT token, or None if not authenticated.
+
+    §18.4: also checks ``jti`` (revocation) and ``iat`` (freshness vs
+    ``user.password_changed_at``). Tokens that fail either check are treated
+    exactly like malformed tokens — return None.
+    """
     if credentials is None:
         return None
 
@@ -293,9 +427,15 @@ async def get_current_user_optional(
     except JWTError:
         return None
 
+    jti = payload.get("jti")
+    if jti and await is_jti_revoked(jti):
+        return None
+
     async with async_session() as db:
         user = await get_user_by_username(db, username)
         if user is None or not user.is_active:
+            return None
+        if not _is_token_fresh(payload.get("iat"), user):
             return None
         return user
 
@@ -303,7 +443,11 @@ async def get_current_user_optional(
 async def get_current_user(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)] = None,
 ) -> User:
-    """Get the current authenticated user from JWT token."""
+    """Get the current authenticated user from JWT token.
+
+    §18.4: rejects revoked ``jti`` values and tokens issued before the user's
+    last password change (``iat < password_changed_at``).
+    """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -320,6 +464,10 @@ async def get_current_user(
     except JWTError:
         raise credentials_exception
 
+    jti = payload.get("jti")
+    if jti and await is_jti_revoked(jti):
+        raise credentials_exception
+
     async with async_session() as db:
         user = await get_user_by_username(db, username)
         if user is None:
@@ -329,6 +477,8 @@ async def get_current_user(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="User account is disabled",
             )
+        if not _is_token_fresh(payload.get("iat"), user):
+            raise credentials_exception
         return user
 
 
@@ -552,6 +702,29 @@ def require_permission(*permissions: str | Permission):
 def RequirePermission(*permissions: str | Permission):
     """Convenience dependency that requires ALL specified permissions."""
     return Depends(require_permission(*permissions))
+
+
+def require_camera_stream_token():
+    """Dependency that validates a camera-stream token passed as ``?token=...``.
+
+    Used for camera stream / snapshot endpoints loaded via ``<img>`` / ``<video>``
+    tags — those can't send Authorization headers, so the frontend obtains a
+    token from ``POST /printers/camera/stream-token`` and appends it to the URL.
+    """
+
+    async def checker(token: str | None = None) -> None:
+        if not token or not await verify_camera_stream_token(token):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=(
+                    "Valid camera stream token required. Obtain one from POST /api/v1/printers/camera/stream-token"
+                ),
+            )
+
+    return checker
+
+
+RequireCameraStreamToken = Depends(require_camera_stream_token())
 
 
 def require_ownership_permission(

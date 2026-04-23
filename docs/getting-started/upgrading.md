@@ -59,10 +59,16 @@ Whatever path you choose, make a full backup first:
 
 === "Native / self-install"
 
+    Use the in-app backup — **Settings → Backup → Local Backup → Create Backup**, then **Download Backup** to save the zip to your computer. The zip packs the SQLite database, archive directory, thumbnails, uploads, and config in the same layout `install.sh` lays out on disk, so restore is just "unzip into the install path and restart".
+
+    If you prefer the shell path (CI automation, no browser handy):
+
     ```bash
     cd /opt/bamdude     # or wherever you installed
     tar czf ~/bamdude-data-$(date +%Y%m%d).tar.gz data/
     ```
+
+    The UI-produced zip is recommended — it also captures a few ancillary pieces (encryption-key metadata, scheduled-backup state) that a raw `tar` of `data/` leaves behind.
 
 === "Bambuddy (source project)"
 
@@ -434,6 +440,10 @@ Because the schema advances forward only, the rollback plan is always "restore t
     ```
 
 === "Native"
+
+    If the backup was produced via **Settings → Backup → Local Backup** (recommended), restore via the same UI on a fresh install of the older tag: reinstall the prior BamDude version, complete first-run setup, open **Settings → Backup → Local Backup**, **Upload** the downloaded zip, then restart the service.
+
+    Shell fallback if you made a raw `tar`:
 
     ```bash
     sudo systemctl stop bamdude

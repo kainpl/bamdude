@@ -1,0 +1,128 @@
+name: Docker Publish (tag)
+
+# Publishes a multi-arch Docker image whenever a v* tag is pushed.
+# Tag shape determines the channel and whether :latest moves:
+#
+#   v0.5.0                        → stable → :0.5.0 + :latest
+#   v0.5.0.1                      → stable → :0.5.0.1 + :latest
+#   v0.5.0b1                      → beta   → :0.5.0b1               (no :latest)
+#   v0.5.0b1-daily.YYYYMMDD       → daily → handled by
+#                                           docker-publish-daily.yml
+#                                           (this workflow SKIPS dailies)
+#
+# Daily tags are ignored here so the dedicated daily workflow can own the
+# full tag-plus-release flow in one atomic transaction.
+#
+# See temp/release_guide.md for the full release cadence and channel
+# convention.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    name: Build & push tagged image
+    runs-on: ubuntu-latest
+    if: github.repository == 'kainpl/bamdude'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Classify tag
+        id: classify
+        run: |
+          # Strip the leading 'v' — the *_VERSION strings in config.py /
+          # package.json / pyproject.toml never carry it.
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+          if [[ "$VERSION" =~ -daily\.[0-9]{8}$ ]]; then
+            echo "channel=daily" >> "$GITHUB_OUTPUT"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Daily tag — owned by docker-publish-daily.yml, skipping."
+          elif [[ "$VERSION" =~ b[0-9]+$ ]]; then
+            echo "channel=beta" >> "$GITHUB_OUTPUT"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "tag_latest=false" >> "$GITHUB_OUTPUT"
+          elif [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "channel=stable" >> "$GITHUB_OUTPUT"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "tag_latest=true" >> "$GITHUB_OUTPUT"
+          else
+            # Unknown shape — don't guess, fail visibly so the operator can
+            # correct the tag rather than end up with a mis-channeled image.
+            echo "::error::Unrecognised tag shape: ${TAG}"
+            exit 1
+          fi
+
+      - name: Set up QEMU
+        if: steps.classify.outputs.skip == 'false'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        if: steps.classify.outputs.skip == 'false'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: steps.classify.outputs.skip == 'false'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        if: steps.classify.outputs.skip == 'false'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push (stable)
+        if: steps.classify.outputs.skip == 'false' && steps.classify.outputs.tag_latest == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          sbom: false
+          tags: |
+            ghcr.io/kainpl/bamdude:${{ steps.classify.outputs.version }}
+            ghcr.io/kainpl/bamdude:latest
+            kainpl/bamdude:${{ steps.classify.outputs.version }}
+            kainpl/bamdude:latest
+          cache-from: type=gha,scope=tag
+          cache-to: type=gha,mode=max,scope=tag
+
+      - name: Build and push (beta)
+        if: steps.classify.outputs.skip == 'false' && steps.classify.outputs.tag_latest == 'false'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          sbom: false
+          tags: |
+            ghcr.io/kainpl/bamdude:${{ steps.classify.outputs.version }}
+            kainpl/bamdude:${{ steps.classify.outputs.version }}
+          cache-from: type=gha,scope=tag
+          cache-to: type=gha,mode=max,scope=tag
+
+      - name: Summary
+        if: steps.classify.outputs.skip == 'false'
+        run: |
+          echo "### Published ${GITHUB_REF_NAME} (${{ steps.classify.outputs.channel }})" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- ghcr.io/kainpl/bamdude:${{ steps.classify.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- kainpl/bamdude:${{ steps.classify.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ steps.classify.outputs.tag_latest }}" = "true" ]; then
+            echo "- :latest updated" >> "$GITHUB_STEP_SUMMARY"
+          fi

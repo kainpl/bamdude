@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main, dev]
     # Run on PRs targeting main or dev, but skip for repo owner (runs local tests)
+  workflow_dispatch:
+    # Manual-trigger button in the Actions UI — useful for re-running on a
+    # branch that hasn't hit main yet (e.g. to validate feature work against
+    # CI before merging).
 
 # Skip CI for PRs authored by repo owner (they run tests locally)
 # Uses PR author instead of triggering actor so rebasing by owner doesn't skip CI
@@ -128,6 +132,10 @@ jobs:
       - name: Run ESLint
         working-directory: frontend
         run: npm run lint
+
+      - name: Check i18n parity (en/uk)
+        working-directory: frontend
+        run: npm run i18n:check
 
   frontend-security:
     name: Frontend Security

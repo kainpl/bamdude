@@ -56,6 +56,7 @@ class PrintDispatchJob:
     requested_by_user_id: int | None = None
     requested_by_username: str | None = None
     project_id: int | None = None
+    cleanup_library_after_dispatch: bool = False
 
 
 @dataclass(slots=True)
@@ -163,6 +164,7 @@ class BackgroundDispatchService:
         requested_by_user_id: int | None,
         requested_by_username: str | None,
         project_id: int | None = None,
+        cleanup_library_after_dispatch: bool = False,
     ) -> dict[str, Any]:
         return await self._dispatch(
             kind="print_library_file",
@@ -174,6 +176,7 @@ class BackgroundDispatchService:
             requested_by_user_id=requested_by_user_id,
             requested_by_username=requested_by_username,
             project_id=project_id,
+            cleanup_library_after_dispatch=cleanup_library_after_dispatch,
         )
 
     async def cancel_job(self, job_id: int) -> dict[str, Any]:
@@ -262,6 +265,7 @@ class BackgroundDispatchService:
         requested_by_user_id: int | None,
         requested_by_username: str | None,
         project_id: int | None = None,
+        cleanup_library_after_dispatch: bool = False,
     ) -> dict[str, Any]:
         async with self._lock:
             has_pending_for_printer = any(job.printer_id == printer_id for job in self._queued_jobs)
@@ -285,6 +289,7 @@ class BackgroundDispatchService:
                 requested_by_user_id=requested_by_user_id,
                 requested_by_username=requested_by_username,
                 project_id=project_id,
+                cleanup_library_after_dispatch=cleanup_library_after_dispatch,
             )
             self._next_job_id += 1
             self._batch_total += 1
@@ -896,6 +901,12 @@ class BackgroundDispatchService:
                 project_id=job.project_id,
                 source_content_hash=lib_file.file_hash,
                 applied_patches=applied_patches or None,
+                library_file_id=lib_file.id,
+                # Forward the requesting user so per-user stats filter sees this
+                # archive and the post-print notification has a recipient. Prior
+                # to upstream #276a1db3 all library-print archives landed with
+                # created_by_id=NULL regardless of who clicked Print.
+                created_by_id=job.requested_by_user_id,
             )
             if not archive:
                 raise RuntimeError("Failed to create archive")
@@ -1104,7 +1115,49 @@ class BackgroundDispatchService:
                 if pre_state:
                     asyncio.create_task(self._verify_print_response(job.printer_id, printer_name, pre_state))
 
+                # Register the requesting user so per-user stats filter sees
+                # this print and the post-print notification has a recipient.
+                # Mirrors the reprint path above — prior to upstream #276a1db3
+                # the library-print branch skipped this call even though the
+                # user was plumbed into the job object.
+                if job.requested_by_user_id and job.requested_by_username:
+                    printer_manager.set_current_print_user(
+                        job.printer_id,
+                        job.requested_by_user_id,
+                        job.requested_by_username,
+                    )
+
+                # Direct-Print flow only: archive_print copies the 3MF, so
+                # deleting the transient library row + files here leaves the
+                # archive intact. Staged in the same transaction as everything
+                # else — a mid-flight FTP / start_print failure rolls both
+                # archive creation and library deletion back cleanly. Disk
+                # deletes run AFTER commit so a rollback leaves no orphan
+                # library_file row pointing at a file we already unlinked.
+                # External library files (is_external=True) are never touched.
+                # Upstream #730 / #1682b695.
+                cleanup_disk_paths: list[Path] = []
+                if job.cleanup_library_after_dispatch and not lib_file.is_external:
+                    cleanup_disk_paths.append(Path(settings.base_dir) / lib_file.file_path)
+                    if lib_file.thumbnail_path:
+                        thumb_path = Path(lib_file.thumbnail_path)
+                        if not thumb_path.is_absolute():
+                            thumb_path = Path(settings.base_dir) / lib_file.thumbnail_path
+                        cleanup_disk_paths.append(thumb_path)
+                    await db.delete(lib_file)
+
                 await db.commit()
+
+                for cleanup_path in cleanup_disk_paths:
+                    try:
+                        if cleanup_path.exists():
+                            cleanup_path.unlink()
+                    except OSError as cleanup_err:
+                        logger.warning(
+                            "Failed to delete transient library file %s: %s",
+                            cleanup_path,
+                            cleanup_err,
+                        )
             except DispatchJobCancelled:
                 await db.rollback()
                 await self._set_active_message(job, f"Cancelled upload on {printer_name}.")
@@ -1139,6 +1192,14 @@ class BackgroundDispatchService:
             timeout,
             pre_state,
         )
+        # Strong signal the MQTT session is half-broken (#887, #936): telemetry
+        # still arrives but our publishes don't reach the printer. Force a fresh
+        # session so the next dispatch can land without a power cycle.
+        client = printer_manager.get_client(printer_id)
+        if client:
+            client.force_reconnect_stale_session(
+                f"print command unacknowledged after {timeout:.0f}s (state still {pre_state})"
+            )
 
     @staticmethod
     async def _cleanup_sd_card_file(

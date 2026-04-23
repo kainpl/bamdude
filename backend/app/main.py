@@ -32,8 +32,10 @@ from backend.app.api.routes import (
     macros,
     maintenance,
     metrics,
+    mfa,
     notification_templates,
     notifications,
+    obico,
     pending_uploads,
     print_queue,
     printer_queues,
@@ -489,6 +491,36 @@ def _get_start_ams_mapping(data: dict, archive_id: int | None) -> list[int] | No
     if not stored_ams_mapping and archive_id:
         stored_ams_mapping = _print_ams_mappings.get(archive_id)
     return stored_ams_mapping
+
+
+async def _bump_library_file_usage(db, library_file_id: int | None) -> None:
+    """Increment LibraryFile.print_count and stamp last_printed_at.
+
+    Call this on successful print completion only (caller gates on status).
+    Caller is responsible for committing the session. No-op when there's no
+    linked library file (e.g. external prints or reprints from archive) or
+    the library row has since been deleted. See #1008.
+    """
+    if library_file_id is None:
+        return
+    from backend.app.models.library import LibraryFile
+
+    lib_file = await db.scalar(select(LibraryFile).where(LibraryFile.id == library_file_id))
+    if lib_file is None:
+        return
+    lib_file.print_count = (lib_file.print_count or 0) + 1
+    lib_file.last_printed_at = datetime.now(timezone.utc)
+
+
+async def _bump_library_file_usage_if_completed(db, item, queue_status: str) -> None:
+    """Queue-branch wrapper: bump usage only for status='completed' items with
+    a library_file_id. Preserved so the on_print_complete queue branch reads
+    naturally; new direct-print path calls ``_bump_library_file_usage``
+    directly after resolving the archive's ``library_file_id``.
+    """
+    if queue_status != "completed":
+        return
+    await _bump_library_file_usage(db, item.library_file_id)
 
 
 def mark_printer_stopped_by_user(printer_id: int) -> None:
@@ -1568,8 +1600,19 @@ async def on_print_start(printer_id: int, data: dict):
         # Get the filename and subtask_name
         filename = data.get("filename", "")
         subtask_name = data.get("subtask_name", "")
+        # Printer-assigned subtask identifier. Normalize "" and "0" to None —
+        # both appear as "no subtask" in MQTT pushes and must not match across
+        # prints (every missing-id archive would otherwise collide).
+        subtask_id = data.get("subtask_id") or None
+        if subtask_id == "0":
+            subtask_id = None
 
-        logger.info("[CALLBACK] Print start detected - filename: %s, subtask: %s", filename, subtask_name)
+        logger.info(
+            "[CALLBACK] Print start detected - filename: %s, subtask: %s, subtask_id: %s",
+            filename,
+            subtask_name,
+            subtask_id,
+        )
 
         # Skip calibration prints - internal printer files should not be archived
         # Bambu calibration gcode lives under /usr/ (e.g. /usr/etc/print/auto_cali_for_user.gcode)
@@ -1705,25 +1748,56 @@ async def on_print_start(printer_id: int, data: dict):
         from backend.app.models.archive import PrintArchive
 
         check_name = subtask_name or filename.split("/")[-1].replace(".gcode", "").replace(".3mf", "")
-        existing = await db.execute(
-            select(PrintArchive)
-            .where(PrintArchive.printer_id == printer_id)
-            .where(PrintArchive.status == "printing")
-            .where(
-                or_(
-                    PrintArchive.print_name == check_name,
-                    PrintArchive.filename.in_(
-                        [
-                            f"{check_name}.3mf",
-                            f"{check_name}.gcode.3mf",
-                        ]
-                    ),
-                )
+
+        # Pre-check: if the printer told us a subtask_id, look for an archive
+        # with the same id on this printer first. The printer-assigned id is
+        # unique per submission (see start_print submission_id), so a match is
+        # a stronger signal than name alone. Only consult status="printing" to
+        # avoid reviving old cancelled rows — BamDude has no stale-cancel
+        # heuristic, so a terminal status here is deliberate (#972 port).
+        existing_archive: PrintArchive | None = None
+        if subtask_id:
+            subtask_match = await db.execute(
+                select(PrintArchive)
+                .where(PrintArchive.printer_id == printer_id)
+                .where(PrintArchive.subtask_id == subtask_id)
+                .where(PrintArchive.status == "printing")
+                .order_by(PrintArchive.created_at.desc())
+                .limit(1)
             )
-            .order_by(PrintArchive.created_at.desc())
-            .limit(1)
-        )
-        existing_archive = existing.scalar_one_or_none()
+            existing_archive = subtask_match.scalar_one_or_none()
+            if existing_archive:
+                logger.info(
+                    "Resuming archive %s on subtask_id match (%s)",
+                    existing_archive.id,
+                    subtask_id,
+                )
+
+        if existing_archive is None:
+            existing = await db.execute(
+                select(PrintArchive)
+                .where(PrintArchive.printer_id == printer_id)
+                .where(PrintArchive.status == "printing")
+                .where(
+                    or_(
+                        PrintArchive.print_name == check_name,
+                        PrintArchive.filename.in_(
+                            [
+                                f"{check_name}.3mf",
+                                f"{check_name}.gcode.3mf",
+                            ]
+                        ),
+                    )
+                )
+                .order_by(PrintArchive.created_at.desc())
+                .limit(1)
+            )
+            existing_archive = existing.scalar_one_or_none()
+            # Backfill subtask_id onto an archive that matched by name only —
+            # next restart can then use the faster subtask_id pre-check path.
+            if existing_archive and subtask_id and existing_archive.subtask_id is None:
+                existing_archive.subtask_id = subtask_id
+                await db.commit()
         if existing_archive:
             # The printer just fired on_print_start for ``check_name``, and we
             # have a matching "printing" archive on file — by definition it IS
@@ -1731,6 +1805,15 @@ async def on_print_start(printer_id: int, data: dict):
             # event). Adopt it, no matter how old it is. The previous 4-hour
             # stale-cancel heuristic was wrong: on long prints it killed the
             # real row and forced a duplicate to be created below.
+            #
+            # Divergence from upstream Bambuddy v0.2.3 #972 "revive" path: they
+            # KEEP stale-cancel AND add a subtask_id-match revive. BamDude keeps
+            # neither — we skip stale-cancel entirely, so there's nothing to
+            # revive. Trade-off: an orphan row from a crash-mid-print without
+            # a matching on_print_start later stays "printing" in DB until
+            # manually cleaned up. Addressing that is a separate feature (a
+            # targeted startup sweep comparing DB printing-rows against live
+            # MQTT state), not a stale-cancel-by-age heuristic.
             logger.info(
                 "Adopting existing printing archive %s for %s (re-trigger of live print)",
                 existing_archive.id,
@@ -1801,6 +1884,10 @@ async def on_print_start(printer_id: int, data: dict):
                     if hash_match.completed_at:
                         hash_match.completed_at = None
                     await db.commit()
+                # Backfill subtask_id so the next restart skips the content_hash path.
+                if subtask_id and hash_match.subtask_id is None:
+                    hash_match.subtask_id = subtask_id
+                    await db.commit()
                 _active_prints[(printer_id, hash_match.filename)] = hash_match.id
                 if subtask_name:
                     _active_prints[(printer_id, f"{subtask_name}.3mf")] = hash_match.id
@@ -1844,6 +1931,7 @@ async def on_print_start(printer_id: int, data: dict):
                     file_path="",  # Empty - no 3MF file available
                     file_size=0,
                     print_name=print_name,
+                    subtask_id=subtask_id,
                     status="printing",
                     started_at=datetime.now(timezone.utc),
                     # Retry hooks recover from this state on:
@@ -1943,6 +2031,7 @@ async def on_print_start(printer_id: int, data: dict):
                 printer_id=printer_id,
                 source_file=temp_path,
                 print_data={**data, "status": "printing"},
+                subtask_id=subtask_id,
             )
 
             if archive:
@@ -2450,10 +2539,16 @@ async def on_print_complete(printer_id: int, data: dict):
                 if archive:
                     archive_id = archive.id
 
+    # Local flag — set True by any swap path (swap_compatible archive or
+    # runtime change_table macro) that physically clears the plate. Used at
+    # the end of on_print_complete to decide whether to arm the
+    # awaiting_plate_clear gate (#961 inversion).
+    _plate_auto_cleared_by_swap = False
+
     # Swap-compatible files (macros baked in by third-party tooling like
     # swaplist.app) handle table changes internally — the plate is already
-    # swapped and clean by the time the print finishes. Auto-clear the
-    # plate-cleared flag so the queue scheduler doesn't block on manual
+    # swapped and clean by the time the print finishes. Skip arming the
+    # plate-clear gate so the queue scheduler doesn't block on manual
     # confirmation.
     if archive_id:
         try:
@@ -2463,7 +2558,7 @@ async def on_print_complete(printer_id: int, data: dict):
                 _sc_result = await db.execute(select(_ScArchive.swap_compatible).where(_ScArchive.id == archive_id))
                 _sc_swap = _sc_result.scalar_one_or_none()
                 if _sc_swap:
-                    printer_manager.set_plate_cleared(printer_id)
+                    _plate_auto_cleared_by_swap = True
                     logger.info(
                         "[SWAP] swap_compatible archive %s — plate auto-cleared for printer %s", archive_id, printer_id
                     )
@@ -2682,9 +2777,10 @@ async def on_print_complete(printer_id: int, data: dict):
                             printer_id, macro.gcode, macro.name
                         )
                         if _sw_ok:
-                            # Table swapped successfully — auto-clear plate so
-                            # the scheduler doesn't wait for manual confirmation.
-                            printer_manager.set_plate_cleared(printer_id)
+                            # Table swapped successfully — skip arming the
+                            # plate-clear gate so the scheduler doesn't wait
+                            # for manual confirmation.
+                            _plate_auto_cleared_by_swap = True
                             logger.info("[SWAP] change_table done — plate auto-cleared for printer %s", printer_id)
                         if not _sw_ok:
                             logger.error("[SWAP] change_table macro failed: %s — will pause queue", _sw_msg)
@@ -2732,6 +2828,11 @@ async def on_print_complete(printer_id: int, data: dict):
                 queue_item.status = queue_status
                 queue_item.completed_at = datetime.now(timezone.utc)
 
+                # Bump usage counters on the source library file so admins can
+                # sort by "last printed" and (eventually) auto-purge stale
+                # files — #1008.
+                await _bump_library_file_usage_if_completed(db, queue_item, queue_status)
+
                 # Update queue status and counters
                 from backend.app.services.queue_counters import (
                     set_queue_error,
@@ -2749,6 +2850,22 @@ async def on_print_complete(printer_id: int, data: dict):
                 await update_queue_counters(db, queue_item.queue_id)
                 await db.commit()
                 logger.info("Updated queue item %s status to %s", queue_item.id, queue_status)
+
+                # MQTT relay - publish queue job completed.
+                # Guarded by the `if queue_item:` scope because queue_item / queue_status
+                # are only defined there; on the external-print path below there's no
+                # job to report to the relay.
+                try:
+                    printer_info = printer_manager.get_printer(printer_id)
+                    await mqtt_relay.on_queue_job_completed(
+                        job_id=queue_item.id,
+                        filename=filename or subtask_name,
+                        printer_id=printer_id,
+                        printer_name=printer_info.name if printer_info else "Unknown",
+                        status=queue_status,
+                    )
+                except Exception:
+                    pass  # Don't fail if MQTT fails
             else:
                 # No queue_item was printing → this was an external or
                 # direct-dispatch print.  Still flip queue.status back to
@@ -2776,18 +2893,22 @@ async def on_print_complete(printer_id: int, data: dict):
                         _pq.status,
                     )
 
-                # MQTT relay - publish queue job completed
-                try:
-                    printer_info = printer_manager.get_printer(printer_id)
-                    await mqtt_relay.on_queue_job_completed(
-                        job_id=queue_item.id,
-                        filename=filename or subtask_name,
-                        printer_id=printer_id,
-                        printer_name=printer_info.name if printer_info else "Unknown",
-                        status=queue_status,
-                    )
-                except Exception:
-                    pass  # Don't fail if MQTT fails
+                # Direct-dispatch / external prints also count toward
+                # LibraryFile usage when we can trace the archive back to a
+                # library file. Queue-less reprints, direct library prints,
+                # and external prints whose archive got backfilled via
+                # attach_3mf_to_archive all land here. Gated on
+                # status=='completed' to match the queue branch.
+                direct_status = data.get("status", "completed")
+                if direct_status == "aborted":
+                    direct_status = "cancelled"
+                if direct_status == "completed" and archive_id:
+                    from backend.app.models.archive import PrintArchive as _PaLib
+
+                    lib_id = await db.scalar(select(_PaLib.library_file_id).where(_PaLib.id == archive_id))
+                    if lib_id is not None:
+                        await _bump_library_file_usage(db, lib_id)
+                        await db.commit()
 
                 # Check if queue is now empty and send notification
                 try:
@@ -3540,6 +3661,20 @@ async def on_print_complete(printer_id: int, data: dict):
         asyncio.create_task(_scan_for_timelapse_with_retries(archive_id, baseline))
         log_timing("Timelapse scan scheduled")
 
+    # Arm the plate-clear gate if the printer is configured to require it
+    # and no swap path already cleared the plate. Persisted to DB so an
+    # Auto Off power cycle can't let the queue bypass the confirmation (#961).
+    if archive_id and not _plate_auto_cleared_by_swap:
+        try:
+            async with async_session() as db:
+                _r = await db.execute(select(Printer.require_plate_clear).where(Printer.id == printer_id))
+                _require = _r.scalar_one_or_none()
+            if _require:
+                printer_manager.set_awaiting_plate_clear(printer_id, True)
+                logger.info("[PLATE] Armed awaiting_plate_clear gate for printer %s", printer_id)
+        except Exception as e:
+            logger.warning("[PLATE] Failed to arm awaiting_plate_clear: %s", e)
+
     logger.info("[CALLBACK] on_print_complete finished for printer %s, archive %s", printer_id, archive_id)
 
 
@@ -3958,6 +4093,19 @@ async def lifespan(app: FastAPI):
     # Startup
     await init_db()
 
+    # Register an app-scoped httpx client for Bambu Cloud services so
+    # per-request BambuCloudService instances reuse the same connection pool
+    # (important for routes like /cloud/filament-info that chain many
+    # get_setting_detail calls). The shared client stores no region/token
+    # state, so the per-request ownership pattern that fixed the region-bleed
+    # bug is preserved.
+    import httpx as _httpx
+
+    from backend.app.services.bambu_cloud import set_shared_http_client
+
+    _shared_cloud_http_client = _httpx.AsyncClient(timeout=30.0)
+    set_shared_http_client(_shared_cloud_http_client)
+
     # Fix queue items stuck with invalid "aborted" status (should be "cancelled").
     # This can happen when a print was cancelled mid-print on versions before this fix.
     try:
@@ -4038,21 +4186,16 @@ async def lifespan(app: FastAPI):
         # Restore MQTT smart plug subscriptions
         if mqtt_settings.get("mqtt_enabled"):
             from backend.app.models.smart_plug import SmartPlug
+            from backend.app.services.mqtt_smart_plug import subscribe_plug_to_mqtt
 
             result = await db.execute(select(SmartPlug).where(SmartPlug.plug_type == "mqtt"))
             mqtt_plugs = result.scalars().all()
+            restored = 0
             for plug in mqtt_plugs:
-                if plug.mqtt_topic:
-                    mqtt_relay.smart_plug_service.subscribe(
-                        plug_id=plug.id,
-                        topic=plug.mqtt_topic,
-                        power_path=plug.mqtt_power_path,
-                        energy_path=plug.mqtt_energy_path,
-                        state_path=plug.mqtt_state_path,
-                        multiplier=plug.mqtt_multiplier or 1.0,
-                    )
-            if mqtt_plugs:
-                logging.info("Restored %s MQTT smart plug subscriptions", len(mqtt_plugs))
+                if subscribe_plug_to_mqtt(mqtt_relay.smart_plug_service, plug):
+                    restored += 1
+            if restored:
+                logging.info("Restored %s MQTT smart plug subscriptions", restored)
 
     # Connect to all active printers
     async with async_session() as db:
@@ -4152,6 +4295,10 @@ async def lifespan(app: FastAPI):
     # Resume any pending auto-offs that were interrupted by restart
     await smart_plug_manager.resume_pending_auto_offs()
 
+    # Rehydrate plate-clear gates from DB so an Auto Off power cycle during a
+    # pending confirmation can't let the queue auto-dispatch onto a dirty plate (#961).
+    await printer_manager.load_awaiting_plate_clear_from_db()
+
     # Start the notification digest scheduler
     notification_service.start_digest_scheduler()
 
@@ -4197,6 +4344,16 @@ async def lifespan(app: FastAPI):
 
         traceback.print_exc()
 
+    # Start Obico AI failure-detection loop. The loop itself is opt-in (gated by
+    # the ``obico_enabled`` setting); we always launch it so it can pick up the
+    # toggle without a restart.
+    try:
+        from backend.app.services.obico_detection import obico_detection_service
+
+        await obico_detection_service.start()
+    except Exception as e:
+        logging.getLogger(__name__).warning("Failed to start Obico detection service: %s", e)
+
     yield
 
     # Shutdown
@@ -4210,6 +4367,12 @@ async def lifespan(app: FastAPI):
     print_scheduler.stop()
     await background_dispatch.stop()
     smart_plug_manager.stop_scheduler()
+    try:
+        from backend.app.services.obico_detection import obico_detection_service
+
+        obico_detection_service.stop()
+    except Exception:
+        pass
     notification_service.stop_digest_scheduler()
     git_backup_service.stop_scheduler()
     local_backup_service.stop_scheduler()
@@ -4226,6 +4389,10 @@ async def lifespan(app: FastAPI):
     await mqtt_smart_plug_service.disconnect(timeout=2)
 
     await mqtt_relay.disconnect(timeout=2)
+
+    # Drop the shared Bambu Cloud HTTP client we registered at startup.
+    set_shared_http_client(None)
+    await _shared_cloud_http_client.aclose()
 
     # Checkpoint WAL and close all database connections
     try:
@@ -4290,17 +4457,29 @@ PUBLIC_API_PATTERNS = [
     # orcaslicer://) cannot send auth headers. These endpoints validate a short-lived
     # download token in the URL path instead.
     "/dl/",  # /archives/{id}/dl/{token}/{filename}, /library/files/{id}/dl/{token}/{filename}
+    # 2FA + OIDC endpoints consumed by the login page before the user has a JWT.
+    # /verify trades a pre-auth token for a JWT; /oidc/providers lists enabled
+    # OIDC buttons; /oidc/authorize/{id} starts the PKCE flow; /oidc/callback
+    # lands from the identity provider; /oidc/exchange swaps the bridge token
+    # for a JWT. All of these carry their own short-lived token binding so the
+    # auth-middleware can skip them safely.
+    "/auth/2fa/verify",
+    "/auth/2fa/send-code",
+    "/auth/oidc/providers",
+    "/auth/oidc/authorize/",
+    "/auth/oidc/callback",
+    "/auth/oidc/exchange",
+    # Obico ML API fetches JPEG frames by one-shot nonce (issue #172 follow-up).
+    # The nonce itself is the credential: 32-byte random, single-use, ~30s TTL.
+    "/obico/cached-frame/",  # /obico/cached-frame/{nonce}
 ]
 
 
-@app.middleware("http")
-async def security_headers_middleware(request, call_next):
-    """Add security headers to all responses."""
-    response = await call_next(request)
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
-    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    return response
+# NOTE: security_headers_middleware is registered *after* auth_middleware below
+# so it becomes the outermost layer and its headers also apply to the early
+# JSONResponse returns from auth_middleware (401 auth-required, 503 setup-required).
+# Starlette middleware order: the LAST @app.middleware("http")-decorated function
+# is the OUTERMOST, so its post-call_next response patch runs on every response.
 
 
 # Setup-gate cache - True once we've confirmed at least one admin exists.
@@ -4450,8 +4629,61 @@ async def auth_middleware(request, call_next):
     return await call_next(request)
 
 
+@app.middleware("http")
+async def security_headers_middleware(request, call_next):
+    """Add HTTP security headers + Content-Security-Policy to every response.
+
+    Registered AFTER auth_middleware so it runs OUTERMOST — meaning it also
+    patches the early JSONResponse returns auth_middleware uses for 401/503.
+
+    CSP notes:
+    - ``script-src 'self'``: hard XSS-exfiltration guard. Inline scripts are
+      not allowed; the SW registration script lives at ``/sw-register.js``
+      (see ``serve_sw_register`` below) so the strict directive holds.
+    - ``style-src 'unsafe-inline'``: React + several UI libs inject inline
+      styles at runtime; we cannot drop this without rewriting them.
+    - ``connect-src 'self' ws: wss:``: API + the same-origin /api/v1/ws
+      WebSocket. ``ws:``/``wss:`` is permissive on protocol but not host —
+      Safari historically does not accept ``'self'`` for WebSockets, hence
+      the explicit scheme allow.
+    - ``img-src``/``media-src`` accept ``data:``/``blob:`` for base64
+      thumbnails and Blob-URL timelapse previews.
+    - ``frame-src 'self' http: https:``: BamDude embeds Spoolman via
+      reverse-proxy (same origin) and arbitrary external links from the
+      sidebar. ``http:`` is allowed because self-hosted Spoolman typically
+      runs on plain HTTP on a LAN address (upstream #1054). ``frame-ancestors
+      'none'`` below still blocks BamDude being framed cross-origin — that's
+      the clickjacking defense that actually matters.
+    - ``frame-ancestors 'none'``: nobody may embed BamDude. This is the
+      modern equivalent of ``X-Frame-Options: DENY``; the SAMEORIGIN value
+      we keep on ``X-Frame-Options`` is for legacy browsers only — modern
+      browsers use ``frame-ancestors`` which takes precedence.
+    """
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "SAMEORIGIN"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "img-src 'self' data: blob:; "
+        "media-src 'self' blob:; "
+        "connect-src 'self' ws: wss:; "
+        "font-src 'self' data: https://fonts.gstatic.com; "
+        "object-src 'none'; "
+        "base-uri 'self'; "
+        "frame-src 'self' http: https:; "
+        "frame-ancestors 'none';"
+    )
+    if request.url.scheme == "https":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
+
+
 # API routes
 app.include_router(auth.router, prefix=app_settings.api_prefix)
+app.include_router(mfa.router, prefix=app_settings.api_prefix)
 app.include_router(users.router, prefix=app_settings.api_prefix)
 app.include_router(groups.router, prefix=app_settings.api_prefix)
 app.include_router(printers.router, prefix=app_settings.api_prefix)
@@ -4488,6 +4720,7 @@ app.include_router(firmware.router, prefix=app_settings.api_prefix)
 app.include_router(git_backup.router, prefix=app_settings.api_prefix)
 app.include_router(local_backup.router, prefix=app_settings.api_prefix)
 app.include_router(metrics.router, prefix=app_settings.api_prefix)
+app.include_router(obico.router, prefix=app_settings.api_prefix)
 app.include_router(virtual_printers.router, prefix=app_settings.api_prefix)
 app.include_router(printer_queues.router, prefix=app_settings.api_prefix)
 app.include_router(telegram.router, prefix=app_settings.api_prefix)
@@ -4553,6 +4786,19 @@ async def serve_service_worker():
             headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
         )
     return {"error": "Service worker not found"}
+
+
+@app.get("/sw-register.js")
+async def serve_sw_register():
+    """Serve the service-worker registration bootstrap script.
+
+    Served as a real JS file so the strict ``script-src 'self'`` CSP covers it
+    without needing ``'unsafe-inline'`` or per-build hashes on the inline tag.
+    """
+    reg_file = app_settings.static_dir / "sw-register.js"
+    if reg_file.exists():
+        return FileResponse(reg_file, media_type="application/javascript")
+    return {"error": "sw-register.js not found"}
 
 
 # Catch-all route for React Router (must be last)

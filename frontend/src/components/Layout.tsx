@@ -242,7 +242,7 @@ export function Layout() {
   const needsClearPlate = printerStatusQueries.some(result => {
     const status = result.data;
     if (!status) return false;
-    return (status.state === 'FINISH' || status.state === 'FAILED') && !status.plate_cleared;
+    return (status.state === 'FINISH' || status.state === 'FAILED') && !!status.awaiting_plate_clear;
   });
 
   // Calculate debug duration client-side for real-time updates
@@ -1028,6 +1028,21 @@ export function Layout() {
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
+                {/* Hidden username anchor so password-manager extensions (1Password,
+                    Bitwarden, browser built-ins) key the Change Password flow to
+                    the current user instead of hunting the DOM for a generic text
+                    input (which used to latch onto the Printers-page search bar
+                    and render it as a masked field — upstream #597d961b). */}
+                <input
+                  type="text"
+                  name="username"
+                  autoComplete="username"
+                  value={user?.username ?? ''}
+                  readOnly
+                  hidden
+                  aria-hidden="true"
+                  tabIndex={-1}
+                />
                 <div>
                   <label className="block text-sm font-medium text-white mb-2">
                     {t('changePassword.currentPassword')}

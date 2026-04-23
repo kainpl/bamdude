@@ -11,6 +11,8 @@ greenlet>=3.0.0
 # Pydantic
 pydantic>=2.0.0
 pydantic-settings>=2.0.0
+# Transitive of pydantic-settings, floor-pinned to patch CVE-2026-28684 (dotenv 1.2.1)
+python-dotenv>=1.2.2
 
 # Bambu Lab Printer Communication
 paho-mqtt>=2.0.0
@@ -48,6 +50,8 @@ psutil>=6.0.0
 PyJWT>=2.12.0
 passlib[bcrypt]>=1.7.4
 ldap3>=2.9.0
+# TOTP (RFC 6238) for 2FA authenticator apps (§18.1)
+pyotp>=2.9.0
 
 # Plate Detection (optional - enables build plate empty detection)
 opencv-python-headless>=4.8.0

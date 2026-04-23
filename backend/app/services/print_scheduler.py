@@ -28,7 +28,11 @@ from backend.app.services.bambu_ftp import (
     with_ftp_retry,
 )
 from backend.app.services.notification_service import notification_service
-from backend.app.services.printer_manager import printer_manager, supports_drying
+from backend.app.services.printer_manager import (
+    first_drying_blocking_reason,
+    printer_manager,
+    supports_drying,
+)
 from backend.app.services.smart_plug_manager import smart_plug_manager
 from backend.app.utils.threemf_tools import extract_nozzle_mapping_from_3mf
 
@@ -134,8 +138,25 @@ class PrintScheduler:
                 [(i.id, i.queue_id, i.archive_id, i.library_file_id) for i in items],
             )
 
-            # Track busy printers to avoid assigning multiple items to same printer
-            busy_printers: set[int] = set()
+            # Seed busy_printers from PrinterQueue.status='printing'. This is
+            # the authoritative "this printer is currently dispatched" marker —
+            # set_queue_busy() atomically flips queue.status='printing' at
+            # dispatch time (whether item, external, or direct-print). Without
+            # this guard the H2D / P1 IDLE→RUNNING MQTT transition lag made the
+            # next check_queue tick see IDLE via _is_printer_idle() and double-
+            # dispatch onto the already-running printer (upstream #950286ad /
+            # v0.2.3.2 re-release). Queue-per-printer architecture — reading
+            # PrinterQueue directly is simpler than joining through
+            # PrintQueueItem and also catches external / direct prints that
+            # don't have a corresponding item row.
+            from backend.app.models.print_queue import PrinterQueue
+
+            busy_result = await db.execute(
+                select(PrinterQueue.printer_id)
+                .where(PrinterQueue.status == "printing")
+                .where(PrinterQueue.printer_id.is_not(None))
+            )
+            busy_printers: set[int] = {pid for (pid,) in busy_result.all() if pid is not None}
 
             # Cache per-printer require_plate_clear setting
             _plate_clear_cache: dict[int, bool] = {}
@@ -201,7 +222,7 @@ class PrintScheduler:
                 elif not printer_idle:
                     if self._drying_in_progress.get(printer_id):
                         new_reason = "Drying in progress"
-                    elif rpc and not printer_manager.is_plate_cleared(printer_id):
+                    elif rpc and printer_manager.is_awaiting_plate_clear(printer_id):
                         status = printer_manager.get_status(printer_id)
                         if status and status.state in ("FINISH", "FAILED"):
                             new_reason = "Plate not cleared"
@@ -301,14 +322,14 @@ class PrintScheduler:
                 for pid in busy_printers:
                     state = printer_manager.get_status(pid)
                     connected = printer_manager.is_connected(pid)
-                    plate_cleared = printer_manager.is_plate_cleared(pid)
+                    awaiting_plate_clear = printer_manager.is_awaiting_plate_clear(pid)
                     state_name = state.state if state else "NO_STATUS"
                     logger.info(
-                        "Queue: printer %d not available - connected=%s, state=%s, plate_cleared=%s",
+                        "Queue: printer %d not available - connected=%s, state=%s, awaiting_plate_clear=%s",
                         pid,
                         connected,
                         state_name,
-                        plate_cleared,
+                        awaiting_plate_clear,
                     )
 
             # Auto-drying: start drying on idle printers that have no pending queue items
@@ -871,16 +892,20 @@ class PrintScheduler:
 
         # IDLE = ready for next print
         # FINISH/FAILED = ready if plate-clear not required, or user confirmed plate is cleared
+        # Printer is ready for dispatch when it's IDLE (never printed / user cleared)
+        # OR at FINISH/FAILED with the plate-clear gate released. The gate is the
+        # persisted ``awaiting_plate_clear`` flag inverted — absent means clear,
+        # present means still waiting on user confirmation.
         idle = state.state == "IDLE" or (
             state.state in ("FINISH", "FAILED")
-            and (not require_plate_clear or printer_manager.is_plate_cleared(printer_id))
+            and (not require_plate_clear or not printer_manager.is_awaiting_plate_clear(printer_id))
         )
         if not idle:
             logger.debug(
-                "Printer %d: not idle - state=%s, plate_cleared=%s",
+                "Printer %d: not idle - state=%s, awaiting_plate_clear=%s",
                 printer_id,
                 state.state,
-                printer_manager.is_plate_cleared(printer_id),
+                printer_manager.is_awaiting_plate_clear(printer_id),
             )
         return idle
 
@@ -1101,14 +1126,17 @@ class PrintScheduler:
                     )
                     continue
 
-                # Check cannot-dry reasons (power constraints etc.)
-                sf_reasons = ams_data.get("dry_sf_reason", [])
-                if sf_reasons:
+                # Check cannot-dry reasons (power constraints etc.) — surface
+                # the first human-readable blocker so support logs actually tell
+                # the operator why auto-drying skipped, not just a bare code list.
+                blocker = first_drying_blocking_reason(ams_data)
+                if blocker is not None:
                     logger.debug(
-                        "Auto-drying: printer %d AMS %d skipped - cannot dry reasons: %s",
+                        "Auto-drying: printer %d AMS %d skipped — blocker code %d: %s",
                         pid,
                         ams_id,
-                        sf_reasons,
+                        blocker[0],
+                        blocker[1],
                     )
                     continue
 
@@ -1583,8 +1611,10 @@ class PrintScheduler:
         await update_queue_counters(db, item.queue_id)
         await db.commit()
 
-        # Consume the plate-cleared flag now that we're starting a print
-        printer_manager.consume_plate_cleared(item.queue_id)
+        # No need to consume a plate-cleared flag here — in the new awaiting-based
+        # model the gate was released when the user confirmed (or by the clear-plate
+        # endpoint / swap macro). If we reached this dispatch point, is_awaiting was
+        # already False (see _is_printer_idle gate).
         logger.info("Queue item %s: Status set to 'printing', sending print command...", item.id)
 
         # Swap-mode start macro — fires before the print starts.
@@ -1640,6 +1670,35 @@ class PrintScheduler:
                     },
                 )
             logger.info("Queue item %s: Print started successfully - %s", item.id, filename)
+
+            # Watchdog: if the printer never transitions out of pre_state, the
+            # MQTT publish was accepted locally but didn't reach the printer
+            # (half-broken session — #887/#936 / #967). Schedule a background
+            # task that reverts the item back to pending and force-reconnects
+            # the MQTT session. The swap-mode branch skips the revert to avoid
+            # re-firing swap_mode_start on the next dispatch — see below.
+            #
+            # H2D Pro firmware (01.01.00.00) keeps state=FINISH for 48-55 s
+            # after accepting project_file before transitioning to PREPARE —
+            # longer than our old 45 s timeout — so we also capture
+            # pre_subtask_id as a second "command landed" signal: the printer
+            # echoes the submission_id we minted in bambu_mqtt._publish_project
+            # back in its next push_status.subtask_id, well before gcode_state
+            # changes on slow models. Watchdog exits early on EITHER a state
+            # change OR a subtask_id advance. Upstream #1078.
+            _post_status = printer_manager.get_status(item.printer_id)
+            _pre_state = _post_status.state if _post_status else None
+            _pre_subtask_id = _post_status.subtask_id if _post_status else None
+            if _pre_state:
+                asyncio.create_task(
+                    self._watchdog_print_start(
+                        item.id,
+                        item.printer_id,
+                        _pre_state,
+                        _pre_subtask_id,
+                        swap_start_fired="swap_mode_start" in swap_events,
+                    )
+                )
 
             # Get estimated time for notification
             estimated_time = None
@@ -1701,6 +1760,104 @@ class PrintScheduler:
             )
 
             await self._power_off_if_needed(db, item)
+
+    @staticmethod
+    async def _watchdog_print_start(
+        queue_item_id: int,
+        printer_id: int,
+        pre_state: str,
+        pre_subtask_id: str | None = None,
+        swap_start_fired: bool = False,
+        timeout: float = 90.0,
+        poll_interval: float = 3.0,
+    ) -> None:
+        """Revert a queue item if the printer never acknowledges the start command.
+
+        Optimistically we mark the queue item as "printing" right after the MQTT
+        project_file publish succeeds locally. If the printer drops/ignores the
+        command (half-broken MQTT session — #887/#936), the state never
+        transitions and the item would otherwise stay stuck in "printing"
+        forever (#967).
+
+        Watchdog exits early on EITHER of two "command landed" signals:
+          * ``gcode_state`` advances past ``pre_state`` — the classic signal.
+          * ``subtask_id`` advances past ``pre_subtask_id`` — the printer
+            echoes the submission_id we minted (``bambu_mqtt._publish_project``,
+            #1042) in its next push_status.subtask_id. On H2D Pro firmware
+            01.01.00.00 the state stays at FINISH 48–55 s after accepting
+            the command, but subtask_id echoes back within the first push —
+            without this guard the old 45 s timeout reverted items the
+            printer had already started physically printing, which then
+            re-dispatched on the next scheduler tick and looked like a
+            reprint (upstream #1078).
+
+        ``timeout`` bumped to 90 s (was 45 s) as belt-and-braces for printers
+        that neither flip state nor echo subtask_id inside the window —
+        genuinely half-broken sessions still revert + force-reconnect as
+        before, just a bit later.
+
+        ``swap_start_fired`` is the BamDude-specific guard: when a swap_mode_start
+        macro already ran successfully on the real printer before start_print,
+        a revert + re-dispatch would re-fire it and cause a double physical
+        table swap. In that case we keep the item in "printing", log a louder
+        warning telling the operator to intervene manually, and still
+        force-reconnect the MQTT session so subsequent commands land.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            await asyncio.sleep(poll_interval)
+            status = printer_manager.get_status(printer_id)
+            if not status:
+                return  # Printer disconnected — don't mess with the DB
+            if status.state != pre_state:
+                return  # Printer picked up the job (state change)
+            if pre_subtask_id and status.subtask_id and status.subtask_id != pre_subtask_id:
+                return  # subtask_id advanced — command landed even though state hasn't flipped yet
+
+        if swap_start_fired:
+            logger.error(
+                "Queue item %s: printer %d did not respond to print command within "
+                "%.0fs (state still %s), BUT swap_mode_start already fired — NOT "
+                "reverting to pending to avoid double table swap. Operator intervention "
+                "required (#967 + swap-mode)",
+                queue_item_id,
+                printer_id,
+                timeout,
+                pre_state,
+            )
+        else:
+            # No swap side-effects on the physical printer — safe to revert.
+            async with async_session() as db:
+                item = await db.get(PrintQueueItem, queue_item_id)
+                if not item or item.status != "printing":
+                    return  # Already moved on (completed/cancelled/etc.)
+                item.status = "pending"
+                item.started_at = None
+                await db.commit()
+                logger.warning(
+                    "Queue item %s: printer %d did not respond to print command within "
+                    "%.0fs (state still %s) — reverted to 'pending' for retry (#967)",
+                    queue_item_id,
+                    printer_id,
+                    timeout,
+                    pre_state,
+                )
+            # Drop any swap config that was registered post-start_print so a
+            # subsequent dispatch can arm it fresh.
+            try:
+                from backend.app.main import _active_swap_config
+
+                _active_swap_config.pop(printer_id, None)
+            except Exception:  # pragma: no cover — import failure is non-fatal
+                pass
+
+        # Same half-broken-session recovery as background_dispatch: force the
+        # MQTT client to reconnect so the next dispatch lands without a power cycle.
+        client = printer_manager.get_client(printer_id)
+        if client and hasattr(client, "force_reconnect_stale_session"):
+            client.force_reconnect_stale_session(
+                f"queue print command unacknowledged after {timeout:.0f}s (state still {pre_state})"
+            )
 
 
 # Global scheduler instance

@@ -68,6 +68,22 @@ BamDude -- це hard fork Bambuddy. Ваша існуюча база даних 
 
 ## :material-arrow-up-circle: Оновлення BamDude
 
+### Спочатку — резервна копія
+
+Перед будь-яким оновленням зробіть backup:
+
+- **Через UI (рекомендовано):** **Налаштування → Backup → Локальна резервна копія → Створити резервну копію**, потім **Завантажити резервну копію**. Zip-файл містить базу даних, архів, мініатюри та налаштування у тому ж layout'і, як `install.sh` розкладає на диску. Відновлення — завантажити той самий zip назад через UI на свіжій інсталяції попередньої версії.
+- **Shell-альтернатива** (якщо UI недоступний):
+
+    ```bash
+    # Native / self-install
+    cd /opt/bamdude && tar czf ~/bamdude-data-$(date +%Y%m%d).tar.gz data/
+
+    # Docker
+    docker run --rm -v bamdude_data:/from -v "$(pwd)/backup":/to \
+      alpine tar czf /to/bamdude-data-$(date +%Y%m%d).tar.gz -C /from .
+    ```
+
 ### Docker
 
 ```bash

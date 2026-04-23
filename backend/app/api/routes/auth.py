@@ -1,8 +1,12 @@
-from datetime import timedelta
+import os
+import secrets
+from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+import jwt
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials
+from jwt.exceptions import PyJWTError as JWTError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -14,6 +18,7 @@ from backend.app.core.auth import (
     SECRET_KEY,
     Permission,
     RequirePermission,
+    _is_token_fresh,
     _validate_api_key,
     authenticate_user,
     authenticate_user_by_email,
@@ -23,6 +28,8 @@ from backend.app.core.auth import (
     get_user_by_email,
     get_user_by_username,
     has_any_admin,
+    is_jti_revoked,
+    revoke_jti,
     security,
 )
 from backend.app.core.database import get_db
@@ -83,6 +90,44 @@ def _api_key_to_user_response(api_key) -> UserResponse:
         permissions=sorted(ALL_PERMISSIONS),
         created_at=api_key.created_at.isoformat(),
     )
+
+
+# ---------------------------------------------------------------------------
+# §18.5 M-R9-A: Real client IP resolution for rate limiting behind reverse proxies.
+# Set TRUSTED_PROXY_IPS (comma-separated) to enable X-Forwarded-For trust.
+# Without this env var client.host is used directly (safe default for direct-deploy).
+# ---------------------------------------------------------------------------
+_TRUSTED_PROXY_IPS: frozenset[str] = frozenset(
+    ip.strip() for ip in os.environ.get("TRUSTED_PROXY_IPS", "").split(",") if ip.strip()
+)
+
+
+def _get_client_ip(request: Request) -> str:
+    """Return the real client IP for rate-limiting purposes.
+
+    When ``TRUSTED_PROXY_IPS`` is configured and the direct TCP peer is a
+    trusted proxy, ``X-Forwarded-For`` is evaluated right-to-left: the
+    rightmost IP that is NOT itself a trusted proxy is the true client
+    address (M-R10-A fix for multi-hop nginx chains). Standard nginx with
+    ``proxy_add_x_forwarded_for`` appends the client IP, so the rightmost
+    entry that isn't a known proxy is always the real caller.
+
+    Falls back to ``request.client.host`` when ``TRUSTED_PROXY_IPS`` is
+    unset (direct deployment without a reverse proxy).
+    """
+    # I5: per-request unique token instead of "unknown" when the transport has
+    # no client address — prevents collision with any literal username and
+    # prevents all such requests from sharing a single rate-limit bucket.
+    direct_ip = request.client.host if request.client else f"__no_ip_{secrets.token_hex(8)}__"
+    if _TRUSTED_PROXY_IPS and direct_ip in _TRUSTED_PROXY_IPS:
+        forwarded_for = request.headers.get("X-Forwarded-For", "")
+        ips = [ip.strip() for ip in forwarded_for.split(",") if ip.strip()]
+        for ip in reversed(ips):
+            if ip not in _TRUSTED_PROXY_IPS:
+                return ip
+        if ips:
+            return ips[0]
+    return direct_ip
 
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
@@ -250,11 +295,37 @@ async def get_auth_status(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/login", response_model=LoginResponse)
-async def login(request: LoginRequest, db: AsyncSession = Depends(get_db)):
+async def login(
+    request: LoginRequest,
+    raw_request: Request,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+):
     """Login and get access token.
 
     Supports username or email-based login. Username lookup is case-insensitive.
+
+    §18.5 rate limiting: two sliding-window buckets — per-username
+    (MAX_LOGIN_ATTEMPTS_PER_USERNAME in 15 min) and per-client-IP
+    (MAX_LOGIN_ATTEMPTS_PER_IP in 15 min). On successful login both buckets
+    are cleared. Behind a reverse proxy configure ``TRUSTED_PROXY_IPS`` so
+    the real client IP is used; otherwise the TCP peer is.
     """
+    from backend.app.core.rate_limit import (
+        MAX_LOGIN_ATTEMPTS_PER_IP,
+        MAX_LOGIN_ATTEMPTS_PER_USERNAME,
+        check_rate_limit,
+        clear_failed_attempts,
+        record_failed_attempt,
+    )
+    from backend.app.models.auth_ephemeral import EventType
+
+    client_ip = _get_client_ip(raw_request)
+    await check_rate_limit(
+        db, request.username, event_type=EventType.LOGIN_ATTEMPT, max_attempts=MAX_LOGIN_ATTEMPTS_PER_USERNAME
+    )
+    await check_rate_limit(db, client_ip, event_type=EventType.LOGIN_IP, max_attempts=MAX_LOGIN_ATTEMPTS_PER_IP)
+
     # Check if LDAP is enabled
     ldap_user = None
     ldap_settings = await _get_ldap_settings(db)
@@ -303,6 +374,10 @@ async def login(request: LoginRequest, db: AsyncSession = Depends(get_db)):
             user = await authenticate_user_by_email(db, request.username, request.password)
 
     if not user:
+        # §18.5: record the failure into both buckets so repeated attempts trip
+        # the rate limit even when the username doesn't exist.
+        await record_failed_attempt(db, request.username, event_type=EventType.LOGIN_ATTEMPT)
+        await record_failed_attempt(db, client_ip, event_type=EventType.LOGIN_IP)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
@@ -312,6 +387,52 @@ async def login(request: LoginRequest, db: AsyncSession = Depends(get_db)):
     # Reload user with groups for proper permission calculation
     result = await db.execute(select(User).where(User.id == user.id).options(selectinload(User.groups)))
     user = result.scalar_one()
+
+    # §18.5: successful login clears both rate-limit buckets for this pair.
+    await clear_failed_attempts(db, user.username, event_type=EventType.LOGIN_ATTEMPT)
+    await clear_failed_attempts(db, client_ip, event_type=EventType.LOGIN_IP)
+
+    # --- 2FA check ---------------------------------------------------------
+    # If the user has any active 2FA method, return a pre_auth_token + cookie
+    # instead of a full JWT. The caller completes the flow via
+    # ``POST /api/v1/auth/2fa/verify``.
+    from backend.app.models.settings import Settings as _Settings
+    from backend.app.models.user_totp import UserTOTP
+
+    totp_row = (await db.execute(select(UserTOTP).where(UserTOTP.user_id == user.id))).scalar_one_or_none()
+    totp_enabled = totp_row is not None and totp_row.is_enabled
+
+    email_2fa_row = (
+        await db.execute(select(_Settings).where(_Settings.key == f"user_{user.id}_email_2fa_enabled"))
+    ).scalar_one_or_none()
+    email_otp_enabled = email_2fa_row is not None and email_2fa_row.value.lower() == "true" and user.email is not None
+
+    if totp_enabled or email_otp_enabled:
+        from backend.app.api.routes.mfa import create_pre_auth_token
+
+        challenge_id = secrets.token_urlsafe(32)
+        pre_auth_token = await create_pre_auth_token(db, user.username, challenge_id=challenge_id)
+        response.set_cookie(
+            key="2fa_challenge",
+            value=challenge_id,
+            httponly=True,
+            secure=raw_request.url.scheme == "https",
+            samesite="lax",
+            max_age=300,
+            path="/api/v1/auth/2fa",
+        )
+        methods: list[str] = []
+        if totp_enabled:
+            methods.append("totp")
+        if email_otp_enabled:
+            methods.append("email")
+        if totp_enabled:
+            methods.append("backup")
+        return LoginResponse(
+            requires_2fa=True,
+            pre_auth_token=pre_auth_token,
+            two_fa_methods=methods,
+        )
 
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(data={"sub": user.username}, expires_delta=access_token_expires)
@@ -375,8 +496,22 @@ async def get_current_user_info(
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
+        jti = payload.get("jti")
+        if jti and await is_jti_revoked(jti):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Could not validate credentials",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
         user = await get_user_by_username(db, username)
         if user is None or not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Could not validate credentials",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        if not _is_token_fresh(payload.get("iat"), user):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Could not validate credentials",
@@ -396,8 +531,39 @@ async def get_current_user_info(
 
 
 @router.post("/logout")
-async def logout():
-    """Logout (client should discard token)."""
+async def logout(
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    """Logout — revoke the caller's JWT ``jti`` so it can't be reused (§18.4).
+
+    Accepts the bearer token via the standard ``Authorization`` header. Validates
+    the signature without enforcing ``exp`` (expired tokens still get their jti
+    blacklisted) so a user who logs out after their token expired can't have
+    anyone replay that token within our revocation window.
+    """
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization[len("Bearer ") :]
+        try:
+            payload = jwt.decode(
+                token,
+                SECRET_KEY,
+                algorithms=[ALGORITHM],
+                options={"verify_exp": False},
+            )
+            jti = payload.get("jti")
+            exp = payload.get("exp")
+            if jti:
+                # Revoke until the token's original expiry so the blacklist doesn't
+                # grow forever. After exp the JWT is dead regardless of the row.
+                expires_at = (
+                    datetime.fromtimestamp(exp, tz=timezone.utc)
+                    if exp
+                    else datetime.now(timezone.utc) + timedelta(hours=24)
+                )
+                await revoke_jti(jti, expires_at, username=payload.get("sub"))
+        except JWTError:
+            # Malformed / signature-invalid token — nothing to revoke.
+            pass
     return {"message": "Logged out successfully"}
 
 
@@ -567,11 +733,41 @@ async def get_advanced_auth_status(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/forgot-password", response_model=ForgotPasswordResponse)
-async def forgot_password(request: ForgotPasswordRequest, db: AsyncSession = Depends(get_db)):
-    """Request password reset via email (advanced auth only)."""
+async def forgot_password(
+    request: ForgotPasswordRequest,
+    raw_request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Request password reset via email (advanced auth only).
+
+    §18.5 rate limiting: 3/15 min per email address + 10/15 min per client IP.
+    Buckets recorded on every call (not just failures) because the endpoint is
+    public and intentionally returns success even for nonexistent emails
+    (anti-enumeration) — a per-email counter without this would let an
+    attacker mass-trigger sends as long as each email is unique.
+    """
     import logging
 
+    from backend.app.core.rate_limit import (
+        MAX_PASSWORD_RESET_PER_IP,
+        MAX_PASSWORD_RESET_PER_USERNAME,
+        check_rate_limit,
+        record_failed_attempt,
+    )
+    from backend.app.models.auth_ephemeral import EventType
+
     logger = logging.getLogger(__name__)
+
+    client_ip = _get_client_ip(raw_request)
+    await check_rate_limit(
+        db, request.email, event_type=EventType.PASSWORD_RESET_SEND, max_attempts=MAX_PASSWORD_RESET_PER_USERNAME
+    )
+    await check_rate_limit(
+        db, client_ip, event_type=EventType.PASSWORD_RESET_IP, max_attempts=MAX_PASSWORD_RESET_PER_IP
+    )
+    # Record the event eagerly — see docstring for the anti-enumeration rationale.
+    await record_failed_attempt(db, request.email, event_type=EventType.PASSWORD_RESET_SEND)
+    await record_failed_attempt(db, client_ip, event_type=EventType.PASSWORD_RESET_IP)
 
     # Check if advanced auth is enabled
     advanced_auth = await is_advanced_auth_enabled(db)
@@ -599,6 +795,7 @@ async def forgot_password(request: ForgotPasswordRequest, db: AsyncSession = Dep
             # Generate new password
             new_password = generate_secure_password()
             user.password_hash = get_password_hash(new_password)
+            user.password_changed_at = datetime.now(timezone.utc)  # §18.4: invalidate existing JWTs
             await db.commit()
 
             login_url = await get_external_login_url(db)
@@ -681,6 +878,7 @@ async def reset_user_password(
         # Generate new password
         new_password = generate_secure_password()
         user.password_hash = get_password_hash(new_password)
+        user.password_changed_at = datetime.now(timezone.utc)  # §18.4: invalidate existing JWTs
         await db.commit()
 
         login_url = await get_external_login_url(db)

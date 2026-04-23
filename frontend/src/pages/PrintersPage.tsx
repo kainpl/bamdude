@@ -14,6 +14,8 @@ import {
   RefreshCw,
   Box,
   HardDrive,
+  DoorOpen,
+  DoorClosed,
   AlertTriangle,
   AlertCircle,
   Terminal,
@@ -25,6 +27,9 @@ import {
   Pencil,
   ArrowUpNarrowWide,
   ArrowDownWideNarrow,
+  ArrowUp,
+  ArrowDown,
+  MoveVertical,
   Layers,
   Video,
   Search,
@@ -53,10 +58,10 @@ import {
 } from 'lucide-react';
 
 import { useNavigate } from 'react-router-dom';
-import { api, discoveryApi, firmwareApi, macrosApi } from '../api/client';
+import { api, discoveryApi, firmwareApi, macrosApi, withStreamToken } from '../api/client';
 import { BulkPrinterToolbar } from '../components/BulkPrinterToolbar';
 import { formatDateOnly, formatETA, formatDuration, parseUTCDate } from '../utils/date';
-import type { Printer, PrinterCreate, AMSUnit, DiscoveredPrinter, FirmwareUpdateInfo, FirmwareUploadStatus, LinkedSpoolInfo, SpoolAssignment, HMSError, Macro } from '../api/client';
+import type { Printer, PrinterCreate, PrinterStatus, AMSUnit, DiscoveredPrinter, FirmwareUpdateInfo, FirmwareUploadStatus, LinkedSpoolInfo, SpoolAssignment, HMSError, Macro } from '../api/client';
 import { Card, CardContent } from '../components/Card';
 import { Button } from '../components/Button';
 import { ConfirmModal } from '../components/ConfirmModal';
@@ -73,12 +78,15 @@ import { AssignSpoolModal } from '../components/AssignSpoolModal';
 import { ConfigureAmsSlotModal } from '../components/ConfigureAmsSlotModal';
 import { useToast } from '../contexts/ToastContext';
 import { ChamberLight } from '../components/icons/ChamberLight';
+import { PlateClearedIcon } from '../components/icons/PlateClearedIcon';
 import { SkipObjectsModal, SkipObjectsIcon } from '../components/SkipObjectsModal';
 import { FileUploadModal } from '../components/FileUploadModal';
 import { PrintModal } from '../components/PrintModal';
 import { PrinterInfoModal } from '../components/PrinterInfoModal';
 import { getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag } from '../utils/amsHelpers';
-import { getPrinterImage, getWifiStrength } from '../utils/printer';
+import { getPrinterImage, getWifiStrength, hasDoorSensor } from '../utils/printer';
+import { formatPrintName } from '../utils/printName';
+import { compareFwVersions } from '../utils/firmwareVersion';
 import { FilamentSlotCircle } from '../components/FilamentSlotCircle';
 import { getColorName, parseFilamentColor, isLightColor } from '../utils/colors';
 
@@ -88,21 +96,9 @@ import { getColorName, parseFilamentColor, isLightColor } from '../utils/colors'
 // names for any color the hand-maintained list didn't cover (upstream #857).
 
 
-// Extract plate number from gcode_file path and append to print name
-function formatPrintName(
-  printName: string | null | undefined,
-  gcodeFile: string | null | undefined,
-  t: (key: string, opts?: Record<string, unknown>) => string,
-): string {
-  if (!printName) return '';
-  if (!gcodeFile) return printName;
-  // Match plate_N.gcode (e.g. "Metadata/plate_3.gcode")
-  const match = gcodeFile.match(/plate_(\d+)\.gcode/i);
-  if (match && match[1] !== '1') {
-    return `${printName} - ${t('printers.plateNumber', { number: match[1] })}`;
-  }
-  return printName;
-}
+// formatPrintName extracted to utils/printName.ts so PrintersPage.tsx can
+// keep react-refresh/only-export-components happy when the helper is imported
+// by tests — upstream move for upstream #881 / #730 follow-ups.
 
 // Format K value with 3 decimal places, default to 0.020 if null
 function formatKValue(k: number | null | undefined): string {
@@ -805,7 +801,7 @@ function CoverImage({ url, printName }: { url: string | null; printName?: string
   const cacheBustedUrl = useMemo(() => {
     if (!url) return null;
     const sep = url.includes('?') ? '&' : '?';
-    return `${url}${sep}v=${encodeURIComponent(printName || Date.now().toString())}`;
+    return withStreamToken(`${url}${sep}v=${encodeURIComponent(printName || Date.now().toString())}`);
   }, [url, printName]);
 
   // Reset loaded/error state when the image URL changes
@@ -1039,6 +1035,8 @@ function mapModelCode(ssdpModel: string | null): string {
     'BL-P001': 'X1C',
     'BL-P002': 'X1',
     'BL-P003': 'X1E',
+    // X2 Series
+    'N6': 'X2D',
     // P Series
     'C11': 'P1S',
     'C12': 'P1P',
@@ -1050,6 +1048,7 @@ function mapModelCode(ssdpModel: string | null): string {
     'X1C': 'X1C',
     'X1': 'X1',
     'X1E': 'X1E',
+    'X2D': 'X2D',
     'P1S': 'P1S',
     'P1P': 'P1P',
     'P2S': 'P2S',
@@ -1338,6 +1337,9 @@ function PrinterCard({
   const [showPauseConfirm, setShowPauseConfirm] = useState(false);
   const [showSpeedMenu, setShowSpeedMenu] = useState<number | null>(null);
   const [showResumeConfirm, setShowResumeConfirm] = useState(false);
+  const [showBedJogMenu, setShowBedJogMenu] = useState<number | null>(null);
+  const [bedJogStep, setBedJogStep] = useState<number>(10);
+  const [showNotHomedModal, setShowNotHomedModal] = useState<null | { distance: number }>(null);
   const [showSkipObjectsModal, setShowSkipObjectsModal] = useState(false);
   const [showUploadForPrint, setShowUploadForPrint] = useState(false);
   const [showPrinterInfo, setShowPrinterInfo] = useState(false);
@@ -1475,6 +1477,23 @@ function PrinterCard({
     staleTime: 2 * 60 * 1000, // 2 minutes
   });
 
+  // Fetch plate list for the archive linked to the active print (upstream #881
+  // follow-up). Only queried when there's a running print backed by an archive;
+  // shared React Query cache with the Queue / Archives pages keeps it cheap.
+  const activeArchiveId =
+    (status?.state === 'RUNNING' || status?.state === 'PAUSE') ? status?.current_archive_id ?? null : null;
+  const { data: activeArchivePlates } = useQuery({
+    queryKey: ['archive-plates', activeArchiveId],
+    queryFn: () => api.getArchivePlates(activeArchiveId!),
+    enabled: activeArchiveId != null,
+    staleTime: 5 * 60 * 1000,
+  });
+  const activePlateLabel = (() => {
+    if (!activeArchivePlates?.is_multi_plate || status?.current_plate_id == null) return null;
+    const plate = activeArchivePlates.plates.find(p => p.index === status.current_plate_id);
+    return plate?.name || t('printers.plateNumber', { number: status.current_plate_id });
+  })();
+
   // Fetch user-defined AMS friendly names from the database
   const { data: amsLabels, refetch: refetchAmsLabels } = useQuery({
     queryKey: ['amsLabels', printer.id],
@@ -1587,6 +1606,36 @@ function PrinterCard({
   });
   const lastPrint = lastPrints?.data?.[0];
 
+  // Plate-clear status pill + button (#939, ported from upstream b046c2ca).
+  const requirePlateClear = printer.require_plate_clear;
+  const isPrintingOrPaused = status?.state === 'RUNNING' || status?.state === 'PAUSE';
+  const needsPlateClear = requirePlateClear && status?.awaiting_plate_clear === true;
+  const showClearPlateButton = status?.connected && needsPlateClear && !isPrintingOrPaused;
+  const plateStatus = (() => {
+    if (!requirePlateClear || !status?.connected) return null;
+    if (isPrintingOrPaused) {
+      return {
+        label: t('printers.plateStatus.inUse'),
+        className: 'bg-blue-500/20 text-blue-400',
+      };
+    }
+    if (status.awaiting_plate_clear) {
+      return {
+        label: t('printers.plateStatus.notCleared'),
+        className: 'bg-yellow-500/20 text-yellow-400',
+      };
+    }
+    return {
+      label: t('printers.plateStatus.cleared'),
+      className: 'bg-status-ok/20 text-status-ok',
+    };
+  })();
+  const plateStatusPill = plateStatus ? (
+    <span className={`inline-flex flex-shrink-0 items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${plateStatus.className}`}>
+      {plateStatus.label}
+    </span>
+  ) : null;
+
   // Determine if this card should be hidden (use cached connected state to prevent flicker)
   const shouldHide = hideIfDisconnected && isConnected === false;
 
@@ -1695,6 +1744,19 @@ function PrinterCard({
     onError: (error: Error) => showToast(error.message || t('printers.toast.failedToResumePrint'), 'error'),
   });
 
+  const clearPlateMutation = useMutation({
+    mutationFn: () => api.clearPlate(printer.id),
+    onSuccess: () => {
+      showToast(t('queue.clearPlateSuccess'));
+      queryClient.setQueryData(['printerStatus', printer.id], (old: PrinterStatus | undefined) =>
+        old ? { ...old, awaiting_plate_clear: false } : old
+      );
+      queryClient.invalidateQueries({ queryKey: ['printerStatus', printer.id] });
+      queryClient.invalidateQueries({ queryKey: ['queue', printer.id] });
+    },
+    onError: (error: Error) => showToast(error.message || t('printers.toast.failedToSendCommand'), 'error'),
+  });
+
   // Chamber light mutation with optimistic update
   const chamberLightMutation = useMutation({
     mutationFn: (on: boolean) => api.setChamberLight(printer.id, on),
@@ -1740,6 +1802,32 @@ function PrinterCard({
       }
       showToast(error.message || t('printers.toast.failedToSetSpeed'), 'error');
     },
+  });
+
+  const bedJogMutation = useMutation({
+    mutationFn: ({ distance, force }: { distance: number; force?: boolean }) =>
+      api.bedJog(printer.id, distance, force ?? false),
+    onError: (error: Error) =>
+      showToast(error.message || t('printers.toast.failedToSendCommand'), 'error'),
+  });
+
+  const homeAxesMutation = useMutation({
+    mutationFn: (axes: 'z' | 'xy' | 'all') => api.homeAxes(printer.id, axes),
+    onSuccess: () => {
+      showToast(t('printers.bedJog.homingStarted'));
+      // Suppress the "not homed" re-prompt for this printer in the current
+      // session — Auto Home just put the printer in a homed state, so the
+      // next jog click shouldn't re-open the warning modal. Mirrors the flag
+      // set by "Move anyway" so either path closes the modal for the session
+      // (upstream #1052 follow-up).
+      try {
+        sessionStorage.setItem(`bamdude.bedJog.warned.${printer.id}`, '1');
+      } catch {
+        /* ignore */
+      }
+    },
+    onError: (error: Error) =>
+      showToast(error.message || t('printers.toast.failedToSendCommand'), 'error'),
   });
 
   // Plate detection setting mutation
@@ -2145,7 +2233,7 @@ function PrinterCard({
               {/* Printer Model Image (or print preview in compact mode) */}
               {cardSize === 1 && status?.cover_url && (status.state === 'RUNNING' || status.state === 'PAUSE') ? (
                 <img
-                  src={status.cover_url}
+                  src={withStreamToken(status.cover_url)}
                   alt={status.subtask_name || t('printers.printPreview')}
                   className={`object-cover rounded-lg bg-bambu-dark flex-shrink-0 ${getImageSize()}`}
                 />
@@ -2400,6 +2488,39 @@ function PrinterCard({
                   </button>
                 );
               })()}
+              {/* SD card missing indicator — shown only when the printer is online
+                  AND reports no SD card. Heartbeat flap from upstream's #899/#0D7C0D40
+                  series can't happen here because our permissive sdcard parser
+                  reads the top-level field only (it doesn't derive from
+                  home_flag bits 8-9, which is what flipped on heartbeats). */}
+              {status?.connected && status?.sdcard === false && (
+                <button
+                  onClick={() => setShowPrinterInfo(true)}
+                  className="flex items-center gap-1 px-2 py-1 rounded-full text-xs bg-status-warning/20 text-status-warning cursor-pointer hover:opacity-80 transition-opacity"
+                  title={t('printers.sdCardMissing')}
+                >
+                  <HardDrive className="w-3 h-3" />
+                  {t('printers.noSd')}
+                </button>
+              )}
+              {/* Enclosure door badge — rendered only for printers with a
+                  confirmed door-open sensor exposed via MQTT (X1 family only).
+                  Open = yellow warning (firmware may pause the print), closed
+                  = green OK. See utils/printer.ts::hasDoorSensor for the
+                  whitelist + rationale; keep it in sync with the backend
+                  counterpart in utils/printer_models.py. */}
+              {status?.connected && hasDoorSensor(printer.model) && (
+                <span
+                  className={`flex items-center px-2 py-1 rounded-full text-xs ${
+                    status.door_open
+                      ? 'bg-status-warning/20 text-status-warning'
+                      : 'bg-status-ok/20 text-status-ok'
+                  }`}
+                  title={status.door_open ? t('printers.door.open') : t('printers.door.closed')}
+                >
+                  {status.door_open ? <DoorOpen className="w-3 h-3" /> : <DoorClosed className="w-3 h-3" />}
+                </span>
+              )}
               {/* Maintenance Status Indicator */}
               {maintenanceInfo && (
                 <button
@@ -2544,10 +2665,34 @@ function PrinterCard({
                         style={{ width: `${status.progress || 0}%` }}
                       />
                     </div>
-                    <span className="text-xs text-white">{Math.round(status.progress || 0)}%</span>
+                    <div className="flex flex-shrink-0 items-center gap-1.5">
+                      <span className="text-xs text-white">{Math.round(status.progress || 0)}%</span>
+                      {plateStatusPill}
+                    </div>
                   </div>
                 ) : (
-                  <p className="text-xs text-bambu-gray">{getStatusDisplay(status.state, status.stg_cur_name)}</p>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0 flex-1 flex items-center gap-1.5">
+                      <p className="min-w-0 truncate text-xs text-bambu-gray">{getStatusDisplay(status.state, status.stg_cur_name)}</p>
+                      {plateStatusPill}
+                    </div>
+                    {showClearPlateButton && (
+                      <button
+                        type="button"
+                        onClick={() => clearPlateMutation.mutate()}
+                        disabled={clearPlateMutation.isPending || !hasPermission('printers:clear_plate')}
+                        aria-label={t('printers.plateStatus.markCleared')}
+                        className="inline-flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full bg-yellow-500/20 border border-yellow-400/40 text-yellow-400 hover:bg-yellow-500/30 transition-colors disabled:opacity-50"
+                        title={!hasPermission('printers:clear_plate') ? t('printers.permission.noControl') : t('printers.plateStatus.markCleared')}
+                      >
+                        {clearPlateMutation.isPending ? (
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                        ) : (
+                          <PlateClearedIcon className="w-3 h-3" />
+                        )}
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
             ) : (
@@ -2586,15 +2731,18 @@ function PrinterCard({
                     {/* Cover Image */}
                     <CoverImage
                       url={(status.state === 'RUNNING' || status.state === 'PAUSE') ? status.cover_url : null}
-                      printName={(status.state === 'RUNNING' || status.state === 'PAUSE') ? (status.subtask_name || status.current_print || undefined) : undefined}
+                      printName={(status.state === 'RUNNING' || status.state === 'PAUSE') ? (formatPrintName(status.subtask_name || status.current_print, status.gcode_file, t, activePlateLabel) || undefined) : undefined}
                     />
                     {/* Print Info */}
                     <div className="flex-1 min-w-0">
                       {status.current_print && (status.state === 'RUNNING' || status.state === 'PAUSE') ? (
                         <>
-                          <p className="text-sm text-bambu-gray mb-1">{getStatusDisplay(status.state, status.stg_cur_name)}</p>
+                          <div className="mb-1 flex items-center gap-2">
+                            <p className="text-sm text-bambu-gray">{getStatusDisplay(status.state, status.stg_cur_name)}</p>
+                            {plateStatusPill}
+                          </div>
                           <p className="text-white text-sm mb-2 truncate">
-                            {formatPrintName(status.subtask_name || status.current_print, status.gcode_file, t)}
+                            {formatPrintName(status.subtask_name || status.current_print, status.gcode_file, t, activePlateLabel)}
                           </p>
                           <div className="flex items-center justify-between text-sm">
                             <div className="flex-1 bg-bambu-dark-tertiary rounded-full h-2 mr-3">
@@ -2634,9 +2782,12 @@ function PrinterCard({
                       ) : (
                         <>
                           <p className="text-sm text-bambu-gray mb-1">{t('printers.sort.status')}</p>
-                          <p className="text-white text-sm mb-2">
-                            {getStatusDisplay(status.state, status.stg_cur_name)}
-                          </p>
+                          <div className="mb-2 flex items-center gap-2">
+                            <p className="text-white text-sm">
+                              {getStatusDisplay(status.state, status.stg_cur_name)}
+                            </p>
+                            {plateStatusPill}
+                          </div>
                           <div className="flex items-center justify-between text-sm">
                             <div className="flex-1 bg-bambu-dark-tertiary rounded-full h-2 mr-3">
                               <div className="bg-bambu-dark-tertiary h-2 rounded-full" />
@@ -2662,7 +2813,7 @@ function PrinterCard({
                 </div>
 
                 {/* Queue Widget - always visible when there are pending items */}
-                <PrinterQueueWidget printerId={printer.id} printerModel={printer.model} printerState={status.state} plateCleared={status.plate_cleared} requirePlateClear={printer.require_plate_clear} />
+                <PrinterQueueWidget printerId={printer.id} printerModel={printer.model} printerState={status.state} awaitingPlateClear={status.awaiting_plate_clear} requirePlateClear={printer.require_plate_clear} />
               </>
             )}
 
@@ -2758,6 +2909,23 @@ function PrinterCard({
               );
             })()}
 
+            {viewMode === 'expanded' && showClearPlateButton && (
+              <button
+                type="button"
+                onClick={() => clearPlateMutation.mutate()}
+                disabled={clearPlateMutation.isPending || !hasPermission('printers:clear_plate')}
+                className="mt-2 w-full inline-flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg bg-yellow-500/20 border border-yellow-400/40 text-yellow-400 hover:bg-yellow-500/30 transition-colors text-xs font-medium disabled:opacity-50"
+                title={!hasPermission('printers:clear_plate') ? t('printers.permission.noControl') : t('printers.plateStatus.markCleared')}
+              >
+                {clearPlateMutation.isPending ? (
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                ) : (
+                  <PlateClearedIcon className="w-4 h-4" />
+                )}
+                {t('printers.plateStatus.markCleared')}
+              </button>
+            )}
+
             {/* Controls - Fans + Print Buttons */}
             {viewMode === 'expanded' && (() => {
               // Determine print state for control buttons
@@ -2781,9 +2949,9 @@ function PrinterCard({
                     <div className="flex-1 h-px bg-bambu-dark-tertiary/30" />
                   </div>
 
-                  <div className="flex items-center justify-between gap-2 max-[550px]:items-start">
+                  <div className="flex flex-wrap items-start justify-between gap-x-2 gap-y-2">
                     {/* Left: Fan Status - always visible, dynamic coloring */}
-                    <div className="flex items-center gap-2 min-w-0 max-[550px]:flex-wrap max-[550px]:items-start max-[550px]:gap-1.5">
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 min-w-0">
                       {/* Part Cooling Fan */}
                       <div
                         className={`flex items-center gap-1 px-1.5 py-1 rounded ${partFan && partFan > 0 ? 'bg-cyan-500/10' : 'bg-bambu-dark'}`}
@@ -2870,6 +3038,97 @@ function PrinterCard({
                                       {label}
                                     </button>
                                   ))}
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        );
+                      })()}
+
+                      {/* Separator */}
+                      <div className="w-px h-5 bg-bambu-gray/30" />
+
+                      {/* Bed Jog (Z-axis) — compact badge, popover holds the actual controls.
+                          When the printer isn't yet homed since finish, show a Studio-style
+                          warning modal offering Home Z, Move Anyway, or Cancel. "Move anyway"
+                          gets remembered per-printer in sessionStorage so the warning only
+                          appears once per browser session. */}
+                      {(() => {
+                        const canControl = hasPermission('printers:control');
+                        const disabled = isPrinting || !canControl;
+                        const bambuIsPlateBelow = true; // positive Z moves plate away from nozzle
+                        const requestJog = (direction: 1 | -1) => {
+                          const signed = direction * bedJogStep * (bambuIsPlateBelow ? 1 : -1);
+                          const warnedKey = `bamdude.bedJog.warned.${printer.id}`;
+                          const warned = (() => {
+                            try { return sessionStorage.getItem(warnedKey) === '1'; }
+                            catch { return false; }
+                          })();
+                          setShowBedJogMenu(null);
+                          if (warned) {
+                            bedJogMutation.mutate({ distance: signed, force: true });
+                          } else {
+                            setShowNotHomedModal({ distance: signed });
+                          }
+                        };
+                        return (
+                          <div className="relative">
+                            <button
+                              onClick={() => setShowBedJogMenu(showBedJogMenu === printer.id ? null : printer.id)}
+                              disabled={disabled}
+                              className={`flex items-center gap-1 px-1.5 py-1 rounded transition-colors ${
+                                disabled
+                                  ? 'bg-bambu-dark cursor-not-allowed'
+                                  : 'bg-indigo-500/10 hover:bg-indigo-500/20'
+                              }`}
+                              title={!canControl ? t('printers.permission.noControl') : isPrinting ? t('printers.bedJog.disabledWhilePrinting') : t('printers.bedJog.title')}
+                            >
+                              <MoveVertical className={`w-3.5 h-3.5 ${disabled ? 'text-bambu-gray/50' : 'text-indigo-400'}`} />
+                              <span className={`text-[10px] ${disabled ? 'text-bambu-gray/50' : 'text-indigo-400'}`}>
+                                {t('printers.bedJog.bed')}
+                              </span>
+                              <span className={`text-[10px] tabular-nums opacity-70 ${disabled ? 'text-bambu-gray/50' : 'text-indigo-400'}`}>
+                                {bedJogStep}mm
+                              </span>
+                            </button>
+                            {showBedJogMenu === printer.id && (
+                              <>
+                                <div className="fixed inset-0 z-40" onClick={() => setShowBedJogMenu(null)} />
+                                <div className="absolute bottom-full left-0 mb-1 z-50 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-lg p-2 min-w-[140px]">
+                                  <div className="flex items-center justify-between gap-1 mb-2">
+                                    <button
+                                      onClick={() => requestJog(-1)}
+                                      className="flex-1 flex items-center justify-center py-1.5 rounded bg-indigo-500/15 hover:bg-indigo-500/30 text-indigo-300"
+                                      aria-label={t('printers.bedJog.up')}
+                                    >
+                                      <ArrowUp className="w-4 h-4" />
+                                    </button>
+                                    <button
+                                      onClick={() => requestJog(1)}
+                                      className="flex-1 flex items-center justify-center py-1.5 rounded bg-indigo-500/15 hover:bg-indigo-500/30 text-indigo-300"
+                                      aria-label={t('printers.bedJog.down')}
+                                    >
+                                      <ArrowDown className="w-4 h-4" />
+                                    </button>
+                                  </div>
+                                  <div className="text-[9px] uppercase tracking-wider text-bambu-gray/70 px-1 mb-1">
+                                    {t('printers.bedJog.step')}
+                                  </div>
+                                  <div className="flex gap-1">
+                                    {[1, 10, 50].map((step) => (
+                                      <button
+                                        key={step}
+                                        onClick={() => setBedJogStep(step)}
+                                        className={`flex-1 px-1 py-1 rounded text-[10px] transition-colors ${
+                                          bedJogStep === step
+                                            ? 'bg-bambu-green/20 text-bambu-green'
+                                            : 'bg-bambu-dark text-bambu-gray hover:bg-bambu-dark-tertiary'
+                                        }`}
+                                      >
+                                        {step}
+                                      </button>
+                                    ))}
+                                  </div>
                                 </div>
                               </>
                             )}
@@ -3267,7 +3526,7 @@ function PrinterCard({
                                       </FilamentHoverCard>
                                     ) : (
                                       <EmptySlotHoverCard
-                                        configureSlot={tray?.state === 10 ? {
+                                        configureSlot={{
                                           enabled: hasPermission('printers:control'),
                                           onConfigure: () => setConfigureSlotModal({
                                             amsId: ams.id,
@@ -3275,8 +3534,8 @@ function PrinterCard({
                                             trayCount: ams.tray.length,
                                             extruderId: mappedExtruderId,
                                           }),
-                                        } : undefined}
-                                        inventory={tray?.state === 10 && !spoolmanEnabled ? {
+                                        }}
+                                        inventory={spoolmanEnabled ? undefined : {
                                           onAssignSpool: () => setAssignSpoolModal({
                                             printerId: printer.id,
                                             amsId: ams.id,
@@ -3287,7 +3546,7 @@ function PrinterCard({
                                               location: `${getAmsLabel(ams.id, ams.tray.length)} Slot ${slotIdx + 1}`,
                                             },
                                           }),
-                                        } : undefined}
+                                        }}
                                       >
                                         {slotVisual}
                                       </EmptySlotHoverCard>
@@ -3585,7 +3844,7 @@ function PrinterCard({
                                   </FilamentHoverCard>
                                 ) : (
                                   <EmptySlotHoverCard
-                                    configureSlot={tray?.state === 10 ? {
+                                    configureSlot={{
                                       enabled: hasPermission('printers:control'),
                                       onConfigure: () => setConfigureSlotModal({
                                         amsId: ams.id,
@@ -3593,8 +3852,8 @@ function PrinterCard({
                                         trayCount: ams.tray.length,
                                         extruderId: mappedExtruderId,
                                       }),
-                                    } : undefined}
-                                    inventory={tray?.state === 10 && !spoolmanEnabled ? {
+                                    }}
+                                    inventory={spoolmanEnabled ? undefined : {
                                       onAssignSpool: () => setAssignSpoolModal({
                                         printerId: printer.id,
                                         amsId: ams.id,
@@ -3605,7 +3864,7 @@ function PrinterCard({
                                           location: getAmsLabel(ams.id, ams.tray.length),
                                         },
                                       }),
-                                    } : undefined}
+                                    }}
                                   >
                                     {slotVisual}
                                   </EmptySlotHoverCard>
@@ -4088,7 +4347,10 @@ function PrinterCard({
         />
       )}
 
-      {/* Print Modal (after upload) */}
+      {/* Print Modal (after upload) — Direct-Print flow: the upload is transient,
+          so the library row + disk file get deleted after the print dispatches
+          (upstream #730 / #1682b695). Every other api.printLibraryFile caller
+          (File Manager Print, Project Detail Print) leaves the flag unset. */}
       {printAfterUpload && (
         <PrintModal
           mode="reprint"
@@ -4097,6 +4359,7 @@ function PrinterCard({
           initialSelectedPrinterIds={[printer.id]}
           onClose={() => setPrintAfterUpload(null)}
           onSuccess={() => setPrintAfterUpload(null)}
+          cleanupLibraryAfterDispatch
         />
       )}
 
@@ -4479,6 +4742,56 @@ function PrinterCard({
           }}
           onCancel={() => setShowResumeConfirm(false)}
         />
+      )}
+
+      {/* Bed Jog — not-homed warning (Studio-style). Shown the first time a
+          user tries to move the bed in a browser session; "Move anyway" wraps
+          the jog with M211 S0/S1 to bypass soft endstops and remembers the
+          choice in sessionStorage as bamdude.bedJog.warned.<printer_id>. */}
+      {showNotHomedModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl w-full max-w-sm p-5">
+            <div className="flex items-start gap-3 mb-4">
+              <AlertTriangle className="w-5 h-5 text-yellow-400 flex-shrink-0 mt-0.5" />
+              <div>
+                <h3 className="text-sm font-semibold text-white mb-1">
+                  {t('printers.bedJog.notHomedTitle')}
+                </h3>
+                <p className="text-xs text-bambu-gray leading-relaxed">
+                  {t('printers.bedJog.notHomedMessage')}
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-col gap-2">
+              <button
+                onClick={() => {
+                  homeAxesMutation.mutate('all');
+                  setShowNotHomedModal(null);
+                }}
+                className="w-full px-3 py-2 rounded-lg text-xs font-medium bg-bambu-green/20 text-bambu-green hover:bg-bambu-green/30 transition-colors"
+              >
+                {t('printers.bedJog.homeZ')}
+              </button>
+              <button
+                onClick={() => {
+                  const d = showNotHomedModal.distance;
+                  try { sessionStorage.setItem(`bamdude.bedJog.warned.${printer.id}`, '1'); } catch { /* ignore */ }
+                  bedJogMutation.mutate({ distance: d, force: true });
+                  setShowNotHomedModal(null);
+                }}
+                className="w-full px-3 py-2 rounded-lg text-xs font-medium bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30 transition-colors"
+              >
+                {t('printers.bedJog.moveAnyway')}
+              </button>
+              <button
+                onClick={() => setShowNotHomedModal(null)}
+                className="w-full px-3 py-2 rounded-lg text-xs font-medium bg-bambu-dark text-bambu-gray hover:bg-bambu-dark-tertiary transition-colors"
+              >
+                {t('common.cancel')}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Skip Objects Modal */}
@@ -5167,6 +5480,9 @@ function AddPrinterModal({
                       <option value="H2D Pro">H2D Pro</option>
                       <option value="H2S">H2S</option>
                     </optgroup>
+                    <optgroup label="X2 Series">
+                      <option value="X2D">X2D</option>
+                    </optgroup>
                     <optgroup label="X1 Series">
                       <option value="X1E">X1E</option>
                       <option value="X1C">X1 Carbon</option>
@@ -5357,18 +5673,22 @@ function FirmwareUpdateModal({
   const [uploadStatus, setUploadStatus] = useState<FirmwareUploadStatus | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [pollInterval, setPollInterval] = useState<NodeJS.Timeout | null>(null);
+  const [selectedVersion, setSelectedVersion] = useState<string | null>(
+    firmwareInfo.update_available ? firmwareInfo.latest_version : null,
+  );
 
-  // Prepare check query (only when update available and user can update)
+  // Prepare check query — runs when a version is selected and user can update.
+  // Keying on selectedVersion so switching targets re-runs the pre-flight.
   const { data: prepareInfo, isLoading: isPreparing } = useQuery({
-    queryKey: ['firmwarePrepare', printer.id],
-    queryFn: () => firmwareApi.prepareUpload(printer.id),
+    queryKey: ['firmwarePrepare', printer.id, selectedVersion],
+    queryFn: () => firmwareApi.prepareUpload(printer.id, selectedVersion ?? undefined),
     staleTime: 30000,
-    enabled: firmwareInfo.update_available && canUpdate,
+    enabled: !!selectedVersion && canUpdate && !isUploading,
   });
 
   // Start upload mutation
   const uploadMutation = useMutation({
-    mutationFn: () => firmwareApi.startUpload(printer.id),
+    mutationFn: () => firmwareApi.startUpload(printer.id, selectedVersion ?? undefined),
     onSuccess: () => {
       setIsUploading(true);
       // Start polling for status
@@ -5429,34 +5749,101 @@ function FirmwareUpdateModal({
             </div>
           </div>
 
-          {/* Version Info */}
-          <div className="bg-bambu-dark rounded-lg p-3 mb-4">
-            <div className="flex justify-between items-center text-sm">
-              <span className="text-bambu-gray">{t('printers.firmwareModal.currentVersion')}</span>
-              <span className={`font-mono ${firmwareInfo.update_available ? 'text-white' : 'text-status-ok'}`}>
-                {firmwareInfo.current_version || t('common.unknown')}
-              </span>
-            </div>
-            {firmwareInfo.update_available && (
-              <div className="flex justify-between items-center text-sm mt-1">
-                <span className="text-bambu-gray">{t('printers.firmwareModal.latestVersion')}</span>
-                <span className="text-orange-400 font-mono">{firmwareInfo.latest_version}</span>
-              </div>
-            )}
-            {firmwareInfo.release_notes && (
-              <details className="mt-3 text-sm" open={!firmwareInfo.update_available}>
-                <summary className={`cursor-pointer hover:underline ${firmwareInfo.update_available ? 'text-orange-400' : 'text-status-ok'}`}>
-                  {t('printers.firmwareModal.releaseNotes')}
-                </summary>
-                <div className="mt-2 text-bambu-gray text-xs max-h-40 overflow-y-auto whitespace-pre-wrap">
-                  {firmwareInfo.release_notes}
+          {/* Version Info — displays the currently-selected target's release notes,
+              or the latest version's when nothing is selected. */}
+          {(() => {
+            const selectedEntry = selectedVersion
+              ? firmwareInfo.available_versions?.find((v) => v.version === selectedVersion)
+              : null;
+            const displayVersion = selectedVersion ?? firmwareInfo.latest_version;
+            const displayNotes = selectedEntry?.release_notes ?? firmwareInfo.release_notes;
+            const showSecondLine = !!displayVersion && displayVersion !== firmwareInfo.current_version;
+            return (
+              <div className="bg-bambu-dark rounded-lg p-3 mb-4">
+                <div className="flex justify-between items-center text-sm">
+                  <span className="text-bambu-gray">{t('printers.firmwareModal.currentVersion')}</span>
+                  <span className={`font-mono ${showSecondLine ? 'text-white' : 'text-status-ok'}`}>
+                    {firmwareInfo.current_version || t('common.unknown')}
+                  </span>
                 </div>
-              </details>
-            )}
-          </div>
+                {showSecondLine && (
+                  <div className="flex justify-between items-center text-sm mt-1">
+                    <span className="text-bambu-gray">{t('printers.firmwareModal.latestVersion')}</span>
+                    <span className="text-orange-400 font-mono">{displayVersion}</span>
+                  </div>
+                )}
+                {displayNotes && (
+                  <details className="mt-3 text-sm" open={!showSecondLine} key={displayVersion ?? 'none'}>
+                    <summary className={`cursor-pointer hover:underline ${showSecondLine ? 'text-orange-400' : 'text-status-ok'}`}>
+                      {t('printers.firmwareModal.releaseNotes')}
+                    </summary>
+                    <div className="mt-2 text-bambu-gray text-xs max-h-40 overflow-y-auto whitespace-pre-wrap">
+                      {displayNotes}
+                    </div>
+                  </details>
+                )}
+              </div>
+            );
+          })()}
 
-          {/* Status / Progress (only when update available) */}
-          {!firmwareInfo.update_available ? null : isPreparing ? (
+          {/* Available versions list — newest-first picker supporting rollback.
+              Hidden once upload is running or completed. */}
+          {firmwareInfo.available_versions && firmwareInfo.available_versions.length > 0 && !isUploading && uploadStatus?.status !== 'complete' && (
+            <div className="mb-4">
+              <div className="text-xs text-bambu-gray mb-2">{t('printers.firmwareModal.availableVersions')}</div>
+              <div className="max-h-56 overflow-y-auto border border-bambu-dark-tertiary rounded-lg divide-y divide-bambu-dark-tertiary">
+                {firmwareInfo.available_versions.map((v) => {
+                  const isCurrent = firmwareInfo.current_version === v.version;
+                  const isSelected = selectedVersion === v.version;
+                  const cmp = firmwareInfo.current_version
+                    ? compareFwVersions(v.version, firmwareInfo.current_version)
+                    : 0;
+                  const relLabel = isCurrent
+                    ? t('printers.firmwareModal.currentBadge')
+                    : cmp > 0
+                      ? t('printers.firmwareModal.newerBadge')
+                      : t('printers.firmwareModal.olderBadge');
+                  const relClass = isCurrent
+                    ? 'text-bambu-gray'
+                    : cmp > 0
+                      ? 'text-orange-400'
+                      : 'text-blue-400';
+                  return (
+                    <button
+                      key={v.version}
+                      type="button"
+                      disabled={!v.file_available || !canUpdate || isCurrent}
+                      onClick={() => setSelectedVersion(v.version)}
+                      className={`w-full text-left px-3 py-2 text-sm flex items-center justify-between gap-2 transition-colors ${
+                        isSelected ? 'bg-orange-500/10' : 'hover:bg-bambu-dark'
+                      } ${!v.file_available || !canUpdate || isCurrent ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="font-mono text-white">{v.version}</span>
+                        <span className={`text-xs ${relClass}`}>{relLabel}</span>
+                      </div>
+                      <span className={`text-xs px-2 py-0.5 rounded-full ${
+                        isCurrent
+                          ? 'bg-blue-500/15 text-blue-400 border border-blue-500/30'
+                          : v.file_available
+                            ? 'bg-bambu-green/15 text-bambu-green border border-bambu-green/30'
+                            : 'bg-bambu-gray/10 text-bambu-gray border border-bambu-gray/30'
+                      }`}>
+                        {isCurrent
+                          ? t('printers.firmwareModal.installed')
+                          : v.file_available
+                          ? t('printers.firmwareModal.usable')
+                          : t('printers.firmwareModal.unavailable')}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Status / Progress (only when a version is selected) */}
+          {!selectedVersion ? null : isPreparing ? (
             <div className="flex items-center gap-2 text-bambu-gray text-sm mb-4">
               <Loader2 className="w-4 h-4 animate-spin" />
               {t('printers.firmwareModal.checkingPrereqs')}
@@ -5708,6 +6095,9 @@ function EditPrinterModal({
                       <option value="H2D">H2D</option>
                       <option value="H2D Pro">H2D Pro</option>
                       <option value="H2S">H2S</option>
+                    </optgroup>
+                    <optgroup label="X2 Series">
+                      <option value="X2D">X2D</option>
                     </optgroup>
                     <optgroup label="X1 Series">
                       <option value="X1E">X1E</option>
@@ -6504,7 +6894,11 @@ export function PrintersPage() {
           <div className="relative w-full sm:w-[28rem] h-9">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray/50" />
             <input
-              type="text"
+              type="search"
+              name="printer-search"
+              autoComplete="off"
+              data-1p-ignore
+              data-lpignore="true"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder={t('printers.search')}

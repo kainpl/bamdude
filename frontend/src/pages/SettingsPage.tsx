@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, ChevronDown, Save, Mail, Flame, Code, Pencil } from 'lucide-react';
+import { Loader2, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, ChevronDown, Save, Mail, Flame, Code, Pencil, ScanEye } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, macrosApi } from '../api/client';
@@ -19,6 +19,7 @@ import { ConfirmModal } from '../components/ConfirmModal';
 import { GcodeEditor } from '../components/GcodeEditor';
 import { CreateUserAdvancedAuthModal } from '../components/CreateUserAdvancedAuthModal';
 import { SpoolmanSettings } from '../components/SpoolmanSettings';
+import { SpoolDisplayNameSettings } from '../components/SpoolDisplayNameSettings';
 import { SpoolCatalogSettings } from '../components/SpoolCatalogSettings';
 import { ColorCatalogSettings } from '../components/ColorCatalogSettings';
 import { ExternalLinksSettings } from '../components/ExternalLinksSettings';
@@ -26,6 +27,9 @@ import { VirtualPrinterList } from '../components/VirtualPrinterList';
 import { GitBackupSettings } from '../components/GitBackupSettings';
 import { EmailSettings } from '../components/EmailSettings';
 import { LDAPSettings } from '../components/LDAPSettings';
+import { TwoFactorSettings } from '../components/TwoFactorSettings';
+import { OIDCProviderSettings } from '../components/OIDCProviderSettings';
+import { FailureDetectionSettings } from '../components/FailureDetectionSettings';
 import { APIBrowser } from '../components/APIBrowser';
 import { Toggle } from '../components/Toggle';
 import { getGroupName, getGroupDescription } from '../utils/groupI18n';
@@ -34,12 +38,33 @@ import { defaultNavItems, getDefaultView, setDefaultView } from '../components/L
 import { availableLanguages } from '../i18n';
 import { useToast } from '../contexts/ToastContext';
 import { useTheme, type ThemeStyle, type DarkBackground, type LightBackground, type ThemeAccent } from '../contexts/ThemeContext';
-import { useState, useEffect, useRef, useCallback } from 'react';
-import { Palette } from 'lucide-react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { Palette, Search } from 'lucide-react';
+import { registerSettingsSearch, getSettingsSearchEntries } from '../lib/settingsSearch';
 
-const validTabs = ['general', 'printing', 'filament', 'notifications', 'plugs', 'network', 'virtual-printer', 'apikeys', 'users', 'backup'] as const;
+const validTabs = ['general', 'printing', 'filament', 'notifications', 'plugs', 'network', 'virtual-printer', 'apikeys', 'failure-detection', 'users', 'backup'] as const;
 type TabType = typeof validTabs[number];
-type UsersSubTab = 'users' | 'email' | 'ldap';
+type UsersSubTab = 'users' | 'email' | 'ldap' | 'twofa' | 'oidc';
+
+// Module-level search registry. Tab-level entries only — see lib/settingsSearch.ts
+// for the design note. Adding a narrower `anchor="card-xyz"` entry + id on the
+// target Card is the upgrade path when keyword searches miss something.
+registerSettingsSearch({ labelKey: 'settings.tabs.general', tab: 'general', keywords: 'general language date time format printer model cards appearance theme dark light archive auto save thumbnails camera external video stream currency cost kwh price file manager disk updates version firmware beta sidebar links navigation', anchor: 'tab-general' });
+registerSettingsSearch({ labelKey: 'settings.tabs.printing', tab: 'printing', keywords: 'printing bed leveling flow calibration vibration first layer timelapse staggered batch delay start group plate clear confirm auto queue gcode injection farmloop swapmod autoclear drying presets temperature humidity ams ftp retry upload', anchor: 'tab-printing' });
+registerSettingsSearch({ labelKey: 'settings.tabs.filament', tab: 'filament', keywords: 'filament checks warning runout remaining print modal custom mapping ams thresholds humidity temperature history retention spoolman tracking inventory sync remote integration spool catalog color catalog brand material import export', anchor: 'tab-filament' });
+registerSettingsSearch({ labelKey: 'settings.tabs.notifications', tab: 'notifications', keywords: 'notifications providers telegram discord email webhook ntfy pushover home assistant message templates notification text edit digest log viewer', anchor: 'tab-notifications' });
+registerSettingsSearch({ labelKey: 'settings.tabs.smartPlugs', tab: 'plugs', keywords: 'smart plugs energy power automation tapo kasa tplink shelly tasmota discovery kwh monitoring', anchor: 'tab-plugs' });
+registerSettingsSearch({ labelKey: 'settings.tabs.network', tab: 'network', keywords: 'network external url reverse proxy public notification link ftp retry upload retries backoff home assistant ha hass mqtt publishing broker topic integration prometheus metrics grafana monitoring bearer token', anchor: 'tab-network' });
+registerSettingsSearch({ labelKey: 'settings.tabs.virtualPrinter', tab: 'virtual-printer', keywords: 'virtual printer proxy archive slicer bambustudio orcaslicer ip bind port', anchor: 'tab-virtual-printer' });
+registerSettingsSearch({ labelKey: 'settings.tabs.apiKeys', tab: 'apikeys', keywords: 'api keys create permission scope webhook endpoint post http browser documentation test token bearer', anchor: 'tab-apikeys' });
+registerSettingsSearch({ labelKey: 'settings.tabs.failureDetection', labelFallback: 'Failure Detection', tab: 'failure-detection', keywords: 'failure detection ai ml obico spaghetti detect monitoring', anchor: 'card-fd-ml' });
+registerSettingsSearch({ labelKey: 'failureDetection.perPrinterTitle', labelFallback: 'Per-Printer Settings', tab: 'failure-detection', keywords: 'failure detection per printer enable per-printer sensitivity', anchor: 'card-fd-perprinter' });
+registerSettingsSearch({ labelKey: 'failureDetection.statusTitle', labelFallback: 'Detection Status', tab: 'failure-detection', keywords: 'failure detection status running connection', anchor: 'card-fd-status' });
+registerSettingsSearch({ labelKey: 'failureDetection.historyTitle', labelFallback: 'Detection History', tab: 'failure-detection', keywords: 'failure detection history log events', anchor: 'card-fd-history' });
+registerSettingsSearch({ labelKey: 'settings.tabs.users', tab: 'users', subTab: 'users', keywords: 'users accounts list groups roles permissions administrators operators viewers current user profile password change', anchor: 'tab-users-users' });
+registerSettingsSearch({ labelKey: 'settings.email.smtpSettings', labelFallback: 'SMTP Configuration', tab: 'users', subTab: 'email', keywords: 'smtp email send server port password auth starttls ssl', anchor: 'tab-users-email' });
+registerSettingsSearch({ labelKey: 'settings.ldap.title', labelFallback: 'LDAP Authentication', tab: 'users', subTab: 'ldap', keywords: 'ldap active directory ad authentication bind dn search base group mapping', anchor: 'tab-users-ldap' });
+registerSettingsSearch({ labelKey: 'settings.tabs.backup', tab: 'backup', keywords: 'backup github gitlab restore download cloud sync profiles archives schedule', anchor: 'tab-backup' });
 
 const STORAGE_CATEGORY_COLORS: Record<string, string> = {
   database: 'bg-blue-600',
@@ -73,13 +98,117 @@ const STORAGE_FALLBACK_COLORS = [
 const getStorageColor = (key: string, index: number) =>
   STORAGE_CATEGORY_COLORS[key] || STORAGE_FALLBACK_COLORS[index % STORAGE_FALLBACK_COLORS.length];
 
+// Maps internal tab id to the actual i18n key under `settings.tabs.*`.
+// BamDude uses camelCase keys in locales (smartPlugs / apiKeys / virtualPrinter)
+// while the internal tab ids use kebab / shortened forms.
+const TAB_I18N_KEY: Record<TabType, string> = {
+  general: 'general',
+  printing: 'printing',
+  filament: 'filament',
+  notifications: 'notifications',
+  plugs: 'smartPlugs',
+  network: 'network',
+  'virtual-printer': 'virtualPrinter',
+  apikeys: 'apiKeys',
+  'failure-detection': 'failureDetection',
+  users: 'users',
+  backup: 'backup',
+};
+
+interface SettingsSearchBarProps {
+  onSelect: (entry: ReturnType<typeof getSettingsSearchEntries>[number]) => void;
+}
+
+function SettingsSearchBar({ onSelect }: SettingsSearchBarProps) {
+  const { t } = useTranslation();
+  const [query, setQuery] = useState('');
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const allEntries = useMemo(() => getSettingsSearchEntries(), []);
+
+  const labelFor = useCallback(
+    (entry: ReturnType<typeof getSettingsSearchEntries>[number]) => {
+      const translated = t(entry.labelKey, { defaultValue: '' });
+      return translated || entry.labelFallback || entry.labelKey;
+    },
+    [t]
+  );
+
+  const results = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return [];
+    return allEntries
+      .filter((e) => {
+        const label = labelFor(e).toLowerCase();
+        return label.includes(q) || e.keywords.toLowerCase().includes(q);
+      })
+      .slice(0, 12);
+  }, [query, allEntries, labelFor]);
+
+  useEffect(() => {
+    const onClickOutside = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onClickOutside);
+    return () => document.removeEventListener('mousedown', onClickOutside);
+  }, []);
+
+  return (
+    <div ref={containerRef} className="relative w-full sm:w-72">
+      <div className="relative">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray" />
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setOpen(true);
+          }}
+          onFocus={() => setOpen(true)}
+          placeholder={t('settings.search.placeholder')}
+          className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg pl-9 pr-3 py-2 text-sm text-white placeholder-bambu-gray focus:outline-none focus:border-bambu-green"
+        />
+      </div>
+      {open && query.trim() && (
+        <div className="absolute right-0 mt-1 w-full sm:w-80 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-lg max-h-80 overflow-y-auto z-20">
+          {results.length === 0 ? (
+            <div className="px-3 py-2 text-sm text-bambu-gray">{t('settings.search.noResults')}</div>
+          ) : (
+            results.map((entry) => (
+              <button
+                key={entry.anchor}
+                type="button"
+                onClick={() => {
+                  onSelect(entry);
+                  setQuery('');
+                  setOpen(false);
+                }}
+                className="w-full text-left px-3 py-2 text-sm text-white hover:bg-bambu-dark-tertiary"
+              >
+                <div className="font-medium">{labelFor(entry)}</div>
+                <div className="text-xs text-bambu-gray truncate">
+                  {t(`settings.tabs.${TAB_I18N_KEY[entry.tab]}`, { defaultValue: entry.tab })}
+                  {entry.subTab ? ` › ${entry.subTab}` : ''}
+                </div>
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function SettingsPage() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { t, i18n } = useTranslation();
   const { showToast } = useToast();
-  const { authEnabled, user, hasPermission } = useAuth();
+  const { authEnabled, user, isAdmin, hasPermission } = useAuth();
   const {
     mode,
     darkStyle, darkBackground, darkAccent,
@@ -517,6 +646,13 @@ export function SettingsPage() {
     queryKey: ['cloud-status'],
     queryFn: api.getCloudStatus,
   });
+
+  // Obico AI failure detection status for the Failure Detection tab indicator (#172)
+  const { data: obicoStatus } = useQuery({
+    queryKey: ['obico-status'],
+    queryFn: api.getObicoStatus,
+  });
+  const obicoActive = !!(obicoStatus?.is_running && obicoStatus?.enabled);
 
   // Advanced auth status for user creation
   const { data: advancedAuthStatus = { advanced_auth_enabled: false, smtp_configured: false } } = useQuery({
@@ -1066,12 +1202,19 @@ export function SettingsPage() {
 
   return (
     <div className="p-4 md:p-6">
-      <div className="mb-4">
-        <div className="flex items-center gap-3">
-          {/*<Disc3 className="w-6 h-6 text-bambu-green" />*/}
-          <h1 className="text-2xl font-bold text-white">{t('settings.title')}</h1>
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-3">
+            <h1 className="text-2xl font-bold text-white">{t('settings.title')}</h1>
+          </div>
+          <p className="text-sm text-bambu-gray">{t('settings.configureBamdude')}</p>
         </div>
-        <p className="text-sm text-bambu-gray">{t('settings.configureBamdude')}</p>
+        <SettingsSearchBar
+          onSelect={(entry) => {
+            handleTabChange(entry.tab);
+            if (entry.subTab) setUsersSubTab(entry.subTab);
+          }}
+        />
       </div>
 
       {/* Tab Navigation */}
@@ -1179,6 +1322,18 @@ export function SettingsPage() {
               {apiKeys.length}
             </span>
           )}
+        </button>
+        <button
+          onClick={() => handleTabChange('failure-detection')}
+          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+            activeTab === 'failure-detection'
+              ? 'text-bambu-green border-bambu-green'
+              : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+          }`}
+        >
+          <ScanEye className="w-4 h-4" />
+          {t('settings.tabs.failureDetection')}
+          <span className={`w-2 h-2 rounded-full ${obicoActive ? 'bg-green-400' : 'bg-gray-500'}`} />
         </button>
         <button
           onClick={() => handleTabChange('users')}
@@ -3650,6 +3805,8 @@ export function SettingsPage() {
           <div className="lg:w-1/3 space-y-4">
             <SpoolmanSettings />
 
+            <SpoolDisplayNameSettings />
+
             <Card>
               <CardHeader>
                 <h2 className="text-lg font-semibold text-white">{t('settings.filamentChecks')}</h2>
@@ -4152,6 +4309,13 @@ export function SettingsPage() {
         </div>
       )}
 
+      {/* ══════ FAILURE DETECTION TAB (Obico AI, §19) ══════ */}
+      {activeTab === 'failure-detection' && (
+        <div className="space-y-4">
+          <FailureDetectionSettings />
+        </div>
+      )}
+
       {/* ══════ USERS TAB ══════ */}
       {activeTab === 'users' && (
         <div className="space-y-4">
@@ -4196,6 +4360,30 @@ export function SettingsPage() {
                 <span className="w-2 h-2 rounded-full bg-green-400" />
               )}
             </button>
+            <button
+              onClick={() => setUsersSubTab('twofa')}
+              className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+                usersSubTab === 'twofa'
+                  ? 'text-bambu-green border-bambu-green'
+                  : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+              }`}
+            >
+              <Lock className="w-4 h-4" />
+              2FA
+            </button>
+            {isAdmin && (
+              <button
+                onClick={() => setUsersSubTab('oidc')}
+                className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+                  usersSubTab === 'oidc'
+                    ? 'text-bambu-green border-bambu-green'
+                    : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+                }`}
+              >
+                <Shield className="w-4 h-4" />
+                SSO / OIDC
+              </button>
+            )}
           </div>
 
           {/* Users Sub-tab */}
@@ -4469,6 +4657,18 @@ export function SettingsPage() {
           {usersSubTab === 'ldap' && (
             <div className="max-w-2xl">
               <LDAPSettings />
+            </div>
+          )}
+
+          {usersSubTab === 'twofa' && (
+            <div className="max-w-2xl">
+              <TwoFactorSettings />
+            </div>
+          )}
+
+          {usersSubTab === 'oidc' && isAdmin && (
+            <div className="max-w-3xl">
+              <OIDCProviderSettings />
             </div>
           )}
         </div>

@@ -9,6 +9,33 @@ import pytest
 from httpx import AsyncClient
 
 
+@pytest.fixture(autouse=True)
+async def _inject_camera_stream_token(async_client: AsyncClient):
+    """Camera image-asset endpoints are gated by ``RequireCameraStreamToken``.
+
+    Tests in this module hit ``/camera/stream``, ``/camera/snapshot``, and the
+    plate-detection reference thumbnail via ``async_client.get(...)`` without
+    any query-param token.  Mint a token once and attach it as a default param
+    (GETs only — POST/DELETE endpoints in this file don't need it).
+
+    After §18.4 ``create_camera_stream_token`` is async (DB-backed via
+    AuthEphemeralToken), so this fixture is async too.
+    """
+    from backend.app.core.auth import create_camera_stream_token
+
+    token = await create_camera_stream_token()
+    original_get = async_client.get
+
+    async def get_with_token(url, **kwargs):
+        params = dict(kwargs.pop("params", None) or {})
+        params.setdefault("token", token)
+        return await original_get(url, params=params, **kwargs)
+
+    async_client.get = get_with_token  # type: ignore[method-assign]
+    yield
+    async_client.get = original_get  # type: ignore[method-assign]
+
+
 class TestCameraAPI:
     """Integration tests for /api/v1/printers/{id}/camera/ endpoints."""
 

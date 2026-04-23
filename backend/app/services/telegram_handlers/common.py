@@ -78,7 +78,7 @@ async def get_printers_data() -> list[dict]:
                 "nozzle_temp": temps.get("nozzle"),
                 "bed_temp": temps.get("bed"),
                 "remaining_time": status.remaining_time if status else None,
-                "plate_cleared": printer_manager.is_plate_cleared(p.id),
+                "awaiting_plate_clear": printer_manager.is_awaiting_plate_clear(p.id),
                 "speed_level": status.speed_level if status else 2,
             }
         )

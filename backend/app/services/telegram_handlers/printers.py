@@ -238,7 +238,7 @@ async def show_printer_detail(
     # Clear plate
     if (
         printer["state"] in ("FINISH", "FAILED")
-        and not printer["plate_cleared"]
+        and printer["awaiting_plate_clear"]
         and has_perm(tg_chat, "printers:clear_plate")
     ):
         next_job = await get_next_queue_item(printer_id)

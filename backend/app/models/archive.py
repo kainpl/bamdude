@@ -12,6 +12,14 @@ class PrintArchive(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     printer_id: Mapped[int | None] = mapped_column(ForeignKey("printers.id"), nullable=True)
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
+    # Link back to the library_files row this archive was dispatched from.
+    # Populated at dispatch time (see background_dispatch.py) so library
+    # usage stats (print_count, last_printed_at) can be driven off the
+    # archive history instead of only live-tracked at queue completion.
+    # NULL for external/manual prints or archives created before m014.
+    library_file_id: Mapped[int | None] = mapped_column(
+        ForeignKey("library_files.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
     # File info
     filename: Mapped[str] = mapped_column(String(255))
@@ -25,6 +33,10 @@ class PrintArchive(Base):
     # lives alongside for future reprint-reapply semantics.
     source_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     applied_patches: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Printer-assigned subtask identifier observed in MQTT push_status. Advisory
+    # match key: on_print_start consults it as a fast pre-check before falling
+    # back to our primary name + content_hash matching (#972).
+    subtask_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     thumbnail_path: Mapped[str | None] = mapped_column(String(500))
     timelapse_path: Mapped[str | None] = mapped_column(String(500))
     source_3mf_path: Mapped[str | None] = mapped_column(String(500))  # Original project 3MF from slicer

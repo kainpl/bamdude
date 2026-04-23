@@ -3,9 +3,10 @@ import { useParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { RefreshCw, AlertTriangle, Camera, Maximize, Minimize, WifiOff, ZoomIn, ZoomOut } from 'lucide-react';
-import { api, getAuthToken } from '../api/client';
+import { api, getAuthToken, getStreamToken, withStreamToken } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
+import { useStreamTokenSync } from '../hooks/useCameraStreamToken';
 import { ChamberLight } from '../components/icons/ChamberLight';
 import { SkipObjectsModal, SkipObjectsIcon } from '../components/SkipObjectsModal';
 
@@ -18,9 +19,23 @@ export function CameraPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
-  const { hasPermission } = useAuth();
+  const { hasPermission, user } = useAuth();
   const { printerId } = useParams<{ printerId: string }>();
   const id = parseInt(printerId || '0', 10);
+
+  // Subscribe to the stream-token query so this page re-renders once the token
+  // arrives. useStreamTokenSync (mounted in App) already owns the fetch; this
+  // useQuery call dedupes via the shared key and just reads the cached value.
+  // Mirror the user-id-keyed query key from useStreamTokenSync (upstream
+  // 32c0b169) so the cache lookup hits the same entry.
+  useStreamTokenSync();
+  const { data: streamTokenData } = useQuery({
+    queryKey: ['camera-stream-token', user?.id ?? null],
+    queryFn: () => api.getCameraStreamToken(),
+    enabled: !!user,
+    staleTime: 50 * 60 * 1000,
+  });
+  const streamTokenValue = streamTokenData?.token ?? getStreamToken();
 
   const [streamMode, setStreamMode] = useState<'stream' | 'snapshot'>('stream');
   const [showSkipObjectsModal, setShowSkipObjectsModal] = useState(false);
@@ -574,11 +589,17 @@ export function CameraPage() {
     setPanOffset({ x: 0, y: 0 });
   };
 
-  const currentUrl = transitioning
+  // Read the token directly from the reactive query value instead of relying on
+  // the module-level cache in withStreamToken(), because that cache is updated
+  // in a useEffect that runs after render.
+  const waitingForStreamToken = !streamTokenValue;
+  const appendToken = (url: string) =>
+    streamTokenValue ? `${url}&token=${encodeURIComponent(streamTokenValue)}` : withStreamToken(url);
+  const currentUrl = transitioning || waitingForStreamToken
     ? ''
     : streamMode === 'stream'
-      ? `/api/v1/printers/${id}/camera/stream?fps=15&t=${imageKey}`
-      : `/api/v1/printers/${id}/camera/snapshot?t=${imageKey}`;
+      ? appendToken(`/api/v1/printers/${id}/camera/stream?fps=15&t=${imageKey}`)
+      : appendToken(`/api/v1/printers/${id}/camera/snapshot?t=${imageKey}`);
 
   const isDisabled = streamLoading || transitioning || isReconnecting;
 

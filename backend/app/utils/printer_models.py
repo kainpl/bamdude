@@ -19,6 +19,7 @@ PRINTER_MODEL_MAP = {
     "Bambu Lab H2D Pro": "H2D Pro",
     "Bambu Lab H2C": "H2C",
     "Bambu Lab H2S": "H2S",
+    "Bambu Lab X2D": "X2D",
 }
 
 # Map from printer_model_id (internal codes in slice_info.config) to short names
@@ -33,6 +34,8 @@ PRINTER_MODEL_ID_MAP = {
     "P1S": "P1S",
     # P2 series
     "P2S": "P2S",
+    # X2 series
+    "N6": "X2D",
     # A1 series
     "A11": "A1",
     "A12": "A1 Mini",
@@ -51,7 +54,7 @@ PRINTER_MODEL_ID_MAP = {
 
 # Rod/rail type classification for maintenance tasks.
 # Carbon rods: X1, P1 series (CoreXY with carbon fiber rods)
-# Steel rods: P2S series (hardened steel linear shafts)
+# Steel rods: P2S, X2D series (hardened steel linear shafts)
 # Linear rails: A1, H2 series (linear rail motion system)
 # Values must be uppercase with spaces stripped for normalized comparison.
 CARBON_ROD_MODELS = frozenset(
@@ -73,8 +76,10 @@ STEEL_ROD_MODELS = frozenset(
     [
         # Display names (uppercase, no spaces)
         "P2S",
+        "X2D",
         # Internal codes
         "N7",  # P2S
+        "N6",  # X2D
     ]
 )
 
@@ -112,6 +117,7 @@ ETHERNET_MODELS = frozenset(
         "X1E",
         "P1S",
         "P2S",
+        "X2D",
         "H2D",
         "H2DPRO",
         "H2C",
@@ -120,6 +126,7 @@ ETHERNET_MODELS = frozenset(
         "C11",  # X1C
         "C13",  # X1E
         "P1S",  # P1S
+        "N6",  # X2D
         "O1D",  # H2D
         "O1E",  # H2D Pro
         "O2D",  # H2D Pro (alternate)
@@ -138,12 +145,52 @@ def has_ethernet(model: str | None) -> bool:
     return normalized in ETHERNET_MODELS
 
 
+# Models with a confirmed door-open sensor exposed via MQTT.
+# Only X1 family is reverse-engineered to publish door state on home_flag bit 23;
+# bit 23 of `stat` on other enclosed models (P1S/P2S/H2*) is undocumented and
+# cannot be trusted (observed to be permanently 0 on some firmwares, meaning
+# the UI would always show "Door Closed" regardless of actual state).
+#
+# Open-frame models (P1P, A1, A1 Mini) do not have a door at all — they must
+# NOT be in this set even if we later reverse-engineer a signal for other
+# enclosed printers.
+#
+# To add a model: verify with a real printer that bit 23 of the field we parse
+# actually flips when the enclosure door is opened/closed. Do not add on
+# protocol speculation.
+DOOR_SENSOR_MODELS = frozenset(
+    [
+        "X1",
+        "X1C",
+        "X1E",
+        # Internal codes
+        "C11",  # X1C
+        "C12",  # X1
+        "C13",  # X1E
+    ]
+)
+
+
+def has_door_sensor(model: str | None) -> bool:
+    """Return True if the printer model has a confirmed door-open sensor
+    exposed via MQTT.
+
+    Gates both the backend bit-23 parser and the frontend door-state badge —
+    non-sensor models must not surface misleading "Door Closed" / "Door Open"
+    state. See ``DOOR_SENSOR_MODELS`` above for the rationale.
+    """
+    if not model:
+        return False
+    normalized = model.strip().upper().replace(" ", "").replace("-", "")
+    return normalized in DOOR_SENSOR_MODELS
+
+
 def get_rod_type(model: str | None) -> str | None:
     """Return the rod/rail type for a printer model.
 
     Returns:
         "carbon" for X1/P1 series (carbon fiber rods),
-        "steel_rod" for P2S series (hardened steel rods),
+        "steel_rod" for P2S/X2D series (hardened steel rods),
         "linear_rail" for A1/H2 series (linear rails),
         None for unknown models.
     """

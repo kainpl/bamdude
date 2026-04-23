@@ -1,0 +1,81 @@
+name: Docker Publish :dev (rolling)
+
+# Rolling :dev Docker tag — rebuilt on every push to the dev branch. Users
+# who pin `ghcr.io/kainpl/bamdude:dev` (or :dev on Docker Hub) always pull
+# the latest dev HEAD, which is convenient for bleeding-edge testers but
+# should NOT be used in production. Stable farms pin :latest or :X.Y.Z.
+#
+# See temp/release_guide.md section 4 for the user-facing description.
+
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+    # Manual button in the Actions UI — re-publish :dev without waiting for
+    # a new commit (useful after secret rotation, registry recovery, etc.).
+
+# Cancel an in-progress :dev build if a newer push arrives — old build's
+# output would get overwritten anyway, saves buildx worker time.
+concurrency:
+  group: docker-publish-dev
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write  # Required to push to ghcr.io
+
+jobs:
+  publish:
+    name: Build & push :dev
+    runs-on: ubuntu-latest
+    # Skip for forks — secrets won't be available anyway, and a fork push
+    # shouldn't clobber kainpl/bamdude:dev.
+    if: github.repository == 'kainpl/bamdude'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU (for arm64 cross-build)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push (multi-arch)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          # --provenance / --sbom off to match the local docker-publish.sh
+          # output shape — keeps :dev and `bash docker-publish.sh` images
+          # byte-identical at the manifest level for bleeding-edge testers
+          # reproducing bugs.
+          provenance: false
+          sbom: false
+          tags: |
+            ghcr.io/kainpl/bamdude:dev
+            kainpl/bamdude:dev
+          cache-from: type=gha,scope=dev
+          cache-to: type=gha,mode=max,scope=dev
+
+      - name: Summary
+        run: |
+          echo "### :dev rolling image refreshed" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`ghcr.io/kainpl/bamdude:dev\` → $(git rev-parse --short HEAD)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`kainpl/bamdude:dev\` → $(git rev-parse --short HEAD)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Pull: \`docker pull ghcr.io/kainpl/bamdude:dev\`" >> "$GITHUB_STEP_SUMMARY"

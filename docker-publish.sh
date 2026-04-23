@@ -2,15 +2,21 @@
 # Build and push multi-architecture Docker image to GitHub Container Registry AND Docker Hub
 #
 # Usage:
-#   ./docker-publish.sh [version] [--parallel] [--ghcr-only] [--dockerhub-only]
+#   ./docker-publish.sh <version> [--parallel] [--ghcr-only] [--dockerhub-only]
+#   ./docker-publish.sh dev [--parallel]              # Rolling :dev tag (no version pin)
 #
 # Examples:
-#   ./docker-publish.sh 0.1.9b            # Sequential build, push to both registries
-#   ./docker-publish.sh 0.1.9b --parallel # Build both archs simultaneously
-#   ./docker-publish.sh 0.1.9b --ghcr-only    # Only push to GHCR
-#   ./docker-publish.sh 0.1.9b --dockerhub-only # Only push to Docker Hub
+#   ./docker-publish.sh 0.5.0 --parallel              # Stable  → :latest + :0.5.0
+#   ./docker-publish.sh 0.5.0b1 --parallel            # Beta    → :0.5.0b1
+#   ./docker-publish.sh 0.5.0b1-daily.20260423        # Daily   → :0.5.0b1-daily.20260423
+#   ./docker-publish.sh dev --parallel                # Rolling → :dev (overwrites)
+#   ./docker-publish.sh 0.5.0 --ghcr-only             # Only push to GHCR
 #
-# Note: Stable versions are also tagged as 'latest'. Beta versions (ending in 'b') are not.
+# Channel → Docker-tag mapping (see temp/release_guide.md for full workflow):
+#   stable   → :latest + :X.Y.Z
+#   beta     → :X.Y.ZbN                          (no :latest)
+#   daily    → :X.Y.Z[bN]-daily.YYYYMMDD         (no :latest)
+#   rolling  → :dev                              (no :latest, no version tag)
 #
 # Prerequisites:
 #   1. Log in to ghcr.io:
@@ -143,12 +149,30 @@ if ! docker buildx inspect --bootstrap | grep -q "linux/arm64"; then
     docker run --privileged --rm tonistiigi/binfmt --install all
 fi
 
-# Only tag as 'latest' for stable releases (not beta versions ending in 'b')
+# Channel detection for tag logic. See temp/release_guide.md for the full
+# format table — `:latest` is reserved for stable versions on main so that
+# pinned deployments keep working when a beta or daily snapshot gets pushed.
+#
+#   X.Y.Z / X.Y.Z.W                      → stable  → tag :latest
+#   X.Y.ZbN / X.Y.Z.WbN                  → beta    → NO :latest
+#   X.Y.Z[bN]-daily.YYYYMMDD             → daily   → NO :latest
+#   'dev'  (from --dev flag)             → rolling → NO :latest, NO version tag
 TAG_LATEST=true
-if [[ "$VERSION" =~ b[0-9]*$ ]]; then
+CHANNEL="stable"
+if [[ "$VERSION" == "dev" ]]; then
+    CHANNEL="rolling"
+    TAG_LATEST=false
+    echo -e "${YELLOW}Rolling 'dev' tag — skipping 'latest' and version-specific tags${NC}"
+elif [[ "$VERSION" =~ -daily\.[0-9]{8}$ ]]; then
+    CHANNEL="daily"
+    TAG_LATEST=false
+    echo -e "${YELLOW}Daily snapshot detected — skipping 'latest' tag${NC}"
+elif [[ "$VERSION" =~ b[0-9]+$ ]]; then
+    CHANNEL="beta"
     TAG_LATEST=false
     echo -e "${YELLOW}Beta version detected — skipping 'latest' tag${NC}"
 fi
+echo -e "${BLUE}  Channel: ${CHANNEL}${NC}"
 
 # Build tags for all target registries
 TAGS=""
