@@ -53,8 +53,12 @@ const blSpool = {
 
 const anotherManualSpool = {
   id: 3,
-  material: 'PETG',
-  subtype: 'HF',
+  // Material kept matching trayInfo.type (PLA) so these RFID-filter tests aren't
+  // secondarily gated by the material-overlap filter introduced with upstream
+  // #1047 — the point of the next three tests is tag_uid/tray_uuid vs manual,
+  // not PLA vs PETG.
+  material: 'PLA',
+  subtype: 'Matte',
   brand: 'Overture',
   color_name: 'Black',
   rgba: '000000FF',
