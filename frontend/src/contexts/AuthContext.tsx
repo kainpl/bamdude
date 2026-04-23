@@ -87,6 +87,57 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
+  // Listen for server-side auth invalidation (token expired, revoked, etc.)
+  // broadcast by api/client.ts request() when it gets a matching 401. Without
+  // this the frontend would sit on stale React state showing a logged-in UI
+  // even though localStorage was already cleared — background polls just
+  // 401'd silently. Now we clear React state and hard-redirect to /login so
+  // the operator notices immediately instead of on the next navigation.
+  useEffect(() => {
+    const handleInvalidated = () => {
+      if (!mountedRef.current) return;
+      setUser(null);
+      const path = window.location.pathname;
+      // /login handles its own flow; /setup is pre-admin bootstrap; standalone
+      // /camera/:id and /overlay/:id routes carry their own short-lived camera
+      // tokens and shouldn't bounce to login on a session-token expiry there.
+      const exempt =
+        path === '/login' ||
+        path === '/setup' ||
+        path.startsWith('/camera/') ||
+        path.startsWith('/overlay/');
+      if (!exempt) {
+        // hard navigation drops all cached queries + in-flight fetches, so
+        // the next render starts from a clean, unauthenticated state.
+        window.location.href = '/login';
+      }
+    };
+    window.addEventListener('bamdude:auth-invalidated', handleInvalidated);
+    return () => window.removeEventListener('bamdude:auth-invalidated', handleInvalidated);
+  }, []);
+
+  // Revalidate when the tab regains focus after being hidden. Covers the
+  // case where the user leaves BamDude open overnight, the JWT expires
+  // silently (no API calls while hidden → no 401 event to hook onto), and
+  // then they come back to find stale UI. Hitting /auth/me forces the
+  // expired-token check; a 401 here flows through the same invalidation
+  // path above. Gated on `user` so we don't ping /auth/me on every focus
+  // for logged-out visitors on /login.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return;
+      if (!mountedRef.current || !user) return;
+      if (!getAuthToken()) return;
+      api.getCurrentUser().catch(() => {
+        // 401 path already dispatches bamdude:auth-invalidated via
+        // request(); other errors (network blip) are safe to swallow
+        // — next real user action will retry.
+      });
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [user]);
+
   // Redirect to /setup when the backend reports no admin exists yet.
   useEffect(() => {
     if (loading) return;

@@ -88,6 +88,16 @@ async function request<T>(
       ];
       if (invalidTokenMessages.some(m => message.includes(m))) {
         setAuthToken(null);
+        // Broadcast so AuthContext can clear React state and redirect to
+        // /login. Before this, clearing the token only wiped localStorage —
+        // React's `user` state stayed populated from the last /auth/me
+        // hydration, so the UI sat there looking logged-in while every
+        // background poll 401'd into a void. Leaving the tab idle overnight
+        // (>24 h, which is the backend ACCESS_TOKEN_EXPIRE_MINUTES) would
+        // reliably reproduce it.
+        window.dispatchEvent(
+          new CustomEvent('bamdude:auth-invalidated', { detail: { reason: 'token-expired', message } }),
+        );
       }
     }
 
