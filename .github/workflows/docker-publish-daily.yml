@@ -1,0 +1,175 @@
+name: Docker Publish :daily snapshot
+
+# Daily-snapshot Docker image + matching git tag + GitHub pre-release.
+#
+# Runs every day at 06:00 UTC on the dev branch. Computes a daily-version
+# string from APP_VERSION + today's date (e.g. 0.5.0b1-daily.20260423),
+# skips if a tag by that name already exists or if there are no new commits
+# since the previous daily. Otherwise: tag dev HEAD, build + push the
+# multi-arch Docker image to GHCR + Docker Hub, create a GitHub
+# pre-release with auto-generated commit notes.
+#
+# Testers pin a specific day's image for reproducible bug reports —
+# `image: ghcr.io/kainpl/bamdude:0.5.0b1-daily.20260423` is a snapshot
+# that won't move. See temp/release_guide.md section 3.
+
+on:
+  schedule:
+    # 06:00 UTC every day. GitHub Actions disables scheduled workflows after
+    # 60 days of repo inactivity — any commit to dev restarts the countdown.
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    # Manual trigger — useful after dev has new commits you want packaged
+    # without waiting for the morning run. Also used to recover after a
+    # failed cron (secrets blip, registry hiccup).
+
+permissions:
+  contents: write  # Required to create tags + releases
+  packages: write  # Required to push to ghcr.io
+
+jobs:
+  build:
+    name: Tag + build + release daily snapshot
+    runs-on: ubuntu-latest
+    if: github.repository == 'kainpl/bamdude'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev  # Daily snapshots always come off dev
+          fetch-depth: 0  # Need tag history to check "no new commits since last daily"
+
+      - name: Compute daily version
+        id: version
+        run: |
+          # Read APP_VERSION from config.py — single source of truth maintained
+          # by scripts/set_version.js. The daily suffix is appended to whatever
+          # dev is currently on (stable target, beta milestone, etc.).
+          APP_VERSION=$(grep -oP 'APP_VERSION\s*=\s*"\K[^"]+' backend/app/core/config.py)
+          TODAY=$(date -u +%Y%m%d)
+          DAILY_VERSION="${APP_VERSION}-daily.${TODAY}"
+          TAG="v${DAILY_VERSION}"
+          echo "app_version=${APP_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "daily_version=${DAILY_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "::notice::Daily candidate: ${TAG}"
+
+      - name: Check if tag already exists
+        id: tag_check
+        run: |
+          if git rev-parse "refs/tags/${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Tag ${{ steps.version.outputs.tag }} already exists — skipping."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check for new commits since previous daily
+        id: commits_check
+        if: steps.tag_check.outputs.exists == 'false'
+        run: |
+          # Find most recent *-daily.* tag; if none, run unconditionally (first daily).
+          # If the previous daily tag points at the same commit as dev HEAD, there's
+          # nothing new to snapshot — skip to avoid noise.
+          PREV_TAG=$(git tag --list 'v*-daily.*' --sort=-v:refname | head -n 1)
+          if [ -z "$PREV_TAG" ]; then
+            echo "has_new=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::No previous daily tag found — running first daily."
+          else
+            PREV_SHA=$(git rev-parse "${PREV_TAG}^{commit}")
+            HEAD_SHA=$(git rev-parse HEAD)
+            if [ "$PREV_SHA" = "$HEAD_SHA" ]; then
+              echo "has_new=false" >> "$GITHUB_OUTPUT"
+              echo "::notice::No new commits since ${PREV_TAG} — skipping."
+            else
+              echo "has_new=true" >> "$GITHUB_OUTPUT"
+              echo "prev_tag=${PREV_TAG}" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - name: Create and push tag
+        if: steps.tag_check.outputs.exists == 'false' && steps.commits_check.outputs.has_new == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.version.outputs.tag }}" -m "Daily snapshot ${{ steps.version.outputs.daily_version }}"
+          git push origin "${{ steps.version.outputs.tag }}"
+
+      - name: Set up QEMU (arm64 cross-build)
+        if: steps.tag_check.outputs.exists == 'false' && steps.commits_check.outputs.has_new == 'true'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        if: steps.tag_check.outputs.exists == 'false' && steps.commits_check.outputs.has_new == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: steps.tag_check.outputs.exists == 'false' && steps.commits_check.outputs.has_new == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        if: steps.tag_check.outputs.exists == 'false' && steps.commits_check.outputs.has_new == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push multi-arch image
+        if: steps.tag_check.outputs.exists == 'false' && steps.commits_check.outputs.has_new == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          sbom: false
+          # Daily gets ONE specific version tag — no :latest, no :dev-anything.
+          # Testers pin this exact string for reproducibility.
+          tags: |
+            ghcr.io/kainpl/bamdude:${{ steps.version.outputs.daily_version }}
+            kainpl/bamdude:${{ steps.version.outputs.daily_version }}
+          cache-from: type=gha,scope=daily
+          cache-to: type=gha,mode=max,scope=daily
+
+      - name: Generate release notes
+        id: notes
+        if: steps.tag_check.outputs.exists == 'false' && steps.commits_check.outputs.has_new == 'true'
+        run: |
+          PREV_TAG="${{ steps.commits_check.outputs.prev_tag }}"
+          if [ -z "$PREV_TAG" ]; then
+            # First daily ever — fall back to "recent N commits" to keep notes finite.
+            NOTES=$(git log -n 20 --pretty='- %s' HEAD)
+          else
+            NOTES=$(git log --pretty='- %s' "${PREV_TAG}..HEAD")
+          fi
+          {
+            echo 'notes<<EOF'
+            echo "Daily snapshot from dev HEAD."
+            echo ""
+            echo "**Pull:**"
+            echo ""
+            echo '```yaml'
+            echo "# docker-compose.yml"
+            echo "image: ghcr.io/kainpl/bamdude:${{ steps.version.outputs.daily_version }}"
+            echo "# or"
+            echo "image: kainpl/bamdude:${{ steps.version.outputs.daily_version }}"
+            echo '```'
+            echo ""
+            echo "**Changes since ${PREV_TAG:-first daily}:**"
+            echo ""
+            echo "$NOTES"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub pre-release
+        if: steps.tag_check.outputs.exists == 'false' && steps.commits_check.outputs.has_new == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }} (daily)
+          body: ${{ steps.notes.outputs.notes }}
+          prerelease: true
+          target_commitish: dev

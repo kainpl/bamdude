@@ -1,7 +1,18 @@
 #!/usr/bin/env node
 /**
  * Set application version across all project files.
- * Usage: node scripts/set_version.js 0.4.0
+ *
+ * Supported formats (see temp/release_guide.md for full channel docs):
+ *   X.Y.Z                         → stable       (e.g. 0.5.0)
+ *   X.Y.Z.W                       → stable patch (e.g. 0.5.0.1)
+ *   X.Y.ZbN / X.Y.Z.WbN           → beta         (e.g. 0.5.0b1, 0.5.0.2b3)
+ *   X.Y.Z[bN]-daily.YYYYMMDD      → daily        (e.g. 0.5.0b1-daily.20260423,
+ *                                                        0.5.0-daily.20260425)
+ *
+ * Daily versions are typically set by the docker-publish-daily.yml workflow
+ * — set them manually only when reproducing a daily locally.
+ *
+ * Usage: node scripts/set_version.js 0.5.0b1
  */
 
 const fs = require("fs");
@@ -10,12 +21,25 @@ const path = require("path");
 const version = process.argv[2];
 if (!version) {
   console.error("Usage: node scripts/set_version.js <version>");
-  console.error("Example: node scripts/set_version.js 0.4.0");
+  console.error("Examples:");
+  console.error("  node scripts/set_version.js 0.5.0                     # stable");
+  console.error("  node scripts/set_version.js 0.5.0b1                   # beta milestone");
+  console.error("  node scripts/set_version.js 0.5.0b1-daily.20260423    # daily snapshot");
   process.exit(1);
 }
 
-if (!/^\d+\.\d+\.\d+(\.\d+)?$/.test(version)) {
-  console.error(`Invalid version format: "${version}". Expected: X.Y.Z or X.Y.Z.P`);
+// Validates all four channels listed above. Kept intentionally strict — an
+// accidental "0.5.0-beta" or "0.5.0-rc1" would silently slip past upstream's
+// pattern and break the Docker-publish channel detection later.
+const VERSION_RE = /^\d+\.\d+\.\d+(\.\d+)?(b\d+)?(-daily\.\d{8})?$/;
+if (!VERSION_RE.test(version)) {
+  console.error(
+    `Invalid version format: "${version}". Expected:\n` +
+      `  X.Y.Z                      (stable)\n` +
+      `  X.Y.Z.W                    (stable patch)\n` +
+      `  X.Y.ZbN / X.Y.Z.WbN        (beta)\n` +
+      `  X.Y.Z[bN]-daily.YYYYMMDD   (daily)`,
+  );
   process.exit(1);
 }
 
