@@ -4,7 +4,7 @@ from pathlib import Path
 from pydantic_settings import BaseSettings
 
 # Application version - single source of truth
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.4.0b1"
 GITHUB_REPO = "kainpl/bamdude"
 
 # App directory - where the application is installed (for static files)

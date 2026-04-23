@@ -10,6 +10,10 @@ All notable changes to BamDude will be documented in this file.
 
 Collects the upstream Bambuddy v0.2.3 → v0.2.3.2 port chain (three upstream releases in one BamDude cycle), three BamDude-native features (`m010` queue-reliability, `m012` MFA cluster, `m013` LibraryFile usage columns, `m014` archive↔library link), and a handful of safety / security / UX fixes. See [`UPDATING.md`](UPDATING.md) for the backup-first upgrade flow.
 
+### 0.4.0b1 — pre-release (2026-04-23)
+
+First beta milestone of the 0.4.0 cycle. Everything listed below is in this image (`ghcr.io/kainpl/bamdude:0.4.0b1` / `kainpl/bamdude:0.4.0b1`). Intended for early testers — pin the exact tag, don't use `:latest` yet (still points at 0.3.2).
+
 ### v0.2.3.2 port — safety, queue reliability, AMS UX
 
 ### Safety
