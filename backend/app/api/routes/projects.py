@@ -660,10 +660,12 @@ async def list_project_archives(
     if not result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Project not found")
 
-    # Get archives with project relationship eagerly loaded
+    # Eager-load the relationships that archive_to_response touches —
+    # created_by.username otherwise triggers a lazy load against an
+    # already-returned async session → MissingGreenlet crash.
     query = (
         select(PrintArchive)
-        .options(selectinload(PrintArchive.project))
+        .options(selectinload(PrintArchive.project), selectinload(PrintArchive.created_by))
         .where(PrintArchive.project_id == project_id)
         .order_by(PrintArchive.created_at.desc())
         .limit(limit)
@@ -1339,9 +1341,13 @@ async def get_project_timeline(
                 )
             )
 
-    # Get queue items
+    # Get queue items. Eager-load archive + library_file so the description
+    # resolution below doesn't trip a lazy-load under the async session —
+    # PrintQueueItem has no ``print_name`` of its own, the display name
+    # comes from whichever source the item references.
     queue_result = await db.execute(
         select(PrintQueueItem)
+        .options(selectinload(PrintQueueItem.archive), selectinload(PrintQueueItem.library_file))
         .where(PrintQueueItem.project_id == project_id)
         .order_by(PrintQueueItem.created_at.desc())
         .limit(limit)
@@ -1349,13 +1355,19 @@ async def get_project_timeline(
     queue_items = queue_result.scalars().all()
 
     for item in queue_items:
+        display_name = (
+            (item.archive.print_name if item.archive else None)
+            or (item.archive.filename if item.archive else None)
+            or (item.library_file.filename if item.library_file else None)
+            or "(unnamed queue item)"
+        )
         if item.status == "printing":
             events.append(
                 TimelineEvent(
                     event_type="print_started",
                     timestamp=item.started_at or item.created_at,
                     title="Print started",
-                    description=item.print_name,
+                    description=display_name,
                     metadata={"queue_item_id": item.id},
                 )
             )
@@ -1365,7 +1377,7 @@ async def get_project_timeline(
                     event_type="queued",
                     timestamp=item.created_at,
                     title="Added to queue",
-                    description=item.print_name,
+                    description=display_name,
                     metadata={"queue_item_id": item.id},
                 )
             )

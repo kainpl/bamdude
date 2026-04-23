@@ -3364,6 +3364,7 @@ export default {
     stats: {
       printJobs: 'Print Jobs',
       total: 'total',
+      inProgress: '{{count}} in progress',
       failed: '{{count}} failed',
       partsPrinted: '{{count}} parts printed',
       printTime: 'Print Time',

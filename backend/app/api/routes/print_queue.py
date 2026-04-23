@@ -362,6 +362,15 @@ async def add_to_queue(
         if not project_result.scalar_one_or_none():
             raise HTTPException(status_code=404, detail="Project not found")
 
+    # Fallback: if the caller didn't pass a project_id but the source is a
+    # library file that's already linked to a project, inherit it. Keeps
+    # project stats (archives-in-progress, queued prints) correct for items
+    # added without an explicit project context (e.g. File Manager bulk add
+    # of a file that was later linked to a project).
+    effective_project_id = data.project_id
+    if effective_project_id is None and library_file and library_file.project_id is not None:
+        effective_project_id = library_file.project_id
+
     # For quantity > 1, group copies under a shared batch_id
     batch_id = str(uuid.uuid4()) if data.quantity > 1 else None
     ams_mapping_json = json.dumps(data.ams_mapping) if data.ams_mapping else None
@@ -401,7 +410,7 @@ async def add_to_queue(
                 mesh_mode_fast_check=data.mesh_mode_fast_check,
                 execute_swap_macros=execute_swap_macros,
                 swap_macro_events=swap_macro_events_json,
-                project_id=data.project_id,
+                project_id=effective_project_id,
                 position=max_pos + 1 + i,
                 status="pending",
                 batch_id=batch_id,

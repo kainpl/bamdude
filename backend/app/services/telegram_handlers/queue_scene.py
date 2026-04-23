@@ -278,6 +278,7 @@ async def cb_qadd_confirm(callback: CallbackQuery, state: FSMContext, tg_chat: T
                 library_file_id=file_id,
                 status="pending",
                 position=max_pos + 1,
+                created_by_id=tg_chat.user_id if tg_chat else None,
             )
             db.add(item)
             await db.commit()

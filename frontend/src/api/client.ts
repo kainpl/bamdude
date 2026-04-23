@@ -2044,12 +2044,15 @@ export interface NotificationTestResponse {
 }
 
 export interface BackgroundDispatchResponse {
-  status: 'dispatched' | string;
+  status: 'dispatched' | 'queued' | string;
   printer_id: number;
   archive_id?: number | null;
   filename: string;
-  dispatch_job_id: number;
-  dispatch_position: number;
+  /** null when status='queued' (quantity > 1 route) — no direct dispatch happened. */
+  dispatch_job_id: number | null;
+  dispatch_position: number | null;
+  batch_id?: string | null;
+  queued_copies?: number;
 }
 
 // Provider-specific config types for reference

@@ -3344,6 +3344,49 @@ async def reprint_archive(
         body.execute_swap_macros = False
         body.swap_macro_events = None
 
+    # Reprint quantity handling mirrors library print_library_file:
+    # quantity == 1 → direct dispatch; quantity > 1 → all copies in queue.
+    qty = max(1, body.quantity or 1)
+
+    if qty > 1:
+        from backend.app.services.queue_batch import enqueue_batch_copies
+
+        items, batch_id = await enqueue_batch_copies(
+            db,
+            printer_id=printer_id,
+            count=qty,
+            archive_id=archive_id,
+            plate_id=body.plate_id,
+            ams_mapping=body.ams_mapping,
+            bed_levelling=body.bed_levelling,
+            flow_cali=body.flow_cali,
+            layer_inspect=body.layer_inspect,
+            timelapse=body.timelapse,
+            use_ams=body.use_ams,
+            mesh_mode_fast_check=body.mesh_mode_fast_check,
+            execute_swap_macros=body.execute_swap_macros,
+            swap_macro_events=body.swap_macro_events,
+            created_by_id=user.id if user else None,
+            project_id=archive.project_id,
+        )
+        logger.info(
+            "Queued %s reprint copies for archive %s on printer %s (batch %s)",
+            len(items),
+            archive_id,
+            printer_id,
+            batch_id,
+        )
+        return {
+            "status": "queued",
+            "printer_id": printer_id,
+            "archive_id": archive_id,
+            "filename": archive.filename,
+            "dispatch_job_id": None,
+            "dispatch_position": None,
+            "batch_id": batch_id,
+            "queued_copies": len(items),
+        }
+
     try:
         dispatch_result = await background_dispatch.dispatch_reprint_archive(
             archive_id=archive_id,
@@ -3366,27 +3409,7 @@ async def reprint_archive(
     )
 
     batch_id: str | None = None
-    extra = max(0, (body.quantity or 1) - 1)
-    if extra > 0:
-        from backend.app.services.queue_batch import enqueue_batch_copies
-
-        _items, batch_id = await enqueue_batch_copies(
-            db,
-            printer_id=printer_id,
-            count=extra,
-            archive_id=archive_id,
-            plate_id=body.plate_id,
-            ams_mapping=body.ams_mapping,
-            bed_levelling=body.bed_levelling,
-            flow_cali=body.flow_cali,
-            layer_inspect=body.layer_inspect,
-            timelapse=body.timelapse,
-            use_ams=body.use_ams,
-            mesh_mode_fast_check=body.mesh_mode_fast_check,
-            execute_swap_macros=body.execute_swap_macros,
-            swap_macro_events=body.swap_macro_events,
-            created_by_id=user.id if user else None,
-        )
+    extra = 0
 
     return {
         "status": "dispatched",

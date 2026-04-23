@@ -3372,6 +3372,7 @@ export default {
     stats: {
       printJobs: 'Завдання друку',
       total: 'всього',
+      inProgress: '{{count}} в процесі',
       failed: '{{count}} невдалих',
       partsPrinted: '{{count}} деталей надруковано',
       printTime: 'Час друку',

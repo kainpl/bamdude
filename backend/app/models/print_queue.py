@@ -22,8 +22,12 @@ class PrintQueueItem(Base):
 
     # Source file (either archive_id OR library_file_id; archive created at print start from library file)
     archive_id: Mapped[int | None] = mapped_column(ForeignKey("print_archives.id", ondelete="CASCADE"), nullable=True)
+    # SET NULL on library file delete so queue items survive as "orphan" rows
+    # with their archive_id (if any) still pointing at a valid archive. The
+    # delete_file endpoint explicitly nulls this too for SQLite installs where
+    # PRAGMA foreign_keys is off by default.
     library_file_id: Mapped[int | None] = mapped_column(
-        ForeignKey("library_files.id", ondelete="CASCADE"), nullable=True
+        ForeignKey("library_files.id", ondelete="SET NULL"), nullable=True
     )
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
 

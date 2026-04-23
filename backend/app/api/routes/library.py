@@ -1633,7 +1633,7 @@ def is_sliced_file(filename: str) -> bool:
 async def add_files_to_queue(
     request: AddToQueueRequest,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission(Permission.QUEUE_CREATE)),
+    current_user: User | None = Depends(require_permission(Permission.QUEUE_CREATE)),
 ):
     """Add library files to the print queue.
 
@@ -1679,13 +1679,18 @@ async def add_files_to_queue(
                 )
                 continue
 
-            # Create queue item referencing library file (archive created at print start)
+            # Create queue item referencing library file (archive created at print start).
+            # Inherit project_id from the library file so project stats count the
+            # item correctly even when bulk-added from File Manager with no project
+            # context passed from the UI.
             max_position += 1
             queue_item = PrintQueueItem(
                 printer_id=None,  # Unassigned
                 library_file_id=file_id,
+                project_id=lib_file.project_id,
                 position=max_position,
                 status="pending",
+                created_by_id=current_user.id if current_user else None,
             )
             db.add(queue_item)
 
@@ -2211,6 +2216,46 @@ async def print_library_file(
         body.execute_swap_macros = False
         body.swap_macro_events = None
 
+    # Print-Now quantity handling:
+    # * quantity == 1 → direct dispatch (no queue items, fastest path).
+    # * quantity > 1 → route ALL copies through the queue, so the whole
+    #   batch is visible in one place and there's no split between an
+    #   "invisible" primary running via background_dispatch and queued
+    #   siblings. The scheduler picks them up one by one.
+    qty = max(1, body.quantity or 1)
+
+    if qty > 1:
+        from backend.app.services.queue_batch import enqueue_batch_copies
+
+        items, batch_id = await enqueue_batch_copies(
+            db,
+            printer_id=printer_id,
+            count=qty,
+            library_file_id=file_id,
+            plate_id=body.plate_id,
+            ams_mapping=body.ams_mapping,
+            bed_levelling=body.bed_levelling,
+            flow_cali=body.flow_cali,
+            layer_inspect=body.layer_inspect,
+            timelapse=body.timelapse,
+            use_ams=body.use_ams,
+            mesh_mode_fast_check=body.mesh_mode_fast_check,
+            execute_swap_macros=body.execute_swap_macros,
+            swap_macro_events=body.swap_macro_events,
+            created_by_id=current_user.id if current_user else None,
+            project_id=body.project_id,
+        )
+        return {
+            "status": "queued",
+            "printer_id": printer_id,
+            "archive_id": None,
+            "filename": lib_file.filename,
+            "dispatch_job_id": None,
+            "dispatch_position": None,
+            "batch_id": batch_id,
+            "queued_copies": len(items),
+        }
+
     try:
         dispatch_result = await background_dispatch.dispatch_print_library_file(
             file_id=file_id,
@@ -2226,28 +2271,6 @@ async def print_library_file(
     except DispatchEnqueueRejected as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
 
-    batch_id: str | None = None
-    extra = max(0, (body.quantity or 1) - 1)
-    if extra > 0:
-        from backend.app.services.queue_batch import enqueue_batch_copies
-
-        _items, batch_id = await enqueue_batch_copies(
-            db,
-            printer_id=printer_id,
-            count=extra,
-            library_file_id=file_id,
-            plate_id=body.plate_id,
-            ams_mapping=body.ams_mapping,
-            bed_levelling=body.bed_levelling,
-            flow_cali=body.flow_cali,
-            layer_inspect=body.layer_inspect,
-            timelapse=body.timelapse,
-            use_ams=body.use_ams,
-            mesh_mode_fast_check=body.mesh_mode_fast_check,
-            execute_swap_macros=body.execute_swap_macros,
-            swap_macro_events=body.swap_macro_events,
-        )
-
     return {
         "status": "dispatched",
         "printer_id": printer_id,
@@ -2255,8 +2278,8 @@ async def print_library_file(
         "filename": lib_file.filename,
         "dispatch_job_id": dispatch_result["dispatch_job_id"],
         "dispatch_position": dispatch_result["dispatch_position"],
-        "batch_id": batch_id,
-        "queued_copies": extra,
+        "batch_id": None,
+        "queued_copies": 0,
     }
 
 
@@ -2479,6 +2502,15 @@ async def delete_file(
             abs_thumb_path.unlink()
     except OSError as e:
         logger.warning("Failed to delete file from disk: %s", e)
+
+    # Explicit NULL-ify on dependent rows before deleting the library file.
+    # SQLite runs with PRAGMA foreign_keys off by default, so FK rules don't
+    # trigger — we can't rely on ON DELETE SET NULL. This runs unconditionally
+    # so the behaviour is identical on SQLite and PostgreSQL.
+    await db.execute(update(PrintArchive).where(PrintArchive.library_file_id == file.id).values(library_file_id=None))
+    await db.execute(
+        update(PrintQueueItem).where(PrintQueueItem.library_file_id == file.id).values(library_file_id=None)
+    )
 
     await db.delete(file)
     await db.commit()

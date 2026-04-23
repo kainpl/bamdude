@@ -688,6 +688,9 @@ export function ProjectDetailPage() {
                 <div>
                   <p className="text-sm text-bambu-gray">{t('projectDetail.stats.printJobs')}</p>
                   <p className="text-xl font-semibold text-white">{stats.total_archives} <span className="text-sm font-normal text-bambu-gray">{t('projectDetail.stats.total')}</span></p>
+                  {stats.in_progress_prints > 0 && (
+                    <p className="text-sm text-bambu-blue">{t('projectDetail.stats.inProgress', { count: stats.in_progress_prints })}</p>
+                  )}
                   {stats.failed_prints > 0 && (
                     <p className="text-sm text-status-error">{t('projectDetail.stats.failed', { count: stats.failed_prints })}</p>
                   )}
