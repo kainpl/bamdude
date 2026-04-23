@@ -82,6 +82,7 @@ async def test_engine():
         print_queue,
         printer,
         project,
+        project_print_plan,
         settings,
         smart_plug,
         spool,

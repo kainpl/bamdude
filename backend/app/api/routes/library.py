@@ -13,7 +13,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
 from fastapi.responses import FileResponse as FastAPIFileResponse
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -56,6 +56,7 @@ from backend.app.schemas.library import (
     ZipExtractResult,
 )
 from backend.app.services.archive import ThreeMFParser
+from backend.app.services.print_plan import ensure_plan_row, remove_plan_row, sync_plan_for_folder
 from backend.app.services.stl_thumbnail import generate_stl_thumbnail
 from backend.app.utils.threemf_tools import extract_nozzle_mapping_from_3mf
 
@@ -544,16 +545,25 @@ async def update_folder(
         else:
             folder.parent_id = None
 
-    # Update project_id (0 to unlink)
+    # Update project_id (0 to unlink) — cascades to files inside the folder
+    # so that linking a folder to a project backfills the project_id column
+    # on every child file, matching user expectation.
     if data.project_id is not None:
         if data.project_id == 0:
             folder.project_id = None
+            new_file_project_id: int | None = None
         else:
             # Verify project exists
             project_result = await db.execute(select(Project).where(Project.id == data.project_id))
             if not project_result.scalar_one_or_none():
                 raise HTTPException(status_code=404, detail="Project not found")
             folder.project_id = data.project_id
+            new_file_project_id = data.project_id
+        await db.execute(
+            update(LibraryFile).where(LibraryFile.folder_id == folder_id).values(project_id=new_file_project_id)
+        )
+        # Mirror the project change into print-plan rows for this folder's files.
+        await sync_plan_for_folder(db, folder_id=folder_id, new_project_id=new_file_project_id)
 
     # Update archive_id (0 to unlink)
     if data.archive_id is not None:
@@ -1069,16 +1079,21 @@ async def list_files(
         print_time = None
         filament_grams = None
         sliced_for_model = None
+        object_count = None
         if f.file_metadata:
             print_name = f.file_metadata.get("print_name")
             print_time = f.file_metadata.get("print_time_seconds")
             filament_grams = f.file_metadata.get("filament_used_grams")
             sliced_for_model = f.file_metadata.get("sliced_for_model")
+            printable_objects = f.file_metadata.get("printable_objects")
+            if isinstance(printable_objects, dict):
+                object_count = len(printable_objects)
 
         file_list.append(
             FileListResponse(
                 id=f.id,
                 folder_id=f.folder_id,
+                project_id=f.project_id,
                 is_external=f.is_external,
                 filename=f.filename,
                 file_type=f.file_type,
@@ -1091,6 +1106,7 @@ async def list_files(
                 print_name=print_name,
                 print_time_seconds=print_time,
                 filament_used_grams=filament_grams,
+                object_count=object_count,
                 sliced_for_model=sliced_for_model,
                 swap_compatible=f.swap_compatible,
                 notes_count=notes_counts.get(f.id, 0),
@@ -2300,11 +2316,15 @@ async def get_file(
     print_time = None
     filament_grams = None
     sliced_for_model = None
+    object_count = None
     if file.file_metadata:
         print_name = file.file_metadata.get("print_name")
         print_time = file.file_metadata.get("print_time_seconds")
         filament_grams = file.file_metadata.get("filament_used_grams")
         sliced_for_model = file.file_metadata.get("sliced_for_model")
+        printable_objects = file.file_metadata.get("printable_objects")
+        if isinstance(printable_objects, dict):
+            object_count = len(printable_objects)
 
     return FileResponseSchema(
         id=file.id,
@@ -2330,6 +2350,7 @@ async def get_file(
         print_name=print_name,
         print_time_seconds=print_time,
         filament_used_grams=filament_grams,
+        object_count=object_count,
         sliced_for_model=sliced_for_model,
         swap_compatible=file.swap_compatible,
     )
@@ -2373,12 +2394,19 @@ async def update_file(
     if data.folder_id is not None:
         if data.folder_id == 0:
             file.folder_id = None
+            # Moving to root clears project — root has no folder, no project.
+            # Explicit data.project_id below still wins if set.
+            file.project_id = None
         else:
-            # Verify folder exists
+            # Verify folder exists and inherit its project_id so moving a
+            # file into a project-linked folder fills the column, and moving
+            # it into an unlinked folder clears it.
             folder_result = await db.execute(select(LibraryFolder).where(LibraryFolder.id == data.folder_id))
-            if not folder_result.scalar_one_or_none():
+            target_folder = folder_result.scalar_one_or_none()
+            if not target_folder:
                 raise HTTPException(status_code=404, detail="Folder not found")
             file.folder_id = data.folder_id
+            file.project_id = target_folder.project_id
 
     if data.project_id is not None:
         if data.project_id == 0:
@@ -2392,6 +2420,20 @@ async def update_file(
 
     if data.notes is not None:
         file.notes = data.notes if data.notes else None
+
+    # Keep the print-plan in sync with this file's final project attachment.
+    # Runs whenever folder_id or project_id touched the row — no-op for other
+    # field edits (filename / notes).
+    if data.folder_id is not None or data.project_id is not None:
+        if file.project_id is None:
+            await remove_plan_row(db, library_file_id=file.id)
+        else:
+            await ensure_plan_row(
+                db,
+                library_file_id=file.id,
+                project_id=file.project_id,
+                file_type=file.file_type,
+            )
 
     await db.commit()
     await db.refresh(file)
@@ -2611,7 +2653,10 @@ async def move_files(
     """
     user, can_modify_all = auth_result
 
-    # Verify folder exists if specified
+    # Verify folder exists if specified, and pick up its project_id so moved
+    # files inherit the destination folder's project (or null when moving to
+    # root / to a folder that isn't linked).
+    target_project_id: int | None = None
     if data.folder_id is not None:
         folder_result = await db.execute(select(LibraryFolder).where(LibraryFolder.id == data.folder_id))
         target_folder = folder_result.scalar_one_or_none()
@@ -2619,6 +2664,7 @@ async def move_files(
             raise HTTPException(status_code=404, detail="Folder not found")
         if target_folder.is_external and target_folder.external_readonly:
             raise HTTPException(status_code=403, detail="Cannot move files to a read-only external folder")
+        target_project_id = target_folder.project_id
 
     # Update files
     moved = 0
@@ -2636,6 +2682,16 @@ async def move_files(
                 skipped += 1
                 continue
             file.folder_id = data.folder_id
+            file.project_id = target_project_id
+            if target_project_id is None:
+                await remove_plan_row(db, library_file_id=file.id)
+            else:
+                await ensure_plan_row(
+                    db,
+                    library_file_id=file.id,
+                    project_id=target_project_id,
+                    file_type=file.file_type,
+                )
             moved += 1
 
     return {"status": "success", "moved": moved, "skipped": skipped}

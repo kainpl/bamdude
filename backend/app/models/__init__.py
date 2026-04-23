@@ -18,6 +18,7 @@ from backend.app.models.pending_upload import PendingUpload
 from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.project import Project
+from backend.app.models.project_print_plan import ProjectPrintPlanItem
 from backend.app.models.settings import Settings
 from backend.app.models.smart_plug import SmartPlug
 from backend.app.models.smart_plug_energy_snapshot import SmartPlugEnergySnapshot
@@ -44,6 +45,7 @@ __all__ = [
     "NotificationTemplate",
     "NotificationLog",
     "Project",
+    "ProjectPrintPlanItem",
     "APIKey",
     "AMSSensorHistory",
     "AmsLabel",

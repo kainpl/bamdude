@@ -105,6 +105,8 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 ### Projects
 - Group related prints
 - Track plates and parts
+- **Print plan table**: per-file copies with live filament/time/cost totals
+- Link folders or individual files from the File Manager
 - Import/Export as ZIP or JSON
 
 </td>

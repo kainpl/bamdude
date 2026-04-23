@@ -246,6 +246,62 @@ class ProjectExport(BaseModel):
     linked_folders: list[LinkedFolderExport] = []
 
 
+class PrintPlanItemResponse(BaseModel):
+    """One file in a project's print plan, with computed per-row totals."""
+
+    id: int
+    library_file_id: int
+    copies: int
+    order_index: int
+
+    # Joined library file fields for display (read-only)
+    filename: str
+    print_name: str | None = None
+    file_type: str
+    thumbnail_path: str | None = None
+    swap_compatible: bool = False
+
+    # Per-unit metadata (nullable — unsliced 3MFs have no timings)
+    filament_grams: float | None = None
+    print_time_seconds: int | None = None
+    object_count: int | None = None
+    cost_per_copy: float | None = None
+
+    # Computed totals = per-unit × copies (null when per-unit is null)
+    total_filament_grams: float | None = None
+    total_print_time_seconds: int | None = None
+    total_objects: int | None = None
+    total_cost: float | None = None
+
+    class Config:
+        from_attributes = True
+
+
+class PrintPlanResponse(BaseModel):
+    """Full plan: ordered items plus grand totals across all rows."""
+
+    items: list[PrintPlanItemResponse]
+    totals_filament_grams: float = 0.0
+    totals_print_time_seconds: int = 0
+    totals_objects: int = 0
+    totals_cost: float = 0.0
+    # Currency-per-kg used when computing cost, echoed back so the UI can
+    # label the total without a second round-trip to /settings.
+    default_filament_cost_per_kg: float = 0.0
+
+
+class PrintPlanItemUpdate(BaseModel):
+    """Patch a single plan row — only ``copies`` is user-editable here."""
+
+    copies: int
+
+
+class PrintPlanReorderRequest(BaseModel):
+    """Bulk-reorder: list of library_file_ids in the desired display order."""
+
+    library_file_ids: list[int]
+
+
 class ProjectImport(BaseModel):
     """Schema for importing a project."""
 

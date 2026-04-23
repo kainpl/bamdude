@@ -152,6 +152,7 @@ class FileResponse(BaseModel):
     print_name: str | None = None
     print_time_seconds: int | None = None
     filament_used_grams: float | None = None
+    object_count: int | None = None
     sliced_for_model: str | None = None
     swap_compatible: bool = False
 
@@ -164,6 +165,7 @@ class FileListResponse(BaseModel):
 
     id: int
     folder_id: int | None
+    project_id: int | None = None
     is_external: bool = False
     filename: str
     file_type: str
@@ -179,6 +181,7 @@ class FileListResponse(BaseModel):
     print_name: str | None = None
     print_time_seconds: int | None = None
     filament_used_grams: float | None = None
+    object_count: int | None = None
     sliced_for_model: str | None = None
     swap_compatible: bool = False
     # Number of notes attached (gh#3) - drives the card icon variant

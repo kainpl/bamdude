@@ -23,6 +23,7 @@ from backend.app.models.library import LibraryFile, LibraryFolder
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.project import Project
 from backend.app.models.project_bom import ProjectBOMItem
+from backend.app.models.project_print_plan import ProjectPrintPlanItem
 from backend.app.models.user import User
 from backend.app.schemas.project import (
     ArchivePreview,
@@ -31,6 +32,10 @@ from backend.app.schemas.project import (
     BOMItemCreate,
     BOMItemResponse,
     BOMItemUpdate,
+    PrintPlanItemResponse,
+    PrintPlanItemUpdate,
+    PrintPlanReorderRequest,
+    PrintPlanResponse,
     ProjectChildPreview,
     ProjectCreate,
     ProjectImport,
@@ -1761,3 +1766,161 @@ async def import_project_file(
         updated_at=project.updated_at,
         stats=stats,
     )
+
+
+# ============ Print Plan ============
+
+
+def _build_plan_item_response(
+    row: ProjectPrintPlanItem,
+    file: LibraryFile,
+    default_cost_per_kg: float,
+) -> PrintPlanItemResponse:
+    """Derive per-row totals from the joined library file's metadata."""
+    meta = file.file_metadata or {}
+    grams = meta.get("filament_used_grams")
+    grams = float(grams) if isinstance(grams, (int, float)) else None
+    secs = meta.get("print_time_seconds")
+    secs = int(secs) if isinstance(secs, (int, float)) else None
+    objs = meta.get("printable_objects")
+    obj_count = len(objs) if isinstance(objs, dict) else None
+    cost_per_copy = round(grams / 1000 * default_cost_per_kg, 2) if grams is not None else None
+
+    total_grams = round(grams * row.copies, 2) if grams is not None else None
+    total_secs = secs * row.copies if secs is not None else None
+    total_objs = obj_count * row.copies if obj_count is not None else None
+    total_cost = round(cost_per_copy * row.copies, 2) if cost_per_copy is not None else None
+
+    return PrintPlanItemResponse(
+        id=row.id,
+        library_file_id=row.library_file_id,
+        copies=row.copies,
+        order_index=row.order_index,
+        filename=file.filename,
+        print_name=(meta.get("print_name") if isinstance(meta.get("print_name"), str) else None),
+        file_type=file.file_type,
+        thumbnail_path=file.thumbnail_path,
+        swap_compatible=file.swap_compatible,
+        filament_grams=grams,
+        print_time_seconds=secs,
+        object_count=obj_count,
+        cost_per_copy=cost_per_copy,
+        total_filament_grams=total_grams,
+        total_print_time_seconds=total_secs,
+        total_objects=total_objs,
+        total_cost=total_cost,
+    )
+
+
+async def _get_default_filament_cost(db: AsyncSession) -> float:
+    """Same fallback semantics the archive service uses — 25.0/kg when unset."""
+    from backend.app.api.routes.settings import get_setting
+
+    raw = await get_setting(db, "default_filament_cost")
+    try:
+        return float(raw) if raw is not None else 25.0
+    except (TypeError, ValueError):
+        return 25.0
+
+
+async def _load_print_plan(db: AsyncSession, project_id: int) -> PrintPlanResponse:
+    rows = (
+        await db.execute(
+            select(ProjectPrintPlanItem, LibraryFile)
+            .join(LibraryFile, ProjectPrintPlanItem.library_file_id == LibraryFile.id)
+            .where(ProjectPrintPlanItem.project_id == project_id)
+            .order_by(ProjectPrintPlanItem.order_index, ProjectPrintPlanItem.id)
+        )
+    ).all()
+
+    default_cost_per_kg = await _get_default_filament_cost(db)
+
+    items = [_build_plan_item_response(row, file, default_cost_per_kg) for row, file in rows]
+
+    return PrintPlanResponse(
+        items=items,
+        totals_filament_grams=round(sum((i.total_filament_grams or 0) for i in items), 2),
+        totals_print_time_seconds=int(sum((i.total_print_time_seconds or 0) for i in items)),
+        totals_objects=int(sum((i.total_objects or 0) for i in items)),
+        totals_cost=round(sum((i.total_cost or 0) for i in items), 2),
+        default_filament_cost_per_kg=default_cost_per_kg,
+    )
+
+
+@router.get("/{project_id}/print-plan", response_model=PrintPlanResponse)
+async def get_project_print_plan(
+    project_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_READ),
+):
+    """Return the ordered print plan for a project with computed totals."""
+    project = (await db.execute(select(Project).where(Project.id == project_id))).scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return await _load_print_plan(db, project_id)
+
+
+@router.patch("/{project_id}/print-plan/{library_file_id}", response_model=PrintPlanItemResponse)
+async def update_project_print_plan_item(
+    project_id: int,
+    library_file_id: int,
+    body: PrintPlanItemUpdate,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+):
+    """Update a plan row's ``copies``. Minimum 1 — 0 means unlink via file update."""
+    if body.copies < 1:
+        raise HTTPException(status_code=400, detail="copies must be >= 1")
+
+    row = (
+        await db.execute(
+            select(ProjectPrintPlanItem).where(
+                ProjectPrintPlanItem.project_id == project_id,
+                ProjectPrintPlanItem.library_file_id == library_file_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Print plan row not found")
+
+    file = (await db.execute(select(LibraryFile).where(LibraryFile.id == library_file_id))).scalar_one_or_none()
+    if file is None:
+        raise HTTPException(status_code=404, detail="Library file not found")
+
+    row.copies = body.copies
+    await db.commit()
+    await db.refresh(row)
+
+    default_cost_per_kg = await _get_default_filament_cost(db)
+    return _build_plan_item_response(row, file, default_cost_per_kg)
+
+
+@router.post("/{project_id}/print-plan/reorder", response_model=PrintPlanResponse)
+async def reorder_project_print_plan(
+    project_id: int,
+    body: PrintPlanReorderRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+):
+    """Assign ``order_index`` = position-in-list for the provided file IDs.
+
+    Rows not mentioned keep their existing order_index. This lets the client
+    ship a stable ID list without knowing about rows that appeared between
+    reads (e.g. a concurrent folder link adding a new file).
+    """
+    rows_by_file = {
+        r.library_file_id: r
+        for r in (
+            await db.execute(select(ProjectPrintPlanItem).where(ProjectPrintPlanItem.project_id == project_id))
+        ).scalars()
+    }
+
+    missing = [fid for fid in body.library_file_ids if fid not in rows_by_file]
+    if missing:
+        raise HTTPException(status_code=404, detail=f"Plan rows not found for files: {missing}")
+
+    for pos, fid in enumerate(body.library_file_ids):
+        rows_by_file[fid].order_index = pos
+
+    await db.commit()
+    return await _load_print_plan(db, project_id)

@@ -16,6 +16,7 @@ import {
   FileBox,
   Clock,
   HardDrive,
+  Package,
   File,
   MoveRight,
   CheckSquare,
@@ -47,6 +48,7 @@ import { api } from '../api/client';
 import type {
   LibraryFolderTree,
   LibraryFileListItem,
+  LibraryFileUpdate,
   LibraryFolderCreate,
   LibraryFolderUpdate,
   ExternalFolderCreate,
@@ -518,6 +520,99 @@ function LinkFolderModal({ folder, onClose, onLink, isLoading, t }: LinkFolderMo
   );
 }
 
+// Link File Modal — per-file project link (simpler than folder: files have no archive_id)
+interface LinkFileModalProps {
+  file: LibraryFileListItem;
+  onClose: () => void;
+  onLink: (update: LibraryFileUpdate) => void;
+  isLoading: boolean;
+  t: TFunction;
+}
+
+function LinkFileModal({ file, onClose, onLink, isLoading, t }: LinkFileModalProps) {
+  const [selectedId, setSelectedId] = useState<number | null>(file.project_id ?? null);
+
+  const { data: projects } = useQuery({
+    queryKey: ['projects'],
+    queryFn: () => api.getProjects(),
+  });
+
+  const handleSave = () => {
+    if (selectedId != null) {
+      onLink({ project_id: selectedId });
+    }
+  };
+
+  const handleUnlink = () => {
+    onLink({ project_id: 0 });
+  };
+
+  const isLinked = file.project_id != null;
+
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+      <div className="bg-bambu-dark-secondary rounded-lg w-full max-w-md border border-bambu-dark-tertiary">
+        <div className="p-4 border-b border-bambu-dark-tertiary flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+            <Link2 className="w-5 h-5 text-bambu-green" />
+            {t('fileManager.linkFile')}
+          </h2>
+          <button onClick={onClose} className="p-1 hover:bg-bambu-dark rounded">
+            <X className="w-5 h-5 text-bambu-gray" />
+          </button>
+        </div>
+
+        <div className="p-4 space-y-4">
+          <p className="text-sm text-bambu-gray">
+            {t('fileManager.linkFileDescription', { name: file.print_name || file.filename })}
+          </p>
+
+          <div className="max-h-64 overflow-y-auto space-y-1 bg-bambu-dark rounded-lg p-2">
+            {projects && projects.length > 0 ? (
+              projects.map((project) => (
+                <button
+                  key={project.id}
+                  onClick={() => setSelectedId(project.id)}
+                  className={`w-full text-left px-3 py-2 rounded transition-colors flex items-center gap-2 ${
+                    selectedId === project.id
+                      ? 'bg-bambu-green/20 text-bambu-green'
+                      : 'hover:bg-bambu-dark-tertiary text-white'
+                  }`}
+                >
+                  <div
+                    className="w-3 h-3 rounded-full flex-shrink-0"
+                    style={{ backgroundColor: project.color || '#00ae42' }}
+                  />
+                  <span className="truncate">{project.name}</span>
+                </button>
+              ))
+            ) : (
+              <p className="text-sm text-bambu-gray text-center py-4">{t('fileManager.noProjectsFound')}</p>
+            )}
+          </div>
+        </div>
+
+        <div className="p-4 border-t border-bambu-dark-tertiary flex justify-between">
+          {isLinked && (
+            <Button variant="danger" onClick={handleUnlink} disabled={isLoading}>
+              <Unlink className="w-4 h-4 mr-2" />
+              {t('fileManager.unlink')}
+            </Button>
+          )}
+          <div className={`flex gap-2 ${!isLinked ? 'ml-auto' : ''}`}>
+            <Button variant="secondary" onClick={onClose}>
+              {t('common.cancel')}
+            </Button>
+            <Button onClick={handleSave} disabled={selectedId == null || selectedId === file.project_id || isLoading}>
+              {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : t('fileManager.link')}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Folder Tree Item
 interface FolderTreeItemProps {
   folder: LibraryFolderTree;
@@ -697,6 +792,7 @@ interface FileCardProps {
   onPrint?: (file: LibraryFileListItem) => void;
   onPreview3d?: (file: LibraryFileListItem) => void;
   onRename?: (file: LibraryFileListItem) => void;
+  onLink?: (file: LibraryFileListItem) => void;
   onGenerateThumbnail?: (file: LibraryFileListItem) => void;
   thumbnailVersion?: number;
   hasPermission: (permission: Permission) => boolean;
@@ -843,7 +939,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   );
 }
 
-function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, onAddToQueue, onPrint, onPreview3d, onRename, onGenerateThumbnail, thumbnailVersion, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
+function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, onAddToQueue, onPrint, onPreview3d, onRename, onLink, onGenerateThumbnail, thumbnailVersion, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
   const [showActions, setShowActions] = useState(false);
 
   return (
@@ -880,10 +976,33 @@ function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, 
             {file.file_type.toUpperCase()}
           </span>
         </div>
-        {/* Notes overlay (gh#3) - bottom-left corner of the thumbnail */}
-        <div className="absolute bottom-0 left-2" onClick={(e) => e.stopPropagation()}>
+        {/* Notes overlay - bottom-left corner */}
+        <div className="absolute bottom-1 left-2" onClick={(e) => e.stopPropagation()}>
           <LibraryFileNotesButton fileId={file.id} initialCount={file.notes_count} variant="overlay" />
         </div>
+        {/* Project link overlay - bottom-right, same height as notes */}
+        {onLink && (
+          <div className="absolute bottom-2 right-2" onClick={(e) => e.stopPropagation()}>
+            {file.project_id != null ? (
+              <button
+                onClick={() => onLink(file)}
+                className="rounded-md bg-blue-500/85 backdrop-blur text-white hover:bg-blue-500 transition-colors flex items-center gap-1 px-1.5 py-1"
+                title={t('fileManager.linkedToProject')}
+              >
+                <Link2 className="w-5 h-5" />
+                <Briefcase className="w-4 h-4" />
+              </button>
+            ) : canModify('library', 'update', file.created_by_id) ? (
+              <button
+                onClick={() => onLink(file)}
+                className="rounded-md bg-bambu-dark/80 backdrop-blur text-bambu-gray hover:text-bambu-green hover:bg-bambu-dark transition-colors flex items-center p-1 opacity-0 group-hover:opacity-100"
+                title={t('fileManager.linkToProject')}
+              >
+                <Link2 className="w-5 h-5" />
+              </button>
+            ) : null}
+          </div>
+        )}
       </div>
 
       {/* Info */}
@@ -897,6 +1016,23 @@ function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, 
             <span className="flex items-center gap-1">
               <Clock className="w-3 h-3" />
               {formatDuration(file.print_time_seconds)}
+            </span>
+          )}
+          {file.filament_used_grams != null && file.filament_used_grams > 0 && (
+            <span className="flex items-center gap-1">
+              <Package className="w-3 h-3" />
+              {file.filament_used_grams.toFixed(1)}g
+            </span>
+          )}
+          {file.object_count != null && file.object_count > 0 && (
+            <span
+              className="flex items-center gap-1"
+              title={file.object_count === 1
+                ? t('archives.card.object', { count: file.object_count })
+                : t('archives.card.objects', { count: file.object_count })}
+            >
+              <Box className="w-3 h-3" />
+              {file.object_count}
             </span>
           )}
         </div>
@@ -1052,6 +1188,7 @@ export function FileManagerPage() {
   const [showMoveModal, setShowMoveModal] = useState(false);
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [linkFolder, setLinkFolder] = useState<LibraryFolderTree | null>(null);
+  const [linkFile, setLinkFile] = useState<LibraryFileListItem | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<{ type: 'file' | 'folder' | 'bulk'; id: number; count?: number } | null>(null);
   const [printFile, setPrintFile] = useState<LibraryFileListItem | null>(null);
   const [printMultiFile, setPrintMultiFile] = useState<LibraryFileListItem | null>(null);
@@ -1348,6 +1485,23 @@ export function FileManagerPage() {
       setLinkFolder(null);
       const isUnlink = variables.data.project_id === 0 && variables.data.archive_id === 0;
       showToast(isUnlink ? t('fileManager.toast.folderUnlinked') : t('fileManager.toast.folderLinked'), 'success');
+    },
+    onError: (error: Error) => showToast(error.message, 'error'),
+  });
+
+  const linkFileMutation = useMutation({
+    mutationFn: ({ id, data }: { id: number; data: LibraryFileUpdate }) =>
+      api.updateLibraryFile(id, data),
+    onSuccess: (_, variables) => {
+      // File's project_id might change the plan row for the linked project —
+      // invalidate both library-files and project-print-plan queries so the
+      // UI reflects the new link status without a hard refresh.
+      queryClient.invalidateQueries({ queryKey: ['library-files'] });
+      queryClient.invalidateQueries({ queryKey: ['project-print-plan'] });
+      queryClient.invalidateQueries({ queryKey: ['project-files'] });
+      setLinkFile(null);
+      const isUnlink = variables.data.project_id === 0 || variables.data.project_id == null;
+      showToast(isUnlink ? t('fileManager.toast.fileUnlinked') : t('fileManager.toast.fileLinked'), 'success');
     },
     onError: (error: Error) => showToast(error.message, 'error'),
   });
@@ -2058,6 +2212,7 @@ export function FileManagerPage() {
                     onPrint={setPrintFile}
                     onPreview3d={setViewerFile}
                     onRename={(f) => setRenameItem({ type: 'file', id: f.id, name: f.filename })}
+                    onLink={setLinkFile}
                     onGenerateThumbnail={(f) => singleThumbnailMutation.mutate(f.id)}
                     thumbnailVersion={thumbnailVersions[file.id]}
                     hasPermission={hasPermission}
@@ -2165,6 +2320,25 @@ export function FileManagerPage() {
                     <div className="text-sm text-bambu-gray truncate">{formatDateTime(file.created_at, timeFormat, dateFormat)}</div>
                     {/* Actions */}
                     <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                      {/* Project link / unlink — sits with the other inline actions */}
+                      {file.project_id != null ? (
+                        <button
+                          onClick={() => setLinkFile(file)}
+                          className="p-1.5 rounded bg-blue-500/20 hover:bg-blue-500/30 flex items-center gap-1 transition-colors"
+                          title={t('fileManager.linkedToProject')}
+                        >
+                          <Link2 className="w-4 h-4 text-blue-400" />
+                          <Briefcase className="w-3.5 h-3.5 text-blue-400" />
+                        </button>
+                      ) : canModify('library', 'update', file.created_by_id) ? (
+                        <button
+                          onClick={() => setLinkFile(file)}
+                          className="p-1.5 rounded transition-colors hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green"
+                          title={t('fileManager.linkToProject')}
+                        >
+                          <Link2 className="w-4 h-4" />
+                        </button>
+                      ) : null}
                       {isSlicedFilename(file.filename) && (
                         <>
                           {/* Notes (gh#3) - bare inline button, matches Print/Clock/Box styling */}
@@ -2277,6 +2451,16 @@ export function FileManagerPage() {
           onClose={() => setLinkFolder(null)}
           onLink={(data) => updateFolderMutation.mutate({ id: linkFolder.id, data })}
           isLoading={updateFolderMutation.isPending}
+          t={t}
+        />
+      )}
+
+      {linkFile && (
+        <LinkFileModal
+          file={linkFile}
+          onClose={() => setLinkFile(null)}
+          onLink={(data) => linkFileMutation.mutate({ id: linkFile.id, data })}
+          isLoading={linkFileMutation.isPending}
           t={t}
         />
       )}

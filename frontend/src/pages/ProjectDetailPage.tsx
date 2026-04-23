@@ -33,10 +33,16 @@ import {
   Play,
   CalendarPlus,
   FileBox,
+  Box,
+  Coins,
+  ArrowUp,
+  ArrowDown,
+  Minus,
+  Unlink,
 } from 'lucide-react';
 import { api } from '../api/client';
-import { parseUTCDate, formatDateOnly, formatDateTime, formatDurationFromHours, type TimeFormat } from '../utils/date';
-import type { Archive, ProjectUpdate, BOMItem, BOMItemCreate, BOMItemUpdate, LibraryFileListItem } from '../api/client';
+import { parseUTCDate, formatDateOnly, formatDateTime, formatDuration, formatDurationFromHours, type TimeFormat } from '../utils/date';
+import type { Archive, ProjectUpdate, BOMItem, BOMItemCreate, BOMItemUpdate, LibraryFileListItem, PrintPlanItem } from '../api/client';
 import { Card, CardContent } from '../components/Card';
 import { Button } from '../components/Button';
 import { useToast } from '../contexts/ToastContext';
@@ -251,24 +257,74 @@ export function ProjectDetailPage() {
   });
 
   // Single bulk query - replaces the previous N+1 useQueries pattern
-  const { data: allProjectFiles, isLoading: projectFilesLoading } = useQuery({
+  const { data: allProjectFiles } = useQuery({
     queryKey: ['project-files', projectId],
     queryFn: () => api.getLibraryFiles(null, false, projectId),
     enabled: projectId > 0,
   });
 
-  // Group files by folder_id for the section-based render
-  const filesByFolder = useMemo(() => {
-    const map = new Map<number, LibraryFileListItem[]>();
-    for (const file of allProjectFiles ?? []) {
-      if (file.folder_id != null) {
-        const arr = map.get(file.folder_id) ?? [];
-        arr.push(file);
-        map.set(file.folder_id, arr);
-      }
-    }
+  // Print plan: ordered list of .3mf files with per-row copies + totals.
+  const { data: printPlan, isLoading: planLoading } = useQuery({
+    queryKey: ['project-print-plan', projectId],
+    queryFn: () => api.getProjectPrintPlan(projectId),
+    enabled: projectId > 0,
+  });
+
+  const invalidatePlan = () => {
+    queryClient.invalidateQueries({ queryKey: ['project-print-plan', projectId] });
+  };
+
+  const updateCopiesMutation = useMutation({
+    mutationFn: ({ fileId, copies }: { fileId: number; copies: number }) =>
+      api.updatePrintPlanItem(projectId, fileId, copies),
+    onSuccess: invalidatePlan,
+    onError: (e: Error) => showToast(e.message, 'error'),
+  });
+
+  const reorderPlanMutation = useMutation({
+    mutationFn: (libraryFileIds: number[]) => api.reorderPrintPlan(projectId, libraryFileIds),
+    onSuccess: invalidatePlan,
+    onError: (e: Error) => showToast(e.message, 'error'),
+  });
+
+  // Unlink a file from this project — backend auto-removes the plan row
+  // via the project_id → print_plan sync hook.
+  const unlinkFileMutation = useMutation({
+    mutationFn: (libraryFileId: number) => api.updateLibraryFile(libraryFileId, { project_id: 0 }),
+    onSuccess: () => {
+      invalidatePlan();
+      queryClient.invalidateQueries({ queryKey: ['project-files', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['library-files'] });
+    },
+    onError: (e: Error) => showToast(e.message, 'error'),
+  });
+
+  const movePlanItem = (index: number, delta: -1 | 1) => {
+    if (!printPlan) return;
+    const items = printPlan.items;
+    const target = index + delta;
+    if (target < 0 || target >= items.length) return;
+    const order = items.map(i => i.library_file_id);
+    [order[index], order[target]] = [order[target], order[index]];
+    reorderPlanMutation.mutate(order);
+  };
+
+  // Look up the full LibraryFileListItem for a plan row so the existing
+  // PrintModal/queue flows keep working unchanged.
+  const filesById = useMemo(() => {
+    const map = new Map<number, LibraryFileListItem>();
+    for (const f of allProjectFiles ?? []) map.set(f.id, f);
     return map;
   }, [allProjectFiles]);
+
+  const openPrint = (item: PrintPlanItem) => {
+    const file = filesById.get(item.library_file_id);
+    if (file) setPrintFile(file);
+  };
+  const openSchedule = (item: PrintPlanItem) => {
+    const file = filesById.get(item.library_file_id);
+    if (file) setScheduleFile(file);
+  };
 
   const currency = getCurrencySymbol(settings?.currency || 'USD');
   const timeFormat: TimeFormat = settings?.time_format || 'system';
@@ -882,7 +938,7 @@ export function ProjectDetailPage() {
         </CardContent>
       </Card>
 
-      {/* Files section - linked folders from File Manager */}
+      {/* Files section - print plan (ordered .3mf files with copies + totals) */}
       <Card>
         <CardContent className="p-4">
           <div className="flex items-center justify-between mb-3">
@@ -892,6 +948,24 @@ export function ProjectDetailPage() {
             </h2>
           </div>
 
+          {/* Linked-folder chips: compact context about where files come from */}
+          {linkedFolders && linkedFolders.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mb-3">
+              {linkedFolders.map((folder) => (
+                <Link
+                  key={folder.id}
+                  to={`/files?folder=${folder.id}`}
+                  className="flex items-center gap-1.5 px-2 py-1 rounded bg-bambu-dark text-xs text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary transition-colors"
+                  title={t('projectDetail.files.fileCount', { count: folder.file_count })}
+                >
+                  <FolderOpen className="w-3.5 h-3.5 text-bambu-green shrink-0" />
+                  <span className="max-w-[140px] truncate">{folder.name}</span>
+                  <span className="text-bambu-gray/60">· {folder.file_count}</span>
+                </Link>
+              ))}
+            </div>
+          )}
+
           <p className="text-xs text-bambu-gray mb-3">
             <Link to="/files" className="text-bambu-green hover:underline">
               {t('projectDetail.files.linkFolders')}
@@ -899,108 +973,221 @@ export function ProjectDetailPage() {
             {' '}{t('projectDetail.files.forQuickAccess')}
           </p>
 
-          {linkedFolders && linkedFolders.length > 0 ? (
-            <div className="space-y-4">
-              {linkedFolders.map((folder) => {
-                const files = filesByFolder.get(folder.id) ?? [];
-                const isLoading = projectFilesLoading;
-
-                return (
-                  <div key={folder.id}>
-                    {/* Folder header - links to File Manager */}
-                    <Link
-                      to={`/files?folder=${folder.id}`}
-                      className="flex items-center justify-between p-3 bg-bambu-dark rounded-lg hover:bg-bambu-dark-tertiary transition-colors mb-2"
+          {planLoading ? (
+            <div className="flex items-center gap-2 text-bambu-gray text-sm">
+              <Loader2 className="w-4 h-4 animate-spin" />
+            </div>
+          ) : !printPlan || printPlan.items.length === 0 ? (
+            <p className="text-bambu-gray/70 text-sm italic">
+              {(!linkedFolders || linkedFolders.length === 0)
+                ? t('projectDetail.files.empty')
+                : t('projectDetail.files.planEmpty')}
+            </p>
+          ) : (
+            <>
+              <div className="space-y-1">
+                {printPlan.items.map((item, idx) => {
+                  const isFirst = idx === 0;
+                  const isLast = idx === printPlan.items.length - 1;
+                  const file = filesById.get(item.library_file_id);
+                  const printable = file ? isSlicedFilename(file.filename) : false;
+                  return (
+                    <div
+                      key={item.id}
+                      className="flex items-center gap-2 p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors"
                     >
-                      <div className="flex items-center gap-3 min-w-0">
-                        <FolderOpen className="w-5 h-5 text-bambu-green shrink-0" />
-                        <div className="min-w-0">
-                          <p className="text-sm text-white truncate">{folder.name}</p>
-                          <p className="text-xs text-bambu-gray">
-                            {t('projectDetail.files.fileCount', { count: folder.file_count })}
-                          </p>
+                      {/* Reorder arrows */}
+                      <div className="flex flex-col gap-0.5 shrink-0">
+                        <button
+                          onClick={() => movePlanItem(idx, -1)}
+                          disabled={isFirst || reorderPlanMutation.isPending}
+                          title={t('projectDetail.files.moveUp')}
+                          className="p-0.5 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+                        >
+                          <ArrowUp className="w-3 h-3" />
+                        </button>
+                        <button
+                          onClick={() => movePlanItem(idx, 1)}
+                          disabled={isLast || reorderPlanMutation.isPending}
+                          title={t('projectDetail.files.moveDown')}
+                          className="p-0.5 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+                        >
+                          <ArrowDown className="w-3 h-3" />
+                        </button>
+                      </div>
+
+                      {/* Thumbnail */}
+                      <div className="w-10 h-10 shrink-0 rounded bg-bambu-dark overflow-hidden flex items-center justify-center">
+                        {item.thumbnail_path ? (
+                          <img
+                            src={api.getLibraryFileThumbnailUrl(item.library_file_id)}
+                            alt={item.print_name || item.filename}
+                            className="w-full h-full object-cover"
+                          />
+                        ) : (
+                          <FileBox className="w-5 h-5 text-bambu-gray/40" />
+                        )}
+                      </div>
+
+                      {/* Name + inline metadata */}
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm text-white truncate" title={item.print_name || item.filename}>
+                          {item.print_name || item.filename}
+                        </p>
+                        <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                          <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-bambu-green/20 text-bambu-green">
+                            {item.file_type.toUpperCase()}
+                          </span>
+                          {item.total_filament_grams != null && item.total_filament_grams > 0 && (
+                            <span className="flex items-center gap-1 text-xs text-bambu-gray">
+                              <Package className="w-3 h-3" />
+                              {item.total_filament_grams.toFixed(1)}g
+                            </span>
+                          )}
+                          {item.total_objects != null && item.total_objects > 0 && (
+                            <span className="flex items-center gap-1 text-xs text-bambu-gray">
+                              <Box className="w-3 h-3" />
+                              {item.total_objects}
+                            </span>
+                          )}
+                          {item.total_print_time_seconds != null && item.total_print_time_seconds > 0 && (
+                            <span className="flex items-center gap-1 text-xs text-bambu-gray">
+                              <Clock className="w-3 h-3" />
+                              {formatDuration(item.total_print_time_seconds)}
+                            </span>
+                          )}
+                          {item.total_cost != null && item.total_cost > 0 && (
+                            <span className="flex items-center gap-1 text-xs text-bambu-gray">
+                              <Coins className="w-3 h-3" />
+                              {currency}{item.total_cost.toFixed(2)}
+                            </span>
+                          )}
                         </div>
                       </div>
-                      <ChevronRight className="w-4 h-4 text-bambu-gray shrink-0" />
-                    </Link>
 
-                    {/* File list within the folder */}
-                    {isLoading ? (
-                      <div className="flex items-center gap-2 px-3 py-2 text-bambu-gray text-sm">
-                        <Loader2 className="w-4 h-4 animate-spin" />
+                      {/* Copies stepper */}
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          onClick={() =>
+                            updateCopiesMutation.mutate({
+                              fileId: item.library_file_id,
+                              copies: Math.max(1, item.copies - 1),
+                            })
+                          }
+                          disabled={item.copies <= 1 || updateCopiesMutation.isPending}
+                          title={t('projectDetail.files.copies')}
+                          className="p-1 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+                        >
+                          <Minus className="w-3.5 h-3.5" />
+                        </button>
+                        <span
+                          className="min-w-[2ch] text-center text-sm text-white font-medium tabular-nums"
+                          title={t('projectDetail.files.copies')}
+                        >
+                          ×{item.copies}
+                        </span>
+                        <button
+                          onClick={() =>
+                            updateCopiesMutation.mutate({
+                              fileId: item.library_file_id,
+                              copies: item.copies + 1,
+                            })
+                          }
+                          disabled={updateCopiesMutation.isPending}
+                          title={t('projectDetail.files.copies')}
+                          className="p-1 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                        </button>
                       </div>
-                    ) : files.length === 0 ? (
-                      <p className="text-bambu-gray/60 text-xs italic px-3">
-                        {t('projectDetail.files.noFiles')}
-                      </p>
-                    ) : (
-                      <div className="space-y-1 pl-3">
-                        {files.map((file) => {
-                          const printable = isSlicedFilename(file.filename);
-                          return (
-                            <div
-                              key={file.id}
-                              className="flex items-center gap-3 p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors"
-                            >
-                              {/* Thumbnail */}
-                              <div className="w-10 h-10 shrink-0 rounded bg-bambu-dark overflow-hidden flex items-center justify-center">
-                                {file.thumbnail_path ? (
-                                  <img
-                                    src={api.getLibraryFileThumbnailUrl(file.id)}
-                                    alt={file.print_name || file.filename}
-                                    className="w-full h-full object-cover"
-                                  />
-                                ) : (
-                                  <FileBox className="w-5 h-5 text-bambu-gray/40" />
-                                )}
-                              </div>
 
-                              {/* Name + type badge */}
-                              <div className="flex-1 min-w-0">
-                                <p className="text-sm text-white truncate" title={file.print_name || file.filename}>
-                                  {file.print_name || file.filename}
-                                </p>
-                                <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
-                                  file.file_type === '3mf' ? 'bg-bambu-green/20 text-bambu-green'
-                                  : file.file_type === 'gcode' ? 'bg-blue-500/20 text-blue-400'
-                                  : 'bg-bambu-gray/20 text-bambu-gray'
-                                }`}>
-                                  {file.file_type.toUpperCase()}
-                                </span>
-                              </div>
+                      {/* Print actions for sliced files */}
+                      {printable && (
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            onClick={() => openPrint(item)}
+                            title={t('projectDetail.files.print')}
+                            className="p-1.5 rounded hover:bg-bambu-green/20 text-bambu-green transition-colors"
+                          >
+                            <Play className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => openSchedule(item)}
+                            title={t('projectDetail.files.addToQueue')}
+                            className="p-1.5 rounded hover:bg-blue-500/20 text-blue-400 transition-colors"
+                          >
+                            <CalendarPlus className="w-4 h-4" />
+                          </button>
+                        </div>
+                      )}
 
-                              {/* Print actions for sliced files */}
-                              {printable && (
-                                <div className="flex items-center gap-1 shrink-0">
-                                  <button
-                                    onClick={() => setPrintFile(file)}
-                                    title={t('projectDetail.files.print')}
-                                    className="p-1.5 rounded hover:bg-bambu-green/20 text-bambu-green transition-colors"
-                                  >
-                                    <Play className="w-4 h-4" />
-                                  </button>
-                                  <button
-                                    onClick={() => setScheduleFile(file)}
-                                    title={t('projectDetail.files.addToQueue')}
-                                    className="p-1.5 rounded hover:bg-blue-500/20 text-blue-400 transition-colors"
-                                  >
-                                    <CalendarPlus className="w-4 h-4" />
-                                  </button>
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
+                      {/* Unlink from project — backend sync removes the plan row */}
+                      <button
+                        onClick={() => unlinkFileMutation.mutate(item.library_file_id)}
+                        disabled={unlinkFileMutation.isPending}
+                        title={t('projectDetail.files.unlinkFile')}
+                        className="p-1.5 rounded hover:bg-red-500/20 text-bambu-gray hover:text-red-400 disabled:opacity-30 disabled:hover:bg-transparent transition-colors shrink-0"
+                      >
+                        <Unlink className="w-4 h-4" />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Grand totals */}
+              <div className="mt-3 p-3 bg-bambu-dark rounded-lg grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
+                <div>
+                  <div className="text-xs text-bambu-gray flex items-center gap-1">
+                    <Layers className="w-3 h-3" />
+                    {t('projectDetail.files.totalPlates')}
                   </div>
-                );
-              })}
-            </div>
-          ) : (
-            <p className="text-bambu-gray/70 text-sm italic">
-              {t('projectDetail.files.empty')}
-            </p>
+                  <div className="text-white font-medium mt-0.5">
+                    {printPlan.items.reduce((sum, i) => sum + i.copies, 0)}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xs text-bambu-gray flex items-center gap-1">
+                    <Box className="w-3 h-3" />
+                    {t('projectDetail.files.totalObjects')}
+                  </div>
+                  <div className="text-white font-medium mt-0.5">{printPlan.totals_objects}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-bambu-gray flex items-center gap-1">
+                    <Package className="w-3 h-3" />
+                    {t('projectDetail.files.totalFilament')}
+                  </div>
+                  <div className="text-white font-medium mt-0.5">
+                    {printPlan.totals_filament_grams.toFixed(1)}g
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xs text-bambu-gray flex items-center gap-1">
+                    <Clock className="w-3 h-3" />
+                    {t('projectDetail.files.totalTime')}
+                  </div>
+                  <div className="text-white font-medium mt-0.5">
+                    {formatDuration(printPlan.totals_print_time_seconds)}
+                  </div>
+                </div>
+                <div>
+                  <div
+                    className="text-xs text-bambu-gray flex items-center gap-1"
+                    title={t('projectDetail.files.costHint', {
+                      currency,
+                      rate: printPlan.default_filament_cost_per_kg.toFixed(2),
+                    })}
+                  >
+                    <Coins className="w-3 h-3" />
+                    {t('projectDetail.files.totalCost')}
+                  </div>
+                  <div className="text-white font-medium mt-0.5">
+                    {currency}{printPlan.totals_cost.toFixed(2)}
+                  </div>
+                </div>
+              </div>
+            </>
           )}
         </CardContent>
       </Card>

@@ -137,6 +137,7 @@ async def init_db():
         printer_queue,
         project,
         project_bom,
+        project_print_plan,
         settings,
         slot_preset,
         smart_plug,

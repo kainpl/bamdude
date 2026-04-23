@@ -885,6 +885,36 @@ export interface ProjectImport {
   linked_folders?: LinkedFolderExport[];
 }
 
+// Print Plan Types
+export interface PrintPlanItem {
+  id: number;
+  library_file_id: number;
+  copies: number;
+  order_index: number;
+  filename: string;
+  print_name: string | null;
+  file_type: string;
+  thumbnail_path: string | null;
+  swap_compatible: boolean;
+  filament_grams: number | null;
+  print_time_seconds: number | null;
+  object_count: number | null;
+  cost_per_copy: number | null;
+  total_filament_grams: number | null;
+  total_print_time_seconds: number | null;
+  total_objects: number | null;
+  total_cost: number | null;
+}
+
+export interface PrintPlanResponse {
+  items: PrintPlanItem[];
+  totals_filament_grams: number;
+  totals_print_time_seconds: number;
+  totals_objects: number;
+  totals_cost: number;
+  default_filament_cost_per_kg: number;
+}
+
 // Timeline Types
 export interface TimelineEvent {
   event_type: string;
@@ -4560,6 +4590,20 @@ export const api = {
       method: 'DELETE',
     }),
 
+  // Print Plan (per-project list of .3mf library files with copies + order)
+  getProjectPrintPlan: (projectId: number) =>
+    request<PrintPlanResponse>(`/projects/${projectId}/print-plan`),
+  updatePrintPlanItem: (projectId: number, libraryFileId: number, copies: number) =>
+    request<PrintPlanItem>(`/projects/${projectId}/print-plan/${libraryFileId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ copies }),
+    }),
+  reorderPrintPlan: (projectId: number, libraryFileIds: number[]) =>
+    request<PrintPlanResponse>(`/projects/${projectId}/print-plan/reorder`, {
+      method: 'POST',
+      body: JSON.stringify({ library_file_ids: libraryFileIds }),
+    }),
+
   // Templates
   getTemplates: () => request<ProjectListItem[]>('/projects/templates'),
   createTemplateFromProject: (projectId: number) =>
@@ -5259,6 +5303,7 @@ export interface LibraryFile {
   print_name: string | null;
   print_time_seconds: number | null;
   filament_used_grams: number | null;
+  object_count: number | null;
   sliced_for_model: string | null;
   swap_compatible: boolean;
 }
@@ -5266,6 +5311,7 @@ export interface LibraryFile {
 export interface LibraryFileListItem {
   id: number;
   folder_id: number | null;
+  project_id: number | null;
   is_external: boolean;
   filename: string;
   file_type: string;
@@ -5279,6 +5325,7 @@ export interface LibraryFileListItem {
   print_name: string | null;
   print_time_seconds: number | null;
   filament_used_grams: number | null;
+  object_count: number | null;
   sliced_for_model: string | null;
   swap_compatible: boolean;
   notes_count: number;
