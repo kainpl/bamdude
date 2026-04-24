@@ -3383,7 +3383,13 @@ export const api = {
     request<{ updated: number; errors: Array<{ id: number; error: string }> }>('/archives/backfill-hashes', {
       method: 'POST',
     }),
-  getArchiveThumbnail: (id: number) => `${API_BASE}/archives/${id}/thumbnail?v=${Date.now()}`,
+  // Stable URL so the browser can cache the thumbnail between renders —
+  // pass ``version`` (e.g. archive.created_at) to force a miss after the
+  // bytes actually changed. The old ``?v=Date.now()`` footgun made every
+  // re-render re-fetch every thumbnail, which turned any background tick
+  // (dispatch progress, toast updates) into a thumbnail thrashing storm.
+  getArchiveThumbnail: (id: number, version?: string | number) =>
+    `${API_BASE}/archives/${id}/thumbnail${version ? `?v=${encodeURIComponent(String(version))}` : ''}`,
   getArchivePlateThumbnail: (id: number, plateIndex: number) =>
     `${API_BASE}/archives/${id}/plate-thumbnail/${plateIndex}`,
   getArchiveDownload: (id: number) => `${API_BASE}/archives/${id}/download`,
@@ -3411,7 +3417,9 @@ export const api = {
   },
   getArchiveGcode: (id: number) => `${API_BASE}/archives/${id}/gcode`,
   getArchivePlatePreview: (id: number) => `${API_BASE}/archives/${id}/plate-preview`,
-  getArchiveTimelapse: (id: number) => `${API_BASE}/archives/${id}/timelapse?v=${Date.now()}`,
+  // Same cache-stability policy as ``getArchiveThumbnail``.
+  getArchiveTimelapse: (id: number, version?: string | number) =>
+    `${API_BASE}/archives/${id}/timelapse${version ? `?v=${encodeURIComponent(String(version))}` : ''}`,
   scanArchiveTimelapse: (id: number) =>
     request<{
       status: string;
