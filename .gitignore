@@ -7,6 +7,9 @@ CLAUDE.md
 .idea/
 .db/
 
+# Local dev SSH keys (never track private keys!)
+spoolbuddy/
+
 # Temp (patches, experiments)
 temp/
 

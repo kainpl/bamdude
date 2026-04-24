@@ -177,11 +177,19 @@ _EMPTY_PROFILE_SEEDS: list[dict] = [
 
 
 async def seed(session_factory):
-    """Backfill existing data + seed empty macros for the new profiles."""
-    from sqlalchemy import select
+    """Backfill existing data + seed empty macros for the new profiles.
 
-    from backend.app.models.macro import Macro
-    from backend.app.models.printer import Printer
+    Note on step 1/step 2: they use **raw SQL** instead of the ORM
+    ``select(Macro)`` / ``select(Printer)`` helpers. Reason: the ORM
+    models evolve over time (later migrations add new columns — e.g.
+    ``macros.action_type`` in m017, ``printers.awaiting_plate_clear``
+    in m010). A legacy install upgrading from v3.0.1 through the whole
+    migration chain reaches m005 before those columns exist, and the
+    ORM SELECT would try to fetch every current-model column →
+    ``no such column`` crash. Raw SQL only touches columns that
+    genuinely existed at m005 time.
+    """
+    from sqlalchemy import text
 
     async with session_factory() as db:
         # 1. Rebind existing built-in A1 Mini swap macros to the Kit Edition
@@ -189,21 +197,24 @@ async def seed(session_factory):
         #    have in their database. STL Edition gets its own seed rows
         #    below, so we don't clobber custom multi-model macros here.
         result = await db.execute(
-            select(Macro).where(
-                Macro.swap_mode_only.is_(True),
-                Macro.event.in_(["swap_mode_start", "swap_mode_change_table"]),
-                Macro.swap_profile.is_(None),
+            text(
+                "SELECT id, printer_models FROM macros "
+                "WHERE swap_mode_only = 1 "
+                "AND event IN ('swap_mode_start', 'swap_mode_change_table') "
+                "AND swap_profile IS NULL"
             )
         )
-        macros = list(result.scalars().all())
         rebound = 0
-        for macro in macros:
+        for row in result.all():
             try:
-                models = json.loads(macro.printer_models or "[]")
+                models = json.loads(row[1] or "[]")
             except (json.JSONDecodeError, TypeError):
                 models = []
             if models == ["A1 Mini"]:
-                macro.swap_profile = "a1mini_kit"
+                await db.execute(
+                    text("UPDATE macros SET swap_profile = 'a1mini_kit' WHERE id = :id"),
+                    {"id": row[0]},
+                )
                 rebound += 1
 
         if rebound:
@@ -211,16 +222,15 @@ async def seed(session_factory):
 
         # 2. Preserve current behaviour for printers that already have swap on.
         result = await db.execute(
-            select(Printer).where(
-                Printer.swap_mode_enabled.is_(True),
-                Printer.swap_profile.is_(None),
-            )
+            text("SELECT id, model FROM printers WHERE swap_mode_enabled = 1 AND swap_profile IS NULL")
         )
-        printers = list(result.scalars().all())
         migrated = 0
-        for printer in printers:
-            if printer.model == "A1 Mini":
-                printer.swap_profile = "a1mini_kit"
+        for printer_id, model in result.all():
+            if model == "A1 Mini":
+                await db.execute(
+                    text("UPDATE printers SET swap_profile = 'a1mini_kit' WHERE id = :id"),
+                    {"id": printer_id},
+                )
                 migrated += 1
             # A1 / other models are intentionally left null - the admin
             # picks a profile explicitly in the UI after m005 lands.
@@ -229,31 +239,38 @@ async def seed(session_factory):
             logger.info("m005: migrated %d A1 Mini printer(s) to swap_profile=a1mini_kit", migrated)
 
         # 3. Seed empty built-in macros for the remaining profiles.
-        #    Idempotent: existence is checked by (swap_profile, event).
+        #    Idempotent: existence check via raw SQL (same forward-schema
+        #    concern as step 1 — later migrations add Macro columns and we
+        #    don't want them to sneak into the SELECT here). INSERT is
+        #    explicit column-list so future ORM additions (e.g. m017's
+        #    action_type) get their DB defaults — safe on either legacy
+        #    or fresh-create_all schemas.
         seeded = 0
         for spec in _EMPTY_PROFILE_SEEDS:
             existing = (
                 await db.execute(
-                    select(Macro).where(
-                        Macro.swap_profile == spec["swap_profile"],
-                        Macro.event == spec["event"],
-                    )
+                    text("SELECT id FROM macros WHERE swap_profile = :sp AND event = :ev LIMIT 1"),
+                    {"sp": spec["swap_profile"], "ev": spec["event"]},
                 )
             ).scalar_one_or_none()
             if existing is not None:
                 continue
-            db.add(
-                Macro(
-                    name=spec["name"],
-                    description=spec.get("description") or None,
-                    printer_models=json.dumps(spec["printer_models"]),
-                    swap_mode_only=True,
-                    swap_profile=spec["swap_profile"],
-                    event=spec["event"],
-                    gcode=spec.get("gcode", ""),
-                    is_custom=False,
-                    enabled=True,
-                )
+            await db.execute(
+                text(
+                    "INSERT INTO macros "
+                    "(name, description, printer_models, swap_mode_only, swap_profile, "
+                    "event, gcode, is_custom, enabled) "
+                    "VALUES (:name, :description, :printer_models, 1, :swap_profile, "
+                    ":event, :gcode, 0, 1)"
+                ),
+                {
+                    "name": spec["name"],
+                    "description": spec.get("description") or None,
+                    "printer_models": json.dumps(spec["printer_models"]),
+                    "swap_profile": spec["swap_profile"],
+                    "event": spec["event"],
+                    "gcode": spec.get("gcode", ""),
+                },
             )
             seeded += 1
 

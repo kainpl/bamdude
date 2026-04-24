@@ -6,6 +6,18 @@ All notable changes to BamDude will be documented in this file.
 
 ---
 
+## [0.4.0.1] - 2026-04-24
+
+Hotfix on top of `0.4.0`. `:latest` moves forward; `:0.4.0` stays pinned for anyone who wants it.
+
+### Fixes
+
+- **Legacy upgrade path restored** — migrating from BamDude 3.0.1 straight to 0.4.0 crashed at `m005_swap_profiles.seed()` with `no such column: printers.awaiting_plate_clear`. The migration used the ORM `select(Printer)` / `select(Macro)` helpers, which loaded every column from the *current* model — including `awaiting_plate_clear` (added by `m010`) and `action_type`/`mqtt_action`/`delay_seconds` (added by `m017`). Those columns don't exist yet at m005's point in the chain. Rewrote all three seed steps to use raw SQL with explicit column lists, touching only columns that genuinely existed at m005 time. New installs (tables built by `create_all`) keep working; legacy Bambuddy 3.0.1 upgraders now get through m005 cleanly.
+- **Archive thumbnail render-thrash during uploads** — `api.getArchiveThumbnail(id)` and `getArchiveTimelapse(id)` built URLs with `?v=${Date.now()}`, so every re-render produced a new URL per `<img>` and the browser re-fetched every thumbnail. Dispatch-progress WebSocket (~5 Hz during FTP upload) turned this into a constant thumbnail refetch loop. Default URL is now stable (no cache-buster param); callers can pass an explicit `version` arg when they need genuine bust after archive media actually changed.
+- **CI dedup across refs** — fast-forward merges (`dev → main`) triggered CI + Security twice on the exact same SHA (once per branch). Added `fkirc/skip-duplicate-actions@v5` as a first-job gate with `concurrent_skipping: 'same_content_newer'`, paths_ignore for `*.md` files. Same-SHA duplicate triggers now short-circuit every downstream job.
+- **Daily-snapshot cron disabled** — back to explicit beta milestones (`vX.Y.ZbN`) for pre-release testing. Workflow stays in-repo, triggered via `workflow_dispatch` when a one-off daily is needed. Uncomment the `schedule:` block to restore the automation.
+- **`CVE-2026-3219` (pip) suppressed in audit** — local-only archive-type confusion in pip itself (CVSS 4.6). BamDude runtime doesn't invoke pip, only image-build does, so blast radius is the build environment. pip upstream hasn't shipped a fix yet; suppressed via `--ignore-vuln CVE-2026-3219` in both CI and weekly security audit to stop the automated issue-bot from re-opening. Remove suppression once pip ships.
+
 ## [0.4.0] - 2026-04-24
 
 Stable cut of the 0.4.0 cycle. Collects the upstream Bambuddy v0.2.3 → v0.2.3.2 port chain (three upstream releases in one BamDude cycle), multiple BamDude-native features (queue↔archive refactor `m019`, MFA cluster `m012`, sliding-session refresh tokens, per-project print plan, MQTT-action macros on print start/finish, spool metadata + auto-increment lots, cross-page navigation polish), and safety/security/UX fixes. `:latest` Docker tag now tracks this release. See [`UPDATING.md`](UPDATING.md) for the backup-first upgrade flow.
