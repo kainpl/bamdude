@@ -44,7 +44,8 @@ const COLUMN_CONFIG_KEY = 'bamdude-inventory-columns';
 const DEFAULT_COLUMNS: ColumnConfig[] = [
   { id: 'id', label: '#', visible: true },
   { id: 'display_name', label: 'Name', visible: true },
-  { id: 'added_time', label: 'Added', visible: true },
+  { id: 'purchase_date', label: 'Date of purchase', visible: true },
+  { id: 'added_time', label: 'Added', visible: false },
   { id: 'encode_time', label: 'Encoded', visible: false },
   { id: 'last_used_time', label: 'Last Used', visible: false },
   { id: 'rgba', label: 'Color', visible: true },
@@ -71,6 +72,8 @@ const DEFAULT_COLUMNS: ColumnConfig[] = [
   { id: 'spool_name', label: 'Spool', visible: false },
   { id: 'cost_per_kg', label: 'Cost/kg', visible: false },
   { id: 'weight_check', label: 'Weight Check', visible: false },
+  { id: 'filament_diameter', label: 'Diameter', visible: false },
+  { id: 'lot', label: 'Lot', visible: false },
 ];
 
 function loadColumnConfig(): ColumnConfig[] {
@@ -80,11 +83,20 @@ function loadColumnConfig(): ColumnConfig[] {
       const parsed = JSON.parse(stored) as ColumnConfig[];
       const defaultIds = new Set(DEFAULT_COLUMNS.map((c) => c.id));
       const storedIds = new Set(parsed.map((c) => c.id));
-      // Keep stored columns that still exist in defaults
+      // Keep stored columns that still exist in defaults — preserves user's
+      // own column order.
       const validStored = parsed.filter((c) => defaultIds.has(c.id));
-      // Add any new default columns not in stored config
-      const newColumns = DEFAULT_COLUMNS.filter((c) => !storedIds.has(c.id));
-      return [...validStored, ...newColumns];
+      // Splice NEW default columns back at their default positions instead
+      // of appending to the end (old behaviour buried newly-added defaults
+      // like ``display_name`` past the right edge for existing users).
+      const result = [...validStored];
+      DEFAULT_COLUMNS.forEach((def, idx) => {
+        if (!storedIds.has(def.id)) {
+          const insertAt = Math.min(idx, result.length);
+          result.splice(insertAt, 0, { ...def });
+        }
+      });
+      return result;
     }
   } catch {
     // Ignore errors
@@ -98,6 +110,29 @@ function saveColumnConfig(config: ColumnConfig[]) {
   } catch {
     // Ignore errors
   }
+}
+
+/**
+ * Translate the user-visible column list into what the table actually
+ * renders. When both ``rgba`` (swatch) and ``color_name`` are visible,
+ * they collapse into one ``color_combined`` pseudo-column at whichever
+ * slot comes first in the user's order. The visibility/order settings
+ * panel keeps the two separate so the user can toggle them independently.
+ */
+function toRenderColumns(visible: string[]): string[] {
+  const idxRgba = visible.indexOf('rgba');
+  const idxName = visible.indexOf('color_name');
+  if (idxRgba === -1 || idxName === -1) return visible;
+  const firstIdx = Math.min(idxRgba, idxName);
+  const out: string[] = [];
+  visible.forEach((c, i) => {
+    if (c === 'rgba' || c === 'color_name') {
+      if (i === firstIdx) out.push('color_combined');
+    } else {
+      out.push(c);
+    }
+  });
+  return out;
 }
 
 function formatWeight(g: number, useKg = false): string {
@@ -143,6 +178,7 @@ type CellCtx = {
 const columnHeaders: Record<string, (t: TFn) => string> = {
   id: (t) => t('inventory.columns.id'),
   display_name: (t) => t('inventory.columns.display_name'),
+  purchase_date: (t) => t('inventory.columns.purchase_date'),
   added_time: (t) => t('inventory.columns.added_time'),
   encode_time: (t) => t('inventory.columns.encode_time'),
   last_used_time: (t) => t('inventory.columns.last_used_time'),
@@ -150,6 +186,9 @@ const columnHeaders: Record<string, (t: TFn) => string> = {
   material: (t) => t('inventory.columns.material'),
   subtype: (t) => t('inventory.columns.subtype'),
   color_name: (t) => t('inventory.columns.color_name'),
+  // Same label as ``rgba`` — pseudo-column inserted by toRenderColumns()
+  // when both swatch and name are visible.
+  color_combined: (t) => t('inventory.columns.rgba'),
   brand: (t) => t('inventory.columns.brand'),
   slicer_filament: (t) => t('inventory.columns.slicer_filament'),
   location: (t) => t('inventory.columns.location'),
@@ -170,6 +209,8 @@ const columnHeaders: Record<string, (t: TFn) => string> = {
   spool_name: (t) => t('inventory.columns.spool_name'),
   cost_per_kg: (t) => t('inventory.columns.cost_per_kg'),
   weight_check: (t) => t('inventory.columns.weight_check'),
+  filament_diameter: (t) => t('inventory.columns.filament_diameter'),
+  lot: (t) => t('inventory.columns.lot'),
 };
 
 // Column cell renderers (25 columns)
@@ -184,6 +225,9 @@ const columnCells: Record<string, (ctx: CellCtx) => ReactNode> = {
   ),
   added_time: ({ spool, dateFormat }) => (
     <span className="text-sm text-bambu-gray">{formatInventoryDate(spool.created_at, dateFormat)}</span>
+  ),
+  purchase_date: ({ spool, dateFormat }) => (
+    <span className="text-sm text-bambu-gray">{spool.purchase_date ? formatInventoryDate(spool.purchase_date, dateFormat) : '-'}</span>
   ),
   encode_time: ({ spool, dateFormat }) => (
     <span className="text-sm text-bambu-gray">{formatInventoryDate(spool.encode_time, dateFormat)}</span>
@@ -208,6 +252,21 @@ const columnCells: Record<string, (ctx: CellCtx) => ReactNode> = {
   ),
   color_name: ({ spool }) => (
     <span className="text-sm text-bambu-gray">{resolveSpoolColorName(spool.color_name, spool.rgba) || '-'}</span>
+  ),
+  // Merged cell for when both "rgba" swatch and "color_name" are visible —
+  // see toRenderColumns(). Settings panel keeps the two separate entries so
+  // the user can still hide one independently.
+  color_combined: ({ spool }) => (
+    <div className="flex items-center gap-2">
+      <span
+        className="w-5 h-5 rounded-full border border-black/20 flex-shrink-0"
+        style={{ backgroundColor: spool.rgba ? `#${spool.rgba.substring(0, 6)}` : '#808080' }}
+        title={spool.rgba ? `#${spool.rgba.substring(0, 6)}` : undefined}
+      />
+      <span className="text-sm text-bambu-gray truncate">
+        {resolveSpoolColorName(spool.color_name, spool.rgba) || '-'}
+      </span>
+    </div>
   ),
   brand: ({ spool }) => (
     <span className="text-sm text-bambu-gray">{spool.brand || '-'}</span>
@@ -361,6 +420,14 @@ const columnCells: Record<string, (ctx: CellCtx) => ReactNode> = {
       </div>
     );
   },
+  filament_diameter: ({ spool }) => (
+    <span className="text-sm text-bambu-gray font-mono">
+      {spool.filament_diameter ? `${spool.filament_diameter} mm` : '-'}
+    </span>
+  ),
+  lot: ({ spool }) => (
+    <span className="text-sm text-bambu-gray font-mono">{spool.lot ?? '-'}</span>
+  ),
 };
 
 // Sort value extractors - return a comparable value for each sortable column
@@ -372,11 +439,13 @@ const columnSortValues: Record<string, (spool: InventorySpool, assignmentMap: Re
   // header clicks and the ArrowUpDown affordance renders.
   display_name: () => 0,
   added_time: (s) => s.created_at || '',
+  purchase_date: (s) => s.purchase_date || '',
   encode_time: (s) => s.encode_time || '',
   last_used_time: (s) => s.last_used || '',
   material: (s) => (s.material || '').toLowerCase(),
   subtype: (s) => (s.subtype || '').toLowerCase(),
   color_name: (s) => (s.color_name || '').toLowerCase(),
+  color_combined: (s) => (s.color_name || '').toLowerCase(),
   brand: (s) => (s.brand || '').toLowerCase(),
   slicer_filament: (s) => (s.slicer_filament_name || s.slicer_filament || '').toLowerCase(),
   location: (s, am) => {
@@ -398,6 +467,8 @@ const columnSortValues: Record<string, (spool: InventorySpool, assignmentMap: Re
   stock: (s) => s.slicer_filament ? 1 : 0,
   spool_name: (s) => s.core_weight_catalog_id ?? 0,
   cost_per_kg: (s) => s.cost_per_kg ?? 0,
+  filament_diameter: (s) => s.filament_diameter || '',
+  lot: (s) => s.lot ?? 0,
   weight_check: (s) => {
     if (s.last_scale_weight == null) return -1;
     const expectedGross = Math.max(0, s.label_weight - s.weight_used) + s.core_weight;
@@ -709,6 +780,22 @@ function InventoryPage() {
     () => columnConfig.filter((c) => c.visible).map((c) => c.id),
     [columnConfig]
   );
+
+  // Rendered columns: settings still expose ``rgba`` and ``color_name`` as
+  // two independent toggles, but the table merges them into a single
+  // "Колір" column when both are on so the swatch + name read as one thing.
+  // When only ``color_name`` is visible it still renders as plain text, just
+  // with the "Колір" header via getHeaderLabel() below.
+  const renderColumns = useMemo(() => toRenderColumns(visibleColumns), [visibleColumns]);
+
+  const getHeaderLabel = (colId: string): string => {
+    // Header override: when only ``color_name`` is visible, label it "Колір"
+    // too so the table is consistent regardless of which toggle is on.
+    if (colId === 'color_name' && !visibleColumns.includes('rgba')) {
+      return t('inventory.columns.rgba');
+    }
+    return columnHeaders[colId]?.(t) ?? colId;
+  };
 
   const handleSort = (colId: string) => {
     if (!columnSortValues[colId]) return; // Not sortable
@@ -1336,7 +1423,7 @@ function InventoryPage() {
               <table className="w-full">
                 <thead>
                   <tr className="border-b border-bambu-dark-tertiary bg-bambu-dark-tertiary/30">
-                    {visibleColumns.map((colId) => {
+                    {renderColumns.map((colId) => {
                       const sortable = !!columnSortValues[colId];
                       const isActive = sortState?.column === colId;
                       return (
@@ -1348,7 +1435,7 @@ function InventoryPage() {
                           onClick={sortable ? () => handleSort(colId) : undefined}
                         >
                           <span className="inline-flex items-center gap-1">
-                            {columnHeaders[colId]?.(t) ?? colId}
+                            {getHeaderLabel(colId)}
                             {sortable && (
                               isActive
                                 ? sortState.direction === 'asc'
@@ -1382,7 +1469,7 @@ function InventoryPage() {
                           onEdit={(s) => setFormModal({ spool: s })}
                           onArchive={(id) => setConfirmAction({ type: 'archive', spoolId: id })}
                           onDelete={(id) => setConfirmAction({ type: 'delete', spoolId: id })}
-                          visibleColumns={visibleColumns}
+                          visibleColumns={renderColumns}
                           assignmentMap={assignmentMap}
                           catalogMap={catalogMap}
                           currencySymbol={currencySymbol}
@@ -1405,7 +1492,7 @@ function InventoryPage() {
                         onRestore={() => restoreMutation.mutate(spool.id)}
                         onArchive={() => setConfirmAction({ type: 'archive', spoolId: spool.id })}
                         onDelete={() => setConfirmAction({ type: 'delete', spoolId: spool.id })}
-                        visibleColumns={visibleColumns}
+                        visibleColumns={renderColumns}
                         assignmentMap={assignmentMap}
                         catalogMap={catalogMap}
                         currencySymbol={currencySymbol}

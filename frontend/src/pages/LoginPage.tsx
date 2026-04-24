@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Navigate, useNavigate, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '../contexts/AuthContext';
@@ -16,7 +16,7 @@ export function LoginPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { t } = useTranslation();
-  const { login, loginWithToken } = useAuth();
+  const { login, loginWithToken, requiresSetup, loading: authLoading } = useAuth();
   const { showToast } = useToast();
   const { mode } = useTheme();
 
@@ -260,6 +260,15 @@ export function LoginPage() {
     // Re-focus the code input after method switch (autoFocus only fires on mount)
     setTimeout(() => twoFAInputRef.current?.focus(), 0);
   };
+
+  // Fresh install gate: if the backend still reports no admin, every API
+  // call (including /login) will 503 with setup_required. Send the user
+  // at /setup instead of letting them stare at a login form that can't
+  // possibly succeed. Runs after auth state has finished loading so we
+  // don't flash /setup before /auth/status has resolved.
+  if (!authLoading && requiresSetup) {
+    return <Navigate to="/setup" replace />;
+  }
 
   // ---- Render: password-reset step (H-6) ----
   if (step === 'reset-password') {

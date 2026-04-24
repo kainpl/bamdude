@@ -7,6 +7,7 @@ import type { InventorySpool, SpoolAssignment } from '../api/client';
 import { Button } from './Button';
 import { ConfirmModal } from './ConfirmModal';
 import { useToast } from '../contexts/ToastContext';
+import { DEFAULT_SPOOL_DISPLAY_TEMPLATE, formatSpoolDisplayName, spoolDisplayNameMatches } from '../utils/spoolName';
 
 interface AssignSpoolModalProps {
   isOpen: boolean;
@@ -175,16 +176,14 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
       })
     : manualSpools;
 
-  // Stage 2: Search filter on material/brand/color_name/subtype
+  // Stage 2: tokenised substring search over the synthesised display name
+  // (same template as the inventory table). Lets the operator type
+  // "SUN Bl" and match "SUNLU PETG Black" without knowing which individual
+  // field the substring lives in.
+  const spoolDisplayTemplate = settings?.spool_display_template || DEFAULT_SPOOL_DISPLAY_TEMPLATE;
   const filteredSpools = profileFilteredSpools?.filter((spool: InventorySpool) => {
     if (!searchFilter) return true;
-    const q = searchFilter.toLowerCase();
-    return (
-      spool.material.toLowerCase().includes(q) ||
-      (spool.brand?.toLowerCase().includes(q) ?? false) ||
-      (spool.color_name?.toLowerCase().includes(q) ?? false) ||
-      (spool.subtype?.toLowerCase().includes(q) ?? false)
-    );
+    return spoolDisplayNameMatches(formatSpoolDisplayName(spool, spoolDisplayTemplate), searchFilter);
   });
 
   const handleAssign = () => {
@@ -312,7 +311,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
                     }`}
                   >
                     <p className="text-white text-sm font-medium truncate">
-                      {spool.brand ? `${spool.brand} ` : ''}{spool.material}{spool.subtype ? ` ${spool.subtype}` : ''}
+                      {formatSpoolDisplayName(spool, spoolDisplayTemplate)}
                     </p>
                     <div className="flex items-center gap-1.5 mt-1">
                       {spool.rgba && (

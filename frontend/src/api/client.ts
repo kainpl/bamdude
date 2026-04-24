@@ -103,6 +103,49 @@ async function refreshAccessToken(): Promise<boolean> {
   return refreshAccessTokenPromise;
 }
 
+/**
+ * Turn a FastAPI error body's ``detail`` field into a human-readable string.
+ *
+ * Accepts the three shapes the backend emits:
+ *   1. ``"Some message"`` — plain HTTPException detail. Returned verbatim.
+ *   2. ``[{loc, msg, ...}, ...]`` — Pydantic 422 validation errors. Each
+ *      entry's ``msg`` is surfaced (with the "Value error, " prefix
+ *      stripped since it's noise from pydantic v2), multi-entry results
+ *      are joined with newlines so toast / inline displays both render
+ *      sensibly. Previous behaviour stringified the whole array as JSON,
+ *      which leaked raw ``{"type":"value_error",...}`` to the user.
+ *   3. ``{error, message, ...}`` / anything else — pull ``message`` then
+ *      ``error``, fall back to JSON as the last resort so we don't lose
+ *      debug info entirely when a backend endpoint returns a bespoke shape.
+ */
+function formatErrorDetail(detail: unknown, status: number): string {
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) {
+    const messages = detail
+      .map((entry) => {
+        if (typeof entry === 'string') return entry;
+        if (entry && typeof entry === 'object' && 'msg' in entry) {
+          const raw = String((entry as { msg?: unknown }).msg ?? '');
+          return raw.replace(/^Value error,\s*/, '');
+        }
+        return '';
+      })
+      .filter(Boolean);
+    if (messages.length) return messages.join('\n');
+  }
+  if (detail && typeof detail === 'object') {
+    const d = detail as Record<string, unknown>;
+    if (typeof d.message === 'string') return d.message;
+    if (typeof d.error === 'string') return d.error;
+    try {
+      return JSON.stringify(detail);
+    } catch {
+      // fall through
+    }
+  }
+  return `HTTP ${status}`;
+}
+
 async function request<T>(
   endpoint: string,
   options: RequestInit = {},
@@ -133,9 +176,7 @@ async function request<T>(
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
     const detail = error.detail;
-    const message = typeof detail === 'string'
-      ? detail
-      : (detail ? JSON.stringify(detail) : `HTTP ${response.status}`);
+    const message = formatErrorDetail(detail, response.status);
 
     if (response.status === 401) {
       const refreshable =
@@ -201,7 +242,6 @@ export interface Printer {
   swap_mode_enabled: boolean;  // A1 Mini plate swapper
   swap_profile: string | null;  // Active swap-mode variant (see /macros/swap-profiles)
   require_plate_clear: boolean;  // Require plate-clear confirmation before next queued print
-  auto_light_off: boolean;  // Turn off chamber light after print starts
   created_at: string;
   updated_at: string;
 }
@@ -396,7 +436,6 @@ export interface PrinterCreate {
   swap_mode_enabled?: boolean;
   swap_profile?: string | null;
   require_plate_clear?: boolean;
-  auto_light_off?: boolean;
 }
 
 // Plate Detection
@@ -2225,6 +2264,13 @@ export interface InventorySpool {
   created_at: string;
   updated_at: string;
   cost_per_kg: number | null;
+  purchase_date: string | null;
+  // "1.75" | "2.85" — NOT NULL on the DB side (defaulted in m020), but
+  // typed as string here to keep the dropdown binding straightforward.
+  filament_diameter: string;
+  // Position inside a purchase bundle / batch. Solo spools stay NULL;
+  // the quick-add auto-increment fills 1..N server-side.
+  lot: number | null;
   last_scale_weight: number | null;
   last_weighed_at: string | null;
   k_profiles?: SpoolKProfile[];
@@ -4266,10 +4312,14 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
-  bulkCreateSpools: (data: Omit<InventorySpool, 'id' | 'archived_at' | 'created_at' | 'updated_at' | 'k_profiles'>, quantity: number) =>
+  bulkCreateSpools: (
+    data: Omit<InventorySpool, 'id' | 'archived_at' | 'created_at' | 'updated_at' | 'k_profiles'>,
+    quantity: number,
+    autoIncrementLot = false,
+  ) =>
     request<InventorySpool[]>('/inventory/spools/bulk', {
       method: 'POST',
-      body: JSON.stringify({ spool: data, quantity }),
+      body: JSON.stringify({ spool: data, quantity, auto_increment_lot: autoIncrementLot }),
     }),
   updateSpool: (id: number, data: Partial<Omit<InventorySpool, 'id' | 'archived_at' | 'created_at' | 'updated_at' | 'k_profiles'>>) =>
     request<InventorySpool>(`/inventory/spools/${id}`, {

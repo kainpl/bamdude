@@ -23,6 +23,11 @@ class SpoolBase(BaseModel):
     data_origin: str | None = None
     tag_type: str | None = None
     cost_per_kg: float | None = Field(default=None, ge=0)
+    purchase_date: datetime | None = None
+    filament_diameter: str = Field(default="1.75", pattern=r"^(1\.75|2\.85)$")
+    # ``gt=0`` — 0 is explicitly forbidden per the UI contract (treat "no
+    # lot number" as NULL instead of zero).
+    lot: int | None = Field(default=None, gt=0)
     weight_locked: bool = False
     last_scale_weight: int | None = None
     last_weighed_at: datetime | None = None
@@ -35,6 +40,9 @@ class SpoolCreate(SpoolBase):
 class SpoolBulkCreate(BaseModel):
     spool: SpoolCreate
     quantity: int = Field(default=1, ge=1, le=100)
+    # When set, overwrites ``spool.lot`` with 1..N for each generated row
+    # so a purchase bundle gets sequential lot numbers in one submit.
+    auto_increment_lot: bool = False
 
 
 class SpoolUpdate(BaseModel):
@@ -57,6 +65,9 @@ class SpoolUpdate(BaseModel):
     data_origin: str | None = None
     tag_type: str | None = None
     cost_per_kg: float | None = Field(default=None, ge=0)
+    purchase_date: datetime | None = None
+    filament_diameter: str | None = Field(default=None, pattern=r"^(1\.75|2\.85)$")
+    lot: int | None = Field(default=None, gt=0)
     weight_locked: bool | None = None
 
 

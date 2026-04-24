@@ -84,13 +84,21 @@ function LanguageSync({ children }: { children: React.ReactNode }) {
 }
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  const { authEnabled, loading, user } = useAuth();
+  const { loading, user, requiresSetup } = useAuth();
 
   if (loading) {
     return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
   }
 
-  if (authEnabled && !user) {
+  // First-boot gate: no admin user yet → the backend's setup middleware 503s
+  // everything but /auth/status + /auth/setup. Route the user at /setup so
+  // they can create the initial admin instead of bouncing to /login where
+  // the form would just fail with "setup required".
+  if (requiresSetup) {
+    return <Navigate to="/setup" replace />;
+  }
+
+  if (!user) {
     return <Navigate to="/login" replace />;
   }
 
@@ -98,18 +106,17 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 }
 
 function AdminRoute({ children }: { children: React.ReactNode }) {
-  const { authEnabled, loading, user, isAdmin } = useAuth();
+  const { loading, user, isAdmin, requiresSetup } = useAuth();
 
   if (loading) {
     return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
   }
 
-  // If auth is not enabled, allow access (backward compatibility)
-  if (!authEnabled) {
-    return <>{children}</>;
+  if (requiresSetup) {
+    return <Navigate to="/setup" replace />;
   }
 
-  // If auth is enabled but no user, redirect to login
+  // Auth is always on; unauthenticated users always land on /login.
   if (!user) {
     return <Navigate to="/login" replace />;
   }
@@ -123,16 +130,20 @@ function AdminRoute({ children }: { children: React.ReactNode }) {
 }
 
 function SetupRoute({ children }: { children: React.ReactNode }) {
-  const { authEnabled, loading } = useAuth();
+  const { loading, requiresSetup } = useAuth();
 
   if (loading) {
     return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
   }
 
-  // If auth is already enabled, redirect to login
-  // Otherwise, allow access to setup page (even if setup was completed before)
-  // This allows users to enable auth later if they skipped it during initial setup
-  if (authEnabled) {
+  // Setup is a ONE-TIME bootstrap flow: allow /setup only while the backend
+  // still reports ``requires_setup=true``. Once the initial admin exists, a
+  // navigation to /setup bounces to /login (returning users can't accidentally
+  // re-enter the setup form). Old behaviour keyed off the now-removed
+  // ``authEnabled`` opt-in flag (always ``true`` post-0.4.0), which meant
+  // fresh installs were immediately redirected away from /setup — breaking
+  // first boot.
+  if (!requiresSetup) {
     return <Navigate to="/login" replace />;
   }
 

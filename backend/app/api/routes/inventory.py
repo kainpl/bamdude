@@ -569,10 +569,19 @@ async def bulk_create_spools(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
-    """Create multiple identical spools."""
+    """Create multiple identical spools.
+
+    With ``auto_increment_lot=True`` the per-row ``lot`` column is
+    overwritten with 1..N instead of copying the template value, so a
+    purchase bundle gets sequential lot numbers in one submit.
+    """
     spools = []
-    for _ in range(data.quantity):
-        spool = Spool(**data.spool.model_dump())
+    template = data.spool.model_dump()
+    for i in range(data.quantity):
+        values = dict(template)
+        if data.auto_increment_lot:
+            values["lot"] = i + 1
+        spool = Spool(**values)
         db.add(spool)
         spools.append(spool)
     await db.commit()

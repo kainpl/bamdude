@@ -124,6 +124,27 @@ export const SPOOL_PLACEHOLDERS: SpoolPlaceholder[] = [
     example: '25',
     format: (s) => (s.cost_per_kg != null ? String(s.cost_per_kg) : ''),
   },
+  {
+    key: 'purchase_date',
+    label: 'Purchase date',
+    description: 'User-entered acquisition date (YYYY-MM-DD)',
+    example: '2026-04-15',
+    format: (s) => (s.purchase_date ? s.purchase_date.slice(0, 10) : ''),
+  },
+  {
+    key: 'filament_diameter',
+    label: 'Filament diameter',
+    description: '1.75 or 2.85 (bare number, no unit)',
+    example: '1.75',
+    format: (s) => s.filament_diameter ?? '',
+  },
+  {
+    key: 'lot',
+    label: 'Lot',
+    description: 'Position inside a purchase bundle / batch',
+    example: '3',
+    format: (s) => (s.lot != null ? String(s.lot) : ''),
+  },
 ];
 
 export const DEFAULT_SPOOL_DISPLAY_TEMPLATE = '{brand} {material} {color_name}';

@@ -25,7 +25,6 @@ class PrinterBase(BaseModel):
     swap_mode_enabled: bool = False
     swap_profile: str | None = None
     require_plate_clear: bool = True
-    auto_light_off: bool = False
 
 
 class PrinterCreate(PrinterBase):

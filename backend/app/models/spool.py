@@ -38,6 +38,18 @@ class Spool(Base):
 
     last_used: Mapped[datetime | None] = mapped_column(DateTime)  # Last time this spool was used in a print
     encode_time: Mapped[datetime | None] = mapped_column(DateTime)  # When spool was encoded/written to tag
+    # User-entered acquisition date — distinct from ``created_at`` (which is
+    # when the row was imported/entered into BamDude). Nullable; the UI
+    # prefers this over ``created_at`` for its default "Added" column.
+    purchase_date: Mapped[datetime | None] = mapped_column(DateTime)
+    # Filament diameter — kept as a short text field ("1.75" / "2.85") rather
+    # than a Float so the schema round-trips the displayed value without
+    # format juggling. Defaulted + backfilled to "1.75" in m020.
+    filament_diameter: Mapped[str] = mapped_column(String(8), default="1.75")
+    # Position within a purchase bundle / batch ("лот"). Null = solo spool.
+    # Quick-add's N-quantity path can auto-number lots 1..N — see
+    # SpoolBulkCreate.auto_increment_lot.
+    lot: Mapped[int | None] = mapped_column(Integer)
     tag_uid: Mapped[str | None] = mapped_column(String(16))  # RFID tag UID (16 hex chars)
     tray_uuid: Mapped[str | None] = mapped_column(String(32))  # Bambu Lab spool UUID (32 hex chars)
     data_origin: Mapped[str | None] = mapped_column(String(20))  # How data was populated: manual, rfid_auto, nfc_link

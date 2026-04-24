@@ -5191,7 +5191,6 @@ function AddPrinterModal({
     swap_mode_enabled: false,
     swap_profile: null,
     require_plate_clear: true,
-    auto_light_off: false,
   });
 
   // Swap profile catalog for dropdowns in the form.
@@ -5667,20 +5666,6 @@ function AddPrinterModal({
                   <p className="text-xs text-bambu-gray mt-1 ml-6">{t('printers.modal.requirePlateClearHint')}</p>
                 </div>
                 )}
-                {form.model && /p1s|p1p/i.test(form.model) && (
-                <div>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={form.auto_light_off ?? false}
-                      onChange={(e) => setForm({ ...form, auto_light_off: e.target.checked })}
-                      className="w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
-                    />
-                    <span className="text-sm text-white">{t('printers.modal.autoLightOff')}</span>
-                  </label>
-                  <p className="text-xs text-bambu-gray mt-1 ml-6">{t('printers.modal.autoLightOffHint')}</p>
-                </div>
-                )}
               </div>
             </div>
 
@@ -6006,7 +5991,6 @@ function EditPrinterModal({
     swap_mode_enabled: printer.swap_mode_enabled ?? false,
     swap_profile: (printer.swap_profile ?? null) as string | null,
     require_plate_clear: printer.require_plate_clear ?? true,
-    auto_light_off: printer.auto_light_off ?? false,
   });
 
   // Swap profile catalog for the dropdown (same query as add-form).
@@ -6051,7 +6035,6 @@ function EditPrinterModal({
       swap_mode_enabled: form.swap_mode_enabled,
       swap_profile: form.swap_mode_enabled ? form.swap_profile : null,
       require_plate_clear: form.swap_mode_enabled ? false : form.require_plate_clear,
-      auto_light_off: form.auto_light_off,
     };
     // Only include access_code if it was changed
     if (form.access_code) {
@@ -6281,20 +6264,6 @@ function EditPrinterModal({
                     <span className="text-sm text-white">{t('printers.modal.requirePlateClear')}</span>
                   </label>
                   <p className="text-xs text-bambu-gray mt-1 ml-6">{t('printers.modal.requirePlateClearHint')}</p>
-                </div>
-                )}
-                {form.model && /p1s|p1p/i.test(form.model) && (
-                <div>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={form.auto_light_off ?? false}
-                      onChange={(e) => setForm({ ...form, auto_light_off: e.target.checked })}
-                      className="w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
-                    />
-                    <span className="text-sm text-white">{t('printers.modal.autoLightOff')}</span>
-                  </label>
-                  <p className="text-xs text-bambu-gray mt-1 ml-6">{t('printers.modal.autoLightOffHint')}</p>
                 </div>
                 )}
               </div>

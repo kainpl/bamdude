@@ -283,6 +283,16 @@ async def setup_auth(request: SetupRequest, db: AsyncSession = Depends(get_db)):
                 detail="User with this username already exists",
             )
 
+        # Orphan cleanup — if the previous admin was deleted via raw SQL (or
+        # an earlier reset_admin that pre-dates the cascade), dangling rows
+        # in ``user_groups`` can survive and collide with a freshly-inserted
+        # admin that reuses the old primary key (SQLite reuses IDs on
+        # INTEGER PRIMARY KEY without AUTOINCREMENT). Clear them before the
+        # new user → admin-group link is flushed.
+        from sqlalchemy import text as _text
+
+        await db.execute(_text("DELETE FROM user_groups WHERE user_id NOT IN (SELECT id FROM users)"))
+
         # Ensure the "Administrators" system group exists. It is normally seeded
         # by migration m001, but a rescue path (CLI reset_admin + fresh DB) may
         # reach setup before seeds run, so we create it on demand.

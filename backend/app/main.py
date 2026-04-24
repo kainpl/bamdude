@@ -1482,12 +1482,10 @@ async def on_print_start(printer_id: int, data: dict):
         result = await db.execute(select(Printer).where(Printer.id == printer_id))
         printer = result.scalar_one_or_none()
 
-        # Auto light off: turn off chamber light after print starts
-        if printer and printer.auto_light_off:
-            client = printer_manager.get_client(printer_id)
-            if client:
-                client.set_chamber_light(False)
-                logger.info("[LIGHT] Auto light off for printer %s", printer_id)
+        # Auto-light-off used to fire here; it's superseded by the generic
+        # macro framework (configure a ``chamber_light_off`` mqtt-action
+        # macro on the ``print_started`` event). fire_event_macros() above
+        # already dispatched those — nothing to do here.
 
         # Plate detection check - pause if objects detected on build plate
         logger.info(
@@ -2485,6 +2483,16 @@ async def on_print_complete(printer_id: int, data: dict):
         return
 
     logger.info("Print complete - filename: %s, subtask: %s, status: %s", filename, subtask_name, data.get("status"))
+
+    # Fire any user-defined ``print_finished`` macros (e.g. turn chamber
+    # light back on after print). Fire-and-forget so macro delay_seconds
+    # doesn't stall completion. Mirrors the ``print_started`` path.
+    try:
+        from backend.app.services.macro_trigger import fire_event_macros
+
+        await fire_event_macros("print_finished", printer_id, async_session, printer_manager)
+    except Exception as e:
+        logger.warning("print_finished macros failed to schedule: %s", e)
 
     # Build list of possible keys to try (matching how they were registered in on_print_start)
     possible_keys = []

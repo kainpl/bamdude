@@ -128,8 +128,16 @@ export function ColumnConfigModal({ isOpen, onClose, columns, defaultColumns, on
                   <GripVertical className="w-4 h-4" />
                 </div>
 
-                {/* Column Name */}
-                <span className="flex-1 font-medium text-sm text-white">{t(`inventory.columns.${column.id}`, column.label)}</span>
+                {/* Column Name — prefer the verbose "_full" label for the
+                    settings dialog so e.g. "Використано" (table header) maps
+                    to "Останнє використання" here. Falls back to the short
+                    label when there's no "_full" variant. */}
+                <span className="flex-1 font-medium text-sm text-white">
+                  {t(
+                    `inventory.columns.${column.id}_full`,
+                    t(`inventory.columns.${column.id}`, column.label),
+                  )}
+                </span>
 
                 {/* Move Buttons */}
                 <div className="flex items-center gap-0.5">

@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, Sparkles } from 'lucide-react';
+import { ChevronDown, ChevronRight, Loader2, Sparkles } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { CalibrationProfile, PAProfileSectionProps } from './types';
 import { isMatchingCalibration } from './utils';
@@ -6,6 +6,7 @@ import { isMatchingCalibration } from './utils';
 export function PAProfileSection({
   formData,
   printersWithCalibrations,
+  loading = false,
   selectedProfiles,
   setSelectedProfiles,
   expandedPrinters,
@@ -82,6 +83,17 @@ export function PAProfileSection({
       <div className="p-6 bg-bambu-dark rounded-lg text-center">
         <p className="text-bambu-gray">
           {t('inventory.selectMaterialFirst')}
+        </p>
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div className="p-6 bg-bambu-dark rounded-lg flex items-center justify-center gap-3">
+        <Loader2 className="w-5 h-5 text-bambu-green animate-spin" />
+        <p className="text-bambu-gray">
+          {t('inventory.loadingPrinterProfiles')}
         </p>
       </div>
     );

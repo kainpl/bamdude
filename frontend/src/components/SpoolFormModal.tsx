@@ -69,6 +69,7 @@ export function SpoolFormModal({
 
   // PA Profile state
   const [fetchedCalibrations, setFetchedCalibrations] = useState<PrinterWithCalibrations[]>([]);
+  const [loadingCalibrations, setLoadingCalibrations] = useState(false);
   const [selectedProfiles, setSelectedProfiles] = useState<Set<string>>(new Set());
   const [expandedPrinters, setExpandedPrinters] = useState<Set<string>>(new Set());
 
@@ -76,6 +77,9 @@ export function SpoolFormModal({
   const resolvedCalibrations = printersWithCalibrations.length > 0
     ? printersWithCalibrations
     : fetchedCalibrations;
+  // Loading state forwarded to PAProfileSection — only relevant for the
+  // self-fetched path (parent-provided calibrations are already resolved).
+  const calibrationsLoading = printersWithCalibrations.length === 0 && loadingCalibrations;
 
   // Count selected PA profiles for tab badge
   const selectedProfileCount = useMemo(() => {
@@ -114,6 +118,7 @@ export function SpoolFormModal({
       // Fetch printer calibrations if not provided via props
       if (printersWithCalibrations.length === 0) {
         (async () => {
+          setLoadingCalibrations(true);
           try {
             const printers = await api.getPrinters();
             const statuses = await Promise.all(
@@ -147,6 +152,8 @@ export function SpoolFormModal({
             setFetchedCalibrations(results);
           } catch (e) {
             console.error('Failed to fetch printer calibrations:', e);
+          } finally {
+            setLoadingCalibrations(false);
           }
         })();
       }
@@ -266,6 +273,12 @@ export function SpoolFormModal({
           slicer_filament: spool.slicer_filament || '',
           note: spool.note || '',
           cost_per_kg: spool.cost_per_kg ?? null,
+          // Trim to yyyy-mm-dd for the <input type="date"> control; ISO
+          // timestamps from the server would otherwise be rejected.
+          purchase_date: spool.purchase_date ? spool.purchase_date.slice(0, 10) : '',
+          filament_diameter: spool.filament_diameter || '1.75',
+          lot: spool.lot != null ? String(spool.lot) : '',
+          auto_increment_lot: false,
         });
         setPresetInputValue(spool.slicer_filament_name || spool.slicer_filament || '');
 
@@ -335,8 +348,8 @@ export function SpoolFormModal({
   });
 
   const bulkCreateMutation = useMutation({
-    mutationFn: ({ data, qty }: { data: Record<string, unknown>; qty: number }) =>
-      api.bulkCreateSpools(data as Parameters<typeof api.bulkCreateSpools>[0], qty),
+    mutationFn: ({ data, qty, autoIncLot }: { data: Record<string, unknown>; qty: number; autoIncLot: boolean }) =>
+      api.bulkCreateSpools(data as Parameters<typeof api.bulkCreateSpools>[0], qty, autoIncLot),
     onSuccess: async (newSpools) => {
       if (selectedProfiles.size > 0) {
         for (const spool of newSpools) {
@@ -493,6 +506,13 @@ export function SpoolFormModal({
       nozzle_temp_max: null,
       note: formData.note || null,
       cost_per_kg: formData.cost_per_kg,
+      // Stamp date input as midnight UTC so the server stores a DATETIME
+      // without inventing a timezone — the UI only ever shows the date part.
+      purchase_date: formData.purchase_date ? `${formData.purchase_date}T00:00:00Z` : null,
+      filament_diameter: formData.filament_diameter || '1.75',
+      // Empty string → null; "0" is client-side blocked in the input
+      // handler so we don't need a special case here.
+      lot: formData.lot.trim() ? parseInt(formData.lot, 10) : null,
     };
 
     // Only send weight_used when creating or when explicitly changed by the user.
@@ -504,7 +524,7 @@ export function SpoolFormModal({
     if (isEditing) {
       updateMutation.mutate(data);
     } else if (quantity > 1) {
-      bulkCreateMutation.mutate({ data, qty: quantity });
+      bulkCreateMutation.mutate({ data, qty: quantity, autoIncLot: formData.auto_increment_lot });
     } else {
       createMutation.mutate(data);
     }
@@ -643,6 +663,7 @@ export function SpoolFormModal({
                   updateField={updateField}
                   spoolCatalog={spoolCatalog}
                   currencySymbol={currencySymbol}
+                  quickAdd={quickAdd}
                 />
               </div>
 
@@ -658,6 +679,7 @@ export function SpoolFormModal({
               formData={formData}
               updateField={updateField}
               printersWithCalibrations={resolvedCalibrations}
+              loading={calibrationsLoading}
               selectedProfiles={selectedProfiles}
               setSelectedProfiles={setSelectedProfiles}
               expandedPrinters={expandedPrinters}

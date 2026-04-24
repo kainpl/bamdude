@@ -23,6 +23,18 @@ export interface SpoolFormData {
   slicer_filament: string;
   note: string;
   cost_per_kg: number | null;
+  // ISO yyyy-mm-dd string or empty. Stored separately from ``created_at``
+  // (the row's import timestamp) — see m020_spool_purchase_date.
+  purchase_date: string;
+  // "1.75" | "2.85"; never empty — defaulted to "1.75" on create.
+  filament_diameter: string;
+  // Empty string = NULL on the wire. 0 is explicitly disallowed by the
+  // validator so the user doesn't accidentally encode "unset" as zero.
+  lot: string;
+  // Quick-add-only toggle: when on, the bulk-create endpoint replaces
+  // per-row lot with 1..N. The ``lot`` field above is hidden behind this
+  // checkbox in quick-add mode.
+  auto_increment_lot: boolean;
 }
 
 export const defaultFormData: SpoolFormData = {
@@ -38,6 +50,10 @@ export const defaultFormData: SpoolFormData = {
   slicer_filament: '',
   note: '',
   cost_per_kg: null,
+  purchase_date: '',
+  filament_diameter: '1.75',
+  lot: '',
+  auto_increment_lot: false,
 };
 
 // Printer with calibrations type
@@ -106,11 +122,16 @@ export interface ColorSectionProps extends SectionProps {
 export interface AdditionalSectionProps extends SectionProps {
   spoolCatalog: { id: number; name: string; weight: number }[];
   currencySymbol: string;
+  // Quick-add toggle replaces the per-spool ``lot`` number field with an
+  // "auto-increment lots" checkbox — sequential 1..N numbering is cheap
+  // to do server-side, and the raw field wouldn't make sense for N copies.
+  quickAdd?: boolean;
 }
 
 // PA Profile section props
 export interface PAProfileSectionProps extends SectionProps {
   printersWithCalibrations: PrinterWithCalibrations[];
+  loading?: boolean;
   selectedProfiles: Set<string>;
   setSelectedProfiles: React.Dispatch<React.SetStateAction<Set<string>>>;
   expandedPrinters: Set<string>;

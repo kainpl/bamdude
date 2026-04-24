@@ -26,6 +26,7 @@ MACRO_EVENTS = {
     "swap_mode_start": "Swap Mode - Start Sequence",
     "swap_mode_change_table": "Swap Mode - Change Table",
     "print_started": "Print Started (gcode_state → RUNNING)",
+    "print_finished": "Print Finished (terminal status — completed/failed/cancelled)",
 }
 
 

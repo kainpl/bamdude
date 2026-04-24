@@ -1,14 +1,16 @@
-"""Fire event-driven macros (``print_started`` etc.) on MQTT state hooks.
+"""Fire event-driven macros (``print_started`` / ``print_finished``) on MQTT hooks.
 
 Called from ``main.on_print_start`` once the printer has transitioned into
-``gcode_state='RUNNING'``. Loads every enabled macro for the event, filters
+``gcode_state='RUNNING'``, and from ``main.on_print_complete`` when the print
+reaches a terminal status. Loads every enabled macro for the event, filters
 via :func:`macro_matcher.find_macros_for_event`, then dispatches each one
 as a fire-and-forget task (so a slow gcode send or a macro delay never
-blocks the surrounding print-start orchestration).
+blocks the surrounding orchestration).
 
-Only ``mqtt_action`` macros are supported for ``print_started`` today. A
-gcode macro firing mid-print would fight the print itself — we could wire
-it when there's a real use case; for now the code refuses gently and logs.
+Only ``mqtt_action`` macros are supported today. A gcode macro firing
+mid-print would fight the print itself; a gcode macro on finish is a
+fair fit but not wired yet — we'll add it when there's a real use case,
+for now the code refuses gently and logs.
 """
 
 from __future__ import annotations
@@ -49,8 +51,8 @@ async def _run_one(
 
         if macro.action_type != "mqtt_action":
             logger.info(
-                "[MACRO-TRIGGER] Skipping gcode macro '%s' on print_started "
-                "(only mqtt_action macros are supported for this event)",
+                "[MACRO-TRIGGER] Skipping gcode macro '%s' — only mqtt_action "
+                "macros are supported for event-driven triggers",
                 macro.name,
             )
             return

@@ -173,6 +173,7 @@ export function AdditionalSection({
   updateField,
   spoolCatalog,
   currencySymbol,
+  quickAdd = false,
 }: AdditionalSectionProps) {
   const { t } = useTranslation();
   const { showToast } = useToast();
@@ -280,7 +281,73 @@ export function AdditionalSection({
         </div>
       </div>
 
-      {/* Cost per kg */}
+      {/* Purchase date */}
+      <div>
+        <label className="block text-sm font-medium text-bambu-gray mb-1">
+          {t('inventory.purchaseDate')}
+        </label>
+        <input
+          type="date"
+          value={formData.purchase_date}
+          onChange={(e) => updateField('purchase_date', e.target.value)}
+          className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
+        />
+      </div>
+
+      {/* Filament diameter */}
+      <div>
+        <label className="block text-sm font-medium text-bambu-gray mb-1">
+          {t('inventory.filamentDiameter')}
+        </label>
+        <select
+          value={formData.filament_diameter || '1.75'}
+          onChange={(e) => updateField('filament_diameter', e.target.value)}
+          className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
+        >
+          <option value="1.75">1.75 mm</option>
+          <option value="2.85">2.85 mm</option>
+        </select>
+      </div>
+
+      {/* Lot (bundle position). Quick-add mode swaps this for an
+          "auto-increment lots" checkbox — bulk create then numbers 1..N. */}
+      <div>
+        <label className="block text-sm font-medium text-bambu-gray mb-1">
+          {t('inventory.lot')}
+        </label>
+        {quickAdd ? (
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={formData.auto_increment_lot}
+              onChange={(e) => updateField('auto_increment_lot', e.target.checked)}
+              className="w-4 h-4 rounded border-bambu-dark-tertiary text-bambu-green focus:ring-bambu-green"
+            />
+            <span className="text-sm text-white">{t('inventory.autoIncrementLots')}</span>
+          </label>
+        ) : (
+          <input
+            type="number"
+            value={formData.lot}
+            min={1}
+            step={1}
+            placeholder={t('inventory.lotPlaceholder')}
+            onChange={(e) => {
+              // 0 is explicitly forbidden — treat as empty (null on save).
+              const raw = e.target.value;
+              if (raw === '' || raw === '0') {
+                updateField('lot', '');
+                return;
+              }
+              const n = parseInt(raw, 10);
+              updateField('lot', Number.isFinite(n) && n > 0 ? String(n) : '');
+            }}
+            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
+          />
+        )}
+      </div>
+
+      {/* Cost per kg + price per spool (derived) */}
       <div>
         <label className="block text-sm font-medium text-bambu-gray mb-1">{t('inventory.costPerKg', 'Cost per kg')}</label>
         <div className="flex items-center gap-2">
@@ -300,6 +367,44 @@ export function AdditionalSection({
               className="w-full py-2 pr-3 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
             />
           </div>
+          <span className="text-xs text-bambu-gray shrink-0">/kg</span>
+        </div>
+      </div>
+
+      {/* Price per spool — helper input that writes into ``cost_per_kg``.
+          Stored value is still per-kg so downstream usage math doesn't have
+          to know the label weight; the UI just converts on input. */}
+      <div>
+        <label className="block text-sm font-medium text-bambu-gray mb-1">
+          {t('inventory.pricePerSpool')}
+        </label>
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-bambu-gray text-sm pointer-events-none">{currencySymbol}</span>
+            <input
+              type="number"
+              value={
+                formData.cost_per_kg != null && formData.label_weight > 0
+                  ? Number(((formData.cost_per_kg * formData.label_weight) / 1000).toFixed(2))
+                  : ''
+              }
+              min={0}
+              step={0.01}
+              placeholder="0.00"
+              onChange={(e) => {
+                if (e.target.value === '') {
+                  updateField('cost_per_kg', null);
+                  return;
+                }
+                const perSpool = parseFloat(e.target.value);
+                if (!Number.isFinite(perSpool) || formData.label_weight <= 0) return;
+                updateField('cost_per_kg', Number(((perSpool * 1000) / formData.label_weight).toFixed(4)));
+              }}
+              style={{ paddingLeft: `${Math.max(2, currencySymbol.length * 0.6 + 1)}rem` }}
+              className="w-full py-2 pr-3 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
+            />
+          </div>
+          <span className="text-xs text-bambu-gray shrink-0">/ {formData.label_weight}g</span>
         </div>
       </div>
 

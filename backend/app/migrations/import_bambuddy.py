@@ -47,7 +47,6 @@ _COPY_WITH_DEFAULTS: dict[str, dict[str, Any]] = {
         "stagger_interval_minutes": 0,
         "swap_mode_enabled": 0,
         "require_plate_clear": 1,
-        "auto_light_off": 0,
         "plate_detection_enabled": 0,
         "cleanup_after_print": 1,
         "mqtt_connection_timeout": 300,

@@ -44,6 +44,9 @@ const PREVIEW_FALLBACK: InventorySpool = {
   created_at: '2026-01-01T00:00:00',
   updated_at: '2026-01-01T00:00:00',
   cost_per_kg: 25,
+  purchase_date: '2026-01-01T00:00:00',
+  filament_diameter: '1.75',
+  lot: 1,
   last_scale_weight: null,
   last_weighed_at: null,
 };

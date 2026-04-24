@@ -56,8 +56,6 @@ class Printer(Base):
     # DB (vs the previous in-memory set) means Auto Off power cycles can't
     # silently bypass the confirmation (#961).
     awaiting_plate_clear: Mapped[bool] = mapped_column(Boolean, default=False)
-    # Auto turn off chamber light after print starts (P1S/P1P turn it on automatically)
-    auto_light_off: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
