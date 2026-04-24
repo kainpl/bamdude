@@ -2,26 +2,33 @@ name: Docker Publish :daily snapshot
 
 # Daily-snapshot Docker image + matching git tag + GitHub pre-release.
 #
-# Runs every day at 06:00 UTC on the dev branch. Computes a daily-version
-# string from APP_VERSION + today's date (e.g. 0.5.0b1-daily.20260423),
-# skips if a tag by that name already exists or if there are no new commits
-# since the previous daily. Otherwise: tag dev HEAD, build + push the
-# multi-arch Docker image to GHCR + Docker Hub, create a GitHub
-# pre-release with auto-generated commit notes.
+# Built to run every morning on the dev branch, but the cron is currently
+# DISABLED — we're back to explicit beta milestones (``vX.Y.ZbN``) for
+# pre-release testing, dailies were noise. The workflow stays in-repo and
+# can be triggered manually from the Actions UI (``workflow_dispatch``)
+# if a one-off daily snapshot is needed. Re-enable by uncommenting the
+# ``schedule`` block below.
+#
+# Version string shape: APP_VERSION + today's date
+# (e.g. 0.5.0b1-daily.20260423). Skips if a tag by that name already
+# exists or if there are no new commits since the previous daily.
+# Otherwise: tag dev HEAD, build + push the multi-arch Docker image to
+# GHCR + Docker Hub, create a GitHub pre-release with auto-generated
+# commit notes.
 #
 # Testers pin a specific day's image for reproducible bug reports —
 # `image: ghcr.io/kainpl/bamdude:0.5.0b1-daily.20260423` is a snapshot
 # that won't move. See temp/release_guide.md section 3.
 
 on:
-  schedule:
-    # 06:00 UTC every day. GitHub Actions disables scheduled workflows after
-    # 60 days of repo inactivity — any commit to dev restarts the countdown.
-    - cron: '0 6 * * *'
+  # schedule:
+  #   # 06:00 UTC every day. GitHub Actions disables scheduled workflows after
+  #   # 60 days of repo inactivity — any commit to dev restarts the countdown.
+  #   - cron: '0 6 * * *'
   workflow_dispatch:
-    # Manual trigger — useful after dev has new commits you want packaged
-    # without waiting for the morning run. Also used to recover after a
-    # failed cron (secrets blip, registry hiccup).
+    # Manual trigger — the only way to fire this workflow while the
+    # schedule is off. Useful for one-off daily snapshots without
+    # waiting for a re-enabled cron.
 
 permissions:
   contents: write  # Required to create tags + releases
