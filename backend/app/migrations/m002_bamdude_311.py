@@ -156,18 +156,32 @@ async def upgrade(conn):
         except Exception:
             pass
 
-    # Recount queue counters
-    await conn.execute(
-        text(
-            "UPDATE printer_queues SET "
-            "pending_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id AND print_queue.status = 'pending'), "
-            "completed_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id AND print_queue.status = 'completed'), "
-            "failed_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id AND print_queue.status = 'failed'), "
-            "cancelled_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id AND print_queue.status = 'cancelled'), "
-            "skipped_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id AND print_queue.status = 'skipped'), "
-            "total_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id)"
+    # Recount queue counters. On fresh installs ``Base.metadata.create_all``
+    # runs BEFORE migrations with the CURRENT schema — and m019 later drops
+    # the cached ``completed_count``/``failed_count``/``cancelled_count``/
+    # ``total_count`` columns — so on fresh installs those columns are
+    # already absent when m002 runs. Skip them in that case; real pre-m019
+    # DBs still have the columns and get the full recount.
+    if await column_exists(conn, "printer_queues", "completed_count"):
+        await conn.execute(
+            text(
+                "UPDATE printer_queues SET "
+                "pending_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id AND print_queue.status = 'pending'), "
+                "completed_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id AND print_queue.status = 'completed'), "
+                "failed_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id AND print_queue.status = 'failed'), "
+                "cancelled_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id AND print_queue.status = 'cancelled'), "
+                "skipped_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id AND print_queue.status = 'skipped'), "
+                "total_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id)"
+            )
         )
-    )
+    else:
+        await conn.execute(
+            text(
+                "UPDATE printer_queues SET "
+                "pending_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id AND print_queue.status = 'pending'), "
+                "skipped_count = (SELECT COUNT(*) FROM print_queue WHERE print_queue.queue_id = printer_queues.id AND print_queue.status = 'skipped')"
+            )
+        )
 
     # ── Clean up print_queue: drop legacy columns ──
     # Remove: printer_id, require_previous_success, target_model, target_location,
