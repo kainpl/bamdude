@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, macrosApi } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
-import { formatDateOnly } from '../utils/date';
+import { formatDateOnly, type DateFormat } from '../utils/date';
 import { getCurrencySymbol, SUPPORTED_CURRENCIES } from '../utils/currency';
 import type { AppSettings, AppSettingsUpdate, SmartPlug, SmartPlugStatus, NotificationProvider, NotificationTemplate, UpdateStatus, GitBackupStatus, CloudAuthStatus, UserCreate, UserUpdate, UserResponse, StorageUsageResponse, Macro, MacroCreate, MacroUpdate } from '../api/client';
 import { Card, CardContent, CardHeader } from '../components/Card';
@@ -3683,7 +3683,7 @@ export function SettingsPage() {
                             <p className="text-white font-medium">{key.name}</p>
                             <p className="text-xs text-bambu-gray">
                               {key.key_prefix}••••••••
-                              {key.last_used && ` · ${t('settings.lastUsed')}: ${formatDateOnly(key.last_used)}`}
+                              {key.last_used && ` · ${t('settings.lastUsed')}: ${formatDateOnly(key.last_used, undefined, settings?.date_format as DateFormat | undefined)}`}
                             </p>
                           </div>
                         </div>

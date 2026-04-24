@@ -87,6 +87,15 @@ export function QueueCard({ queue, compact = false, onEditItem }: QueueCardProps
   const { hasPermission } = useAuth();
   const [expanded, setExpanded] = useState(false);
 
+  // Pull system time-format so ETA respects the user's 12h/24h choice.
+  // Cached globally — shared with everywhere else that reads settings.
+  const { data: settings } = useQuery({
+    queryKey: ['settings'],
+    queryFn: api.getSettings,
+    staleTime: 60_000,
+  });
+  const timeFormat = (settings?.time_format ?? 'system') as 'system' | '12h' | '24h';
+
   // Fetch pending items
   const { data: pendingItems } = useQuery({
     queryKey: ['queue', queue.printer_id, 'pending'],
@@ -448,7 +457,7 @@ export function QueueCard({ queue, compact = false, onEditItem }: QueueCardProps
                             {formatDuration(status.remaining_time * 60)}
                           </span>
                           <span className="text-bambu-green font-medium">
-                            ETA {formatETA(status.remaining_time)}
+                            ETA {formatETA(status.remaining_time, timeFormat, t)}
                           </span>
                         </>
                       )}

@@ -6,6 +6,32 @@ All notable changes to BamDude will be documented in this file.
 
 ---
 
+## [0.4.1] - Unreleased
+
+Polish release on top of `0.4.0.1`. Mostly UI-side date/time formatting consistency and small navigation conveniences.
+
+### Date / time formatting respects system settings everywhere
+
+Audit pass — every user-visible date or time value now follows the `time_format` (12h/24h) and `date_format` (system/us/eu/iso) preferences set under Settings → System. Previously many places fell through to the browser locale even when the user explicitly picked one of the explicit formats.
+
+- **`utils/date.ts` helpers** — `formatDateOnly` and `formatDate` gained optional trailing `dateFormat` / `timeFormat` arguments (backward-compatible: existing 1-2-arg callers unchanged). When set to anything other than `'system'`, the explicit `MM/DD/YYYY` / `DD/MM/YYYY` / `YYYY-MM-DD` form is used and any locale-style `options` are ignored. **`formatDateTime`**: explicit `dateFormat` now wins over `options` (previous logic flipped to `toLocaleString(undefined, options)` and silently dropped the user's preference).
+- **`QueueCard.tsx`** — current-print ETA now passes `timeFormat` (was rendering in browser-default 12h/24h regardless of setting).
+- **`ProjectDetailPage.tsx`** — `CurrentPrintInfoCard` ETA + project due date + activity timeline timestamps all respect settings; timeline `formatTimelineDate` no longer hard-codes `dateFormat='system'`.
+- **`PrintersPage.tsx`** — "Last: <name> • <date>" footer line + plate-detection reference timestamp use `dateFormat`. New `dateFormat` prop on `PrinterCard` threaded through both grid + grouped-by-location render paths.
+- **`SettingsPage.tsx`** — API key `last_used` uses `dateFormat`.
+- **`NotificationProviderCard.tsx`** — "last success" badge uses `dateFormat`.
+- **`GitBackupSettings.tsx`** — local `formatDateTime` helper that called `date.toLocaleString()` without settings replaced with the util's settings-aware version. Backup status, scheduled run, log table, and local backup file list timestamps all follow the user's choice.
+- **`NotificationLogViewer.tsx`** — log row date + tooltip full-date both threaded with `timeFormat`/`dateFormat`.
+- **`LibraryFileNotesPopover.tsx`** — note `updated_at` metadata uses `formatDateTime` with settings (was raw `toLocaleString()`).
+- **`CalendarView.tsx`** — per-event time in the day drawer uses `formatTimeOnly(timeFormat)` (was raw `toLocaleTimeString(undefined, ...)`). Day-name + selected-date header intentionally kept locale-driven (Intl handles full weekday/month names better than the explicit numeric forms).
+- **`SpoolUsageHistory.tsx`** — usage record timestamps use `formatDateTime` with settings (was hard-coded `'en-GB'`).
+
+Intentionally left alone: chart axis labels (`Queue/TimelineAxis`, `PrintCalendar`, `AMSHistoryModal` X-tick, `StatsPage`, `FilamentTrends`), debug log timestamps (`MQTTDebugModal`, `FailureDetectionSettings` event log) — all locale-only by design.
+
+### Navigation
+
+- **Project badge on archive cards is now clickable** → opens the project's detail page. Hover gets a `brightness-125` accent. `onClick stopPropagation` so the click doesn't bubble to the parent archive card and open the archive detail modal instead.
+
 ## [0.4.0.1] - 2026-04-24
 
 Hotfix on top of `0.4.0`. `:latest` moves forward; `:0.4.0` stays pinned for anyone who wants it.

@@ -224,10 +224,18 @@ export function parseUTCDate(dateStr: string | null | undefined): Date | null {
  */
 export function formatDate(
   dateStr: string | null | undefined,
-  options?: Intl.DateTimeFormatOptions
+  options?: Intl.DateTimeFormatOptions,
+  timeFormat: TimeFormat = 'system',
+  dateFormat: DateFormat = 'system'
 ): string {
   const date = parseUTCDate(dateStr);
   if (!date) return '';
+
+  // Explicit dateFormat: render as ``DATE TIME`` with both portions
+  // following user preference, ignore ``options``.
+  if (dateFormat !== 'system') {
+    return `${formatDateInput(date, dateFormat)} ${formatTimeInput(date, timeFormat)}`;
+  }
 
   const defaultOptions: Intl.DateTimeFormatOptions = {
     year: 'numeric',
@@ -237,22 +245,40 @@ export function formatDate(
     minute: '2-digit',
   };
 
-  return date.toLocaleString(undefined, options ?? defaultOptions);
+  const finalOptions = applyTimeFormat(options ?? defaultOptions, timeFormat);
+  return date.toLocaleString(undefined, finalOptions);
 }
 
 /**
  * Format a UTC date string to a localized date-only string.
  *
+ * Two optional add-ons keep the call sites flexible:
+ *
+ * - ``options`` — full Intl.DateTimeFormatOptions (locale-driven path).
+ *   Used as-is when ``dateFormat='system'``.
+ * - ``dateFormat`` (system | us | eu | iso) — when set to anything other
+ *   than ``'system'``, the explicit ``MM/DD/YYYY`` / ``DD/MM/YYYY`` /
+ *   ``YYYY-MM-DD`` form is used and ``options`` is ignored.
+ *
+ * Argument order kept (options before dateFormat) for backward
+ * compatibility with existing 2-arg callers.
+ *
  * @param dateStr - Date string from backend
- * @param options - Intl.DateTimeFormat options
- * @returns Formatted date string in user's locale and timezone
+ * @param options - Intl.DateTimeFormat options for the locale path
+ * @param dateFormat - User's date_format preference (default 'system')
+ * @returns Formatted date string
  */
 export function formatDateOnly(
   dateStr: string | null | undefined,
-  options?: Intl.DateTimeFormatOptions
+  options?: Intl.DateTimeFormatOptions,
+  dateFormat: DateFormat = 'system'
 ): string {
   const date = parseUTCDate(dateStr);
   if (!date) return '';
+
+  if (dateFormat !== 'system') {
+    return formatDateInput(date, dateFormat);
+  }
 
   const defaultOptions: Intl.DateTimeFormatOptions = {
     year: 'numeric',
@@ -280,17 +306,17 @@ export function formatDateTime(
   const date = parseUTCDate(dateStr);
   if (!date) return '';
 
-  // If explicit date format selected, use manual formatting
-  if (dateFormat !== 'system' || options) {
-    if (options) {
-      const finalOptions = applyTimeFormat(options, timeFormat);
-      return date.toLocaleString(undefined, finalOptions);
-    }
+  // Explicit date format wins over ``options``: when the user picked
+  // ``us``/``eu``/``iso`` they want the mechanical form everywhere, even
+  // if the call site passed locale-style ``options`` like
+  // ``{month: 'short'}``. ``options`` only matters when ``dateFormat`` is
+  // left at ``'system'`` (locale-driven path).
+  if (dateFormat !== 'system') {
     return `${formatDateInput(date, dateFormat)} ${formatTimeInput(date, timeFormat)}`;
   }
 
-  // System default - use locale
-  const defaultOptions: Intl.DateTimeFormatOptions = {
+  // System default - use locale (caller-provided options or our default).
+  const defaultOptions: Intl.DateTimeFormatOptions = options ?? {
     year: 'numeric',
     month: 'short',
     day: 'numeric',

@@ -41,7 +41,7 @@ import {
   Unlink,
 } from 'lucide-react';
 import { api, withStreamToken } from '../api/client';
-import { parseUTCDate, formatDateOnly, formatDateTime, formatDuration, formatDurationFromHours, formatETA, type TimeFormat } from '../utils/date';
+import { parseUTCDate, formatDateOnly, formatDateTime, formatDuration, formatDurationFromHours, formatETA, type TimeFormat, type DateFormat } from '../utils/date';
 import type { Archive, ProjectUpdate, BOMItem, BOMItemCreate, BOMItemUpdate, LibraryFileListItem, PrintPlanItem, PrintQueueItem } from '../api/client';
 import { Card, CardContent } from '../components/Card';
 import { Button } from '../components/Button';
@@ -341,6 +341,7 @@ export function ProjectDetailPage() {
 
   const currency = getCurrencySymbol(settings?.currency || 'USD');
   const timeFormat: TimeFormat = settings?.time_format || 'system';
+  const dateFormat = (settings?.date_format || 'system') as DateFormat;
 
   const updateMutation = useMutation({
     mutationFn: (data: ProjectUpdate) => api.updateProject(projectId, data),
@@ -516,7 +517,7 @@ export function ProjectDetailPage() {
   });
 
   const formatTimelineDate = (timestamp: string) => {
-    return formatDateTime(timestamp, timeFormat, 'system', {
+    return formatDateTime(timestamp, timeFormat, dateFormat, {
       month: 'short',
       day: 'numeric',
       hour: '2-digit',
@@ -862,7 +863,7 @@ export function ProjectDetailPage() {
           {project.due_date && (
             <div className="flex items-center gap-2">
               <Calendar className="w-4 h-4 text-bambu-gray" />
-              <span className="text-sm text-white">{formatDateOnly(project.due_date, { year: 'numeric', month: 'short', day: 'numeric' })}</span>
+              <span className="text-sm text-white">{formatDateOnly(project.due_date, { year: 'numeric', month: 'short', day: 'numeric' }, dateFormat)}</span>
               {getDueDateStatus(project.due_date, t) && (
                 <span className={`text-xs ${getDueDateStatus(project.due_date, t)!.color}`}>
                   ({getDueDateStatus(project.due_date, t)!.label})
@@ -1566,6 +1567,7 @@ export function ProjectDetailPage() {
                     key={item.id}
                     item={item}
                     accentColor={project.color}
+                    timeFormat={timeFormat}
                     t={t}
                   />
                 ))}
@@ -1666,6 +1668,7 @@ export function ProjectDetailPage() {
 interface CurrentPrintInfoCardProps {
   item: PrintQueueItem;
   accentColor: string | null;
+  timeFormat: TimeFormat;
   t: TFunction;
 }
 
@@ -1678,7 +1681,7 @@ interface CurrentPrintInfoCardProps {
  * ``color`` when set so the operator can eyeball project identity
  * alongside sibling project cards.
  */
-function CurrentPrintInfoCard({ item, accentColor, t }: CurrentPrintInfoCardProps) {
+function CurrentPrintInfoCard({ item, accentColor, timeFormat, t }: CurrentPrintInfoCardProps) {
   const { data: status } = useQuery({
     queryKey: ['printerStatus', item.printer_id],
     queryFn: () => api.getPrinterStatus(item.printer_id!),
@@ -1744,7 +1747,7 @@ function CurrentPrintInfoCard({ item, accentColor, t }: CurrentPrintInfoCardProp
                       {formatDuration(status.remaining_time * 60)}
                     </span>
                     <span className="text-bambu-green font-medium">
-                      ETA {formatETA(status.remaining_time)}
+                      ETA {formatETA(status.remaining_time, timeFormat, t)}
                     </span>
                   </>
                 )}

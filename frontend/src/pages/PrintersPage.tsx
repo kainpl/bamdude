@@ -60,7 +60,7 @@ import {
 import { Link as RouterLink, useNavigate } from 'react-router-dom';
 import { api, discoveryApi, firmwareApi, macrosApi, withStreamToken } from '../api/client';
 import { BulkPrinterToolbar } from '../components/BulkPrinterToolbar';
-import { formatDateOnly, formatETA, formatDuration, parseUTCDate } from '../utils/date';
+import { formatDateOnly, formatETA, formatDuration } from '../utils/date';
 import type { Printer, PrinterCreate, PrinterStatus, AMSUnit, DiscoveredPrinter, FirmwareUpdateInfo, FirmwareUploadStatus, LinkedSpoolInfo, SpoolAssignment, HMSError, Macro } from '../api/client';
 import { Card, CardContent } from '../components/Card';
 import { Button } from '../components/Button';
@@ -1284,6 +1284,7 @@ function PrinterCard({
   onGetAssignment,
   onUnassignSpool,
   timeFormat = 'system',
+  dateFormat = 'system',
   cameraViewMode = 'window',
   onOpenEmbeddedCamera,
   checkPrinterFirmware = true,
@@ -1311,6 +1312,7 @@ function PrinterCard({
   onGetAssignment?: (printerId: number, amsId: number, trayId: number) => SpoolAssignment | undefined;
   onUnassignSpool?: (printerId: number, amsId: number, trayId: number) => void;
   timeFormat?: 'system' | '12h' | '24h';
+  dateFormat?: 'system' | 'us' | 'eu' | 'iso';
   cameraViewMode?: 'window' | 'embedded';
   onOpenEmbeddedCamera?: (printerId: number, printerName: string) => void;
   checkPrinterFirmware?: boolean;
@@ -2826,7 +2828,7 @@ function PrinterCard({
                               Last: {lastPrint.print_name || lastPrint.filename}
                               {lastPrint.completed_at && (
                                 <span className="ml-1 text-bambu-gray/60">
-                                  • {formatDateOnly(lastPrint.completed_at, { month: 'short', day: 'numeric' })}
+                                  • {formatDateOnly(lastPrint.completed_at, { month: 'short', day: 'numeric' }, dateFormat)}
                                 </span>
                               )}
                             </p>
@@ -4561,9 +4563,9 @@ function PrinterCard({
                             {ref.label || <span className="italic opacity-50">{t('printers.noLabel')}</span>}
                           </p>
                         )}
-                        {/* Timestamp */}
+                        {/* Timestamp — respect user's date_format choice */}
                         <p className="text-[10px] text-bambu-gray/60">
-                          {ref.timestamp ? parseUTCDate(ref.timestamp)?.toLocaleDateString() ?? '' : ''}
+                          {ref.timestamp ? formatDateOnly(ref.timestamp, undefined, dateFormat) : ''}
                         </p>
                       </div>
                     ))}
@@ -7066,6 +7068,7 @@ export function PrintersPage() {
                     onGetAssignment={getAssignment}
                     onUnassignSpool={(pid, aid, tid) => unassignMutation.mutate({ printerId: pid, amsId: aid, trayId: tid })}
                     timeFormat={settings?.time_format || 'system'}
+                    dateFormat={settings?.date_format || 'system'}
                     cameraViewMode={settings?.camera_view_mode || 'window'}
                     onOpenEmbeddedCamera={(id, name) => setEmbeddedCameraPrinters(prev => new Map(prev).set(id, { id, name }))}
                     checkPrinterFirmware={settings?.check_printer_firmware !== false}

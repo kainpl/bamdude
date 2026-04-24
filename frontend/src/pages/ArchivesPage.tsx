@@ -977,9 +977,11 @@ function ArchiveCard({
               {archive.content_hash.slice(0, 8).toUpperCase()}
             </span>
           )}
-          {archive.project_name && (
-            <span
-              className="text-xs px-1.5 py-0.5 rounded-full truncate max-w-[120px]"
+          {archive.project_name && archive.project_id != null && (
+            <Link
+              to={`/projects/${archive.project_id}`}
+              onClick={(e) => e.stopPropagation()}
+              className="text-xs px-1.5 py-0.5 rounded-full truncate max-w-[120px] hover:brightness-125 transition"
               style={{
                 backgroundColor: `${projects?.find(p => p.id === archive.project_id)?.color || '#6b7280'}20`,
                 color: projects?.find(p => p.id === archive.project_id)?.color || '#6b7280'
@@ -987,7 +989,7 @@ function ArchiveCard({
               title={t('archives.card.project', { name: archive.project_name })}
             >
               {archive.project_name}
-            </span>
+            </Link>
           )}
         </div>
 

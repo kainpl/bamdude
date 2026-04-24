@@ -37,15 +37,18 @@ import { Button } from './Button';
 import { Toggle } from './Toggle';
 import { ConfirmModal } from './ConfirmModal';
 import { useToast } from '../contexts/ToastContext';
-import { formatRelativeTime, parseUTCDate } from '../utils/date';
+import { formatDateTime as fmtDateTime, formatRelativeTime, type DateFormat, type TimeFormat } from '../utils/date';
 
 type GitProvider = 'github' | 'gitlab';
 
-function formatDateTime(dateStr: string | null): string {
+/**
+ * Wrapper that returns ``-`` for null and threads the user's date/time
+ * preferences through. Replaces the old local helper that called
+ * ``date.toLocaleString()`` and ignored settings entirely.
+ */
+function formatDateTime(dateStr: string | null, timeFormat: TimeFormat = 'system', dateFormat: DateFormat = 'system'): string {
   if (!dateStr) return '-';
-  const date = parseUTCDate(dateStr);
-  if (!date) return '-';
-  return date.toLocaleString();
+  return fmtDateTime(dateStr, timeFormat, dateFormat) || '-';
 }
 
 interface StatusBadgeProps {
@@ -81,6 +84,16 @@ export function GitBackupSettings() {
   const queryClient = useQueryClient();
   const { showToast } = useToast();
   const { t } = useTranslation();
+
+  // Pull system time/date format so backup status timestamps follow the
+  // user's preference instead of falling through to the browser locale.
+  const { data: settings } = useQuery({
+    queryKey: ['settings'],
+    queryFn: api.getSettings,
+    staleTime: 60_000,
+  });
+  const timeFormat = (settings?.time_format ?? 'system') as TimeFormat;
+  const dateFormat = (settings?.date_format ?? 'system') as DateFormat;
 
   // Local state for form
   const [provider, setProvider] = useState<GitProvider>('github');
@@ -780,7 +793,7 @@ export function GitBackupSettings() {
                   <tbody>
                     {logs.slice(0, 10).map((log) => (
                       <tr key={log.id} className="border-b border-bambu-dark-tertiary/50 hover:bg-bambu-dark-secondary">
-                        <td className="py-2 px-2 text-white">{formatDateTime(log.started_at)}</td>
+                        <td className="py-2 px-2 text-white">{formatDateTime(log.started_at, timeFormat, dateFormat)}</td>
                         <td className="py-2 px-2"><StatusBadge status={log.status} /></td>
                         <td className="py-2 px-2">
                           {log.commit_sha ? (
@@ -1055,7 +1068,7 @@ export function GitBackupSettings() {
                   <div>
                     <div className="text-bambu-gray text-xs">{t('backup.scheduledLocalBackup.lastRun')}</div>
                     <div className="text-white">
-                      {formatDateTime(localBackupStatus?.last_backup_at ?? null)}
+                      {formatDateTime(localBackupStatus?.last_backup_at ?? null, timeFormat, dateFormat)}
                       {localBackupStatus?.last_status && (
                         <span className={`ml-2 text-xs ${localBackupStatus.last_status === 'success' ? 'text-status-ok' : 'text-status-error'}`}>
                           ({localBackupStatus.last_status})
@@ -1065,7 +1078,7 @@ export function GitBackupSettings() {
                   </div>
                   <div>
                     <div className="text-bambu-gray text-xs">{t('backup.scheduledLocalBackup.nextRun')}</div>
-                    <div className="text-white">{formatDateTime(localBackupStatus?.next_run ?? null)}</div>
+                    <div className="text-white">{formatDateTime(localBackupStatus?.next_run ?? null, timeFormat, dateFormat)}</div>
                   </div>
                 </div>
               </>
@@ -1111,7 +1124,7 @@ export function GitBackupSettings() {
                       <div className="flex-1 min-w-0">
                         <p className="text-sm text-white truncate">{b.filename}</p>
                         <p className="text-xs text-bambu-gray">
-                          {(b.size / (1024 * 1024)).toFixed(1)} MB · {formatDateTime(b.created_at)}
+                          {(b.size / (1024 * 1024)).toFixed(1)} MB · {formatDateTime(b.created_at, timeFormat, dateFormat)}
                         </p>
                       </div>
                       <a

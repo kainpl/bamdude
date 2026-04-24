@@ -16,6 +16,7 @@ import { api, LIBRARY_FILE_NOTE_MAX_LENGTH, type LibraryFileNote } from '../api/
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { ConfirmModal } from './ConfirmModal';
+import { formatDateTime, type DateFormat, type TimeFormat } from '../utils/date';
 
 type Mode = 'view' | 'create' | 'edit';
 
@@ -44,6 +45,16 @@ export function LibraryFileNotesPopover({ fileId, open, anchorRef, onClose, onCo
   const { authEnabled } = useAuth();
   const queryClient = useQueryClient();
   const popoverRef = useRef<HTMLDivElement | null>(null);
+
+  // Pull system date/time format so note timestamps follow the user's
+  // preference instead of falling through to the browser locale.
+  const { data: settings } = useQuery({
+    queryKey: ['settings'],
+    queryFn: api.getSettings,
+    staleTime: 60_000,
+  });
+  const timeFormat = (settings?.time_format ?? 'system') as TimeFormat;
+  const dateFormat = (settings?.date_format ?? 'system') as DateFormat;
 
   const [mode, setMode] = useState<Mode>('view');
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -257,8 +268,7 @@ export function LibraryFileNotesPopover({ fileId, open, anchorRef, onClose, onCo
   const isSaving = createMutation.isPending || updateMutation.isPending;
   const formatMeta = (note: LibraryFileNote) => {
     const author = note.user_username ?? (authEnabled ? t('libraryNotes.unknownAuthor') : t('libraryNotes.anonymous'));
-    const ts = new Date(note.updated_at);
-    const datePart = ts.toLocaleString();
+    const datePart = formatDateTime(note.updated_at, timeFormat, dateFormat);
     return `${author} · ${datePart}`;
   };
 

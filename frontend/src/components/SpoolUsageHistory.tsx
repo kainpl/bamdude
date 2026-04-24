@@ -5,11 +5,7 @@ import { api } from '../api/client';
 import type { SpoolUsageRecord } from '../api/client';
 import { Button } from './Button';
 import { useToast } from '../contexts/ToastContext';
-function formatDate(dateStr: string): string {
-  const date = new Date(dateStr);
-  return date.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }) +
-    ' ' + date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
-}
+import { formatDateTime, type DateFormat, type TimeFormat } from '../utils/date';
 
 interface SpoolUsageHistoryProps {
   spoolId: number;
@@ -25,6 +21,16 @@ export function SpoolUsageHistory({ spoolId }: SpoolUsageHistoryProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
+
+  // Pull system date/time format so usage timestamps follow the user's
+  // preference instead of the previous hard-coded en-GB.
+  const { data: settings } = useQuery({
+    queryKey: ['settings'],
+    queryFn: api.getSettings,
+    staleTime: 60_000,
+  });
+  const timeFormat = (settings?.time_format ?? 'system') as TimeFormat;
+  const dateFormat = (settings?.date_format ?? 'system') as DateFormat;
 
   const { data: history, isLoading } = useQuery({
     queryKey: ['spool-usage', spoolId],
@@ -78,7 +84,7 @@ export function SpoolUsageHistory({ spoolId }: SpoolUsageHistoryProps) {
             className="flex items-center justify-between p-2 rounded bg-bambu-dark/50 text-xs"
           >
             <div className="flex-1 min-w-0">
-              <span className="text-bambu-gray">{formatDate(record.created_at)}</span>
+              <span className="text-bambu-gray">{formatDateTime(record.created_at, timeFormat, dateFormat)}</span>
               {record.print_name && (
                 <span className="text-white ml-2 truncate" title={record.print_name}>
                   {record.print_name}

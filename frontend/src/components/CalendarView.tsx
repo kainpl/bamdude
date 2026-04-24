@@ -1,8 +1,9 @@
 import { useState, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useQuery } from '@tanstack/react-query';
 import type { ArchiveSlim } from '../api/client';
 import { api } from '../api/client';
-import { parseUTCDate } from '../utils/date';
+import { formatTimeOnly, parseUTCDate, type TimeFormat } from '../utils/date';
 import { getArchiveStatusBadge, isFailureStatus } from '../utils/archiveStatus';
 
 interface CalendarViewProps {
@@ -15,6 +16,18 @@ interface CalendarViewProps {
 export function CalendarView({ archives, printerMap }: CalendarViewProps) {
   const { t } = useTranslation();
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
+
+  // Pull system time format so per-event timestamps respect the 12h/24h
+  // preference. Day names + selected-date header keep using browser locale
+  // (Intl.DateTimeFormat handles full weekday/month names better than the
+  // explicit MM/DD/YYYY date_format choices, which would produce harsh
+  // numeric output for a calendar header).
+  const { data: settings } = useQuery({
+    queryKey: ['settings'],
+    queryFn: api.getSettings,
+    staleTime: 60_000,
+  });
+  const timeFormat = (settings?.time_format ?? 'system') as TimeFormat;
 
   // Build list of last 30 days (today first, 29 days back last)
   const days = useMemo(() => {
@@ -204,7 +217,7 @@ export function CalendarView({ archives, printerMap }: CalendarViewProps) {
                         <span>
                           {(() => {
                             const d = parseUTCDate(archive.created_at);
-                            return d ? d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : '';
+                            return d ? formatTimeOnly(d, timeFormat) : '';
                           })()}
                         </span>
                       </div>

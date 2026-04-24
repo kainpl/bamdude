@@ -19,7 +19,7 @@ import {
     Plus
 } from 'lucide-react';
 import {api} from '../api/client';
-import {formatDateOnly, parseUTCDate} from '../utils/date';
+import {formatDateOnly, parseUTCDate, type DateFormat} from '../utils/date';
 import type {NotificationProvider, NotificationProviderUpdate, TelegramChat} from '../api/client';
 import {Card, CardContent} from './Card';
 import {Button} from './Button';
@@ -70,6 +70,15 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
     const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
     const [showTelegramChatModal, setShowTelegramChatModal] = useState(false);
     const [editingTelegramChat, setEditingTelegramChat] = useState<TelegramChat | null>(null);
+
+    // Pull system date_format so the "last success" timestamp follows the
+    // user's preference. Cached globally — shared with other settings reads.
+    const {data: settings} = useQuery({
+        queryKey: ['settings'],
+        queryFn: api.getSettings,
+        staleTime: 60_000,
+    });
+    const dateFormat = (settings?.date_format ?? 'system') as DateFormat;
 
     const isTelegram = provider.provider_type === 'telegram';
 
@@ -144,7 +153,7 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                         <div className="flex items-center gap-3">
                             {provider.last_success && (
                                 <span
-                                    className="text-xs text-status-ok hidden sm:inline">{t('notifications.lastSuccess', {date: formatDateOnly(provider.last_success)})}</span>
+                                    className="text-xs text-status-ok hidden sm:inline">{t('notifications.lastSuccess', {date: formatDateOnly(provider.last_success, undefined, dateFormat)})}</span>
                             )}
                             {/* Only show error if it's more recent than last success */}
                             {provider.last_error && provider.last_error_at && (
