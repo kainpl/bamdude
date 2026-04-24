@@ -1284,8 +1284,14 @@ class ArchiveService:
         status: str,
         completed_at: datetime | None = None,
         failure_reason: str | None = None,
+        error_message: str | None = None,
     ) -> bool:
-        """Update the status of an archive."""
+        """Update the status of an archive.
+
+        ``failure_reason`` is the short cause code (VARCHAR(100), e.g.
+        "Filament runout"); ``error_message`` is the verbose diagnostic text
+        (TEXT) carried over from the queue item on failure.
+        """
         archive = await self.get_archive(archive_id)
         if not archive:
             return False
@@ -1295,6 +1301,8 @@ class ArchiveService:
             archive.completed_at = completed_at
         if failure_reason:
             archive.failure_reason = failure_reason
+        if error_message and not archive.error_message:
+            archive.error_message = error_message
 
         await self.db.commit()
         return True

@@ -23,13 +23,12 @@ class PrinterQueue(Base):
     last_activity_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     current_item_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
-    # Cached counters (updated on item status change)
+    # Cached counters. Only live-state counters (pending, skipped) live here
+    # post-m019 — completed / failed / cancelled / total roll off the archive
+    # table via archive.queue_id at read time, since queue items in those
+    # terminal states are cleaned up or never existed (external prints).
     pending_count: Mapped[int] = mapped_column(default=0)
-    completed_count: Mapped[int] = mapped_column(default=0)
-    failed_count: Mapped[int] = mapped_column(default=0)
-    cancelled_count: Mapped[int] = mapped_column(default=0)
     skipped_count: Mapped[int] = mapped_column(default=0)
-    total_count: Mapped[int] = mapped_column(default=0)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())

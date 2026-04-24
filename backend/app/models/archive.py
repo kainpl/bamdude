@@ -20,6 +20,23 @@ class PrintArchive(Base):
     library_file_id: Mapped[int | None] = mapped_column(
         ForeignKey("library_files.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    # Queue this archive belongs to (1:1 with a printer, may match
+    # printer_id when PrinterQueue.id == printer.id numerically, but not
+    # guaranteed). Populated at dispatch time (see background_dispatch.py)
+    # so historical queue counters can be recomputed from the archive
+    # table itself — print_queue only keeps live pending/skipped items
+    # post-m019. NULL for very old archives created before this field.
+    queue_id: Mapped[int | None] = mapped_column(
+        ForeignKey("printer_queues.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    # Same batch grouping the queue item carried. Preserved here so we
+    # can still ask "how many of batch <uuid> completed?" after the
+    # queue rows are cleaned up.
+    batch_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    # Free-form diagnostic text from dispatcher / scheduler when the
+    # print failed. Short causes still live in ``failure_reason``;
+    # this is the verbose twin that operators see on hover.
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # File info
     filename: Mapped[str] = mapped_column(String(255))

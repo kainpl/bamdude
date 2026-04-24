@@ -343,6 +343,18 @@ async def _get_plug_energy(plug, db) -> dict | None:
         return await tasmota_service.get_energy(plug)
 
 
+async def _default_queue_id_for_printer(db, printer_id: int) -> int | None:
+    """Resolve a printer's single PrinterQueue row → its id, or None.
+
+    External / direct-dispatch archives use this to fill ``archive.queue_id``
+    so the post-m019 archive-driven counters in ``GET /printer-queues/``
+    include them under the printer's default queue.
+    """
+    from backend.app.models.printer_queue import PrinterQueue
+
+    return (await db.execute(select(PrinterQueue.id).where(PrinterQueue.printer_id == printer_id))).scalar_one_or_none()
+
+
 async def _record_energy_start(archive, printer_id: int, db, *, context: str = "") -> bool:
     """Capture the smart plug lifetime counter on the archive at print start.
 
@@ -1944,6 +1956,10 @@ async def on_print_start(printer_id: int, data: dict):
                     subtask_id=subtask_id,
                     status="printing",
                     started_at=datetime.now(timezone.utc),
+                    # External / direct-dispatch falls back to the printer's
+                    # default queue so post-m019 archive-driven counters
+                    # include it.
+                    queue_id=await _default_queue_id_for_printer(db, printer_id),
                     # Retry hooks recover from this state on:
                     # (1) BamDude startup sweep, (2) printer reconnect,
                     # (3) on_print_complete last-chance, (4) manual via API.
@@ -2045,6 +2061,17 @@ async def on_print_start(printer_id: int, data: dict):
             )
 
             if archive:
+                # External / direct-dispatch archive: attribute to the
+                # printer's default queue so post-m019 archive-driven
+                # counters include it. (Queue-driven prints already had
+                # queue_id set at dispatch time — nothing to do there.)
+                # Explicit commit because the success path below doesn't
+                # always commit (``_record_energy_start`` only does so when
+                # a smart plug is present).
+                if archive.queue_id is None:
+                    archive.queue_id = await _default_queue_id_for_printer(db, printer_id)
+                    await db.commit()
+
                 # Detect swap compatibility from filename. Covers both the
                 # singular ".swap." suffix (older / custom tooling) and the
                 # ".swaps." suffix that swaplist.app actually emits on export.
@@ -2835,6 +2862,18 @@ async def on_print_complete(printer_id: int, data: dict):
                 # "cancelled" so it matches the queue schema Literal.
                 if queue_status == "aborted":
                     queue_status = "cancelled"
+
+                # Carry verbose error text from the queue item onto the
+                # archive. Once the queue item is auto-deleted below, this is
+                # the only surviving diagnostic for the failure — the
+                # IssuesSection reads it off the archive on hover.
+                if queue_item.error_message and queue_item.archive_id:
+                    from backend.app.models.archive import PrintArchive as _ArchiveForErr
+
+                    _err_archive = await db.get(_ArchiveForErr, queue_item.archive_id)
+                    if _err_archive is not None and not _err_archive.error_message:
+                        _err_archive.error_message = queue_item.error_message
+
                 queue_item.status = queue_status
                 queue_item.completed_at = datetime.now(timezone.utc)
 
@@ -2876,6 +2915,23 @@ async def on_print_complete(printer_id: int, data: dict):
                     )
                 except Exception:
                     pass  # Don't fail if MQTT fails
+
+                # Auto-cleanup: completed queue items now live on via their
+                # linked archive (counters re-computed from print_archives
+                # post-m019). Failed / cancelled / skipped stay put so the
+                # operator can retry from the queue UI.
+                if queue_status == "completed" and queue_item.archive_id is not None:
+                    _completed_item_id = queue_item.id
+                    _completed_archive_id = queue_item.archive_id
+                    _completed_queue_id = queue_item.queue_id
+                    await db.delete(queue_item)
+                    await db.commit()
+                    logger.info(
+                        "Auto-cleaned completed queue item %s (archive %s, queue %s)",
+                        _completed_item_id,
+                        _completed_archive_id,
+                        _completed_queue_id,
+                    )
             else:
                 # No queue_item was printing → this was an external or
                 # direct-dispatch print.  Still flip queue.status back to

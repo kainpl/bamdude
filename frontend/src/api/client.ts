@@ -505,6 +505,14 @@ export interface Archive {
   energy_kwh: number | null;
   energy_cost: number | null;
   swap_compatible: boolean;
+  // Queue attribution (m019). Queue-driven archives carry the originating
+  // queue_id + batch_id; external / direct-dispatch archives get queue_id
+  // (the printer's default queue) but no batch_id.
+  queue_id: number | null;
+  batch_id: string | null;
+  // Verbose diagnostic for failures — the "hover to see why" twin of
+  // ``failure_reason`` (short cause code).
+  error_message: string | null;
   created_at: string;
   // User tracking (Issue #206)
   created_by_id: number | null;

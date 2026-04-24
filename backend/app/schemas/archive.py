@@ -104,6 +104,16 @@ class ArchiveResponse(BaseModel):
     # Swap mode
     swap_compatible: bool = False
 
+    # Queue attribution (m019). For archives dispatched from a queue item or
+    # batch, these tie the archive back to its origin row. External /
+    # direct-dispatch archives still get ``queue_id`` (the printer's default
+    # queue) but no ``batch_id``.
+    queue_id: int | None = None
+    batch_id: str | None = None
+    # Verbose diagnostic text for failures — the "hover to see why" twin of
+    # ``failure_reason`` (short cause code).
+    error_message: str | None = None
+
     created_at: datetime
 
     # User tracking (Issue #206)

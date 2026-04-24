@@ -1007,19 +1007,36 @@ class BackgroundDispatchService:
                 # to upstream #276a1db3 all library-print archives landed with
                 # created_by_id=NULL regardless of who clicked Print.
                 created_by_id=job.requested_by_user_id,
+                # Born in "printing" so the UI doesn't flash a transient
+                # "archived" label during the FTP/MQTT window (#876 follow-up).
+                # Error paths below flip it to "failed" before the txn commits.
+                print_data={"status": "printing"},
             )
             if not archive:
                 raise RuntimeError("Failed to create archive")
 
-            # Queue-item dispatches need their archive_id updated in the same
-            # txn so the scheduler's follow-up logic (status flip, WS push,
-            # notification) sees a consistent row.
+            # Queue-item dispatches: keep queue_item + archive aligned in the
+            # same txn so the scheduler's follow-up logic sees a consistent
+            # view. Also copies queue_id + batch_id onto the archive so the
+            # archive-driven queue counters post-m019 can find this row.
             if job.queue_item_id:
                 from backend.app.models.print_queue import PrintQueueItem
 
                 q_item = await db.get(PrintQueueItem, job.queue_item_id)
                 if q_item is not None:
                     q_item.archive_id = archive.id
+                    archive.queue_id = q_item.queue_id
+                    archive.batch_id = q_item.batch_id
+
+            # For non-queue dispatches (Print Now qty=1), attribute the
+            # archive to the printer's default queue so GET /printer-queues/
+            # counters include it.
+            if archive.queue_id is None and job.printer_id is not None:
+                from backend.app.models.printer_queue import PrinterQueue as _PQ
+
+                archive.queue_id = (
+                    await db.execute(select(_PQ.id).where(_PQ.printer_id == job.printer_id))
+                ).scalar_one_or_none()
 
             await db.flush()
 
@@ -1273,10 +1290,16 @@ class BackgroundDispatchService:
             except DispatchJobCancelled:
                 await db.rollback()
                 await self._set_active_message(job, f"Cancelled upload on {printer_name}.")
-                job.outcome = {"success": False, "archive_id": None, "error": "Cancelled", "cancelled": True}
+                # archive_print committed the row before this branch, so the
+                # outer session rollback can't undo it. Flip the zombie from
+                # "printing" → "cancelled" in a fresh session so the UI
+                # doesn't keep it spinning forever.
+                await self._mark_dispatch_archive_terminal(archive.id, "cancelled", "Cancelled before start")
+                job.outcome = {"success": False, "archive_id": archive.id, "error": "Cancelled", "cancelled": True}
                 raise
             except Exception as e:
-                job.outcome = {"success": False, "archive_id": None, "error": str(e), "cancelled": False}
+                await self._mark_dispatch_archive_terminal(archive.id, "failed", str(e))
+                job.outcome = {"success": False, "archive_id": archive.id, "error": str(e), "cancelled": False}
                 raise
             finally:
                 job.completion_event.set()
@@ -1331,6 +1354,38 @@ class BackgroundDispatchService:
             await delete_file_async(printer_ip, access_code, remote_path, printer_model=printer_model)
         except Exception:
             pass  # Best-effort - don't fail the error handler
+
+    @staticmethod
+    async def _mark_dispatch_archive_terminal(archive_id: int, status: str, error_message: str) -> None:
+        """Flip a dispatch-time archive to a terminal state on error.
+
+        ``archive_print`` commits the row before the upload/start block runs,
+        so a later FTP or start-print failure can leave the archive stuck in
+        "printing". This writes a terminal ``status`` + ``error_message`` +
+        ``completed_at`` in a fresh session — only if the archive is still
+        in "printing", so we don't clobber an on_print_complete transition
+        that raced with us.
+        """
+        from datetime import datetime, timezone
+
+        from backend.app.models.archive import PrintArchive
+
+        try:
+            async with async_session() as fdb:
+                archive = await fdb.get(PrintArchive, archive_id)
+                if archive is None or archive.status != "printing":
+                    return
+                archive.status = status
+                archive.error_message = error_message
+                archive.completed_at = datetime.now(timezone.utc)
+                await fdb.commit()
+        except Exception as cleanup_err:
+            logger.warning(
+                "Failed to mark dispatch archive %s as %s: %s",
+                archive_id,
+                status,
+                cleanup_err,
+            )
 
     @staticmethod
     def _resolve_plate_id(file_path: Path, requested_plate_id: int | None) -> int:

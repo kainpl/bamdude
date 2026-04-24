@@ -157,6 +157,10 @@ def archive_to_response(
         "quantity": archive.quantity,
         "energy_kwh": archive.energy_kwh,
         "energy_cost": archive.energy_cost,
+        # Queue attribution (m019) + verbose error_message twin for failures.
+        "queue_id": archive.queue_id,
+        "batch_id": archive.batch_id,
+        "error_message": archive.error_message,
         "created_at": archive.created_at,
         # User tracking (Issue #206)
         "created_by_id": archive.created_by_id,

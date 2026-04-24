@@ -809,8 +809,10 @@ function ArchiveCard({
               </Link>
             );
           }
+          // Verbose diagnostic on hover for failed/cancelled archives (m019).
+          const errorTooltip = archive.error_message || archive.failure_reason || undefined;
           return (
-            <div className={`${base} ${pulseCls}`}>
+            <div className={`${base} ${pulseCls}`} title={errorTooltip}>
               {isPrinting && <Loader2 className="w-3 h-3 animate-spin" />}
               {t(badge.labelKey)}
             </div>
@@ -1980,8 +1982,9 @@ function ArchiveListRow({
                   </Link>
                 );
               }
+              const errorTooltip = archive.error_message || archive.failure_reason || undefined;
               return (
-                <span className={`${base} ${pulseCls}`}>
+                <span className={`${base} ${pulseCls}`} title={errorTooltip}>
                   {isPrinting && <Loader2 className="w-2.5 h-2.5 animate-spin" />}
                   {t(badge.labelKey)}
                 </span>

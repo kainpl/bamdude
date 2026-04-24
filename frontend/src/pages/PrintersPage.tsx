@@ -1610,7 +1610,23 @@ function PrinterCard({
   const requirePlateClear = printer.require_plate_clear;
   const isPrintingOrPaused = status?.state === 'RUNNING' || status?.state === 'PAUSE';
   const needsPlateClear = requirePlateClear && status?.awaiting_plate_clear === true;
-  const showClearPlateButton = status?.connected && needsPlateClear && !isPrintingOrPaused;
+  // Share the same queue query PrinterQueueWidget already uses — react-query
+  // dedupes, zero extra network. We only need to know whether the widget will
+  // be rendering its green "Clear & Start Next" CTA so we can hide our yellow
+  // duplicate while it's visible.
+  const { data: pendingQueue } = useQuery({
+    queryKey: ['queue', printer.id, 'pending'],
+    queryFn: () => api.getQueue(printer.id, 'pending'),
+    refetchInterval: 30000,
+    enabled: status?.connected === true,
+  });
+  const hasAutoDispatchableQueue = (pendingQueue ?? []).some(i => !i.manual_start);
+  const greenClearCtaVisible =
+    needsPlateClear
+    && (status?.state === 'FINISH' || status?.state === 'FAILED')
+    && hasAutoDispatchableQueue;
+  const showClearPlateButton =
+    status?.connected && needsPlateClear && !isPrintingOrPaused && !greenClearCtaVisible;
   const plateStatus = (() => {
     if (!requirePlateClear || !status?.connected) return null;
     if (isPrintingOrPaused) {

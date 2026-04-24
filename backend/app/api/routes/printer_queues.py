@@ -4,22 +4,24 @@ import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.models.archive import PrintArchive
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.user import User
 from backend.app.schemas.printer_queue import PrinterQueueResponse, PrinterQueueUpdate
+from backend.app.services.queue_counters import get_queue_terminal_counts
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/queues", tags=["queues"])
 
 
-def _to_response(queue: PrinterQueue) -> PrinterQueueResponse:
+def _to_response(queue: PrinterQueue, terminal_counts: dict[str, int]) -> PrinterQueueResponse:
     return PrinterQueueResponse(
         id=queue.id,
         printer_id=queue.printer_id,
@@ -30,14 +32,52 @@ def _to_response(queue: PrinterQueue) -> PrinterQueueResponse:
         last_activity_at=queue.last_activity_at,
         current_item_id=queue.current_item_id,
         pending_count=queue.pending_count,
-        completed_count=queue.completed_count,
-        failed_count=queue.failed_count,
-        cancelled_count=queue.cancelled_count,
+        completed_count=terminal_counts.get("completed_count", 0),
+        failed_count=terminal_counts.get("failed_count", 0),
+        cancelled_count=terminal_counts.get("cancelled_count", 0),
         skipped_count=queue.skipped_count,
-        total_count=queue.total_count,
+        total_count=terminal_counts.get("total_count", 0),
         created_at=queue.created_at,
         updated_at=queue.updated_at,
     )
+
+
+async def _bulk_terminal_counts(db: AsyncSession, queue_ids: list[int]) -> dict[int, dict[str, int]]:
+    """Compute terminal archive counters for every queue in one query.
+
+    Replaces the cached ``completed_count``/``failed_count``/``cancelled_count``/
+    ``total_count`` columns dropped in m019 — queue terminal state now lives
+    on ``print_archives.queue_id`` and is aggregated at read time.
+    """
+    if not queue_ids:
+        return {}
+
+    result = await db.execute(
+        select(PrintArchive.queue_id, PrintArchive.status, func.count())
+        .where(PrintArchive.queue_id.in_(queue_ids))
+        .group_by(PrintArchive.queue_id, PrintArchive.status)
+    )
+    by_queue: dict[int, dict[str, int]] = {qid: {} for qid in queue_ids}
+    for qid, status, count in result.all():
+        if qid is None:
+            continue
+        by_queue.setdefault(qid, {})[status] = int(count or 0)
+
+    counts_by_queue: dict[int, dict[str, int]] = {}
+    for qid, by_status in by_queue.items():
+        completed = by_status.get("completed", 0)
+        failed = by_status.get("failed", 0)
+        # Treat the whole failure family as "cancelled" for the legacy split;
+        # a dedicated failure breakdown still lives under ``failed_count``.
+        cancelled = by_status.get("cancelled", 0) + by_status.get("aborted", 0) + by_status.get("stopped", 0)
+        total = sum(by_status.values())
+        counts_by_queue[qid] = {
+            "completed_count": completed,
+            "failed_count": failed,
+            "cancelled_count": cancelled,
+            "total_count": total,
+        }
+    return counts_by_queue
 
 
 @router.get("/", response_model=list[PrinterQueueResponse])
@@ -52,7 +92,8 @@ async def list_queues(
         select(PrinterQueue).options(selectinload(PrinterQueue.printer)).order_by(PrinterQueue.id)
     )
     queues = list(result.scalars().all())
-    return [_to_response(q) for q in queues]
+    counts_by_queue = await _bulk_terminal_counts(db, [q.id for q in queues])
+    return [_to_response(q, counts_by_queue.get(q.id, {})) for q in queues]
 
 
 @router.get("/{queue_id}", response_model=PrinterQueueResponse)
@@ -70,7 +111,8 @@ async def get_queue(
     queue = result.scalar_one_or_none()
     if not queue:
         raise HTTPException(404, "Queue not found")
-    return _to_response(queue)
+    terminal_counts = await get_queue_terminal_counts(db, queue.id)
+    return _to_response(queue, terminal_counts)
 
 
 @router.patch("/{queue_id}", response_model=PrinterQueueResponse)
@@ -102,4 +144,5 @@ async def update_queue(
 
     await db.commit()
     await db.refresh(queue)
-    return _to_response(queue)
+    terminal_counts = await get_queue_terminal_counts(db, queue.id)
+    return _to_response(queue, terminal_counts)

@@ -2503,14 +2503,35 @@ async def delete_file(
     except OSError as e:
         logger.warning("Failed to delete file from disk: %s", e)
 
-    # Explicit NULL-ify on dependent rows before deleting the library file.
-    # SQLite runs with PRAGMA foreign_keys off by default, so FK rules don't
-    # trigger — we can't rely on ON DELETE SET NULL. This runs unconditionally
-    # so the behaviour is identical on SQLite and PostgreSQL.
+    # Dependent-row handling runs in-app so SQLite (FK off by default) and
+    # PostgreSQL behave identically.
+    #
+    # Archives keep their SET NULL — the archive row owns its own 3MF copy in
+    # the archive dir, so history survives without the library file.
+    #
+    # Queue items are different: a queue_item with library_file_id=NULL and
+    # archive_id=NULL would be permanently undispatchable, so we either
+    # cascade-delete them or block the library-file delete when one is live:
+    #
+    #   - ``status='printing'`` → block the delete with 409; the operator has
+    #     to wait for the job to finish (or stop it) before removing the source.
+    #   - any other status → delete the queue item along with the file.
+    queue_items_result = await db.execute(select(PrintQueueItem).where(PrintQueueItem.library_file_id == file.id))
+    queue_items = list(queue_items_result.scalars().all())
+    printing_blockers = [qi for qi in queue_items if qi.status == "printing"]
+    if printing_blockers:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "file_in_use",
+                "message": "Cannot delete file: a queue item is currently printing. Wait for or stop the print first.",
+                "queue_item_ids": [qi.id for qi in printing_blockers],
+            },
+        )
+
     await db.execute(update(PrintArchive).where(PrintArchive.library_file_id == file.id).values(library_file_id=None))
-    await db.execute(
-        update(PrintQueueItem).where(PrintQueueItem.library_file_id == file.id).values(library_file_id=None)
-    )
+    for qi in queue_items:
+        await db.delete(qi)
 
     await db.delete(file)
     await db.commit()
@@ -2759,6 +2780,18 @@ async def bulk_delete(
                 skipped_files += 1
                 continue
 
+            # Skip files that are currently being printed by a queue item —
+            # cascading the file delete now would orphan the live print row.
+            # See single-file delete_file for the full reasoning.
+            queue_items_result = await db.execute(
+                select(PrintQueueItem).where(PrintQueueItem.library_file_id == file.id)
+            )
+            queue_items = list(queue_items_result.scalars().all())
+            if any(qi.status == "printing" for qi in queue_items):
+                logger.info("bulk_delete: skipping file %s — queue item currently printing", file.id)
+                skipped_files += 1
+                continue
+
             try:
                 if not file.is_external:
                     abs_file_path = to_absolute_path(file.file_path)
@@ -2769,6 +2802,14 @@ async def bulk_delete(
                     abs_thumb_path.unlink()
             except OSError as e:
                 logger.warning("Failed to delete file from disk: %s", e)
+
+            # Archives keep the SET NULL behaviour; queue items cascade-delete.
+            await db.execute(
+                update(PrintArchive).where(PrintArchive.library_file_id == file.id).values(library_file_id=None)
+            )
+            for qi in queue_items:
+                await db.delete(qi)
+
             await db.delete(file)
             deleted_files += 1
 
