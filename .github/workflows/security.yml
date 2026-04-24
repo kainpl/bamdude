@@ -160,8 +160,12 @@ jobs:
         run: |
           # CVE-2026-4539: low-severity ReDoS in Pygments AdlLexer (indirect dep via mkdocs-material/pytest/rich).
           # No fix available yet. Remove --ignore-vuln once Pygments releases a patched version.
-          pip-audit --desc on --format json --output pip-audit-results.json --ignore-vuln CVE-2026-4539 || echo "vulnerabilities_found=true" >> $GITHUB_OUTPUT
-          pip-audit --desc on --ignore-vuln CVE-2026-4539 || true
+          # CVE-2026-3219: medium-severity (CVSS 4.6) in pip itself — local-only archive-type
+          # confusion attack (tar+ZIP concat). BamDude doesn't invoke pip at runtime, so the
+          # blast radius is the image-build environment. pip upstream hasn't shipped a fixed
+          # release yet — remove --ignore-vuln once they do.
+          pip-audit --desc on --format json --output pip-audit-results.json --ignore-vuln CVE-2026-4539 --ignore-vuln CVE-2026-3219 || echo "vulnerabilities_found=true" >> $GITHUB_OUTPUT
+          pip-audit --desc on --ignore-vuln CVE-2026-4539 --ignore-vuln CVE-2026-3219 || true
 
       - name: Upload audit results
         if: always()

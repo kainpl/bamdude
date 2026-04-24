@@ -100,7 +100,13 @@ jobs:
         run: |
           # CVE-2026-4539: low-severity ReDoS in Pygments AdlLexer (indirect dep via mkdocs-material/pytest/rich).
           # No fix available yet. Remove --ignore-vuln once Pygments releases a patched version.
-          pip-audit --desc on --ignore-vuln CVE-2026-4539
+          # CVE-2026-3219: medium-severity (CVSS 4.6) in pip itself — pip treats a file that
+          # identifies as BOTH tar and ZIP as a ZIP regardless of filename, so a crafted local
+          # archive could install the "wrong" contents. Local attack vector only; BamDude
+          # doesn't invoke pip at runtime (only at image build), so the blast radius is the
+          # build environment. pip upstream hasn't cut a release with the fix yet — remove
+          # --ignore-vuln once they do.
+          pip-audit --desc on --ignore-vuln CVE-2026-4539 --ignore-vuln CVE-2026-3219
 
   backend-tests:
     name: Backend Tests
