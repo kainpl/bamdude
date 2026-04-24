@@ -32,11 +32,35 @@ env:
 # Default permissions for all jobs
 permissions:
   contents: read
+  actions: write  # needed by skip-duplicate-actions
+
+# Cancel previous runs for the same branch when a new push lands.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
+  # Short-circuit when the same SHA already ran on another ref (e.g.
+  # fast-forward dev → main puts the exact same commit on two branches;
+  # without this we'd audit the same bytes twice in a row).
+  check-duplicate:
+    name: Check Duplicate
+    runs-on: ubuntu-latest
+    outputs:
+      should_skip: ${{ steps.skip.outputs.should_skip }}
+    steps:
+      - id: skip
+        uses: fkirc/skip-duplicate-actions@v5
+        with:
+          concurrent_skipping: 'same_content_newer'
+          skip_after_successful_duplicate: 'true'
+          paths_ignore: '["**/*.md", "CHANGELOG.md"]'
+
   bandit:
     name: Python Security Analysis (Bandit)
     runs-on: ubuntu-latest
+    needs: check-duplicate
+    if: needs.check-duplicate.outputs.should_skip != 'true'
     permissions:
       contents: read
       security-events: write
@@ -65,6 +89,8 @@ jobs:
   trivy:
     name: Container Security Scan (Trivy)
     runs-on: ubuntu-latest
+    needs: check-duplicate
+    if: needs.check-duplicate.outputs.should_skip != 'true'
     permissions:
       contents: read
       security-events: write
@@ -110,6 +136,8 @@ jobs:
   backend-audit:
     name: Backend Security Audit
     runs-on: ubuntu-latest
+    needs: check-duplicate
+    if: needs.check-duplicate.outputs.should_skip != 'true'
     permissions:
       contents: read
       issues: write
@@ -258,6 +286,8 @@ jobs:
   frontend-audit:
     name: Frontend Security Audit
     runs-on: ubuntu-latest
+    needs: check-duplicate
+    if: needs.check-duplicate.outputs.should_skip != 'true'
     permissions:
       contents: read
       issues: write

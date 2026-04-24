@@ -26,8 +26,30 @@ concurrency:
 # Minimum permissions for all jobs
 permissions:
   contents: read
+  actions: write  # needed by skip-duplicate-actions to cancel sibling runs
 
 jobs:
+  # ============================================================================
+  # Skip duplicate runs — same SHA already built / in-flight on another ref
+  # ============================================================================
+  # Without this, a fast-forward dev → main merge triggers CI twice on the
+  # same SHA (once per ref). skip-duplicate-actions detects the duplicate
+  # by content hash and makes every downstream job short-circuit. The
+  # concurrency block above still handles the single-ref case (new push to
+  # the same branch cancels the in-flight run).
+  check-duplicate:
+    name: Check Duplicate
+    runs-on: ubuntu-latest
+    outputs:
+      should_skip: ${{ steps.skip.outputs.should_skip }}
+    steps:
+      - id: skip
+        uses: fkirc/skip-duplicate-actions@v5
+        with:
+          concurrent_skipping: 'same_content_newer'
+          skip_after_successful_duplicate: 'true'
+          paths_ignore: '["**/*.md", "CHANGELOG.md"]'
+
   # ============================================================================
   # Backend Checks
   # ============================================================================
@@ -35,7 +57,8 @@ jobs:
   backend-lint:
     name: Backend Lint
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner
+    needs: check-duplicate
+    if: needs.check-duplicate.outputs.should_skip != 'true' && (github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner)
     steps:
       - uses: actions/checkout@v4
 
@@ -56,7 +79,8 @@ jobs:
   backend-security:
     name: Backend Security
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner
+    needs: check-duplicate
+    if: needs.check-duplicate.outputs.should_skip != 'true' && (github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner)
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -81,9 +105,9 @@ jobs:
   backend-tests:
     name: Backend Tests
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner
-    continue-on-error: true  # Some pre-existing tests may fail
     needs: backend-lint
+    if: success() && (github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner)
+    continue-on-error: true  # Some pre-existing tests may fail
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python
@@ -114,7 +138,8 @@ jobs:
   frontend-lint:
     name: Frontend Lint
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner
+    needs: check-duplicate
+    if: needs.check-duplicate.outputs.should_skip != 'true' && (github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner)
     steps:
       - uses: actions/checkout@v4
 
@@ -140,7 +165,8 @@ jobs:
   frontend-security:
     name: Frontend Security
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner
+    needs: check-duplicate
+    if: needs.check-duplicate.outputs.should_skip != 'true' && (github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner)
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -186,7 +212,8 @@ jobs:
   frontend-typecheck:
     name: Frontend Type Check
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner
+    needs: check-duplicate
+    if: needs.check-duplicate.outputs.should_skip != 'true' && (github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner)
     steps:
       - uses: actions/checkout@v4
 
@@ -208,8 +235,8 @@ jobs:
   frontend-tests:
     name: Frontend Tests
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner
     needs: [frontend-lint, frontend-typecheck]
+    if: success() && (github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner)
     steps:
       - uses: actions/checkout@v4
       - name: Set up Node.js
@@ -229,8 +256,8 @@ jobs:
   frontend-build:
     name: Frontend Build
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner
     needs: [frontend-tests]
+    if: success() && (github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner)
     steps:
       - uses: actions/checkout@v4
 
@@ -256,9 +283,9 @@ jobs:
   docker-test:
     name: Docker Build
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner
-    timeout-minutes: 20
     needs: [backend-tests, frontend-build]
+    if: success() && (github.event_name == 'push' || github.event.pull_request.user.login != github.repository_owner)
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
