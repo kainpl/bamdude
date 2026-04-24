@@ -761,7 +761,7 @@ export default {
       addToFavorites: 'Додати до обраного',
       removeFromFavorites: 'Видалити з обраного',
       edit: 'Редагувати',
-      goToProject: 'Перейти до проєкту: {{name}}',
+      goToProject: 'Перейти до {{name}}',
       addToProject: 'Додати до проєкту',
       removeFromProject: 'Видалити з проєкту',
       loading: 'Завантаження...',
@@ -1225,7 +1225,9 @@ export default {
       done: '{{count}} завершено',
       failed: '{{count}} з помилкою',
       cancelled: '{{count}} скасовано',
+      viewArchivesTitle: 'Відкрити архів для цього принтера',
     },
+    goToPrinter: 'Відкрити сторінку принтера',
     toast: {
       statusUpdated: 'Статус черги оновлено',
       itemStarted: 'Знято з очікування — почнеться, коли дійде черга',

@@ -62,6 +62,7 @@ class PrintQueueItemResponse(BaseModel):
     id: int
     queue_id: int
     printer_id: int | None = None  # Convenience - resolved from queue
+    project_id: int | None = None  # Linked project (inherited from library_file or set directly)
     waiting_reason: str | None = None
     archive_id: int | None
     library_file_id: int | None

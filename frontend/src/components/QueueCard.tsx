@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -291,9 +291,13 @@ export function QueueCard({ queue, compact = false, onEditItem }: QueueCardProps
       <Card className={`${borderClass} border`}>
         <CardContent className="!p-3">
           <div className="flex items-center justify-between gap-2">
-            <span className="text-sm font-bold text-white truncate">
+            <Link
+              to={`/#printer-${queue.printer_id}`}
+              className="text-sm font-bold text-white truncate hover:text-bambu-green transition-colors"
+              title={t('queueCard.goToPrinter')}
+            >
               {queue.printer_name ?? `Printer #${queue.printer_id}`}
-            </span>
+            </Link>
             <div className="flex items-center gap-2 flex-shrink-0">
               <StatusBadge status={queue.status} t={t} />
               {queue.status === 'printing' && status?.progress != null &&
@@ -341,8 +345,14 @@ export function QueueCard({ queue, compact = false, onEditItem }: QueueCardProps
       <CardContent className="!p-4 space-y-3">
         {/* Header */}
         <div className="flex items-center justify-between gap-2">
-          <h3 className="text-sm font-bold text-white truncate">
-            {queue.printer_name ?? `Printer #${queue.printer_id}`}
+          <h3 className="text-sm font-bold truncate">
+            <Link
+              to={`/#printer-${queue.printer_id}`}
+              className="text-white hover:text-bambu-green transition-colors"
+              title={t('queueCard.goToPrinter')}
+            >
+              {queue.printer_name ?? `Printer #${queue.printer_id}`}
+            </Link>
           </h3>
           <div className="flex items-center gap-2 flex-shrink-0">
             <StatusBadge status={queue.status} t={t} />
@@ -645,14 +655,18 @@ export function QueueCard({ queue, compact = false, onEditItem }: QueueCardProps
           />
         )}
 
-        {/* Footer counters */}
-        <div className="text-xs text-bambu-gray pt-1 border-t border-bambu-dark-tertiary">
+        {/* Footer counters — clickable shortcut to archives filtered by this printer */}
+        <Link
+          to={`/archives?printer=${queue.printer_id}`}
+          className="block text-xs text-bambu-gray hover:text-white pt-1 border-t border-bambu-dark-tertiary transition-colors"
+          title={t('queueCard.footer.viewArchivesTitle')}
+        >
           {t('queueCard.footer.pending', { count: queue.pending_count })}
           {' \u00B7 '}
           {t('queueCard.footer.done', { count: queue.completed_count })}
           {queue.failed_count > 0 && <>{' \u00B7 '}{t('queueCard.footer.failed', { count: queue.failed_count })}</>}
           {queue.cancelled_count > 0 && <>{' \u00B7 '}{t('queueCard.footer.cancelled', { count: queue.cancelled_count })}</>}
-        </div>
+        </Link>
       </CardContent>
     </Card>
   );

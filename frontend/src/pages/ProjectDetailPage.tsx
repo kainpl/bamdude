@@ -40,9 +40,9 @@ import {
   Minus,
   Unlink,
 } from 'lucide-react';
-import { api } from '../api/client';
-import { parseUTCDate, formatDateOnly, formatDateTime, formatDuration, formatDurationFromHours, type TimeFormat } from '../utils/date';
-import type { Archive, ProjectUpdate, BOMItem, BOMItemCreate, BOMItemUpdate, LibraryFileListItem, PrintPlanItem } from '../api/client';
+import { api, withStreamToken } from '../api/client';
+import { parseUTCDate, formatDateOnly, formatDateTime, formatDuration, formatDurationFromHours, formatETA, type TimeFormat } from '../utils/date';
+import type { Archive, ProjectUpdate, BOMItem, BOMItemCreate, BOMItemUpdate, LibraryFileListItem, PrintPlanItem, PrintQueueItem } from '../api/client';
 import { Card, CardContent } from '../components/Card';
 import { Button } from '../components/Button';
 import { useToast } from '../contexts/ToastContext';
@@ -262,6 +262,19 @@ export function ProjectDetailPage() {
     queryFn: () => api.getLibraryFiles(null, false, projectId),
     enabled: projectId > 0,
   });
+
+  // Active prints for this project — pulled from the global 'printing'
+  // queue feed (real + virtual current-print items) and filtered client-side.
+  const { data: allPrintingQueueItems } = useQuery({
+    queryKey: ['queue', 'printing'],
+    queryFn: () => api.getQueue(undefined, 'printing'),
+    refetchInterval: 10000,
+    enabled: projectId > 0,
+  });
+  const projectPrintingItems = useMemo(
+    () => (allPrintingQueueItems ?? []).filter(i => i.project_id === projectId),
+    [allPrintingQueueItems, projectId],
+  );
 
   // Print plan: ordered list of .3mf files with per-row copies + totals.
   const { data: printPlan, isLoading: planLoading } = useQuery({
@@ -1528,7 +1541,9 @@ export function ProjectDetailPage() {
       </Card>
 
 
-      {/* Queue section */}
+      {/* Queue section — shows each currently-printing item for this project
+          (thumbnail + name + progress + ETA/layer), plus a pending counter.
+          No control buttons by design — this is an informational panel. */}
       {stats && (stats.queued_prints > 0 || stats.in_progress_prints > 0) && (
         <Card>
           <CardContent className="p-4">
@@ -1544,18 +1559,23 @@ export function ProjectDetailPage() {
                 {t('projectDetail.queue.viewAll')}
               </Link>
             </div>
-            <div className="flex items-center gap-4 text-sm">
-              {stats.in_progress_prints > 0 && (
-                <span className="text-yellow-400">
-                  {t('projectDetail.queue.printing', { count: stats.in_progress_prints })}
-                </span>
-              )}
-              {stats.queued_prints > 0 && (
-                <span className="text-bambu-gray">
-                  {t('projectDetail.queue.queued', { count: stats.queued_prints })}
-                </span>
-              )}
-            </div>
+            {projectPrintingItems.length > 0 && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 gap-3 mb-3">
+                {projectPrintingItems.map(item => (
+                  <CurrentPrintInfoCard
+                    key={item.id}
+                    item={item}
+                    accentColor={project.color}
+                    t={t}
+                  />
+                ))}
+              </div>
+            )}
+            {stats.queued_prints > 0 && (
+              <div className="text-sm text-bambu-gray">
+                {t('projectDetail.queue.queued', { count: stats.queued_prints })}
+              </div>
+            )}
           </CardContent>
         </Card>
       )}
@@ -1639,6 +1659,113 @@ export function ProjectDetailPage() {
           }}
         />
       )}
+    </div>
+  );
+}
+
+interface CurrentPrintInfoCardProps {
+  item: PrintQueueItem;
+  accentColor: string | null;
+  t: TFunction;
+}
+
+/**
+ * Info-only current-print card for the project detail page. Mirrors the
+ * layout of QueueCard's live-print block (thumbnail + name + progress +
+ * ETA/layer) but renders nothing interactive — no pause/stop/etc. buttons,
+ * since this panel exists solely to surface which of the project's jobs
+ * are live on which printer. The progress-bar fill uses the project's
+ * ``color`` when set so the operator can eyeball project identity
+ * alongside sibling project cards.
+ */
+function CurrentPrintInfoCard({ item, accentColor, t }: CurrentPrintInfoCardProps) {
+  const { data: status } = useQuery({
+    queryKey: ['printerStatus', item.printer_id],
+    queryFn: () => api.getPrinterStatus(item.printer_id!),
+    enabled: item.printer_id != null,
+    refetchInterval: 5000,
+  });
+
+  const name =
+    status?.subtask_name
+    || status?.current_print
+    || item.archive_name
+    || item.library_file_name
+    || `#${item.id}`;
+  const thumbnail = status?.cover_url;
+  const isLive = status?.state === 'RUNNING' || status?.state === 'PAUSE';
+  const progress = status?.progress ?? 0;
+  const fillColor = accentColor || '#60a5fa'; // fallback: QueueCard's blue-400
+
+  return (
+    <div className="p-3 rounded-lg bg-bambu-dark">
+      <div className="flex items-start gap-3">
+        {thumbnail ? (
+          <img
+            src={withStreamToken(thumbnail)}
+            alt=""
+            className="w-20 h-20 rounded-lg object-cover flex-shrink-0 bg-bambu-dark-tertiary"
+          />
+        ) : (
+          <div className="w-20 h-20 rounded-lg bg-bambu-dark-tertiary flex-shrink-0" />
+        )}
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5 mb-1">
+            <p className="text-sm text-bambu-gray">{t('queueCard.currentPrint')}</p>
+            {item.printer_name && item.printer_id != null && (
+              <Link
+                to={`/#printer-${item.printer_id}`}
+                className="text-xs text-bambu-gray/70 hover:text-bambu-green transition-colors"
+                title={t('queueCard.goToPrinter')}
+              >
+                · {item.printer_name}
+              </Link>
+            )}
+          </div>
+          <p className="text-sm text-white truncate mb-2">{name}</p>
+          {isLive ? (
+            <>
+              <div className="flex items-center gap-2">
+                <div className="flex-1 bg-bambu-dark-tertiary rounded-full h-2 overflow-hidden">
+                  <div
+                    className="h-2 rounded-full transition-all"
+                    style={{ width: `${progress}%`, backgroundColor: fillColor }}
+                  />
+                </div>
+                <span className="text-sm text-white font-medium flex-shrink-0">
+                  {Math.round(progress)}%
+                </span>
+              </div>
+              <div className="flex items-center gap-3 mt-2 text-xs text-bambu-gray">
+                {status?.remaining_time != null && status.remaining_time > 0 && (
+                  <>
+                    <span className="flex items-center gap-1">
+                      <Clock className="w-3 h-3" />
+                      {formatDuration(status.remaining_time * 60)}
+                    </span>
+                    <span className="text-bambu-green font-medium">
+                      ETA {formatETA(status.remaining_time)}
+                    </span>
+                  </>
+                )}
+                {status.layer_num != null && status.total_layers != null && status.total_layers > 0 && (
+                  <span className="flex items-center gap-1">
+                    <Layers className="w-3 h-3" />
+                    {status.layer_num}/{status.total_layers}
+                  </span>
+                )}
+              </div>
+            </>
+          ) : (
+            <div className="flex items-center gap-2">
+              <div className="flex-1 bg-bambu-dark-tertiary rounded-full h-2">
+                <div className="h-2 rounded-full" style={{ width: '0%', backgroundColor: fillColor }} />
+              </div>
+              <span className="text-sm text-white font-medium flex-shrink-0">0%</span>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

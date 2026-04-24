@@ -167,6 +167,7 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
         "id": item.id,
         "queue_id": item.queue_id,
         "printer_id": item.printer_id,  # convenience property from queue
+        "project_id": item.project_id,
         "waiting_reason": item.waiting_reason,
         "archive_id": item.archive_id,
         "library_file_id": item.library_file_id,

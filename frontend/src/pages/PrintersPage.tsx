@@ -57,7 +57,7 @@ import {
   EyeOff,
 } from 'lucide-react';
 
-import { useNavigate } from 'react-router-dom';
+import { Link as RouterLink, useNavigate } from 'react-router-dom';
 import { api, discoveryApi, firmwareApi, macrosApi, withStreamToken } from '../api/client';
 import { BulkPrinterToolbar } from '../components/BulkPrinterToolbar';
 import { formatDateOnly, formatETA, formatDuration, parseUTCDate } from '../utils/date';
@@ -1581,6 +1581,16 @@ function PrinterCard({
   });
   const queueCount = queueItems?.length ?? 0;
 
+  // Pull this printer's summary counters off the global queues list. Shared
+  // react-query key with QueuePage means no extra network on visits that
+  // already hydrated the cache.
+  const { data: printerQueues } = useQuery({
+    queryKey: ['queues'],
+    queryFn: api.getQueues,
+    staleTime: 15000,
+  });
+  const printerQueue = printerQueues?.find(q => q.printer_id === printer.id);
+
   // Fetch currently printing queue item to show who started it (Issue #206)
   const { data: printingQueueItems } = useQuery({
     queryKey: ['queue', printer.id, 'printing'],
@@ -2193,7 +2203,8 @@ function PrinterCard({
 
   return (
     <Card
-      className={`relative ${isSelected ? 'ring-2 ring-bambu-green' : ''}`}
+      id={`printer-${printer.id}`}
+      className={`relative scroll-mt-20 ${isSelected ? 'ring-2 ring-bambu-green' : ''}`}
       onDragEnter={handleCardDragEnter}
       onDragOver={handleCardDragOver}
       onDragLeave={handleCardDragLeave}
@@ -4230,9 +4241,26 @@ function PrinterCard({
           </div>
         )}
 
+        {/* Archive summary — counter line mirrors QueueCard footer, links
+            to the archive filtered by this printer. Sits above the action
+            buttons so it reads as part of the printer's "status" row. */}
+        {printerQueue && (
+          <RouterLink
+            to={`/archives?printer=${printer.id}`}
+            className="block text-xs text-bambu-gray hover:text-white pt-2 mt-2 border-t border-bambu-dark-tertiary transition-colors"
+            title={t('queueCard.footer.viewArchivesTitle')}
+          >
+            {t('queueCard.footer.pending', { count: printerQueue.pending_count })}
+            {' \u00B7 '}
+            {t('queueCard.footer.done', { count: printerQueue.completed_count })}
+            {printerQueue.failed_count > 0 && <>{' \u00B7 '}{t('queueCard.footer.failed', { count: printerQueue.failed_count })}</>}
+            {printerQueue.cancelled_count > 0 && <>{' \u00B7 '}{t('queueCard.footer.cancelled', { count: printerQueue.cancelled_count })}</>}
+          </RouterLink>
+        )}
+
         {/* Connection Info & Actions - hidden in compact mode */}
         {viewMode === 'expanded' && (
-          <div className="mt-4 pt-4 border-t border-bambu-dark-tertiary flex items-center justify-end gap-2 flex-wrap">
+          <div className="mt-2 pt-4 border-t border-bambu-dark-tertiary flex items-center justify-end gap-2 flex-wrap">
               {/* Chamber Light */}
               <Button
                 variant="secondary"
@@ -6422,6 +6450,20 @@ export function PrintersPage() {
     queryKey: ['printers'],
     queryFn: api.getPrinters,
   });
+
+  // Hash-scroll: links from other pages (queue card / project detail) hit
+  // /printers#printer-<id>. The target card only mounts once `printers` is
+  // loaded, so re-run this when the data arrives.
+  useEffect(() => {
+    if (!printers?.length) return;
+    const hash = window.location.hash;
+    if (!hash || !hash.startsWith('#printer-')) return;
+    // Defer one tick so the freshly-mounted card exists in the DOM.
+    const handle = window.setTimeout(() => {
+      document.getElementById(hash.slice(1))?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 50);
+    return () => window.clearTimeout(handle);
+  }, [printers]);
 
   // Fetch app settings for AMS thresholds
   const { data: settings } = useQuery({

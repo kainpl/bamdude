@@ -164,7 +164,7 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
                 }
               }}
               disabled={item.disabled}
-              title={item.title}
+              title={item.title ?? item.label}
               className={`w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors ${
                 item.disabled
                   ? 'text-bambu-gray cursor-not-allowed'
@@ -174,13 +174,13 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
               } ${hasSubmenu && activeSubmenu === index ? 'bg-bambu-dark-tertiary' : ''}`}
             >
               {item.icon && <span className="w-4 h-4 flex-shrink-0 flex items-center justify-center">{item.icon}</span>}
-              <span className="flex-1">{item.label}</span>
-              {hasSubmenu && <ChevronRight className="w-4 h-4 text-bambu-gray" />}
+              <span className="flex-1 min-w-0 truncate">{item.label}</span>
+              {hasSubmenu && <ChevronRight className="w-4 h-4 text-bambu-gray flex-shrink-0" />}
             </button>
             {/* Submenu */}
             {hasSubmenu && activeSubmenu === index && (
               <div
-                className={`absolute min-w-[160px] bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl py-1 overflow-hidden max-h-[300px] overflow-y-auto z-[60] ${
+                className={`absolute min-w-[160px] max-w-[280px] bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl py-1 overflow-hidden max-h-[300px] overflow-y-auto z-[60] whitespace-nowrap ${
                   openSubmenuLeft ? 'right-full mr-1' : 'left-full ml-1'
                 } ${submenuPositions[index] === 'bottom' ? 'bottom-0' : 'top-0'}`}
                 onMouseEnter={() => {
@@ -201,6 +201,7 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
                       }
                     }}
                     disabled={subItem.disabled}
+                    title={subItem.title ?? subItem.label}
                     className={`w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors ${
                       subItem.disabled
                         ? 'text-bambu-gray cursor-not-allowed'
@@ -210,7 +211,7 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
                     }`}
                   >
                     {subItem.icon && <span className="w-4 h-4 flex-shrink-0 flex items-center justify-center">{subItem.icon}</span>}
-                    {subItem.label}
+                    <span className="flex-1 min-w-0 truncate">{subItem.label}</span>
                   </button>
                 ))}
               </div>

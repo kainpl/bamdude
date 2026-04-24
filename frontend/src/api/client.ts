@@ -1556,6 +1556,7 @@ export interface PrintQueueItem {
   id: number;
   queue_id: number;
   printer_id?: number | null;  // Convenience - resolved from queue
+  project_id?: number | null;
   waiting_reason: string | null;
   archive_id: number | null;
   library_file_id: number | null;

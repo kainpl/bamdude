@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -2422,6 +2422,7 @@ export function ArchivesPage() {
   const { showToast } = useToast();
   const { hasAnyPermission } = useAuth();
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState(search);
   const [page, setPage] = useState(1);
@@ -2429,7 +2430,11 @@ export function ArchivesPage() {
     const saved = localStorage.getItem('archivePerPage');
     return saved ? Number(saved) : 24;
   });
+  // Printer filter: URL `?printer=<id>` wins over localStorage on mount so
+  // entry points like the queue-card footer link can pre-select a printer.
   const [filterPrinter, setFilterPrinter] = useState<number | null>(() => {
+    const urlPrinter = searchParams.get('printer');
+    if (urlPrinter) return Number(urlPrinter);
     const saved = localStorage.getItem('archiveFilterPrinter');
     return saved ? Number(saved) : null;
   });
@@ -2610,6 +2615,16 @@ export function ArchivesPage() {
     },
   });
 
+
+  // Strip `?printer=<id>` from the URL once consumed so reload/back falls
+  // back to localStorage instead of re-forcing the filter.
+  useEffect(() => {
+    if (searchParams.has('printer')) {
+      const next = new URLSearchParams(searchParams);
+      next.delete('printer');
+      setSearchParams(next, { replace: true });
+    }
+  }, [searchParams, setSearchParams]);
 
   // Persist all filters to localStorage
   useEffect(() => {

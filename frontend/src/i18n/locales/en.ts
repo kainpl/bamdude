@@ -751,7 +751,7 @@ export default {
       addToFavorites: 'Add to Favorites',
       removeFromFavorites: 'Remove from Favorites',
       edit: 'Edit',
-      goToProject: 'Go to Project: {{name}}',
+      goToProject: 'Go to {{name}}',
       addToProject: 'Add to Project',
       removeFromProject: 'Remove from Project',
       loading: 'Loading...',
@@ -1219,7 +1219,9 @@ export default {
       done: '{{count}} done',
       failed: '{{count}} failed',
       cancelled: '{{count}} cancelled',
+      viewArchivesTitle: 'View archive for this printer',
     },
+    goToPrinter: 'Open printer page',
     toast: {
       statusUpdated: 'Queue status updated',
       itemStarted: 'Released — will print when queue reaches it',
