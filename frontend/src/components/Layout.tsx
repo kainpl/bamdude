@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { Printer, Archive, Calendar, BarChart3, Cloud, Settings, Sun, Moon, ChevronLeft, ChevronRight, Keyboard, GripVertical, ArrowUpCircle, Wrench, FolderKanban, FolderOpen, X, Menu, Info, Plug, Bug, LogOut, Key, Loader2, Disc3, ShieldAlert, Bell, type LucideIcon } from 'lucide-react';
-import { GitHubIcon } from './BrandIcons';
+import { Printer, Archive, Calendar, BarChart3, Cloud, Settings, Sun, Moon, ChevronLeft, ChevronRight, Keyboard, GripVertical, ArrowUpCircle, Wrench, FolderKanban, FolderOpen, X, Menu, Info, Plug, Bug, LogOut, Key, Loader2, Disc3, ShieldAlert, Bell, BookOpen, type LucideIcon } from 'lucide-react';
+import { GitHubIcon, TelegramIcon } from './BrandIcons';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '../contexts/ThemeContext';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
@@ -73,6 +73,13 @@ export function getDefaultView(): string {
 export function setDefaultView(path: string) {
   localStorage.setItem('defaultView', path);
 }
+
+// External links surfaced in the sidebar footer + on the logo.  Placeholders
+// for now — swap with the real landing / Telegram group / docs URLs once
+// they're public.
+const TELEGRAM_SUPPORT_URL = 'http://localhost:8080/telegram';
+const DOCS_URL = 'http://localhost:8080/docs';
+const LANDING_URL = 'http://localhost:8080/';
 
 export function Layout() {
   const navigate = useNavigate();
@@ -490,11 +497,19 @@ export function Layout() {
           >
             <Menu className="w-6 h-6 text-white" />
           </button>
-          <img
-            src={mode === 'dark' ? '/img/bamdude_logo_dark_transparent.png' : '/img/bamdude_logo_light.png'}
-            alt="BamDude"
-            className="h-8 ml-3"
-          />
+          <a
+            href={LANDING_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="ml-3 inline-flex items-center"
+            title="BamDude"
+          >
+            <img
+              src={mode === 'dark' ? '/img/bamdude_logo_dark_transparent.png' : '/img/bamdude_logo_light.png'}
+              alt="BamDude"
+              className="h-8"
+            />
+          </a>
         </header>
       )}
 
@@ -514,13 +529,21 @@ export function Layout() {
             : `fixed inset-y-0 left-0 z-30 ${sidebarExpanded ? 'w-64' : 'w-16'}`
         }`}
       >
-        {/* Logo */}
+        {/* Logo (clickable — opens the public landing page in a new tab). */}
         <div className={`border-b border-bambu-dark-tertiary flex items-center justify-center ${isSidebarCompact || sidebarExpanded ? 'p-4' : 'p-2'}`}>
-          <img
-            src={mode === 'dark' ? '/img/bamdude_logo_dark_transparent.png' : '/img/bamdude_logo_light.png'}
-            alt="BamDude"
-            className={isSidebarCompact || sidebarExpanded ? 'h-16 w-auto' : 'h-8 w-8 object-cover object-left'}
-          />
+          <a
+            href={LANDING_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center justify-center"
+            title="BamDude"
+          >
+            <img
+              src={mode === 'dark' ? '/img/bamdude_logo_dark_transparent.png' : '/img/bamdude_logo_light.png'}
+              alt="BamDude"
+              className={isSidebarCompact || sidebarExpanded ? 'h-16 w-auto' : 'h-8 w-8 object-cover object-left'}
+            />
+          </a>
         </div>
 
         {/* Navigation */}
@@ -687,7 +710,8 @@ export function Layout() {
         <div className="p-2 border-t border-bambu-dark-tertiary">
           {isSidebarCompact || sidebarExpanded ? (
             <div className="flex flex-col gap-2 px-2">
-              {/* Top row: icons */}
+              {/* Row 1: action icons (smart-switches, system, shortcuts,
+                  theme, password, logout). */}
               <div className="flex items-center justify-center gap-1">
                 {hasSwitchbarPlugs && (
                   <div className="relative">
@@ -725,15 +749,6 @@ export function Layout() {
                     <Info className="w-5 h-5" />
                   </span>
                 )}
-                <a
-                  href="https://github.com/kainpl/bambuddy-he"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white"
-                  title={t('nav.viewOnGitHubIcon')}
-                >
-                  <GitHubIcon className="w-5 h-5" />
-                </a>
                 <button
                   onClick={() => setShowShortcuts(true)}
                   className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white"
@@ -766,6 +781,36 @@ export function Layout() {
                     </button>
                   </>
                 )}
+              </div>
+              {/* Row 2: external links (GitHub, docs, Telegram support). */}
+              <div className="flex items-center justify-center gap-1">
+                <a
+                  href="https://github.com/kainpl/bambuddy-he"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white"
+                  title={t('nav.viewOnGitHubIcon')}
+                >
+                  <GitHubIcon className="w-5 h-5" />
+                </a>
+                <a
+                  href={DOCS_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white"
+                  title={t('nav.docs')}
+                >
+                  <BookOpen className="w-5 h-5" />
+                </a>
+                <a
+                  href={TELEGRAM_SUPPORT_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white"
+                  title={t('nav.telegramSupport')}
+                >
+                  <TelegramIcon className="w-5 h-5" />
+                </a>
               </div>
               {/* Bottom row: version */}
               <div className="flex items-center justify-center gap-2">
@@ -837,6 +882,24 @@ export function Layout() {
                 title={t('nav.viewOnGitHubIcon')}
               >
                 <GitHubIcon className="w-5 h-5" />
+              </a>
+              <a
+                href={DOCS_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white"
+                title={t('nav.docs')}
+              >
+                <BookOpen className="w-5 h-5" />
+              </a>
+              <a
+                href={TELEGRAM_SUPPORT_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white"
+                title={t('nav.telegramSupport')}
+              >
+                <TelegramIcon className="w-5 h-5" />
               </a>
               <button
                 onClick={() => setShowShortcuts(true)}
