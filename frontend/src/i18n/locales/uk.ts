@@ -42,6 +42,9 @@ export default {
     confirm: 'Підтвердити',
     loading: 'Завантаження...',
     reconnecting: 'Відновлюю з\'єднання…',
+    hourShort: 'г',
+    minuteShort: 'хв',
+    gramShort: 'г',
     error: 'Помилка',
     success: 'Успіх',
     warning: 'Попередження',
@@ -3143,6 +3146,10 @@ export default {
   fileManager: {
     title: 'Файловий менеджер',
     subtitle: 'Організуйте та керуйте файлами для друку',
+    plate: 'Плита',
+    plateSlot: 'Слот',
+    plateGallery: 'Галерея плит',
+    multiPlateBadgeTooltip: 'Мульті-плейт-файл — кілька плит для друку',
     uploadFiles: 'Завантажити файли',
     newFolder: 'Нова папка',
     folderName: 'Назва папки',
@@ -3961,6 +3968,9 @@ export default {
     clickToChangeSlot: 'Натисніть для зміни призначення слоту',
     filamentTypeMismatch: 'Потрібний тип філаменту не знайдено у принтері.',
     plateNFallback: 'Платформа {{index}}',
+    selectPlateToPrint: 'Оберіть плиту для друку',
+    selectPlatesToPrint: 'Оберіть плити для друку',
+    selectionRequired: 'Потрібно щось обрати',
 
     // index.tsx
     failedToUpdateQueue: 'Не вдалося оновити елемент черги',

@@ -42,6 +42,9 @@ export default {
     confirm: 'Confirm',
     loading: 'Loading...',
     reconnecting: 'Reconnecting…',
+    hourShort: 'h',
+    minuteShort: 'm',
+    gramShort: 'g',
     error: 'Error',
     success: 'Success',
     warning: 'Warning',
@@ -3135,6 +3138,10 @@ export default {
   fileManager: {
     title: 'File Manager',
     subtitle: 'Organize and manage your print files',
+    plate: 'Plate',
+    plateSlot: 'Slot',
+    plateGallery: 'Plate gallery',
+    multiPlateBadgeTooltip: 'Multi-plate file — multiple build plates inside',
     uploadFiles: 'Upload Files',
     newFolder: 'New Folder',
     folderName: 'Folder Name',
@@ -3961,6 +3968,9 @@ export default {
     clickToChangeSlot: 'Click to change slot assignment',
     filamentTypeMismatch: 'Required filament type not found in printer.',
     plateNFallback: 'Plate {{index}}',
+    selectPlateToPrint: 'Select plate to print',
+    selectPlatesToPrint: 'Select plates to print',
+    selectionRequired: 'Selection required',
 
     // index.tsx
     failedToUpdateQueue: 'Failed to update queue item',

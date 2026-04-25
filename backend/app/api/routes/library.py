@@ -921,6 +921,20 @@ async def scan_external_folder(
                         thumb_full = thumb_dir / thumb_filename
                         thumb_full.write_bytes(thumb_data)
                         thumbnail_path = to_relative_path(thumb_full)
+                    # Same per-plate cache populated as the upload route —
+                    # external 3MFs imported via folder-scan benefit too.
+                    try:
+                        import zipfile as _zf
+
+                        from backend.app.services.archive import parse_plates_from_3mf
+
+                        with _zf.ZipFile(str(filepath), "r") as _zfh:
+                            plates_payload = parse_plates_from_3mf(_zfh)
+                        if plates_payload and file_metadata is not None:
+                            file_metadata["plates"] = plates_payload
+                            file_metadata["is_multi_plate"] = len(plates_payload) > 1
+                    except Exception as _pe:
+                        logger.debug("Per-plate parse for external scan failed (non-critical): %s", _pe)
                 except Exception as e:
                     logger.debug("Failed to extract metadata from external 3mf %s: %s", filepath, e)
 
@@ -1080,6 +1094,7 @@ async def list_files(
         filament_grams = None
         sliced_for_model = None
         object_count = None
+        is_multi_plate = False
         if f.file_metadata:
             print_name = f.file_metadata.get("print_name")
             print_time = f.file_metadata.get("print_time_seconds")
@@ -1088,6 +1103,38 @@ async def list_files(
             printable_objects = f.file_metadata.get("printable_objects")
             if isinstance(printable_objects, dict):
                 object_count = len(printable_objects)
+            # ``is_multi_plate`` is pre-computed at upload + by m023 backfill
+            # so the frontend can gate gallery rendering without an extra
+            # /plates fetch per single-plate file.
+            is_multi_plate = bool(f.file_metadata.get("is_multi_plate"))
+
+            # Multi-plate files: replace the single-plate snapshot values
+            # with sums across every plate. The card represents the WHOLE
+            # file, so showing only plate 1's time / weight / object count
+            # is misleading. The cached ``plates`` array (m023) carries
+            # everything we need — no ZIP open.
+            if is_multi_plate:
+                plates_payload = f.file_metadata.get("plates")
+                if isinstance(plates_payload, list) and plates_payload:
+                    time_sum = 0
+                    grams_sum = 0.0
+                    objects_sum = 0
+                    for p in plates_payload:
+                        pt = p.get("print_time_seconds") if isinstance(p, dict) else None
+                        if isinstance(pt, (int, float)):
+                            time_sum += int(pt)
+                        pg = p.get("filament_used_grams") if isinstance(p, dict) else None
+                        if isinstance(pg, (int, float)):
+                            grams_sum += float(pg)
+                        po = p.get("printable_objects") if isinstance(p, dict) else None
+                        if isinstance(po, dict):
+                            objects_sum += len(po)
+                    if time_sum > 0:
+                        print_time = time_sum
+                    if grams_sum > 0:
+                        filament_grams = round(grams_sum, 1)
+                    if objects_sum > 0:
+                        object_count = objects_sum
 
         file_list.append(
             FileListResponse(
@@ -1109,6 +1156,7 @@ async def list_files(
                 object_count=object_count,
                 sliced_for_model=sliced_for_model,
                 swap_compatible=f.swap_compatible,
+                is_multi_plate=is_multi_plate,
                 notes_count=notes_counts.get(f.id, 0),
             )
         )
@@ -1183,6 +1231,24 @@ async def upload_file(
                     thumbnail_path = str(thumb_path)
 
                 metadata = _clean_3mf_metadata(raw_metadata)
+
+                # Populate per-plate cache so the gallery / list endpoint
+                # doesn't need to reopen the ZIP on every read. ``plates``
+                # carries the full per-plate breakdown; ``is_multi_plate``
+                # is a tiny top-level boolean that the file-list response
+                # uses to gate gallery rendering on the frontend.
+                try:
+                    import zipfile as _zf
+
+                    from backend.app.services.archive import parse_plates_from_3mf
+
+                    with _zf.ZipFile(str(file_path), "r") as _zfh:
+                        plates_payload = parse_plates_from_3mf(_zfh)
+                    if plates_payload:
+                        metadata["plates"] = plates_payload
+                        metadata["is_multi_plate"] = len(plates_payload) > 1
+                except Exception as _pe:
+                    logger.debug("Per-plate parse for upload failed (non-critical): %s", _pe)
             except Exception as e:
                 logger.warning("Failed to parse 3MF: %s", e)
 
@@ -1421,6 +1487,19 @@ async def extract_zip_file(
                                 thumbnail_path = str(thumb_path)
 
                             metadata = _clean_3mf_metadata(raw_metadata)
+                            # Per-plate cache (same as upload_file path).
+                            try:
+                                import zipfile as _zf
+
+                                from backend.app.services.archive import parse_plates_from_3mf
+
+                                with _zf.ZipFile(str(file_path), "r") as _zfh:
+                                    plates_payload = parse_plates_from_3mf(_zfh)
+                                if plates_payload:
+                                    metadata["plates"] = plates_payload
+                                    metadata["is_multi_plate"] = len(plates_payload) > 1
+                            except Exception as _pe:
+                                logger.debug("Per-plate parse for ZIP-extracted 3MF failed (non-critical): %s", _pe)
                         except Exception as e:
                             logger.warning("Failed to parse 3MF from ZIP: %s", e)
 
@@ -1724,9 +1803,6 @@ async def get_library_file_plates(
     Returns a list of plates with their index, name, thumbnail availability,
     and filament requirements. For single-plate exports, returns a single plate.
     """
-    import json
-
-    import defusedxml.ElementTree as ET
 
     # Get the library file
     result = await db.execute(select(LibraryFile).where(LibraryFile.id == file_id))
@@ -1743,229 +1819,46 @@ async def get_library_file_plates(
     if not lib_file.filename.lower().endswith(".3mf"):
         return {"file_id": file_id, "filename": lib_file.filename, "plates": [], "is_multi_plate": False}
 
-    plates = []
+    # Fast path: read pre-computed plates from the library file's JSON
+    # metadata (populated at upload time + by m023 backfill). No ZIP open.
+    cached_plates = (lib_file.file_metadata or {}).get("plates") if isinstance(lib_file.file_metadata, dict) else None
+    if isinstance(cached_plates, list) and cached_plates:
+        plates = [
+            {
+                **p,
+                "thumbnail_url": (
+                    f"/api/v1/library/files/{file_id}/plate-thumbnail/{p.get('index')}"
+                    if p.get("has_thumbnail")
+                    else None
+                ),
+            }
+            for p in cached_plates
+        ]
+        return {
+            "file_id": file_id,
+            "filename": lib_file.filename,
+            "plates": plates,
+            "is_multi_plate": len(plates) > 1,
+        }
 
+    # Slow path: open ZIP + parse. Used for files uploaded before m023 ran,
+    # or as a safety net after a corrupted JSON column. Result is NOT
+    # written back here — the migration / upload-time hook owns persistence.
+    plates: list[dict] = []
     try:
+        from backend.app.services.archive import parse_plates_from_3mf
+
         with zipfile.ZipFile(file_path, "r") as zf:
-            namelist = zf.namelist()
-
-            # Find all plate gcode files to determine available plates
-            gcode_files = [n for n in namelist if n.startswith("Metadata/plate_") and n.endswith(".gcode")]
-
-            # If no gcode is present (source-only or unsliced), fall back to plate JSON/PNG
-            plate_indices: list[int] = []
-            if gcode_files:
-                # Extract plate indices from gcode filenames
-                for gf in gcode_files:
-                    try:
-                        plate_str = gf[15:-6]  # Remove "Metadata/plate_" and ".gcode"
-                        plate_indices.append(int(plate_str))
-                    except ValueError:
-                        pass  # Skip gcode file with non-numeric plate index
-            else:
-                plate_json_files = [n for n in namelist if n.startswith("Metadata/plate_") and n.endswith(".json")]
-                plate_png_files = [
-                    n
-                    for n in namelist
-                    if n.startswith("Metadata/plate_")
-                    and n.endswith(".png")
-                    and "_small" not in n
-                    and "no_light" not in n
-                ]
-                plate_name_candidates = plate_json_files + plate_png_files
-                plate_re = re.compile(r"^Metadata/plate_(\d+)\.(json|png)$")
-                seen_indices: set[int] = set()
-                for name in plate_name_candidates:
-                    match = plate_re.match(name)
-                    if match:
-                        try:
-                            index = int(match.group(1))
-                        except ValueError:
-                            continue
-                        if index in seen_indices:
-                            continue
-                        seen_indices.add(index)
-                        plate_indices.append(index)
-
-            if not plate_indices:
-                # No plate metadata found
-                return {"file_id": file_id, "filename": lib_file.filename, "plates": [], "is_multi_plate": False}
-
-            plate_indices.sort()
-
-            # Parse model_settings.config for plate names + object assignments
-            plate_names = {}
-            plate_object_ids: dict[int, list[str]] = {}
-            object_names_by_id: dict[str, str] = {}
-            if "Metadata/model_settings.config" in namelist:
-                try:
-                    model_content = zf.read("Metadata/model_settings.config").decode()
-                    model_root = ET.fromstring(model_content)
-                    for obj_elem in model_root.findall(".//object"):
-                        obj_id = obj_elem.get("id")
-                        if not obj_id:
-                            continue
-                        name_meta = obj_elem.find("metadata[@key='name']")
-                        obj_name = name_meta.get("value") if name_meta is not None else None
-                        if obj_name:
-                            object_names_by_id[obj_id] = obj_name
-
-                    for plate_elem in model_root.findall(".//plate"):
-                        plater_id = None
-                        plater_name = None
-                        for meta in plate_elem.findall("metadata"):
-                            key = meta.get("key")
-                            value = meta.get("value")
-                            if key == "plater_id" and value:
-                                try:
-                                    plater_id = int(value)
-                                except ValueError:
-                                    pass  # Ignore plate with non-numeric plater_id
-                            elif key == "plater_name" and value:
-                                plater_name = value.strip()
-                        if plater_id is not None and plater_name:
-                            plate_names[plater_id] = plater_name
-
-                        if plater_id is not None:
-                            for instance_elem in plate_elem.findall("model_instance"):
-                                for inst_meta in instance_elem.findall("metadata"):
-                                    if inst_meta.get("key") == "object_id":
-                                        obj_id = inst_meta.get("value")
-                                        if not obj_id:
-                                            continue
-                                        plate_object_ids.setdefault(plater_id, [])
-                                        if obj_id not in plate_object_ids[plater_id]:
-                                            plate_object_ids[plater_id].append(obj_id)
-                except Exception:
-                    pass  # model_settings.config is optional; skip if missing or malformed
-
-            # Parse slice_info.config for plate metadata
-            plate_metadata = {}
-            if "Metadata/slice_info.config" in namelist:
-                content = zf.read("Metadata/slice_info.config").decode()
-                root = ET.fromstring(content)
-
-                for plate_elem in root.findall(".//plate"):
-                    plate_info = {"filaments": [], "prediction": None, "weight": None, "name": None, "objects": []}
-
-                    plate_index = None
-                    for meta in plate_elem.findall("metadata"):
-                        key = meta.get("key")
-                        value = meta.get("value")
-                        if key == "index" and value:
-                            try:
-                                plate_index = int(value)
-                            except ValueError:
-                                pass  # Ignore plate with non-numeric index
-                        elif key == "prediction" and value:
-                            try:
-                                plate_info["prediction"] = int(value)
-                            except ValueError:
-                                pass  # Leave prediction as None if not a valid integer
-                        elif key == "weight" and value:
-                            try:
-                                plate_info["weight"] = float(value)
-                            except ValueError:
-                                pass  # Leave weight as None if not a valid number
-
-                    # Get filaments used in this plate
-                    for filament_elem in plate_elem.findall("filament"):
-                        filament_id = filament_elem.get("id")
-                        filament_type = filament_elem.get("type", "")
-                        filament_color = filament_elem.get("color", "")
-                        used_g = filament_elem.get("used_g", "0")
-                        used_m = filament_elem.get("used_m", "0")
-
-                        try:
-                            used_grams = float(used_g)
-                        except (ValueError, TypeError):
-                            used_grams = 0
-
-                        if used_grams > 0 and filament_id:
-                            plate_info["filaments"].append(
-                                {
-                                    "slot_id": int(filament_id),
-                                    "type": filament_type,
-                                    "color": filament_color,
-                                    "used_grams": round(used_grams, 1),
-                                    "used_meters": float(used_m) if used_m else 0,
-                                }
-                            )
-
-                    plate_info["filaments"].sort(key=lambda x: x["slot_id"])
-
-                    # Collect object names
-                    for obj_elem in plate_elem.findall("object"):
-                        obj_name = obj_elem.get("name")
-                        if obj_name and obj_name not in plate_info["objects"]:
-                            plate_info["objects"].append(obj_name)
-
-                    # Set plate name
-                    if plate_index is not None:
-                        custom_name = plate_names.get(plate_index)
-                        if custom_name:
-                            plate_info["name"] = custom_name
-                        elif plate_info["objects"]:
-                            plate_info["name"] = plate_info["objects"][0]
-                        plate_metadata[plate_index] = plate_info
-
-            # Parse plate_*.json for object lists when slice_info is missing
-            plate_json_objects: dict[int, list[str]] = {}
-            for name in namelist:
-                match = re.match(r"^Metadata/plate_(\d+)\.json$", name)
-                if not match:
-                    continue
-                try:
-                    plate_index = int(match.group(1))
-                except ValueError:
-                    continue
-                try:
-                    payload = json.loads(zf.read(name).decode())
-                    bbox_objects = payload.get("bbox_objects", [])
-                    names: list[str] = []
-                    for obj in bbox_objects:
-                        obj_name = obj.get("name") if isinstance(obj, dict) else None
-                        if obj_name and obj_name not in names:
-                            names.append(obj_name)
-                    if names:
-                        plate_json_objects[plate_index] = names
-                except Exception:
-                    continue
-
-            # Build plate list
-            for idx in plate_indices:
-                meta = plate_metadata.get(idx, {})
-                has_thumbnail = f"Metadata/plate_{idx}.png" in namelist
-                objects = meta.get("objects", [])
-                if not objects:
-                    objects = plate_json_objects.get(idx, [])
-                if not objects and plate_object_ids.get(idx):
-                    objects = [
-                        object_names_by_id.get(obj_id, f"Object {obj_id}") for obj_id in plate_object_ids.get(idx, [])
-                    ]
-
-                plate_name = meta.get("name")
-                if not plate_name:
-                    plate_name = plate_names.get(idx)
-                if not plate_name and objects:
-                    plate_name = objects[0]
-
-                plates.append(
-                    {
-                        "index": idx,
-                        "name": plate_name,
-                        "objects": objects,
-                        "object_count": len(objects),
-                        "has_thumbnail": has_thumbnail,
-                        "thumbnail_url": f"/api/v1/library/files/{file_id}/plate-thumbnail/{idx}"
-                        if has_thumbnail
-                        else None,
-                        "print_time_seconds": meta.get("prediction"),
-                        "filament_used_grams": meta.get("weight"),
-                        "filaments": meta.get("filaments", []),
-                    }
-                )
-
+            raw_plates = parse_plates_from_3mf(zf)
+        for p in raw_plates:
+            plates.append(
+                {
+                    **p,
+                    "thumbnail_url": (
+                        f"/api/v1/library/files/{file_id}/plate-thumbnail/{p['index']}" if p["has_thumbnail"] else None
+                    ),
+                }
+            )
     except Exception as e:
         logger.warning("Failed to parse plates from library file %s: %s", file_id, e)
 

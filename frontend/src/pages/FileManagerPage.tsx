@@ -43,6 +43,7 @@ import {
   FolderSymlink,
   WrapText,
   ListCollapse,
+  Layers,
 } from 'lucide-react';
 import { api } from '../api/client';
 import type {
@@ -58,6 +59,7 @@ import type {
 } from '../api/client';
 import { Button } from '../components/Button';
 import { ConfirmModal } from '../components/ConfirmModal';
+import { LibraryPlateGalleryModal } from '../components/LibraryPlateGallery';
 import { PrintModal } from '../components/PrintModal';
 import { ModelViewerModal } from '../components/ModelViewerModal';
 import { FileUploadModal } from '../components/FileUploadModal';
@@ -794,6 +796,7 @@ interface FileCardProps {
   onRename?: (file: LibraryFileListItem) => void;
   onLink?: (file: LibraryFileListItem) => void;
   onGenerateThumbnail?: (file: LibraryFileListItem) => void;
+  onPlateGallery?: (file: LibraryFileListItem) => void;
   thumbnailVersion?: number;
   hasPermission: (permission: Permission) => boolean;
   canModify: (resource: 'queue' | 'archives' | 'library', action: 'update' | 'delete' | 'reprint', createdById: number | null | undefined) => boolean;
@@ -939,7 +942,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   );
 }
 
-function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, onAddToQueue, onPrint, onPreview3d, onRename, onLink, onGenerateThumbnail, thumbnailVersion, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
+function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, onAddToQueue, onPrint, onPreview3d, onRename, onLink, onGenerateThumbnail, onPlateGallery, thumbnailVersion, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
   const [showActions, setShowActions] = useState(false);
 
   return (
@@ -964,6 +967,14 @@ function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, 
         )}
         {/* File type badge */}
         <div className="absolute top-2 right-2 flex items-center gap-1">
+          {file.is_multi_plate && (
+            <span
+              className="text-xs px-1.5 py-0.5 bg-cyan-500/90 text-white rounded font-medium"
+              title={t('fileManager.multiPlateBadgeTooltip')}
+            >
+              MP
+            </span>
+          )}
           {file.swap_compatible && (
             <span className="text-xs px-1.5 py-0.5 bg-amber-500/90 text-white rounded font-medium">SWAP</span>
           )}
@@ -976,6 +987,23 @@ function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, 
             {file.file_type.toUpperCase()}
           </span>
         </div>
+        {/* Plate-gallery overlay — sits directly above the notes button.
+            Only multi-plate sliced 3MFs render it; opens the modal handled
+            by FileManagerPage so the same dialog instance is shared with
+            the list-mode action button. */}
+        {file.is_multi_plate && onPlateGallery && (
+          <div className="absolute bottom-8 left-2" onClick={(e) => e.stopPropagation()}>
+            <div className="relative inline-block">
+              <button
+                onClick={() => onPlateGallery(file)}
+                className="rounded-md bg-bambu-dark/80 backdrop-blur text-bambu-gray hover:text-bambu-green hover:bg-bambu-dark transition-colors flex items-center"
+                title={t('fileManager.plateGallery')}
+              >
+                <Layers className="w-5 h-5" />
+              </button>
+            </div>
+          </div>
+        )}
         {/* Notes overlay - bottom-left corner */}
         <div className="absolute bottom-1 left-2" onClick={(e) => e.stopPropagation()}>
           <LibraryFileNotesButton fileId={file.id} initialCount={file.notes_count} variant="overlay" />
@@ -1196,6 +1224,8 @@ export function FileManagerPage() {
   const [renameItem, setRenameItem] = useState<{ type: 'file' | 'folder'; id: number; name: string } | null>(null);
   const [thumbnailVersions, setThumbnailVersions] = useState<Record<number, number>>({});
   const [viewerFile, setViewerFile] = useState<LibraryFileListItem | null>(null);
+  // Per-plate gallery modal — opened from list-mode "plates" button. Null when closed.
+  const [galleryFile, setGalleryFile] = useState<LibraryFileListItem | null>(null);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>(() => {
     return (localStorage.getItem('library-view-mode') as 'grid' | 'list') || 'grid';
   });
@@ -2214,6 +2244,7 @@ export function FileManagerPage() {
                     onRename={(f) => setRenameItem({ type: 'file', id: f.id, name: f.filename })}
                     onLink={setLinkFile}
                     onGenerateThumbnail={(f) => singleThumbnailMutation.mutate(f.id)}
+                    onPlateGallery={setGalleryFile}
                     thumbnailVersion={thumbnailVersions[file.id]}
                     hasPermission={hasPermission}
                     canModify={canModify}
@@ -2226,22 +2257,34 @@ export function FileManagerPage() {
             </div>
           ) : (
             <div className="flex-1 lg:overflow-y-auto">
-              <div className="bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary overflow-hidden">
+              {/* Outer grid carries the column-template; header + every row
+                  use ``grid-cols-subgrid`` so they share track widths. The
+                  Actions column is therefore sized to the WIDEST row's
+                  buttons (e.g. a sliced .gcode.3mf with all of: project,
+                  notes, print, schedule, plate gallery, 3D, menu) — all
+                  other rows then use that same width and align cleanly. */}
+              <div
+                className={`grid ${
+                  authEnabled
+                    ? 'grid-cols-[auto_minmax(0,1fr)_max-content_max-content_max-content_max-content_max-content]'
+                    : 'grid-cols-[auto_minmax(0,1fr)_max-content_max-content_max-content_max-content]'
+                } bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary`}
+              >
                 {/* List header - hidden on mobile, show simplified on small screens */}
-                <div className={`hidden sm:grid ${authEnabled ? 'grid-cols-[auto_1fr_120px_100px_100px_140px_160px]' : 'grid-cols-[auto_1fr_100px_100px_140px_160px]'} gap-4 px-4 py-2 bg-bambu-dark-secondary border-b border-bambu-dark-tertiary text-xs text-bambu-gray font-medium`}>
+                <div className="hidden sm:grid grid-cols-subgrid col-span-full gap-4 px-4 py-2 bg-bambu-dark-secondary border-b border-bambu-dark-tertiary text-xs text-bambu-gray font-medium">
                   <div className="w-6" />
-                  <div>{t('common.name')}</div>
-                  {authEnabled && <div>{t('fileManager.uploadedBy', { defaultValue: 'Uploaded By' })}</div>}
-                  <div>{t('common.type')}</div>
-                  <div>{t('fileManager.size')}</div>
-                  <div>{t('common.date')}</div>
-                  <div>{t('archives.list.actions')}</div>
+                  <div className="text-center">{t('common.name')}</div>
+                  {authEnabled && <div className="text-center">{t('fileManager.uploadedBy', { defaultValue: 'Uploaded By' })}</div>}
+                  <div className="text-center">{t('common.type')}</div>
+                  <div className="text-center">{t('fileManager.size')}</div>
+                  <div className="text-center">{t('common.date')}</div>
+                  <div className="text-center">{t('archives.list.actions')}</div>
                 </div>
                 {/* List rows */}
                 {filteredAndSortedFiles.map((file) => (
                   <div
                     key={file.id}
-                    className={`grid ${authEnabled ? 'grid-cols-[auto_1fr_120px_100px_100px_140px_160px]' : 'grid-cols-[auto_1fr_100px_100px_140px_160px]'} gap-4 px-4 py-3 items-center border-b border-bambu-dark-tertiary last:border-b-0 cursor-pointer hover:bg-bambu-dark/50 transition-colors ${
+                    className={`grid grid-cols-subgrid col-span-full gap-4 px-4 py-3 items-center border-b border-bambu-dark-tertiary last:border-b-0 cursor-pointer hover:bg-bambu-dark/50 transition-colors ${
                       selectedFiles.includes(file.id) ? 'bg-bambu-green/10' : ''
                     }`}
                     onClick={() => handleFileSelect(file.id)}
@@ -2270,9 +2313,12 @@ export function FileManagerPage() {
                             </div>
                           )}
                         </div>
-                        {/* Hover preview */}
+                        {/* Hover preview — popup's top-left corner anchors at
+                            the thumbnail's bottom-right 1/3 point (i.e. 2/3
+                            down and 2/3 right of the thumbnail). The popup
+                            then extends down + to the right of that anchor. */}
                         {file.thumbnail_path && (
-                          <div className="absolute left-0 top-full mt-2 z-50 hidden group-hover/thumb:block">
+                          <div className="absolute top-2/3 left-2/3 z-50 hidden group-hover/thumb:block">
                             <div className="w-48 h-48 rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary shadow-xl overflow-hidden">
                               <img
                                 src={`${api.getLibraryFileThumbnailUrl(file.id)}${thumbnailVersions[file.id] ? `?v=${thumbnailVersions[file.id]}` : ''}`}
@@ -2313,13 +2359,36 @@ export function FileManagerPage() {
                       {file.swap_compatible && (
                         <span className="text-[10px] px-1 py-0.5 bg-amber-500/20 text-amber-400 rounded">SWAP</span>
                       )}
+                      {file.is_multi_plate && (
+                        <span
+                          className="text-[10px] px-1 py-0.5 bg-cyan-500/20 text-cyan-400 rounded"
+                          title={t('fileManager.multiPlateBadgeTooltip')}
+                        >
+                          MP
+                        </span>
+                      )}
                     </div>
                     {/* Size */}
                     <div className="text-sm text-bambu-gray">{formatFileSize(file.file_size)}</div>
                     {/* Date */}
                     <div className="text-sm text-bambu-gray truncate">{formatDateTime(file.created_at, timeFormat, dateFormat)}</div>
-                    {/* Actions */}
-                    <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                    {/* Actions — right-aligned within the column. When more
+                        buttons appear (e.g. swap-mode adds Layers + Box for
+                        a sliced .gcode.3mf), the row grows to the LEFT
+                        instead of pushing the whole column wider. */}
+                    <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
+                      {/* Plate gallery — leftmost so the eye scans the row
+                          left-to-right with the most "what's inside" action
+                          first. Only multi-plate sliced .gcode.3mf qualifies. */}
+                      {file.file_type === '3mf' && isSlicedFilename(file.filename) && file.is_multi_plate && (
+                        <button
+                          onClick={() => setGalleryFile(file)}
+                          className="p-1.5 rounded transition-colors hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green"
+                          title={t('fileManager.plateGallery')}
+                        >
+                          <Layers className="w-4 h-4" />
+                        </button>
+                      )}
                       {/* Project link / unlink — sits with the other inline actions */}
                       {file.project_id != null ? (
                         <button
@@ -2359,7 +2428,7 @@ export function FileManagerPage() {
                             onClick={() => hasPermission('queue:create') && setScheduleFile(file)}
                             className={`p-1.5 rounded transition-colors ${
                               hasPermission('queue:create')
-                                ? 'hover:bg-bambu-dark text-bambu-gray hover:text-white'
+                                ? 'hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green'
                                 : 'text-bambu-gray/50 cursor-not-allowed'
                             }`}
                             title={hasPermission('queue:create') ? t('fileManager.schedulePrint') : t('fileManager.noPermissionAddToQueue')}
@@ -2406,6 +2475,13 @@ export function FileManagerPage() {
       </div>
 
       {/* Modals */}
+      {galleryFile && (
+        <LibraryPlateGalleryModal
+          fileId={galleryFile.id}
+          filename={galleryFile.print_name || galleryFile.filename}
+          onClose={() => setGalleryFile(null)}
+        />
+      )}
       {showNewFolderModal && (
         <NewFolderModal
           parentId={selectedFolderId}

@@ -107,6 +107,10 @@ export const DEFAULT_SCHEDULE_OPTIONS: ScheduleOptions = {
 
 /**
  * Plate information from a multi-plate 3MF file.
+ *
+ * Mirrors the backend ``/library/files/{id}/plates`` and
+ * ``/archives/{id}/plates`` response shape — see ``services/archive.py
+ * ::parse_plates_from_3mf`` for the parser.
  */
 export interface PlateInfo {
   index: number;
@@ -114,9 +118,15 @@ export interface PlateInfo {
   has_thumbnail: boolean;
   thumbnail_url: string | null;
   objects: string[];
+  /** Counted from per-instance ``identify_id`` (skipped="false"); may exceed
+   *  ``objects.length`` when one model is duplicated across the plate. */
+  object_count?: number;
   filaments: Array<{
+    slot_id?: number;
     type: string;
     color: string;
+    used_grams?: number;
+    used_meters?: number;
   }>;
   print_time_seconds: number | null;
   filament_used_grams: number | null;

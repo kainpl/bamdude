@@ -678,7 +678,7 @@ async def get_virtual_printer_settings(
     return {
         "enabled": enabled == "true" if enabled else False,
         "access_code_set": bool(access_code),
-        "mode": mode or "immediate",
+        "mode": mode or "file_manager",
         "model": model or DEFAULT_VIRTUAL_PRINTER_MODEL,
         "target_printer_id": int(target_printer_id) if target_printer_id else None,
         "remote_interface_ip": remote_interface_ip or "",
@@ -715,7 +715,7 @@ async def update_virtual_printer_settings(
     # Get current values
     current_enabled = await get_setting(db, "virtual_printer_enabled") == "true"
     current_access_code = await get_setting(db, "virtual_printer_access_code") or ""
-    current_mode = await get_setting(db, "virtual_printer_mode") or "immediate"
+    current_mode = await get_setting(db, "virtual_printer_mode") or "file_manager"
     current_model = await get_setting(db, "virtual_printer_model") or DEFAULT_VIRTUAL_PRINTER_MODEL
     current_target_id_str = await get_setting(db, "virtual_printer_target_printer_id")
     current_target_id = int(current_target_id_str) if current_target_id_str else None
@@ -729,18 +729,16 @@ async def update_virtual_printer_settings(
     new_target_id = target_printer_id if target_printer_id is not None else current_target_id
     new_remote_iface = remote_interface_ip if remote_interface_ip is not None else current_remote_iface
 
-    # Validate mode
-    # "review" is the new name for "queue" (pending review before archiving)
-    # "print_queue" archives and adds to print queue (unassigned)
-    # "proxy" is transparent TCP proxy to a real printer
-    if new_mode not in ("immediate", "queue", "review", "print_queue", "file_manager", "proxy"):
+    # Validate mode. Three supported modes:
+    #   "print_queue"  — archive + push to a printer queue
+    #   "file_manager" — save to library (review-style flow)
+    #   "proxy"        — transparent TCP proxy to a real printer
+    # m002 already migrated legacy ``immediate``/``review``/``queue`` rows.
+    if new_mode not in ("print_queue", "file_manager", "proxy"):
         return JSONResponse(
             status_code=400,
-            content={"detail": "Mode must be 'immediate', 'review', 'print_queue', 'file_manager', or 'proxy'"},
+            content={"detail": "Mode must be 'print_queue', 'file_manager', or 'proxy'"},
         )
-    # Normalize legacy "queue" to "review" for storage
-    if new_mode == "queue":
-        new_mode = "review"
 
     # Validate model
     if model is not None and model not in VIRTUAL_PRINTER_MODELS:

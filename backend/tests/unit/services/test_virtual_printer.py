@@ -21,7 +21,7 @@ class TestVirtualPrinterInstance:
         return VirtualPrinterInstance(
             vp_id=1,
             name="TestPrinter",
-            mode="immediate",
+            mode="file_manager",
             model="C11",
             access_code="12345678",
             serial_suffix="391800001",
@@ -36,7 +36,7 @@ class TestVirtualPrinterInstance:
         """Verify constructor stores parameters correctly."""
         assert instance.id == 1
         assert instance.name == "TestPrinter"
-        assert instance.mode == "immediate"
+        assert instance.mode == "file_manager"
         assert instance.model == "C11"
         assert instance.access_code == "12345678"
         assert instance.serial_suffix == "391800001"
@@ -53,7 +53,7 @@ class TestVirtualPrinterInstance:
         inst = VirtualPrinterInstance(
             vp_id=2,
             name="X1C",
-            mode="immediate",
+            mode="file_manager",
             model="BL-P001",
             access_code="12345678",
             serial_suffix="391800002",
@@ -123,38 +123,26 @@ class TestVirtualPrinterInstance:
     # ========================================================================
 
     @pytest.mark.asyncio
-    async def test_on_file_received_adds_to_pending(self, instance):
-        """Verify received file is added to pending list in review mode."""
-        instance.mode = "review"
-
+    async def test_on_file_received_saves_to_library_in_default_mode(self, instance):
+        """Default ``file_manager`` mode routes received files to the library."""
         file_path = Path("/tmp/test.3mf")  # nosec B108
 
-        with patch.object(instance, "_queue_file", new_callable=AsyncMock) as mock_queue:
+        with patch.object(instance, "_save_to_library", new_callable=AsyncMock) as mock_save:
             await instance.on_file_received(file_path, "192.168.1.100")
 
             assert "test.3mf" in instance._pending_files
-            mock_queue.assert_called_once()
+            mock_save.assert_called_once_with(file_path, "192.168.1.100")
 
     @pytest.mark.asyncio
-    async def test_on_file_received_archives_immediately(self, instance):
-        """Verify file is archived in immediate mode."""
+    async def test_on_file_received_routes_to_print_queue(self, instance):
+        """``print_queue`` mode routes received files to ``_add_to_print_queue``."""
+        instance.mode = "print_queue"
         file_path = Path("/tmp/test.3mf")  # nosec B108
 
-        with patch.object(instance, "_archive_file", new_callable=AsyncMock) as mock_archive:
+        with patch.object(instance, "_add_to_print_queue", new_callable=AsyncMock) as mock_q:
             await instance.on_file_received(file_path, "192.168.1.100")
 
-            mock_archive.assert_called_once_with(file_path, "192.168.1.100")
-
-    @pytest.mark.asyncio
-    async def test_archive_file_skips_non_3mf(self, instance):
-        """Verify non-3MF files are skipped and cleaned up."""
-        instance._session_factory = MagicMock()
-        instance._pending_files["verify_job"] = Path("/tmp/verify_job")  # nosec B108
-
-        with patch("pathlib.Path.unlink"):
-            await instance._archive_file(Path("/tmp/verify_job"), "192.168.1.100")  # nosec B108
-
-            assert "verify_job" not in instance._pending_files
+            mock_q.assert_called_once_with(file_path, "192.168.1.100")
 
     # ========================================================================
     # Tests for auto_dispatch
@@ -329,7 +317,7 @@ class TestVirtualPrinterManager:
         inst = VirtualPrinterInstance(
             vp_id=1,
             name="Test",
-            mode="immediate",
+            mode="file_manager",
             model="C11",
             access_code="12345678",
             serial_suffix="391800001",
@@ -346,7 +334,7 @@ class TestVirtualPrinterManager:
         inst = VirtualPrinterInstance(
             vp_id=1,
             name="Test",
-            mode="immediate",
+            mode="file_manager",
             model="C11",
             access_code="12345678",
             serial_suffix="391800001",
@@ -390,7 +378,7 @@ class TestVirtualPrinterManager:
         inst = VirtualPrinterInstance(
             vp_id=1,
             name="Bambuddy",
-            mode="immediate",
+            mode="file_manager",
             model="C11",
             access_code="12345678",
             serial_suffix="391800001",
@@ -419,7 +407,7 @@ class TestVirtualPrinterManager:
             inst = VirtualPrinterInstance(
                 vp_id=i,
                 name=f"VP{i}",
-                mode="immediate",
+                mode="file_manager",
                 model="C11",
                 access_code="12345678",
                 serial_suffix=f"39180000{i}",
@@ -441,7 +429,7 @@ class TestVirtualPrinterManager:
             inst = VirtualPrinterInstance(
                 vp_id=i,
                 name=f"VP{i}",
-                mode="immediate",
+                mode="file_manager",
                 model="C11",
                 access_code="12345678",
                 serial_suffix=f"39180000{i}",
@@ -500,7 +488,7 @@ class TestVirtualPrinterManager:
         inst = VirtualPrinterInstance(
             vp_id=1,
             name="TestVP",
-            mode="immediate",
+            mode="file_manager",
             model="C11",
             access_code="12345678",
             serial_suffix="391800001",
@@ -532,7 +520,7 @@ class TestVirtualPrinterManager:
         inst = VirtualPrinterInstance(
             vp_id=1,
             name="TestVP",
-            mode="immediate",
+            mode="file_manager",
             model="C11",
             access_code="12345678",
             serial_suffix="391800001",
@@ -562,7 +550,7 @@ class TestVirtualPrinterManager:
         inst = VirtualPrinterInstance(
             vp_id=1,
             name="TestVP",
-            mode="immediate",
+            mode="file_manager",
             model="C11",
             access_code="12345678",
             serial_suffix="391800001",
@@ -587,7 +575,7 @@ class TestVirtualPrinterManager:
         inst = VirtualPrinterInstance(
             vp_id=1,
             name="TestVP",
-            mode="immediate",
+            mode="file_manager",
             model="C11",
             access_code="12345678",
             serial_suffix="391800001",
@@ -618,7 +606,7 @@ class TestVirtualPrinterManager:
         inst = VirtualPrinterInstance(
             vp_id=1,
             name="TestVP",
-            mode="immediate",
+            mode="file_manager",
             model="C11",
             access_code="12345678",
             serial_suffix="391800001",
@@ -1334,7 +1322,7 @@ class TestVirtualPrinterManagerDirectories:
         VirtualPrinterInstance(
             vp_id=42,
             name="Test",
-            mode="immediate",
+            mode="file_manager",
             model="C11",
             access_code="12345678",
             serial_suffix="391800042",
@@ -1424,7 +1412,7 @@ class TestVirtualPrinterInstanceIPOverride:
         return VirtualPrinterInstance(
             vp_id=20,
             name="IPTest",
-            mode="immediate",
+            mode="file_manager",
             model="BL-P001",
             access_code="12345678",
             serial_suffix="391800020",
@@ -1461,7 +1449,7 @@ class TestVirtualPrinterInstanceIPOverride:
         inst = VirtualPrinterInstance(
             vp_id=21,
             name="NoRemote",
-            mode="immediate",
+            mode="file_manager",
             model="BL-P001",
             access_code="12345678",
             serial_suffix="391800021",
@@ -1487,7 +1475,7 @@ class TestVirtualPrinterInstanceIPOverride:
         inst = VirtualPrinterInstance(
             vp_id=22,
             name="NoIPs",
-            mode="immediate",
+            mode="file_manager",
             model="BL-P001",
             access_code="12345678",
             serial_suffix="391800022",
@@ -1620,7 +1608,7 @@ class TestBindServer:
         inst = VirtualPrinterInstance(
             vp_id=99,
             name="Bambuddy",
-            mode="immediate",
+            mode="file_manager",
             model="BL-P001",
             access_code="12345678",
             serial_suffix="391800099",

@@ -25,6 +25,10 @@ export function useWebSocket() {
     setIsConnectedLocal(connected);
     setIsConnectedShared(connected);
   }, [setIsConnectedShared]);
+  // Exposes the current connection's "send a ping right now" hook to code
+  // outside the connect() closure (specifically the visibility handler).
+  // Re-set on every connect, cleared on every close.
+  const sendPingRef = useRef<(() => void) | null>(null);
   const lastMissingSpoolWarningRef = useRef<Map<number, string>>(new Map());
   const { showToast } = useToast();
   const { t } = useTranslation();
@@ -112,16 +116,20 @@ export function useWebSocket() {
       }
     };
 
+    const sendPing = () => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'ping' }));
+        armPongTimeout();
+      }
+    };
+
     ws.onopen = () => {
       if (import.meta.env.MODE !== 'test') console.log('[WebSocket] Connected');
       setIsConnected(true);
+      // Expose the on-demand ping for the visibility handler.
+      sendPingRef.current = sendPing;
       // Start ping interval — server replies with type='pong'.
-      pingInterval = window.setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'ping' }));
-          armPongTimeout();
-        }
-      }, 30000);
+      pingInterval = window.setInterval(sendPing, 30000);
     };
 
     ws.onmessage = (event) => {
@@ -154,6 +162,7 @@ export function useWebSocket() {
         pingInterval = null;
       }
       clearPongTimeout();
+      sendPingRef.current = null;
       setIsConnected(false);
       wsRef.current = null;
 
@@ -397,38 +406,38 @@ export function useWebSocket() {
   }, [handleMessage]);
 
   useEffect(() => {
-    connect();
+    // Defer the initial connect by a microtask so React.StrictMode's
+    // mount-unmount-remount dance in dev doesn't create a transient
+    // WebSocket that gets closed before its ``onopen`` fires (browsers
+    // log a noisy "closed before connection established" warning + then
+    // 1006 abnormal-close on that orphan socket). The cleanup below
+    // cancels this timer if StrictMode unmounts us before it fires, so
+    // only the surviving mount's connect actually runs. In production
+    // (no StrictMode) this is a harmless 0 ms delay.
+    const initTimer = window.setTimeout(connect, 0);
 
-    // Visibility-sync: when the tab returns to the foreground after being
-    // backgrounded (browser timer throttle / OS process suspend), the WS
-    // socket may be silently dead and React-Query's cache shows stale data
-    // until the next scheduled refetch. Force both back to fresh:
-    //   1. close the socket — triggers the standard reconnect path so a
-    //      new connection re-fetches initial state.
-    //   2. invalidate ALL queries — refetchOnWindowFocus does this for
-    //      *active* queries, but a queue card mounted on Home won't refetch
-    //      its hidden Archive query. Hard-invalidate everything so any
-    //      page the user navigates to within the next few seconds has
-    //      fresh data instead of stale cache.
-    const onVisible = () => {
+    // Visibility-sync: when the tab returns to the foreground we want
+    // (a) fresh data (queries may have been throttled while hidden) and
+    // (b) confidence that the WS socket is still alive — browsers can
+    // silently kill long-idle sockets without firing onclose.
+    //
+    // Strategy: invalidate queries unconditionally (cheap, runs only once
+    // per visibility flip) + send an immediate ping. The existing 10 s
+    // pong-timeout watchdog inside connect() handles the "no pong came
+    // back" case — if the socket was killed in the background, the
+    // watchdog detects it within ~10 s and triggers the standard
+    // reconnect path. Healthy sockets just receive a pong and carry on
+    // without churning. No more reconnect flicker on every Alt+Tab.
+    const onVisibilityChange = () => {
       if (document.visibilityState !== 'visible') return;
-      if (import.meta.env.MODE !== 'test') {
-        console.log('[WebSocket] Tab visible — forcing reconnect + query refresh');
-      }
-      try {
-        if (wsRef.current && wsRef.current.readyState !== WebSocket.CLOSED) {
-          wsRef.current.close();
-        }
-      } catch {
-        // ignore — onclose handler will reconnect
-      }
-      // refetchType='all' refetches active + inactive queries.
       queryClient.invalidateQueries({ refetchType: 'all' });
+      sendPingRef.current?.();
     };
-    document.addEventListener('visibilitychange', onVisible);
+    document.addEventListener('visibilitychange', onVisibilityChange);
 
     return () => {
-      document.removeEventListener('visibilitychange', onVisible);
+      clearTimeout(initTimer);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
       }

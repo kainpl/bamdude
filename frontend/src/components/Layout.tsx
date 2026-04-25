@@ -74,10 +74,10 @@ export function setDefaultView(path: string) {
   localStorage.setItem('defaultView', path);
 }
 
-// External links surfaced in the sidebar footer + on the logo.  Placeholders
-// for now — swap with the real landing / Telegram group / docs URLs once
-// they're public.
-const TELEGRAM_SUPPORT_URL = 'http://localhost:8080/telegram';
+// External links surfaced in the sidebar footer + on the logo. Landing /
+// docs URLs are still placeholders — swap once the public endpoints exist.
+const TELEGRAM_SUPPORT_URL = 'https://t.me/+3KQl2uNtOwo3NTgy';
+const TELEGRAM_SUPPORT_NAME = 'BamDude Friends Forum';
 const DOCS_URL = 'http://localhost:8080/docs';
 const LANDING_URL = 'http://localhost:8080/';
 
@@ -807,7 +807,7 @@ export function Layout() {
                   target="_blank"
                   rel="noopener noreferrer"
                   className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white"
-                  title={t('nav.telegramSupport')}
+                  title={`${t('nav.telegramSupport')} - ${TELEGRAM_SUPPORT_NAME}`}
                 >
                   <TelegramIcon className="w-5 h-5" />
                 </a>
@@ -897,7 +897,7 @@ export function Layout() {
                 target="_blank"
                 rel="noopener noreferrer"
                 className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white"
-                title={t('nav.telegramSupport')}
+                title={`${t('nav.telegramSupport')} - ${TELEGRAM_SUPPORT_NAME}`}
               >
                 <TelegramIcon className="w-5 h-5" />
               </a>

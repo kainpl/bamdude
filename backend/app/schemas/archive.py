@@ -103,6 +103,9 @@ class ArchiveResponse(BaseModel):
 
     # Swap mode
     swap_compatible: bool = False
+    # True iff the archive's 3MF has 2+ plates (extracted at archive_print()
+    # / m023 backfill). Frontend uses this to gate gallery rendering.
+    is_multi_plate: bool = False
 
     # Queue attribution (m019). For archives dispatched from a queue item or
     # batch, these tie the archive back to its origin row. External /
@@ -122,11 +125,18 @@ class ArchiveResponse(BaseModel):
 
     @model_validator(mode="after")
     def compute_object_count(self) -> "ArchiveResponse":
-        """Compute object_count from extra_data.printable_objects if not set."""
+        """Compute object_count + is_multi_plate from extra_data when not set.
+
+        Both fields live in ``extra_data`` JSON (populated at archive_print
+        / m023 backfill); these defaults make the API response usable
+        without forcing every reader to dig into the JSON itself.
+        """
         if self.object_count is None and self.extra_data:
             printable_objects = self.extra_data.get("printable_objects")
             if printable_objects and isinstance(printable_objects, dict):
                 self.object_count = len(printable_objects)
+        if not self.is_multi_plate and self.extra_data:
+            self.is_multi_plate = bool(self.extra_data.get("is_multi_plate"))
         return self
 
     class Config:

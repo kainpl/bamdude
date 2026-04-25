@@ -155,6 +155,10 @@ class FileResponse(BaseModel):
     object_count: int | None = None
     sliced_for_model: str | None = None
     swap_compatible: bool = False
+    # True iff the file has 2+ plates (extracted at upload / m023). Frontend
+    # uses this to gate gallery rendering — saves an N-card-page worth of
+    # /plates fetches when most files are single-plate.
+    is_multi_plate: bool = False
 
     class Config:
         from_attributes = True
@@ -184,6 +188,7 @@ class FileListResponse(BaseModel):
     object_count: int | None = None
     sliced_for_model: str | None = None
     swap_compatible: bool = False
+    is_multi_plate: bool = False
     # Number of notes attached (gh#3) - drives the card icon variant
     # (MessageSquarePlus when 0, MessageSquare when >0).
     notes_count: int = 0

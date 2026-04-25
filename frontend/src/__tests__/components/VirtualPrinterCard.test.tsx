@@ -40,7 +40,7 @@ const createMockPrinter = (overrides: Partial<VirtualPrinterConfig> = {}): Virtu
   id: 1,
   name: 'Test VP',
   enabled: false,
-  mode: 'immediate',
+  mode: 'file_manager',
   model: 'BL-P001',
   model_name: 'X1C',
   access_code_set: false,
@@ -70,7 +70,7 @@ describe('VirtualPrinterCard - auto-dispatch toggle', () => {
   });
 
   it('does not render auto-dispatch toggle when mode is immediate', async () => {
-    const printer = createMockPrinter({ mode: 'immediate' });
+    const printer = createMockPrinter({ mode: 'file_manager' });
     render(<VirtualPrinterCard printer={printer} models={models} />);
 
     // Wait for the card to render fully (check for something that should be there)

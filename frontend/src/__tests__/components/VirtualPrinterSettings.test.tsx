@@ -44,14 +44,14 @@ import { virtualPrinterApi } from '../../api/client';
 const createMockSettings = (overrides = {}) => ({
   enabled: false,
   access_code_set: false,
-  mode: 'immediate' as const,
+  mode: 'file_manager' as const,
   model: 'BL-P001',
   target_printer_id: null as number | null,
   remote_interface_ip: null as string | null,
   status: {
     enabled: false,
     running: false,
-    mode: 'immediate',
+    mode: 'file_manager',
     name: 'BamDude',
     serial: '00M00A391800001',
     model: 'BL-P001',
@@ -157,7 +157,7 @@ describe('VirtualPrinterSettings', () => {
           status: {
             enabled: true,
             running: true,
-            mode: 'immediate',
+            mode: 'file_manager',
             name: 'BamDude',
             serial: '00M00A391800001',
             model: 'BL-P001',
@@ -304,7 +304,7 @@ describe('VirtualPrinterSettings', () => {
       // Legacy values (immediate / review / queue with non-current-shape)
       // map to file_manager in the BamDude component (component:58-61).
       vi.mocked(virtualPrinterApi.getSettings).mockResolvedValue(
-        createMockSettings({ mode: 'immediate' })
+        createMockSettings({ mode: 'file_manager' })
       );
 
       render(<VirtualPrinterSettings />);
@@ -574,7 +574,7 @@ describe('VirtualPrinterSettings', () => {
   describe('network interface override', () => {
     it('shows interface dropdown when enabled in immediate mode', async () => {
       vi.mocked(virtualPrinterApi.getSettings).mockResolvedValue(
-        createMockSettings({ enabled: true, mode: 'immediate' })
+        createMockSettings({ enabled: true, mode: 'file_manager' })
       );
 
       render(<VirtualPrinterSettings />);
@@ -586,7 +586,7 @@ describe('VirtualPrinterSettings', () => {
 
     it('shows interface dropdown when enabled in review mode', async () => {
       vi.mocked(virtualPrinterApi.getSettings).mockResolvedValue(
-        createMockSettings({ enabled: true, mode: 'review' })
+        createMockSettings({ enabled: true, mode: 'file_manager' })
       );
 
       render(<VirtualPrinterSettings />);
@@ -622,7 +622,7 @@ describe('VirtualPrinterSettings', () => {
 
     it('hides interface dropdown when disabled', async () => {
       vi.mocked(virtualPrinterApi.getSettings).mockResolvedValue(
-        createMockSettings({ enabled: false, mode: 'immediate' })
+        createMockSettings({ enabled: false, mode: 'file_manager' })
       );
 
       render(<VirtualPrinterSettings />);
@@ -636,7 +636,7 @@ describe('VirtualPrinterSettings', () => {
 
     it('shows configured status when interface is set', async () => {
       vi.mocked(virtualPrinterApi.getSettings).mockResolvedValue(
-        createMockSettings({ enabled: true, mode: 'immediate', remote_interface_ip: '10.0.0.50' })
+        createMockSettings({ enabled: true, mode: 'file_manager', remote_interface_ip: '10.0.0.50' })
       );
 
       render(<VirtualPrinterSettings />);
@@ -648,7 +648,7 @@ describe('VirtualPrinterSettings', () => {
 
     it('shows optional hint when no interface is set', async () => {
       vi.mocked(virtualPrinterApi.getSettings).mockResolvedValue(
-        createMockSettings({ enabled: true, mode: 'immediate', remote_interface_ip: '' })
+        createMockSettings({ enabled: true, mode: 'file_manager', remote_interface_ip: '' })
       );
 
       render(<VirtualPrinterSettings />);

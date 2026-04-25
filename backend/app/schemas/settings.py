@@ -144,8 +144,8 @@ class AppSettings(BaseModel):
     virtual_printer_enabled: bool = Field(default=False, description="Enable virtual printer for slicer uploads")
     virtual_printer_access_code: str = Field(default="", description="Access code for virtual printer authentication")
     virtual_printer_mode: str = Field(
-        default="immediate",
-        description="Mode: 'immediate' (archive now), 'review' (pending review), or 'print_queue' (add to print queue)",
+        default="file_manager",
+        description="Mode: 'print_queue' (archive + add to print queue), 'file_manager' (save to library), or 'proxy' (transparent forward to a real printer)",
     )
 
     # Dark mode theme settings

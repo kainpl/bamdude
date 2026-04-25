@@ -5441,6 +5441,10 @@ export interface LibraryFileListItem {
   object_count: number | null;
   sliced_for_model: string | null;
   swap_compatible: boolean;
+  // True iff the 3MF carries 2+ plates (extracted at upload / m023 backfill).
+  // Used to gate gallery rendering — single-plate files skip the per-card
+  // gallery fetch entirely.
+  is_multi_plate?: boolean;
   notes_count: number;
 }
 
@@ -5592,7 +5596,9 @@ export const discoveryApi = {
 };
 
 // Virtual Printer types
-export type VirtualPrinterMode = 'immediate' | 'queue' | 'review' | 'print_queue' | 'file_manager' | 'proxy';  // 'queue' is legacy, normalized to 'review'
+// Three supported modes after the m002 migration purged the legacy
+// ``immediate`` / ``review`` / ``queue`` values.
+export type VirtualPrinterMode = 'print_queue' | 'file_manager' | 'proxy';
 
 export interface VirtualPrinterProxyStatus {
   running: boolean;
@@ -5661,7 +5667,7 @@ export const virtualPrinterApi = {
   updateSettings: (data: {
     enabled?: boolean;
     access_code?: string;
-    mode?: 'immediate' | 'review' | 'print_queue' | 'file_manager' | 'proxy';
+    mode?: VirtualPrinterMode;
     model?: string;
     target_printer_id?: number;
     remote_interface_ip?: string;

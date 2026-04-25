@@ -51,13 +51,13 @@ class TestVirtualPrinterSettingsAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_update_mode(self, async_client: AsyncClient):
-        """Verify mode can be updated."""
-        response = await async_client.put("/api/v1/settings/virtual-printer?mode=review")
+    async def test_update_mode_to_file_manager(self, async_client: AsyncClient):
+        """Verify mode can be set to file_manager (the default)."""
+        response = await async_client.put("/api/v1/settings/virtual-printer?mode=file_manager")
 
         assert response.status_code == 200
         result = response.json()
-        assert result["mode"] == "review"
+        assert result["mode"] == "file_manager"
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -71,23 +71,15 @@ class TestVirtualPrinterSettingsAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_update_mode_legacy_queue_maps_to_review(self, async_client: AsyncClient):
-        """Verify legacy 'queue' mode is normalized to 'review'."""
-        response = await async_client.put("/api/v1/settings/virtual-printer?mode=queue")
+    async def test_update_mode_legacy_rejected(self, async_client: AsyncClient):
+        """Verify legacy 'immediate'/'review'/'queue' modes are rejected.
 
-        assert response.status_code == 200
-        result = response.json()
-        assert result["mode"] == "review"  # Legacy queue maps to review
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_update_mode_to_immediate(self, async_client: AsyncClient):
-        """Verify mode can be set to immediate."""
-        response = await async_client.put("/api/v1/settings/virtual-printer?mode=immediate")
-
-        assert response.status_code == 200
-        result = response.json()
-        assert result["mode"] == "immediate"
+        m002 already migrated existing rows away from those values; the
+        API now refuses to accept them on writes too.
+        """
+        for legacy in ("immediate", "review", "queue"):
+            response = await async_client.put(f"/api/v1/settings/virtual-printer?mode={legacy}")
+            assert response.status_code == 400, f"expected 400 for legacy mode={legacy}, got {response.status_code}"
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -136,7 +128,7 @@ class TestVirtualPrinterSettingsAPI:
                 return_value={
                     "enabled": True,
                     "running": True,
-                    "mode": "immediate",
+                    "mode": "file_manager",
                     "name": "Bambuddy",
                     "serial": "00M09A391800001",
                     "pending_files": 0,
@@ -157,7 +149,7 @@ class TestVirtualPrinterSettingsAPI:
                 return_value={
                     "enabled": False,
                     "running": False,
-                    "mode": "immediate",
+                    "mode": "file_manager",
                     "name": "Bambuddy",
                     "serial": "00M09A391800001",
                     "pending_files": 0,

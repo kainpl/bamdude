@@ -7,7 +7,6 @@ bound to its dedicated IP address, regardless of mode.
 import asyncio
 import logging
 from collections.abc import Callable
-from datetime import datetime, timezone
 from pathlib import Path
 
 from backend.app.core.config import settings as app_settings
@@ -197,14 +196,19 @@ class VirtualPrinterInstance:
 
         self._pending_files[file_path.name] = file_path
 
-        if self.mode == "immediate":
-            await self._archive_file(file_path, source_ip)
-        elif self.mode == "print_queue":
+        # Three supported modes (m002 already migrated legacy ``immediate``
+        # / ``review`` rows to ``file_manager``, and ``queue`` to
+        # ``print_queue``):
+        #   * print_queue  — archive + push to a printer queue.
+        #   * file_manager — save to library for review.
+        #   * proxy        — bypasses this handler (the TCP proxy passes
+        #                    bytes straight through to the real printer).
+        # Anything unexpected falls back to file_manager rather than
+        # silently dropping the file.
+        if self.mode == "print_queue":
             await self._add_to_print_queue(file_path, source_ip)
-        elif self.mode == "file_manager":
-            await self._save_to_library(file_path, source_ip)
         else:
-            await self._queue_file(file_path, source_ip)
+            await self._save_to_library(file_path, source_ip)
 
         # Reset MQTT status back to IDLE
         if self._mqtt and file_path.suffix.lower() == ".3mf":
@@ -213,80 +217,6 @@ class VirtualPrinterInstance:
     async def on_print_command(self, filename: str, data: dict) -> None:
         """Handle print command from MQTT."""
         logger.info("[VP %s] Print command for: %s", self.name, filename)
-
-    async def _archive_file(self, file_path: Path, source_ip: str) -> None:
-        """Archive file immediately."""
-        if not self._session_factory:
-            logger.error("Cannot archive: no database session factory configured")
-            return
-
-        if file_path.suffix.lower() != ".3mf":
-            logger.debug("Skipping non-3MF file: %s", file_path.name)
-            self._pending_files.pop(file_path.name, None)
-            try:
-                file_path.unlink()
-            except OSError:
-                pass
-            return
-
-        try:
-            from backend.app.services.archive import ArchiveService
-
-            async with self._session_factory() as db:
-                service = ArchiveService(db)
-                archive = await service.archive_print(
-                    printer_id=None,
-                    source_file=file_path,
-                    print_data={
-                        "status": "archived",
-                        "source": "virtual_printer",
-                        "source_ip": source_ip,
-                    },
-                )
-                if archive:
-                    logger.info("[VP %s] Archived: %s - %s", self.name, archive.id, archive.print_name)
-                    try:
-                        file_path.unlink()
-                    except OSError:
-                        pass
-                    self._pending_files.pop(file_path.name, None)
-                else:
-                    logger.error("Failed to archive file: %s", file_path.name)
-        except Exception as e:
-            logger.error("Error archiving file: %s", e)
-
-    async def _queue_file(self, file_path: Path, source_ip: str) -> None:
-        """Queue file for user review."""
-        if not self._session_factory:
-            logger.error("Cannot queue: no database session factory configured")
-            return
-
-        if file_path.suffix.lower() != ".3mf":
-            self._pending_files.pop(file_path.name, None)
-            try:
-                file_path.unlink()
-            except OSError:
-                pass
-            return
-
-        try:
-            from backend.app.models.pending_upload import PendingUpload
-
-            async with self._session_factory() as db:
-                pending = PendingUpload(
-                    filename=file_path.name,
-                    file_path=str(file_path),
-                    file_size=file_path.stat().st_size,
-                    source_ip=source_ip,
-                    status="pending",
-                    uploaded_at=datetime.now(timezone.utc),
-                )
-                db.add(pending)
-                await db.commit()
-                logger.info("[VP %s] Queued: %s - %s", self.name, pending.id, file_path.name)
-                self._pending_files.pop(file_path.name, None)
-        except Exception as e:
-            logger.error("Error queueing file: %s", e)
 
     async def _save_to_library(self, file_path: Path, source_ip: str) -> None:
         """Save file directly to the File Manager library."""
@@ -366,6 +296,23 @@ class VirtualPrinterInstance:
                         return obj
 
                     metadata = clean_metadata(raw_metadata)
+
+                    # Per-plate cache (matches the regular library upload path
+                    # in routes/library.py::upload_file). Without this, VP-saved
+                    # library entries miss the gallery on the file-manager UI
+                    # because ``is_multi_plate`` is unset.
+                    try:
+                        import zipfile as _zf
+
+                        from backend.app.services.archive import parse_plates_from_3mf
+
+                        with _zf.ZipFile(str(dest_path), "r") as _zfh:
+                            plates_payload = parse_plates_from_3mf(_zfh)
+                        if plates_payload and metadata is not None:
+                            metadata["plates"] = plates_payload
+                            metadata["is_multi_plate"] = len(plates_payload) > 1
+                    except Exception as _pe:
+                        logger.debug("[VP %s] per-plate parse failed (non-critical): %s", self.name, _pe)
                 except Exception as e:
                     logger.warning("[VP %s] Failed to parse 3MF metadata: %s", self.name, e)
 
@@ -978,7 +925,7 @@ class VirtualPrinterManager:
         return {
             "enabled": False,
             "running": False,
-            "mode": "immediate",
+            "mode": "file_manager",
             "name": "Bambuddy",
             "serial": "",
             "model": DEFAULT_VIRTUAL_PRINTER_MODEL,
@@ -990,7 +937,7 @@ class VirtualPrinterManager:
         self,
         enabled: bool,
         access_code: str = "",
-        mode: str = "immediate",
+        mode: str = "file_manager",
         model: str = "",
         target_printer_ip: str = "",
         target_printer_serial: str = "",

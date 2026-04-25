@@ -578,6 +578,345 @@ def extract_printable_objects_from_3mf(
     return printable_objects
 
 
+def parse_plates_from_3mf(zf: zipfile.ZipFile) -> list[dict]:
+    """Build the full per-plate metadata list for one 3MF.
+
+    Returns a list of dicts ready for the ``/library/files/{id}/plates`` /
+    ``/archives/{id}/plates`` response shape AND for caching in
+    ``library_files.file_metadata['plates']`` /
+    ``print_archives.extra_data['plates']``. The caller adds
+    ``thumbnail_url`` (it depends on whether we're serving a library file
+    or an archive) — everything else is computed here.
+
+    Per-plate fields:
+        ``index``, ``name``, ``objects`` (list of names),
+        ``object_count``, ``has_thumbnail``,
+        ``print_time_seconds``, ``filament_used_grams``,
+        ``filaments`` (list of {slot_id, type, color, used_grams, used_meters}),
+        ``printable_objects`` (dict[identify_id, name]),
+        ``bbox_all`` (or None),
+        ``gcode_label_objects`` (file-global, copied per-plate),
+        ``exclude_object`` (file-global, copied per-plate).
+
+    Returns ``[]`` when the 3MF has no recognisable plate metadata
+    (corrupt / source-only without slicing).
+    """
+    namelist = zf.namelist()
+
+    # Plate index discovery: prefer the gcode files (sliced 3MF), fall
+    # back to the JSON / PNG metadata when the file is source-only.
+    gcode_files = [n for n in namelist if n.startswith("Metadata/plate_") and n.endswith(".gcode")]
+    plate_indices: list[int] = []
+    if gcode_files:
+        for gf in gcode_files:
+            try:
+                plate_indices.append(int(gf[15:-6]))  # strip "Metadata/plate_" + ".gcode"
+            except ValueError:
+                pass
+    else:
+        plate_re = re.compile(r"^Metadata/plate_(\d+)\.(json|png)$")
+        seen: set[int] = set()
+        for name in namelist:
+            match = plate_re.match(name)
+            if not match:
+                continue
+            # Skip the size-suffixed thumbnails ("plate_1_small.png" etc.).
+            if "_small" in name or "no_light" in name:
+                continue
+            try:
+                idx = int(match.group(1))
+            except ValueError:
+                continue
+            if idx in seen:
+                continue
+            seen.add(idx)
+            plate_indices.append(idx)
+
+    if not plate_indices:
+        return []
+
+    plate_indices.sort()
+
+    # model_settings.config: per-plate custom name + per-plate object id list.
+    plate_names: dict[int, str] = {}
+    plate_object_ids: dict[int, list[str]] = {}
+    object_names_by_id: dict[str, str] = {}
+    if "Metadata/model_settings.config" in namelist:
+        try:
+            model_content = zf.read("Metadata/model_settings.config").decode()
+            model_root = ET.fromstring(model_content)
+            for obj_elem in model_root.findall(".//object"):
+                obj_id = obj_elem.get("id")
+                if not obj_id:
+                    continue
+                name_meta = obj_elem.find("metadata[@key='name']")
+                obj_name = name_meta.get("value") if name_meta is not None else None
+                if obj_name:
+                    object_names_by_id[obj_id] = obj_name
+            for plate_elem in model_root.findall(".//plate"):
+                plater_id: int | None = None
+                plater_name: str | None = None
+                for meta in plate_elem.findall("metadata"):
+                    key = meta.get("key")
+                    value = meta.get("value")
+                    if key == "plater_id" and value:
+                        try:
+                            plater_id = int(value)
+                        except ValueError:
+                            pass
+                    elif key == "plater_name" and value:
+                        plater_name = value.strip()
+                if plater_id is not None and plater_name:
+                    plate_names[plater_id] = plater_name
+                if plater_id is not None:
+                    for instance_elem in plate_elem.findall("model_instance"):
+                        for inst_meta in instance_elem.findall("metadata"):
+                            if inst_meta.get("key") == "object_id":
+                                obj_id = inst_meta.get("value")
+                                if not obj_id:
+                                    continue
+                                plate_object_ids.setdefault(plater_id, [])
+                                if obj_id not in plate_object_ids[plater_id]:
+                                    plate_object_ids[plater_id].append(obj_id)
+        except Exception:  # noqa: BLE001 — model_settings is optional, best-effort
+            pass
+
+    # slice_info.config: per-plate prediction (time), weight, filaments, objects.
+    plate_metadata: dict[int, dict] = {}
+    if "Metadata/slice_info.config" in namelist:
+        try:
+            content = zf.read("Metadata/slice_info.config").decode()
+            root = ET.fromstring(content)
+            for plate_elem in root.findall(".//plate"):
+                plate_info: dict = {
+                    "filaments": [],
+                    "prediction": None,
+                    "weight": None,
+                    "name": None,
+                    "objects": [],
+                }
+                plate_index: int | None = None
+                for meta in plate_elem.findall("metadata"):
+                    key = meta.get("key")
+                    value = meta.get("value")
+                    if key == "index" and value:
+                        try:
+                            plate_index = int(value)
+                        except ValueError:
+                            pass
+                    elif key == "prediction" and value:
+                        try:
+                            plate_info["prediction"] = int(value)
+                        except ValueError:
+                            pass
+                    elif key == "weight" and value:
+                        try:
+                            plate_info["weight"] = float(value)
+                        except ValueError:
+                            pass
+                for filament_elem in plate_elem.findall("filament"):
+                    filament_id = filament_elem.get("id")
+                    filament_type = filament_elem.get("type", "")
+                    filament_color = filament_elem.get("color", "")
+                    used_g = filament_elem.get("used_g", "0")
+                    used_m = filament_elem.get("used_m", "0")
+                    try:
+                        used_grams = float(used_g)
+                    except (ValueError, TypeError):
+                        used_grams = 0
+                    if used_grams > 0 and filament_id:
+                        plate_info["filaments"].append(
+                            {
+                                "slot_id": int(filament_id),
+                                "type": filament_type,
+                                "color": filament_color,
+                                "used_grams": round(used_grams, 1),
+                                "used_meters": float(used_m) if used_m else 0,
+                            }
+                        )
+                plate_info["filaments"].sort(key=lambda x: x["slot_id"])
+                for obj_elem in plate_elem.findall("object"):
+                    obj_name = obj_elem.get("name")
+                    if obj_name and obj_name not in plate_info["objects"]:
+                        plate_info["objects"].append(obj_name)
+                if plate_index is not None:
+                    custom_name = plate_names.get(plate_index)
+                    if custom_name:
+                        plate_info["name"] = custom_name
+                    elif plate_info["objects"]:
+                        plate_info["name"] = plate_info["objects"][0]
+                    plate_metadata[plate_index] = plate_info
+        except (OSError, ET.ParseError):
+            pass
+
+    # plate_*.json: object names fallback when slice_info is missing/empty.
+    plate_json_objects: dict[int, list[str]] = {}
+    for name in namelist:
+        match = re.match(r"^Metadata/plate_(\d+)\.json$", name)
+        if not match:
+            continue
+        try:
+            idx = int(match.group(1))
+        except ValueError:
+            continue
+        try:
+            payload = json.loads(zf.read(name).decode())
+            bbox_objects = payload.get("bbox_objects", [])
+            obj_names: list[str] = []
+            for obj in bbox_objects:
+                obj_name = obj.get("name") if isinstance(obj, dict) else None
+                if obj_name and obj_name not in obj_names:
+                    obj_names.append(obj_name)
+            if obj_names:
+                plate_json_objects[idx] = obj_names
+        except Exception:  # noqa: BLE001 — fallback parse, best-effort
+            continue
+
+    # Skip-objects + label-object metadata in one zip-pass.
+    skip_meta = parse_per_plate_skip_metadata(zf, plate_indices)
+    global_glo = skip_meta["gcode_label_objects"]
+    global_eo = skip_meta["exclude_object"]
+
+    plates: list[dict] = []
+    for idx in plate_indices:
+        meta = plate_metadata.get(idx, {})
+        has_thumbnail = f"Metadata/plate_{idx}.png" in namelist
+        objects = meta.get("objects", [])
+        if not objects:
+            objects = plate_json_objects.get(idx, [])
+        if not objects and plate_object_ids.get(idx):
+            objects = [object_names_by_id.get(obj_id, f"Object {obj_id}") for obj_id in plate_object_ids.get(idx, [])]
+        plate_name = meta.get("name")
+        if not plate_name:
+            plate_name = plate_names.get(idx)
+        if not plate_name and objects:
+            plate_name = objects[0]
+        skip_plate = skip_meta["plates"].get(idx, {})
+        printable_objects = skip_plate.get("printable_objects", {})
+        # ``object_count`` reflects the count of physical INSTANCES on the
+        # plate, not unique names. For multi-instance arrays (the same STL
+        # cloned N times) the ``objects`` list is name-deduplicated and
+        # collapses to one entry — using it as the count would lie. The
+        # ``printable_objects`` dict is keyed by ``identify_id`` (the same
+        # id space the firmware addresses via M623), so each clone gets
+        # its own row and ``len(...)`` is the truthful instance count.
+        # Fallback to ``len(objects)`` only for source-only / unsliced
+        # 3MFs that have no identify_id metadata at all.
+        if printable_objects:
+            object_count = len(printable_objects)
+        else:
+            object_count = len(objects)
+        plates.append(
+            {
+                "index": idx,
+                "name": plate_name,
+                "objects": objects,
+                "object_count": object_count,
+                "has_thumbnail": has_thumbnail,
+                "print_time_seconds": meta.get("prediction"),
+                "filament_used_grams": meta.get("weight"),
+                "filaments": meta.get("filaments", []),
+                "printable_objects": printable_objects,
+                "bbox_all": skip_plate.get("bbox_all"),
+                "gcode_label_objects": global_glo,
+                "exclude_object": global_eo,
+            }
+        )
+    return plates
+
+
+def parse_per_plate_skip_metadata(zf: zipfile.ZipFile, plate_indices: list[int]) -> dict:
+    """Extract skip-objects + label-object metadata for *every* plate in a 3MF.
+
+    Used by the ``/library/files/{id}/plates`` and ``/archives/{id}/plates``
+    endpoints to enrich the gallery payload — each plate gets its full
+    ``printable_objects`` map (id → name), its ``bbox_all`` for UI overlays,
+    and the file-global ``gcode_label_objects`` + ``exclude_object`` flags
+    copied per plate (they live in ``project_settings.config`` and apply to
+    the whole 3MF, but copying makes the per-plate UI logic simpler — no
+    cross-referencing required).
+
+    Single-pass over the ZIP: opens slice_info.config + project_settings.config
+    + plate_N.json once each, never re-decodes per plate.
+
+    Returns:
+        ``{
+            "plates": {plate_idx: {"printable_objects": dict[int,str],
+                                    "bbox_all": list | None}},
+            "gcode_label_objects": bool,
+            "exclude_object": bool | None,
+        }``
+    """
+    namelist = zf.namelist()
+    out: dict = {"plates": {}, "gcode_label_objects": True, "exclude_object": None}
+
+    # Global flags from project_settings.config (apply to whole 3MF).
+    if "Metadata/project_settings.config" in namelist:
+        try:
+            content = zf.read("Metadata/project_settings.config").decode("utf-8", errors="replace")
+            data = json.loads(content)
+            glo = _coerce_bool(data.get("gcode_label_objects"))
+            out["gcode_label_objects"] = True if glo is None else glo
+            if "exclude_object" in data:
+                eo = _coerce_bool(data["exclude_object"])
+                if eo is not None:
+                    out["exclude_object"] = eo
+        except (json.JSONDecodeError, OSError, KeyError):
+            pass  # Defaults already applied; missing/corrupt config is non-fatal.
+
+    # Per-plate ``printable_objects`` (id → name) from slice_info.config.
+    if "Metadata/slice_info.config" in namelist:
+        try:
+            content = zf.read("Metadata/slice_info.config").decode()
+            root = ET.fromstring(content)
+            for plate_elem in root.findall(".//plate"):
+                # Resolve plate's own index — slice_info <plate><metadata key="index">.
+                idx: int | None = None
+                for meta in plate_elem.findall("metadata"):
+                    if meta.get("key") == "index":
+                        try:
+                            idx = int(meta.get("value", ""))
+                        except ValueError:
+                            pass  # Plate without a usable index — skip below.
+                        break
+                if idx is None:
+                    continue
+                printable: dict[int, str] = {}
+                for obj in plate_elem.findall("object"):
+                    identify_id = obj.get("identify_id")
+                    name = obj.get("name")
+                    skipped = obj.get("skipped", "false")
+                    if identify_id and name and skipped.lower() != "true":
+                        try:
+                            printable[int(identify_id)] = name
+                        except ValueError:
+                            pass  # Non-numeric identify_id — frontend can't M623 it anyway.
+                out["plates"].setdefault(idx, {})["printable_objects"] = printable
+        except (OSError, ET.ParseError):
+            pass
+
+    # Per-plate ``bbox_all`` from plate_N.json.
+    for idx in plate_indices:
+        plate_json_path = f"Metadata/plate_{idx}.json"
+        if plate_json_path not in namelist:
+            continue
+        try:
+            payload = json.loads(zf.read(plate_json_path).decode())
+            bbox_all = payload.get("bbox_all")
+            if bbox_all is not None:
+                out["plates"].setdefault(idx, {})["bbox_all"] = bbox_all
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # Defensive defaults so callers don't need to .get() each field.
+    for idx in plate_indices:
+        plate_dict = out["plates"].setdefault(idx, {})
+        plate_dict.setdefault("printable_objects", {})
+        plate_dict.setdefault("bbox_all", None)
+
+    return out
+
+
 def remove_swap_pending_event(archive: PrintArchive, event: str) -> bool:
     """Drop *event* from ``archive.extra_data['swap_macro_events_pending']``.
 
@@ -1183,6 +1522,17 @@ class ArchiveService:
         parser = ThreeMFParser(dest_file, plate_number=plate_number)
         metadata = parser.parse()
 
+        # Per-plate cache so the gallery / list endpoint doesn't reopen the
+        # ZIP every time. Same idea as the library upload route.
+        try:
+            with zipfile.ZipFile(dest_file, "r") as _zfh:
+                plates_payload = parse_plates_from_3mf(_zfh)
+            if plates_payload:
+                metadata["plates"] = plates_payload
+                metadata["is_multi_plate"] = len(plates_payload) > 1
+        except Exception as _pe:
+            logger.debug("archive_print: per-plate parse failed (non-critical): %s", _pe)
+
         # Save thumbnail if present (reuse existing if file was deduped)
         thumbnail_path = thumbnail_reuse
         if "_thumbnail_data" in metadata:
@@ -1340,6 +1690,16 @@ class ArchiveService:
             # Parse 3MF metadata (reuse the same parser as archive_print).
             parser = ThreeMFParser(dest_file)
             metadata = parser.parse()
+
+            # Per-plate cache populated alongside the rest of the metadata.
+            try:
+                with zipfile.ZipFile(dest_file, "r") as _zfh:
+                    plates_payload = parse_plates_from_3mf(_zfh)
+                if plates_payload:
+                    metadata["plates"] = plates_payload
+                    metadata["is_multi_plate"] = len(plates_payload) > 1
+            except Exception as _pe:
+                logger.debug("attach_3mf_to_archive: per-plate parse failed (non-critical): %s", _pe)
 
             thumbnail_path = None
             if "_thumbnail_data" in metadata:

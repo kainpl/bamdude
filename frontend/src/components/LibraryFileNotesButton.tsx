@@ -34,7 +34,7 @@ export function LibraryFileNotesButton({ fileId, initialCount, variant = 'inline
     : t('libraryNotes.addFirstNote');
 
   const buttonClass = variant === 'overlay'
-    ? 'rounded-md bg-bambu-dark/80 backdrop-blur text-white hover:bg-bambu-dark transition-colors flex items-center'
+    ? 'rounded-md bg-bambu-dark/80 backdrop-blur text-bambu-gray hover:text-bambu-green hover:bg-bambu-dark transition-colors flex items-center'
     : 'p-1.5 rounded transition-colors text-bambu-gray hover:text-bambu-green hover:bg-bambu-dark flex items-center';
 
   const iconClass = variant === 'overlay' ? 'w-5 h-5' : 'w-4 h-4';

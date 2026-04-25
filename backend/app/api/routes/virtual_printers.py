@@ -19,7 +19,7 @@ router = APIRouter(prefix="/virtual-printers", tags=["virtual-printers"])
 class VirtualPrinterCreate(BaseModel):
     name: str = "Bambuddy"
     enabled: bool = False
-    mode: str = "immediate"
+    mode: str = "file_manager"
     model: str | None = None
     access_code: str | None = None
     target_printer_id: int | None = None
@@ -119,7 +119,7 @@ async def create_virtual_printer(
     from backend.app.services.virtual_printer.manager import DEFAULT_VIRTUAL_PRINTER_MODEL
 
     # Validate mode
-    if body.mode not in ("immediate", "review", "print_queue", "file_manager", "proxy"):
+    if body.mode not in ("print_queue", "file_manager", "proxy"):
         return JSONResponse(status_code=400, content={"detail": "Invalid mode"})
 
     # Validate model
@@ -267,7 +267,7 @@ async def update_virtual_printer(
     if body.name is not None:
         vp.name = body.name
     if body.mode is not None:
-        if body.mode not in ("immediate", "review", "print_queue", "file_manager", "proxy"):
+        if body.mode not in ("print_queue", "file_manager", "proxy"):
             return JSONResponse(status_code=400, content={"detail": "Invalid mode"})
         vp.mode = body.mode
     if body.model is not None:
