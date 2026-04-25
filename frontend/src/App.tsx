@@ -29,6 +29,8 @@ import { ThemeProvider } from './contexts/ThemeContext';
 import { ToastProvider } from './contexts/ToastContext';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { ColorCatalogProvider } from './contexts/ColorCatalogContext';
+import { ConnectionProvider } from './contexts/ConnectionContext';
+import { useConnectionToast } from './hooks/useConnectionToast';
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -40,6 +42,7 @@ const queryClient = new QueryClient({
 
 function WebSocketProvider({ children }: { children: React.ReactNode }) {
   useWebSocket();
+  useConnectionToast();
   return <>{children}</>;
 }
 
@@ -200,6 +203,7 @@ function App() {
       <ToastProvider>
         <QueryClientProvider client={queryClient}>
           <AuthProvider>
+            <ConnectionProvider>
             <ColorCatalogProvider>
             <StreamTokenSync />
             <BrowserRouter>
@@ -240,6 +244,7 @@ function App() {
               </Routes>
             </BrowserRouter>
             </ColorCatalogProvider>
+            </ConnectionProvider>
           </AuthProvider>
         </QueryClientProvider>
       </ToastProvider>

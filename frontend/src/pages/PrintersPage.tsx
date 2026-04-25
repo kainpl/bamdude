@@ -1869,8 +1869,11 @@ function PrinterCard({
   });
 
   // Query for printable objects (for skip functionality)
-  // Fetch when printing with 2+ objects OR when modal is open
-  const isPrintingWithObjects = (status?.state === 'RUNNING' || status?.state === 'PAUSE') && (status?.printable_objects_count ?? 0) >= 2;
+  // Fetch when printing with 2+ objects, slicer-side exclude support, OR when modal is open
+  const isPrintingWithObjects =
+    (status?.state === 'RUNNING' || status?.state === 'PAUSE')
+    && (status?.printable_objects_count ?? 0) >= 2
+    && (status?.skip_objects_supported ?? false);
   const { data: objectsData } = useQuery({
     queryKey: ['printableObjects', printer.id],
     queryFn: () => api.getPrintableObjects(printer.id),
@@ -2732,9 +2735,9 @@ function PrinterCard({
                   {/* Skip Objects button - top right corner, always visible */}
                   <button
                     onClick={() => setShowSkipObjectsModal(true)}
-                    disabled={!(status.state === 'RUNNING' || status.state === 'PAUSE') || (status.printable_objects_count ?? 0) < 2 || !hasPermission('printers:control')}
+                    disabled={!(status.state === 'RUNNING' || status.state === 'PAUSE') || (status.printable_objects_count ?? 0) < 2 || !(status.skip_objects_supported ?? false) || !hasPermission('printers:control')}
                     className={`absolute top-2 right-2 p-1.5 rounded transition-colors z-10 ${
-                      (status.state === 'RUNNING' || status.state === 'PAUSE') && (status.printable_objects_count ?? 0) >= 2 && hasPermission('printers:control')
+                      (status.state === 'RUNNING' || status.state === 'PAUSE') && (status.printable_objects_count ?? 0) >= 2 && (status.skip_objects_supported ?? false) && hasPermission('printers:control')
                         ? 'text-bambu-gray hover:text-white hover:bg-white/10'
                         : 'text-bambu-gray/30 cursor-not-allowed'
                     }`}

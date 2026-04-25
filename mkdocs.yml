@@ -161,6 +161,7 @@ nav:
     - Docker: getting-started/docker.md
     - Upgrading: getting-started/upgrading.md
     - First Printer Setup: getting-started/first-printer.md
+    - Reverse Proxy & HTTPS: getting-started/reverse-proxy.md
 
   - Features:
     - features/index.md

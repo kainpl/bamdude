@@ -1,9 +1,9 @@
 ---
-title: Встановлення Docker
+title: Інсталяція Docker
 description: Розгорніть BamDude за допомогою Docker однією командою
 ---
 
-# Встановлення Docker
+# Інсталяція Docker
 
 Docker -- найпростіший спосіб запустити BamDude. Одна команда -- і готово.
 
@@ -57,11 +57,20 @@ volumes:
 ### Змінні середовища
 
 | Змінна | За замовчуванням | Опис |
-|--------|-----------------|------|
+|--------|------------------|------|
 | `TZ` | `UTC` | Ваш часовий пояс (наприклад, `America/New_York`) |
 | `PORT` | `8000` | Порт, на якому працює BamDude |
 | `DEBUG` | `false` | Увімкнення логування налагодження |
 | `LOG_LEVEL` | `INFO` | Рівень логування: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+| `LOG_TO_FILE` | `true` | Запис логів у `/app/logs/bamdude.log` |
+| `DATABASE_URL` | не задано (SQLite) | URL PostgreSQL, наприклад `postgresql+asyncpg://user:pass@host:5432/bamdude` |
+| `TRUSTED_PROXY_IPS` | порожньо | Розділені комою IP реверс-проксі, що довіряються для `X-Forwarded-For` (встановлюйте, коли BamDude стоїть за nginx / Caddy / Traefik) |
+| `AUTH_REFRESH_COOKIE_SECURE` | не задано (auto) | Примусово встановити прапорець `Secure` для refresh-cookie. За замовчуванням -- автовизначення зі схеми запиту. |
+| `MFA_ENCRYPTION_KEY` | не задано | URL-safe base64 Fernet-ключ для at-rest шифрування TOTP / OIDC секретів. |
+| `APP_URL` | `http://localhost:5173` | Публічний URL BamDude (використовується в WebAuthn RP-ID + посиланнях сповіщень). |
+| `JWT_SECRET_KEY` | автогенерація, зберігається | Не змінюйте на запущеній інсталяції -- це анулює всі видані токени. |
+
+Повний перелік, включно з опціональними інтеграціями, див. у [Інсталяція > Змінні середовища](installation.uk.md#змінні-середовища).
 
 ---
 
@@ -152,7 +161,7 @@ docker compose logs bamdude
 docker compose exec bamdude ping YOUR_PRINTER_IP
 ```
 
-Якщо використовуєте bridge мережевий режим, спробуйте `network_mode: host`.
+Якщо використовуєте bridge-режим мережі, спробуйте `network_mode: host`.
 
 ---
 
@@ -164,8 +173,8 @@ docker compose exec bamdude ping YOUR_PRINTER_IP
 
 [:material-arrow-up-circle: **Оновлення**<br><small>Міграція з Bambuddy</small>](upgrading.uk.md)
 
-[:material-help-circle: **Вирішення проблем**<br><small>Виникли проблеми?</small>](../reference/troubleshooting.md)
+[:material-help-circle: **Вирішення проблем**<br><small>Виникли проблеми?</small>](../reference/troubleshooting.uk.md)
 
 </div>
 
-> Базується на документації [Bambuddy](https://github.com/maziggy/bambuddy).
+> Початково базується на документації [Bambuddy](https://github.com/maziggy/bambuddy).

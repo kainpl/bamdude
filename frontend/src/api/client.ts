@@ -399,6 +399,10 @@ export interface PrinterStatus {
   last_ams_update: number;
   // Number of printable objects in current print (for skip objects feature)
   printable_objects_count: number;
+  // Whether the active 3MF supports per-object skipping (slicer's
+  // gcode_label_objects AND exclude_object both true in project settings).
+  // Skip-objects button is gated on this AND printable_objects_count >= 2.
+  skip_objects_supported: boolean;
   // Fan speeds (0-100 percentage, null if not available for this model)
   cooling_fan_speed: number | null;  // Part cooling fan
   big_fan1_speed: number | null;     // Auxiliary fan
@@ -1013,6 +1017,8 @@ export interface APIKeyUpdate {
 export interface AppSettings {
   save_thumbnails: boolean;
   capture_finish_photo: boolean;
+  archive_3mf_retention_enabled: boolean;
+  archive_3mf_retention_days: number;
   default_filament_cost: number;
   currency: string;
   energy_cost_per_kwh: number;
@@ -3225,6 +3231,43 @@ export const api = {
     return request<PaginatedArchiveResponse>(`/archives/?${qs}`);
   },
   getArchiveFilterOptions: () => request<ArchiveFilterOptions>('/archives/filter-options'),
+  getArchiveCleanupStatus: () => request<{
+    enabled: boolean;
+    days: number;
+    last_run: {
+      started_at: string;
+      finished_at: string | null;
+      groups_scanned: number;
+      groups_skipped_active_print: number;
+      groups_skipped_queue: number;
+      groups_skipped_library: number;
+      groups_cleared: number;
+      archives_cleared: number;
+      bytes_freed: number;
+      errors: string[];
+    } | null;
+    next_run_at: string | null;
+  }>('/archives/cleanup/status'),
+  getArchiveCleanupPreview: () => request<{
+    enabled: boolean;
+    days: number;
+    cutoff?: string;
+    groups: number;
+    archives: number;
+    bytes: number;
+  }>('/archives/cleanup/preview'),
+  runArchiveCleanup: () => request<{
+    started_at: string;
+    finished_at: string | null;
+    groups_scanned: number;
+    groups_skipped_active_print: number;
+    groups_skipped_queue: number;
+    groups_skipped_library: number;
+    groups_cleared: number;
+    archives_cleared: number;
+    bytes_freed: number;
+    errors: string[];
+  }>('/archives/cleanup/run', { method: 'POST' }),
   getArchivesSlim: (dateFrom?: string, dateTo?: string) => {
     const params = new URLSearchParams();
     if (dateFrom) params.set('date_from', dateFrom);

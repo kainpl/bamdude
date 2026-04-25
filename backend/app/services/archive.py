@@ -291,6 +291,22 @@ class ThreeMFParser:
 
     def _extract_print_settings(self, data: dict):
         """Extract print settings from JSON config."""
+        # gcode_label_objects: Orca writes this; Bambu Studio doesn't (it
+        # emits label_object markers unconditionally) — so a missing field
+        # means "Bambu, label_object on by default" → True. Coerce because
+        # slicers store these as ``["1"]``, ``"1"``, bool, or int depending
+        # on version.
+        glo_raw = data.get("gcode_label_objects")
+        glo = _coerce_bool(glo_raw)
+        self.metadata["gcode_label_objects"] = True if glo is None else glo
+
+        # exclude_object: present in both slicers — emit only when
+        # interpretable, no fallback (per design: "значення без фаллбека").
+        if "exclude_object" in data:
+            eo = _coerce_bool(data["exclude_object"])
+            if eo is not None:
+                self.metadata["exclude_object"] = eo
+
         try:
             # Layer height - usually an array, get first value
             if "layer_height" in data:
@@ -432,6 +448,33 @@ class ThreeMFParser:
                 break
 
 
+def _coerce_bool(value) -> bool | None:
+    """Best-effort bool coercion for slicer config values.
+
+    Bambu Studio + Orca store config values inconsistently: lists with one
+    string element (``["1"]``), bare strings (``"1"`` / ``"true"``),
+    booleans, or ints — sometimes mixing across versions of the same
+    slicer. Returns None when the value is uninterpretable; callers
+    decide whether to fall back to a default.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        s = value.strip().lower()
+        if s in {"1", "true", "yes", "on"}:
+            return True
+        if s in {"0", "false", "no", "off"}:
+            return False
+        return None
+    if isinstance(value, list) and value:
+        return _coerce_bool(value[0])
+    return None
+
+
 def extract_printable_objects_from_3mf(
     data: bytes, plate_number: int | None = None, include_positions: bool = False
 ) -> dict[int, str] | dict[int, dict] | tuple[dict[int, dict], list | None]:
@@ -533,6 +576,115 @@ def extract_printable_objects_from_3mf(
     if include_positions:
         return printable_objects, bbox_all
     return printable_objects
+
+
+def remove_swap_pending_event(archive: PrintArchive, event: str) -> bool:
+    """Drop *event* from ``archive.extra_data['swap_macro_events_pending']``.
+
+    Used by dispatch right after firing ``swap_mode_start`` and by
+    ``on_print_complete`` right after firing ``swap_mode_change_table``
+    so the pending list is a real checklist of what's left to do — not a
+    static record of what was originally planned. The caller is responsible
+    for committing the session.
+
+    If removing *event* leaves the list empty, the key is dropped
+    entirely so a future on_print_complete sees a clean ``extra_data``.
+
+    Returns True iff *event* was present (i.e. caller has dirty state to
+    commit). Returns False if the event was already absent (idempotent
+    no-op — second call can't double-fire).
+    """
+    if not isinstance(archive.extra_data, dict):
+        return False
+    pending = archive.extra_data.get("swap_macro_events_pending")
+    if not isinstance(pending, list) or event not in pending:
+        return False
+    remaining = [e for e in pending if e != event]
+    merged = dict(archive.extra_data)
+    if remaining:
+        merged["swap_macro_events_pending"] = remaining
+    else:
+        merged.pop("swap_macro_events_pending", None)
+    archive.extra_data = merged
+    return True
+
+
+def load_objects_from_archive_into_state(archive: PrintArchive, printer_id: int) -> bool:
+    """Parse the archive's stored 3MF and push printable_objects into MQTT state.
+
+    Used by ``main.on_print_start`` and the on-demand
+    ``ArchiveDownloadRetryService`` so the skip-objects modal sees objects
+    even on prints that started from the printer (where BamDude's initial
+    FTP fetch may have failed and only succeeded on a later retry).
+
+    State is reset unconditionally as soon as the function is called for a
+    given archive — we're declaring "this is the current print on
+    *printer_id*". Stale ``printable_objects`` from the prior print would
+    otherwise misreport the count and let the frontend show the skip
+    dialog with object IDs that don't exist in the new gcode (the firmware
+    would reject the resulting ``M623`` with "Invalid object IDs"). If the
+    parser yields nothing (Orca with ``support_skip_objects`` disabled, a
+    corrupt 3MF, or a non-3MF archive), the state stays empty — the
+    skip-objects button stays hidden, which is the truthful UI for "we
+    don't know the object list for this print".
+
+    Returns True iff non-empty objects were loaded.
+    """
+    # Local import — printer_manager pulls in archive_download_retry which
+    # in turn would close a load-time cycle if we imported at module top.
+    from backend.app.services.printer_manager import printer_manager
+
+    client = printer_manager.get_client(printer_id)
+    if client is not None:
+        client.state.printable_objects = {}
+        client.state.printable_objects_bbox_all = None
+        client.state.skipped_objects = []
+        client.state.skip_objects_supported = False
+
+    try:
+        if not archive.file_path:
+            return False
+        file_path = settings.base_dir / archive.file_path
+        if not file_path.is_file() or not str(file_path).endswith(".3mf"):
+            return False
+        with open(file_path, "rb") as f:
+            threemf_data = f.read()
+        result = extract_printable_objects_from_3mf(threemf_data, include_positions=True)
+        # Function returns either dict or (dict, bbox_all) depending on flag —
+        # we always pass include_positions=True so unpack accordingly.
+        printable_objects, bbox_all = (
+            result if isinstance(result, tuple) else (result, None)  # type: ignore[misc]
+        )
+        if not printable_objects:
+            return False
+        if client is None:
+            return False
+        client.state.printable_objects = printable_objects
+        client.state.printable_objects_bbox_all = bbox_all
+
+        # skip_objects_supported gate: requires BOTH flags true in
+        # archive.extra_data. Strict — None / missing → False (hide
+        # the button). For Bambu Studio files the parser defaults
+        # gcode_label_objects to True at extraction time; exclude_object
+        # is only stored when interpretable. Old archives without the
+        # m022 backfill will fail this gate cleanly (button hidden, no
+        # firmware-reject surprises on click).
+        meta = archive.extra_data if isinstance(archive.extra_data, dict) else {}
+        glo = meta.get("gcode_label_objects")
+        eo = meta.get("exclude_object")
+        client.state.skip_objects_supported = bool(glo) and bool(eo)
+
+        logger.info(
+            "Loaded %s printable objects for printer %s from archive %s (skip_objects_supported=%s)",
+            len(printable_objects),
+            printer_id,
+            archive.id,
+            client.state.skip_objects_supported,
+        )
+        return True
+    except Exception as e:
+        logger.debug("Failed to extract printable objects from archive %s: %s", archive.id, e)
+        return False
 
 
 class ProjectPageParser:
@@ -885,6 +1037,7 @@ class ArchiveService:
         applied_patches: list[str] | None = None,
         subtask_id: str | None = None,
         library_file_id: int | None = None,
+        swap_macro_events_pending: list[str] | None = None,
     ) -> PrintArchive | None:
         """Archive a 3MF file with metadata.
 
@@ -1043,6 +1196,18 @@ class ArchiveService:
         # Merge with print data from MQTT
         if print_data:
             metadata["_print_data"] = print_data
+
+        # Persist swap-macro intent in the same INSERT as the rest of
+        # metadata. ``on_print_complete`` reads this when its in-memory
+        # ``_active_swap_config`` is empty (post-restart recovery) and
+        # clears the key after firing the macro to keep idempotency.
+        # Only meaningful when ``swap_mode_change_table`` is in the list
+        # (the only event ``on_print_complete`` consults). Pre-stamping
+        # at archive creation avoids a separate post-start_print UPDATE
+        # that races the runtime-tracker write loop on SQLite's single
+        # writer and times out under busy_timeout.
+        if swap_macro_events_pending and "swap_mode_change_table" in swap_macro_events_pending:
+            metadata["swap_macro_events_pending"] = list(swap_macro_events_pending)
 
         # Determine status and timestamps
         status = print_data.get("status", "completed") if print_data else "archived"

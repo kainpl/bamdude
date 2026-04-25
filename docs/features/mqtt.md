@@ -7,6 +7,15 @@ description: Publish events to external MQTT brokers
 
 BamDude can publish events to an external MQTT broker, enabling integration with **Home Assistant**, **Node-RED**, and other MQTT-based systems.
 
+!!! info "Three different MQTT roles"
+    BamDude touches MQTT in three independent places:
+
+    1. **MQTT relay (this page)** -- BamDude *publishes* its own state to your external broker so HA / Node-RED can subscribe.
+    2. **Printer-side MQTT** -- BamDude *connects to each printer's* internal MQTT broker (Bambu's protocol) to receive `push_status` and send commands. Configured per-printer when you add the printer; invisible to operators after that.
+    3. **Smart-plug MQTT subscriber** -- a separate code path subscribes BamDude *to your broker* to receive smart-plug telemetry (Tasmota / Zigbee2MQTT / Sonoff). Configured per-plug under **Settings > Smart Plugs**.
+
+    This page only covers the relay (#1).
+
 ---
 
 ## :material-cog: Configuration
@@ -20,7 +29,7 @@ Navigate to **Settings > Network > MQTT Publishing**.
 | **Port** | Broker port | 1883 (8883 with TLS) |
 | **Username** | Authentication (optional) | -- |
 | **Password** | Authentication (optional) | -- |
-| **Topic Prefix** | Prefix for all topics | `bamdude` |
+| **Topic Prefix** | Prefix for all topics | `bambuddy` (legacy default — change to `bamdude` if starting fresh) |
 | **Use TLS** | Enable TLS/SSL encryption | Off |
 
 ---

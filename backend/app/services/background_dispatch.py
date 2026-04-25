@@ -413,21 +413,17 @@ class BackgroundDispatchService:
                 payload: dict[str, Any] | None = None
                 job_to_start: PrintDispatchJob | None = None
                 async with self._lock:
-                    busy_printer_ids = {state.job.printer_id for state in self._active_jobs.values()}
-                    start_index = next(
-                        (
-                            idx
-                            for idx, queued_job in enumerate(self._queued_jobs)
-                            if queued_job.printer_id not in busy_printer_ids
-                        ),
-                        None,
-                    )
-
-                    if start_index is None:
+                    # Full serialization: only one dispatch in flight across
+                    # all printers. Parallel dispatches contended on the
+                    # SQLite write lock during ``INSERT INTO print_archives``
+                    # and triggered "database is locked" mid-FTP. A short
+                    # queued wait between farm jobs is the tradeoff.
+                    if self._active_jobs:
+                        break
+                    if not self._queued_jobs:
                         break
 
-                    job_to_start = self._queued_jobs[start_index]
-                    del self._queued_jobs[start_index]
+                    job_to_start = self._queued_jobs.popleft()
                     self._active_jobs[job_to_start.id] = ActiveDispatchState(
                         job=job_to_start,
                         message="Preparing background dispatch...",
@@ -472,6 +468,14 @@ class BackgroundDispatchService:
             if not active:
                 return
             active.message = message
+            # New phase → previous upload progress is no longer relevant.
+            # Without this the toast keeps rendering a 100% progress bar
+            # during post-upload phases (swap macros, "Starting print…")
+            # because ``_set_active_upload_progress(job, 1, 1)`` runs
+            # right after upload finishes and nothing ever clears it.
+            # The next upload (if any) will repopulate via the same setter.
+            active.upload_bytes = None
+            active.upload_total_bytes = None
             payload = self._build_state_payload_unlocked(
                 recent_event={
                     "status": "processing",
@@ -640,6 +644,22 @@ class BackgroundDispatchService:
             archive = await service.get_archive(job.source_id)
             if not archive:
                 raise RuntimeError("Archive not found")
+
+            # Pre-stamp swap_macro_events_pending while we have a writable
+            # session and BEFORE FTP upload / start_print / runtime-tracker
+            # writes start competing for SQLite's single writer. Reprint
+            # reuses the existing archive row, so this is the only chance
+            # to persist the intent without a standalone UPDATE that
+            # would race the runtime-tracker. Library-file dispatch
+            # handles this via archive_print()'s INSERT instead.
+            opts = job.options if isinstance(job.options, dict) else {}
+            if opts.get("execute_swap_macros"):
+                _events = opts.get("swap_macro_events") or []
+                if "swap_mode_change_table" in _events:
+                    _merged = dict(archive.extra_data or {})
+                    _merged["swap_macro_events_pending"] = list(_events)
+                    archive.extra_data = _merged
+                    await db.commit()
 
             printer = await db.scalar(select(Printer).where(Printer.id == job.printer_id))
             if not printer:
@@ -835,6 +855,16 @@ class BackgroundDispatchService:
                     job, printer, "swap_mode_start", f"Running swap start macro on {printer_name}..."
                 )
 
+                # Tick swap_mode_start off the pending checklist now that
+                # it actually fired. Keeps extra_data["swap_macro_events_pending"]
+                # honest as a "what's still to do" list (variant 2 — proper
+                # checklist). Safe to write here: macro completed, start_print
+                # hasn't fired yet → runtime-tracker isn't producing writes.
+                from backend.app.services.archive import remove_swap_pending_event
+
+                if archive and remove_swap_pending_event(archive, "swap_mode_start"):
+                    await db.commit()
+
                 await self._set_active_message(job, f"Starting print on {printer_name}...")
                 started = printer_manager.start_print(
                     job.printer_id,
@@ -861,10 +891,18 @@ class BackgroundDispatchService:
                 if pre_state:
                     asyncio.create_task(self._verify_print_response(job.printer_id, printer_name, pre_state))
 
-                # Register swap config for on_print_complete to pick up.
+                # Register in-memory swap config for on_print_complete's fast
+                # path. Persistence to archive.extra_data (restart recovery)
+                # is handled where the archive row is created / loaded — see
+                # archive_print's swap_macro_events_pending parameter for the
+                # library-file path, and the explicit pre-stamp block below
+                # the archive lookup for the reprint path.
                 from backend.app.main import register_swap_config
 
-                register_swap_config(job.printer_id, job.options if isinstance(job.options, dict) else {})
+                register_swap_config(
+                    job.printer_id,
+                    job.options if isinstance(job.options, dict) else {},
+                )
 
                 # Register stagger slot so subsequent queue-driven
                 # dispatches respect the grid-load cap.  Uses system-wide
@@ -1011,6 +1049,17 @@ class BackgroundDispatchService:
                 # "archived" label during the FTP/MQTT window (#876 follow-up).
                 # Error paths below flip it to "failed" before the txn commits.
                 print_data={"status": "printing"},
+                # Persist swap intent in the same INSERT (post-start_print
+                # UPDATE raced the runtime-tracker on SQLite's single
+                # writer and timed out). The marker is only meaningful for
+                # ``on_print_complete``'s restart-recovery branch — fast
+                # path still uses ``_active_swap_config`` set by
+                # ``register_swap_config`` after start_print.
+                swap_macro_events_pending=(
+                    job.options.get("swap_macro_events")
+                    if isinstance(job.options, dict) and job.options.get("execute_swap_macros")
+                    else None
+                ),
             )
             if not archive:
                 raise RuntimeError("Failed to create archive")
@@ -1197,6 +1246,16 @@ class BackgroundDispatchService:
                     job, printer, "swap_mode_start", f"Running swap start macro on {printer_name}..."
                 )
 
+                # Tick swap_mode_start off the pending checklist now that
+                # it actually fired. Keeps extra_data["swap_macro_events_pending"]
+                # honest as a "what's still to do" list (variant 2 — proper
+                # checklist). Safe to write here: macro completed, start_print
+                # hasn't fired yet → runtime-tracker isn't producing writes.
+                from backend.app.services.archive import remove_swap_pending_event
+
+                if archive and remove_swap_pending_event(archive, "swap_mode_start"):
+                    await db.commit()
+
                 await self._set_active_message(job, f"Starting print on {printer_name}...")
                 started = printer_manager.start_print(
                     job.printer_id,
@@ -1220,10 +1279,18 @@ class BackgroundDispatchService:
                     await db.rollback()
                     raise RuntimeError("Failed to start print")
 
-                # Register swap config for on_print_complete to pick up.
+                # Register in-memory swap config for on_print_complete's fast
+                # path. Persistence to archive.extra_data (restart recovery)
+                # is handled where the archive row is created / loaded — see
+                # archive_print's swap_macro_events_pending parameter for the
+                # library-file path, and the explicit pre-stamp block below
+                # the archive lookup for the reprint path.
                 from backend.app.main import register_swap_config
 
-                register_swap_config(job.printer_id, job.options if isinstance(job.options, dict) else {})
+                register_swap_config(
+                    job.printer_id,
+                    job.options if isinstance(job.options, dict) else {},
+                )
 
                 # Register stagger slot so subsequent queue-driven
                 # dispatches respect the grid-load cap.  Uses system-wide

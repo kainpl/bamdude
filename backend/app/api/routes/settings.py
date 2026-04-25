@@ -80,6 +80,7 @@ async def get_settings(
             if setting.key in [
                 "save_thumbnails",
                 "capture_finish_photo",
+                "archive_3mf_retention_enabled",
                 "spoolman_enabled",
                 "spoolman_disable_weight_sync",
                 "spoolman_report_partial_usage",
@@ -119,6 +120,7 @@ async def get_settings(
                 "ams_humidity_good",
                 "ams_humidity_fair",
                 "ams_history_retention_days",
+                "archive_3mf_retention_days",
                 "ftp_retry_count",
                 "ftp_retry_delay",
                 "ftp_timeout",

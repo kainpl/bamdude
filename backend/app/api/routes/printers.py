@@ -631,6 +631,7 @@ async def get_printer_status(
         mc_print_sub_stage=state.mc_print_sub_stage,
         last_ams_update=state.last_ams_update,
         printable_objects_count=len(state.printable_objects),
+        skip_objects_supported=state.skip_objects_supported,
         cooling_fan_speed=state.cooling_fan_speed,
         big_fan1_speed=state.big_fan1_speed,
         big_fan2_speed=state.big_fan2_speed,

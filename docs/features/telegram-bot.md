@@ -53,6 +53,9 @@ The Telegram bot provides:
 !!! info "Bot Token Source"
     The bot token is read from the first enabled Telegram notification provider in the database.
 
+!!! info "Per-message permission checks"
+    Every command and inline-button press passes through `auth_middleware` before the handler runs. The middleware looks up the chat in `telegram_chats`, resolves its assigned group, and rejects the action unless the group holds the matching `resource:action` permission (e.g. `printers:control`, `archives:read`). Unauthorized chats see "У вас немає прав" / "You don't have permission" instead of executing the action.
+
 ---
 
 ## :material-message-text: Commands
@@ -109,9 +112,12 @@ The flow uses aiogram's FSM (Finite State Machine) for multi-step interactions.
 Add a new printer directly from Telegram:
 
 1. Enter the printer's IP address
-2. BamDude auto-detects the printer model
-3. Enter the access code
+2. Enter the access code (8-digit code from the printer's network settings)
+3. BamDude connects, auto-detects the printer model + serial, and adds it to the database
 4. Confirm to add
+
+!!! note "No mDNS auto-discovery"
+    Telegram's add-printer scene asks for the IP + access code explicitly -- there is no automatic LAN discovery from inside the bot. Find the IP on the printer's screen (Settings > Network) before starting the flow.
 
 ---
 

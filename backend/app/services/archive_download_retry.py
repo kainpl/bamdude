@@ -171,6 +171,21 @@ class ArchiveDownloadRetryService:
             async with async_session() as db2:
                 service = ArchiveService(db2)
                 ok = await service.attach_3mf_to_archive(archive_id, temp_path, downloaded_filename)
+                if ok:
+                    # Re-fetch with the freshly-attached file_path + push
+                    # printable_objects into MQTT state. This is the missing
+                    # bridge that lets the skip-objects modal work for prints
+                    # started directly from the printer (chicken-and-egg —
+                    # the modal's gate condition needs printable_objects_count
+                    # > 0, but until this hook runs, that count stays 0 and
+                    # the frontend never asks for objects).
+                    refreshed = (
+                        await db2.execute(select(PrintArchive).where(PrintArchive.id == archive_id))
+                    ).scalar_one_or_none()
+                    if refreshed is not None and archive.printer_id is not None:
+                        from backend.app.services.archive import load_objects_from_archive_into_state
+
+                        load_objects_from_archive_into_state(refreshed, archive.printer_id)
             if ok:
                 logger.info("Archive retry: recovered 3MF for archive %s", archive_id)
                 await ws_manager.send_archive_updated({"id": archive_id, "recovered_3mf": True})

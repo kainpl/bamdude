@@ -61,6 +61,12 @@ When using Telegram as a notification provider, BamDude sends actionable notific
 
 See [Telegram Bot Setup](telegram-bot.md) for full configuration.
 
+!!! tip "Per-chat event routing"
+    Telegram notifications are not routed to a single hard-coded chat -- they are fanned out to every authorized chat whose `telegram_chats.notification_events` setting includes the firing event. So one chat can subscribe to "Print Complete" + "HMS Error" only, while another chat takes everything. Configure each chat's subscriptions under **Settings > Notifications > Telegram Chats**.
+
+!!! tip "Localized templates per user"
+    Notification bodies are rendered from `notification_templates_{en,uk}.json`. The template language is picked per-recipient -- Telegram uses the chat's owning user's `settings.language`, email uses the recipient user's language, etc. Adding a new template key means updating *both* `en` and `uk` JSON files (BamDude ships en + uk only).
+
 ---
 
 ## :material-clock: Quiet Hours & Digest

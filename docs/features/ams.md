@@ -33,9 +33,23 @@ Manually configure slots for third-party filaments:
 4. Select a matching K profile
 5. Optionally set a custom color
 
+!!! tip "AMS-HT preset stickiness fixed (#1053)"
+    Earlier builds keyed AMS-HT slot presets at `ams_id * 4 + tray_id = 512`, but the frontend looks them up by `ams_id` directly for HT (single-slot units share their global tray id with the unit id). The slot fell through to the generic preset (`Generic PLA`) on every poll even after a custom preset was saved — so operators had to re-select it after every spool change. Backend now keys via the same helper the frontend uses, and the saved preset stays put.
+
 ### Multi-AMS Support
 
 Up to 4 AMS units per printer (16 total slots). External spool holders supported for printers without AMS.
+
+### Assign Spool from Inventory
+
+The AMS slot menu's **Assign Spool** option pairs a physical inventory row (from [Filaments](spoolman.md)) with the slot. The picker now includes:
+
+- **RFID-detected spools** — Bambu Lab tags read on the slot.
+- **Manually-added inventory rows without RFID** — refills, third-party brands, untagged spools (#1047). Earlier builds required exact `slicer_filament_name` equality and hid every spool that didn't carry a slicer profile name; the picker now also accepts partial-material match (a `PLA` spool shows up for a `PLA Basic` slot, and vice versa).
+- **External slots (`amsId 254/255`)** — those have no RFID reader so the picker shows the full inventory.
+
+!!! tip "Filter by slicer filament name"
+    When a 3MF is loaded on the printer, the picker can be filtered by the slicer's expected filament profile (extracted from the active 3MF). Narrows the list to spools that match the print's required material — drops the chance of accidentally assigning a wrong spool. Toggle off the filter to see the full list, with a one-line warning when material doesn't match.
 
 ---
 
@@ -67,15 +81,14 @@ Control AMS drying directly from BamDude for AMS 2 Pro and AMS-HT units.
 
 Automatically dry filament between scheduled prints when humidity exceeds the threshold.
 
-- Enable in **Settings** > **AMS Display Thresholds** > **Queue Auto-Drying**
-- Non-blocking (default): prints take priority
-- Blocking: queue waits for drying to finish
+- Enable in **Settings** > **AMS Display Thresholds** > **Queue Auto-Drying** (`queue_drying_enabled`).
+- **Non-blocking** (default, `queue_drying_block=false`) — drying runs in the background; prints in the queue take priority.
+- **Blocking** (`queue_drying_block=true`) — the queue stalls until drying completes. Use this when you really want a dry spool before the next print starts and don't mind the wait.
+- Per-filament temperature + duration come from the configurable presets (Settings → Print Queue), not hard-coded defaults — AMS 2 Pro and AMS-HT have separate columns since they reach different temperatures.
 
 ### Ambient Drying
 
-Automatically dry filament on any idle printer, regardless of scheduled prints.
-
-- Enable in **Settings** > **Print Queue** > **Ambient Drying**
+A separate path that doesn't depend on the queue. Enable under **Settings** > **Print Queue** > **Ambient Drying** (`ambient_drying_enabled`). On any idle printer where humidity is above the threshold, BamDude starts drying without setting a target temperature — useful as a 24/7 humidity-keeper for an idle farm.
 
 ---
 

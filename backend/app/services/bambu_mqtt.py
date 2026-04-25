@@ -168,6 +168,13 @@ class PrinterState:
     printable_objects: dict = field(default_factory=dict)
     # Objects that have been skipped during the current print
     skipped_objects: list = field(default_factory=list)
+    # Whether the active print's source 3MF supports per-object skipping.
+    # Computed from archive.extra_data: requires both ``gcode_label_objects``
+    # AND ``exclude_object`` to be True. Used to gate the skip-objects
+    # button in the UI — even with N>=2 objects in the metadata, the firmware
+    # can only skip them when the gcode carries label_object markers AND
+    # the slicer profile enables exclude_object.
+    skip_objects_supported: bool = False
     # Fan speeds (0-100 percentage, None if not available for this model)
     cooling_fan_speed: int | None = None  # Part cooling fan
     big_fan1_speed: int | None = None  # Auxiliary fan
@@ -3280,10 +3287,16 @@ class BambuMQTTClient:
 
         self._sequence_id += 1
 
+        # Match Bambu Studio's payload exactly — they ship BOTH the explicit
+        # named bool AND a legacy ``option`` bitmask field (0/1) on the same
+        # command. Some firmware revisions reject the command when only one
+        # of the two is present, so include both. See
+        # ``DevPrintOptions.cpp::command_set_printing_option``.
         command = {
             "print": {
                 "command": "print_option",
                 "sequence_id": str(self._sequence_id),
+                "option": int(enabled),
                 option_name: enabled,
             }
         }

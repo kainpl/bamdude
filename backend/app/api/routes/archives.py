@@ -525,6 +525,78 @@ async def search_archives(
     return [archive_to_response(a) for a in paginated]
 
 
+@router.get("/cleanup/status")
+async def archive_cleanup_status(
+    _: User | None = RequirePermission(Permission.ARCHIVES_READ),
+):
+    """Status of the daily 3MF auto-cleanup loop.
+
+    Returns: enabled flag, retention window, last run summary, next
+    scheduled run time. Drives the "Archive cleanup" panel on the
+    settings page so the operator can see the loop is alive without
+    digging in logs.
+    """
+    from backend.app.core.database import async_session as _ses
+    from backend.app.services.archive_cleanup_service import archive_cleanup_service
+
+    async with _ses() as db:
+        enabled_raw = (
+            await __import__("backend.app.api.routes.settings", fromlist=["get_setting"]).get_setting(
+                db, "archive_3mf_retention_enabled"
+            )
+            or "false"
+        ).lower()
+        days_raw = (
+            await __import__("backend.app.api.routes.settings", fromlist=["get_setting"]).get_setting(
+                db, "archive_3mf_retention_days"
+            )
+            or "30"
+        )
+    try:
+        days = max(1, int(days_raw))
+    except (TypeError, ValueError):
+        days = 30
+    last = archive_cleanup_service.last_result
+    next_at = archive_cleanup_service.next_run_at
+    return {
+        "enabled": enabled_raw == "true",
+        "days": days,
+        "last_run": last.as_dict() if last else None,
+        "next_run_at": next_at.isoformat() if next_at else None,
+    }
+
+
+@router.get("/cleanup/preview")
+async def archive_cleanup_preview(
+    _: User | None = RequirePermission(Permission.ARCHIVES_READ),
+):
+    """Dry-run: how many archives would lose their 3MF right now?
+
+    Reads the same settings + skip rules as the live sweep but does not
+    touch disk or DB. Used by the settings UI to render "X archives,
+    Y MB to free" before the operator hits "Run now".
+    """
+    from backend.app.services.archive_cleanup_service import archive_cleanup_service
+
+    return await archive_cleanup_service.preview()
+
+
+@router.post("/cleanup/run")
+async def archive_cleanup_run(
+    _: User | None = RequirePermission(Permission.ARCHIVES_DELETE_ALL),
+):
+    """Trigger an immediate cleanup sweep, bypassing the daily cron.
+
+    Returns the run summary (same shape as ``last_run`` in
+    ``/cleanup/status``). Honours the same enable + retention settings
+    as the cron path — disabled feature returns an empty no-op result.
+    """
+    from backend.app.services.archive_cleanup_service import archive_cleanup_service
+
+    result = await archive_cleanup_service.run_now()
+    return result.as_dict()
+
+
 @router.post("/search/rebuild-index")
 async def rebuild_search_index(
     db: AsyncSession = Depends(get_db),

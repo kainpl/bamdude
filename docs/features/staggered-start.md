@@ -54,6 +54,19 @@ Configure default stagger values in **Settings > Queue > Staggered Start**. Thes
 
 ---
 
+## :material-shield-check: Dispatch is always serialized
+
+Even with stagger disabled, BamDude's dispatch loop processes one job at a time across the whole farm. This is a 0.4.1 reliability change -- back-to-back dispatches to two different printers used to race on `INSERT INTO print_archives` and SQLite's single-writer semantics could fail the second job mid-FTP with `database is locked`. Now jobs run strictly one-at-a-time.
+
+What this means in practice:
+
+- **Without stagger**, the second printer waits a few seconds (until the first job's FTP upload + start command finish) before its own FTP upload starts. Not a bug -- a deliberate trade-off for archive integrity.
+- **Stagger is still useful** for spreading the *running-print* heat load -- bed currents drawn while the prints are physically running, not the FTP/MQTT-startup moment that serialization already handles. A 6-printer batch with stagger off still has all 6 beds heating within a few seconds of each other once each FTP completes.
+
+Use stagger when peak power draw during heating is the constraint; ignore stagger if your circuit can handle simultaneous bed heating and you only care about avoiding the SQLite race (already handled).
+
+---
+
 ## :material-monitor-dashboard: Bed Temperature Monitoring
 
 BamDude monitors bed temperatures across all printers. Combined with staggered start, this helps:

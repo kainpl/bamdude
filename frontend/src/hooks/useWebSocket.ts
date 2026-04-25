@@ -1,6 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useToast } from '../contexts/ToastContext';
+import { useConnection } from '../contexts/ConnectionContext';
 import { useTranslation } from 'react-i18next';
 
 interface WebSocketMessage {
@@ -15,7 +16,15 @@ export function useWebSocket() {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<number | null>(null);
   const queryClient = useQueryClient();
-  const [isConnected, setIsConnected] = useState(false);
+  const [isConnected, setIsConnectedLocal] = useState(false);
+  const { setIsConnected: setIsConnectedShared } = useConnection();
+  // Single setter that updates both the local hook state (used by callers
+  // who consume `useWebSocket` directly) and the shared ConnectionContext
+  // (used by indicators / banners across the tree).
+  const setIsConnected = useCallback((connected: boolean) => {
+    setIsConnectedLocal(connected);
+    setIsConnectedShared(connected);
+  }, [setIsConnectedShared]);
   const lastMissingSpoolWarningRef = useRef<Map<number, string>>(new Map());
   const { showToast } = useToast();
   const { t } = useTranslation();
@@ -75,14 +84,42 @@ export function useWebSocket() {
     const ws = new WebSocket(wsUrl);
 
     let pingInterval: number | null = null;
+    // Pong-timeout watchdog: every ping starts a 10 s timer that's cleared
+    // when the next pong arrives. If the timer expires, the socket is
+    // considered silently dead (common when a backgrounded tab gets
+    // throttled or when the OS suspends the connection without notifying
+    // us via onclose) and we close → triggers the standard reconnect.
+    let pongTimeout: number | null = null;
+
+    const armPongTimeout = () => {
+      if (pongTimeout) clearTimeout(pongTimeout);
+      pongTimeout = window.setTimeout(() => {
+        if (import.meta.env.MODE !== 'test') {
+          console.warn('[WebSocket] No pong within 10s — closing dead socket');
+        }
+        try {
+          ws.close();
+        } catch {
+          // Already closed; onclose handler will reconnect.
+        }
+      }, 10000);
+    };
+
+    const clearPongTimeout = () => {
+      if (pongTimeout) {
+        clearTimeout(pongTimeout);
+        pongTimeout = null;
+      }
+    };
 
     ws.onopen = () => {
       if (import.meta.env.MODE !== 'test') console.log('[WebSocket] Connected');
       setIsConnected(true);
-      // Start ping interval
+      // Start ping interval — server replies with type='pong'.
       pingInterval = window.setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: 'ping' }));
+          armPongTimeout();
         }
       }, 30000);
     };
@@ -90,6 +127,12 @@ export function useWebSocket() {
     ws.onmessage = (event) => {
       try {
         const message: WebSocketMessage = JSON.parse(event.data);
+        // Pong from the server clears the watchdog. Don't queue or render —
+        // it's keepalive plumbing, not user-visible state.
+        if (message.type === 'pong') {
+          clearPongTimeout();
+          return;
+        }
         // Handle printer_status directly (already throttled) to avoid queue delays
         // This prevents the "timelapse" effect where status updates are applied slowly
         if (message.type === 'printer_status' && message.printer_id !== undefined && message.data) {
@@ -110,6 +153,7 @@ export function useWebSocket() {
         clearInterval(pingInterval);
         pingInterval = null;
       }
+      clearPongTimeout();
       setIsConnected(false);
       wsRef.current = null;
 
@@ -125,7 +169,7 @@ export function useWebSocket() {
     };
 
     wsRef.current = ws;
-  }, [processMessageQueue]);
+  }, [processMessageQueue, setIsConnected]);
 
   // Throttled printer status update - coalesces rapid updates per printer
   const throttledPrinterStatusUpdate = useCallback((printerId: number, data: Record<string, unknown>) => {
@@ -355,7 +399,36 @@ export function useWebSocket() {
   useEffect(() => {
     connect();
 
+    // Visibility-sync: when the tab returns to the foreground after being
+    // backgrounded (browser timer throttle / OS process suspend), the WS
+    // socket may be silently dead and React-Query's cache shows stale data
+    // until the next scheduled refetch. Force both back to fresh:
+    //   1. close the socket — triggers the standard reconnect path so a
+    //      new connection re-fetches initial state.
+    //   2. invalidate ALL queries — refetchOnWindowFocus does this for
+    //      *active* queries, but a queue card mounted on Home won't refetch
+    //      its hidden Archive query. Hard-invalidate everything so any
+    //      page the user navigates to within the next few seconds has
+    //      fresh data instead of stale cache.
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return;
+      if (import.meta.env.MODE !== 'test') {
+        console.log('[WebSocket] Tab visible — forcing reconnect + query refresh');
+      }
+      try {
+        if (wsRef.current && wsRef.current.readyState !== WebSocket.CLOSED) {
+          wsRef.current.close();
+        }
+      } catch {
+        // ignore — onclose handler will reconnect
+      }
+      // refetchType='all' refetches active + inactive queries.
+      queryClient.invalidateQueries({ refetchType: 'all' });
+    };
+    document.addEventListener('visibilitychange', onVisible);
+
     return () => {
+      document.removeEventListener('visibilitychange', onVisible);
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
       }
@@ -369,7 +442,7 @@ export function useWebSocket() {
         wsRef.current.close();
       }
     };
-  }, [connect]);
+  }, [connect, queryClient]);
 
   const sendMessage = useCallback((message: Record<string, unknown>) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {

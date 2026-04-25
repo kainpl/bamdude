@@ -62,6 +62,15 @@ volumes:
 | `PORT` | `8000` | Port BamDude runs on |
 | `DEBUG` | `false` | Enable debug logging |
 | `LOG_LEVEL` | `INFO` | Log level: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+| `LOG_TO_FILE` | `true` | Write logs to `/app/logs/bamdude.log` |
+| `DATABASE_URL` | unset (SQLite) | PostgreSQL URL, e.g. `postgresql+asyncpg://user:pass@host:5432/bamdude` |
+| `TRUSTED_PROXY_IPS` | empty | Comma-separated reverse-proxy IPs trusted for `X-Forwarded-For` (set this when fronting BamDude with nginx / Caddy / Traefik) |
+| `AUTH_REFRESH_COOKIE_SECURE` | unset (auto) | Force the refresh-cookie `Secure` flag. Auto-detect from request scheme by default. |
+| `MFA_ENCRYPTION_KEY` | unset | URL-safe base64 Fernet key for at-rest encryption of TOTP / OIDC secrets. |
+| `APP_URL` | `http://localhost:5173` | Public URL of BamDude (used in WebAuthn RP-ID + notification links). |
+| `JWT_SECRET_KEY` | auto-generated, persisted | Don't change on a running install -- it invalidates all issued tokens. |
+
+See [Installation > Environment Variables](installation.md#environment-variables) for the full list including optional integrations.
 
 ---
 

@@ -427,18 +427,40 @@ def register_expected_print(
 
 
 def register_swap_config(printer_id: int, options: dict):
-    """Register swap-macro config for the current print on *printer_id*.
+    """Register in-memory swap-macro config for the current print on *printer_id*.
 
-    Called from dispatch/scheduler AFTER a successful ``start_print``.
-    ``on_print_complete`` reads and pops the config to decide whether
-    ``swap_mode_change_table`` should fire.
+    Called from dispatch AFTER a successful ``start_print``. Stores only
+    the in-memory fast path; persistence to ``archive.extra_data`` is
+    handled separately by the dispatch caller (in the same db session
+    that's already open for archive creation / lookup, before the FTP
+    upload and start_print fire). Two reasons for the split:
+
+    * Library-file dispatch — the swap intent is folded into
+      ``archive_print()``'s INSERT (parameter
+      ``swap_macro_events_pending``), so no extra UPDATE is needed.
+    * Reprint dispatch — the existing archive row is updated in the
+      already-open session before any other DB writes (runtime tracker,
+      AMS history, etc.) start contending for the SQLite writer.
+
+    The previous design made ``register_swap_config`` async and ran a
+    standalone UPDATE after ``start_print``. That UPDATE raced the
+    runtime-tracker UPDATE on ``printers`` (both writers under SQLite's
+    single-writer rule) and timed out under ``busy_timeout``, leaving
+    ``swap_macro_events_pending`` not persisted — so a backend restart
+    mid-print still couldn't recover the change_table intent.
+
+    ``on_print_complete`` reads + pops this dict; it falls back to
+    ``archive.extra_data["swap_macro_events_pending"]`` for restart
+    recovery, then clears that key after firing the macro for
+    idempotency.
     """
     if not options.get("execute_swap_macros"):
         return
     events = options.get("swap_macro_events") or []
-    if events:
-        _active_swap_config[printer_id] = {"swap_macro_events": events}
-        logging.getLogger(__name__).info("[SWAP] Registered swap config for printer %s: events=%s", printer_id, events)
+    if not events:
+        return
+    _active_swap_config[printer_id] = {"swap_macro_events": list(events)}
+    logging.getLogger(__name__).info("[SWAP] Registered swap config for printer %s: events=%s", printer_id, events)
 
 
 async def maybe_register_external_stagger(printer_id: int) -> None:
@@ -1383,25 +1405,16 @@ async def _dispatch_user_print_email(
 
 
 def _load_objects_from_archive(archive, printer_id: int, logger) -> None:
-    """Extract printable objects from an archive's 3MF file and store in printer state."""
-    try:
-        from backend.app.services.archive import extract_printable_objects_from_3mf
+    """Thin wrapper around services.archive.load_objects_from_archive_into_state.
 
-        file_path = app_settings.base_dir / archive.file_path
-        if file_path.is_file() and str(file_path).endswith(".3mf"):
-            with open(file_path, "rb") as f:
-                threemf_data = f.read()
-            # Extract with positions for UI overlay
-            printable_objects, bbox_all = extract_printable_objects_from_3mf(threemf_data, include_positions=True)
-            if printable_objects:
-                client = printer_manager.get_client(printer_id)
-                if client:
-                    client.state.printable_objects = printable_objects
-                    client.state.printable_objects_bbox_all = bbox_all
-                    client.state.skipped_objects = []
-                    logger.info("Loaded %s printable objects for printer %s", len(printable_objects), printer_id)
-    except Exception as e:
-        logger.debug("Failed to extract printable objects from archive: %s", e)
+    Kept as a backward-compatible shim — call sites in this file pass a
+    ``logger`` arg that the shared helper doesn't take (it uses its own
+    module logger). Logging behaviour is equivalent.
+    """
+    _ = logger  # noqa: F841 — intentional discard, see docstring
+    from backend.app.services.archive import load_objects_from_archive_into_state
+
+    load_objects_from_archive_into_state(archive, printer_id)
 
 
 async def on_print_start(printer_id: int, data: dict):
@@ -1673,15 +1686,35 @@ async def on_print_start(printer_id: int, data: dict):
         # apart. If _active_prints already tracks ANY variation of this print
         # on this printer, treat the event as a duplicate and return — no new
         # archive, no re-notification.
+        #
+        # **Side effect we DO need to repeat**: re-load printable_objects +
+        # skip_objects_supported into the freshly-created MQTT client state.
+        # ``ensure_fresh_connection`` (default mqtt_connection_timeout=300s
+        # for legacy printers) periodically swaps the BambuMQTTClient for a
+        # new one with empty state, so without this re-load the skip-objects
+        # button goes dark roughly every 5 minutes mid-print. Server-restart
+        # papers over the symptom (it wipes _active_prints, so the next
+        # on_print_start takes the full path and loads objects), but the
+        # underlying state was being silently lost.
         for key in expected_keys:
             active_archive_id = _active_prints.get(key)
             if active_archive_id:
                 logger.info(
-                    "[CALLBACK] Duplicate print_start for printer %s (active archive %s via key %s) — skipping",
+                    "[CALLBACK] Duplicate print_start for printer %s (active archive %s via key %s) — skipping (re-loading objects into fresh client state)",
                     printer_id,
                     active_archive_id,
                     key,
                 )
+                try:
+                    from backend.app.models.archive import PrintArchive
+
+                    _arc = (
+                        await db.execute(select(PrintArchive).where(PrintArchive.id == active_archive_id))
+                    ).scalar_one_or_none()
+                    if _arc is not None:
+                        _load_objects_from_archive(_arc, printer_id, logger)
+                except Exception as e:
+                    logger.debug("[CALLBACK] re-load printable_objects failed: %s", e)
                 return
 
         expected_archive_id = None
@@ -2803,8 +2836,44 @@ async def on_print_complete(printer_id: int, data: dict):
     # Swap-mode change-table macro — runs after print completes (before queue
     # picks up the next item). If this fails the queue pauses so a half-swapped
     # table doesn't cause the next print to crash.
+    #
+    # Source of intent (in order):
+    # 1. ``_active_swap_config[printer_id]`` (fast path, in-memory)
+    # 2. ``archive.extra_data["swap_macro_events_pending"]`` — restart-recovery.
+    #    Persisted by ``register_swap_config`` at dispatch time; surviving
+    #    even when the backend was restarted between print-start and
+    #    print-complete.
+    #
+    # After the macro fires (success OR fail) we clear
+    # ``swap_macro_events_pending`` from extra_data so a re-trigger of this
+    # ``on_print_complete`` (MQTT replay, reconnect flap) doesn't re-fire the
+    # macro a second time. The in-memory ``_active_swap_config.pop`` already
+    # provided this idempotency for the fast path; the persisted marker
+    # needs the same protection.
     swap_config = _active_swap_config.pop(printer_id, None)
-    if swap_config and "swap_mode_change_table" in (swap_config.get("swap_macro_events") or []):
+    swap_events: list[str] = list(swap_config.get("swap_macro_events", [])) if swap_config else []
+    if not swap_events and archive_id:
+        try:
+            async with async_session() as db:
+                from backend.app.models.archive import PrintArchive as _PASwap
+
+                _pa_extra = (
+                    await db.execute(select(_PASwap.extra_data).where(_PASwap.id == archive_id))
+                ).scalar_one_or_none()
+                if isinstance(_pa_extra, dict):
+                    pending = _pa_extra.get("swap_macro_events_pending")
+                    if isinstance(pending, list) and pending:
+                        swap_events = [str(e) for e in pending]
+                        logger.info(
+                            "[SWAP] Recovered swap config for printer %s from archive %s extra_data (events=%s)",
+                            printer_id,
+                            archive_id,
+                            swap_events,
+                        )
+        except Exception as e:
+            logger.debug("[SWAP] extra_data fallback lookup failed (non-critical): %s", e)
+
+    if "swap_mode_change_table" in swap_events:
         try:
             async with async_session() as db:
                 from backend.app.models.printer import Printer as _SwapPrinter
@@ -2844,6 +2913,27 @@ async def on_print_complete(printer_id: int, data: dict):
                                 await db.commit()
         except Exception as e:
             logger.error("[SWAP] change_table macro error: %s", e)
+        finally:
+            # Idempotency: tick swap_mode_change_table off the pending
+            # checklist (variant 2 — drop just THIS event from the list,
+            # not the whole key). A re-trigger of on_print_complete (MQTT
+            # replay, reconnect flap) finds the event gone and skips
+            # firing. If the list becomes empty, the key drops entirely
+            # for clean state. Per-event removal is what keeps the
+            # pending list a faithful checklist of "what's still to do".
+            if archive_id:
+                try:
+                    async with async_session() as db:
+                        from backend.app.models.archive import PrintArchive as _PASwapClear
+                        from backend.app.services.archive import remove_swap_pending_event
+
+                        _arc = await db.get(_PASwapClear, archive_id)
+                        if _arc is not None and remove_swap_pending_event(_arc, "swap_mode_change_table"):
+                            await db.commit()
+                except Exception as e:
+                    logger.debug(
+                        "[SWAP] failed to remove swap_mode_change_table from pending for archive %s: %s", archive_id, e
+                    )
 
     # Update queue item status early - must run before the archive_id early-return
     # so queue items don't get stuck in "printing" when archive lookup fails.
@@ -4428,6 +4518,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logging.getLogger(__name__).warning("Failed to start Obico detection service: %s", e)
 
+    # Daily archive 3MF cleanup loop (gated internally by the
+    # ``archive_3mf_retention_enabled`` setting; always launched so a
+    # toggle takes effect without a restart).
+    try:
+        from backend.app.services.archive_cleanup_service import archive_cleanup_service
+
+        archive_cleanup_service.start()
+    except Exception as e:
+        logging.getLogger(__name__).warning("Failed to start archive cleanup service: %s", e)
+
     yield
 
     # Shutdown
@@ -4445,6 +4545,12 @@ async def lifespan(app: FastAPI):
         from backend.app.services.obico_detection import obico_detection_service
 
         obico_detection_service.stop()
+    except Exception:
+        pass
+    try:
+        from backend.app.services.archive_cleanup_service import archive_cleanup_service
+
+        await archive_cleanup_service.stop()
     except Exception:
         pass
     notification_service.stop_digest_scheduler()

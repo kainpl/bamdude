@@ -166,6 +166,16 @@ Both are transparent to the user — the search API works the same way.
 
 ---
 
+## :material-clock-alert: Slow first-boot migrations
+
+Some migrations are intrinsically slow regardless of database backend because the bottleneck is opening 3MFs on disk, not DB writes:
+
+- **m022** (0.4.1) reads one config file from inside every existing 3MF to backfill the new `gcode_label_objects` + `exclude_object` flags. Roughly 50-200 ms per file. An install with thousands of archives can spend several minutes inside the migration step before the API comes up. Same wall-clock cost on PostgreSQL as on SQLite.
+
+The migration logs progress every 100 rows -- watch for `m022 library_files: progress` and `m022 print_archives: progress` lines if you think the boot has hung. Files that have been deleted from disk are skipped silently.
+
+---
+
 ## :material-alert: Limitations
 
 !!! warning "Create the database first"

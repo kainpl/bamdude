@@ -97,7 +97,10 @@ export function CameraPage() {
     },
   });
 
-  const isPrintingWithObjects = (status?.state === 'RUNNING' || status?.state === 'PAUSE') && (status?.printable_objects_count ?? 0) >= 2;
+  const isPrintingWithObjects =
+    (status?.state === 'RUNNING' || status?.state === 'PAUSE')
+    && (status?.printable_objects_count ?? 0) >= 2
+    && (status?.skip_objects_supported ?? false);
 
   // Update document title
   useEffect(() => {

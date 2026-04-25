@@ -10,6 +10,15 @@ class AppSettings(BaseModel):
     capture_finish_photo: bool = Field(
         default=True, description="Capture photo from printer camera when print completes"
     )
+    archive_3mf_retention_enabled: bool = Field(
+        default=False,
+        description="Auto-delete 3MF files of archive groups whose newest print is older than the retention window",
+    )
+    archive_3mf_retention_days: int = Field(
+        default=30,
+        ge=1,
+        description="Days since the design's most recent print before its 3MF copies are eligible for cleanup. Minimum 1.",
+    )
     default_filament_cost: float = Field(default=25.0, description="Default filament cost per kg")
     currency: str = Field(default="USD", description="Currency for cost tracking")
     energy_cost_per_kwh: float = Field(default=0.15, description="Electricity cost per kWh for energy tracking")
@@ -282,6 +291,8 @@ class AppSettingsUpdate(BaseModel):
 
     save_thumbnails: bool | None = None
     capture_finish_photo: bool | None = None
+    archive_3mf_retention_enabled: bool | None = None
+    archive_3mf_retention_days: int | None = Field(default=None, ge=1)
     default_filament_cost: float | None = None
     currency: str | None = None
     energy_cost_per_kwh: float | None = None

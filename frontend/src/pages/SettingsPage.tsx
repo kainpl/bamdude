@@ -20,6 +20,7 @@ import { GcodeEditor } from '../components/GcodeEditor';
 import { CreateUserAdvancedAuthModal } from '../components/CreateUserAdvancedAuthModal';
 import { SpoolmanSettings } from '../components/SpoolmanSettings';
 import { SpoolDisplayNameSettings } from '../components/SpoolDisplayNameSettings';
+import { ArchiveCleanupSettingsBlock } from '../components/ArchiveCleanupSettingsBlock';
 import { SpoolCatalogSettings } from '../components/SpoolCatalogSettings';
 import { ColorCatalogSettings } from '../components/ColorCatalogSettings';
 import { ExternalLinksSettings } from '../components/ExternalLinksSettings';
@@ -992,6 +993,8 @@ export function SettingsPage() {
     const hasChanges =
       settings.save_thumbnails !== localSettings.save_thumbnails ||
       settings.capture_finish_photo !== localSettings.capture_finish_photo ||
+      (settings.archive_3mf_retention_enabled ?? false) !== (localSettings.archive_3mf_retention_enabled ?? false) ||
+      (settings.archive_3mf_retention_days ?? 30) !== (localSettings.archive_3mf_retention_days ?? 30) ||
       settings.default_filament_cost !== localSettings.default_filament_cost ||
       settings.currency !== localSettings.currency ||
       settings.energy_cost_per_kwh !== localSettings.energy_cost_per_kwh ||
@@ -1066,6 +1069,8 @@ export function SettingsPage() {
       const settingsToSave: AppSettingsUpdate = {
         save_thumbnails: localSettings.save_thumbnails,
         capture_finish_photo: localSettings.capture_finish_photo,
+        archive_3mf_retention_enabled: localSettings.archive_3mf_retention_enabled,
+        archive_3mf_retention_days: localSettings.archive_3mf_retention_days,
         default_filament_cost: localSettings.default_filament_cost,
         currency: localSettings.currency,
         energy_cost_per_kwh: localSettings.energy_cost_per_kwh,
@@ -2546,6 +2551,13 @@ export function SettingsPage() {
                   </div>
                 </div>
               )}
+
+              <ArchiveCleanupSettingsBlock
+                enabled={localSettings.archive_3mf_retention_enabled ?? false}
+                days={localSettings.archive_3mf_retention_days ?? 30}
+                onChangeEnabled={(v) => updateSetting('archive_3mf_retention_enabled', v)}
+                onChangeDays={(v) => updateSetting('archive_3mf_retention_days', v)}
+              />
             </CardContent>
           </Card>
 
