@@ -94,6 +94,14 @@ Both PrintModal's plate picker (multi-plate 3MF reprint / queue flow) and the Fi
 - Thumbnails switched from `object-cover` to `object-contain` so source images with off-center framing are no longer cropped toward the bottom.
 - `LibraryPlateGallery` lost its `compact` variant — only the modal callsite remained, so it's now a single render path.
 
+### Parallel dispatch with startup-lock
+
+Background dispatch now runs jobs **in parallel** across printers — sending a print to two or more printers at the same time no longer queues them one-after-another. The previous full-serialization gate (one job in flight across the farm) was added to dodge a "database is locked" deadlock, but it serialized the slow FTP / start_print phases too, which on a busy farm meant operators waited several minutes before the second printer even started receiving its file.
+
+**Mechanic** — replaced the global "one at a time" gate in `_dispatcher_loop` with a `self._startup_lock` (asyncio.Lock) that wraps **only** each job's DB-write critical section: `archive_print` (the heavy `INSERT INTO print_archives`) plus queue-item linking, with an explicit `commit()` at the end. The lock releases right after that commit, so the FTP upload + MQTT `start_print` + post-write phases all run concurrently with the next job's setup. This eliminates the original deadlock root cause (an open write-txn left over from `db.flush()` was held throughout FTP, blocking the next job's INSERT for longer than SQLite's 15s busy timeout) without giving up parallelism on the long phases.
+
+**Affected paths** — `_run_reprint_archive` and `_run_print_library_file`. Both wrap their DB-write phase in `acquire()` / `try / finally release()`. Reprint's lock window is just the optional `swap_macro_events_pending` pre-stamp commit; library-file's lock window covers archive INSERT + queue linking + commit. Post-FTP follow-up writes (swap-pending checklist tick, optional library-file cleanup, final commit) stay outside the lock — they're short and serialize naturally via SQLite's WAL + busy-timeout.
+
 ### Label-object metadata extraction
 
 Two new fields are now extracted from each 3MF's `Metadata/project_settings.config` and stored alongside the existing print metadata:

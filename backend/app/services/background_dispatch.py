@@ -84,6 +84,14 @@ class BackgroundDispatchService:
         self._dispatcher_task: asyncio.Task | None = None
         self._running_tasks: dict[int, asyncio.Task] = {}
         self._lock = asyncio.Lock()
+        # Serializes only the DB-write *startup* phase of each job
+        # (archive INSERT + queue_item linking + commit). Once that phase
+        # ends, the lock releases and FTP / start_print / post-write phases
+        # of multiple jobs run in parallel. Replaces the older "one job at
+        # a time across all printers" gate that contended on the SQLite
+        # write lock when ``archive_print``'s INSERT raced an open FTP
+        # session's still-uncommitted txn.
+        self._startup_lock = asyncio.Lock()
         self._job_event = asyncio.Event()
         self._next_job_id = 1
         self._active_jobs: dict[int, ActiveDispatchState] = {}
@@ -413,13 +421,11 @@ class BackgroundDispatchService:
                 payload: dict[str, Any] | None = None
                 job_to_start: PrintDispatchJob | None = None
                 async with self._lock:
-                    # Full serialization: only one dispatch in flight across
-                    # all printers. Parallel dispatches contended on the
-                    # SQLite write lock during ``INSERT INTO print_archives``
-                    # and triggered "database is locked" mid-FTP. A short
-                    # queued wait between farm jobs is the tradeoff.
-                    if self._active_jobs:
-                        break
+                    # Multiple jobs can be active concurrently. Mutual
+                    # exclusion of the *startup* (DB-write) phase is
+                    # enforced inside ``_run_*`` via ``self._startup_lock``;
+                    # the FTP / start_print / post-write phases run in
+                    # parallel across printers.
                     if not self._queued_jobs:
                         break
 
@@ -652,14 +658,22 @@ class BackgroundDispatchService:
             # to persist the intent without a standalone UPDATE that
             # would race the runtime-tracker. Library-file dispatch
             # handles this via archive_print()'s INSERT instead.
-            opts = job.options if isinstance(job.options, dict) else {}
-            if opts.get("execute_swap_macros"):
-                _events = opts.get("swap_macro_events") or []
-                if "swap_mode_change_table" in _events:
-                    _merged = dict(archive.extra_data or {})
-                    _merged["swap_macro_events_pending"] = list(_events)
-                    archive.extra_data = _merged
-                    await db.commit()
+            #
+            # Hold the startup-lock only while the DB write txn is open;
+            # releasing right after commit lets the next job begin its own
+            # setup while this one runs FTP / start_print in parallel.
+            await self._startup_lock.acquire()
+            try:
+                opts = job.options if isinstance(job.options, dict) else {}
+                if opts.get("execute_swap_macros"):
+                    _events = opts.get("swap_macro_events") or []
+                    if "swap_mode_change_table" in _events:
+                        _merged = dict(archive.extra_data or {})
+                        _merged["swap_macro_events_pending"] = list(_events)
+                        archive.extra_data = _merged
+                        await db.commit()
+            finally:
+                self._startup_lock.release()
 
             printer = await db.scalar(select(Printer).where(Printer.id == job.printer_id))
             if not printer:
@@ -1025,69 +1039,82 @@ class BackgroundDispatchService:
                     logger.info("Dispatch job %s: 3MF patched (%s)", job.id, patches)
 
             await self._set_active_message(job, f"Creating archive for {lib_file.filename}...")
-            archive_service = ArchiveService(db)
-            applied_patches = job.options.get("applied_patches") if isinstance(job.options, dict) else None
-            # Archive the file that will ACTUALLY be sent to the printer
-            # (patched or original). content_hash will match what lands on
-            # SD so on_print_complete chain-lookup works even if
-            # _expected_prints misses.  source_content_hash stays the
-            # library's original hash for design-level dedup.
-            archive = await archive_service.archive_print(
-                printer_id=job.printer_id,
-                source_file=upload_file_path,
-                original_filename=lib_file.filename,
-                project_id=job.project_id,
-                source_content_hash=lib_file.file_hash,
-                applied_patches=applied_patches or None,
-                library_file_id=lib_file.id,
-                # Forward the requesting user so per-user stats filter sees this
-                # archive and the post-print notification has a recipient. Prior
-                # to upstream #276a1db3 all library-print archives landed with
-                # created_by_id=NULL regardless of who clicked Print.
-                created_by_id=job.requested_by_user_id,
-                # Born in "printing" so the UI doesn't flash a transient
-                # "archived" label during the FTP/MQTT window (#876 follow-up).
-                # Error paths below flip it to "failed" before the txn commits.
-                print_data={"status": "printing"},
-                # Persist swap intent in the same INSERT (post-start_print
-                # UPDATE raced the runtime-tracker on SQLite's single
-                # writer and timed out). The marker is only meaningful for
-                # ``on_print_complete``'s restart-recovery branch — fast
-                # path still uses ``_active_swap_config`` set by
-                # ``register_swap_config`` after start_print.
-                swap_macro_events_pending=(
-                    job.options.get("swap_macro_events")
-                    if isinstance(job.options, dict) and job.options.get("execute_swap_macros")
-                    else None
-                ),
-            )
-            if not archive:
-                raise RuntimeError("Failed to create archive")
+            # Hold the startup-lock for the DB-write critical section only:
+            # ``archive_print`` (heavy INSERT into print_archives + related
+            # rows) plus the queue-item linking. Commit closes the txn
+            # before FTP starts, so two parallel jobs no longer race on
+            # SQLite's single-writer lock during a held FTP session. The
+            # finally-block guarantees release on any exception path.
+            await self._startup_lock.acquire()
+            try:
+                archive_service = ArchiveService(db)
+                applied_patches = job.options.get("applied_patches") if isinstance(job.options, dict) else None
+                # Archive the file that will ACTUALLY be sent to the printer
+                # (patched or original). content_hash will match what lands on
+                # SD so on_print_complete chain-lookup works even if
+                # _expected_prints misses.  source_content_hash stays the
+                # library's original hash for design-level dedup.
+                archive = await archive_service.archive_print(
+                    printer_id=job.printer_id,
+                    source_file=upload_file_path,
+                    original_filename=lib_file.filename,
+                    project_id=job.project_id,
+                    source_content_hash=lib_file.file_hash,
+                    applied_patches=applied_patches or None,
+                    library_file_id=lib_file.id,
+                    # Forward the requesting user so per-user stats filter sees this
+                    # archive and the post-print notification has a recipient. Prior
+                    # to upstream #276a1db3 all library-print archives landed with
+                    # created_by_id=NULL regardless of who clicked Print.
+                    created_by_id=job.requested_by_user_id,
+                    # Born in "printing" so the UI doesn't flash a transient
+                    # "archived" label during the FTP/MQTT window (#876 follow-up).
+                    # Error paths below flip it to "failed" before the txn commits.
+                    print_data={"status": "printing"},
+                    # Persist swap intent in the same INSERT (post-start_print
+                    # UPDATE raced the runtime-tracker on SQLite's single
+                    # writer and timed out). The marker is only meaningful for
+                    # ``on_print_complete``'s restart-recovery branch — fast
+                    # path still uses ``_active_swap_config`` set by
+                    # ``register_swap_config`` after start_print.
+                    swap_macro_events_pending=(
+                        job.options.get("swap_macro_events")
+                        if isinstance(job.options, dict) and job.options.get("execute_swap_macros")
+                        else None
+                    ),
+                )
+                if not archive:
+                    raise RuntimeError("Failed to create archive")
 
-            # Queue-item dispatches: keep queue_item + archive aligned in the
-            # same txn so the scheduler's follow-up logic sees a consistent
-            # view. Also copies queue_id + batch_id onto the archive so the
-            # archive-driven queue counters post-m019 can find this row.
-            if job.queue_item_id:
-                from backend.app.models.print_queue import PrintQueueItem
+                # Queue-item dispatches: keep queue_item + archive aligned in the
+                # same txn so the scheduler's follow-up logic sees a consistent
+                # view. Also copies queue_id + batch_id onto the archive so the
+                # archive-driven queue counters post-m019 can find this row.
+                if job.queue_item_id:
+                    from backend.app.models.print_queue import PrintQueueItem
 
-                q_item = await db.get(PrintQueueItem, job.queue_item_id)
-                if q_item is not None:
-                    q_item.archive_id = archive.id
-                    archive.queue_id = q_item.queue_id
-                    archive.batch_id = q_item.batch_id
+                    q_item = await db.get(PrintQueueItem, job.queue_item_id)
+                    if q_item is not None:
+                        q_item.archive_id = archive.id
+                        archive.queue_id = q_item.queue_id
+                        archive.batch_id = q_item.batch_id
 
-            # For non-queue dispatches (Print Now qty=1), attribute the
-            # archive to the printer's default queue so GET /printer-queues/
-            # counters include it.
-            if archive.queue_id is None and job.printer_id is not None:
-                from backend.app.models.printer_queue import PrinterQueue as _PQ
+                # For non-queue dispatches (Print Now qty=1), attribute the
+                # archive to the printer's default queue so GET /printer-queues/
+                # counters include it.
+                if archive.queue_id is None and job.printer_id is not None:
+                    from backend.app.models.printer_queue import PrinterQueue as _PQ
 
-                archive.queue_id = (
-                    await db.execute(select(_PQ.id).where(_PQ.printer_id == job.printer_id))
-                ).scalar_one_or_none()
+                    archive.queue_id = (
+                        await db.execute(select(_PQ.id).where(_PQ.printer_id == job.printer_id))
+                    ).scalar_one_or_none()
 
-            await db.flush()
+                # Commit closes the write txn — was a flush() before, which
+                # left an open txn that other jobs' archive_print INSERTs
+                # contended on through the entire FTP upload window.
+                await db.commit()
+            finally:
+                self._startup_lock.release()
 
             base_name = lib_file.filename
             if base_name.endswith(".gcode.3mf"):
