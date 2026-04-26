@@ -12,9 +12,9 @@ Polish release on top of `0.4.0.1`. Mostly UI-side date/time formatting consiste
 
 ### Documentation moved to its own repository
 
-The MkDocs site source (`docs/`, `mkdocs.yml`, `overrides/`) now lives in a dedicated repository at [`kainpl/docs.bamdude.top`](https://github.com/kainpl/docs.bamdude.top); the static-site build deps (`mkdocs`, `mkdocs-material`, `mkdocs-static-i18n`) were dropped from `requirements-dev.txt`. The application repo is now code + tests + Docker + CHANGELOG only — no docs build needed for a normal contributor checkout.
+The MkDocs site source (`docs/`, `mkdocs.yml`, `overrides/`) now lives in a dedicated repository at [`kainpl/docs.bamdude.top`](https://github.com/kainpl/docs.bamdude.top) and is published at **<https://docs.bamdude.top/>**. The static-site build deps (`mkdocs`, `mkdocs-material`, `mkdocs-static-i18n`) were dropped from `requirements-dev.txt`. The application repo is now code + tests + Docker + CHANGELOG only — no docs build needed for a normal contributor checkout.
 
-Cross-links in `README.md`, `UPDATING.md`, and `DOCKERHUB.md` were repointed at the new docs repo on GitHub. They flip to `https://docs.bamdude.top/...` once the domain is registered and the docs site goes live.
+Cross-links in `README.md`, `UPDATING.md`, and `DOCKERHUB.md` now point at the published `docs.bamdude.top/...` URLs. The sidebar logo (was a localhost placeholder) targets **<https://bamdude.top/>** (landing page); the sidebar's "Docs" link targets the docs site directly.
 
 ### Date / time formatting respects system settings everywhere
 

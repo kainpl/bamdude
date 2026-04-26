@@ -111,8 +111,7 @@ volumes:
 ## Upgrading & migration
 
 Full manual (every source version × every install method, backup/rollback, troubleshooting):
-**https://github.com/kainpl/docs.bamdude.top/blob/main/docs/getting-started/upgrading.md**
-(once `https://docs.bamdude.top/` goes live, the link becomes direct).
+**https://docs.bamdude.top/getting-started/upgrading/**
 
 Short version:
 

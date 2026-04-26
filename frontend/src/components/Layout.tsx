@@ -74,12 +74,11 @@ export function setDefaultView(path: string) {
   localStorage.setItem('defaultView', path);
 }
 
-// External links surfaced in the sidebar footer + on the logo. Landing /
-// docs URLs are still placeholders — swap once the public endpoints exist.
+// External links surfaced in the sidebar footer + on the logo.
 const TELEGRAM_SUPPORT_URL = 'https://t.me/+3KQl2uNtOwo3NTgy';
 const TELEGRAM_SUPPORT_NAME = 'BamDude Friends Forum';
-const DOCS_URL = 'http://localhost:8080/docs';
-const LANDING_URL = 'http://localhost:8080/';
+const DOCS_URL = 'https://docs.bamdude.top/';
+const LANDING_URL = 'https://bamdude.top/';
 
 export function Layout() {
   const navigate = useNavigate();
