@@ -5,13 +5,96 @@ const API_BASE = '/api/v1';
 // Auth token storage
 let authToken: string | null = localStorage.getItem('auth_token');
 
+// Proactive-refresh plumbing — see ``scheduleProactiveRefresh`` below.
+const REFRESH_SAFETY_MS = 60_000;
+// setTimeout delays larger than int32 ms wrap negative ⇒ instant-fire.
+// 2_147_483_000 ms ≈ 24.85 days.
+const MAX_TIMEOUT_MS = 2_147_483_000;
+let proactiveRefreshTimer: number | null = null;
+
+/**
+ * Decode a JWT payload (the middle base64url-encoded segment). We don't
+ * verify the signature — that's the server's job — we only need ``exp``
+ * to schedule a proactive refresh before the token dies.
+ */
+function decodeJwt(token: string): { exp?: number; iat?: number } | null {
+  try {
+    const payload = token.split('.')[1];
+    if (!payload) return null;
+    const json = atob(payload.replace(/-/g, '+').replace(/_/g, '/'));
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+}
+
+function tokenExpiryMs(): number | null {
+  if (!authToken) return null;
+  const decoded = decodeJwt(authToken);
+  if (!decoded?.exp) return null;
+  return decoded.exp * 1000;
+}
+
+/**
+ * True when the access token is within ``REFRESH_SAFETY_MS`` of expiry (or
+ * already past it). ``request()`` checks this before sending so the network
+ * call goes out with a fresh token instead of triggering the reactive 401
+ * dance — which the browser's network panel logs even when JS recovers
+ * cleanly. Returns ``false`` when we can't read the expiry (non-JWT token
+ * or decode failure) — in that case the reactive path still catches it.
+ */
+function isTokenNearExpiry(): boolean {
+  const exp = tokenExpiryMs();
+  if (exp === null) return false;
+  return Date.now() >= exp - REFRESH_SAFETY_MS;
+}
+
+/**
+ * Arm a one-shot timer that fires ``refreshAccessToken()`` shortly before
+ * the current token's ``exp``. Re-armed on every successful ``setAuthToken``
+ * (login / refresh response / page reload with a still-valid stored token).
+ *
+ * Without this every long-idle tab would hit the reactive 401 path on
+ * refocus — the request still completes (refresh + retry), but the browser
+ * console fills with one red 401 entry per parallel query (10–40 of them on
+ * Archives / Print queue). Proactive refresh keeps the token green so no
+ * request leaves with a dead token in the first place.
+ */
+function scheduleProactiveRefresh() {
+  if (proactiveRefreshTimer !== null) {
+    window.clearTimeout(proactiveRefreshTimer);
+    proactiveRefreshTimer = null;
+  }
+  const exp = tokenExpiryMs();
+  if (exp === null) return;
+  const delay = Math.max(0, exp - Date.now() - REFRESH_SAFETY_MS);
+  proactiveRefreshTimer = window.setTimeout(() => {
+    proactiveRefreshTimer = null;
+    // Fire-and-forget: a successful refresh re-arms via setAuthToken; a
+    // failed one falls through to the next request's reactive 401 handler
+    // which dispatches ``bamdude:auth-invalidated``.
+    refreshAccessToken();
+  }, Math.min(delay, MAX_TIMEOUT_MS));
+}
+
 export function setAuthToken(token: string | null) {
   authToken = token;
   if (token) {
     localStorage.setItem('auth_token', token);
+    scheduleProactiveRefresh();
   } else {
     localStorage.removeItem('auth_token');
+    if (proactiveRefreshTimer !== null) {
+      window.clearTimeout(proactiveRefreshTimer);
+      proactiveRefreshTimer = null;
+    }
   }
+}
+
+// Initial arm on module load — picks up a still-valid token left in
+// localStorage from a previous session.
+if (authToken) {
+  scheduleProactiveRefresh();
 }
 
 export function getAuthToken(): string | null {
@@ -151,6 +234,19 @@ async function request<T>(
   options: RequestInit = {},
   __isRetry = false,
 ): Promise<T> {
+  // Pre-emptive refresh: if the access token is past or within
+  // REFRESH_SAFETY_MS of expiry, await a refresh BEFORE issuing the request
+  // so it goes out with a fresh token. Avoids the 401 burst that sprays the
+  // browser network panel when 20+ parallel queries fire on tab-refocus
+  // after a long idle. Coalesced across concurrent callers via
+  // ``refreshAccessTokenPromise`` so one /auth/refresh covers them all.
+  // Skipped on retry (the reactive path already handled it) and when the
+  // proactive timer just fired but hadn't completed yet (the timer's own
+  // call coalesces with this one).
+  if (authToken && !__isRetry && isTokenNearExpiry()) {
+    await refreshAccessToken();
+  }
+
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...options.headers as Record<string, string>,
