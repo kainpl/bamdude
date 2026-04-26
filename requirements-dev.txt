@@ -10,10 +10,9 @@ ruff>=0.8.0
 # Required by pyftpdlib TLS_FTPHandler for mock FTP server tests
 pyOpenSSL>=26.0.0
 
-# Documentation
-mkdocs>=1.6.0,<2.0.0
-mkdocs-material>=9.5.0
-mkdocs-static-i18n>=1.2.0
+# Documentation lives in a separate repo (kainpl/docs.bamdude.top) — no
+# mkdocs build deps here. Install them in that repo's venv if you need to
+# preview docs locally.
 
 # Security scanning
 bandit[sarif]>=1.7.0

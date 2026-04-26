@@ -308,7 +308,7 @@ class TestVirtualPrinterManager:
         status = manager.get_status()
         assert status["enabled"] is False
         assert status["running"] is False
-        assert status["mode"] == "immediate"
+        assert status["mode"] == "file_manager"
 
     def test_manager_is_enabled_with_instance(self, manager, tmp_path):
         """Verify is_enabled is True when instances exist."""
@@ -392,7 +392,7 @@ class TestVirtualPrinterManager:
         status = manager.get_status()
         assert status["enabled"] is True
         assert status["running"] is True
-        assert status["mode"] == "immediate"
+        assert status["mode"] == "file_manager"
         assert status["name"] == "Bambuddy"
         assert status["serial"] == "01S00A391800001"
         assert status["model"] == "C11"
@@ -451,7 +451,7 @@ class TestVirtualPrinterManager:
             "id": 1,
             "name": "TestVP",
             "enabled": True,
-            "mode": "immediate",
+            "mode": "file_manager",
             "model": "C11",
             "access_code": "12345678",
             "serial_suffix": "391800001",

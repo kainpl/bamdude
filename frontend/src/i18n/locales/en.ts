@@ -1981,6 +1981,7 @@ export default {
       swap_mode_start: 'Swap Mode. Start',
       swap_mode_change_table: 'Swap Mode. Change Table',
       print_started: 'Print started',
+      print_finished: 'Print finished',
     },
     macroActionType: 'Action type',
     macroActionTypeGcode: 'G-code',

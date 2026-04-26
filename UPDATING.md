@@ -1,8 +1,8 @@
 # Updating BamDude
 
-Short version. The full guide — including migration from Bambuddy, switching install method, and rollback — lives at [`docs/getting-started/upgrading.md`](docs/getting-started/upgrading.md) ([українською](docs/getting-started/upgrading.uk.md)). Once the docs site ships publicly this file will point there; for now the content is all in-repo.
+Short version. The full guide — including migration from Bambuddy, switching install method, and rollback — now lives in the separate docs repository at [`kainpl/docs.bamdude.top`](https://github.com/kainpl/docs.bamdude.top/blob/main/docs/getting-started/upgrading.md) ([українською](https://github.com/kainpl/docs.bamdude.top/blob/main/docs/getting-started/upgrading.uk.md)). Once `https://docs.bamdude.top/` goes live the links will become direct.
 
-> **Always back up `data/` (or the `bamdude_data` Docker volume) before any upgrade.** The DB schema advances forward only — there is no built-in downgrade path. See the Rollback section in [`upgrading.md`](docs/getting-started/upgrading.md#rollback) for the reverse procedure.
+> **Always back up `data/` (or the `bamdude_data` Docker volume) before any upgrade.** The DB schema advances forward only — there is no built-in downgrade path. See the Rollback section of the [upgrade guide](https://github.com/kainpl/docs.bamdude.top/blob/main/docs/getting-started/upgrading.md#rollback) for the reverse procedure.
 
 ---
 
@@ -84,8 +84,8 @@ You should see the `m00X` migrations that apply to the version you upgraded to, 
 
 ## Migrating FROM Bambuddy (source project)
 
-See [`upgrading.md → Scenario 1`](docs/getting-started/upgrading.md#scenario-1-migrating-from-bambuddy-222). Short form: point BamDude at your existing Bambuddy `data/` directory, first boot runs `m000_bambuddy_import`, Bambuddy file is renamed (not deleted) so rollback is possible. Only Bambuddy **2.2.2** is tested; newer Bambuddy releases (0.2.3+) are untested and may break — the fork has diverged.
+See [`upgrading.md → Scenario 1`](https://github.com/kainpl/docs.bamdude.top/blob/main/docs/getting-started/upgrading.md#scenario-1-migrating-from-bambuddy-222). Short form: point BamDude at your existing Bambuddy `data/` directory, first boot runs `m000_bambuddy_import`, Bambuddy file is renamed (not deleted) so rollback is possible. Only Bambuddy **2.2.2** is tested; newer Bambuddy releases (0.2.3+) are untested and may break — the fork has diverged.
 
 ## Switching install method
 
-Native ↔ Docker ↔ GHCR/Docker Hub swaps don't touch data — just point the new instance at the existing `data/` directory or copy the volume contents. Full commands in [`upgrading.md → Switching install method`](docs/getting-started/upgrading.md#switching-install-method).
+Native ↔ Docker ↔ GHCR/Docker Hub swaps don't touch data — just point the new instance at the existing `data/` directory or copy the volume contents. Full commands in [`upgrading.md → Switching install method`](https://github.com/kainpl/docs.bamdude.top/blob/main/docs/getting-started/upgrading.md#switching-install-method).

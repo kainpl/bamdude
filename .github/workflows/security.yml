@@ -158,7 +158,7 @@ jobs:
       - name: Run pip-audit
         id: pip-audit
         run: |
-          # CVE-2026-4539: low-severity ReDoS in Pygments AdlLexer (indirect dep via mkdocs-material/pytest/rich).
+          # CVE-2026-4539: low-severity ReDoS in Pygments AdlLexer (indirect dep via pytest/rich).
           # No fix available yet. Remove --ignore-vuln once Pygments releases a patched version.
           # CVE-2026-3219: medium-severity (CVSS 4.6) in pip itself — local-only archive-type
           # confusion attack (tar+ZIP concat). BamDude doesn't invoke pip at runtime, so the

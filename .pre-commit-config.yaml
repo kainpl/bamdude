@@ -23,9 +23,8 @@ repos:
       - id: end-of-file-fixer
         exclude: ^static/
       - id: check-yaml
-        # mkdocs.yml uses ``!!python/name:...`` tags for the
-        # ``material.extensions.emoji`` plugin — standard mkdocs-material
-        # syntax. ``--unsafe`` allows custom YAML tags through.
+        # ``--unsafe`` allows custom YAML tags through. Kept on so any
+        # future YAML using non-standard tags doesn't fail this hook.
         args: ['--unsafe']
       - id: check-json
         exclude: ^(static/|frontend/tsconfig\.)

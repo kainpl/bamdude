@@ -1987,6 +1987,7 @@ export default {
       swap_mode_start: 'Swap Mode. Старт',
       swap_mode_change_table: 'Swap Mode. Зміна столу',
       print_started: 'Старт друку',
+      print_finished: 'Завершення друку',
     },
     macroActionType: 'Тип дії',
     macroActionTypeGcode: 'G-код',

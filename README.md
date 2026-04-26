@@ -224,7 +224,7 @@ uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
 
 ### Upgrading or migrating
 
-Full manual: **[docs/getting-started/upgrading.md](docs/getting-started/upgrading.md)** — covers migration from Bambuddy 2.2.2, from Bambuddy-HE / BamDude 0.2.x, routine BamDude-to-BamDude updates, switching between self-install / Docker / GHCR, and rollback.
+Full manual: **[Upgrade guide on the docs site](https://github.com/kainpl/docs.bamdude.top/blob/main/docs/getting-started/upgrading.md)** ([source](https://github.com/kainpl/docs.bamdude.top)) — covers migration from Bambuddy 2.2.2, from Bambuddy-HE / BamDude 0.2.x, routine BamDude-to-BamDude updates, switching between self-install / Docker / GHCR, and rollback. Once the docs site goes live the link will become https://docs.bamdude.top/getting-started/upgrading/.
 
 Short version:
 

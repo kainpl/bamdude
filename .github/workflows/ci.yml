@@ -98,7 +98,7 @@ jobs:
 
       - name: Run pip-audit
         run: |
-          # CVE-2026-4539: low-severity ReDoS in Pygments AdlLexer (indirect dep via mkdocs-material/pytest/rich).
+          # CVE-2026-4539: low-severity ReDoS in Pygments AdlLexer (indirect dep via pytest/rich).
           # No fix available yet. Remove --ignore-vuln once Pygments releases a patched version.
           # CVE-2026-3219: medium-severity (CVSS 4.6) in pip itself — pip treats a file that
           # identifies as BOTH tar and ZIP as a ZIP regardless of filename, so a crafted local
