@@ -49,10 +49,8 @@ describe('getPrinterImage', () => {
       expect(getPrinterImage('H2D Pro')).toBe('/img/printers/h2dpro.png');
     });
 
-    it('P2S → p1s.png (shared with P1S)', () => {
-      // Pre-existing behaviour: P2S currently reuses the P1S artwork. Not
-      // changed by the X2D diff; asserted to catch accidental regressions.
-      expect(getPrinterImage('P2S')).toBe('/img/printers/p1s.png');
+    it('P2S → p2s.png (own asset)', () => {
+      expect(getPrinterImage('P2S')).toBe('/img/printers/p2s.png');
     });
 
     it('A1 Mini → a1mini.png (not a1.png)', () => {
