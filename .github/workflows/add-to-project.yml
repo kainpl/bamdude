@@ -1,0 +1,25 @@
+name: Add to BamDude project
+
+# Auto-adds new issues + PRs to the user-level project board
+# https://github.com/users/kainpl/projects/3 so the board reflects every
+# repo in the BamDude umbrella (this app, docs.bamdude.top, bamdude.top).
+# The "Auto-add to project" built-in workflow on the project itself is
+# capped at one repo filter, so we wire it here per-repo via Actions.
+#
+# Requires repo secret PROJECTS_TOKEN — fine-grained PAT with Account
+# permissions → Projects: Read and write, scoped to this repository.
+
+on:
+  issues:
+    types: [opened, reopened, transferred]
+  pull_request_target:
+    types: [opened, reopened, ready_for_review]
+
+jobs:
+  add-to-project:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/add-to-project@v1
+        with:
+          project-url: https://github.com/users/kainpl/projects/3
+          github-token: ${{ secrets.PROJECTS_TOKEN }}
