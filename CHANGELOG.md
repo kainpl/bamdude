@@ -6,7 +6,7 @@ All notable changes to BamDude will be documented in this file.
 
 ---
 
-## [0.4.1] - Unreleased
+## [0.4.1] - 2026-04-28
 
 Polish release on top of `0.4.0.1`. Mostly UI-side date/time formatting consistency and small navigation conveniences.
 
