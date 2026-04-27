@@ -41,7 +41,7 @@ The `:latest` tag tracks the `main` branch. To pin a specific release, edit your
 
 ```yaml
 # ghcr.io/kainpl/bamdude:latest         → always main
-# ghcr.io/kainpl/bamdude:0.4.0          → pinned release
+# ghcr.io/kainpl/bamdude:0.4.1          → pinned release
 # kainpl/bamdude:latest                 → Docker Hub mirror (same bits)
 ```
 
