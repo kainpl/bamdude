@@ -7,9 +7,6 @@ CLAUDE.md
 .idea/
 .db/
 
-# Local dev SSH keys (never track private keys!)
-spoolbuddy/
-
 # Temp (patches, experiments)
 temp/
 
@@ -50,6 +47,8 @@ firmware/
 
 # Virtual printer (auto-generated certs and uploads at repo root)
 /virtual_printer/
+
+plate_calibration/
 
 # IDE
 .idea/
