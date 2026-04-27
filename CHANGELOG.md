@@ -10,6 +10,10 @@ All notable changes to BamDude will be documented in this file.
 
 Polish release on top of `0.4.0.1`. Mostly UI-side date/time formatting consistency and small navigation conveniences.
 
+### 0.4.1b1 — pre-release (2026-04-27)
+
+First beta milestone of the 0.4.1 cycle. Everything listed under `[0.4.1]` is in this image (`ghcr.io/kainpl/bamdude:0.4.1b1` / `kainpl/bamdude:0.4.1b1`). Intended for early testers — pin the exact tag, don't use `:latest` yet (still points at 0.4.0.1).
+
 ### Documentation moved to its own repository
 
 The MkDocs site source (`docs/`, `mkdocs.yml`, `overrides/`) now lives in a dedicated repository at [`kainpl/docs.bamdude.top`](https://github.com/kainpl/docs.bamdude.top) and is published at **<https://docs.bamdude.top/>**. The static-site build deps (`mkdocs`, `mkdocs-material`, `mkdocs-static-i18n`) were dropped from `requirements-dev.txt`. The application repo is now code + tests + Docker + CHANGELOG only — no docs build needed for a normal contributor checkout.
