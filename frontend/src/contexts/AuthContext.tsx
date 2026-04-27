@@ -35,13 +35,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const checkAuthStatus = async () => {
     try {
-      // Note: no `?token=` URL-param bootstrap. That flow was introduced for the
-      // SpoolBuddy kiosk launcher (removed in the BamDude fork) and was a session-
-      // fixation vector — an attacker-crafted link like /?token=ATTACKER_TOKEN would
-      // overwrite localStorage with the attacker's token before any server verify.
-      // If a future feature needs cross-origin auth bootstrap, port upstream's
-      // 2-arg setAuthToken(token, persistToLocalStorage=false) from PR #933 instead.
-
+      // No `?token=` URL-param bootstrap on purpose — it's a session-fixation
+      // vector (attacker-crafted /?token=… would overwrite localStorage with
+      // the attacker's token before any server verify). If a future feature
+      // ever needs cross-origin auth bootstrap, do it through a non-persistent
+      // setAuthToken path that doesn't touch localStorage.
       const status = await api.getAuthStatus();
       if (!mountedRef.current) return;
       setRequiresSetup(status.requires_setup);
