@@ -111,6 +111,22 @@ function getLatestWs(): MockWebSocket | undefined {
   return wsInstances[wsInstances.length - 1];
 }
 
+// useWebSocket defers the initial `new WebSocket(...)` to a 0 ms setTimeout to
+// dodge React.StrictMode's mount-unmount-remount churn. Tests that call into
+// the hook must await the deferred connect before reading `wsInstances`,
+// otherwise getLatestWs() returns undefined. Under fake timers we have to flush
+// the pending timer ourselves — RTL's `waitFor` doesn't auto-advance them.
+async function waitForWs(): Promise<MockWebSocket> {
+  if (vi.isFakeTimers()) {
+    act(() => {
+      vi.advanceTimersByTime(0);
+    });
+  } else {
+    await waitFor(() => expect(getLatestWs()).toBeDefined());
+  }
+  return getLatestWs()!;
+}
+
 describe('useWebSocket hook', () => {
   let queryClient: QueryClient;
 
@@ -190,9 +206,8 @@ describe('useWebSocket hook', () => {
         wrapper: createWrapper(queryClient),
       });
 
-      const ws = getLatestWs();
-      expect(ws).toBeDefined();
-      expect(ws?.url).toContain('/api/v1/ws');
+      const ws = await waitForWs();
+      expect(ws.url).toContain('/api/v1/ws');
     });
 
     it('reports connected state when WebSocket opens', async () => {
@@ -206,9 +221,9 @@ describe('useWebSocket hook', () => {
       expect(result.current.isConnected).toBe(false);
 
       // Simulate connection opening
-      const ws = getLatestWs();
+      const ws = await waitForWs();
       act(() => {
-        ws?.open();
+        ws.open();
       });
 
       await waitFor(() => {
@@ -285,7 +300,7 @@ describe('useWebSocket hook', () => {
         wrapper: createWrapper(queryClient),
       });
 
-      const ws = getLatestWs()!;
+      const ws = await waitForWs();
 
       // Open connection
       act(() => {
@@ -327,7 +342,7 @@ describe('useWebSocket hook', () => {
         wrapper: createWrapper(queryClient),
       });
 
-      const ws = getLatestWs()!;
+      const ws = await waitForWs();
 
       // Open connection
       act(() => {
@@ -368,7 +383,7 @@ describe('useWebSocket hook', () => {
         wrapper: createWrapper(queryClient),
       });
 
-      const ws = getLatestWs()!;
+      const ws = await waitForWs();
 
       // Open connection
       act(() => {
@@ -405,7 +420,7 @@ describe('useWebSocket hook', () => {
         wrapper: createWrapper(queryClient),
       });
 
-      const ws = getLatestWs()!;
+      const ws = await waitForWs();
       act(() => {
         ws.open();
       });
@@ -435,7 +450,7 @@ describe('useWebSocket hook', () => {
         wrapper: createWrapper(queryClient),
       });
 
-      const ws = getLatestWs()!;
+      const ws = await waitForWs();
 
       // Open connection
       act(() => {
@@ -460,7 +475,7 @@ describe('useWebSocket hook', () => {
         wrapper: createWrapper(queryClient),
       });
 
-      const ws = getLatestWs()!;
+      const ws = await waitForWs();
 
       // Open connection
       act(() => {
@@ -490,7 +505,7 @@ describe('useWebSocket hook', () => {
         wrapper: createWrapper(queryClient),
       });
 
-      const ws = getLatestWs()!;
+      const ws = await waitForWs();
 
       // Open connection
       act(() => {
@@ -519,7 +534,7 @@ describe('useWebSocket hook', () => {
         wrapper: createWrapper(queryClient),
       });
 
-      const ws = getLatestWs()!;
+      const ws = await waitForWs();
 
       // Open connection
       act(() => {
@@ -542,7 +557,7 @@ describe('useWebSocket hook', () => {
         wrapper: createWrapper(queryClient),
       });
 
-      const ws = getLatestWs()!;
+      const ws = await waitForWs();
 
       // Don't open connection - still in CONNECTING state
 
@@ -564,7 +579,7 @@ describe('useWebSocket hook', () => {
         wrapper: createWrapper(queryClient),
       });
 
-      const firstWs = getLatestWs()!;
+      const firstWs = await waitForWs();
 
       // Open connection
       act(() => {
@@ -597,7 +612,7 @@ describe('useWebSocket hook', () => {
         wrapper: createWrapper(queryClient),
       });
 
-      const ws = getLatestWs()!;
+      const ws = await waitForWs();
 
       // Open connection
       act(() => {

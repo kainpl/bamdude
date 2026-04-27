@@ -816,8 +816,13 @@ describe('PrintModal', () => {
       // Select printer
       await user.click(screen.getByText('X1 Carbon'));
 
-      // Plate 1 is auto-selected. Click Plate 3 to add it (multi-select in add-to-queue mode)
-      await user.click(screen.getByText('Plate 3'));
+      // Plate 1 is auto-selected. Switch the paginator to plate 3 (small "3"
+      // button, identified via its hover-title fallback) and then click the
+      // active-plate card to toggle plate 3 into the selection — the
+      // PlateSelector deliberately decouples navigation from selection.
+      await user.click(screen.getByTitle('Plate 3'));
+      const plate3Card = screen.getByText('Plate 3').closest('button')!;
+      await user.click(plate3Card);
 
       // Submit - should queue plates 1 and 3
       const submitButton = document.querySelector('button[type="submit"]') as HTMLElement;

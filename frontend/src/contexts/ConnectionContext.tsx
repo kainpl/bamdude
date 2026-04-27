@@ -37,17 +37,20 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   return <ConnectionContext.Provider value={value}>{children}</ConnectionContext.Provider>;
 }
 
+// Stable default returned when there's no provider above us. Must be a single
+// object reference — returning a fresh literal each call broke memoization of
+// any hook that captured `setIsConnected` (notably useWebSocket's `connect`),
+// which then re-ran its useEffect on every render and reconnected the socket.
+const DEFAULT_CONNECTION_VALUE: ConnectionContextValue = {
+  isConnected: true,
+  showOfflineIndicator: false,
+  setIsConnected: () => {},
+};
+
 export function useConnection(): ConnectionContextValue {
   const ctx = useContext(ConnectionContext);
   if (!ctx) {
-    // Defensive default — components rendered outside the provider (e.g. during
-    // tests) should still mount cleanly. Treat as "connected" so they don't
-    // render warning indicators in environments that don't have the WS layer.
-    return {
-      isConnected: true,
-      showOfflineIndicator: false,
-      setIsConnected: () => {},
-    };
+    return DEFAULT_CONNECTION_VALUE;
   }
   return ctx;
 }
