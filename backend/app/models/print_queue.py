@@ -82,6 +82,13 @@ class PrintQueueItem(Base):
     # User tracking
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
+    # Auto-queue traceability — set when this item was created by AutoQueueScheduler
+    # via assignment from auto_queue_items. NULL for items added directly to a
+    # specific printer's queue (the existing flow).
+    source_auto_item_id: Mapped[int | None] = mapped_column(
+        ForeignKey("auto_queue_items.id", ondelete="SET NULL"), nullable=True
+    )
+
     # Relationships
     queue: Mapped["PrinterQueue"] = relationship(back_populates="items")
     archive: Mapped["PrintArchive | None"] = relationship()
