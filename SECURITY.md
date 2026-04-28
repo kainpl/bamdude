@@ -8,11 +8,7 @@ The BamDude team takes security seriously. We appreciate your efforts to respons
 
 **Please DO NOT report security vulnerabilities through public GitHub issues.**
 
-Instead, please report them via email to:
-
-**security@bamdude.cool**
-
-Or use GitHub's private vulnerability reporting feature:
+Use GitHub's private vulnerability reporting feature:
 1. Go to the [Security tab](https://github.com/kainpl/bamdude/security)
 2. Click "Report a vulnerability"
 3. Fill out the form with details

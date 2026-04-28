@@ -250,6 +250,6 @@ sudo lsof -i :8000  # Linux/macOS
 
 ## Support
 
-- **Documentation:** https://wiki.bamdude.cool
+- **Documentation:** https://docs.bamdude.top
 - **Discord:** https://discord.gg/aFS3ZfScHM
 - **Issues:** https://github.com/kainpl/bamdude/issues

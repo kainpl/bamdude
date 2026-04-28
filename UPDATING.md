@@ -2,7 +2,7 @@
 
 Short version. The full guide — including migration from Bambuddy, switching install method, and rollback — lives at **<https://docs.bamdude.top/getting-started/upgrading/>** ([українською](https://docs.bamdude.top/uk/getting-started/upgrading/)).
 
-> **Always back up `data/` (or the `bamdude_data` Docker volume) before any upgrade.** The DB schema advances forward only — there is no built-in downgrade path. See the Rollback section of the [upgrade guide](https://docs.bamdude.top/getting-started/upgrading/#rollback) for the reverse procedure.
+> **Always back up `data/` (or the `bamdude_data` Docker volume) before any upgrade.** The DB schema advances forward only — there is no built-in downgrade path. See the Rollback section of the [upgrade guide](https://docs.bamdude.top/getting-started/upgrading/#7-rollback-if-things-break) for the reverse procedure.
 
 ---
 
