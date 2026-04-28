@@ -1285,6 +1285,20 @@ export default {
     },
   },
 
+  // Auto Queue (router layer above per-printer queues)
+  autoQueue: {
+    title: 'Auto Queue',
+    itemCount_one: '{{count}} pending',
+    itemCount_other: '{{count}} pending',
+    itemCount: '{{count}} pending',
+    anyModel: 'Any model',
+    exactColor: 'Exact color',
+    assignNow: 'Assign now',
+    cancelled: 'Auto-queue item cancelled',
+    assigned: 'Auto-queue item assigned',
+    batchCancelled: '{{count}} batch items cancelled',
+  },
+
   // Statistics page
   stats: {
     title: 'Dashboard',

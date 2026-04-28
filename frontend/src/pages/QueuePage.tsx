@@ -9,6 +9,7 @@ import { QueueCard } from '../components/QueueCard';
 import { QueueStatsBar } from '../components/Queue/QueueStatsBar';
 import { StaggerBanner } from '../components/Queue/StaggerBanner';
 import { QueueTimelineView } from '../components/Queue/QueueTimelineView';
+import { AutoQueuePanel } from '../components/Queue/AutoQueuePanel';
 import { PrintModal } from '../components/PrintModal';
 
 type ViewMode = 'compact' | 'expanded' | 'all' | 'timeline';
@@ -324,6 +325,9 @@ export function QueuePage() {
       {!isLoading && queues && queues.length > 0 && (
         <QueueStatsBar queues={queues} pendingItems={allPendingItems} />
       )}
+
+      {/* Auto-queue router items (sits above per-printer queues). Hidden when empty. */}
+      <AutoQueuePanel />
 
       {/* Electrical-load diagnostic banner (stagger). Hidden when stagger is disabled. */}
       <StaggerBanner />

@@ -1291,6 +1291,22 @@ export default {
     },
   },
 
+  // Авто-черга (роутер над per-printer чергами)
+  autoQueue: {
+    title: 'Авто-черга',
+    itemCount_one: '{{count}} в очікуванні',
+    itemCount_few: '{{count}} в очікуванні',
+    itemCount_many: '{{count}} в очікуванні',
+    itemCount_other: '{{count}} в очікуванні',
+    itemCount: '{{count}} в очікуванні',
+    anyModel: 'Будь-яка модель',
+    exactColor: 'Точний колір',
+    assignNow: 'Призначити зараз',
+    cancelled: 'Елемент авто-черги скасовано',
+    assigned: 'Елемент авто-черги призначено',
+    batchCancelled: 'Скасовано {{count}} елементів партії',
+  },
+
   // Statistics page
   stats: {
     title: 'Статистика',
