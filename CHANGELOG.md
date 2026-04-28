@@ -6,6 +6,26 @@ All notable changes to BamDude will be documented in this file.
 
 ---
 
+## [Unreleased]
+
+### Auto-queue (router above per-printer queues)
+
+A second queue layer that sits **above** the existing per-printer queues and routes a job to whichever idle printer matches first. Useful for farms that don't care which specific printer runs a print, only that it ships ASAP and on a compatible machine.
+
+- **Print modal toggle** — adding to queue now offers two paths:
+  - **Specific printer** — existing per-printer flow, unchanged.
+  - **Auto-distribute** — drops the job into the auto-queue with optional target model + location filter + `force exact color match` toggle. Backend auto-extracts target model and required filaments from the 3MF when not specified, so submitting with no extra config "just works".
+- **Eligibility model** — for each pending auto-queue item the scheduler picks an idle printer that matches: target model (or auto-detected from the 3MF), optional location filter, all required filament types loaded in AMS (canonical equivalence applied — e.g. `PA-CF` ↔ `PA12-CF` ↔ `PAHT-CF`), force-color-match constraint when set. AMS slot mapping is computed at dispatch time using the same 4-tier priority as the regular queue (unique `tray_info_idx` > exact color > similar color > type-only).
+- **Batch fan-out** — the modal's `Quantity` field still works in auto mode; multi-plate selection also fans out (one auto-queue row per plate × quantity), so 4 copies × 2 plates → 8 routed items sharing one batch ID.
+- **Queue dashboard panel** — a new "Auto Queue" card sits above the per-printer queue cards. Hidden when nothing is pending. Each row shows the file, target model / location / force-color, batch size badge for multi-copy submissions, and a `waiting_reason` line in yellow when the scheduler can't place the item (e.g. "No idle printer matches A1MINI + PETG", "PLA / Red not loaded"). Per-row actions: `Assign now` (one-shot bypass of `manual_start` / `scheduled_time`) and `Cancel` (single or whole batch).
+- **Settings → Queue & Scheduling → "Auto-Queue Routing"** — new toggle: `Shortest job first`. When on, the scheduler orders pending items by print time (NULLS LAST) instead of position, with an automatic starvation guard: items skipped multiple times get sticky `been_jumped` priority so nothing waits forever. Off by default — pure FIFO matches the existing per-printer queue behavior.
+- **REST surface** — new endpoints under `/api/v1/auto-queue`: `POST /` (create + auto-extract from 3MF, supports `quantity` + `plate_ids`), `GET /` (status / batch filters), `GET/PUT/DELETE /{id}`, `POST /reorder`, `POST /{id}/assign-now`, `DELETE /batch/{batch_id}`. Reuses the existing `queue:read / queue:create / queue:update_all / queue:delete_all / queue:reorder` permissions — no new permission needed.
+- **Schema additions** — new `auto_queue_items` table (33 columns: routing target, filament filters, print options, lifecycle, SJF, batch). Adds `print_queue.source_auto_item_id` FK so a per-printer item can trace back to the auto-queue row that produced it, and `printer_queues.auto_distribute_eligible` flag (default true) for opt-out per printer. Migration `m024`.
+
+The single-dispatch invariant from 0.4.0 still holds: the auto-queue scheduler only writes a row into the matching printer's `print_queue` and updates the auto-queue item to `status='assigned'`. The existing per-printer dispatcher then takes over with full plate-clear / stagger / swap-macro / drying support intact.
+
+---
+
 ## [0.4.1] - 2026-04-28
 
 Polish release on top of `0.4.0.1`. Mostly UI-side date/time formatting consistency and small navigation conveniences.
