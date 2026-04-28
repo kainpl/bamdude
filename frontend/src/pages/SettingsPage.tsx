@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, ChevronDown, Save, Mail, Flame, Code, Pencil, ScanEye } from 'lucide-react';
+import { Loader2, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, ChevronDown, Save, Mail, Flame, Code, Pencil, ScanEye, Sparkles } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, macrosApi } from '../api/client';
@@ -1010,6 +1010,7 @@ export function SettingsPage() {
       settings.ams_history_retention_days !== localSettings.ams_history_retention_days ||
       settings.disable_filament_warnings !== localSettings.disable_filament_warnings ||
       (settings.queue_drying_enabled ?? false) !== (localSettings.queue_drying_enabled ?? false) ||
+      (settings.queue_shortest_first ?? false) !== (localSettings.queue_shortest_first ?? false) ||
       (settings.queue_drying_block ?? false) !== (localSettings.queue_drying_block ?? false) ||
       (settings.ambient_drying_enabled ?? false) !== (localSettings.ambient_drying_enabled ?? false) ||
       (settings.drying_presets ?? '') !== (localSettings.drying_presets ?? '') ||
@@ -1086,6 +1087,7 @@ export function SettingsPage() {
         ams_history_retention_days: localSettings.ams_history_retention_days,
         disable_filament_warnings: localSettings.disable_filament_warnings,
         queue_drying_enabled: localSettings.queue_drying_enabled,
+        queue_shortest_first: localSettings.queue_shortest_first,
         queue_drying_block: localSettings.queue_drying_block,
         ambient_drying_enabled: localSettings.ambient_drying_enabled,
         drying_presets: localSettings.drying_presets,
@@ -3990,6 +3992,30 @@ export function SettingsPage() {
                   <p className="text-xs text-bambu-gray">
                     {t('settings.historyRetentionDescription')}
                   </p>
+                </div>
+
+                {/* Auto-queue routing (SJF) */}
+                <div className="space-y-3 pt-4 border-t border-bambu-dark-tertiary">
+                  <div className="flex items-center gap-2 text-white">
+                    <Sparkles className="w-4 h-4 text-bambu-green" />
+                    <span className="font-medium">{t('settings.autoQueueRouting')}</span>
+                  </div>
+                  <p className="text-xs text-bambu-gray">{t('settings.autoQueueRoutingDescription')}</p>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <label className="block text-sm text-white">{t('settings.queueShortestFirst')}</label>
+                      <p className="text-xs text-bambu-gray mt-0.5">{t('settings.queueShortestFirstDescription')}</p>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={localSettings.queue_shortest_first ?? false}
+                        onChange={(e) => updateSetting('queue_shortest_first', e.target.checked)}
+                        className="sr-only peer"
+                      />
+                      <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                    </label>
+                  </div>
                 </div>
 
                 {/* Queue Auto-Drying */}

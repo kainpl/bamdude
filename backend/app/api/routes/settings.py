@@ -97,6 +97,7 @@ async def get_settings(
                 "prometheus_enabled",
                 "user_notifications_enabled",
                 "prefer_lowest_filament",
+                "queue_shortest_first",
                 "queue_drying_enabled",
                 "queue_drying_block",
                 "ambient_drying_enabled",
