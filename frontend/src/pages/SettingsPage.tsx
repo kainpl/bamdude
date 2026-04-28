@@ -2450,6 +2450,30 @@ export function SettingsPage() {
                 )}
               </div>
 
+              {/* Auto-queue routing (SJF) */}
+              <div className="space-y-3 pt-4 border-t border-bambu-dark-tertiary">
+                <div className="flex items-center gap-2 text-white">
+                  <Sparkles className="w-4 h-4 text-bambu-green" />
+                  <span className="font-medium">{t('settings.autoQueueRouting')}</span>
+                </div>
+                <p className="text-xs text-bambu-gray">{t('settings.autoQueueRoutingDescription')}</p>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <label className="block text-sm text-white">{t('settings.queueShortestFirst')}</label>
+                    <p className="text-xs text-bambu-gray mt-0.5">{t('settings.queueShortestFirstDescription')}</p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={localSettings.queue_shortest_first ?? false}
+                      onChange={(e) => updateSetting('queue_shortest_first', e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                  </label>
+                </div>
+              </div>
+
               {/* Per-Printer Mapping Default (Print Modal) */}
               <div className="space-y-3 pt-4 border-t border-bambu-dark-tertiary">
                 <div className="flex items-center gap-2 text-white">
@@ -3992,30 +4016,6 @@ export function SettingsPage() {
                   <p className="text-xs text-bambu-gray">
                     {t('settings.historyRetentionDescription')}
                   </p>
-                </div>
-
-                {/* Auto-queue routing (SJF) */}
-                <div className="space-y-3 pt-4 border-t border-bambu-dark-tertiary">
-                  <div className="flex items-center gap-2 text-white">
-                    <Sparkles className="w-4 h-4 text-bambu-green" />
-                    <span className="font-medium">{t('settings.autoQueueRouting')}</span>
-                  </div>
-                  <p className="text-xs text-bambu-gray">{t('settings.autoQueueRoutingDescription')}</p>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <label className="block text-sm text-white">{t('settings.queueShortestFirst')}</label>
-                      <p className="text-xs text-bambu-gray mt-0.5">{t('settings.queueShortestFirstDescription')}</p>
-                    </div>
-                    <label className="relative inline-flex items-center cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={localSettings.queue_shortest_first ?? false}
-                        onChange={(e) => updateSetting('queue_shortest_first', e.target.checked)}
-                        className="sr-only peer"
-                      />
-                      <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
-                    </label>
-                  </div>
                 </div>
 
                 {/* Queue Auto-Drying */}
