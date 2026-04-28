@@ -8,15 +8,17 @@ import { Button } from './Button';
 import { useToast } from '../contexts/ToastContext';
 
 type Mode = 'print_queue' | 'auto_queue' | 'file_manager' | 'proxy';
+type DisplayMode = 'print_queue' | 'file_manager' | 'proxy';
 
-const MODE_LABELS: Record<string, string> = {
+// Backend keeps print_queue / auto_queue as separate mode strings, but the UI
+// folds them into a single "Queue" radio + an "Auto-select printer" toggle.
+const MODE_LABELS: Record<DisplayMode, string> = {
   print_queue: 'queue',
-  auto_queue: 'autoQueue',
   file_manager: 'fileManager',
   proxy: 'proxy',
 };
 
-const MODE_LIST: readonly Mode[] = ['print_queue', 'auto_queue', 'file_manager', 'proxy'] as const;
+const DISPLAY_MODES: readonly DisplayMode[] = ['print_queue', 'file_manager', 'proxy'] as const;
 
 interface VirtualPrinterAddDialogProps {
   onClose: () => void;
@@ -82,29 +84,61 @@ export function VirtualPrinterAddDialog({ onClose }: VirtualPrinterAddDialogProp
           <div>
             <label className="text-sm text-white font-medium block mb-1">{t('virtualPrinter.mode.title')}</label>
             <div className="grid grid-cols-2 gap-2">
-              {MODE_LIST.map((m) => (
-                <button
-                  key={m}
-                  onClick={() => setMode(m)}
-                  className={`p-2 rounded-lg border text-left transition-colors ${
-                    mode === m
-                      ? m === 'proxy'
-                        ? 'border-blue-500 bg-blue-500/10'
-                        : 'border-bambu-green bg-bambu-green/10'
-                      : 'border-bambu-dark-tertiary hover:border-bambu-gray'
-                  }`}
-                >
-                  <div className="flex items-center gap-1.5 text-white text-xs font-medium">
-                    {m === 'proxy' && <ArrowRightLeft className="w-3 h-3" />}
-                    {t(`virtualPrinter.mode.${MODE_LABELS[m]}`)}
-                  </div>
-                  <div className="text-[10px] text-bambu-gray">
-                    {t(`virtualPrinter.mode.${MODE_LABELS[m]}Desc`)}
-                  </div>
-                </button>
-              ))}
+              {DISPLAY_MODES.map((m) => {
+                // Queue radio is highlighted for both print_queue and auto_queue;
+                // the toggle below splits between them.
+                const isSelected = m === 'print_queue'
+                  ? (mode === 'print_queue' || mode === 'auto_queue')
+                  : mode === m;
+                return (
+                  <button
+                    key={m}
+                    onClick={() => setMode(m)}
+                    className={`p-2 rounded-lg border text-left transition-colors ${
+                      isSelected
+                        ? m === 'proxy'
+                          ? 'border-blue-500 bg-blue-500/10'
+                          : 'border-bambu-green bg-bambu-green/10'
+                        : 'border-bambu-dark-tertiary hover:border-bambu-gray'
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5 text-white text-xs font-medium">
+                      {m === 'proxy' && <ArrowRightLeft className="w-3 h-3" />}
+                      {t(`virtualPrinter.mode.${MODE_LABELS[m]}`)}
+                    </div>
+                    <div className="text-[10px] text-bambu-gray">
+                      {t(`virtualPrinter.mode.${MODE_LABELS[m]}Desc`)}
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           </div>
+
+          {/* Auto-select printer toggle — visible only when Queue mode is picked */}
+          {(mode === 'print_queue' || mode === 'auto_queue') && (
+            <div>
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-white text-sm font-medium">{t('virtualPrinter.autoSelectPrinter.title')}</div>
+                  <div className="text-[10px] text-bambu-gray">{t('virtualPrinter.autoSelectPrinter.description')}</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setMode(mode === 'auto_queue' ? 'print_queue' : 'auto_queue')}
+                  className={`relative w-10 h-5 rounded-full transition-colors flex-shrink-0 ${
+                    mode === 'auto_queue' ? 'bg-bambu-green' : 'bg-bambu-dark-tertiary'
+                  }`}
+                >
+                  <span
+                    className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform ${
+                      mode === 'auto_queue' ? 'translate-x-5' : ''
+                    }`}
+                  />
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Target Printer - only for proxy mode */}
           {mode === 'proxy' && (

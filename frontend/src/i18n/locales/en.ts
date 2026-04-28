@@ -4469,6 +4469,10 @@ export default {
       title: 'Auto-dispatch',
       description: 'Automatically start prints when added to queue. When off, prints wait for manual dispatch.',
     },
+    autoSelectPrinter: {
+      title: 'Auto-select printer',
+      description: 'When on, uploads go to the auto-queue router that picks any idle printer matching model + filaments. When off, the upload lands in a specific printer queue.',
+    },
     setupRequired: {
       title: 'Setup Required',
       description: 'The virtual printer feature requires additional system configuration before it will work. This includes port forwarding, firewall rules, and platform-specific settings.',

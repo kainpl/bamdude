@@ -13,15 +13,17 @@ import { ConfirmModal } from './ConfirmModal';
 import { useToast } from '../contexts/ToastContext';
 
 type LocalMode = 'print_queue' | 'auto_queue' | 'file_manager' | 'proxy';
+type DisplayMode = 'print_queue' | 'file_manager' | 'proxy';
 
-const MODE_LABELS: Record<string, string> = {
+// Backend keeps print_queue / auto_queue as separate mode strings, but the UI
+// folds them into a single "Queue" radio + an "Auto-select printer" toggle.
+const MODE_LABELS: Record<DisplayMode, string> = {
   print_queue: 'queue',
-  auto_queue: 'autoQueue',
   file_manager: 'fileManager',
   proxy: 'proxy',
 };
 
-const MODE_LIST: readonly LocalMode[] = ['print_queue', 'auto_queue', 'file_manager', 'proxy'] as const;
+const DISPLAY_MODES: readonly DisplayMode[] = ['print_queue', 'file_manager', 'proxy'] as const;
 
 interface VirtualPrinterCardProps {
   printer: VirtualPrinterConfig;
@@ -38,7 +40,7 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
   const [localName, setLocalName] = useState(printer.name);
   const [localAccessCode, setLocalAccessCode] = useState('');
   const [localMode, setLocalMode] = useState<LocalMode>(
-    ((MODE_LIST as readonly string[]).includes(printer.mode) ? printer.mode : 'file_manager') as LocalMode
+    ((['print_queue', 'auto_queue', 'file_manager', 'proxy'] as readonly string[]).includes(printer.mode) ? printer.mode : 'file_manager') as LocalMode
   );
   const [localTargetPrinterId, setLocalTargetPrinterId] = useState<number | null>(printer.target_printer_id);
   const [localBindIp, setLocalBindIp] = useState(printer.bind_ip || '');
@@ -53,7 +55,7 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
   useEffect(() => {
     if (!pendingAction) {
       setLocalEnabled(printer.enabled);
-      setLocalMode(((MODE_LIST as readonly string[]).includes(printer.mode) ? printer.mode : 'file_manager') as LocalMode);
+      setLocalMode(((['print_queue', 'auto_queue', 'file_manager', 'proxy'] as readonly string[]).includes(printer.mode) ? printer.mode : 'file_manager') as LocalMode);
       setLocalName(printer.name);
       setLocalTargetPrinterId(printer.target_printer_id);
       setLocalBindIp(printer.bind_ip || '');
@@ -86,7 +88,7 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
     onError: (error: Error) => {
       showToast(error.message || t('virtualPrinter.toast.failedToUpdate'), 'error');
       setLocalEnabled(printer.enabled);
-      setLocalMode(((MODE_LIST as readonly string[]).includes(printer.mode) ? printer.mode : 'file_manager') as LocalMode);
+      setLocalMode(((['print_queue', 'auto_queue', 'file_manager', 'proxy'] as readonly string[]).includes(printer.mode) ? printer.mode : 'file_manager') as LocalMode);
       setLocalTargetPrinterId(printer.target_printer_id);
       setLocalBindIp(printer.bind_ip || '');
       setPendingAction(null);
@@ -176,7 +178,9 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
   };
 
   const isRunning = printer.status?.running || false;
-  const modeLabel = t(`virtualPrinter.mode.${MODE_LABELS[localMode] || 'archive'}`);
+  // For status badge: collapse auto_queue → queue (UI shows them as one mode + toggle).
+  const displayMode: DisplayMode = localMode === 'auto_queue' ? 'print_queue' : (localMode as DisplayMode);
+  const modeLabel = t(`virtualPrinter.mode.${MODE_LABELS[displayMode] || 'archive'}`);
   const targetPrinterName = printers?.find(p => p.id === localTargetPrinterId)?.name;
 
   return (
@@ -257,30 +261,66 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
             <div>
               <div className="text-white text-sm font-medium mb-2">{t('virtualPrinter.mode.title')}</div>
               <div className="grid grid-cols-2 gap-2">
-                {MODE_LIST.map((mode) => (
-                  <button
-                    key={mode}
-                    onClick={() => handleModeChange(mode)}
-                    disabled={pendingAction === 'mode'}
-                    className={`p-2 rounded-lg border text-left transition-colors ${
-                      localMode === mode
-                        ? mode === 'proxy'
-                          ? 'border-blue-500 bg-blue-500/10'
-                          : 'border-bambu-green bg-bambu-green/10'
-                        : 'border-bambu-dark-tertiary hover:border-bambu-gray'
-                    }`}
-                  >
-                    <div className="flex items-center gap-1.5 text-white text-xs font-medium">
-                      {mode === 'proxy' && <ArrowRightLeft className="w-3 h-3" />}
-                      {t(`virtualPrinter.mode.${MODE_LABELS[mode]}`)}
-                    </div>
-                    <div className="text-[10px] text-bambu-gray">
-                      {t(`virtualPrinter.mode.${MODE_LABELS[mode]}Desc`)}
-                    </div>
-                  </button>
-                ))}
+                {DISPLAY_MODES.map((mode) => {
+                  // Queue radio is highlighted for both print_queue and auto_queue;
+                  // the toggle below splits between them.
+                  const isSelected = mode === 'print_queue'
+                    ? (localMode === 'print_queue' || localMode === 'auto_queue')
+                    : localMode === mode;
+                  return (
+                    <button
+                      key={mode}
+                      onClick={() => handleModeChange(mode)}
+                      disabled={pendingAction === 'mode'}
+                      className={`p-2 rounded-lg border text-left transition-colors ${
+                        isSelected
+                          ? mode === 'proxy'
+                            ? 'border-blue-500 bg-blue-500/10'
+                            : 'border-bambu-green bg-bambu-green/10'
+                          : 'border-bambu-dark-tertiary hover:border-bambu-gray'
+                      }`}
+                    >
+                      <div className="flex items-center gap-1.5 text-white text-xs font-medium">
+                        {mode === 'proxy' && <ArrowRightLeft className="w-3 h-3" />}
+                        {t(`virtualPrinter.mode.${MODE_LABELS[mode]}`)}
+                      </div>
+                      <div className="text-[10px] text-bambu-gray">
+                        {t(`virtualPrinter.mode.${MODE_LABELS[mode]}Desc`)}
+                      </div>
+                    </button>
+                  );
+                })}
               </div>
             </div>
+
+            {/* Auto-select printer toggle — only when Queue mode is picked.
+                Splits print_queue (specific / least busy) vs auto_queue (router). */}
+            {(localMode === 'print_queue' || localMode === 'auto_queue') && (
+              <div className="pt-2 border-t border-bambu-dark-tertiary">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-white text-sm font-medium">{t('virtualPrinter.autoSelectPrinter.title')}</div>
+                    <div className="text-[10px] text-bambu-gray">{t('virtualPrinter.autoSelectPrinter.description')}</div>
+                  </div>
+                  <button
+                    onClick={() => {
+                      const next: LocalMode = localMode === 'auto_queue' ? 'print_queue' : 'auto_queue';
+                      handleModeChange(next);
+                    }}
+                    disabled={pendingAction === 'mode'}
+                    className={`relative w-10 h-5 rounded-full transition-colors flex-shrink-0 ${
+                      localMode === 'auto_queue' ? 'bg-bambu-green' : 'bg-bambu-dark-tertiary'
+                    } ${pendingAction === 'mode' ? 'opacity-50' : ''}`}
+                  >
+                    <span
+                      className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform ${
+                        localMode === 'auto_queue' ? 'translate-x-5' : ''
+                      }`}
+                    />
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Auto-dispatch toggle - print_queue + auto_queue both use it for manual_start */}
             {(localMode === 'print_queue' || localMode === 'auto_queue') && (
