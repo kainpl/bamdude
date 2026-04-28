@@ -15,6 +15,7 @@ from backend.app.api.routes import (
     api_keys,
     archives,
     auth,
+    auto_queue,
     background_dispatch as background_dispatch_routes,
     camera,
     cloud,
@@ -4884,6 +4885,7 @@ app.include_router(cloud.router, prefix=app_settings.api_prefix)
 app.include_router(local_presets.router, prefix=app_settings.api_prefix)
 app.include_router(smart_plugs.router, prefix=app_settings.api_prefix)
 app.include_router(print_queue.router, prefix=app_settings.api_prefix)
+app.include_router(auto_queue.router, prefix=app_settings.api_prefix)
 app.include_router(background_dispatch_routes.router, prefix=app_settings.api_prefix)
 app.include_router(kprofiles.router, prefix=app_settings.api_prefix)
 app.include_router(notifications.router, prefix=app_settings.api_prefix)
