@@ -7,13 +7,16 @@ import { Card, CardContent } from './Card';
 import { Button } from './Button';
 import { useToast } from '../contexts/ToastContext';
 
-type Mode = 'print_queue' | 'file_manager' | 'proxy';
+type Mode = 'print_queue' | 'auto_queue' | 'file_manager' | 'proxy';
 
 const MODE_LABELS: Record<string, string> = {
   print_queue: 'queue',
+  auto_queue: 'autoQueue',
   file_manager: 'fileManager',
   proxy: 'proxy',
 };
+
+const MODE_LIST: readonly Mode[] = ['print_queue', 'auto_queue', 'file_manager', 'proxy'] as const;
 
 interface VirtualPrinterAddDialogProps {
   onClose: () => void;
@@ -79,7 +82,7 @@ export function VirtualPrinterAddDialog({ onClose }: VirtualPrinterAddDialogProp
           <div>
             <label className="text-sm text-white font-medium block mb-1">{t('virtualPrinter.mode.title')}</label>
             <div className="grid grid-cols-2 gap-2">
-              {(['print_queue', 'file_manager', 'proxy'] as const).map((m) => (
+              {MODE_LIST.map((m) => (
                 <button
                   key={m}
                   onClick={() => setMode(m)}

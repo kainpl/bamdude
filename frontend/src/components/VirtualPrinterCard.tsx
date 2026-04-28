@@ -12,13 +12,16 @@ import { Button } from './Button';
 import { ConfirmModal } from './ConfirmModal';
 import { useToast } from '../contexts/ToastContext';
 
-type LocalMode = 'print_queue' | 'file_manager' | 'proxy';
+type LocalMode = 'print_queue' | 'auto_queue' | 'file_manager' | 'proxy';
 
 const MODE_LABELS: Record<string, string> = {
   print_queue: 'queue',
+  auto_queue: 'autoQueue',
   file_manager: 'fileManager',
   proxy: 'proxy',
 };
+
+const MODE_LIST: readonly LocalMode[] = ['print_queue', 'auto_queue', 'file_manager', 'proxy'] as const;
 
 interface VirtualPrinterCardProps {
   printer: VirtualPrinterConfig;
@@ -35,7 +38,7 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
   const [localName, setLocalName] = useState(printer.name);
   const [localAccessCode, setLocalAccessCode] = useState('');
   const [localMode, setLocalMode] = useState<LocalMode>(
-    (['print_queue', 'file_manager', 'proxy'].includes(printer.mode) ? printer.mode : 'file_manager') as LocalMode
+    ((MODE_LIST as readonly string[]).includes(printer.mode) ? printer.mode : 'file_manager') as LocalMode
   );
   const [localTargetPrinterId, setLocalTargetPrinterId] = useState<number | null>(printer.target_printer_id);
   const [localBindIp, setLocalBindIp] = useState(printer.bind_ip || '');
@@ -50,7 +53,7 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
   useEffect(() => {
     if (!pendingAction) {
       setLocalEnabled(printer.enabled);
-      setLocalMode((['print_queue', 'file_manager', 'proxy'].includes(printer.mode) ? printer.mode : 'file_manager') as LocalMode);
+      setLocalMode(((MODE_LIST as readonly string[]).includes(printer.mode) ? printer.mode : 'file_manager') as LocalMode);
       setLocalName(printer.name);
       setLocalTargetPrinterId(printer.target_printer_id);
       setLocalBindIp(printer.bind_ip || '');
@@ -83,7 +86,7 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
     onError: (error: Error) => {
       showToast(error.message || t('virtualPrinter.toast.failedToUpdate'), 'error');
       setLocalEnabled(printer.enabled);
-      setLocalMode((['print_queue', 'file_manager', 'proxy'].includes(printer.mode) ? printer.mode : 'file_manager') as LocalMode);
+      setLocalMode(((MODE_LIST as readonly string[]).includes(printer.mode) ? printer.mode : 'file_manager') as LocalMode);
       setLocalTargetPrinterId(printer.target_printer_id);
       setLocalBindIp(printer.bind_ip || '');
       setPendingAction(null);
@@ -254,7 +257,7 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
             <div>
               <div className="text-white text-sm font-medium mb-2">{t('virtualPrinter.mode.title')}</div>
               <div className="grid grid-cols-2 gap-2">
-                {(['print_queue', 'file_manager', 'proxy'] as const).map((mode) => (
+                {MODE_LIST.map((mode) => (
                   <button
                     key={mode}
                     onClick={() => handleModeChange(mode)}
@@ -279,8 +282,8 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
               </div>
             </div>
 
-            {/* Auto-dispatch toggle - only for print_queue mode */}
-            {localMode === 'print_queue' && (
+            {/* Auto-dispatch toggle - print_queue + auto_queue both use it for manual_start */}
+            {(localMode === 'print_queue' || localMode === 'auto_queue') && (
               <div className="pt-2 border-t border-bambu-dark-tertiary">
                 <div className="flex items-center justify-between">
                   <div>
@@ -394,27 +397,29 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
               </div>
             )}
 
-            {/* Target Printer */}
-            <div className="pt-2 border-t border-bambu-dark-tertiary">
-              <div className="text-white text-sm font-medium mb-2">{t('virtualPrinter.targetPrinter.title')}</div>
-              <div className="relative">
-                <select
-                  value={localTargetPrinterId ?? ''}
-                  onChange={(e) => {
-                    const id = parseInt(e.target.value, 10);
-                    if (!isNaN(id)) handleTargetPrinterChange(id);
-                  }}
-                  disabled={pendingAction === 'targetPrinter'}
-                  className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-md px-3 py-1.5 text-white text-sm appearance-none cursor-pointer disabled:opacity-50 pr-10"
-                >
-                  <option value="">{t('virtualPrinter.targetPrinter.placeholder')}</option>
-                  {printers?.map((p) => (
-                    <option key={p.id} value={p.id}>{p.name} ({p.ip_address})</option>
-                  ))}
-                </select>
-                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
+            {/* Target Printer — ignored in auto_queue mode (router picks one) */}
+            {localMode !== 'auto_queue' && (
+              <div className="pt-2 border-t border-bambu-dark-tertiary">
+                <div className="text-white text-sm font-medium mb-2">{t('virtualPrinter.targetPrinter.title')}</div>
+                <div className="relative">
+                  <select
+                    value={localTargetPrinterId ?? ''}
+                    onChange={(e) => {
+                      const id = parseInt(e.target.value, 10);
+                      if (!isNaN(id)) handleTargetPrinterChange(id);
+                    }}
+                    disabled={pendingAction === 'targetPrinter'}
+                    className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-md px-3 py-1.5 text-white text-sm appearance-none cursor-pointer disabled:opacity-50 pr-10"
+                  >
+                    <option value="">{t('virtualPrinter.targetPrinter.placeholder')}</option>
+                    {printers?.map((p) => (
+                      <option key={p.id} value={p.id}>{p.name} ({p.ip_address})</option>
+                    ))}
+                  </select>
+                  <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
+                </div>
               </div>
-            </div>
+            )}
 
             {/* Bind Interface */}
             <div className="pt-2 border-t border-bambu-dark-tertiary">

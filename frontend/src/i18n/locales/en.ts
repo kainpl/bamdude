@@ -4458,6 +4458,8 @@ export default {
       reviewDesc: 'Review before archiving',
       queue: 'Queue',
       queueDesc: 'Archive and add to queue',
+      autoQueue: 'Auto Queue',
+      autoQueueDesc: 'Drop into the auto-queue router (matches model + filaments)',
       fileManager: 'File Manager',
       fileManagerDesc: 'Save directly to File Manager',
       proxy: 'Proxy',

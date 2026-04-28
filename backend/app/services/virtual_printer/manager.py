@@ -196,10 +196,15 @@ class VirtualPrinterInstance:
 
         self._pending_files[file_path.name] = file_path
 
-        # Three supported modes (m002 already migrated legacy ``immediate``
+        # Four supported modes (m002 already migrated legacy ``immediate``
         # / ``review`` rows to ``file_manager``, and ``queue`` to
         # ``print_queue``):
-        #   * print_queue  — archive + push to a printer queue.
+        #   * print_queue  — archive + push directly to a per-printer queue
+        #                    (specific target_printer_id, or "least busy of
+        #                    matching model" via _find_best_queue).
+        #   * auto_queue   — archive + drop into the global auto-queue
+        #                    layer; AutoQueueScheduler picks an eligible
+        #                    printer with full filament/color check.
         #   * file_manager — save to library for review.
         #   * proxy        — bypasses this handler (the TCP proxy passes
         #                    bytes straight through to the real printer).
@@ -207,6 +212,8 @@ class VirtualPrinterInstance:
         # silently dropping the file.
         if self.mode == "print_queue":
             await self._add_to_print_queue(file_path, source_ip)
+        elif self.mode == "auto_queue":
+            await self._add_to_auto_queue(file_path, source_ip)
         else:
             await self._save_to_library(file_path, source_ip)
 
@@ -416,6 +423,93 @@ class VirtualPrinterInstance:
                     logger.error("Failed to archive file: %s", file_path.name)
         except Exception as e:
             logger.error("Error adding to print queue: %s", e)
+
+    async def _add_to_auto_queue(self, file_path: Path, source_ip: str) -> None:
+        """Archive file and drop it into the global auto-queue layer.
+
+        Unlike ``_add_to_print_queue`` this never picks a printer up-front:
+        the AutoQueueScheduler later assigns the item to whichever idle
+        printer matches model + filaments + colors. ``target_printer_id``
+        on the VP config is intentionally ignored in this mode (use
+        ``print_queue`` mode for specific-printer routing).
+        """
+        if not self._session_factory:
+            logger.error("Cannot add to auto-queue: no database session factory configured")
+            return
+
+        if file_path.suffix.lower() != ".3mf":
+            self._pending_files.pop(file_path.name, None)
+            try:
+                file_path.unlink()
+            except OSError:
+                pass
+            return
+
+        try:
+            from sqlalchemy import func as sa_func, select as sa_select
+
+            from backend.app.models.auto_queue import AutoQueueItem
+            from backend.app.services.archive import ArchiveService
+            from backend.app.services.auto_queue_threemf import extract_auto_queue_requirements
+
+            async with self._session_factory() as db:
+                service = ArchiveService(db)
+                archive = await service.archive_print(
+                    printer_id=None,
+                    source_file=file_path,
+                    print_data={
+                        "status": "archived",
+                        "source": "virtual_printer",
+                        "source_ip": source_ip,
+                    },
+                )
+                if not archive:
+                    logger.error("[VP %s] Failed to archive file: %s", self.name, file_path.name)
+                    return
+
+                plate_id = self._extract_plate_id(file_path)
+                # Use the freshly-copied archive 3MF (or the original upload as a
+                # fallback) to extract target model + required filament types.
+                source_for_extract = Path(archive.file_path) if archive.file_path else file_path
+                requirements = extract_auto_queue_requirements(source_for_extract, plate_id=plate_id)
+
+                # Position at the end of pending items so VP-uploads don't
+                # jump ahead of UI submissions.
+                max_pos = await db.scalar(
+                    sa_select(sa_func.coalesce(sa_func.max(AutoQueueItem.position), 0)).where(
+                        AutoQueueItem.status == "pending"
+                    )
+                )
+                next_pos = (max_pos or 0) + 1
+
+                item = AutoQueueItem(
+                    archive_id=archive.id,
+                    target_model=requirements.target_model or archive.sliced_for_model,
+                    required_filament_types=(
+                        list(requirements.required_filament_types) if requirements.required_filament_types else None
+                    ),
+                    plate_id=plate_id,
+                    position=next_pos,
+                    status="pending",
+                    manual_start=not self.auto_dispatch,
+                )
+                db.add(item)
+                await db.commit()
+                logger.info(
+                    "[VP %s] Added to auto-queue (item %s, target_model=%s, filaments=%s)",
+                    self.name,
+                    item.id,
+                    item.target_model,
+                    item.required_filament_types,
+                )
+
+                try:
+                    file_path.unlink()
+                except OSError:
+                    pass
+                self._pending_files.pop(file_path.name, None)
+        except Exception as e:
+            logger.exception("[VP %s] Error adding to auto-queue: %s", self.name, e)
 
     @staticmethod
     def _extract_plate_id(file_path: Path) -> int | None:

@@ -5827,7 +5827,7 @@ export const discoveryApi = {
 // Virtual Printer types
 // Three supported modes after the m002 migration purged the legacy
 // ``immediate`` / ``review`` / ``queue`` values.
-export type VirtualPrinterMode = 'print_queue' | 'file_manager' | 'proxy';
+export type VirtualPrinterMode = 'print_queue' | 'auto_queue' | 'file_manager' | 'proxy';
 
 export interface VirtualPrinterProxyStatus {
   running: boolean;

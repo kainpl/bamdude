@@ -149,7 +149,7 @@ class AppSettings(BaseModel):
     virtual_printer_access_code: str = Field(default="", description="Access code for virtual printer authentication")
     virtual_printer_mode: str = Field(
         default="file_manager",
-        description="Mode: 'print_queue' (archive + add to print queue), 'file_manager' (save to library), or 'proxy' (transparent forward to a real printer)",
+        description="Mode: 'print_queue' (archive + push directly to a per-printer queue), 'auto_queue' (archive + drop into the auto-queue router), 'file_manager' (save to library), or 'proxy' (transparent forward to a real printer)",
     )
 
     # Dark mode theme settings
