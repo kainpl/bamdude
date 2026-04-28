@@ -106,6 +106,22 @@ export const DEFAULT_SCHEDULE_OPTIONS: ScheduleOptions = {
 };
 
 /**
+ * Auto-distribute mode options. Used by the AutoModeOptions panel
+ * when the operator picks "Auto" instead of a specific printer.
+ */
+export interface AutoModeOptionsState {
+  target_model: string | null;
+  target_location: string | null;
+  force_color_match: boolean;
+}
+
+export const DEFAULT_AUTO_MODE_OPTIONS: AutoModeOptionsState = {
+  target_model: null,
+  target_location: null,
+  force_color_match: false,
+};
+
+/**
  * Plate information from a multi-plate 3MF file.
  *
  * Mirrors the backend ``/library/files/{id}/plates`` and

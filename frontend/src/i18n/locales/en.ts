@@ -3922,6 +3922,21 @@ export default {
     quantity: 'Quantity',
     quantityHint: 'Print multiple copies. Extras are queued after the first.',
 
+    // Dispatch mode toggle (add-to-queue only)
+    dispatchModeSpecific: 'Specific printer',
+    dispatchModeAuto: 'Auto-distribute',
+    autoMode: {
+      title: 'Auto-distribute',
+      hint: 'The job is held in a router queue and assigned to any matching idle printer.',
+      targetModel: 'Target model',
+      autoDetect: 'Auto-detect from file',
+      autoDetectFromFile: 'Auto-detect ({{model}})',
+      targetLocation: 'Location filter',
+      anyLocation: 'Any location',
+      forceColorMatch: 'Force exact color match',
+      forceColorMatchDesc: 'Wait for a printer with the exact filament colors loaded.',
+    },
+
     // ScheduleOptions
     whenToPrint: 'When to print',
     scheduleAsap: 'ASAP',

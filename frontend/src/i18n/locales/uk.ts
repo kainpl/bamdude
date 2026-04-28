@@ -3922,6 +3922,21 @@ export default {
     quantity: 'Кількість',
     quantityHint: 'Кілька копій. Додаткові стають у чергу після першої.',
 
+    // Перемикач режиму призначення (тільки в add-to-queue)
+    dispatchModeSpecific: 'Конкретний принтер',
+    dispatchModeAuto: 'Авто-розподіл',
+    autoMode: {
+      title: 'Авто-розподіл',
+      hint: 'Завдання потрапляє у роутер-чергу і призначається на будь-який підходящий вільний принтер.',
+      targetModel: 'Цільова модель',
+      autoDetect: 'Авто-визначення з файлу',
+      autoDetectFromFile: 'Авто-визначення ({{model}})',
+      targetLocation: 'Фільтр локації',
+      anyLocation: 'Будь-яка локація',
+      forceColorMatch: 'Точний збіг кольору',
+      forceColorMatchDesc: 'Чекати принтер із точно такими ж завантаженими кольорами.',
+    },
+
     // ScheduleOptions
     whenToPrint: 'Коли друкувати',
     scheduleAsap: 'Якнайшвидше',
