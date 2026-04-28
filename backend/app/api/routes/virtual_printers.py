@@ -35,6 +35,10 @@ class VirtualPrinterUpdate(BaseModel):
     model: str | None = None
     access_code: str | None = None
     target_printer_id: int | None = None
+    # Pydantic can't distinguish "field not provided" from "field=null", so we
+    # use this sentinel to explicitly clear target_printer_id (e.g. when the
+    # operator switches a VP into auto-select mode).
+    clear_target_printer: bool = False
     auto_dispatch: bool | None = None
     bind_ip: str | None = None
     remote_interface_ip: str | None = None
@@ -119,7 +123,7 @@ async def create_virtual_printer(
     from backend.app.services.virtual_printer.manager import DEFAULT_VIRTUAL_PRINTER_MODEL
 
     # Validate mode
-    if body.mode not in ("print_queue", "file_manager", "proxy"):
+    if body.mode not in ("print_queue", "auto_queue", "file_manager", "proxy"):
         return JSONResponse(status_code=400, content={"detail": "Invalid mode"})
 
     # Validate model
@@ -143,6 +147,22 @@ async def create_virtual_printer(
         else:
             if not body.access_code:
                 return JSONResponse(status_code=400, content={"detail": "Access code is required when enabling"})
+
+    # In print_queue mode without auto-select (auto_queue toggle off) AND
+    # without a target printer, auto_dispatch=True is unsafe — uploads have
+    # nowhere to land automatically and would silently fall through to the
+    # library. Force the operator to either pick a target or switch to
+    # auto_queue / disable auto_dispatch.
+    if body.mode == "print_queue" and body.auto_dispatch and not body.target_printer_id:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "detail": (
+                    "Auto-dispatch in Queue mode requires a Target Printer. "
+                    "Pick a target, enable Auto-select printer, or turn Auto-dispatch off."
+                )
+            },
+        )
 
     # Validate proxy target printer exists
     target_printer = None
@@ -267,7 +287,7 @@ async def update_virtual_printer(
     if body.name is not None:
         vp.name = body.name
     if body.mode is not None:
-        if body.mode not in ("print_queue", "file_manager", "proxy"):
+        if body.mode not in ("print_queue", "auto_queue", "file_manager", "proxy"):
             return JSONResponse(status_code=400, content={"detail": "Invalid mode"})
         vp.mode = body.mode
     if body.model is not None:
@@ -281,7 +301,9 @@ async def update_virtual_printer(
         if body.access_code and len(body.access_code) != 8:
             return JSONResponse(status_code=400, content={"detail": "Access code must be exactly 8 characters"})
         vp.access_code = body.access_code
-    if body.target_printer_id is not None:
+    if body.clear_target_printer:
+        vp.target_printer_id = None
+    elif body.target_printer_id is not None:
         from backend.app.models.printer import Printer
 
         result = await db.execute(select(Printer).where(Printer.id == body.target_printer_id))
@@ -300,6 +322,20 @@ async def update_virtual_printer(
         vp.bind_ip = body.bind_ip
     if body.remote_interface_ip is not None:
         vp.remote_interface_ip = body.remote_interface_ip
+
+    # After all partial updates: validate the effective state. In print_queue
+    # mode (auto_queue toggle off) without a Target Printer, auto_dispatch=True
+    # is unsafe — uploads have nowhere to land automatically.
+    if vp.mode == "print_queue" and vp.auto_dispatch and not vp.target_printer_id:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "detail": (
+                    "Auto-dispatch in Queue mode requires a Target Printer. "
+                    "Pick a target, enable Auto-select printer, or turn Auto-dispatch off."
+                )
+            },
+        )
 
     # Auto-inherit model when switching to proxy mode with existing target printer
     if body.mode == "proxy" and body.model is None and body.target_printer_id is None and vp.target_printer_id:

@@ -5966,6 +5966,8 @@ export const multiVirtualPrinterApi = {
     model?: string;
     access_code?: string;
     target_printer_id?: number;
+    /** Explicitly null out target_printer_id (Pydantic can't distinguish "absent" from "null"). */
+    clear_target_printer?: boolean;
     auto_dispatch?: boolean;
     bind_ip?: string;
     remote_interface_ip?: string;

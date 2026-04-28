@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
 import {
   Loader2, Check, AlertTriangle, Eye, EyeOff, Info,
-  ChevronDown, ChevronRight, ArrowRightLeft, Trash2,
+  ChevronDown, ChevronRight, ArrowRightLeft, Trash2, X,
 } from 'lucide-react';
 import { api, multiVirtualPrinterApi } from '../api/client';
 import type { VirtualPrinterConfig } from '../api/client';
@@ -156,18 +156,58 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
   const handleModeChange = (mode: LocalMode) => {
     setLocalMode(mode);
     setPendingAction('mode');
-    updateMutation.mutate({ mode });
+    // When switching to auto_queue, target_printer_id becomes irrelevant —
+    // clear it both locally and on the backend so a stale value can't sneak
+    // back in if the operator later flips the toggle off.
+    if (mode === 'auto_queue' && localTargetPrinterId !== null) {
+      setLocalTargetPrinterId(null);
+      updateMutation.mutate({ mode, clear_target_printer: true });
+    } else {
+      updateMutation.mutate({ mode });
+    }
+  };
+
+  const handleClearTargetPrinter = () => {
+    setLocalTargetPrinterId(null);
+    setPendingAction('targetPrinter');
+    updateMutation.mutate({ clear_target_printer: true });
   };
 
   const handleModelChange = (model: string) => {
     setLocalModel(model);
     setPendingAction('model');
+    // If a target is picked and its model no longer matches the new VP model,
+    // clear the target so the two fields can't disagree.
+    const expectedDisplay = models[model];
+    const currentTarget = printers?.find((p) => p.id === localTargetPrinterId);
+    if (
+      localTargetPrinterId !== null
+      && currentTarget
+      && expectedDisplay
+      && currentTarget.model
+      && currentTarget.model !== expectedDisplay
+    ) {
+      setLocalTargetPrinterId(null);
+      updateMutation.mutate({ model, clear_target_printer: true });
+      return;
+    }
     updateMutation.mutate({ model });
   };
 
   const handleTargetPrinterChange = (printerId: number) => {
+    const picked = printers?.find((p) => p.id === printerId);
     setLocalTargetPrinterId(printerId);
     setPendingAction('targetPrinter');
+    // Inherit VP model from the picked printer when it differs (so the
+    // Printer Model dropdown can stay in sync without a second click).
+    if (picked?.model) {
+      const matchingCode = Object.entries(models).find(([, displayName]) => displayName === picked.model)?.[0];
+      if (matchingCode && matchingCode !== localModel) {
+        setLocalModel(matchingCode);
+        updateMutation.mutate({ target_printer_id: printerId, model: matchingCode });
+        return;
+      }
+    }
     updateMutation.mutate({ target_printer_id: printerId });
   };
 
@@ -293,6 +333,56 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
               </div>
             </div>
 
+            {/* Auto-dispatch toggle - print_queue + auto_queue both use it for manual_start */}
+            {(localMode === 'print_queue' || localMode === 'auto_queue') && (() => {
+              // Auto-dispatch in print_queue mode without a Target Printer is unsafe —
+              // uploads have nowhere to land automatically. Block + warn.
+              const autoDispatchBlocked = localMode === 'print_queue' && localTargetPrinterId === null;
+              return (
+                <div className="pt-2 border-t border-bambu-dark-tertiary">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-white text-sm font-medium">{t('virtualPrinter.autoDispatch.title')}</div>
+                      <div className="text-[10px] text-bambu-gray">{t('virtualPrinter.autoDispatch.description')}</div>
+                    </div>
+                    <button
+                      onClick={() => {
+                        if (autoDispatchBlocked && !localAutoDispatch) {
+                          // Trying to turn it on while blocked — show warning, don't request.
+                          showToast(t('virtualPrinter.autoDispatch.requiresTargetOrAuto'), 'error');
+                          return;
+                        }
+                        const newVal = !localAutoDispatch;
+                        setLocalAutoDispatch(newVal);
+                        setPendingAction('autoDispatch');
+                        updateMutation.mutate({ auto_dispatch: newVal });
+                      }}
+                      disabled={pendingAction === 'autoDispatch' || (autoDispatchBlocked && !localAutoDispatch)}
+                      className={`relative w-10 h-5 rounded-full transition-colors flex-shrink-0 ${
+                        localAutoDispatch ? 'bg-bambu-green' : 'bg-bambu-dark-tertiary'
+                      } ${pendingAction === 'autoDispatch' || (autoDispatchBlocked && !localAutoDispatch) ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    >
+                      <span
+                        className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform ${
+                          localAutoDispatch ? 'translate-x-5' : ''
+                        }`}
+                      />
+                    </button>
+                  </div>
+                  {autoDispatchBlocked && (
+                    <div className="mt-2 flex items-start gap-2 p-2 rounded bg-yellow-500/10 border border-yellow-500/30">
+                      <AlertTriangle className="w-4 h-4 text-yellow-400 flex-shrink-0 mt-0.5" />
+                      <p className="text-xs text-yellow-400">
+                        {localAutoDispatch
+                          ? t('virtualPrinter.autoDispatch.activeButUnsafe')
+                          : t('virtualPrinter.autoDispatch.requiresTargetOrAuto')}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
             {/* Auto-select printer toggle — only when Queue mode is picked.
                 Splits print_queue (specific / least busy) vs auto_queue (router). */}
             {(localMode === 'print_queue' || localMode === 'auto_queue') && (
@@ -315,36 +405,6 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
                     <span
                       className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform ${
                         localMode === 'auto_queue' ? 'translate-x-5' : ''
-                      }`}
-                    />
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* Auto-dispatch toggle - print_queue + auto_queue both use it for manual_start */}
-            {(localMode === 'print_queue' || localMode === 'auto_queue') && (
-              <div className="pt-2 border-t border-bambu-dark-tertiary">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="text-white text-sm font-medium">{t('virtualPrinter.autoDispatch.title')}</div>
-                    <div className="text-[10px] text-bambu-gray">{t('virtualPrinter.autoDispatch.description')}</div>
-                  </div>
-                  <button
-                    onClick={() => {
-                      const newVal = !localAutoDispatch;
-                      setLocalAutoDispatch(newVal);
-                      setPendingAction('autoDispatch');
-                      updateMutation.mutate({ auto_dispatch: newVal });
-                    }}
-                    disabled={pendingAction === 'autoDispatch'}
-                    className={`relative w-10 h-5 rounded-full transition-colors flex-shrink-0 ${
-                      localAutoDispatch ? 'bg-bambu-green' : 'bg-bambu-dark-tertiary'
-                    } ${pendingAction === 'autoDispatch' ? 'opacity-50' : ''}`}
-                  >
-                    <span
-                      className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform ${
-                        localAutoDispatch ? 'translate-x-5' : ''
                       }`}
                     />
                   </button>
@@ -437,29 +497,66 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
               </div>
             )}
 
-            {/* Target Printer — ignored in auto_queue mode (router picks one) */}
-            {localMode !== 'auto_queue' && (
-              <div className="pt-2 border-t border-bambu-dark-tertiary">
-                <div className="text-white text-sm font-medium mb-2">{t('virtualPrinter.targetPrinter.title')}</div>
-                <div className="relative">
-                  <select
-                    value={localTargetPrinterId ?? ''}
-                    onChange={(e) => {
-                      const id = parseInt(e.target.value, 10);
-                      if (!isNaN(id)) handleTargetPrinterChange(id);
-                    }}
-                    disabled={pendingAction === 'targetPrinter'}
-                    className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-md px-3 py-1.5 text-white text-sm appearance-none cursor-pointer disabled:opacity-50 pr-10"
-                  >
-                    <option value="">{t('virtualPrinter.targetPrinter.placeholder')}</option>
-                    {printers?.map((p) => (
-                      <option key={p.id} value={p.id}>{p.name} ({p.ip_address})</option>
-                    ))}
-                  </select>
-                  <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
+            {/* Target Printer — only meaningful for print_queue (specific or
+                least-busy fallback) and proxy. Hidden in auto_queue (router picks)
+                and file_manager (file isn't queued at all). */}
+            {(localMode === 'print_queue' || localMode === 'proxy') && (() => {
+              // Filter printer list by current VP model so only compatible
+              // hardware is selectable. Empty model = show everything.
+              const expectedDisplay = models[localModel];
+              const filteredPrinters = (printers ?? []).filter(
+                (p) => !expectedDisplay || !p.model || p.model === expectedDisplay,
+              );
+              const noMatchingPrinters =
+                expectedDisplay !== undefined && (printers?.length ?? 0) > 0 && filteredPrinters.length === 0;
+              return (
+                <div className="pt-2 border-t border-bambu-dark-tertiary">
+                  <div className="text-white text-sm font-medium mb-2">
+                    {t('virtualPrinter.targetPrinter.title')}
+                    {expectedDisplay && (
+                      <span className="text-bambu-gray font-normal ml-1">
+                        ({t('virtualPrinter.targetPrinter.filteredBy', { model: expectedDisplay })})
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="relative flex-1">
+                      <select
+                        value={localTargetPrinterId ?? ''}
+                        onChange={(e) => {
+                          const id = parseInt(e.target.value, 10);
+                          if (!isNaN(id)) handleTargetPrinterChange(id);
+                        }}
+                        disabled={pendingAction === 'targetPrinter' || noMatchingPrinters}
+                        className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-md px-3 py-1.5 text-white text-sm appearance-none cursor-pointer disabled:opacity-50 pr-10"
+                      >
+                        <option value="">{t('virtualPrinter.targetPrinter.placeholder')}</option>
+                        {filteredPrinters.map((p) => (
+                          <option key={p.id} value={p.id}>{p.name} ({p.ip_address})</option>
+                        ))}
+                      </select>
+                      <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
+                    </div>
+                    {localTargetPrinterId !== null && (
+                      <button
+                        type="button"
+                        onClick={handleClearTargetPrinter}
+                        disabled={pendingAction === 'targetPrinter'}
+                        title={t('virtualPrinter.targetPrinter.clear')}
+                        className="p-1.5 rounded-md border border-bambu-dark-tertiary hover:border-bambu-gray text-bambu-gray hover:text-white transition-colors disabled:opacity-50"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                  {noMatchingPrinters && (
+                    <p className="mt-1 text-xs text-yellow-400">
+                      {t('virtualPrinter.targetPrinter.noMatchForModel', { model: expectedDisplay })}
+                    </p>
+                  )}
                 </div>
-              </div>
-            )}
+              );
+            })()}
 
             {/* Bind Interface */}
             <div className="pt-2 border-t border-bambu-dark-tertiary">

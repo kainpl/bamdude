@@ -4442,6 +4442,9 @@ export default {
       placeholder: 'Select a printer...',
       hint: 'Select the printer to proxy slicer traffic to. The printer must be in LAN mode.',
       noPrinters: 'No printers configured. Add a printer first to use proxy mode.',
+      clear: 'Clear target printer',
+      filteredBy: 'filtered by {{model}}',
+      noMatchForModel: 'No printers of model {{model}} are configured. Pick a different VP model or add a matching printer.',
     },
     remoteInterface: {
       title: 'Network Interface Override',
@@ -4468,6 +4471,8 @@ export default {
     autoDispatch: {
       title: 'Auto-dispatch',
       description: 'Automatically start prints when added to queue. When off, prints wait for manual dispatch.',
+      requiresTargetOrAuto: 'In Queue mode, Auto-dispatch needs a Target Printer. Pick one, or enable Auto-select printer for the auto-queue router to find one for you.',
+      activeButUnsafe: 'Auto-dispatch is on but the Target Printer is empty — uploads will fall through to the library. Pick a Target Printer or enable Auto-select printer.',
     },
     autoSelectPrinter: {
       title: 'Auto-select printer',

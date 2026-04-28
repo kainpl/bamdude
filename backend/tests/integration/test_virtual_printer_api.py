@@ -269,14 +269,20 @@ class TestVirtualPrinterAutoDispatchAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_create_virtual_printer_auto_dispatch_default(self, async_client: AsyncClient):
-        """Verify creating a VP without auto_dispatch defaults to true."""
+    async def test_create_virtual_printer_auto_dispatch_default(self, async_client: AsyncClient, printer_factory):
+        """Verify creating a VP without auto_dispatch defaults to true.
+
+        auto_dispatch=true requires either target_printer_id or auto_queue mode
+        in print_queue routing — pick the target-printer path for this case.
+        """
+        target = await printer_factory(name="TgtDefault")
         response = await async_client.post(
             "/api/v1/virtual-printers",
             json={
                 "name": "TestDefaultDispatch",
                 "mode": "print_queue",
                 "access_code": "12345678",
+                "target_printer_id": target.id,
             },
         )
 
@@ -287,7 +293,10 @@ class TestVirtualPrinterAutoDispatchAPI:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_create_virtual_printer_auto_dispatch_false(self, async_client: AsyncClient):
-        """Verify creating a VP with auto_dispatch=false persists correctly."""
+        """Verify creating a VP with auto_dispatch=false persists correctly.
+
+        auto_dispatch=false → target_printer_id not required (manual gate).
+        """
         response = await async_client.post(
             "/api/v1/virtual-printers",
             json={
@@ -304,15 +313,17 @@ class TestVirtualPrinterAutoDispatchAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_update_virtual_printer_auto_dispatch(self, async_client: AsyncClient):
+    async def test_update_virtual_printer_auto_dispatch(self, async_client: AsyncClient, printer_factory):
         """Verify auto_dispatch can be toggled via PUT and persists."""
-        # Create with auto_dispatch=True (default)
+        target = await printer_factory(name="TgtToggle")
+        # Create with auto_dispatch=True (default) — needs a target
         create_resp = await async_client.post(
             "/api/v1/virtual-printers",
             json={
                 "name": "TestToggleDispatch",
                 "mode": "print_queue",
                 "access_code": "12345678",
+                "target_printer_id": target.id,
             },
         )
         assert create_resp.status_code == 200
@@ -330,3 +341,133 @@ class TestVirtualPrinterAutoDispatchAPI:
         get_resp = await async_client.get(f"/api/v1/virtual-printers/{vp_id}")
         assert get_resp.status_code == 200
         assert get_resp.json()["auto_dispatch"] is False
+
+
+class TestVirtualPrinterAutoQueueModeAPI:
+    """Integration tests for the new auto_queue mode + auto-dispatch validation."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_create_with_auto_queue_mode(self, async_client: AsyncClient):
+        """auto_queue is a valid mode string (router-queue routing)."""
+        response = await async_client.post(
+            "/api/v1/virtual-printers",
+            json={
+                "name": "AutoQueueVP",
+                "mode": "auto_queue",
+                "access_code": "12345678",
+            },
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["mode"] == "auto_queue"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_create_print_queue_with_auto_dispatch_no_target_rejected(self, async_client: AsyncClient):
+        """print_queue + auto_dispatch=true + no target_printer_id → 400.
+
+        Without a target the upload has nowhere to land automatically, so the
+        operator must either pick a target, switch to auto_queue, or disable
+        auto_dispatch.
+        """
+        response = await async_client.post(
+            "/api/v1/virtual-printers",
+            json={
+                "name": "NoTargetAutoDispatch",
+                "mode": "print_queue",
+                "access_code": "12345678",
+                "auto_dispatch": True,
+            },
+        )
+        assert response.status_code == 400
+        assert "Target Printer" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_update_clear_target_with_auto_dispatch_rejected(self, async_client: AsyncClient, printer_factory):
+        """PUT effective-state guard: clearing target while auto_dispatch=true → 400."""
+        target = await printer_factory(name="TgtClearGuard")
+        create_resp = await async_client.post(
+            "/api/v1/virtual-printers",
+            json={
+                "name": "ClearGuardVP",
+                "mode": "print_queue",
+                "access_code": "12345678",
+                "target_printer_id": target.id,
+                # auto_dispatch defaults to true
+            },
+        )
+        assert create_resp.status_code == 200
+        vp_id = create_resp.json()["id"]
+
+        # Try to clear target while auto_dispatch is still true → must fail
+        bad = await async_client.put(
+            f"/api/v1/virtual-printers/{vp_id}",
+            json={"clear_target_printer": True},
+        )
+        assert bad.status_code == 400
+        assert "Target Printer" in bad.json()["detail"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_clear_target_printer_works_when_safe(self, async_client: AsyncClient, printer_factory):
+        """clear_target_printer sentinel actually clears target when paired
+        with auto_dispatch=false (or a mode change to auto_queue/file_manager)."""
+        target = await printer_factory(name="TgtSafeClear")
+        create_resp = await async_client.post(
+            "/api/v1/virtual-printers",
+            json={
+                "name": "SafeClearVP",
+                "mode": "print_queue",
+                "access_code": "12345678",
+                "target_printer_id": target.id,
+                "auto_dispatch": False,
+            },
+        )
+        assert create_resp.status_code == 200
+        vp_id = create_resp.json()["id"]
+        assert create_resp.json()["target_printer_id"] == target.id
+
+        # Clear while auto_dispatch=false (safe combo)
+        cleared = await async_client.put(
+            f"/api/v1/virtual-printers/{vp_id}",
+            json={"clear_target_printer": True},
+        )
+        assert cleared.status_code == 200
+        assert cleared.json()["target_printer_id"] is None
+
+        # Verify persistence
+        got = await async_client.get(f"/api/v1/virtual-printers/{vp_id}")
+        assert got.json()["target_printer_id"] is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_switch_to_auto_queue_with_clear_target(self, async_client: AsyncClient, printer_factory):
+        """Switching to auto_queue mode + clear_target_printer in one PUT
+        should succeed even if auto_dispatch=true (auto_queue mode doesn't
+        need a target — router picks one)."""
+        target = await printer_factory(name="TgtAutoSwap")
+        create_resp = await async_client.post(
+            "/api/v1/virtual-printers",
+            json={
+                "name": "AutoSwapVP",
+                "mode": "print_queue",
+                "access_code": "12345678",
+                "target_printer_id": target.id,
+            },
+        )
+        assert create_resp.status_code == 200
+        vp_id = create_resp.json()["id"]
+
+        # Switch to auto_queue + clear target in one shot
+        switched = await async_client.put(
+            f"/api/v1/virtual-printers/{vp_id}",
+            json={"mode": "auto_queue", "clear_target_printer": True},
+        )
+        assert switched.status_code == 200, switched.text
+        body = switched.json()
+        assert body["mode"] == "auto_queue"
+        assert body["target_printer_id"] is None
+        # auto_dispatch was true (default) — must remain true since auto_queue
+        # is a valid combo with auto_dispatch=true.
+        assert body["auto_dispatch"] is True
