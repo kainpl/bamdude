@@ -15,6 +15,7 @@ from backend.app.api.routes import (
     api_keys,
     archives,
     auth,
+    auto_queue,
     background_dispatch as background_dispatch_routes,
     camera,
     cloud,
@@ -61,6 +62,7 @@ from backend.app.core.database import async_session, engine, init_db
 from backend.app.core.websocket import ws_manager
 from backend.app.models.smart_plug import SmartPlug
 from backend.app.services.archive import ArchiveService
+from backend.app.services.auto_queue_scheduler import auto_queue_scheduler
 from backend.app.services.background_dispatch import background_dispatch
 from backend.app.services.bambu_mqtt import PrinterState
 from backend.app.services.git_backup import git_backup_service
@@ -4387,6 +4389,10 @@ async def lifespan(app: FastAPI):
     # Start the print scheduler
     asyncio.create_task(print_scheduler.run())
 
+    # Start the auto-queue scheduler — routes pending auto items to idle
+    # printers; assignment hands off to print_scheduler/background_dispatch.
+    asyncio.create_task(auto_queue_scheduler.run())
+
     # Start background dispatch worker for send/start operations
     await background_dispatch.start()
 
@@ -4539,6 +4545,7 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
     print_scheduler.stop()
+    auto_queue_scheduler.stop()
     await background_dispatch.stop()
     smart_plug_manager.stop_scheduler()
     try:
@@ -4878,6 +4885,7 @@ app.include_router(cloud.router, prefix=app_settings.api_prefix)
 app.include_router(local_presets.router, prefix=app_settings.api_prefix)
 app.include_router(smart_plugs.router, prefix=app_settings.api_prefix)
 app.include_router(print_queue.router, prefix=app_settings.api_prefix)
+app.include_router(auto_queue.router, prefix=app_settings.api_prefix)
 app.include_router(background_dispatch_routes.router, prefix=app_settings.api_prefix)
 app.include_router(kprofiles.router, prefix=app_settings.api_prefix)
 app.include_router(notifications.router, prefix=app_settings.api_prefix)

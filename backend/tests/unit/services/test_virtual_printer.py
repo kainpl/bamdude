@@ -287,6 +287,198 @@ class TestVirtualPrinterInstance:
         queue_item = added_items[0]
         assert queue_item.manual_start is True
 
+    # ========================================================================
+    # Tests for the new auto_queue mode (drops uploads into the auto-queue
+    # router instead of a per-printer queue).
+    # ========================================================================
+
+    @pytest.mark.asyncio
+    async def test_on_file_received_routes_to_auto_queue(self, instance):
+        """``auto_queue`` mode routes received files to ``_add_to_auto_queue``."""
+        instance.mode = "auto_queue"
+        file_path = Path("/tmp/test.3mf")  # nosec B108
+
+        with patch.object(instance, "_add_to_auto_queue", new_callable=AsyncMock) as mock_q:
+            await instance.on_file_received(file_path, "192.168.1.100")
+
+            mock_q.assert_called_once_with(file_path, "192.168.1.100")
+
+    @pytest.mark.asyncio
+    async def test_add_to_auto_queue_creates_auto_queue_item(self, tmp_path):
+        """Verify auto_queue mode creates an AutoQueueItem with extracted requirements."""
+        from backend.app.services.auto_queue_threemf import AutoQueueRequirements
+        from backend.app.services.virtual_printer.manager import VirtualPrinterInstance
+
+        mock_db = AsyncMock()
+        added_items = []
+
+        def capture_add(item):
+            added_items.append(item)
+
+        mock_db.add = MagicMock(side_effect=capture_add)
+        mock_db.commit = AsyncMock()
+        # Position lookup returns 0 → first item gets position 1.
+        mock_db.scalar = AsyncMock(return_value=0)
+
+        mock_session_factory = MagicMock()
+        mock_session_ctx = AsyncMock()
+        mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_db)
+        mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_session_factory.return_value = mock_session_ctx
+
+        inst = VirtualPrinterInstance(
+            vp_id=20,
+            name="AutoQueueVP",
+            mode="auto_queue",
+            model="C12",
+            access_code="12345678",
+            serial_suffix="391800020",
+            target_printer_id=99,  # intentionally set — must be IGNORED in auto_queue mode
+            auto_dispatch=True,
+            base_dir=tmp_path,
+            session_factory=mock_session_factory,
+        )
+
+        file_path = tmp_path / "test.3mf"
+        file_path.write_bytes(b"fake3mf")
+
+        mock_archive = MagicMock()
+        mock_archive.id = 42
+        mock_archive.file_path = str(file_path)
+        mock_archive.sliced_for_model = "P1S"
+
+        fake_reqs = AutoQueueRequirements(
+            target_model="P1S",
+            required_filament_types=["PLA", "PETG"],
+            print_time_seconds=3600,
+            filament_slots=[],
+        )
+
+        with (
+            patch(
+                "backend.app.services.archive.ArchiveService.archive_print",
+                new_callable=AsyncMock,
+                return_value=mock_archive,
+            ),
+            patch(
+                "backend.app.services.auto_queue_threemf.extract_auto_queue_requirements",
+                return_value=fake_reqs,
+            ),
+            patch.object(inst, "_extract_plate_id", return_value=None),
+        ):
+            await inst._add_to_auto_queue(file_path, "192.168.1.100")
+
+        assert len(added_items) == 1
+        item = added_items[0]
+        assert item.archive_id == 42
+        assert item.target_model == "P1S"
+        assert item.required_filament_types == ["PLA", "PETG"]
+        assert item.status == "pending"
+        assert item.position == 1
+        # auto_dispatch=True → manual_start=False (router picks on next tick)
+        assert item.manual_start is False
+        # target_printer_id on VP must NOT bleed into the auto-queue item;
+        # the router decides routing, not the VP config.
+        assert not hasattr(item, "printer_id") or getattr(item, "printer_id", None) is None
+
+    @pytest.mark.asyncio
+    async def test_add_to_auto_queue_respects_auto_dispatch_off(self, tmp_path):
+        """auto_dispatch=False → AutoQueueItem.manual_start=True (waits for operator)."""
+        from backend.app.services.auto_queue_threemf import AutoQueueRequirements
+        from backend.app.services.virtual_printer.manager import VirtualPrinterInstance
+
+        mock_db = AsyncMock()
+        added_items = []
+        mock_db.add = MagicMock(side_effect=lambda i: added_items.append(i))
+        mock_db.commit = AsyncMock()
+        mock_db.scalar = AsyncMock(return_value=5)  # 5 pending exist → new item gets pos 6
+
+        mock_session_factory = MagicMock()
+        mock_session_ctx = AsyncMock()
+        mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_db)
+        mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_session_factory.return_value = mock_session_ctx
+
+        inst = VirtualPrinterInstance(
+            vp_id=21,
+            name="AutoQueueManual",
+            mode="auto_queue",
+            model="C12",
+            access_code="12345678",
+            serial_suffix="391800021",
+            auto_dispatch=False,
+            base_dir=tmp_path,
+            session_factory=mock_session_factory,
+        )
+
+        file_path = tmp_path / "test.3mf"
+        file_path.write_bytes(b"fake3mf")
+
+        mock_archive = MagicMock(id=43, file_path=str(file_path), sliced_for_model="X1C")
+        fake_reqs = AutoQueueRequirements(
+            target_model="X1C",
+            required_filament_types=["PLA"],
+            print_time_seconds=None,
+            filament_slots=[],
+        )
+
+        with (
+            patch(
+                "backend.app.services.archive.ArchiveService.archive_print",
+                new_callable=AsyncMock,
+                return_value=mock_archive,
+            ),
+            patch(
+                "backend.app.services.auto_queue_threemf.extract_auto_queue_requirements",
+                return_value=fake_reqs,
+            ),
+            patch.object(inst, "_extract_plate_id", return_value=None),
+        ):
+            await inst._add_to_auto_queue(file_path, "192.168.1.100")
+
+        assert len(added_items) == 1
+        item = added_items[0]
+        assert item.manual_start is True
+        assert item.position == 6  # appended after the 5 existing pending items
+
+    @pytest.mark.asyncio
+    async def test_add_to_auto_queue_skips_non_3mf(self, tmp_path):
+        """Non-3MF uploads are deleted, no AutoQueueItem created."""
+        from backend.app.services.virtual_printer.manager import VirtualPrinterInstance
+
+        mock_db = AsyncMock()
+        added_items = []
+        mock_db.add = MagicMock(side_effect=lambda i: added_items.append(i))
+        mock_db.commit = AsyncMock()
+
+        mock_session_factory = MagicMock()
+        mock_session_ctx = AsyncMock()
+        mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_db)
+        mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_session_factory.return_value = mock_session_ctx
+
+        inst = VirtualPrinterInstance(
+            vp_id=22,
+            name="AutoQueueBadFile",
+            mode="auto_queue",
+            model="C12",
+            access_code="12345678",
+            serial_suffix="391800022",
+            base_dir=tmp_path,
+            session_factory=mock_session_factory,
+        )
+
+        # Non-3MF — should be skipped + deleted
+        bad_file = tmp_path / "test.gcode"
+        bad_file.write_bytes(b"not 3mf")
+        inst._pending_files[bad_file.name] = bad_file
+
+        await inst._add_to_auto_queue(bad_file, "192.168.1.100")
+
+        assert added_items == []
+        assert not bad_file.exists()
+        assert bad_file.name not in inst._pending_files
+
 
 class TestVirtualPrinterManager:
     """Tests for VirtualPrinterManager orchestrator."""

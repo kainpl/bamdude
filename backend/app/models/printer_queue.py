@@ -30,6 +30,12 @@ class PrinterQueue(Base):
     pending_count: Mapped[int] = mapped_column(default=0)
     skipped_count: Mapped[int] = mapped_column(default=0)
 
+    # Eligibility for auto-queue distribution. When False, the AutoQueueScheduler
+    # skips this printer when looking for an idle target — useful when the printer
+    # is reserved for manual prints, under maintenance, or otherwise excluded from
+    # automated routing. UI exposes a checkbox per printer.
+    auto_distribute_eligible: Mapped[bool] = mapped_column(default=True, nullable=False)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 

@@ -1291,6 +1291,22 @@ export default {
     },
   },
 
+  // Авто-черга (роутер над per-printer чергами)
+  autoQueue: {
+    title: 'Авто-черга',
+    itemCount_one: '{{count}} в очікуванні',
+    itemCount_few: '{{count}} в очікуванні',
+    itemCount_many: '{{count}} в очікуванні',
+    itemCount_other: '{{count}} в очікуванні',
+    itemCount: '{{count}} в очікуванні',
+    anyModel: 'Будь-яка модель',
+    exactColor: 'Точний колір',
+    assignNow: 'Призначити зараз',
+    cancelled: 'Елемент авто-черги скасовано',
+    assigned: 'Елемент авто-черги призначено',
+    batchCancelled: 'Скасовано {{count}} елементів партії',
+  },
+
   // Statistics page
   stats: {
     title: 'Статистика',
@@ -1882,6 +1898,10 @@ export default {
     historyRetention: 'Зберігання історії',
     keepSensorHistory: 'Зберігати історію сенсорів протягом',
     historyRetentionDescription: 'Старіші дані вологості та температури будуть автоматично видалені',
+    autoQueueRouting: 'Маршрутизація авто-черги',
+    autoQueueRoutingDescription: 'Керує тим, як планувальник авто-черги обирає наступне завдання для призначення.',
+    queueShortestFirst: 'Спершу коротші друки',
+    queueShortestFirstDescription: 'Віддавати перевагу коротшим друкам; завдання, які пропустили кілька разів, повертаються наперед, щоб нічого не застрявало.',
     queueDrying: 'Автосушіння черги',
     queueDryingDescription: 'Автоматично сушити філамент AMS, коли принтер простоює між друками в черзі. Використовує поріг вологості вище для запуску сушіння.',
     queueDryingEnabled: 'Увімкнути автосушіння',
@@ -3922,6 +3942,21 @@ export default {
     quantity: 'Кількість',
     quantityHint: 'Кілька копій. Додаткові стають у чергу після першої.',
 
+    // Перемикач режиму призначення (тільки в add-to-queue)
+    dispatchModeSpecific: 'Конкретний принтер',
+    dispatchModeAuto: 'Авто-розподіл',
+    autoMode: {
+      title: 'Авто-розподіл',
+      hint: 'Завдання потрапляє у роутер-чергу і призначається на будь-який підходящий вільний принтер.',
+      targetModel: 'Цільова модель',
+      autoDetect: 'Авто-визначення з файлу',
+      autoDetectFromFile: 'Авто-визначення ({{model}})',
+      targetLocation: 'Фільтр локації',
+      anyLocation: 'Будь-яка локація',
+      forceColorMatch: 'Точний збіг кольору',
+      forceColorMatchDesc: 'Чекати принтер із точно такими ж завантаженими кольорами.',
+    },
+
     // ScheduleOptions
     whenToPrint: 'Коли друкувати',
     scheduleAsap: 'Якнайшвидше',
@@ -4408,6 +4443,9 @@ export default {
       placeholder: 'Виберіть принтер...',
       hint: 'Виберіть принтер для проксі трафіку слайсера. Принтер повинен бути в режимі LAN.',
       noPrinters: 'Принтери не налаштовано. Спочатку додайте принтер для режиму проксі.',
+      clear: 'Очистити цільовий принтер',
+      filteredBy: 'фільтр за {{model}}',
+      noMatchForModel: 'Немає принтерів моделі {{model}}. Виберіть іншу VP-модель або додайте відповідний принтер.',
     },
     remoteInterface: {
       title: 'Перевизначення мережевого інтерфейсу',
@@ -4424,6 +4462,8 @@ export default {
       reviewDesc: 'Переглянути перед архівуванням',
       queue: 'Черга',
       queueDesc: 'Архівувати та додати до черги',
+      autoQueue: 'Авто-черга',
+      autoQueueDesc: 'Покласти у роутер авто-черги (підбирає за моделлю + філаментами)',
       fileManager: 'Файловий менеджер',
       fileManagerDesc: 'Зберегти безпосередньо у Файловий менеджер',
       proxy: 'Проксі',
@@ -4432,6 +4472,12 @@ export default {
     autoDispatch: {
       title: 'Автовідправка',
       description: 'Автоматично починати друк при додаванні до черги. Якщо вимкнено, друки чекають ручної відправки.',
+      requiresTargetOrAuto: 'У режимі Queue для автовідправки потрібен Target Printer. Виберіть принтер, або увімкніть Auto-select printer щоб роутер авто-черги вибрав сам.',
+      activeButUnsafe: 'Автовідправка увімкнена, але Target Printer не вибрано — завантаження потрапить у Library. Виберіть Target Printer або увімкніть Auto-select printer.',
+    },
+    autoSelectPrinter: {
+      title: 'Автовибір принтера',
+      description: 'Якщо увімкнено, завантаження потрапляє у роутер авто-черги, який підбирає будь-який вільний принтер за моделлю + філаментами. Якщо вимкнено — завантаження йде в чергу конкретного принтера.',
     },
     setupRequired: {
       title: 'Потрібне налаштування',

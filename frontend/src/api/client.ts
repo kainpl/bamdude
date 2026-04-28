@@ -1136,6 +1136,8 @@ export interface AppSettings {
   queue_drying_block: boolean;  // Block queue until drying completes
   ambient_drying_enabled: boolean;  // Auto-dry idle printers based on humidity regardless of queue
   drying_presets: string;  // JSON blob of drying presets per filament type
+  // Auto-queue routing
+  queue_shortest_first: boolean;  // SJF + been_jumped guard for the auto-queue scheduler
   // Print modal settings
   per_printer_mapping_expanded: boolean;  // Whether custom mapping is expanded by default in print modal
   // Date/time format settings
@@ -1841,6 +1843,104 @@ export interface PrintQueueBulkUpdateResponse {
   updated_count: number;
   skipped_count: number;
   message: string;
+}
+
+// Auto Queue types — see backend/app/schemas/auto_queue.py
+export interface AutoQueueFilamentOverride {
+  slot_id: number;
+  type?: string | null;
+  color?: string | null;
+  force_color_match?: boolean;
+}
+
+export interface AutoQueueItem {
+  id: number;
+  archive_id: number | null;
+  library_file_id: number | null;
+  project_id: number | null;
+  target_model: string | null;
+  target_location: string | null;
+  required_filament_types: string[] | null;
+  filament_overrides: AutoQueueFilamentOverride[] | null;
+  force_color_match: boolean;
+  plate_id: number | null;
+  position: number;
+  scheduled_time: string | null;
+  manual_start: boolean;
+  auto_off_after: boolean;
+  require_previous_success: boolean;
+  bed_levelling: boolean;
+  flow_cali: boolean;
+  layer_inspect: boolean;
+  timelapse: boolean;
+  use_ams: boolean;
+  mesh_mode_fast_check: boolean;
+  execute_swap_macros: boolean;
+  swap_macro_events: string[] | null;
+  status: 'pending' | 'assigned' | 'cancelled';
+  waiting_reason: string | null;
+  assigned_to_item_id: number | null;
+  assigned_at: string | null;
+  cancelled_at: string | null;
+  print_time_seconds: number | null;
+  been_jumped: boolean;
+  batch_id: string | null;
+  created_at: string;
+  created_by_id: number | null;
+  archive_name?: string | null;
+  archive_thumbnail?: string | null;
+  library_file_name?: string | null;
+  library_file_thumbnail?: string | null;
+  created_by_username?: string | null;
+  assigned_printer_id?: number | null;
+  assigned_printer_name?: string | null;
+}
+
+export interface AutoQueueItemCreate {
+  archive_id?: number | null;
+  library_file_id?: number | null;
+  project_id?: number | null;
+  target_model?: string | null;
+  target_location?: string | null;
+  required_filament_types?: string[] | null;
+  filament_overrides?: AutoQueueFilamentOverride[] | null;
+  force_color_match?: boolean;
+  plate_id?: number | null;
+  plate_ids?: number[] | null;
+  bed_levelling?: boolean;
+  flow_cali?: boolean;
+  layer_inspect?: boolean;
+  timelapse?: boolean;
+  use_ams?: boolean;
+  mesh_mode_fast_check?: boolean;
+  execute_swap_macros?: boolean;
+  swap_macro_events?: string[] | null;
+  scheduled_time?: string | null;
+  manual_start?: boolean;
+  auto_off_after?: boolean;
+  require_previous_success?: boolean;
+  quantity?: number;
+}
+
+export interface AutoQueueItemUpdate {
+  position?: number | null;
+  target_model?: string | null;
+  target_location?: string | null;
+  required_filament_types?: string[] | null;
+  filament_overrides?: AutoQueueFilamentOverride[] | null;
+  force_color_match?: boolean | null;
+  scheduled_time?: string | null;
+  manual_start?: boolean | null;
+  auto_off_after?: boolean | null;
+  require_previous_success?: boolean | null;
+  bed_levelling?: boolean | null;
+  flow_cali?: boolean | null;
+  layer_inspect?: boolean | null;
+  timelapse?: boolean | null;
+  use_ams?: boolean | null;
+  mesh_mode_fast_check?: boolean | null;
+  execute_swap_macros?: boolean | null;
+  swap_macro_events?: string[] | null;
 }
 
 // MQTT Logging types
@@ -4189,6 +4289,39 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
+  // Auto Queue — single global router-queue above per-printer queues
+  getAutoQueue: (status?: 'pending' | 'assigned' | 'cancelled', batchId?: string) => {
+    const params = new URLSearchParams();
+    if (status) params.set('status', status);
+    if (batchId) params.set('batch_id', batchId);
+    const qs = params.toString();
+    return request<AutoQueueItem[]>(`/auto-queue/${qs ? `?${qs}` : ''}`);
+  },
+  getAutoQueueItem: (id: number) => request<AutoQueueItem>(`/auto-queue/${id}`),
+  addToAutoQueue: (data: AutoQueueItemCreate) =>
+    request<AutoQueueItem>('/auto-queue/', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updateAutoQueueItem: (id: number, data: AutoQueueItemUpdate) =>
+    request<AutoQueueItem>(`/auto-queue/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  removeFromAutoQueue: (id: number) =>
+    request<AutoQueueItem>(`/auto-queue/${id}`, { method: 'DELETE' }),
+  reorderAutoQueue: (items: { id: number; position: number }[]) =>
+    request<{ reordered: number }>('/auto-queue/reorder', {
+      method: 'POST',
+      body: JSON.stringify({ items }),
+    }),
+  assignAutoQueueNow: (id: number) =>
+    request<AutoQueueItem>(`/auto-queue/${id}/assign-now`, { method: 'POST' }),
+  cancelAutoQueueBatch: (batchId: string) =>
+    request<{ affected: number; batch_id: string }>(`/auto-queue/batch/${batchId}`, {
+      method: 'DELETE',
+    }),
+
   // Printer Queues (queue-level operations)
   getQueues: () =>
     request<PrinterQueue[]>('/queues/'),
@@ -5694,7 +5827,7 @@ export const discoveryApi = {
 // Virtual Printer types
 // Three supported modes after the m002 migration purged the legacy
 // ``immediate`` / ``review`` / ``queue`` values.
-export type VirtualPrinterMode = 'print_queue' | 'file_manager' | 'proxy';
+export type VirtualPrinterMode = 'print_queue' | 'auto_queue' | 'file_manager' | 'proxy';
 
 export interface VirtualPrinterProxyStatus {
   running: boolean;
@@ -5833,6 +5966,8 @@ export const multiVirtualPrinterApi = {
     model?: string;
     access_code?: string;
     target_printer_id?: number;
+    /** Explicitly null out target_printer_id (Pydantic can't distinguish "absent" from "null"). */
+    clear_target_printer?: boolean;
     auto_dispatch?: boolean;
     bind_ip?: string;
     remote_interface_ip?: string;

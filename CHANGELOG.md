@@ -6,6 +6,49 @@ All notable changes to BamDude will be documented in this file.
 
 ---
 
+## [0.4.2] - WIP
+
+### 0.4.2b1 — pre-release (2026-04-28)
+
+First beta of the 0.4.2 cycle. Image: `ghcr.io/kainpl/bamdude:0.4.2b1` / `kainpl/bamdude:0.4.2b1`. Pin the exact tag — `:latest` still tracks 0.4.1.
+
+### Auto-queue (router above per-printer queues)
+
+A second queue layer that sits **above** the existing per-printer queues and routes a job to whichever idle printer matches first. Useful for farms that don't care which specific printer runs a print, only that it ships ASAP and on a compatible machine.
+
+- **Print modal toggle** — adding to queue now offers two paths:
+  - **Specific printer** — existing per-printer flow, unchanged.
+  - **Auto-distribute** — drops the job into the auto-queue with optional target model + location filter + `force exact color match` toggle. Backend auto-extracts target model and required filaments from the 3MF when not specified, so submitting with no extra config "just works".
+- **Eligibility model** — for each pending auto-queue item the scheduler picks an idle printer that matches: target model (or auto-detected from the 3MF), optional location filter, all required filament types loaded in AMS (canonical equivalence applied — e.g. `PA-CF` ↔ `PA12-CF` ↔ `PAHT-CF`), force-color-match constraint when set. AMS slot mapping is computed at dispatch time using the same 4-tier priority as the regular queue (unique `tray_info_idx` > exact color > similar color > type-only).
+- **Batch fan-out** — the modal's `Quantity` field still works in auto mode; multi-plate selection also fans out (one auto-queue row per plate × quantity), so 4 copies × 2 plates → 8 routed items sharing one batch ID.
+- **Queue dashboard panel** — a new "Auto Queue" card sits above the per-printer queue cards. Hidden when nothing is pending. Each row shows the file, target model / location / force-color, batch size badge for multi-copy submissions, and a `waiting_reason` line in yellow when the scheduler can't place the item (e.g. "No idle printer matches A1MINI + PETG", "PLA / Red not loaded"). Per-row actions: `Assign now` (one-shot bypass of `manual_start` / `scheduled_time`) and `Cancel` (single or whole batch).
+- **Settings → Printing → Queue & Scheduling → "Auto-Queue Routing"** — new toggle: `Shortest job first`. When on, the scheduler orders pending items by print time (NULLS LAST) instead of position, with an automatic starvation guard: items skipped multiple times get sticky `been_jumped` priority so nothing waits forever. Off by default — pure FIFO matches the existing per-printer queue behavior.
+- **REST surface** — new endpoints under `/api/v1/auto-queue`: `POST /` (create + auto-extract from 3MF, supports `quantity` + `plate_ids`), `GET /` (status / batch filters), `GET/PUT/DELETE /{id}`, `POST /reorder`, `POST /{id}/assign-now`, `DELETE /batch/{batch_id}`. Reuses the existing `queue:read / queue:create / queue:update_all / queue:delete_all / queue:reorder` permissions — no new permission needed.
+- **Schema additions** — new `auto_queue_items` table (33 columns: routing target, filament filters, print options, lifecycle, SJF, batch). Adds `print_queue.source_auto_item_id` FK so a per-printer item can trace back to the auto-queue row that produced it, and `printer_queues.auto_distribute_eligible` flag (default true) for opt-out per printer. Migration `m024`.
+
+The single-dispatch invariant from 0.4.0 still holds: the auto-queue scheduler only writes a row into the matching printer's `print_queue` and updates the auto-queue item to `status='assigned'`. The existing per-printer dispatcher then takes over with full plate-clear / stagger / swap-macro / drying support intact.
+
+### Virtual Printer — auto-select printer + tighter validation
+
+The VP edit / create UI used to expose four mode buttons (`Queue`, `Auto Queue`, `File Manager`, `Proxy`). Operators reasonably asked "what's the difference between the first two?", so it's now consolidated into three buttons + a sub-toggle:
+
+- **3 mode buttons:** `Queue` / `File Manager` / `Proxy`. Picking `Queue` reveals an `Auto-select printer` toggle below it.
+  - Toggle **off** → `mode='print_queue'` on the backend (specific Target Printer or `_find_best_queue` fallback by model).
+  - Toggle **on** → `mode='auto_queue'` on the backend (drops uploads into the auto-queue router, ignores `target_printer_id`).
+  - Backend stays unchanged — both mode strings are still accepted; this is a UI-only fold.
+- **Auto-dispatch above Auto-select printer** in the form (more logical reading order for an operator setting up a new VP).
+- **Target Printer dropdown filters by VP model** — only printers matching the SSDP-resolved display name are listed. Picking a Target Printer auto-fills the VP Model from that printer's hardware model in the same request; changing the VP Model with an incompatible Target picked clears the Target. Adds an `X` clear button next to the dropdown for explicit resets.
+- **Target Printer hidden in `auto_queue` and `file_manager` modes** — neither one routes uploads at the per-printer level, so the field is meaningless there.
+- **`auto_dispatch=true` + `print_queue` mode + no Target Printer is now rejected** at the API level (POST + PUT). Without a target the upload would silently fall through to the library — a footgun for "I configured automation, why is nothing printing?". The toggle is also visually disabled in the UI with a yellow inline warning telling the operator how to fix it (pick a target, enable Auto-select printer, or turn Auto-dispatch off). The PUT validator runs against the *effective* state after partial updates, so clearing the Target via the new `X` button while Auto-dispatch is still on also fails cleanly.
+
+### Documentation
+
+- **`https://docs.bamdude.top/getting-started/upgrading/`** — restored two sections that were dropped during the 0.4.1 docs rewrite: `Scenario 1 — Migrating from Bambuddy 2.2.2` (Docker Compose / docker run / native variants) and `Switching install method` (Native↔Docker, Docker→Native, Docker Hub↔GHCR). The §5 "Notable upgrade paths" section was trimmed: the Bambuddy 3.0.x heading is now correctly labelled "Bambuddy HE 3.0.x", and the now-stale `0.3.x → 0.4.x` and `0.4.0 → 0.4.1` callouts were removed (the same details still live in the migration matrix).
+- **`UPDATING.md`** — fixed broken `#rollback` anchor (real heading slug is `#7-rollback-if-things-break` after the 0.4.1 rewrite).
+- Replaced dead `wiki.bamdude.cool` and `security@bamdude.cool` references in `install/README.md`, `SECURITY.md`, and the Virtual Printer setup-required UI banner with the actual `docs.bamdude.top` URL. The `.cool` domain was never owned by the project.
+
+---
+
 ## [0.4.1] - 2026-04-28
 
 Polish release on top of `0.4.0.1`. Mostly UI-side date/time formatting consistency and small navigation conveniences.

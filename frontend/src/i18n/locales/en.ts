@@ -1285,6 +1285,20 @@ export default {
     },
   },
 
+  // Auto Queue (router layer above per-printer queues)
+  autoQueue: {
+    title: 'Auto Queue',
+    itemCount_one: '{{count}} pending',
+    itemCount_other: '{{count}} pending',
+    itemCount: '{{count}} pending',
+    anyModel: 'Any model',
+    exactColor: 'Exact color',
+    assignNow: 'Assign now',
+    cancelled: 'Auto-queue item cancelled',
+    assigned: 'Auto-queue item assigned',
+    batchCancelled: '{{count}} batch items cancelled',
+  },
+
   // Statistics page
   stats: {
     title: 'Dashboard',
@@ -1876,6 +1890,10 @@ export default {
     historyRetention: 'History Retention',
     keepSensorHistory: 'Keep sensor history for',
     historyRetentionDescription: 'Older humidity and temperature data will be automatically deleted',
+    autoQueueRouting: 'Auto-Queue Routing',
+    autoQueueRoutingDescription: 'Controls how the auto-queue scheduler picks the next pending job to assign.',
+    queueShortestFirst: 'Shortest job first',
+    queueShortestFirstDescription: 'Prefer shorter prints; jobs that get skipped multiple times are pushed back to the front so nothing starves.',
     queueDrying: 'Queue Auto-Drying',
     queueDryingDescription: 'Automatically dry AMS filament when printer is idle between queued prints. Uses humidity threshold above to trigger drying.',
     queueDryingEnabled: 'Enable auto-drying',
@@ -3922,6 +3940,21 @@ export default {
     quantity: 'Quantity',
     quantityHint: 'Print multiple copies. Extras are queued after the first.',
 
+    // Dispatch mode toggle (add-to-queue only)
+    dispatchModeSpecific: 'Specific printer',
+    dispatchModeAuto: 'Auto-distribute',
+    autoMode: {
+      title: 'Auto-distribute',
+      hint: 'The job is held in a router queue and assigned to any matching idle printer.',
+      targetModel: 'Target model',
+      autoDetect: 'Auto-detect from file',
+      autoDetectFromFile: 'Auto-detect ({{model}})',
+      targetLocation: 'Location filter',
+      anyLocation: 'Any location',
+      forceColorMatch: 'Force exact color match',
+      forceColorMatchDesc: 'Wait for a printer with the exact filament colors loaded.',
+    },
+
     // ScheduleOptions
     whenToPrint: 'When to print',
     scheduleAsap: 'ASAP',
@@ -4409,6 +4442,9 @@ export default {
       placeholder: 'Select a printer...',
       hint: 'Select the printer to proxy slicer traffic to. The printer must be in LAN mode.',
       noPrinters: 'No printers configured. Add a printer first to use proxy mode.',
+      clear: 'Clear target printer',
+      filteredBy: 'filtered by {{model}}',
+      noMatchForModel: 'No printers of model {{model}} are configured. Pick a different VP model or add a matching printer.',
     },
     remoteInterface: {
       title: 'Network Interface Override',
@@ -4425,6 +4461,8 @@ export default {
       reviewDesc: 'Review before archiving',
       queue: 'Queue',
       queueDesc: 'Archive and add to queue',
+      autoQueue: 'Auto Queue',
+      autoQueueDesc: 'Drop into the auto-queue router (matches model + filaments)',
       fileManager: 'File Manager',
       fileManagerDesc: 'Save directly to File Manager',
       proxy: 'Proxy',
@@ -4433,6 +4471,12 @@ export default {
     autoDispatch: {
       title: 'Auto-dispatch',
       description: 'Automatically start prints when added to queue. When off, prints wait for manual dispatch.',
+      requiresTargetOrAuto: 'In Queue mode, Auto-dispatch needs a Target Printer. Pick one, or enable Auto-select printer for the auto-queue router to find one for you.',
+      activeButUnsafe: 'Auto-dispatch is on but the Target Printer is empty — uploads will fall through to the library. Pick a Target Printer or enable Auto-select printer.',
+    },
+    autoSelectPrinter: {
+      title: 'Auto-select printer',
+      description: 'When on, uploads go to the auto-queue router that picks any idle printer matching model + filaments. When off, the upload lands in a specific printer queue.',
     },
     setupRequired: {
       title: 'Setup Required',

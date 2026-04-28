@@ -2,7 +2,12 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertCircle, AlertTriangle, Calendar, Loader2, Pencil, Printer, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { PrintQueueItemCreate, PrintQueueItemUpdate, SpoolAssignment } from '../../api/client';
+import type {
+  AutoQueueItemCreate,
+  PrintQueueItemCreate,
+  PrintQueueItemUpdate,
+  SpoolAssignment,
+} from '../../api/client';
 import { api } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { Card, CardContent } from '../Card';
@@ -14,6 +19,7 @@ import { useMultiPrinterFilamentMapping, type PerPrinterConfig } from '../../hoo
 import { getCurrencySymbol } from '../../utils/currency';
 import { toDateTimeLocalValue, parseUTCDate } from '../../utils/date';
 import { getGlobalTrayId, isPlaceholderDate } from '../../utils/amsHelpers';
+import { AutoModeOptions } from './AutoModeOptions';
 import { FilamentMapping } from './FilamentMapping';
 import { PlateSelector } from './PlateSelector';
 import { PrinterSelector } from './PrinterSelector';
@@ -28,7 +34,9 @@ import type {
   SwapMacroEvent,
   SwapMacrosOptions,
 } from './types';
+import type { AutoModeOptionsState } from './types';
 import {
+  DEFAULT_AUTO_MODE_OPTIONS,
   DEFAULT_PRINT_OPTIONS,
   DEFAULT_SCHEDULE_OPTIONS,
   DEFAULT_SWAP_MACROS_OPTIONS,
@@ -171,6 +179,13 @@ export function PrintModal({
 
   // Quantity (batch). Only exposed for reprint + add-to-queue modes.
   const [quantity, setQuantity] = useState<number>(1);
+
+  // Dispatch mode: 'specific' = pick exact printer(s); 'auto' = route via auto-queue.
+  // Only meaningful for add-to-queue mode (reprint is always specific, edit-queue-item
+  // is already bound to a per-printer queue row).
+  const [dispatchMode, setDispatchMode] = useState<'specific' | 'auto'>('specific');
+  const [autoModeOptions, setAutoModeOptions] = useState<AutoModeOptionsState>(DEFAULT_AUTO_MODE_OPTIONS);
+  const isAutoMode = mode === 'add-to-queue' && dispatchMode === 'auto';
 
   const [filamentWarningItems, setFilamentWarningItems] = useState<FilamentWarningItem[] | null>(null);
 
@@ -419,6 +434,48 @@ export function PrintModal({
   const handleSubmit = async (e?: React.FormEvent, options?: { skipFilamentCheck?: boolean }) => {
     e?.preventDefault();
 
+    // Auto-distribute path: bypass per-printer mapping entirely.
+    // The scheduler picks a printer + computes AMS mapping at dispatch.
+    if (isAutoMode) {
+      setIsSubmitting(true);
+      try {
+        const platesToQueue =
+          selectedPlates.size > 0 ? [...selectedPlates] : selectedPlate !== null ? [selectedPlate] : [];
+        const payload: AutoQueueItemCreate = {
+          archive_id: isLibraryFile ? undefined : archiveId,
+          library_file_id: isLibraryFile ? libraryFileId : undefined,
+          project_id: projectId,
+          target_model: autoModeOptions.target_model ?? undefined,
+          target_location: autoModeOptions.target_location ?? undefined,
+          force_color_match: autoModeOptions.force_color_match,
+          plate_ids: platesToQueue.length > 1 ? platesToQueue : undefined,
+          plate_id: platesToQueue.length === 1 ? platesToQueue[0] : null,
+          ...printOptions,
+          execute_swap_macros: !swapCompatible && swapMacros.execute && swapMacros.events.length > 0,
+          swap_macro_events:
+            !swapCompatible && swapMacros.execute && swapMacros.events.length > 0 ? swapMacros.events : null,
+          scheduled_time:
+            scheduleOptions.scheduleType === 'scheduled' && scheduleOptions.scheduledTime
+              ? new Date(scheduleOptions.scheduledTime).toISOString()
+              : undefined,
+          manual_start: scheduleOptions.scheduleType === 'manual',
+          auto_off_after: scheduleOptions.autoOffAfter,
+          quantity,
+        };
+        await api.addToAutoQueue(payload);
+        showToast(quantity > 1 ? t('queue.itemsQueued', { count: quantity }) : t('queue.printQueued'));
+        queryClient.invalidateQueries({ queryKey: ['auto-queue'] });
+        queryClient.invalidateQueries({ queryKey: ['queue'] });
+        onSuccess?.();
+        onClose();
+      } catch (err) {
+        showToast(t('printModal.failedPrefix', { error: (err as Error).message }), 'error');
+      } finally {
+        setIsSubmitting(false);
+      }
+      return;
+    }
+
     if (
       !options?.skipFilamentCheck &&
       !settings?.disable_filament_warnings &&
@@ -645,6 +702,12 @@ export function PrintModal({
   const canSubmit = useMemo(() => {
     if (isPending) return false;
 
+    // Auto mode: no specific printer required (router picks one). Plate gate still applies.
+    if (isAutoMode) {
+      if (isMultiPlate && selectedPlates.size === 0) return false;
+      return true;
+    }
+
     // Need at least one printer selected
     if (selectedPrinters.length === 0) return false;
 
@@ -652,7 +715,7 @@ export function PrintModal({
     if (isMultiPlate && selectedPlates.size === 0) return false;
 
     return true;
-  }, [selectedPrinters.length, isMultiPlate, selectedPlates.size, isPending]);
+  }, [isAutoMode, selectedPrinters.length, isMultiPlate, selectedPlates.size, isPending]);
 
   // Modal title and action button text based on mode
   const getModalConfig = () => {
@@ -736,6 +799,39 @@ export function PrintModal({
           </div>
 
           <form onSubmit={handleSubmit} className={mode === 'reprint' ? '' : 'p-4 space-y-4'}>
+            {/* Dispatch mode toggle — only for add-to-queue.
+                Reprint is always specific; edit is bound to an existing per-printer row. */}
+            {mode === 'add-to-queue' && (
+              <div className="flex gap-2 p-1 bg-bambu-dark rounded-lg" role="radiogroup">
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={dispatchMode === 'specific'}
+                  onClick={() => setDispatchMode('specific')}
+                  className={`flex-1 text-sm py-1.5 rounded transition-colors ${
+                    dispatchMode === 'specific'
+                      ? 'bg-bambu-green text-bambu-dark font-medium'
+                      : 'text-bambu-gray hover:text-white'
+                  }`}
+                >
+                  {t('printModal.dispatchModeSpecific')}
+                </button>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={dispatchMode === 'auto'}
+                  onClick={() => setDispatchMode('auto')}
+                  className={`flex-1 text-sm py-1.5 rounded transition-colors ${
+                    dispatchMode === 'auto'
+                      ? 'bg-bambu-green text-bambu-dark font-medium'
+                      : 'text-bambu-gray hover:text-white'
+                  }`}
+                >
+                  {t('printModal.dispatchModeAuto')}
+                </button>
+              </div>
+            )}
+
             {/* Archive name */}
             <p className={`text-sm text-bambu-gray ${mode === 'reprint' ? 'mb-4' : ''}`}>
               {mode === 'reprint' ? (
@@ -781,8 +877,18 @@ export function PrintModal({
               multiSelect={mode === 'add-to-queue'}
             />
 
+            {/* Auto-distribute mode controls — replaces PrinterSelector */}
+            {isAutoMode && (
+              <AutoModeOptions
+                options={autoModeOptions}
+                onChange={setAutoModeOptions}
+                printers={printers}
+                slicedForModel={slicedForModel}
+              />
+            )}
+
             {/* Printer selection with per-printer mapping - hidden when printer is pre-selected via props */}
-            {!initialSelectedPrinterIds?.length && (
+            {!isAutoMode && !initialSelectedPrinterIds?.length && (
               <PrinterSelector
                 printers={printers || []}
                 selectedPrinterIds={selectedPrinters}
@@ -801,7 +907,7 @@ export function PrintModal({
             )}
 
             {/* Compatibility warning when sliced model doesn't match selected printer */}
-            {slicedForModel && selectedPrinters.length === 1 && (() => {
+            {!isAutoMode && slicedForModel && selectedPrinters.length === 1 && (() => {
               const selectedPrinter = printers?.find(p => p.id === selectedPrinters[0]);
               if (selectedPrinter && selectedPrinter.model && slicedForModel !== selectedPrinter.model) {
                 return (
@@ -826,8 +932,8 @@ export function PrintModal({
               </div>
             )}
 
-            {/* Filament mapping - only show when single printer selected */}
-            {showFilamentMapping && !archiveDataMissing && selectedPrinters.length === 1 && (
+            {/* Filament mapping - only show when single printer selected (not in auto mode) */}
+            {!isAutoMode && showFilamentMapping && !archiveDataMissing && selectedPrinters.length === 1 && (
               <FilamentMapping
                 printerId={effectivePrinterId!}
                 filamentReqs={effectiveFilamentReqs}
@@ -840,20 +946,26 @@ export function PrintModal({
             )}
 
             {/* Print options */}
-            {(mode === 'reprint' || effectivePrinterCount > 0) && (
+            {(mode === 'reprint' || effectivePrinterCount > 0 || isAutoMode) && (
               <PrintOptionsPanel options={printOptions} onChange={setPrintOptions} defaultExpanded={!!initialSelectedPrinterIds?.length} />
             )}
 
             {/* Swap-mode macros — only relevant when at least one selected
                 printer has swap mode enabled AND the source file does not
                 already carry swap macros baked in by third-party tooling
-                (swap_compatible flag). Hidden completely otherwise. */}
-            {!swapCompatible && selectedPrinters.some(id => printers?.find(p => p.id === id)?.swap_mode_enabled) && (
+                (swap_compatible flag). In auto mode show whenever the file
+                isn't swap-compatible (the scheduler will route to a
+                swap-enabled printer if one is needed). */}
+            {!swapCompatible && (
+              isAutoMode
+                ? (printers ?? []).some(p => p.swap_mode_enabled)
+                : selectedPrinters.some(id => printers?.find(p => p.id === id)?.swap_mode_enabled)
+            ) && (
               <SwapMacrosPanel options={swapMacros} onChange={setSwapMacros} />
             )}
 
             {/* Quantity (batch) - not for edit mode */}
-            {mode !== 'edit-queue-item' && effectivePrinterCount > 0 && (
+            {mode !== 'edit-queue-item' && (effectivePrinterCount > 0 || isAutoMode) && (
               <div className="mb-4 flex items-center justify-between bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg p-3">
                 <div>
                   <div className="text-sm text-white font-medium">{t('printModal.quantity')}</div>

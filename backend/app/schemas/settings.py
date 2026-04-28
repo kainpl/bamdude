@@ -95,6 +95,10 @@ class AppSettings(BaseModel):
         default=False,
         description="When multiple AMS trays match, prefer the one with lowest remaining filament",
     )
+    queue_shortest_first: bool = Field(
+        default=False,
+        description="Auto-queue: prefer shorter print jobs first (with been_jumped starvation guard)",
+    )
     queue_drying_block: bool = Field(
         default=False,
         description="Block queue until drying completes (when disabled, prints take priority over drying)",
@@ -145,7 +149,7 @@ class AppSettings(BaseModel):
     virtual_printer_access_code: str = Field(default="", description="Access code for virtual printer authentication")
     virtual_printer_mode: str = Field(
         default="file_manager",
-        description="Mode: 'print_queue' (archive + add to print queue), 'file_manager' (save to library), or 'proxy' (transparent forward to a real printer)",
+        description="Mode: 'print_queue' (archive + push directly to a per-printer queue), 'auto_queue' (archive + drop into the auto-queue router), 'file_manager' (save to library), or 'proxy' (transparent forward to a real printer)",
     )
 
     # Dark mode theme settings
@@ -315,6 +319,7 @@ class AppSettingsUpdate(BaseModel):
     ams_temp_fair: float | None = None
     ams_history_retention_days: int | None = None
     prefer_lowest_filament: bool | None = None
+    queue_shortest_first: bool | None = None
     queue_drying_enabled: bool | None = None
     queue_drying_block: bool | None = None
     ambient_drying_enabled: bool | None = None
