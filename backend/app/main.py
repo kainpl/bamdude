@@ -548,6 +548,34 @@ async def _bump_library_file_usage(db, library_file_id: int | None) -> None:
     lib_file.last_printed_at = datetime.now(timezone.utc)
 
 
+def _format_hms_error_summary(hms_errors: list[dict]) -> str | None:
+    """Build a human-readable failure reason from MQTT hms_errors for
+    PrintQueueItem.error_message (#1111).
+
+    Each entry has keys: code ('0x4038'), attr (32-bit int), module, severity.
+    The short code used for the hms_errors.py lookup table is 'MMMM_EEEE' —
+    module from attr bits 16-31, error from the numeric part of code. Falls
+    back to the raw short code when no description is on file. Returns None
+    for an empty list so callers can leave error_message unset.
+    """
+    if not hms_errors:
+        return None
+    from backend.app.services.hms_errors import get_error_description
+
+    parts: list[str] = []
+    for err in hms_errors:
+        try:
+            code_str = str(err.get("code", "")).replace("0x", "")
+            error_num = int(code_str, 16) if code_str else 0
+            module_num = (int(err.get("attr", 0)) >> 16) & 0xFFFF
+            short_code = f"{module_num:04X}_{error_num:04X}"
+        except (TypeError, ValueError):
+            continue
+        description = get_error_description(short_code)
+        parts.append(f"[{short_code}] {description}" if description else f"[{short_code}]")
+    return "; ".join(parts) if parts else None
+
+
 async def _bump_library_file_usage_if_completed(db, item, queue_status: str) -> None:
     """Queue-branch wrapper: bump usage only for status='completed' items with
     a library_file_id. Preserved so the on_print_complete queue branch reads
@@ -2976,6 +3004,15 @@ async def on_print_complete(printer_id: int, data: dict):
 
                 queue_item.status = queue_status
                 queue_item.completed_at = datetime.now(timezone.utc)
+                # #1111: pre-RUNNING failures (FAILED from PREPARE/SLICING)
+                # arrive without a queue_item.error_message because the print
+                # never reached the runtime layer that normally populates it.
+                # Synthesise from the live HMS list so the user sees e.g.
+                # "[0500_4038] The nozzle diameter in sliced file is not
+                # consistent with the current nozzle setting" instead of a
+                # blank reason.
+                if queue_status == "failed" and not queue_item.error_message:
+                    queue_item.error_message = _format_hms_error_summary(data.get("hms_errors") or [])
 
                 # Bump usage counters on the source library file so admins can
                 # sort by "last printed" and (eventually) auto-purge stale
