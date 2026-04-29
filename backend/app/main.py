@@ -249,6 +249,12 @@ if not app_settings.debug:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("paho.mqtt").setLevel(logging.WARNING)
 
+# Drop SQLAlchemy pool noise driven by Starlette's BaseHTTPMiddleware
+# cancellation propagation on client disconnect (#1112 follow-up).
+from backend.app.core.logging_filters import CancelledPoolNoiseFilter  # noqa: E402
+
+logging.getLogger("sqlalchemy.pool").addFilter(CancelledPoolNoiseFilter())
+
 logging.info("BamDude starting - debug=%s, log_level=%s", app_settings.debug, log_level_str)
 
 

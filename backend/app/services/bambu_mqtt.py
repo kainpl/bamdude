@@ -3881,8 +3881,9 @@ class BambuMQTTClient:
         self._sequence_id += 1
 
         # Detect printer type by serial number prefix.
-        # Dual-nozzle families: H2D family ("094") and X2D ("20P9", #988).
-        is_dual_nozzle = self.serial_number.startswith(("094", "20P9"))
+        # Dual-nozzle families: H2 family — legacy "094" + post-2026 H2C
+        # batches "31B8B" (#1105); X2D — "20P9" (#988).
+        is_dual_nozzle = self.serial_number.startswith(("094", "20P9", "31B8B"))
 
         if is_dual_nozzle:
             # H2D format: uses extruder_id, nozzle_id, nozzle_diameter
