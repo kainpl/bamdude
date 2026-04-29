@@ -1655,7 +1655,8 @@ export default {
       passwordChanged: 'Password changed successfully',
       connectionFailed: 'Connection failed',
       testFailed: 'Test failed',
-      cameraConnected: 'Camera connected{{resolution}}'
+      cameraConnected: 'Camera connected{{resolution}}',
+      noPermissionUpdate: "You don't have permission to change settings"
     },
     testConnection: 'Test Connection',
     catalog: {

@@ -1663,7 +1663,8 @@ export default {
       passwordChanged: 'Пароль успішно змінено',
       connectionFailed: 'Помилка підключення',
       testFailed: 'Тест не вдався',
-      cameraConnected: 'Камеру підключено{{resolution}}'
+      cameraConnected: 'Камеру підключено{{resolution}}',
+      noPermissionUpdate: 'У вас немає дозволу змінювати налаштування'
     },
     testConnection: 'Тест підключення',
     catalog: {

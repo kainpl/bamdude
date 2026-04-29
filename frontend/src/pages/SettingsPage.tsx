@@ -989,6 +989,14 @@ export function SettingsPage() {
       return;
     }
 
+    // Safety net: skip auto-save entirely when the user lacks settings:update.
+    // The actual user feedback (toast + revert) lives in updateSetting below,
+    // which runs once per click. Doing it here as well would fire on every
+    // React render since the debounced-save effect depends on non-stable refs.
+    if (!hasPermission('settings:update')) {
+      return;
+    }
+
     // Check if there are actual changes
     const hasChanges =
       settings.save_thumbnails !== localSettings.save_thumbnails ||
@@ -1131,11 +1139,19 @@ export function SettingsPage() {
         clearTimeout(saveTimeoutRef.current);
       }
     };
-  }, [localSettings, settings, updateMutation]);
+  }, [localSettings, settings, updateMutation, hasPermission, showToast, t]);
 
   const updateSetting = useCallback(<K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
+    // Gate at the point of user interaction (not in the debounced-save
+    // effect — that runs on every render and would fire the toast
+    // repeatedly). One toast per attempt; no local-state divergence for a
+    // read-only delegated user.
+    if (!hasPermission('settings:update')) {
+      showToast(t('settings.toast.noPermissionUpdate'), 'error');
+      return;
+    }
     setLocalSettings(prev => prev ? { ...prev, [key]: value } : null);
-  }, []);
+  }, [hasPermission, showToast, t]);
 
   const handleTestExternalCamera = async (printerId: number, url: string, cameraType: string) => {
     if (!url) {
@@ -1396,7 +1412,18 @@ export function SettingsPage() {
                 <div className="relative">
                   <select
                     value={i18n.language}
-                    onChange={(e) => { i18n.changeLanguage(e.target.value); api.updateSettings({ language: e.target.value }); showToast(t('settings.toast.settingsSaved'), 'success'); }}
+                    onChange={(e) => {
+                      const newLang = e.target.value;
+                      // Block server persist if the user lacks settings:update —
+                      // without this guard the fire-and-forget api.updateSettings
+                      // call below would 403 silently while a success toast flashed.
+                      if (!hasPermission('settings:update')) {
+                        showToast(t('settings.toast.noPermissionUpdate'), 'error');
+                        return;
+                      }
+                      i18n.changeLanguage(newLang);
+                      updateMutation.mutate({ language: newLang });
+                    }}
                     className="w-full px-3 py-2 pr-10 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none appearance-none cursor-pointer"
                   >
                     {availableLanguages.map((lang) => (
