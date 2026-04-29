@@ -44,8 +44,16 @@ The VP edit / create UI used to expose four mode buttons (`Queue`, `Auto Queue`,
 ### Documentation
 
 - **`https://docs.bamdude.top/getting-started/upgrading/`** — restored two sections that were dropped during the 0.4.1 docs rewrite: `Scenario 1 — Migrating from Bambuddy 2.2.2` (Docker Compose / docker run / native variants) and `Switching install method` (Native↔Docker, Docker→Native, Docker Hub↔GHCR). The §5 "Notable upgrade paths" section was trimmed: the Bambuddy 3.0.x heading is now correctly labelled "Bambuddy HE 3.0.x", and the now-stale `0.3.x → 0.4.x` and `0.4.0 → 0.4.1` callouts were removed (the same details still live in the migration matrix).
+- **`https://docs.bamdude.top/features/auto-queue/`** — new feature page documenting the auto-queue router (eligibility model, SJF + been_jumped starvation guard, AutoQueuePanel, REST surface, comparison vs the legacy "any of model X" picker). Added to the `Print Queue` nav section in both `en` and `uk`.
+- **`https://docs.bamdude.top/features/virtual-printer/`** — rewritten for the new 4-mode UX (`file_manager` / `print_queue` / `auto_queue` / `proxy`): documents the consolidated mode picker (3 buttons + Auto-select toggle), Model↔Target Printer linking, the validation rules from this release, and a dedicated section on the new `auto_queue` mode.
+- **`https://docs.bamdude.top/features/print-queue/`** — Model-based assignment line cross-links to the new auto-queue doc.
+- **`bamdude.top`** landing — `Auto-queue routing` added to the "Print farm queue" feature group and to the BamDude summary highlights; new comparison-table row "Auto-queue routing (model + filament + color)" under Scheduling & Automation.
 - **`UPDATING.md`** — fixed broken `#rollback` anchor (real heading slug is `#7-rollback-if-things-break` after the 0.4.1 rewrite).
 - Replaced dead `wiki.bamdude.cool` and `security@bamdude.cool` references in `install/README.md`, `SECURITY.md`, and the Virtual Printer setup-required UI banner with the actual `docs.bamdude.top` URL. The `.cool` domain was never owned by the project.
+
+### Cleanup
+
+- **i18n unused-key sweep** — pruned 826 leaf keys from each of `frontend/src/i18n/locales/{en,uk}.ts` (5506 → 4500 lines / 4501 lines, about 18% smaller). Static analysis with literal + template-prefix + plural-base detection (i18next `t('key', {count})` keeps `_one` / `_other` siblings safe). Backend `telegram_ui_*.json` left alone (only 3 truly-dead keys, 11 dynamically-keyed via `f"states.{...}"` / `f"queue.status_{...}"`); `notification_templates_*.json` and `maintenance_types_*.json` excluded from the sweep — they're loaded as bulk records by `locale_updater.py`, not via `t()`.
 
 ---
 
