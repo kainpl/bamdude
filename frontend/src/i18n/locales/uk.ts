@@ -2002,6 +2002,11 @@ export default {
         autoCreateDesc: 'Автоматично створювати локальний акаунт при першому вході.',
         autoLink: 'Авто-прив\'язка існуючих акаунтів',
         autoLinkDesc: 'Прив\'язувати локальні акаунти за збігом email при першому вході.',
+        emailClaim: 'Email claim',
+        emailClaimHelp: 'JWT claim, який використовується як email-ідентичність. За замовчуванням "email". Для Azure Entra ID встановіть "preferred_username" або "upn" — Azure не надсилає email_verified, а кастомний claim пропускає цю перевірку.',
+        requireEmailVerified: 'Вимагати email_verified',
+        requireEmailVerifiedDesc: 'Довіряти стандартному claim "email" лише коли провайдер явно встановлює email_verified=true. Вимкніть для застарілих IdP, які не надсилають цей claim. Обов\'язково ON, коли увімкнено авто-прив\'язку з "email" claim.',
+        requireEmailVerifiedNAForCustomClaim: 'Не застосовується — кастомні claim ніколи не звертаються до email_verified.',
         secretHint: 'залишіть порожнім для збереження',
         secretPlaceholder: 'новий secret'
       }

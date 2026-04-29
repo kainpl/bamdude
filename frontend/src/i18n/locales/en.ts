@@ -1992,6 +1992,11 @@ export default {
         autoCreateDesc: 'Automatically create a local account on first login.',
         autoLink: 'Auto-link existing accounts',
         autoLinkDesc: 'Link existing local accounts by matching email on first login.',
+        emailClaim: 'Email claim',
+        emailClaimHelp: 'JWT claim used as the email identity. Default "email". For Azure Entra ID set "preferred_username" or "upn" — Azure does not send email_verified, and a custom claim skips that gate entirely.',
+        requireEmailVerified: 'Require email_verified',
+        requireEmailVerifiedDesc: 'Only trust the standard "email" claim when the provider explicitly sets email_verified=true. Disable for legacy IdPs that never send the claim. Required ON when auto-link is on with the "email" claim.',
+        requireEmailVerifiedNAForCustomClaim: 'Not used — custom claims never consult email_verified.',
         secretHint: 'leave blank to keep current',
         secretPlaceholder: 'new secret'
       }

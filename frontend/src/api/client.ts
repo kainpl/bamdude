@@ -2871,6 +2871,10 @@ export interface OIDCProvider {
   is_enabled: boolean;
   auto_create_users: boolean;
   auto_link_existing_accounts: boolean;
+  /** JWT claim used as email identity. "email" (default) or e.g. "preferred_username"/"upn" for Azure Entra ID. */
+  email_claim: string;
+  /** Only consulted when email_claim === "email". Set false for legacy IdPs that never send email_verified. */
+  require_email_verified: boolean;
   icon_url?: string | null;
 }
 
@@ -2883,6 +2887,8 @@ export interface OIDCProviderCreate {
   is_enabled?: boolean;
   auto_create_users?: boolean;
   auto_link_existing_accounts?: boolean;
+  email_claim?: string;
+  require_email_verified?: boolean;
   icon_url?: string | null;
 }
 
