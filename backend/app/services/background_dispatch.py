@@ -901,18 +901,37 @@ class BackgroundDispatchService:
                     )
                     raise RuntimeError("Failed to start print")
 
+                # Wait for the printer to actually pick up the command before
+                # marking the dispatch job complete (#1042/#1134). MQTT-publish
+                # success only proves the command queued locally; the printer
+                # can still reject it (HMS error pending, half-broken session,
+                # SD card missing) and never transition. Until #1134 this
+                # watchdog was fire-and-forget — the job was reported
+                # successful and the user had no signal that the print never
+                # started. The uploaded file is intentionally left on the
+                # printer's SD card on timeout: the next dispatch will
+                # overwrite it via the existing delete-then-upload step, and
+                # the printer may still be in the middle of reading it if it
+                # picked up just past the timeout.
                 _post_status = printer_manager.get_status(job.printer_id)
                 pre_state = getattr(_post_status, "state", None)
+                pre_subtask_id = getattr(_post_status, "subtask_id", None)
                 pre_gcode_file = getattr(_post_status, "gcode_file", None)
                 if pre_state:
-                    asyncio.create_task(
-                        self._verify_print_response(
-                            job.printer_id,
-                            printer_name,
-                            pre_state,
-                            pre_gcode_file=pre_gcode_file,
-                        )
+                    await self._set_active_message(job, f"Waiting for {printer_name} to acknowledge print...")
+                    transitioned = await self._verify_print_response(
+                        job.printer_id,
+                        printer_name,
+                        pre_state,
+                        pre_subtask_id=pre_subtask_id,
+                        pre_gcode_file=pre_gcode_file,
                     )
+                    if not transitioned:
+                        raise RuntimeError(
+                            f"Printer did not acknowledge print command — state still {pre_state}. "
+                            f"Check the printer for a pending error (HMS code, plate-clear prompt, "
+                            f"SD card) and try again."
+                        )
 
                 # Register in-memory swap config for on_print_complete's fast
                 # path. Persistence to archive.extra_data (restart recovery)
@@ -1341,18 +1360,31 @@ class BackgroundDispatchService:
                 except Exception as _e:
                     logger.debug("Stagger registration for direct dispatch failed: %s", _e)
 
+                # See _run_reprint_archive for rationale (#1042/#1134). Outer
+                # ``except Exception`` block already runs
+                # ``_mark_dispatch_archive_terminal(archive.id, "failed", ...)``
+                # so a RuntimeError raised here flips the freshly-created
+                # archive from "printing" → "failed" without leaving a
+                # phantom row for a print that never started.
                 _post_status = printer_manager.get_status(job.printer_id)
                 pre_state = getattr(_post_status, "state", None)
+                pre_subtask_id = getattr(_post_status, "subtask_id", None)
                 pre_gcode_file = getattr(_post_status, "gcode_file", None)
                 if pre_state:
-                    asyncio.create_task(
-                        self._verify_print_response(
-                            job.printer_id,
-                            printer_name,
-                            pre_state,
-                            pre_gcode_file=pre_gcode_file,
-                        )
+                    await self._set_active_message(job, f"Waiting for {printer_name} to acknowledge print...")
+                    transitioned = await self._verify_print_response(
+                        job.printer_id,
+                        printer_name,
+                        pre_state,
+                        pre_subtask_id=pre_subtask_id,
+                        pre_gcode_file=pre_gcode_file,
                     )
+                    if not transitioned:
+                        raise RuntimeError(
+                            f"Printer did not acknowledge print command — state still {pre_state}. "
+                            f"Check the printer for a pending error (HMS code, plate-clear prompt, "
+                            f"SD card) and try again."
+                        )
 
                 # Register the requesting user so per-user stats filter sees
                 # this print and the post-print notification has a recipient.
@@ -1421,39 +1453,58 @@ class BackgroundDispatchService:
         printer_id: int,
         printer_name: str,
         pre_state: str,
-        timeout: float = 15.0,
+        pre_subtask_id: str | None = None,
+        timeout: float = 90.0,
         poll_interval: float = 3.0,
         pre_gcode_file: str | None = None,
-    ):
-        """Check if the printer responded to a print command.
+    ) -> bool:
+        """Wait for the printer to acknowledge a print command.
 
-        Runs as a fire-and-forget background task after start_print() succeeds.
-        If the printer's gcode_state hasn't changed within the timeout, logs a
-        warning for diagnostics (visible in support packages).
+        Returns True if the printer transitioned (state advanced past
+        ``pre_state`` or ``subtask_id`` advanced past ``pre_subtask_id``).
+        Returns False on timeout — in that case logs a warning and (when the
+        ``gcode_file`` discriminator says the publish didn't land) forces an
+        MQTT reconnect, mirroring the queue-side watchdog
+        (`_watchdog_print_start`). Caller surfaces the False result to the
+        user (typically by raising so the dispatch job is marked failed).
+
+        H2D can sit at FINISH for ~50 s after accepting `project_file` before
+        flipping to PREPARE; the printer echoes our per-dispatch identity
+        back as ``subtask_id`` on ``push_status`` first, so a subtask_id
+        change is a definitive "command landed" signal even while state is
+        still FINISH (#1078).
         """
         deadline = time.monotonic() + timeout
-        last_status = None
+        last_status = None  # captured for #1150 gcode_file discriminator on timeout
         while time.monotonic() < deadline:
             await asyncio.sleep(poll_interval)
             state = printer_manager.get_status(printer_id)
             if not state:
-                return  # Printer disconnected
+                # Printer momentarily not reporting — could be a brief MQTT
+                # disconnect mid-window. Keep polling rather than declaring
+                # failure on the first missed tick; the printer may reconnect
+                # within the remaining timeout and still surface a transition.
+                continue
             last_status = state
             if state.state != pre_state:
-                return  # Printer responded
+                return True
+            if pre_subtask_id is not None and state.subtask_id is not None and state.subtask_id != pre_subtask_id:
+                return True
         logger.warning(
-            "Printer %s (%d) did not respond to print command within %.0fs (state still %s) - printer may need restart",
+            "Printer %s (%d) did not respond to print command within %.0fs "
+            "(state still %s, subtask_id still %s) — printer may need restart",
             printer_name,
             printer_id,
             timeout,
             pre_state,
+            pre_subtask_id,
         )
         # P1P 0500_4003 discriminator (#1150): if `gcode_file` advanced from
         # what we observed pre-dispatch, the printer accepted our project_file
         # and is just slow-parsing on the SD-card MCU side. Forcing an MQTT
-        # reconnect mid-parse triggers 0500_4003 ("Failed to start print job").
-        # Only force a reconnect when gcode_file is unchanged — that's the
-        # half-broken-publish signal from #887 / #936.
+        # reconnect mid-parse triggers 0500_4003. Only reconnect when
+        # `gcode_file` is unchanged — that's the half-broken-publish signal
+        # from #887 / #936.
         current_gcode_file = getattr(last_status, "gcode_file", None) if last_status else None
         publish_landed = current_gcode_file is not None and current_gcode_file != pre_gcode_file
         if publish_landed:
@@ -1466,13 +1517,14 @@ class BackgroundDispatchService:
                 current_gcode_file,
                 pre_gcode_file,
             )
-            return
+            return False
         client = printer_manager.get_client(printer_id)
-        if client:
+        if client and hasattr(client, "force_reconnect_stale_session"):
             client.force_reconnect_stale_session(
                 f"print command unacknowledged after {timeout:.0f}s "
                 f"(state still {pre_state}, gcode_file {current_gcode_file!r})"
             )
+        return False
 
     @staticmethod
     async def _cleanup_sd_card_file(
