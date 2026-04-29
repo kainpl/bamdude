@@ -232,6 +232,14 @@ class AppSettings(BaseModel):
         description="Low stock threshold percentage (%) for inventory filtering and display",
     )
 
+    # Auto-Print G-code Injection (#422). Per-model snippet library:
+    # ``{model: {"start_gcode": "...", "end_gcode": "..."}}`` JSON-encoded.
+    # Resolved by background_dispatch when a queue item has gcode_injection=True.
+    gcode_snippets: str = Field(
+        default="",
+        description="JSON: per-model G-code injection snippets {model: {start_gcode, end_gcode}}",
+    )
+
     # User email notifications (requires Advanced Authentication)
     user_notifications_enabled: bool = Field(
         default=True,
@@ -391,6 +399,20 @@ class AppSettingsUpdate(BaseModel):
     obico_poll_interval: int | None = Field(default=None, ge=5, le=120)
     obico_enabled_printers: str | None = None
     default_sidebar_order: str | None = None
+    gcode_snippets: str | None = None
+
+    @field_validator("gcode_snippets")
+    @classmethod
+    def validate_gcode_snippets(cls, v: str | None) -> str | None:
+        if v is None or v == "":
+            return v
+        try:
+            parsed = json.loads(v)
+        except json.JSONDecodeError:
+            raise ValueError("gcode_snippets must be valid JSON or empty")
+        if not isinstance(parsed, dict):
+            raise ValueError("gcode_snippets must be a JSON object keyed by printer model")
+        return v
 
     @field_validator("ldap_group_mapping")
     @classmethod

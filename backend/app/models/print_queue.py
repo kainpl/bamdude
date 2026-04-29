@@ -64,6 +64,15 @@ class PrintQueueItem(Base):
     execute_swap_macros: Mapped[bool] = mapped_column(Boolean, default=True)
     swap_macro_events: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Auto-Print G-code Injection (#422). When True, dispatch resolves the
+    # ``gcode_snippets`` setting (per-model JSON: ``{model: {start_gcode,
+    # end_gcode}}``), substitutes ``{header_keys}`` from the 3MF gcode header,
+    # and splices the snippets into the plate gcode at
+    # ``; MACHINE_START_GCODE_END`` (start) / EOF (end) before FTP upload.
+    # Anchored after the printer's own startup block — slicer-side
+    # custom-start-gcode semantics, not "before homing/bed-mesh".
+    gcode_injection: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+
     # Status: pending, printing, completed, failed, skipped, cancelled
     status: Mapped[str] = mapped_column(String(20), default="pending")
 

@@ -468,6 +468,62 @@ class BackgroundDispatchService:
         finally:
             self._job_event.set()
 
+    async def _maybe_inject_gcode(
+        self,
+        *,
+        job: PrintDispatchJob,
+        source_path: Path,
+        printer_model: str | None,
+        plate_id: int,
+    ) -> Path | None:
+        """Splice operator-defined snippets into the plate gcode (#422).
+
+        Returns the path of a NEW temp 3MF when injection succeeded (caller
+        replaces ``upload_file_path`` and tracks cleanup), or None when the
+        feature is off, the snippets aren't configured for this printer
+        model, or the injector rejected the file. Failures are non-fatal —
+        we log and fall back to the unmodified upload so a snippet typo
+        can't take a print job down.
+        """
+        if not job.options.get("gcode_injection"):
+            return None
+        if not printer_model:
+            logger.info("Dispatch job %s: gcode_injection on but no printer model, skipping", job.id)
+            return None
+        try:
+            import json as _json
+
+            from backend.app.api.routes.settings import get_setting
+            from backend.app.services.gcode_injector import inject_gcode_into_3mf
+
+            async with self._session_factory() as _sdb:
+                snippets_raw = await get_setting(_sdb, "gcode_snippets")
+            if not snippets_raw:
+                return None
+            snippets = _json.loads(snippets_raw)
+            model_snippets = snippets.get(printer_model, {}) if isinstance(snippets, dict) else {}
+            start_gc = (model_snippets.get("start_gcode") or "").strip()
+            end_gc = (model_snippets.get("end_gcode") or "").strip()
+            if not start_gc and not end_gc:
+                return None
+            injected = await asyncio.to_thread(
+                inject_gcode_into_3mf, source_path, plate_id, start_gc or None, end_gc or None
+            )
+            if injected is None:
+                logger.warning("Dispatch job %s: gcode injection produced no result, using original", job.id)
+                return None
+            # Record the injection in applied_patches so the archive row's
+            # chain-of-custody reflects what actually went to the printer.
+            existing = job.options.get("applied_patches") or []
+            job.options["applied_patches"] = existing + [
+                {"name": "gcode_injection", "model": printer_model, "plate_id": plate_id}
+            ]
+            logger.info("Dispatch job %s: gcode injected for model %s plate %s", job.id, printer_model, plate_id)
+            return injected
+        except Exception as exc:
+            logger.warning("Dispatch job %s: gcode injection failed (%s), uploading original", job.id, exc)
+            return None
+
     async def _set_active_message(self, job: PrintDispatchJob, message: str):
         async with self._lock:
             active = self._active_jobs.get(job.id)
@@ -712,6 +768,19 @@ class BackgroundDispatchService:
                     existing_patches = job.options.get("applied_patches") or []
                     job.options["applied_patches"] = existing_patches + patches
                     logger.info("Dispatch job %s: 3MF patched (%s)", job.id, patches)
+
+            # Auto-Print G-code Injection (#422). Runs after the mesh-mode
+            # patch so chain-of-custody hash math stays sane: the patched 3MF
+            # is what we actually upload, and we record the injection in
+            # applied_patches so the archive row keeps a faithful history.
+            _injection_cleanup_path = await self._maybe_inject_gcode(
+                job=job,
+                source_path=upload_file_path,
+                printer_model=printer_model,
+                plate_id=archive.plate_id or 1,
+            )
+            if _injection_cleanup_path is not None:
+                upload_file_path = _injection_cleanup_path
 
             base_name = archive.filename
             if base_name.endswith(".gcode.3mf"):
@@ -1065,6 +1134,18 @@ class BackgroundDispatchService:
                     existing_patches = job.options.get("applied_patches") or []
                     job.options["applied_patches"] = existing_patches + patches
                     logger.info("Dispatch job %s: 3MF patched (%s)", job.id, patches)
+
+            # Auto-Print G-code Injection (#422). Same ordering as the
+            # archive path above: runs after mesh-mode patching so the
+            # injected snippet lands in the file we actually upload.
+            _injection_cleanup_path_lib = await self._maybe_inject_gcode(
+                job=job,
+                source_path=upload_file_path,
+                printer_model=printer_model,
+                plate_id=int(job.options.get("plate_id") or 1),
+            )
+            if _injection_cleanup_path_lib is not None:
+                upload_file_path = _injection_cleanup_path_lib
 
             await self._set_active_message(job, f"Creating archive for {lib_file.filename}...")
             # Hold the startup-lock for the DB-write critical section only:

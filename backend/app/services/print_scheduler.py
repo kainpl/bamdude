@@ -1520,6 +1520,7 @@ class PrintScheduler:
             "use_ams": item.use_ams,
             "execute_swap_macros": item.execute_swap_macros,
             "swap_macro_events": swap_events,
+            "gcode_injection": item.gcode_injection,
         }
 
         if archive:

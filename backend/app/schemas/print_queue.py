@@ -33,6 +33,7 @@ class PrintQueueItemCreate(BaseModel):
     mesh_mode_fast_check: bool = True
     execute_swap_macros: bool = True
     swap_macro_events: list[str] | None = None
+    gcode_injection: bool = False
     # Batch: create N identical items sharing a batch_id (1..50)
     quantity: int = Field(default=1, ge=1, le=50)
     # Project to associate the resulting archive with (when triggered from project view)
@@ -56,6 +57,7 @@ class PrintQueueItemUpdate(BaseModel):
     mesh_mode_fast_check: bool | None = None
     execute_swap_macros: bool | None = None
     swap_macro_events: list[str] | None = None
+    gcode_injection: bool | None = None
 
 
 class PrintQueueItemResponse(BaseModel):
@@ -81,6 +83,7 @@ class PrintQueueItemResponse(BaseModel):
     mesh_mode_fast_check: bool = True
     execute_swap_macros: bool = True
     swap_macro_events: list[str] | None = None
+    gcode_injection: bool = False
     status: Literal["pending", "printing", "completed", "failed", "skipped", "cancelled"]
     started_at: UTCDatetime
     completed_at: UTCDatetime
@@ -142,6 +145,7 @@ class PrintQueueBulkUpdate(BaseModel):
     mesh_mode_fast_check: bool | None = None
     execute_swap_macros: bool | None = None
     swap_macro_events: list[str] | None = None
+    gcode_injection: bool | None = None
 
 
 class PrintQueueBulkUpdateResponse(BaseModel):

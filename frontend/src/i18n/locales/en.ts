@@ -3289,6 +3289,8 @@ export default {
     timelapseDesc: 'Record timelapse video',
     meshModeFastCheck: 'Quick Vibration Check',
     meshModeFastCheckDesc: 'Runs once before printing to confirm belt tension is normal. Disable to skip for this job.',
+    gcodeInjection: 'Inject G-code snippets',
+    gcodeInjectionDesc: 'Splice the operator-defined snippets for this printer model into the plate gcode at MACHINE_START_GCODE_END (start) and EOF (end). Configure snippets in Settings → Printers → G-code Snippets.',
     // Swap-mode macros (visible only when a swap-enabled printer is selected)
     swapMacros: 'Swap Macros',
     executeSwapMacros: 'Execute swap macros',

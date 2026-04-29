@@ -1748,6 +1748,10 @@ export interface PrintQueueItem {
   mesh_mode_fast_check: boolean;
   execute_swap_macros: boolean;
   swap_macro_events: string[] | null;
+  /** Auto-Print G-code Injection (#422). When true, dispatch resolves the per-model
+      gcode_snippets server setting and splices snippets into the plate gcode at
+      `; MACHINE_START_GCODE_END` (start) and EOF (end) before FTP upload. */
+  gcode_injection: boolean;
   status: 'pending' | 'printing' | 'completed' | 'failed' | 'skipped' | 'cancelled';
   started_at: string | null;
   completed_at: string | null;
@@ -1810,6 +1814,7 @@ export interface PrintQueueItemCreate {
   mesh_mode_fast_check?: boolean;
   execute_swap_macros?: boolean;
   swap_macro_events?: string[] | null;
+  gcode_injection?: boolean;
   quantity?: number;
   // Project to associate the resulting archive with
   project_id?: number;
@@ -1831,6 +1836,7 @@ export interface PrintQueueItemUpdate {
   mesh_mode_fast_check?: boolean;
   execute_swap_macros?: boolean;
   swap_macro_events?: string[] | null;
+  gcode_injection?: boolean;
 }
 
 export interface PrinterQueue {
@@ -1867,6 +1873,7 @@ export interface PrintQueueBulkUpdate {
   mesh_mode_fast_check?: boolean;
   execute_swap_macros?: boolean;
   swap_macro_events?: string[] | null;
+  gcode_injection?: boolean;
 }
 
 export interface PrintQueueBulkUpdateResponse {
