@@ -3050,6 +3050,11 @@ export default {
     noPresetsFound: 'Пресети не знайдено',
     note: 'Примітка',
     notePlaceholder: 'Будь-які додаткові примітки про цю котушку...',
+    // RFID button rename (was "Delete Tag" — confusing because it sounded
+    // like a taxonomy delete; this clears the RFID tag/UUID off the spool
+    // record, the spool itself stays).
+    clearRfid: 'Очистити RFID мітку',
+    rfidCleared: 'RFID мітку очищено',
     archive: 'Архівувати',
     restore: 'Відновити',
     noSpools: 'Котушок ще немає. Додайте першу котушку для початку.',

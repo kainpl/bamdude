@@ -6,7 +6,7 @@ import { api, macrosApi } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import { formatDateOnly, type DateFormat } from '../utils/date';
 import { getCurrencySymbol, SUPPORTED_CURRENCIES } from '../utils/currency';
-import type { AppSettings, AppSettingsUpdate, SmartPlug, SmartPlugStatus, NotificationProvider, NotificationTemplate, UpdateStatus, GitBackupStatus, CloudAuthStatus, UserCreate, UserUpdate, UserResponse, StorageUsageResponse, Macro, MacroCreate, MacroUpdate } from '../api/client';
+import type { AppSettings, AppSettingsUpdate, APIKey, SmartPlug, SmartPlugStatus, NotificationProvider, NotificationTemplate, UpdateStatus, GitBackupStatus, CloudAuthStatus, UserCreate, UserUpdate, UserResponse, StorageUsageResponse, Macro, MacroCreate, MacroUpdate } from '../api/client';
 import { Card, CardContent, CardHeader } from '../components/Card';
 import { Button } from '../components/Button';
 import { SmartPlugCard } from '../components/SmartPlugCard';
@@ -487,8 +487,14 @@ export function SettingsPage() {
 
   const deleteAPIKeyMutation = useMutation({
     mutationFn: (id: number) => api.deleteAPIKey(id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['api-keys'] });
+    onSuccess: (_data, deletedId) => {
+      // Synchronously filter out the deleted key from the React Query
+      // cache so the row disappears immediately instead of waiting on the
+      // refetch fired by `invalidateQueries`. The server already confirmed
+      // the delete, so the cache is the source of truth here.
+      queryClient.setQueryData<APIKey[]>(['api-keys'], (old) =>
+        (old ?? []).filter((key) => key.id !== deletedId)
+      );
       showToast(t('settings.toast.apiKeyDeleted'));
     },
     onError: (error: Error) => {

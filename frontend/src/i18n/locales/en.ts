@@ -3048,6 +3048,11 @@ export default {
     noPresetsFound: 'No presets found',
     note: 'Note',
     notePlaceholder: 'Any additional notes about this spool...',
+    // RFID button rename (was "Delete Tag" — confusing because it sounded
+    // like a taxonomy delete; this clears the RFID tag/UUID off the spool
+    // record, the spool itself stays).
+    clearRfid: 'Clear RFID Tag',
+    rfidCleared: 'RFID tag cleared',
     archive: 'Archive',
     restore: 'Restore',
     noSpools: 'No spools yet. Add your first spool to get started.',

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { RefreshCw, AlertTriangle, Camera, Maximize, Minimize, WifiOff, ZoomIn, ZoomOut } from 'lucide-react';
@@ -22,6 +22,11 @@ export function CameraPage() {
   const { hasPermission, user } = useAuth();
   const { printerId } = useParams<{ printerId: string }>();
   const id = parseInt(printerId || '0', 10);
+  // Honor ?fps=N query param for /camera/<id> diagnostic URLs (#1131).
+  // Default 15, clamp 1–30, fallback to 15 on non-numeric input.
+  const [searchParams] = useSearchParams();
+  const fpsParam = parseInt(searchParams.get('fps') || '15', 10);
+  const fps = Math.min(Math.max(isNaN(fpsParam) ? 15 : fpsParam, 1), 30);
 
   // Subscribe to the stream-token query so this page re-renders once the token
   // arrives. useStreamTokenSync (mounted in App) already owns the fetch; this
@@ -601,7 +606,7 @@ export function CameraPage() {
   const currentUrl = transitioning || waitingForStreamToken
     ? ''
     : streamMode === 'stream'
-      ? appendToken(`/api/v1/printers/${id}/camera/stream?fps=15&t=${imageKey}`)
+      ? appendToken(`/api/v1/printers/${id}/camera/stream?fps=${fps}&t=${imageKey}`)
       : appendToken(`/api/v1/printers/${id}/camera/snapshot?t=${imageKey}`);
 
   const isDisabled = streamLoading || transitioning || isReconnecting;

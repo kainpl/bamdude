@@ -388,7 +388,7 @@ export function SpoolFormModal({
       api.updateSpool(spool!.id, { tag_uid: null, tray_uuid: null, tag_type: null, data_origin: null } as Parameters<typeof api.updateSpool>[1]),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['inventory-spools'] });
-      showToast(t('inventory.tagDeleted', 'Tag removed'), 'success');
+      showToast(t('inventory.rfidCleared', 'RFID tag cleared'), 'success');
       onClose();
     },
     onError: (error: Error) => {
@@ -698,7 +698,7 @@ export function SpoolFormModal({
                 disabled={isPending || !spool?.tag_uid}
               >
                 <Tag className="w-4 h-4" />
-                {t('inventory.deleteTag', 'Delete Tag')}
+                {t('inventory.clearRfid', 'Clear RFID Tag')}
               </Button>
               <Button
                 variant="secondary"
