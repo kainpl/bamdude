@@ -31,6 +31,7 @@ from backend.app.services.bambu_ftp import (
     upload_file_async,
     with_ftp_retry,
 )
+from backend.app.services.gcode_patcher import GcodeInjectionSpec
 from backend.app.services.printer_manager import printer_manager
 
 logger = logging.getLogger(__name__)
@@ -468,22 +469,21 @@ class BackgroundDispatchService:
         finally:
             self._job_event.set()
 
-    async def _maybe_inject_gcode(
+    async def _build_injection_spec(
         self,
         *,
         job: PrintDispatchJob,
-        source_path: Path,
         printer_model: str | None,
         plate_id: int,
-    ) -> Path | None:
-        """Splice operator-defined snippets into the plate gcode (#422).
+    ) -> GcodeInjectionSpec | None:
+        """Resolve the per-job injection spec from settings + per-printer model (#422).
 
-        Returns the path of a NEW temp 3MF when injection succeeded (caller
-        replaces ``upload_file_path`` and tracks cleanup), or None when the
-        feature is off, the snippets aren't configured for this printer
-        model, or the injector rejected the file. Failures are non-fatal —
-        we log and fall back to the unmodified upload so a snippet typo
-        can't take a print job down.
+        Returns a ``GcodeInjectionSpec`` for ``apply_3mf_transforms`` to splice
+        in during its single open/write pass, or None when injection is off,
+        the printer model is unknown, or no snippets are configured for the
+        target model. The actual zip mutation lives in ``apply_3mf_transforms``
+        so M970-commenting and snippet-injection share one open/repack cycle
+        instead of two — important on multi-plate 50+ MB 3MFs.
         """
         if not job.options.get("gcode_injection"):
             return None
@@ -494,7 +494,6 @@ class BackgroundDispatchService:
             import json as _json
 
             from backend.app.api.routes.settings import get_setting
-            from backend.app.services.gcode_injector import inject_gcode_into_3mf
 
             async with self._session_factory() as _sdb:
                 snippets_raw = await get_setting(_sdb, "gcode_snippets")
@@ -506,22 +505,13 @@ class BackgroundDispatchService:
             end_gc = (model_snippets.get("end_gcode") or "").strip()
             if not start_gc and not end_gc:
                 return None
-            injected = await asyncio.to_thread(
-                inject_gcode_into_3mf, source_path, plate_id, start_gc or None, end_gc or None
+            return GcodeInjectionSpec(
+                plate_id=plate_id,
+                start_gcode=start_gc or None,
+                end_gcode=end_gc or None,
             )
-            if injected is None:
-                logger.warning("Dispatch job %s: gcode injection produced no result, using original", job.id)
-                return None
-            # Record the injection in applied_patches so the archive row's
-            # chain-of-custody reflects what actually went to the printer.
-            existing = job.options.get("applied_patches") or []
-            job.options["applied_patches"] = existing + [
-                {"name": "gcode_injection", "model": printer_model, "plate_id": plate_id}
-            ]
-            logger.info("Dispatch job %s: gcode injected for model %s plate %s", job.id, printer_model, plate_id)
-            return injected
         except Exception as exc:
-            logger.warning("Dispatch job %s: gcode injection failed (%s), uploading original", job.id, exc)
+            logger.warning("Dispatch job %s: failed to resolve gcode_snippets (%s), skipping", job.id, exc)
             return None
 
     async def _set_active_message(self, job: PrintDispatchJob, message: str):
@@ -752,35 +742,35 @@ class BackgroundDispatchService:
             if not file_path.exists():
                 raise RuntimeError("Archive file not found")
 
-            # Gcode post-processing: patch 3MF if the operator toggled off
-            # the vibration fast-check.  The patcher works on a temp copy
-            # and returns the original path unchanged if nothing needed.
+            # Unified 3MF post-processing: M970 commenting (mesh-mode-fast-check
+            # off) and per-plate G-code injection (#422) share a single
+            # open/mutate/write pass instead of unzipping+rezipping the file
+            # twice. ``apply_3mf_transforms`` returns the source path unchanged
+            # when no transform actually mutated any byte (e.g. an already-
+            # patched Swaplist export, or an injection toggle without snippets
+            # configured for this printer model).
             upload_file_path = file_path
             _patch_cleanup_dir = None
-            if not job.options.get("mesh_mode_fast_check", True):
-                from backend.app.services.gcode_patcher import patch_mesh_mode_fast_check
-
-                patched_path, patches = await asyncio.to_thread(patch_mesh_mode_fast_check, file_path)
-                if patches:
-                    upload_file_path = patched_path
-                    _patch_cleanup_dir = patched_path.parent
-                    # Merge into applied_patches so archive_print persists the chain.
-                    existing_patches = job.options.get("applied_patches") or []
-                    job.options["applied_patches"] = existing_patches + patches
-                    logger.info("Dispatch job %s: 3MF patched (%s)", job.id, patches)
-
-            # Auto-Print G-code Injection (#422). Runs after the mesh-mode
-            # patch so chain-of-custody hash math stays sane: the patched 3MF
-            # is what we actually upload, and we record the injection in
-            # applied_patches so the archive row keeps a faithful history.
-            _injection_cleanup_path = await self._maybe_inject_gcode(
+            inject_spec = await self._build_injection_spec(
                 job=job,
-                source_path=upload_file_path,
                 printer_model=printer_model,
                 plate_id=archive.plate_id or 1,
             )
-            if _injection_cleanup_path is not None:
-                upload_file_path = _injection_cleanup_path
+            if not job.options.get("mesh_mode_fast_check", True) or inject_spec is not None:
+                from backend.app.services.gcode_patcher import apply_3mf_transforms
+
+                patched_path, patches = await asyncio.to_thread(
+                    apply_3mf_transforms,
+                    file_path,
+                    mesh_mode_fast_check_off=not job.options.get("mesh_mode_fast_check", True),
+                    gcode_injection=inject_spec,
+                )
+                if patches and patched_path != file_path:
+                    upload_file_path = patched_path
+                    _patch_cleanup_dir = patched_path.parent
+                    existing_patches = job.options.get("applied_patches") or []
+                    job.options["applied_patches"] = existing_patches + patches
+                    logger.info("Dispatch job %s: 3MF transformed (%s)", job.id, patches)
 
             base_name = archive.filename
             if base_name.endswith(".gcode.3mf"):
@@ -1120,32 +1110,30 @@ class BackgroundDispatchService:
             if not await printer_manager.ensure_fresh_connection_for_printer(printer):
                 raise RuntimeError("Can`t re-connect printer MQTT")
 
-            # Gcode post-processing: patch 3MF if the operator toggled off
-            # the vibration fast-check.
+            # Unified 3MF post-processing — same single-pass pipeline as the
+            # archive path above. See _maybe_inject_gcode → _build_injection_spec.
             upload_file_path = file_path
             _patch_cleanup_dir_lib = None
-            if not job.options.get("mesh_mode_fast_check", True):
-                from backend.app.services.gcode_patcher import patch_mesh_mode_fast_check
+            inject_spec_lib = await self._build_injection_spec(
+                job=job,
+                printer_model=printer_model,
+                plate_id=int(job.options.get("plate_id") or 1),
+            )
+            if not job.options.get("mesh_mode_fast_check", True) or inject_spec_lib is not None:
+                from backend.app.services.gcode_patcher import apply_3mf_transforms
 
-                patched_path, patches = await asyncio.to_thread(patch_mesh_mode_fast_check, file_path)
-                if patches:
+                patched_path, patches = await asyncio.to_thread(
+                    apply_3mf_transforms,
+                    file_path,
+                    mesh_mode_fast_check_off=not job.options.get("mesh_mode_fast_check", True),
+                    gcode_injection=inject_spec_lib,
+                )
+                if patches and patched_path != file_path:
                     upload_file_path = patched_path
                     _patch_cleanup_dir_lib = patched_path.parent
                     existing_patches = job.options.get("applied_patches") or []
                     job.options["applied_patches"] = existing_patches + patches
-                    logger.info("Dispatch job %s: 3MF patched (%s)", job.id, patches)
-
-            # Auto-Print G-code Injection (#422). Same ordering as the
-            # archive path above: runs after mesh-mode patching so the
-            # injected snippet lands in the file we actually upload.
-            _injection_cleanup_path_lib = await self._maybe_inject_gcode(
-                job=job,
-                source_path=upload_file_path,
-                printer_model=printer_model,
-                plate_id=int(job.options.get("plate_id") or 1),
-            )
-            if _injection_cleanup_path_lib is not None:
-                upload_file_path = _injection_cleanup_path_lib
+                    logger.info("Dispatch job %s: 3MF transformed (%s)", job.id, patches)
 
             await self._set_active_message(job, f"Creating archive for {lib_file.filename}...")
             # Hold the startup-lock for the DB-write critical section only:

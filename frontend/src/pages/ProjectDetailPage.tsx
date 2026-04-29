@@ -578,7 +578,20 @@ export function ProjectDetailPage() {
               style={{ backgroundColor: project.color || '#6b7280' }}
             />
             <div>
-              <h1 className="text-2xl font-bold text-white">{project.name}</h1>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h1 className="text-2xl font-bold text-white">{project.name}</h1>
+                {project.url && (
+                  <a
+                    href={project.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-bambu-gray hover:text-bambu-green transition-colors flex-shrink-0"
+                    title={project.url}
+                  >
+                    <ExternalLink className="w-4 h-4" />
+                  </a>
+                )}
+              </div>
               {project.description && (
                 <p className="text-bambu-gray mt-1">{project.description}</p>
               )}

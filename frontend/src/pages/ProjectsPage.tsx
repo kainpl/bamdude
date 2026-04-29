@@ -20,6 +20,7 @@ import {
   Download,
   Upload,
   Copy,
+  ExternalLink,
 } from 'lucide-react';
 import { api } from '../api/client';
 import type { ProjectListItem, ProjectCreate, ProjectUpdate, ProjectImport, Permission } from '../api/client';
@@ -314,6 +315,26 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
         }}
       />
 
+      {/* Cover image hero (#1155). Renders only when the project has a cover
+          uploaded; otherwise the card keeps its existing all-color header. */}
+      {project.cover_image_filename && (
+        <div className="relative w-full aspect-[3/1] overflow-hidden">
+          <img
+            src={api.getProjectCoverImageUrl(project.id)}
+            alt=""
+            className="absolute inset-0 w-full h-full object-cover"
+            loading="lazy"
+            onError={(e) => {
+              // Hide the wrapper if the image 404s (e.g. operator deleted the
+              // file outside BamDude); keeps the card looking intentional.
+              (e.currentTarget.parentElement as HTMLElement | null)?.style.setProperty('display', 'none');
+            }}
+          />
+          {/* Subtle gradient so card text below stays readable */}
+          <div className="absolute inset-0 bg-gradient-to-t from-bambu-card via-transparent to-transparent" />
+        </div>
+      )}
+
       <div className="p-5 pl-6">
         {/* Header */}
         <div className="flex items-start justify-between mb-4">
@@ -324,6 +345,18 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2 flex-wrap">
                 <h3 className="font-semibold text-white truncate">{project.name}</h3>
+                {project.url && (
+                  <a
+                    href={project.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                    className="text-bambu-gray hover:text-bambu-green transition-colors flex-shrink-0"
+                    title={project.url}
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </a>
+                )}
                 {project.target_parts_count ? (
                   <span className={`text-xs px-2 py-0.5 rounded-full whitespace-nowrap font-medium ${
                     partsProgressPercent >= 100
