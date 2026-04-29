@@ -3395,6 +3395,24 @@ async def on_print_complete(printer_id: int, data: dict):
             service = ArchiveService(db)
             status = data.get("status", "completed")
 
+            # Back-fill created_by_id on reprint when NULL (#730 follow-up,
+            # audit A.21). Reprint reuses the source archive row instead of
+            # creating a new one, so an archive that was auto-created from a
+            # printer-initiated print (created_by_id=NULL) would otherwise
+            # stay unattributed forever — Print Log credited the reprinter
+            # via _print_user_info but the Statistics per-user filter reads
+            # archive.created_by_id and stayed unassigned. When we have a
+            # print-session user AND the archive has no attribution yet,
+            # credit the current user. Never overwrite existing attribution.
+            _print_user_id = _print_user_info.get("user_id") if _print_user_info else None
+            if _print_user_id is not None:
+                from backend.app.models.archive import PrintArchive as _ArchiveForAttr
+
+                _attr_archive = await db.get(_ArchiveForAttr, archive_id)
+                if _attr_archive is not None and _attr_archive.created_by_id is None:
+                    _attr_archive.created_by_id = _print_user_id
+                    await db.commit()
+
             # Auto-detect failure reason
             failure_reason = None
             if status == "aborted":
@@ -4933,19 +4951,36 @@ async def security_headers_middleware(request, call_next):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "SAMEORIGIN"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    response.headers["Content-Security-Policy"] = (
-        "default-src 'self'; "
-        "script-src 'self'; "
-        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-        "img-src 'self' data: blob:; "
-        "media-src 'self' blob:; "
-        "connect-src 'self' ws: wss:; "
-        "font-src 'self' data: https://fonts.gstatic.com; "
-        "object-src 'none'; "
-        "base-uri 'self'; "
-        "frame-src 'self' http: https:; "
-        "frame-ancestors 'none';"
-    )
+    if request.url.path in ("/docs", "/redoc", "/docs/oauth2-redirect"):
+        # FastAPI's built-in Swagger UI / ReDoc pages load assets from
+        # cdn.jsdelivr.net and bootstrap with an inline <script>, so the
+        # default CSP would render a blank page (audit A.38).
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+            "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; "
+            "img-src 'self' data: blob: https://fastapi.tiangolo.com https://cdn.redoc.ly; "
+            "connect-src 'self'; "
+            "font-src 'self' data: https://fonts.gstatic.com; "
+            "worker-src 'self' blob:; "
+            "object-src 'none'; "
+            "base-uri 'self'; "
+            "frame-ancestors 'none';"
+        )
+    else:
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self'; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "img-src 'self' data: blob:; "
+            "media-src 'self' blob:; "
+            "connect-src 'self' ws: wss:; "
+            "font-src 'self' data: https://fonts.gstatic.com; "
+            "object-src 'none'; "
+            "base-uri 'self'; "
+            "frame-src 'self' http: https:; "
+            "frame-ancestors 'none';"
+        )
     if request.url.scheme == "https":
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return response

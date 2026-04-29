@@ -2,7 +2,7 @@
 
 import logging
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -187,11 +187,23 @@ async def create_spool_from_tray(db: AsyncSession, tray_data: dict) -> Spool:
 
 
 async def find_matching_untagged_spool(db: AsyncSession, tray_data: dict) -> Spool | None:
-    """Find an existing untagged inventory spool matching brand/material/color.
+    """Find an existing untagged Bambu inventory spool matching material/color.
 
     When a Bambu Lab spool is detected in the AMS but no tag match exists,
     check if the user has a manually-added spool with the same properties
-    that hasn't been linked to a tag yet. Returns the oldest match (FIFO).
+    that hasn't been linked to a tag yet. Returns the best match (#918):
+
+    - **Brand**: only consider spools whose brand is unspecified or contains
+      ``bambu`` (case-insensitive — covers both ``Bambu`` and ``Bambu Lab`` as
+      stored by the form's brand dropdown). Prevents a same-color
+      Polymaker / generic spool from accidentally attracting a Bambu UUID.
+    - **Subtype**: prefer an exact match (e.g. AMS ``Basic`` → spool subtype
+      ``Basic``), but fall back to a NULL-subtype spool — the form's Quick
+      Add mode leaves subtype empty, so bulk-logged spools rely on this
+      fallback to attract their RFID tag instead of duplicating on first
+      AMS read.
+    - **FIFO** within each preference group (user likely logged in purchase
+      order).
     """
     tray_type = tray_data.get("tray_type", "")
     tray_sub_brands = tray_data.get("tray_sub_brands", "")
@@ -222,7 +234,7 @@ async def find_matching_untagged_spool(db: AsyncSession, tray_data: dict) -> Spo
         elif color_code and color_code[0] == "T":
             subtype = "Tri Color"
 
-    # Build query: active spools with no tag, matching brand + material + color
+    # Active, untagged spools matching material + color + Bambu-or-unset brand.
     query = (
         select(Spool)
         .options(selectinload(Spool.k_profiles), selectinload(Spool.assignments))
@@ -232,17 +244,30 @@ async def find_matching_untagged_spool(db: AsyncSession, tray_data: dict) -> Spo
             Spool.tray_uuid.is_(None),
             func.upper(Spool.material) == material.upper(),
             func.upper(Spool.rgba) == tray_color.upper(),
+            or_(
+                Spool.brand.is_(None),
+                func.lower(Spool.brand).like("%bambu%"),
+            ),
         )
     )
 
-    # Match subtype if parsed (e.g. "Basic", "Matte")
     if subtype:
-        query = query.where(func.upper(Spool.subtype) == subtype.upper())
+        # Exact subtype OR NULL fallback. The CASE in ORDER BY ensures an
+        # exact-subtype row beats a NULL-subtype row when both exist; FIFO
+        # within each group.
+        query = query.where(
+            or_(
+                func.upper(Spool.subtype) == subtype.upper(),
+                Spool.subtype.is_(None),
+            )
+        ).order_by(
+            case((func.upper(Spool.subtype) == subtype.upper(), 0), else_=1),
+            Spool.created_at.asc(),
+        )
     else:
-        query = query.where(Spool.subtype.is_(None))
+        query = query.where(Spool.subtype.is_(None)).order_by(Spool.created_at.asc())
 
-    # FIFO: oldest spool first (user likely added in purchase order)
-    query = query.order_by(Spool.created_at.asc()).limit(1)
+    query = query.limit(1)
 
     result = await db.execute(query)
     spool = result.scalar_one_or_none()
