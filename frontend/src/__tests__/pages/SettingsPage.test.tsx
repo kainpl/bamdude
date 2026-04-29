@@ -238,4 +238,72 @@ describe('SettingsPage', () => {
       });
     });
   });
+
+  describe('API Keys tab — delete flow (audit A.26)', () => {
+    // Without setQueryData on success the deleted row stayed visible until a
+    // manual reload — invalidateQueries didn't reliably trigger a UI swap on
+    // every browser. Pin the synchronous-removal contract here.
+    it('removes a deleted key from the list without a page reload', async () => {
+      const initialKeys = [
+        {
+          id: 42,
+          name: 'CI deploy key',
+          key_prefix: 'bb_abcd1234',
+          can_queue: true,
+          can_control_printer: false,
+          can_read_status: true,
+          printer_ids: null,
+          enabled: true,
+          last_used: null,
+          created_at: '2026-01-01T00:00:00Z',
+          expires_at: null,
+        },
+      ];
+
+      let deleteCallCount = 0;
+      server.use(
+        http.get('/api/v1/api-keys/', () => HttpResponse.json(initialKeys)),
+        http.delete('/api/v1/api-keys/:id', ({ params }) => {
+          deleteCallCount += 1;
+          expect(params.id).toBe('42');
+          return HttpResponse.json({ message: 'API key deleted' });
+        })
+      );
+
+      const user = userEvent.setup();
+      render(<SettingsPage />);
+
+      // Switch to API Keys tab. Both desktop tab + mobile dropdown render
+      // the label, so just grab the button form.
+      await waitFor(() => {
+        expect(screen.getAllByText('API Keys').length).toBeGreaterThan(0);
+      });
+      const tabButton = screen.getAllByText('API Keys').find((el) => el.tagName === 'BUTTON');
+      expect(tabButton).toBeDefined();
+      await user.click(tabButton!);
+
+      // Key is listed
+      await waitFor(() => {
+        expect(screen.getByText('CI deploy key')).toBeInTheDocument();
+      });
+
+      // Click the trash button on the row
+      const cards = screen.getByText('CI deploy key').closest('.flex.items-center.justify-between');
+      expect(cards).not.toBeNull();
+      const trashButton = cards!.querySelectorAll('button');
+      await user.click(trashButton[trashButton.length - 1]);
+
+      // Confirm the deletion in the modal
+      const confirmButton = await screen.findByRole('button', { name: /delete/i });
+      await user.click(confirmButton);
+
+      // The deleted key disappears from the list immediately — no manual
+      // reload required. setQueryData drops it before any refetch could fire.
+      await waitFor(() => {
+        expect(screen.queryByText('CI deploy key')).not.toBeInTheDocument();
+      });
+
+      expect(deleteCallCount).toBe(1);
+    });
+  });
 });

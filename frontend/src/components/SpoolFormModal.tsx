@@ -279,6 +279,10 @@ export function SpoolFormModal({
           filament_diameter: spool.filament_diameter || '1.75',
           lot: spool.lot != null ? String(spool.lot) : '',
           auto_increment_lot: false,
+          extra_colors: spool.extra_colors || '',
+          effect_type: spool.effect_type || '',
+          category: spool.category || '',
+          low_stock_threshold_pct: spool.low_stock_threshold_pct != null ? String(spool.low_stock_threshold_pct) : '',
         });
         setPresetInputValue(spool.slicer_filament_name || spool.slicer_filament || '');
 
@@ -402,6 +406,20 @@ export function SpoolFormModal({
     queryFn: () => api.getAssignments(),
     enabled: isOpen && isEditing,
   });
+
+  // B.8 — collect categories already in use for the autocomplete <datalist>.
+  const { data: allSpoolsForCategories } = useQuery({
+    queryKey: ['spools'],
+    queryFn: () => api.getSpools(false),
+    enabled: isOpen,
+  });
+  const knownCategories = useMemo(() => {
+    const set = new Set<string>();
+    for (const s of allSpoolsForCategories || []) {
+      if (s.category) set.add(s.category);
+    }
+    return Array.from(set).sort();
+  }, [allSpoolsForCategories]);
   const spoolAssignment = spool ? assignments?.find(a => a.spool_id === spool.id) : undefined;
 
   const unassignMutation = useMutation({
@@ -513,6 +531,14 @@ export function SpoolFormModal({
       // Empty string → null; "0" is client-side blocked in the input
       // handler so we don't need a special case here.
       lot: formData.lot.trim() ? parseInt(formData.lot, 10) : null,
+      // B.1 — gradient stops + effect (empty string → NULL).
+      extra_colors: formData.extra_colors.trim() || null,
+      effect_type: formData.effect_type || null,
+      // B.8 — category + low-stock threshold override.
+      category: formData.category.trim() || null,
+      low_stock_threshold_pct: formData.low_stock_threshold_pct.trim()
+        ? parseInt(formData.low_stock_threshold_pct, 10)
+        : null,
     };
 
     // Only send weight_used when creating or when explicitly changed by the user.
@@ -664,6 +690,8 @@ export function SpoolFormModal({
                   spoolCatalog={spoolCatalog}
                   currencySymbol={currencySymbol}
                   quickAdd={quickAdd}
+                  categories={knownCategories}
+                  errors={errors}
                 />
               </div>
 

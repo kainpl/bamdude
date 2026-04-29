@@ -749,6 +749,8 @@ export default {
         thisWeek: 'Цей тиждень',
         thisMonth: 'Цей місяць',
         favorites: 'Обрані',
+        notPrinted: 'Не друковані',
+        printed: 'Друковані',
         failed: 'Невдалі друки',
         duplicates: 'Дублікати'
       },
@@ -980,6 +982,7 @@ export default {
     cancelDispatchJob: 'Скасувати завдання відправки',
     cancel: 'Скасувати',
     cancelling: 'Скасування\u2026',
+    awaitingPrinter: 'Очікування принтера\u2026',
     status: {
       dispatched: 'Відправлено',
       processing: 'Обробляється',
@@ -3055,10 +3058,16 @@ export default {
     // record, the spool itself stays).
     clearRfid: 'Очистити RFID мітку',
     rfidCleared: 'RFID мітку очищено',
+    spoolmanMixedContentTitle: 'Spoolman неможливо вбудувати через HTTP',
+    spoolmanMixedContentBody: 'Браузер блокує HTTP-вміст усередині HTTPS-сторінки, тому iframe Spoolman залишається порожнім. BamDude завантажений через HTTPS, але Spoolman налаштований на http:// URL.',
+    spoolmanMixedContentFixReverseProxy: 'Найкраще рішення: розмістити Spoolman за тим самим reverse-proxy, що й BamDude, щоб обидва були доступні через HTTPS.',
+    spoolmanMixedContentFixOpenNewTab: 'Обхідний шлях: відкрити Spoolman у новій вкладці — окремі вкладки не підпадають під правило mixed-content.',
+    spoolmanOpenInNewTab: 'Відкрити Spoolman у новій вкладці',
     archive: 'Архівувати',
     restore: 'Відновити',
     noSpools: 'Котушок ще немає. Додайте першу котушку для початку.',
     noManualSpools: 'Немає вручну доданих котушок. Спочатку додайте котушку до інвентарю.',
+    noAvailableSpools: 'Немає доступних котушок. Додайте котушку до інвентарю або від\'єднайте її від іншого слота.',
     assignSpool: 'Призначити котушку',
     unassignSpool: 'Зняти призначення',
     assignSuccess: 'Котушку призначено та слот AMS налаштовано',
@@ -3208,7 +3217,29 @@ export default {
     assignMismatchMessage: 'Матеріал вибраної котушки "{{spoolMaterial}}" не відповідає матеріалу лотку "{{trayMaterial}}" для {{location}}. Призначити все одно?',
     assignMismatchConfirm: 'Призначити все одно',
     assignPartialMismatchMessage: 'Матеріал котушки "{{spoolMaterial}}" схожий, але не точно відповідає "{{trayMaterial}}" у {{location}}. Продовжити?',
-    assignProfileMismatchMessage: 'Профіль котушки "{{spoolProfile}}" не відповідає профілю лотку "{{trayProfile}}" у {{location}}. Продовжити?'
+    assignProfileMismatchMessage: 'Профіль котушки "{{spoolProfile}}" не відповідає профілю лотку "{{trayProfile}}" у {{location}}. Продовжити?',
+    spoolForm: {
+      category: 'Категорія',
+      categoryPlaceholder: 'Виробництво',
+      lowStockOverride: 'Поріг низьк. запасу (%)',
+      lowStockOverridePlaceholder: 'Як глобальний',
+      extraColors: 'Додаткові кольори',
+      extraColorsHelp: 'Список hex-токенів через кому (6 або 8 символів), до 8. Порожньо = суцільний колір.',
+      effectType: 'Візуальний ефект',
+      effectNone: 'Без ефекту',
+      effects: {
+        sparkle: 'Іскристий',
+        silk: 'Шовк',
+        matte: 'Матовий',
+        glow: 'Світиться',
+        wood: 'Дерево',
+        marble: 'Мармур',
+        galaxy: 'Галактика',
+        rainbow: 'Веселка',
+        metal: 'Метал',
+        translucent: 'Напівпрозорий'
+      }
+    }
   },
 
   // Timelapse
@@ -3764,6 +3795,12 @@ export default {
       proxy: 'Проксі',
       proxyDesc: 'Передати на реальний принтер'
     },
+    archiveNameSource: {
+      title: 'Джерело назви архіву',
+      description: 'Звідки береться назва архіву коли слайсери вивантажують через віртуальний принтер.',
+      metadata: 'Метадані (print_name з 3MF)',
+      filename: 'Назва файлу (rename у діалозі слайсера)',
+    },
     autoDispatch: {
       title: 'Автовідправка',
       description: 'Автоматично починати друк при додаванні до черги. Якщо вимкнено, друки чекають ручної відправки.',
@@ -4240,6 +4277,15 @@ export default {
       printJobStopsDesc: 'Отримувати сповіщення, коли ваше завдання друку скасовано або зупинено.',
       saveSuccess: 'Налаштування сповіщень збережено.',
       saveError: 'Не вдалося зберегти налаштування сповіщень.'
+    },
+    eventPriority: {
+      sectionTitle: 'Пріоритет події (ntfy)',
+      helpNtfy: 'Перевизначити серверний пріоритет ntfy для кожної події. 1 = мін., 5 = терміново.',
+      min: '1 — Мін.',
+      low: '2 — Низький',
+      default: '3 — За замовч.',
+      high: '4 — Високий',
+      urgent: '5 — Терміново'
     }
   },
 

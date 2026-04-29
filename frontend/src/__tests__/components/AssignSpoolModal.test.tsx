@@ -80,7 +80,7 @@ describe('AssignSpoolModal', () => {
     expect(screen.queryByText('Assign Spool')).not.toBeInTheDocument();
   });
 
-  it('filters out Bambu Lab spools (with tag_uid/tray_uuid)', async () => {
+  it('lists every vendor including Bambu Lab spools (#1133)', async () => {
     render(<AssignSpoolModal {...defaultProps} />);
 
     await waitFor(() => {
@@ -91,8 +91,11 @@ describe('AssignSpoolModal', () => {
     expect(screen.getByText(/Polymaker/)).toBeInTheDocument();
     expect(screen.getByText(/Overture/)).toBeInTheDocument();
 
-    // BL spool should NOT be visible
-    expect(screen.queryByText(/Jade White/)).not.toBeInTheDocument();
+    // BL spool with tag_uid/tray_uuid should ALSO be visible — the earlier
+    // "manual spools only" gate (tag_uid && tray_uuid both null) was the
+    // exact bug fixed by upstream #1133. (Color name may render in both
+    // the row label and the swatch hint, so use getAllByText.)
+    expect(screen.getAllByText(/Jade White/).length).toBeGreaterThan(0);
   });
 
   it('filters out spools already assigned to other slots', async () => {
@@ -128,13 +131,25 @@ describe('AssignSpoolModal', () => {
     expect(screen.getByText(/Polymaker/)).toBeInTheDocument();
   });
 
-  it('shows noManualSpools message when all spools are BL or assigned', async () => {
-    (api.getSpools as ReturnType<typeof vi.fn>).mockResolvedValue([blSpool]);
+  it('shows noAvailableSpools message when inventory is empty', async () => {
+    (api.getSpools as ReturnType<typeof vi.fn>).mockResolvedValue([]);
 
     render(<AssignSpoolModal {...defaultProps} />);
 
     await waitFor(() => {
-      expect(screen.getByText(/No manually added spools/i)).toBeInTheDocument();
+      expect(screen.getByText(/No spools available/i)).toBeInTheDocument();
     });
+  });
+
+  it('drops archived spools always — even with the toggle on', async () => {
+    const archivedSpool = { ...manualSpool, id: 99, archived_at: '2026-01-01T00:00:00Z', brand: 'Archived' };
+    (api.getSpools as ReturnType<typeof vi.fn>).mockResolvedValue([archivedSpool]);
+
+    render(<AssignSpoolModal {...defaultProps} />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/No spools available/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/Archived/)).not.toBeInTheDocument();
   });
 });

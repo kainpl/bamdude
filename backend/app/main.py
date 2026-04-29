@@ -242,6 +242,19 @@ if app_settings.log_to_file:
     root_logger.addHandler(file_handler)
     logging.info("Logging to file: %s", log_file)
 
+    # Pipe uvicorn's HTTP access log to bamdude.log too. Uvicorn ships its
+    # access logger with propagate=False by default, so without this attach
+    # there is no on-disk record of which endpoint triggered a server-state
+    # change — leaving incident triage to eyeball-correlate timestamps
+    # across separate streams. Filtered to write methods only
+    # (POST/PUT/PATCH/DELETE) so the high-volume status-poll GETs from the
+    # frontend don't churn the rotation window faster than it's useful.
+    from backend.app.core.logging_filters import WriteRequestsOnlyFilter  # noqa: E402
+
+    uvicorn_access_logger = logging.getLogger("uvicorn.access")
+    uvicorn_access_logger.addHandler(file_handler)
+    uvicorn_access_logger.addFilter(WriteRequestsOnlyFilter())
+
 # Reduce noise from third-party libraries in production
 if not app_settings.debug:
     logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
@@ -300,6 +313,78 @@ _bed_cooldown_tasks: dict[int, asyncio.Task] = {}
 # When on_print_complete fires with status "failed" for these printers we treat it
 # as "cancelled" (stopped by user) so the correct notification email is sent.
 _user_stopped_printers: set[int] = set()
+
+
+# HMS short-code → human-readable failure reason. Used by on_print_complete when
+# status="failed" to label the print's failure_reason in archives.
+#
+# Earlier code matched on `module` alone (e.g. "any module 0x0C HMS → Layer shift"),
+# which was wrong on two counts:
+#   1. Real layer-shift codes live in module 0x03 (per Bambu wiki), not 0x0C.
+#   2. Module 0x0C is "Motion Controller" — a broad category that also covers
+#      cameras, visual markers, AND the H2D firmware emits 0x0C HMS codes
+#      (e.g. 0C00_001B) as part of its user-cancel sequence. Matching on the
+#      module alone caused user-cancellations to be archived as "Layer shift"
+#      failures.
+# We now match by full short code only — anything not in this map leaves
+# failure_reason=None rather than guessing.
+_HMS_FAILURE_REASONS: dict[str, str] = {
+    # Layer shift / step loss
+    "0300_4057": "Layer shift",
+    "0300_4068": "Layer shift",
+    "0300_800C": "Layer shift",
+    # Filament runout (printer-side & per-AMS-slot)
+    "0300_8004": "Filament runout",
+    "0700_8011": "Filament runout",
+    "0701_8011": "Filament runout",
+    "0702_8011": "Filament runout",
+    "0703_8011": "Filament runout",
+    "0704_8011": "Filament runout",
+    "0705_8011": "Filament runout",
+    "0706_8011": "Filament runout",
+    "0707_8011": "Filament runout",
+    "07FF_8011": "Filament runout",
+    # Clogged nozzle / extruder
+    "0300_4006": "Clogged nozzle",
+    "0300_8016": "Clogged nozzle",
+    "0300_801C": "Clogged nozzle",
+    "0700_8003": "Clogged nozzle",
+    "0700_8007": "Clogged nozzle",
+    "0700_8013": "Clogged nozzle",
+    "0701_8003": "Clogged nozzle",
+    "0701_8007": "Clogged nozzle",
+    "0701_8013": "Clogged nozzle",
+    "0702_8003": "Clogged nozzle",
+}
+
+
+def _hms_short_code(attr: int, code: int | str) -> str:
+    """Build the canonical "MMMM_CCCC" HMS short code from raw attr/code values."""
+    if isinstance(code, str):
+        code_int = int(code.replace("0x", ""), 16) if code else 0
+    else:
+        code_int = int(code or 0)
+    attr_int = int(attr or 0)
+    return f"{(attr_int >> 16) & 0xFFFF:04X}_{code_int & 0xFFFF:04X}"
+
+
+def derive_failure_reason(status: str, hms_errors: list[dict] | None) -> str | None:
+    """Derive a human-readable failure_reason for an archived print.
+
+    Returns "User cancelled" for cancelled/aborted prints; for failed prints,
+    returns the first matching reason from _HMS_FAILURE_REASONS, or None when
+    no HMS code matches (don't guess — null is honest).
+    """
+    if status in ("aborted", "cancelled"):
+        return "User cancelled"
+    if status != "failed":
+        return None
+    for err in hms_errors or []:
+        short_code = _hms_short_code(err.get("attr", 0), err.get("code", 0))
+        if short_code in _HMS_FAILURE_REASONS:
+            return _HMS_FAILURE_REASONS[short_code]
+    return None
+
 
 # Track created_by_id for expected prints so the user email can be sent even when
 # the archive itself doesn't have created_by_id set (e.g. library-file-based prints).
@@ -3413,33 +3498,17 @@ async def on_print_complete(printer_id: int, data: dict):
                     _attr_archive.created_by_id = _print_user_id
                     await db.commit()
 
-            # Auto-detect failure reason
-            failure_reason = None
-            if status == "aborted":
-                failure_reason = "User cancelled"
-                logger.info("[ARCHIVE] Print was aborted by user, setting failure_reason='User cancelled'")
-            elif status == "failed":
-                # Try to determine failure reason from HMS errors
-                hms_errors = data.get("hms_errors", [])
-                if hms_errors:
-                    logger.info("[ARCHIVE] HMS errors at failure: %s", hms_errors)
-                    # Map known HMS error modules to failure reasons
-                    # Module 0x07 = Filament, 0x0C = MC (Motion Controller), etc.
-                    for err in hms_errors:
-                        module = err.get("module", 0)
-                        if module == 0x07:  # Filament module
-                            failure_reason = "Filament runout"
-                            break
-                        elif module == 0x0C:  # Motion controller
-                            failure_reason = "Layer shift"
-                            break
-                        elif module == 0x05:  # Nozzle/extruder
-                            failure_reason = "Clogged nozzle"
-                            break
-                    if failure_reason:
-                        logger.info("[ARCHIVE] Detected failure_reason from HMS: %s", failure_reason)
-                else:
-                    logger.info("[ARCHIVE] No HMS errors available to determine failure reason")
+            # Auto-detect failure reason via curated short-code map (see
+            # _HMS_FAILURE_REASONS). Module-based heuristics mislabel H2D
+            # user-cancels (module 0x0C cancel echo) as "Layer shift".
+            hms_errors = data.get("hms_errors", []) if status == "failed" else None
+            if hms_errors:
+                logger.info("[ARCHIVE] HMS errors at failure: %s", hms_errors)
+            failure_reason = derive_failure_reason(status, hms_errors)
+            if failure_reason:
+                logger.info("[ARCHIVE] failure_reason=%r (status=%s)", failure_reason, status)
+            elif status == "failed" and hms_errors:
+                logger.info("[ARCHIVE] HMS errors present but none matched a known failure-reason short code")
 
             await service.update_archive_status(
                 archive_id,
@@ -5055,10 +5124,23 @@ if app_settings.static_dir.exists() and any(app_settings.static_dir.iterdir()):
 
 @app.get("/")
 async def serve_frontend():
-    """Serve the React frontend."""
+    """Serve the React frontend.
+
+    ``Cache-Control: no-cache, must-revalidate`` so the browser always
+    revalidates ``index.html`` against the server (returning 304 if
+    unchanged). Without this, browsers cache the HTML aggressively and
+    keep referencing rotated-out hashed asset filenames after a deploy,
+    which surfaces as "the UI is broken until I hard-refresh". The
+    hashed asset bundles under ``/assets/*`` keep their default long-
+    lived caching — only the document that points at them needs to
+    revalidate.
+    """
     index_file = app_settings.static_dir / "index.html"
     if index_file.exists():
-        return FileResponse(index_file)
+        return FileResponse(
+            index_file,
+            headers={"Cache-Control": "no-cache, must-revalidate"},
+        )
     return {
         "message": "BamDude API",
         "docs": "/docs",
@@ -5110,7 +5192,12 @@ async def serve_sw_register():
 # Catch-all route for React Router (must be last)
 @app.get("/{full_path:path}")
 async def serve_spa(full_path: str):
-    """Serve React app for client-side routing."""
+    """Serve React app for client-side routing.
+
+    Same ``Cache-Control: no-cache, must-revalidate`` as ``serve_frontend``
+    so deep-links into client-side routes (``/printers``, ``/queue``, …)
+    don't cache stale HTML pointing at rotated-out asset bundles.
+    """
     # Don't intercept API routes - raise proper 404 so FastAPI can handle redirects
     if full_path.startswith("api/"):
         from fastapi import HTTPException
@@ -5119,6 +5206,9 @@ async def serve_spa(full_path: str):
 
     index_file = app_settings.static_dir / "index.html"
     if index_file.exists():
-        return FileResponse(index_file)
+        return FileResponse(
+            index_file,
+            headers={"Cache-Control": "no-cache, must-revalidate"},
+        )
 
     return {"error": "Frontend not built"}

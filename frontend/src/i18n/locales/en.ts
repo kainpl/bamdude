@@ -739,6 +739,8 @@ export default {
         thisWeek: 'This Week',
         thisMonth: 'This Month',
         favorites: 'Favorites',
+        notPrinted: 'Not Printed',
+        printed: 'Printed',
         failed: 'Failed Prints',
         duplicates: 'Duplicates'
       },
@@ -974,6 +976,7 @@ export default {
     cancelDispatchJob: 'Cancel dispatch job',
     cancel: 'Cancel',
     cancelling: 'Cancelling…',
+    awaitingPrinter: 'Awaiting printer…',
     status: {
       dispatched: 'Dispatched',
       processing: 'Processing',
@@ -3053,10 +3056,16 @@ export default {
     // record, the spool itself stays).
     clearRfid: 'Clear RFID Tag',
     rfidCleared: 'RFID tag cleared',
+    spoolmanMixedContentTitle: 'Spoolman cannot be embedded over HTTP',
+    spoolmanMixedContentBody: 'Your browser blocks HTTP content inside HTTPS pages, so the Spoolman iframe stays blank. BamDude is loaded over HTTPS but Spoolman is configured at an http:// URL.',
+    spoolmanMixedContentFixReverseProxy: 'Best fix: put Spoolman behind the same reverse proxy as BamDude so both are reachable over HTTPS.',
+    spoolmanMixedContentFixOpenNewTab: 'Workaround: open Spoolman in a new tab — standalone tabs are not subject to the mixed-content rule.',
+    spoolmanOpenInNewTab: 'Open Spoolman in new tab',
     archive: 'Archive',
     restore: 'Restore',
     noSpools: 'No spools yet. Add your first spool to get started.',
     noManualSpools: 'No manually added spools available. Add a spool to your inventory first.',
+    noAvailableSpools: 'No spools available. Add a spool to your inventory or unassign one from another slot first.',
     assignSpool: 'Assign Spool',
     unassignSpool: 'Unassign',
     assignSuccess: 'Spool assigned and AMS slot configured',
@@ -3206,7 +3215,29 @@ export default {
     assignMismatchMessage: 'The selected spool material "{{spoolMaterial}}" does not match the tray material "{{trayMaterial}}" for {{location}}. Assign anyway?',
     assignMismatchConfirm: 'Assign Anyway',
     assignPartialMismatchMessage: 'The spool material "{{spoolMaterial}}" is similar to but not exactly matching "{{trayMaterial}}" in {{location}}. Do you want to proceed?',
-    assignProfileMismatchMessage: 'The spool profile "{{spoolProfile}}" does not match the tray profile "{{trayProfile}}" in {{location}}. Do you want to proceed?'
+    assignProfileMismatchMessage: 'The spool profile "{{spoolProfile}}" does not match the tray profile "{{trayProfile}}" in {{location}}. Do you want to proceed?',
+    spoolForm: {
+      category: 'Category',
+      categoryPlaceholder: 'Production',
+      lowStockOverride: 'Low-stock override (%)',
+      lowStockOverridePlaceholder: 'Use global',
+      extraColors: 'Extra colour stops',
+      extraColorsHelp: 'Comma-separated 6/8-char hex tokens, up to 8. Empty = solid colour.',
+      effectType: 'Visual effect',
+      effectNone: 'None',
+      effects: {
+        sparkle: 'Sparkle',
+        silk: 'Silk',
+        matte: 'Matte',
+        glow: 'Glow',
+        wood: 'Wood',
+        marble: 'Marble',
+        galaxy: 'Galaxy',
+        rainbow: 'Rainbow',
+        metal: 'Metal',
+        translucent: 'Translucent'
+      }
+    }
   },
 
   // Timelapse
@@ -3763,6 +3794,12 @@ export default {
       proxy: 'Proxy',
       proxyDesc: 'Relay to real printer'
     },
+    archiveNameSource: {
+      title: 'Archive name source',
+      description: 'Where the archive\'s display name comes from when slicers upload via the virtual printer.',
+      metadata: 'Metadata (3MF print_name)',
+      filename: 'Filename (rename in slicer dialog)',
+    },
     autoDispatch: {
       title: 'Auto-dispatch',
       description: 'Automatically start prints when added to queue. When off, prints wait for manual dispatch.',
@@ -4239,6 +4276,15 @@ export default {
       printJobStopsDesc: 'Get notified when your print job is cancelled or stopped.',
       saveSuccess: 'Notification preferences saved.',
       saveError: 'Failed to save notification preferences.'
+    },
+    eventPriority: {
+      sectionTitle: 'Event priority (ntfy)',
+      helpNtfy: 'Override the ntfy server-side priority per event. 1 = min, 5 = urgent.',
+      min: '1 — Min',
+      low: '2 — Low',
+      default: '3 — Default',
+      high: '4 — High',
+      urgent: '5 — Urgent'
     }
   },
 

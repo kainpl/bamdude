@@ -31,6 +31,13 @@ class SpoolBase(BaseModel):
     weight_locked: bool = False
     last_scale_weight: int | None = None
     last_weighed_at: datetime | None = None
+    # B.1 — multi-colour gradient stops (comma-separated 6/8-char hex
+    # tokens, max 8) and visual effect overlay.
+    extra_colors: str | None = Field(default=None, max_length=255)
+    effect_type: str | None = Field(default=None, max_length=20)
+    # B.8 — free-text category + per-spool low-stock threshold override (%).
+    category: str | None = Field(default=None, max_length=50)
+    low_stock_threshold_pct: int | None = Field(default=None, ge=1, le=99)
 
 
 class SpoolCreate(SpoolBase):
@@ -69,6 +76,10 @@ class SpoolUpdate(BaseModel):
     filament_diameter: str | None = Field(default=None, pattern=r"^(1\.75|2\.85)$")
     lot: int | None = Field(default=None, gt=0)
     weight_locked: bool | None = None
+    extra_colors: str | None = Field(default=None, max_length=255)
+    effect_type: str | None = Field(default=None, max_length=20)
+    category: str | None = Field(default=None, max_length=50)
+    low_stock_threshold_pct: int | None = Field(default=None, ge=1, le=99)
 
 
 class SpoolKProfileBase(BaseModel):

@@ -368,12 +368,15 @@ class VirtualPrinterInstance:
             return
 
         try:
+            from backend.app.api.routes.settings import get_setting
             from backend.app.models.print_queue import PrintQueueItem
             from backend.app.services.archive import ArchiveService
 
             async with self._session_factory() as db:
                 # First check if we can find a queue before archiving
                 # We need sliced_for_model from 3MF metadata - parse it early
+                name_source = await get_setting(db, "virtual_printer_archive_name_source")
+                prefer_filename = name_source == "filename"
                 service = ArchiveService(db)
                 archive = await service.archive_print(
                     printer_id=None,
@@ -383,6 +386,7 @@ class VirtualPrinterInstance:
                         "source": "virtual_printer",
                         "source_ip": source_ip,
                     },
+                    prefer_filename_for_name=prefer_filename,
                 )
                 if archive:
                     queue = await self._find_best_queue(db, archive)
@@ -448,11 +452,14 @@ class VirtualPrinterInstance:
         try:
             from sqlalchemy import func as sa_func, select as sa_select
 
+            from backend.app.api.routes.settings import get_setting
             from backend.app.models.auto_queue import AutoQueueItem
             from backend.app.services.archive import ArchiveService
             from backend.app.services.auto_queue_threemf import extract_auto_queue_requirements
 
             async with self._session_factory() as db:
+                name_source = await get_setting(db, "virtual_printer_archive_name_source")
+                prefer_filename = name_source == "filename"
                 service = ArchiveService(db)
                 archive = await service.archive_print(
                     printer_id=None,
@@ -462,6 +469,7 @@ class VirtualPrinterInstance:
                         "source": "virtual_printer",
                         "source_ip": source_ip,
                     },
+                    prefer_filename_for_name=prefer_filename,
                 )
                 if not archive:
                     logger.error("[VP %s] Failed to archive file: %s", self.name, file_path.name)

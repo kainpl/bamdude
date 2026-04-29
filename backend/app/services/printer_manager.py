@@ -258,8 +258,14 @@ class PrinterManager:
             self._awaiting_plate_clear.add(printer_id)
         else:
             self._awaiting_plate_clear.discard(printer_id)
-        self._schedule_async(self._persist_awaiting_plate_clear(printer_id, awaiting))
-        self._schedule_async(self._broadcast_status_change(printer_id))
+        # Guard at the higher layer so we don't create coroutines that
+        # ``_schedule_async`` would silently drop (otherwise Python emits
+        # "coroutine was never awaited" warnings — visible in sync unit
+        # tests that instantiate ``PrinterManager()`` without attaching a
+        # loop).
+        if self._loop and self._loop.is_running():
+            self._schedule_async(self._persist_awaiting_plate_clear(printer_id, awaiting))
+            self._schedule_async(self._broadcast_status_change(printer_id))
 
     async def _broadcast_status_change(self, printer_id: int) -> None:
         """Emit a ``printer_status`` WebSocket update for this printer (#1128).

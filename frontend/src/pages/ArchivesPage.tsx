@@ -2406,14 +2406,19 @@ function ArchiveListRow({
 
 type SortOption = 'date-desc' | 'date-asc' | 'name-asc' | 'name-desc' | 'size-desc' | 'size-asc';
 type ViewMode = 'grid' | 'list' | 'calendar';
-type Collection = 'all' | 'recent' | 'this-week' | 'this-month' | 'favorites' | 'failed' | 'duplicates';
+type Collection = 'all' | 'recent' | 'this-week' | 'this-month' | 'favorites' | 'not-printed' | 'printed' | 'failed' | 'duplicates';
 
+// `not-printed` and `printed` are server-side filters in
+// backend/app/services/archive.py — see the audit B.3 entry for the
+// status-set rationale.
 const collections: { id: Collection; labelKey: string; icon: React.ReactNode }[] = [
   { id: 'all', labelKey: 'archives.page.collection.all', icon: <FolderOpen className="w-4 h-4" /> },
   { id: 'recent', labelKey: 'archives.page.collection.recent', icon: <Clock className="w-4 h-4" /> },
   { id: 'this-week', labelKey: 'archives.page.collection.thisWeek', icon: <Calendar className="w-4 h-4" /> },
   { id: 'this-month', labelKey: 'archives.page.collection.thisMonth', icon: <Calendar className="w-4 h-4" /> },
   { id: 'favorites', labelKey: 'archives.page.collection.favorites', icon: <Star className="w-4 h-4" /> },
+  { id: 'not-printed', labelKey: 'archives.page.collection.notPrinted', icon: <Upload className="w-4 h-4" /> },
+  { id: 'printed', labelKey: 'archives.page.collection.printed', icon: <Printer className="w-4 h-4" /> },
   { id: 'failed', labelKey: 'archives.page.collection.failed', icon: <AlertCircle className="w-4 h-4" /> },
   { id: 'duplicates', labelKey: 'archives.page.collection.duplicates', icon: <Copy className="w-4 h-4" /> },
 ];

@@ -8,6 +8,7 @@ import { Button } from './Button';
 import { useToast } from '../contexts/ToastContext';
 
 type LocalMode = 'print_queue' | 'file_manager' | 'proxy';
+type ArchiveNameSource = 'metadata' | 'filename';
 
 export function VirtualPrinterSettings() {
   const { t } = useTranslation();
@@ -20,8 +21,9 @@ export function VirtualPrinterSettings() {
   const [localModel, setLocalModel] = useState('BL-P001');
   const [localTargetPrinterId, setLocalTargetPrinterId] = useState<number | null>(null);
   const [localRemoteInterfaceIp, setLocalRemoteInterfaceIp] = useState('');
+  const [localArchiveNameSource, setLocalArchiveNameSource] = useState<ArchiveNameSource>('metadata');
   const [showAccessCode, setShowAccessCode] = useState(false);
-  const [pendingAction, setPendingAction] = useState<'toggle' | 'accessCode' | 'mode' | 'model' | 'targetPrinter' | 'remoteInterface' | null>(null);
+  const [pendingAction, setPendingAction] = useState<'toggle' | 'accessCode' | 'mode' | 'model' | 'targetPrinter' | 'remoteInterface' | 'archiveNameSource' | null>(null);
 
   // Fetch current settings
   const { data: settings, isLoading } = useQuery({
@@ -62,12 +64,15 @@ export function VirtualPrinterSettings() {
       setLocalModel(settings.model);
       setLocalTargetPrinterId(settings.target_printer_id);
       setLocalRemoteInterfaceIp(settings.remote_interface_ip || '');
+      setLocalArchiveNameSource(
+        settings.archive_name_source === 'filename' ? 'filename' : 'metadata',
+      );
     }
   }, [settings]);
 
   // Update mutation
   const updateMutation = useMutation({
-    mutationFn: (data: { enabled?: boolean; access_code?: string; mode?: LocalMode; model?: string; target_printer_id?: number; remote_interface_ip?: string }) =>
+    mutationFn: (data: { enabled?: boolean; access_code?: string; mode?: LocalMode; model?: string; target_printer_id?: number; remote_interface_ip?: string; archive_name_source?: ArchiveNameSource }) =>
       virtualPrinterApi.updateSettings(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['virtual-printer-settings'] });
@@ -161,6 +166,12 @@ export function VirtualPrinterSettings() {
     setLocalRemoteInterfaceIp(ip);
     setPendingAction('remoteInterface');
     updateMutation.mutate({ remote_interface_ip: ip });
+  };
+
+  const handleArchiveNameSourceChange = (source: ArchiveNameSource) => {
+    setLocalArchiveNameSource(source);
+    setPendingAction('archiveNameSource');
+    updateMutation.mutate({ archive_name_source: source });
   };
 
   if (isLoading) {
@@ -449,6 +460,27 @@ export function VirtualPrinterSettings() {
               </button>
             </div>
           </div>
+
+          {/* Archive name source — applies to non-proxy modes that produce
+              archives (#1152, audit B.14). Hidden in proxy mode where the
+              VP just forwards bytes and never creates an archive row. */}
+          {localMode !== 'proxy' && (
+            <div className="py-3 border-t border-bambu-dark-tertiary">
+              <div className="text-white font-medium mb-1">{t('virtualPrinter.archiveNameSource.title')}</div>
+              <div className="text-xs text-bambu-gray mb-2">
+                {t('virtualPrinter.archiveNameSource.description')}
+              </div>
+              <select
+                value={localArchiveNameSource}
+                onChange={(e) => handleArchiveNameSourceChange(e.target.value as ArchiveNameSource)}
+                disabled={pendingAction === 'archiveNameSource'}
+                className="w-full p-2 rounded bg-bambu-dark border border-bambu-dark-tertiary text-white focus:outline-none focus:border-bambu-green"
+              >
+                <option value="metadata">{t('virtualPrinter.archiveNameSource.metadata')}</option>
+                <option value="filename">{t('virtualPrinter.archiveNameSource.filename')}</option>
+              </select>
+            </div>
+          )}
         </CardContent>
       </Card>
       </div>

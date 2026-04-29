@@ -49,6 +49,10 @@ const PREVIEW_FALLBACK: InventorySpool = {
   lot: 1,
   last_scale_weight: null,
   last_weighed_at: null,
+  extra_colors: null,
+  effect_type: null,
+  category: null,
+  low_stock_threshold_pct: null,
 };
 
 export function SpoolDisplayNameSettings() {

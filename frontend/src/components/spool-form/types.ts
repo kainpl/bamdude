@@ -35,6 +35,16 @@ export interface SpoolFormData {
   // per-row lot with 1..N. The ``lot`` field above is hidden behind this
   // checkbox in quick-add mode.
   auto_increment_lot: boolean;
+  // B.1 — comma-separated 6/8-char hex tokens (no leading `#`), up to 8.
+  // Empty string = solid (use `rgba`).
+  extra_colors: string;
+  // B.1 — visual effect overlay; empty string = no effect.
+  effect_type: string;
+  // B.8 — free-text category; empty string = NULL on the wire.
+  category: string;
+  // B.8 — per-spool override of the global low-stock threshold (1..99).
+  // Empty string = NULL (use global).
+  low_stock_threshold_pct: string;
 }
 
 export const defaultFormData: SpoolFormData = {
@@ -54,6 +64,10 @@ export const defaultFormData: SpoolFormData = {
   filament_diameter: '1.75',
   lot: '',
   auto_increment_lot: false,
+  extra_colors: '',
+  effect_type: '',
+  category: '',
+  low_stock_threshold_pct: '',
 };
 
 // Printer with calibrations type
@@ -126,6 +140,10 @@ export interface AdditionalSectionProps extends SectionProps {
   // "auto-increment lots" checkbox — sequential 1..N numbering is cheap
   // to do server-side, and the raw field wouldn't make sense for N copies.
   quickAdd?: boolean;
+  // B.8 — categories already in use across the inventory; the form
+  // autocompletes from this list so users converge on consistent labels.
+  categories?: string[];
+  errors?: Partial<Record<keyof SpoolFormData, string>>;
 }
 
 // PA Profile section props
@@ -171,6 +189,24 @@ export function validateForm(formData: SpoolFormData, quickAdd = false): Validat
 
   if (!formData.subtype) {
     errors.subtype = 'Subtype is required';
+  }
+
+  // B.8 — low-stock threshold override must be 1..99 if provided.
+  if (formData.low_stock_threshold_pct) {
+    const n = Number(formData.low_stock_threshold_pct);
+    if (!Number.isInteger(n) || n < 1 || n > 99) {
+      errors.low_stock_threshold_pct = 'Must be an integer 1..99';
+    }
+  }
+
+  // B.1 — extra colours must be comma-separated 6/8-char hex tokens, ≤8.
+  if (formData.extra_colors) {
+    const stops = formData.extra_colors.split(',').map((s) => s.trim()).filter(Boolean);
+    if (stops.length > 8) {
+      errors.extra_colors = 'Up to 8 stops';
+    } else if (stops.some((s) => !/^[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$/.test(s))) {
+      errors.extra_colors = 'Invalid hex stop (use RRGGBB or RRGGBBAA)';
+    }
   }
 
   return {

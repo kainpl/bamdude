@@ -547,6 +547,15 @@ export function ToastProvider({ children }: { children: ReactNode }) {
                         failed: 'bg-red-500',
                         cancelled: 'bg-yellow-500',
                       };
+                      // Upload byte count reached the total — printer hasn't
+                      // yet confirmed receipt (state still 'processing').
+                      // Without distinguishing this we'd show a frozen 100%
+                      // bar that reads as "stuck" on small files where the
+                      // upload completed in <500ms (audit B.13).
+                      const uploadDoneAwaitingPrinter =
+                        job.status === 'processing' &&
+                        typeof job.uploadProgressPct === 'number' &&
+                        job.uploadProgressPct >= 99.9;
                       return (
                         <div key={job.jobId} className="rounded border border-white/10 bg-black/15 p-2">
                           <div className="flex items-center justify-between gap-2">
@@ -579,15 +588,21 @@ export function ToastProvider({ children }: { children: ReactNode }) {
                               {job.message}
                             </div>
                           )}
-                          {job.status === 'processing' && typeof job.uploadBytes === 'number' && typeof job.uploadTotalBytes === 'number' && job.uploadTotalBytes > 0 && (
-                            <div className="text-[11px] text-bambu-gray truncate">
-                              {formatFileSize(job.uploadBytes)} / {formatFileSize(job.uploadTotalBytes)}
-                              {typeof job.uploadProgressPct === 'number' ? ` (${job.uploadProgressPct.toFixed(1)}%)` : ''}
-                            </div>
+                          {job.status === 'processing' && (
+                            uploadDoneAwaitingPrinter ? (
+                              <div className="text-[11px] text-bambu-gray truncate">
+                                {t('backgroundDispatch.awaitingPrinter')}
+                              </div>
+                            ) : typeof job.uploadBytes === 'number' && typeof job.uploadTotalBytes === 'number' && job.uploadTotalBytes > 0 ? (
+                              <div className="text-[11px] text-bambu-gray truncate">
+                                {formatFileSize(job.uploadBytes)} / {formatFileSize(job.uploadTotalBytes)}
+                                {typeof job.uploadProgressPct === 'number' ? ` (${job.uploadProgressPct.toFixed(1)}%)` : ''}
+                              </div>
+                            ) : null
                           )}
                           <div className="mt-1 h-1.5 w-full rounded bg-white/10 overflow-hidden">
                             <div
-                              className={`h-full ${barColorByStatus[job.status]} transition-all duration-300`}
+                              className={`h-full ${barColorByStatus[job.status]} transition-all duration-300 ${uploadDoneAwaitingPrinter ? 'animate-pulse' : ''}`}
                               style={{
                                 width: `${
                                   job.status === 'processing' && typeof job.uploadProgressPct === 'number'

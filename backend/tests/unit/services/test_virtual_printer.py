@@ -364,6 +364,11 @@ class TestVirtualPrinterInstance:
                 "backend.app.services.auto_queue_threemf.extract_auto_queue_requirements",
                 return_value=fake_reqs,
             ),
+            patch(
+                "backend.app.api.routes.settings.get_setting",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
             patch.object(inst, "_extract_plate_id", return_value=None),
         ):
             await inst._add_to_auto_queue(file_path, "192.168.1.100")
@@ -431,6 +436,11 @@ class TestVirtualPrinterInstance:
             patch(
                 "backend.app.services.auto_queue_threemf.extract_auto_queue_requirements",
                 return_value=fake_reqs,
+            ),
+            patch(
+                "backend.app.api.routes.settings.get_setting",
+                new_callable=AsyncMock,
+                return_value=None,
             ),
             patch.object(inst, "_extract_plate_id", return_value=None),
         ):

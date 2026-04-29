@@ -52,6 +52,19 @@ class HMSError:
     message: str = ""
 
 
+# HMS short codes the firmware emits during normal user-cancel sequences.
+# These aren't faults — they're status echoes that confirm the cancel happened.
+# Filtering them at parse-time keeps them out of state.hms_errors entirely,
+# so they don't drive the printer card's "X problem" badge, the red pip, or
+# any other consumer that treats hms_errors as the active-fault list.
+_HMS_USER_ACTION_CODES: frozenset[str] = frozenset(
+    {
+        "0300_400C",  # "The task was canceled."
+        "0500_400E",  # "Printing was cancelled."
+    }
+)
+
+
 @dataclass
 class KProfile:
     """Pressure advance (K) calibration profile from printer."""
@@ -2352,6 +2365,14 @@ class BambuMQTTClient:
                         # indicators that some firmware sends during normal printing.
                         if code < 0x4000:
                             continue
+                        # Skip user-action echoes — the printer firmware emits these
+                        # as part of normal user-cancel sequences. They're not faults
+                        # and shouldn't count toward "X problem" badges or surface as
+                        # red pips on the printer card. Backend's notification path
+                        # already suppresses 0500_400E for the same reason.
+                        short_code = f"{(attr >> 16) & 0xFFFF:04X}_{code & 0xFFFF:04X}"
+                        if short_code in _HMS_USER_ACTION_CODES:
+                            continue
                         self.state.hms_errors.append(
                             HMSError(
                                 code=f"0x{code:x}" if code else "0x0",
@@ -2388,23 +2409,30 @@ class BambuMQTTClient:
                         f"[{self.serial_number}] print_error: {print_error} (0x{print_error:08x}) -> short_code={short_code}"
                     )
 
-                    # Only add if not already in HMS errors (avoid duplicates)
-                    existing_short_codes = set()
-                    for e in self.state.hms_errors:
-                        # Extract short code from existing errors
-                        e_module = (e.attr >> 16) & 0xFFFF
-                        e_error = int(e.code.replace("0x", ""), 16) if e.code else 0
-                        existing_short_codes.add(f"{e_module:04X}_{e_error:04X}")
+                    # Same user-action filter as the hms[] branch above —
+                    # print_error carries the same cancel echoes (e.g.
+                    # 0500_400E) and they must not surface as faults on the
+                    # printer card.
+                    if short_code in _HMS_USER_ACTION_CODES:
+                        pass  # cancel echo — silently drop
+                    else:
+                        # Only add if not already in HMS errors (avoid duplicates)
+                        existing_short_codes = set()
+                        for e in self.state.hms_errors:
+                            # Extract short code from existing errors
+                            e_module = (e.attr >> 16) & 0xFFFF
+                            e_error = int(e.code.replace("0x", ""), 16) if e.code else 0
+                            existing_short_codes.add(f"{e_module:04X}_{e_error:04X}")
 
-                    if short_code not in existing_short_codes:
-                        self.state.hms_errors.append(
-                            HMSError(
-                                code=f"0x{error:x}",
-                                attr=print_error,  # Store full value for display
-                                module=module >> 8,  # High byte of module (e.g., 0x05)
-                                severity=3,  # Warning level for print_error
+                        if short_code not in existing_short_codes:
+                            self.state.hms_errors.append(
+                                HMSError(
+                                    code=f"0x{error:x}",
+                                    attr=print_error,  # Store full value for display
+                                    module=module >> 8,  # High byte of module (e.g., 0x05)
+                                    severity=3,  # Warning level for print_error
+                                )
                             )
-                        )
 
         # Parse home_flag first so SD-card / door detection below can use it.
         # Bit 8 = HAS_SDCARD_NORMAL, bit 9 = HAS_SDCARD_ABNORMAL, bit 11 = store-to-SD,

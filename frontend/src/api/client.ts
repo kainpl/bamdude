@@ -2475,6 +2475,12 @@ export interface InventorySpool {
   lot: number | null;
   last_scale_weight: number | null;
   last_weighed_at: string | null;
+  // B.1 — multi-colour gradient stops + visual effect overlay.
+  extra_colors: string | null;
+  effect_type: string | null;
+  // B.8 — per-spool category + low-stock threshold override (%, 1..99).
+  category: string | null;
+  low_stock_threshold_pct: number | null;
   k_profiles?: SpoolKProfile[];
 }
 
@@ -5858,6 +5864,10 @@ export interface VirtualPrinterSettings {
   model: string;
   target_printer_id: number | null;  // For proxy mode
   remote_interface_ip: string | null;  // For SSDP proxy across networks
+  // 'metadata' uses the 3MF's embedded print_name (creator-baked title);
+  // 'filename' uses the FTP-uploaded filename so renames in BambuStudio's
+  // "send to printer" dialog surface in the archive (#1152, audit B.14).
+  archive_name_source: 'metadata' | 'filename';
   status: VirtualPrinterStatus;
 }
 
@@ -5900,6 +5910,7 @@ export const virtualPrinterApi = {
     model?: string;
     target_printer_id?: number;
     remote_interface_ip?: string;
+    archive_name_source?: 'metadata' | 'filename';
   }) => {
     const params = new URLSearchParams();
     if (data.enabled !== undefined) params.set('enabled', String(data.enabled));
@@ -5908,6 +5919,7 @@ export const virtualPrinterApi = {
     if (data.model !== undefined) params.set('model', data.model);
     if (data.target_printer_id !== undefined) params.set('target_printer_id', String(data.target_printer_id));
     if (data.remote_interface_ip !== undefined) params.set('remote_interface_ip', data.remote_interface_ip);
+    if (data.archive_name_source !== undefined) params.set('archive_name_source', data.archive_name_source);
 
     return request<VirtualPrinterSettings>(`/settings/virtual-printer?${params.toString()}`, {
       method: 'PUT',

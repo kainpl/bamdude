@@ -2,6 +2,7 @@
 
 import base64
 import binascii
+import contextlib
 import hashlib
 import logging
 import os
@@ -133,6 +134,160 @@ def calculate_file_hash(file_path: Path) -> str:
         for byte_block in iter(lambda: f.read(4096), b""):
             sha256_hash.update(byte_block)
     return sha256_hash.hexdigest()
+
+
+def _resolve_upload_destination(target_folder: LibraryFolder | None, filename: str) -> tuple[Path, bool]:
+    """Resolve the on-disk destination for an uploaded file.
+
+    Non-external target: returns ``(<library_files_dir>/<uuid><ext>, False)``.
+    Writable external target: writes to ``<external_path>/<filename>``
+    (preserves the real filename so the file is recognisable on the mount);
+    returns ``(dest, True)``. Raises ``HTTPException`` for read-only external
+    folders (403), missing/inaccessible/non-writable external paths (400), and
+    filename collisions on the external mount (409). See upstream #1112 —
+    previously uploads to writable external folders were silently misrouted to
+    the internal library dir.
+    """
+    if target_folder is not None and target_folder.is_external:
+        if target_folder.external_readonly:
+            raise HTTPException(status_code=403, detail="Cannot upload to a read-only external folder")
+        if not target_folder.external_path:
+            raise HTTPException(status_code=400, detail="External folder has no configured path")
+        ext_dir = Path(target_folder.external_path)
+        if not ext_dir.exists() or not ext_dir.is_dir():
+            raise HTTPException(
+                status_code=400,
+                detail=f"External path is not accessible: {target_folder.external_path}",
+            )
+        if not os.access(ext_dir, os.W_OK):
+            raise HTTPException(
+                status_code=400,
+                detail=f"External path is not writable: {target_folder.external_path}",
+            )
+        # Guard against path-traversal via a pathological filename — join then
+        # verify the resolved destination is still inside the external dir.
+        dest = (ext_dir / filename).resolve()
+        try:
+            dest.relative_to(ext_dir.resolve())
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid filename") from None
+        if dest.exists():
+            raise HTTPException(
+                status_code=409,
+                detail=f"A file named {filename!r} already exists in the external folder",
+            )
+        return dest, True
+    ext = os.path.splitext(filename)[1].lower()
+    return get_library_files_dir() / f"{uuid.uuid4().hex}{ext}", False
+
+
+def _stored_file_path(abs_path: Path, is_external: bool) -> str:
+    """Produce the value to persist in ``LibraryFile.file_path``.
+
+    External files store the absolute mount path directly (same shape as scan
+    produces), so ``to_absolute_path`` round-trips through its
+    ``is_absolute()`` fast path. Managed files store a path relative to
+    ``base_dir`` for portability.
+    """
+    return str(abs_path) if is_external else to_relative_path(abs_path)
+
+
+class _MoveSkip(Exception):
+    """Signalled by ``_move_file_bytes`` to skip a file with a user-visible reason.
+
+    Carries an optional ``code`` for machine-friendly grouping (the front-end
+    can localise it) and a fallback English ``reason`` for logs.
+    """
+
+    def __init__(self, code: str, reason: str):
+        super().__init__(reason)
+        self.code = code
+        self.reason = reason
+
+
+def _resolve_source_disk_path(file: LibraryFile) -> Path | None:
+    """Return the absolute on-disk path for an existing LibraryFile, or None
+    if it can't be located (legacy DB row, deleted file, etc.)."""
+    if file.is_external:
+        return Path(file.file_path) if file.file_path else None
+    return to_absolute_path(file.file_path)
+
+
+def _move_file_bytes(file: LibraryFile, target_folder: LibraryFolder | None) -> str:
+    """Physically relocate ``file``'s bytes to match ``target_folder``.
+
+    Used by the move endpoint when source/target straddle the
+    managed↔external boundary (upstream #1112 follow-up — the prior
+    implementation updated the DB row's ``folder_id`` but never moved the
+    bytes, so a file moved to an external SMB folder showed up in the UI but
+    not on the NAS).
+
+    Returns the new ``file_path`` value to persist (relative for managed
+    targets, absolute for external targets — matches the upload + scan paths).
+    Raises ``_MoveSkip`` for any condition that would make the move unsafe
+    (target unwritable, filename collision, source missing).
+
+    Copy-then-unlink ordering: a partial copy followed by a failed unlink
+    leaves both source and dest on disk — safer than the symmetric "rename or
+    move" which would lose the source if the target write didn't complete on a
+    flaky mount. The DB row stays pointed at the source until the caller
+    commits the new ``file_path``.
+    """
+    src = _resolve_source_disk_path(file)
+    if not src or not src.exists():
+        raise _MoveSkip("source_missing", "source file missing on disk")
+
+    target_is_external = target_folder is not None and target_folder.is_external
+
+    if target_is_external:
+        if target_folder.external_readonly:
+            raise _MoveSkip("target_readonly", "target external folder is read-only")
+        if not target_folder.external_path:
+            raise _MoveSkip("target_misconfigured", "target external folder has no path")
+        ext_dir = Path(target_folder.external_path)
+        if not ext_dir.exists() or not ext_dir.is_dir():
+            raise _MoveSkip("target_inaccessible", f"target path not accessible: {ext_dir}")
+        if not os.access(ext_dir, os.W_OK):
+            raise _MoveSkip("target_unwritable", f"target path not writable: {ext_dir}")
+        dest = (ext_dir / file.filename).resolve()
+        try:
+            dest.relative_to(ext_dir.resolve())
+        except ValueError:
+            raise _MoveSkip("invalid_filename", f"unsafe filename: {file.filename!r}") from None
+        if dest.exists():
+            raise _MoveSkip("name_collision", f"a file named {file.filename!r} already exists in target")
+        try:
+            shutil.copy2(src, dest)
+        except OSError as e:
+            with contextlib.suppress(OSError):
+                dest.unlink(missing_ok=True)
+            raise _MoveSkip("copy_failed", f"copy failed: {e}") from e
+    else:
+        # → managed (root or non-external folder): generate a fresh UUID
+        # filename in the internal store so we don't collide with another file
+        # that happens to share ``filename``.
+        ext = src.suffix.lower()
+        dest = get_library_files_dir() / f"{uuid.uuid4().hex}{ext}"
+        try:
+            shutil.copy2(src, dest)
+        except OSError as e:
+            with contextlib.suppress(OSError):
+                dest.unlink(missing_ok=True)
+            raise _MoveSkip("copy_failed", f"copy failed: {e}") from e
+
+    # Copy succeeded — unlink the original. Failure here leaves an orphan on
+    # disk but the DB row is consistent against the new dest.
+    try:
+        src.unlink(missing_ok=True)
+    except OSError as e:
+        logger.warning(
+            "Move: copied %s -> %s but couldn't remove source: %s",
+            src,
+            dest,
+            e,
+        )
+
+    return _stored_file_path(dest, is_external=target_is_external)
 
 
 def extract_gcode_thumbnail(file_path: Path) -> bytes | None:
@@ -1184,17 +1339,17 @@ async def upload_file(
         file_type = ext[1:] if ext else "unknown"
 
         # Verify folder exists if specified
+        target_folder: LibraryFolder | None = None
         if folder_id is not None:
             folder_result = await db.execute(select(LibraryFolder).where(LibraryFolder.id == folder_id))
             target_folder = folder_result.scalar_one_or_none()
             if not target_folder:
                 raise HTTPException(status_code=404, detail="Folder not found")
-            if target_folder.is_external and target_folder.external_readonly:
-                raise HTTPException(status_code=403, detail="Cannot upload to a read-only external folder")
 
-        # Generate unique filename for storage
-        unique_filename = f"{uuid.uuid4().hex}{ext}"
-        file_path = get_library_files_dir() / unique_filename
+        # Writable external folders write through to the mount so the file is
+        # visible outside BamDude (upstream #1112); everything else lands under
+        # the internal library dir with a UUID-scoped filename.
+        file_path, is_external_upload = _resolve_upload_destination(target_folder, filename)
 
         # Save file
         content = await file.read()
@@ -1282,11 +1437,14 @@ async def upload_file(
             fname_lower.endswith((".swap.3mf", ".swaps.3mf")) or ".swap." in fname_lower or ".swaps." in fname_lower
         )
 
-        # Create database entry (store relative paths for portability)
+        # Create database entry (managed files store relative paths for
+        # portability; external files store the absolute mount path — same
+        # shape scan produces).
         library_file = LibraryFile(
             folder_id=folder_id,
+            is_external=is_external_upload,
             filename=filename,
-            file_path=to_relative_path(file_path),
+            file_path=_stored_file_path(file_path, is_external_upload),
             file_type=file_type,
             file_size=len(content),
             file_hash=file_hash,
@@ -2595,13 +2753,22 @@ async def move_files(
 ):
     """Move multiple files to a folder.
 
-    Files not owned by the user are skipped (unless user has *_all permission).
+    Cross-boundary moves (managed ↔ external, or external ↔ external)
+    physically relocate the bytes — see ``_move_file_bytes``. Same-boundary
+    moves stay DB-only because the file's on-disk location doesn't depend on
+    which managed folder owns it.
+
+    Files not owned by the user are skipped (unless user has ``*_all``
+    permission). Each skip carries a structured reason so the UI can surface
+    "5 of 10 files were skipped: 3 had filename collisions on the NAS, 2 are
+    no longer on disk" rather than a blank "skipped: 5".
     """
     user, can_modify_all = auth_result
 
     # Verify folder exists if specified, and pick up its project_id so moved
     # files inherit the destination folder's project (or null when moving to
     # root / to a folder that isn't linked).
+    target_folder: LibraryFolder | None = None
     target_project_id: int | None = None
     if data.folder_id is not None:
         folder_result = await db.execute(select(LibraryFolder).where(LibraryFolder.id == data.folder_id))
@@ -2612,21 +2779,28 @@ async def move_files(
             raise HTTPException(status_code=403, detail="Cannot move files to a read-only external folder")
         target_project_id = target_folder.project_id
 
-    # Update files
+    target_is_external = target_folder is not None and target_folder.is_external
+
     moved = 0
     skipped = 0
+    skipped_reasons: list[dict] = []
+
     for file_id in data.file_ids:
-        result = await db.execute(select(LibraryFile).where(LibraryFile.id == file_id))
+        result = await db.execute(
+            select(LibraryFile).options(selectinload(LibraryFile.folder)).where(LibraryFile.id == file_id)
+        )
         file = result.scalar_one_or_none()
-        if file:
-            # Ownership check
-            if not can_modify_all and file.created_by_id != user.id:
-                skipped += 1
-                continue
-            # Cannot move external files out of their folder
-            if file.is_external:
-                skipped += 1
-                continue
+        if not file:
+            continue
+
+        # Ownership check
+        if not can_modify_all and file.created_by_id != user.id:
+            skipped += 1
+            skipped_reasons.append({"file_id": file_id, "code": "not_owner", "reason": "not the file owner"})
+            continue
+
+        # No bytes need to move when both ends are managed (same-boundary).
+        if not file.is_external and not target_is_external:
             file.folder_id = data.folder_id
             file.project_id = target_project_id
             if target_project_id is None:
@@ -2639,8 +2813,63 @@ async def move_files(
                     file_type=file.file_type,
                 )
             moved += 1
+            continue
 
-    return {"status": "success", "moved": moved, "skipped": skipped}
+        # Block moves out of a read-only external mount. The user only has
+        # read access to the source, and a move is semantically a delete on
+        # the source — which a read-only mount can't fulfil. Without this
+        # guard we'd succeed at copying to the target, fail to unlink the
+        # source, and the same file would now exist in two places (with the
+        # DB pointing at only one).
+        if file.is_external and file.folder is not None and file.folder.external_readonly:
+            skipped += 1
+            skipped_reasons.append(
+                {"file_id": file_id, "code": "source_readonly", "reason": "source is on a read-only external folder"}
+            )
+            continue
+
+        # Otherwise relocate the bytes, then update the DB row to match.
+        try:
+            new_file_path = _move_file_bytes(file, target_folder)
+        except _MoveSkip as e:
+            skipped += 1
+            skipped_reasons.append({"file_id": file_id, "code": e.code, "reason": e.reason})
+            continue
+
+        file.is_external = target_is_external
+        file.folder_id = data.folder_id
+        file.project_id = target_project_id
+        file.file_path = new_file_path
+        # External rows historically carry ``file_hash=None`` (scan skips
+        # hashing). When pulling an external file into managed storage,
+        # compute the hash so dedup detection works for future uploads of the
+        # same content.
+        if not target_is_external and file.file_hash is None:
+            try:
+                abs_path = to_absolute_path(new_file_path)
+                if abs_path:
+                    file.file_hash = calculate_file_hash(abs_path)
+            except OSError:
+                pass  # leave hash null; dedup just won't match this row
+        if target_project_id is None:
+            await remove_plan_row(db, library_file_id=file.id)
+        else:
+            await ensure_plan_row(
+                db,
+                library_file_id=file.id,
+                project_id=target_project_id,
+                file_type=file.file_type,
+            )
+        moved += 1
+
+    await db.commit()
+
+    return {
+        "status": "success",
+        "moved": moved,
+        "skipped": skipped,
+        "skipped_reasons": skipped_reasons,
+    }
 
 
 @router.post("/bulk-delete", response_model=BulkDeleteResponse)

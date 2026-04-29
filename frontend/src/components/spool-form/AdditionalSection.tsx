@@ -174,6 +174,8 @@ export function AdditionalSection({
   spoolCatalog,
   currencySymbol,
   quickAdd = false,
+  categories = [],
+  errors = {},
 }: AdditionalSectionProps) {
   const { t } = useTranslation();
   const { showToast } = useToast();
@@ -417,6 +419,91 @@ export function AdditionalSection({
           value={formData.note}
           onChange={(e) => updateField('note', e.target.value)}
         />
+      </div>
+
+      {/* B.8 — Category + low-stock threshold override */}
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className="block text-sm font-medium text-bambu-gray mb-1">
+            {t('inventory.spoolForm.category', 'Category')}
+          </label>
+          <input
+            type="text"
+            list="spool-categories"
+            maxLength={50}
+            placeholder={t('inventory.spoolForm.categoryPlaceholder', 'Production')}
+            value={formData.category}
+            onChange={(e) => updateField('category', e.target.value)}
+            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm placeholder:text-bambu-gray/50 focus:outline-none focus:border-bambu-green"
+          />
+          <datalist id="spool-categories">
+            {categories.map((c) => (
+              <option key={c} value={c} />
+            ))}
+          </datalist>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-bambu-gray mb-1">
+            {t('inventory.spoolForm.lowStockOverride', 'Low-stock override (%)')}
+          </label>
+          <input
+            type="number"
+            min={1}
+            max={99}
+            step={1}
+            placeholder={t('inventory.spoolForm.lowStockOverridePlaceholder', 'Use global')}
+            value={formData.low_stock_threshold_pct}
+            onChange={(e) => updateField('low_stock_threshold_pct', e.target.value)}
+            className={`w-full px-3 py-2 bg-bambu-dark border ${errors.low_stock_threshold_pct ? 'border-red-500' : 'border-bambu-dark-tertiary'} rounded-lg text-white text-sm placeholder:text-bambu-gray/50 focus:outline-none focus:border-bambu-green`}
+          />
+          {errors.low_stock_threshold_pct && (
+            <p className="text-xs text-red-400 mt-1">{errors.low_stock_threshold_pct}</p>
+          )}
+        </div>
+      </div>
+
+      {/* B.1 — Multi-colour gradient stops + effect overlay */}
+      <div className="space-y-3">
+        <div>
+          <label className="block text-sm font-medium text-bambu-gray mb-1">
+            {t('inventory.spoolForm.extraColors', 'Extra colour stops')}
+          </label>
+          <input
+            type="text"
+            placeholder="RRGGBB,RRGGBB,RRGGBBAA"
+            value={formData.extra_colors}
+            onChange={(e) => updateField('extra_colors', e.target.value)}
+            className={`w-full px-3 py-2 bg-bambu-dark border ${errors.extra_colors ? 'border-red-500' : 'border-bambu-dark-tertiary'} rounded-lg text-white text-sm placeholder:text-bambu-gray/50 focus:outline-none focus:border-bambu-green font-mono`}
+          />
+          <p className="text-xs text-bambu-gray mt-1">
+            {t('inventory.spoolForm.extraColorsHelp', 'Comma-separated 6/8-char hex tokens, up to 8. Empty = solid colour.')}
+          </p>
+          {errors.extra_colors && (
+            <p className="text-xs text-red-400 mt-1">{errors.extra_colors}</p>
+          )}
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-bambu-gray mb-1">
+            {t('inventory.spoolForm.effectType', 'Visual effect')}
+          </label>
+          <select
+            value={formData.effect_type}
+            onChange={(e) => updateField('effect_type', e.target.value)}
+            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
+          >
+            <option value="">{t('inventory.spoolForm.effectNone', 'None')}</option>
+            <option value="sparkle">{t('inventory.spoolForm.effects.sparkle', 'Sparkle')}</option>
+            <option value="silk">{t('inventory.spoolForm.effects.silk', 'Silk')}</option>
+            <option value="matte">{t('inventory.spoolForm.effects.matte', 'Matte')}</option>
+            <option value="glow">{t('inventory.spoolForm.effects.glow', 'Glow')}</option>
+            <option value="wood">{t('inventory.spoolForm.effects.wood', 'Wood')}</option>
+            <option value="marble">{t('inventory.spoolForm.effects.marble', 'Marble')}</option>
+            <option value="galaxy">{t('inventory.spoolForm.effects.galaxy', 'Galaxy')}</option>
+            <option value="rainbow">{t('inventory.spoolForm.effects.rainbow', 'Rainbow')}</option>
+            <option value="metal">{t('inventory.spoolForm.effects.metal', 'Metal')}</option>
+            <option value="translucent">{t('inventory.spoolForm.effects.translucent', 'Translucent')}</option>
+          </select>
+        </div>
       </div>
     </div>
   );

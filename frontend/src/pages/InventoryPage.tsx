@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, type ReactNode } from 'react';
+import { useState, useMemo, useEffect, type CSSProperties, type ReactNode } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -33,6 +33,26 @@ type SortState = { column: string; direction: SortDirection } | null;
 type DisplayItem =
   | { type: 'single'; spool: InventorySpool }
   | { type: 'group'; key: string; spools: InventorySpool[]; representative: InventorySpool };
+
+/**
+ * B.1 — render the swatch as either a flat colour, a linear-gradient over the
+ * extra-colour stops, or a CSS effect overlay. Always falls back to the
+ * existing flat-`rgba` swatch shape so the helper is safe to swap in.
+ */
+function spoolSwatchStyle(s: InventorySpool): CSSProperties {
+  const base = s.rgba ? `#${s.rgba.substring(0, 6)}` : '#808080';
+  const stops = (s.extra_colors || '')
+    .split(',')
+    .map((token) => token.trim())
+    .filter((token) => /^[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$/.test(token))
+    .slice(0, 8)
+    .map((token) => `#${token.substring(0, 6)}`);
+  if (stops.length > 0) {
+    const colors = [base, ...stops];
+    return { background: `linear-gradient(135deg, ${colors.join(', ')})` };
+  }
+  return { backgroundColor: base };
+}
 
 function spoolGroupKey(s: InventorySpool): string {
   return `${s.material}|${s.subtype || ''}|${s.brand || ''}|${s.color_name || ''}|${s.rgba || ''}|${s.label_weight}`;
@@ -239,7 +259,7 @@ const columnCells: Record<string, (ctx: CellCtx) => ReactNode> = {
     <div className="flex items-center justify-center">
       <span
         className="w-5 h-5 rounded-full border border-black/20 flex-shrink-0"
-        style={{ backgroundColor: spool.rgba ? `#${spool.rgba.substring(0, 6)}` : '#808080' }}
+        style={spoolSwatchStyle(spool)}
         title={spool.rgba ? `#${spool.rgba.substring(0, 6)}` : undefined}
       />
     </div>
@@ -260,7 +280,7 @@ const columnCells: Record<string, (ctx: CellCtx) => ReactNode> = {
     <div className="flex items-center gap-2">
       <span
         className="w-5 h-5 rounded-full border border-black/20 flex-shrink-0"
-        style={{ backgroundColor: spool.rgba ? `#${spool.rgba.substring(0, 6)}` : '#808080' }}
+        style={spoolSwatchStyle(spool)}
         title={spool.rgba ? `#${spool.rgba.substring(0, 6)}` : undefined}
       />
       <span className="text-sm text-bambu-gray truncate">
@@ -498,6 +518,7 @@ function saveSortState(state: SortState) {
 
 // Wrapper: when Spoolman is enabled, embed its UI; otherwise show internal inventory
 export default function InventoryPageRouter() {
+  const { t } = useTranslation();
   const { data: spoolmanSettings } = useQuery({
     queryKey: ['spoolman-settings'],
     queryFn: api.getSpoolmanSettings,
@@ -505,9 +526,49 @@ export default function InventoryPageRouter() {
   });
 
   if (spoolmanSettings?.spoolman_enabled === 'true' && spoolmanSettings?.spoolman_url) {
+    const spoolmanUrl = spoolmanSettings.spoolman_url.replace(/\/+$/, '');
+    // Browsers block HTTP iframes inside HTTPS parents (mixed-content rule,
+    // independent of CSP). Surface a targeted warning instead of letting
+    // the iframe render as a silent blank — there's nothing BamDude can do
+    // browser-side to override the block. See upstream issue #1096.
+    const bamdudeIsHttps = window.location.protocol === 'https:';
+    const spoolmanIsHttp = spoolmanUrl.toLowerCase().startsWith('http://');
+    if (bamdudeIsHttps && spoolmanIsHttp) {
+      return (
+        <div className="p-6 max-w-3xl mx-auto">
+          <div className="rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-5">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
+              <div className="flex-1 min-w-0 space-y-2 text-sm">
+                <p className="font-semibold text-amber-900 dark:text-amber-100">
+                  {t('inventory.spoolmanMixedContentTitle')}
+                </p>
+                <p className="text-amber-800 dark:text-amber-200">
+                  {t('inventory.spoolmanMixedContentBody')}
+                </p>
+                <ul className="list-disc pl-5 space-y-1 text-amber-800 dark:text-amber-200">
+                  <li>{t('inventory.spoolmanMixedContentFixReverseProxy')}</li>
+                  <li>{t('inventory.spoolmanMixedContentFixOpenNewTab')}</li>
+                </ul>
+                <div className="flex flex-wrap gap-2 pt-2">
+                  <a
+                    href={`${spoolmanUrl}/spool`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-2 px-3 py-1.5 text-sm rounded bg-amber-600 hover:bg-amber-700 text-white"
+                  >
+                    {t('inventory.spoolmanOpenInNewTab')}
+                  </a>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
     return (
       <iframe
-        src={`${spoolmanSettings.spoolman_url.replace(/\/+$/, '')}/spool`}
+        src={`${spoolmanUrl}/spool`}
         className="h-full w-full border-0"
         title="Spoolman"
         sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
@@ -645,7 +706,9 @@ function InventoryPage() {
       totalWeight += remaining;
       totalConsumed += s.weight_used;
       const pct = s.label_weight > 0 ? (remaining / s.label_weight) * 100 : 0;
-      if (pct < lowStockThreshold) lowStock++;
+      // B.8 — per-spool override falls back to the global setting when NULL.
+      const threshold = s.low_stock_threshold_pct ?? lowStockThreshold;
+      if (pct < threshold) lowStock++;
       const mat = s.material || 'Unknown';
       if (!byMaterial[mat]) byMaterial[mat] = { count: 0, weight: 0 };
       byMaterial[mat].count++;
@@ -704,7 +767,9 @@ function InventoryPage() {
       filtered = filtered.filter((s) => {
         const remaining = Math.max(0, s.label_weight - s.weight_used);
         const pct = s.label_weight > 0 ? (remaining / s.label_weight) * 100 : 0;
-        return pct < lowStockThreshold;
+        // B.8 — per-spool override falls back to the global setting.
+        const threshold = s.low_stock_threshold_pct ?? lowStockThreshold;
+        return pct < threshold;
       });
     }
 

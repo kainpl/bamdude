@@ -2,8 +2,11 @@
 
 Houses :class:`CancelledPoolNoiseFilter` — drops SQLAlchemy connection-pool
 log noise caused by Starlette's ``BaseHTTPMiddleware`` cancellation
-propagation. Lives in its own module so the test suite can import it
-without pulling in :mod:`backend.app.main`'s startup graph.
+propagation — and :class:`WriteRequestsOnlyFilter`, which strips noisy
+high-volume reads (GET / HEAD / OPTIONS) from uvicorn's HTTP access log so
+the on-disk file mostly captures the state-changing calls worth keeping in
+incident triage history. Lives in its own module so the test suite can
+import it without pulling in :mod:`backend.app.main`'s startup graph.
 """
 
 from __future__ import annotations
@@ -70,3 +73,42 @@ class CancelledPoolNoiseFilter(logging.Filter):
             if self._has_cancelled_in_chain(exc):
                 return False
         return True
+
+
+class WriteRequestsOnlyFilter(logging.Filter):
+    """Pass only state-changing HTTP verbs through uvicorn's access log.
+
+    Attach to ``logging.getLogger("uvicorn.access")`` when piping the
+    access log to a rotating file. The frontend polls status endpoints
+    aggressively (printer status, queue, archives) — including every
+    GET would churn the rotation window faster than it's useful for
+    incident triage. POST / PUT / PATCH / DELETE are the verbs that
+    actually mutate server state, so those are the records worth
+    keeping on disk for the "who triggered this 6 ms before that MQTT
+    publish?" forensics use case.
+
+    Uvicorn's access record format is::
+
+        '%s - "%s %s HTTP/%s" %d'  ←  ``args`` tuple shape
+
+    where ``args[1]`` is the verb (``"GET"`` / ``"POST"`` / …). We
+    pattern-match on ``args[1]`` rather than the formatted ``message``
+    so the check stays cheap (no string formatting on every record)
+    and robust against URL substrings that happen to contain a verb
+    name (e.g. ``/api/v1/get-something``).
+    """
+
+    _WRITE_VERBS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
+        # uvicorn's access logger emits records with args populated; if
+        # something else is logging through this logger and the args
+        # shape doesn't match, fall through (let it pass) rather than
+        # silently dropping unrelated records.
+        args = record.args
+        if not isinstance(args, tuple) or len(args) < 2:
+            return True
+        verb = args[1]
+        if not isinstance(verb, str):
+            return True
+        return verb.upper() in self._WRITE_VERBS
