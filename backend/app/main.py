@@ -313,6 +313,35 @@ _EXPECTED_PRINT_CLEANUP_INTERVAL: int = 15 * 60  # 15 minutes
 _expected_prints_cleanup_task: asyncio.Task | None = None
 
 
+# Per-printer lock that serialises the spool-assignment block of
+# `on_ams_change` (auto-unlink stale + auto-assign new) when MQTT bursts
+# deliver multiple AMS updates for the same printer in quick succession
+# (~30 ms apart, observed in the wild on H2D + dual AMS).
+#
+# Without this serialisation, two concurrent on_ams_change callbacks each
+# read "no assignment for (printer, ams, tray)", each call auto_assign_spool,
+# and the second commit hits
+#   IntegrityError: duplicate key value violates unique constraint
+#                   "spool_assignment_printer_id_ams_id_tray_id_key"
+# SQLite's WAL serial-write semantics had been silently swallowing the race
+# until optional Postgres support landed (asyncpg allows true concurrent
+# transactions and surfaces the constraint violation).
+#
+# Scope is intentionally narrow: only the auto-assign block is inside the
+# lock. The Spoolman sync (network-bound, idempotent) stays outside.
+# Per-printer scope keeps unrelated printers fully parallel.
+_ams_assignment_locks: dict[int, asyncio.Lock] = {}
+
+
+def _get_ams_assignment_lock(printer_id: int) -> asyncio.Lock:
+    """Return the per-printer assignment lock, creating it on first use."""
+    lock = _ams_assignment_locks.get(printer_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _ams_assignment_locks[printer_id] = lock
+    return lock
+
+
 async def _get_plug_energy(plug, db) -> dict | None:
     """Get energy from plug regardless of type (Tasmota, Home Assistant, MQTT, or REST).
 
@@ -994,9 +1023,16 @@ async def on_ams_change(printer_id: int, ams_data: list):
     except Exception as e:
         logger.warning("Spool assignment cleanup failed: %s", e, exc_info=True)
 
-    # Auto-manage inventory spools from AMS tray data (skip if Spoolman manages AMS)
+    # Auto-manage inventory spools from AMS tray data (skip if Spoolman
+    # manages AMS). Serialised per-printer via _ams_assignment_locks: MQTT
+    # bursts can deliver two AMS pushes ~30 ms apart, and without the lock
+    # both callbacks read "no existing assignment" for the same
+    # (printer, ams, tray) and race to INSERT, hitting the
+    # spool_assignment_printer_id_ams_id_tray_id_key unique constraint on
+    # Postgres. SQLite's WAL serialises writes so the bug stayed latent
+    # there. See _ams_assignment_locks comment for details.
     try:
-        async with async_session() as db:
+        async with _get_ams_assignment_lock(printer_id), async_session() as db:
             from backend.app.api.routes.settings import get_setting
             from backend.app.models.spool_assignment import SpoolAssignment as SA
             from backend.app.services.spool_tag_matcher import (
