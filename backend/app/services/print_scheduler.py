@@ -1590,6 +1590,11 @@ class PrintScheduler:
         _post_status = printer_manager.get_status(item.queue_id)
         _pre_state = _post_status.state if _post_status else None
         _pre_subtask_id = _post_status.subtask_id if _post_status else None
+        # Capture gcode_file at dispatch time so the watchdog can distinguish
+        # #1150 (slow parse — command landed, file changed on the printer) from
+        # #887/#936 (half-broken session — publish swallowed, file unchanged).
+        # Used only on the timeout path. Ported from upstream v0.2.4b1 (#1150).
+        _pre_gcode_file = _post_status.gcode_file if _post_status else None
 
         # Hold the printer against further dispatches until the watchdog
         # confirms the printer transitioned (or until the hard timeout).
@@ -1607,6 +1612,7 @@ class PrintScheduler:
                     _pre_state,
                     _pre_subtask_id,
                     swap_start_fired="swap_mode_start" in swap_events,
+                    pre_gcode_file=_pre_gcode_file,
                 )
             )
 
@@ -1650,6 +1656,7 @@ class PrintScheduler:
         swap_start_fired: bool = False,
         timeout: float = 90.0,
         poll_interval: float = 3.0,
+        pre_gcode_file: str | None = None,
     ) -> None:
         """Revert a queue item if the printer never acknowledges the start command.
 
@@ -1684,6 +1691,7 @@ class PrintScheduler:
         force-reconnect the MQTT session so subsequent commands land.
         """
         deadline = time.monotonic() + timeout
+        last_status = None  # Captured for #1150 gcode_file discriminator on timeout
         while time.monotonic() < deadline:
             await asyncio.sleep(poll_interval)
             status = printer_manager.get_status(printer_id)
@@ -1694,6 +1702,7 @@ class PrintScheduler:
                 # otherwise hold the printer unnecessarily.
                 scheduler._release_dispatch_hold(printer_id)
                 return
+            last_status = status
             if status.state != pre_state:
                 # Printer picked up the job (state change) — release the
                 # post-dispatch hold so the next pending item for this printer
@@ -1746,12 +1755,33 @@ class PrintScheduler:
             except Exception:  # pragma: no cover — import failure is non-fatal
                 pass
 
-        # Same half-broken-session recovery as background_dispatch: force the
-        # MQTT client to reconnect so the next dispatch lands without a power cycle.
+        # Same #1150 / #887/#936 discriminator as background_dispatch: if the
+        # printer's gcode_file changed since pre-dispatch, the project_file
+        # command landed and the printer is parsing — a forced reconnect mid-
+        # parse triggers 0500_4003 ("can't parse print file") on P1P firmware
+        # 01.10.00.00 (slow ~135s parse). If gcode_file is unchanged, the
+        # publish was silently swallowed (#887/#936) and the original
+        # force_reconnect recovery is what we want. Caveat: in the rare retry-
+        # same-file slow-parse scenario the gcode_file looks identical pre/post
+        # publish, so the watchdog falls through to reconnect and the user
+        # still hits 0500_4003 on that retry — accepted to avoid breaking the
+        # half-broken-session recovery path. Ported from upstream v0.2.4b1.
         client = printer_manager.get_client(printer_id)
-        if client and hasattr(client, "force_reconnect_stale_session"):
+        current_gcode_file = getattr(last_status, "gcode_file", None) if last_status else None
+        publish_landed = current_gcode_file is not None and current_gcode_file != pre_gcode_file
+        if publish_landed:
+            logger.warning(
+                "Queue item %s: gcode_file changed to %r (was %r) — printer "
+                "received the command and is parsing slowly. Skipping forced "
+                "MQTT reconnect to avoid 0500_4003 mid-parse (#1150).",
+                queue_item_id,
+                current_gcode_file,
+                pre_gcode_file,
+            )
+        elif client and hasattr(client, "force_reconnect_stale_session"):
             client.force_reconnect_stale_session(
-                f"queue print command unacknowledged after {timeout:.0f}s (state still {pre_state})"
+                f"queue print command unacknowledged after {timeout:.0f}s "
+                f"(state still {pre_state}, gcode_file {current_gcode_file!r})"
             )
 
 

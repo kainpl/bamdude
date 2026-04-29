@@ -901,9 +901,18 @@ class BackgroundDispatchService:
                     )
                     raise RuntimeError("Failed to start print")
 
-                pre_state = getattr(printer_manager.get_status(job.printer_id), "state", None)
+                _post_status = printer_manager.get_status(job.printer_id)
+                pre_state = getattr(_post_status, "state", None)
+                pre_gcode_file = getattr(_post_status, "gcode_file", None)
                 if pre_state:
-                    asyncio.create_task(self._verify_print_response(job.printer_id, printer_name, pre_state))
+                    asyncio.create_task(
+                        self._verify_print_response(
+                            job.printer_id,
+                            printer_name,
+                            pre_state,
+                            pre_gcode_file=pre_gcode_file,
+                        )
+                    )
 
                 # Register in-memory swap config for on_print_complete's fast
                 # path. Persistence to archive.extra_data (restart recovery)
@@ -1332,9 +1341,18 @@ class BackgroundDispatchService:
                 except Exception as _e:
                     logger.debug("Stagger registration for direct dispatch failed: %s", _e)
 
-                pre_state = getattr(printer_manager.get_status(job.printer_id), "state", None)
+                _post_status = printer_manager.get_status(job.printer_id)
+                pre_state = getattr(_post_status, "state", None)
+                pre_gcode_file = getattr(_post_status, "gcode_file", None)
                 if pre_state:
-                    asyncio.create_task(self._verify_print_response(job.printer_id, printer_name, pre_state))
+                    asyncio.create_task(
+                        self._verify_print_response(
+                            job.printer_id,
+                            printer_name,
+                            pre_state,
+                            pre_gcode_file=pre_gcode_file,
+                        )
+                    )
 
                 # Register the requesting user so per-user stats filter sees
                 # this print and the post-print notification has a recipient.
@@ -1405,6 +1423,7 @@ class BackgroundDispatchService:
         pre_state: str,
         timeout: float = 15.0,
         poll_interval: float = 3.0,
+        pre_gcode_file: str | None = None,
     ):
         """Check if the printer responded to a print command.
 
@@ -1413,11 +1432,13 @@ class BackgroundDispatchService:
         warning for diagnostics (visible in support packages).
         """
         deadline = time.monotonic() + timeout
+        last_status = None
         while time.monotonic() < deadline:
             await asyncio.sleep(poll_interval)
             state = printer_manager.get_status(printer_id)
             if not state:
                 return  # Printer disconnected
+            last_status = state
             if state.state != pre_state:
                 return  # Printer responded
         logger.warning(
@@ -1427,13 +1448,30 @@ class BackgroundDispatchService:
             timeout,
             pre_state,
         )
-        # Strong signal the MQTT session is half-broken (#887, #936): telemetry
-        # still arrives but our publishes don't reach the printer. Force a fresh
-        # session so the next dispatch can land without a power cycle.
+        # P1P 0500_4003 discriminator (#1150): if `gcode_file` advanced from
+        # what we observed pre-dispatch, the printer accepted our project_file
+        # and is just slow-parsing on the SD-card MCU side. Forcing an MQTT
+        # reconnect mid-parse triggers 0500_4003 ("Failed to start print job").
+        # Only force a reconnect when gcode_file is unchanged — that's the
+        # half-broken-publish signal from #887 / #936.
+        current_gcode_file = getattr(last_status, "gcode_file", None) if last_status else None
+        publish_landed = current_gcode_file is not None and current_gcode_file != pre_gcode_file
+        if publish_landed:
+            logger.warning(
+                "Printer %s (%d): gcode_file changed to %r (was %r) — printer "
+                "received the command and is parsing slowly. Skipping forced "
+                "MQTT reconnect to avoid 0500_4003 mid-parse (#1150).",
+                printer_name,
+                printer_id,
+                current_gcode_file,
+                pre_gcode_file,
+            )
+            return
         client = printer_manager.get_client(printer_id)
         if client:
             client.force_reconnect_stale_session(
-                f"print command unacknowledged after {timeout:.0f}s (state still {pre_state})"
+                f"print command unacknowledged after {timeout:.0f}s "
+                f"(state still {pre_state}, gcode_file {current_gcode_file!r})"
             )
 
     @staticmethod
