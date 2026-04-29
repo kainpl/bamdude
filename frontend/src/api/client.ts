@@ -1119,6 +1119,26 @@ export interface APIKeyUpdate {
   expires_at?: string | null;
 }
 
+// Long-lived camera-stream tokens (#1108)
+export interface LongLivedToken {
+  id: number;
+  user_id: number;
+  name: string;
+  scope: string;
+  lookup_prefix: string;
+  created_at: string | null;
+  expires_at: string | null;
+  last_used_at: string | null;
+  // Plaintext is only returned on create — null on every subsequent listing.
+  token: string | null;
+}
+
+export interface LongLivedTokenCreate {
+  name: string;
+  expires_in_days: number;
+  scope?: string;
+}
+
 // Settings types
 export interface AppSettings {
   save_thumbnails: boolean;
@@ -5064,6 +5084,18 @@ export const api = {
     }),
   deleteAPIKey: (id: number) =>
     request<{ message: string }>(`/api-keys/${id}`, { method: 'DELETE' }),
+
+  // Long-lived camera-stream tokens (#1108)
+  getLongLivedTokens: (userId?: number) =>
+    request<LongLivedToken[]>(`/auth/tokens${userId !== undefined ? `?user_id=${userId}` : ''}`),
+  getAllLongLivedTokens: () => request<LongLivedToken[]>('/auth/tokens/all'),
+  createLongLivedToken: (data: LongLivedTokenCreate) =>
+    request<LongLivedToken>('/auth/tokens', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  revokeLongLivedToken: (id: number) =>
+    request<void>(`/auth/tokens/${id}`, { method: 'DELETE' }),
 
   // AMS History
   getAMSHistory: (printerId: number, amsId: number, hours = 24) =>

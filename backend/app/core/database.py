@@ -143,6 +143,7 @@ async def init_db():
         library,
         library_file_note,
         local_preset,
+        long_lived_token,
         macro,
         maintenance,
         notification,

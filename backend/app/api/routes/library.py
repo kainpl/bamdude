@@ -10,6 +10,7 @@ import re
 import shutil
 import uuid
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
@@ -1199,7 +1200,9 @@ async def list_files(
         include_root: If True and folder_id is None, returns files at root level.
                      If False and folder_id is None, returns all files.
     """
-    query = select(LibraryFile).options(selectinload(LibraryFile.created_by))
+    # Trash bin (#1008): exclude soft-deleted rows from the main listing.
+    # Users manage trashed files via /library/trash endpoints instead.
+    query = LibraryFile.active().options(selectinload(LibraryFile.created_by))
 
     if folder_id is not None:
         query = query.where(LibraryFile.folder_id == folder_id)
@@ -1757,8 +1760,8 @@ async def batch_generate_stl_thumbnails(
     thumbnails_dir = get_library_thumbnails_dir()
     results: list[BatchThumbnailResult] = []
 
-    # Build query based on request
-    query = select(LibraryFile).where(LibraryFile.file_type == "stl")
+    # Build query based on request (trash-aware: skip soft-deleted rows)
+    query = LibraryFile.active().where(LibraryFile.file_type == "stl")
 
     if request.file_ids:
         # Specific files
@@ -2527,10 +2530,21 @@ async def delete_file(
         )
     ),
 ):
-    """Delete a file."""
+    """Move a file to the trash (soft-delete, #1008).
+
+    Bytes + thumbnail stay on disk so a user can restore the file from
+    Settings → Library Trash. After the configured retention window
+    (default 30 days) the background sweeper hard-deletes both the row
+    and the bytes. External files bypass the trash entirely — their
+    bytes live outside BamDude's control, so there's nothing to restore.
+    Queue items keep referencing the trashed row; printing items block
+    the soft-delete so we never yank the file mid-job.
+    """
     user, can_modify_all = auth_result
 
-    result = await db.execute(select(LibraryFile).where(LibraryFile.id == file_id))
+    # Use the active() filter so a row already in the trash returns 404 — the
+    # caller should be hitting the trash endpoints to manage it instead.
+    result = await db.execute(LibraryFile.active().where(LibraryFile.id == file_id))
     file = result.scalar_one_or_none()
 
     if not file:
@@ -2541,32 +2555,10 @@ async def delete_file(
         if file.created_by_id != user.id:
             raise HTTPException(status_code=403, detail="You can only delete your own files")
 
-    # External files: only remove DB entry and thumbnail, never delete the actual file
-    try:
-        if not file.is_external:
-            abs_file_path = to_absolute_path(file.file_path)
-            if abs_file_path and abs_file_path.exists():
-                abs_file_path.unlink()
-        # Always clean up thumbnails we generated
-        abs_thumb_path = to_absolute_path(file.thumbnail_path)
-        if abs_thumb_path and abs_thumb_path.exists():
-            abs_thumb_path.unlink()
-    except OSError as e:
-        logger.warning("Failed to delete file from disk: %s", e)
-
-    # Dependent-row handling runs in-app so SQLite (FK off by default) and
-    # PostgreSQL behave identically.
-    #
-    # Archives keep their SET NULL — the archive row owns its own 3MF copy in
-    # the archive dir, so history survives without the library file.
-    #
-    # Queue items are different: a queue_item with library_file_id=NULL and
-    # archive_id=NULL would be permanently undispatchable, so we either
-    # cascade-delete them or block the library-file delete when one is live:
-    #
-    #   - ``status='printing'`` → block the delete with 409; the operator has
-    #     to wait for the job to finish (or stop it) before removing the source.
-    #   - any other status → delete the queue item along with the file.
+    # Block delete if any queue item referencing this file is currently
+    # printing — pulling the file out from under a live job is unsafe
+    # regardless of the trash bin (the file is still on disk but we'd
+    # break the audit trail).
     queue_items_result = await db.execute(select(PrintQueueItem).where(PrintQueueItem.library_file_id == file.id))
     queue_items = list(queue_items_result.scalars().all())
     printing_blockers = [qi for qi in queue_items if qi.status == "printing"]
@@ -2580,14 +2572,29 @@ async def delete_file(
             },
         )
 
-    await db.execute(update(PrintArchive).where(PrintArchive.library_file_id == file.id).values(library_file_id=None))
-    for qi in queue_items:
-        await db.delete(qi)
+    if file.is_external:
+        # External files bypass the trash — just drop the DB row + our thumbnail
+        # + clean up dependents. The on-disk file is outside BamDude's control.
+        try:
+            abs_thumb_path = to_absolute_path(file.thumbnail_path)
+            if abs_thumb_path and abs_thumb_path.exists():
+                abs_thumb_path.unlink()
+        except OSError as e:
+            logger.warning("Failed to delete thumbnail from disk: %s", e)
+        await db.execute(
+            update(PrintArchive).where(PrintArchive.library_file_id == file.id).values(library_file_id=None)
+        )
+        for qi in queue_items:
+            await db.delete(qi)
+        await db.delete(file)
+        await db.commit()
+        return {"status": "success", "message": "File deleted", "trashed": False}
 
-    await db.delete(file)
+    # Managed file: soft-delete. Bytes + thumbnail + queue refs stay; the
+    # sweeper cleans up after the retention window, restore reverses this.
+    file.deleted_at = datetime.now(timezone.utc)
     await db.commit()
-
-    return {"status": "success", "message": "File deleted"}
+    return {"status": "success", "message": "File moved to trash", "trashed": True}
 
 
 # ============ File Content Endpoints ============

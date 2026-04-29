@@ -13,6 +13,7 @@ from sqlalchemy import delete, or_, select, text
 from backend.app.api.routes import (
     ams_history,
     api_keys,
+    archive_purge,
     archives,
     auth,
     auto_queue,
@@ -28,6 +29,7 @@ from backend.app.api.routes import (
     kprofiles,
     library,
     library_notes,
+    library_trash,
     local_backup,
     local_presets,
     macros,
@@ -4735,6 +4737,25 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logging.getLogger(__name__).warning("Failed to start archive cleanup service: %s", e)
 
+    # Library trash sweeper + auto-purge (#1008). Runs every 15 min: hard-deletes
+    # rows whose deleted_at is older than the retention window AND, if enabled,
+    # moves files older than the auto-purge threshold to trash (24h-throttled).
+    try:
+        from backend.app.services.library_trash import library_trash_service
+
+        await library_trash_service.start_scheduler()
+    except Exception as e:
+        logging.getLogger(__name__).warning("Failed to start library trash sweeper: %s", e)
+
+    # Archive auto-purge sweeper (#1008 follow-up). Same 15-min cadence,
+    # 24h-throttled, opt-in via Settings.
+    try:
+        from backend.app.services.archive_purge import archive_purge_service
+
+        await archive_purge_service.start_scheduler()
+    except Exception as e:
+        logging.getLogger(__name__).warning("Failed to start archive auto-purge sweeper: %s", e)
+
     yield
 
     # Shutdown
@@ -4761,12 +4782,32 @@ async def lifespan(app: FastAPI):
         await archive_cleanup_service.stop()
     except Exception:
         pass
+    try:
+        from backend.app.services.library_trash import library_trash_service
+
+        library_trash_service.stop_scheduler()
+    except Exception:
+        pass
+    try:
+        from backend.app.services.archive_purge import archive_purge_service
+
+        archive_purge_service.stop_scheduler()
+    except Exception:
+        pass
     notification_service.stop_digest_scheduler()
     git_backup_service.stop_scheduler()
     local_backup_service.stop_scheduler()
     stop_ams_history_recording()
     stop_runtime_tracking()
     stop_camera_cleanup()
+    # Tear down all camera fan-out broadcasters (#1089) so subscribers exit
+    # cleanly and pump tasks don't outlive the asyncio loop.
+    try:
+        from backend.app.services.camera_fanout import shutdown_all_broadcasters
+
+        await shutdown_all_broadcasters()
+    except Exception as e:
+        logging.warning("Failed to shut down camera broadcasters: %s", e)
     stop_expected_prints_cleanup()
     printer_manager.disconnect_all()
     await close_spoolman_client()
@@ -5170,6 +5211,8 @@ app.include_router(external_links.router, prefix=app_settings.api_prefix)
 app.include_router(projects.router, prefix=app_settings.api_prefix)
 app.include_router(library.router, prefix=app_settings.api_prefix)
 app.include_router(library_notes.router, prefix=app_settings.api_prefix)
+app.include_router(library_trash.router, prefix=app_settings.api_prefix)
+app.include_router(archive_purge.router, prefix=app_settings.api_prefix)
 app.include_router(api_keys.router, prefix=app_settings.api_prefix)
 app.include_router(webhook.router, prefix=app_settings.api_prefix)
 app.include_router(ams_history.router, prefix=app_settings.api_prefix)
