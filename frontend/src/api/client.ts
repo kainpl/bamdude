@@ -6014,8 +6014,17 @@ export interface VirtualPrinterConfig {
   auto_dispatch: boolean;
   bind_ip: string | null;
   remote_interface_ip: string | null;
+  /** Tailscale per-VP cert provisioning (#1070) — defaults to true (off). */
+  tailscale_disabled: boolean;
   position: number;
-  status: { running: boolean; pending_files: number; proxy?: VirtualPrinterProxyStatus };
+  status: {
+    running: boolean;
+    pending_files: number;
+    /** Tailnet FQDN currently advertised over SSDP (only present when LE cert is in use). */
+    tailscale_fqdn?: string;
+    tailscale_disabled?: boolean;
+    proxy?: VirtualPrinterProxyStatus;
+  };
 }
 
 export interface VirtualPrinterListResponse {
@@ -6038,6 +6047,7 @@ export const multiVirtualPrinterApi = {
     auto_dispatch?: boolean;
     bind_ip?: string;
     remote_interface_ip?: string;
+    tailscale_disabled?: boolean;
   }) =>
     request<VirtualPrinterConfig>('/virtual-printers', {
       method: 'POST',
@@ -6056,6 +6066,7 @@ export const multiVirtualPrinterApi = {
     auto_dispatch?: boolean;
     bind_ip?: string;
     remote_interface_ip?: string;
+    tailscale_disabled?: boolean;
   }) =>
     request<VirtualPrinterConfig>(`/virtual-printers/${id}`, {
       method: 'PUT',

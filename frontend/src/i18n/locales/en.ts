@@ -3779,6 +3779,12 @@ export default {
       placeholder: 'Auto-detect (default)...',
       hint: 'Override the IP address advertised via SSDP and used in the TLS certificate. Useful when BamDude has multiple network interfaces.'
     },
+    tailscale: {
+      title: 'Use Tailscale Let\'s Encrypt cert',
+      description: 'When on, asks the local tailscale CLI for an LE cert and advertises the tailnet FQDN over SSDP. Slicers connect via a hostname that matches the trusted cert (no manual CA install).',
+      activeFor: 'Active — broadcasting tailnet FQDN {{fqdn}}',
+      unavailable: 'Tailscale is not available or LE cert provisioning failed. Falling back to the self-signed CA.'
+    },
     mode: {
       title: 'Mode',
       archive: 'Archive',

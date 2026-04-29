@@ -661,6 +661,7 @@ class TestVirtualPrinterManager:
             "remote_interface_ip": "",
             "target_printer_id": None,
             "auto_dispatch": True,
+            "tailscale_disabled": True,
             "position": 0,
         }
         defaults.update(overrides)
