@@ -6,6 +6,14 @@ All notable changes to BamDude will be documented in this file.
 
 ---
 
+## [0.4.3] - WIP
+
+### Security
+
+- **`postcss` 8.5.6 → 8.5.12** — clears [GHSA-qx2v-qp2m-jg93](https://github.com/advisories/GHSA-qx2v-qp2m-jg93) (moderate-severity XSS via unescaped `</style>` sequence in PostCSS's CSS Stringify output). Caret range in `frontend/package.json` already accepted 8.5.12, so this is a lockfile-only bump (`npm install postcss@^8.5.12 --package-lock-only`); Vite, autoprefixer, and `@tailwindcss/postcss` all dedupe onto the same 8.5.12 in `node_modules`. PostCSS runs at build time only and BamDude doesn't pass user-controlled CSS through it at runtime, so the practical impact even on the older version was nil — this is hygiene + clearing the `npm audit` warning. Ported from upstream Bambuddy v0.2.4b1.
+
+---
+
 ## [0.4.2] - WIP
 
 ### 0.4.2b1 — pre-release (2026-04-28)
