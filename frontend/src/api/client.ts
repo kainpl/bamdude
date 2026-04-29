@@ -876,6 +876,12 @@ export interface Project {
   parent_id: number | null;
   parent_name: string | null;
   children: ProjectChildPreview[];
+  // B.2 (#1155) — external link rendered as a clickable icon next to the
+  // project name. Validated http(s) on the wire; null = no link.
+  url: string | null;
+  // B.2 (#1155) — filename of the cover photo inside the project's
+  // attachments dir; serves as the card's hero image. Null = no cover.
+  cover_image_filename: string | null;
   created_at: string;
   updated_at: string;
   stats?: ProjectStats;
@@ -914,6 +920,8 @@ export interface ProjectListItem {
   queue_count: number;
   progress_percent: number | null;  // Plates progress
   archives: ArchivePreview[];
+  url: string | null;
+  cover_image_filename: string | null;
 }
 
 export interface ProjectCreate {
@@ -928,6 +936,7 @@ export interface ProjectCreate {
   priority?: string;
   budget?: number | null;
   parent_id?: number;
+  url?: string | null;
 }
 
 export interface ProjectUpdate {
@@ -943,6 +952,7 @@ export interface ProjectUpdate {
   priority?: string;
   budget?: number | null;
   parent_id?: number;
+  url?: string | null;
 }
 
 // BOM Types - Tracks sourced/purchased parts (hardware, electronics, etc.)
@@ -4919,6 +4929,37 @@ export const api = {
       `/projects/${projectId}/attachments/${encodeURIComponent(filename)}`,
       { method: 'DELETE' }
     ),
+
+  // B.2 (#1155) — Project cover image. The GET URL is consumed by an
+  // <img src> tag, so it threads through withStreamToken() to satisfy
+  // the camera-stream-token gate (the GET endpoint is RequireCameraStreamToken
+  // for the same reason: <img> tags can't send Authorization headers).
+  uploadProjectCoverImage: async (projectId: number, file: File): Promise<{
+    status: string;
+    filename: string;
+    size: number;
+  }> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const headers: Record<string, string> = {};
+    if (authToken) {
+      headers['Authorization'] = `Bearer ${authToken}`;
+    }
+    const response = await fetch(`${API_BASE}/projects/${projectId}/cover-image`, {
+      method: 'POST',
+      headers,
+      body: formData,
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+    return response.json();
+  },
+  getProjectCoverImageUrl: (projectId: number) =>
+    withStreamToken(`${API_BASE}/projects/${projectId}/cover-image`),
+  deleteProjectCoverImage: (projectId: number) =>
+    request<{ status: string }>(`/projects/${projectId}/cover-image`, { method: 'DELETE' }),
 
   // BOM (Bill of Materials)
   getProjectBOM: (projectId: number) =>

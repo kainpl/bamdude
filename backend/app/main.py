@@ -216,16 +216,37 @@ check_dependencies()
 # Configure logging - LOG_LEVEL env var controls the level directly
 log_level_str = app_settings.log_level.upper()
 log_level = getattr(logging, log_level_str, logging.INFO)
-log_format = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
+# Trace ID column ([-] when no request scope is active — startup, MQTT
+# callbacks, scheduled tasks not chained from a request — so the column
+# stays visually aligned and missing values are obvious in grep). See
+# backend/app/core/trace.py for the ContextVar that feeds this slot.
+log_format = "%(asctime)s %(levelname)s [%(name)s] [%(trace_id)s] %(message)s"
 
 # Create root logger
 root_logger = logging.getLogger()
 root_logger.setLevel(log_level)
 
+# Trace-ID injection: this filter populates record.trace_id from the
+# per-request ContextVar so the format string above can reference it.
+# Attached to each HANDLER (not the root logger) because Python's
+# logging semantics only invoke a logger's filters on records that
+# *originated* at that logger — records propagated up from child
+# loggers (every named logger in the app) never trigger root's filter.
+# Putting it on the handlers means every record any handler emits gets
+# trace_id injected just before the formatter runs, regardless of which
+# logger created the record. Without this, the formatter raises
+# KeyError on every child-logger record and the stdlib logging machinery
+# silently drops it — exactly the "logs/bamdude.log only shows logs
+# partially" failure mode (audit A.28). See backend/app/core/trace.py.
+from backend.app.core.trace import TraceIDFilter  # noqa: E402
+
+_trace_id_filter = TraceIDFilter()
+
 # Console handler - always enabled
 console_handler = logging.StreamHandler()
 console_handler.setLevel(log_level)
 console_handler.setFormatter(logging.Formatter(log_format))
+console_handler.addFilter(_trace_id_filter)
 root_logger.addHandler(console_handler)
 
 # File handler - only in production or if explicitly enabled
@@ -239,6 +260,7 @@ if app_settings.log_to_file:
     )
     file_handler.setLevel(log_level)
     file_handler.setFormatter(logging.Formatter(log_format))
+    file_handler.addFilter(_trace_id_filter)
     root_logger.addHandler(file_handler)
     logging.info("Logging to file: %s", log_file)
 
@@ -254,6 +276,12 @@ if app_settings.log_to_file:
     uvicorn_access_logger = logging.getLogger("uvicorn.access")
     uvicorn_access_logger.addHandler(file_handler)
     uvicorn_access_logger.addFilter(WriteRequestsOnlyFilter())
+    # Uvicorn's access logger has propagate=False (its own default), so
+    # the root-attached TraceIDFilter never sees these records. Attach a
+    # second filter instance directly to the access logger so HTTP access
+    # lines carry the same trace ID column as the application logs they
+    # correlate with.
+    uvicorn_access_logger.addFilter(TraceIDFilter())
 
 # Reduce noise from third-party libraries in production
 if not app_settings.debug:
@@ -4423,6 +4451,13 @@ def stop_expected_prints_cleanup() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
+    # Install Windows-only asyncio Proactor cleanup-RST filter (#1113) before
+    # anything else can spawn tasks that might trip it. The filter is a no-op
+    # on non-Windows hosts.
+    from backend.app.core.asyncio_handlers import install_proactor_reset_filter
+
+    install_proactor_reset_filter()
+
     await init_db()
 
     # Register an app-scoped httpx client for Bambu Cloud services so
@@ -5052,6 +5087,58 @@ async def security_headers_middleware(request, call_next):
         )
     if request.url.scheme == "https":
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
+
+
+@app.middleware("http")
+async def trace_id_middleware(request, call_next):
+    """Stamp every HTTP request with a trace ID and echo it back (audit B.12).
+
+    Decorated AFTER auth_middleware + security_headers_middleware on
+    purpose: Starlette stacks @app.middleware decorators LIFO, so the
+    last-decorated runs first inbound. Putting the trace stamp last
+    makes it the OUTERMOST layer, which means every line emitted on the
+    way down to the route handler — including the auth-middleware's
+    early 401/503 returns and the security-headers stamping — all carry
+    the same trace ID. If we put it before auth, those layers' logs
+    would be stamped with the *previous* request's ID — useless for
+    correlation.
+
+    Honours an inbound ``X-Trace-Id`` header so callers running their
+    own tracing can correlate their span IDs with our log lines, but
+    only if the value passes the whitelist gate in
+    ``backend.app.core.trace.normalise_inbound_trace_id`` — anything
+    rejected (too long, contains control chars, etc.) silently triggers
+    a freshly minted server-side ID rather than failing the request.
+
+    The minted (or echoed) ID is set on a ContextVar so that every log
+    record emitted during the request — application logs *and* uvicorn's
+    access log — carries it via TraceIDFilter, and is also written to
+    the ``X-Trace-Id`` response header so clients can pin a server-side
+    log search to the exact request they made.
+    """
+    from backend.app.core.trace import (
+        generate_trace_id,
+        normalise_inbound_trace_id,
+        trace_id_var,
+    )
+
+    inbound = normalise_inbound_trace_id(request.headers.get("X-Trace-Id"))
+    trace_id = inbound if inbound is not None else generate_trace_id()
+
+    token = trace_id_var.set(trace_id)
+    try:
+        response = await call_next(request)
+    finally:
+        # Reset the ContextVar so a record emitted in a totally
+        # unrelated background task that just happens to inherit this
+        # context doesn't keep referencing this request's ID forever.
+        # In practice ContextVar.reset is best-effort under asyncio
+        # task-spawn semantics, but the cost is one attribute write so
+        # we may as well do it.
+        trace_id_var.reset(token)
+
+    response.headers["X-Trace-Id"] = trace_id
     return response
 
 
