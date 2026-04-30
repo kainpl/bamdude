@@ -6,7 +6,7 @@ All notable changes to BamDude will be documented in this file.
 
 ---
 
-## [0.4.2b2] - WIP
+## [0.4.2b2] - 2026-04-30
 
 ### Added
 
