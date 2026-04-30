@@ -47,6 +47,15 @@ class Project(Base):
     # Phase 10: Sub-projects (hierarchical)
     parent_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"), nullable=True)
 
+    # B.2 (#1155) — external link rendered as a clickable icon next to the project
+    # name (Bambuddy / MakerWorld / GitHub / Notion etc). Validated http(s) only
+    # in the schema layer so a `javascript:`-style XSS payload can't reach the DOM.
+    url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    # B.2 (#1155) — filename of the cover photo inside the project's attachments
+    # dir; serves as the card's hero image. Tracked separately from the
+    # ``attachments`` JSON list so swapping/deleting one doesn't disturb the other.
+    cover_image_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())

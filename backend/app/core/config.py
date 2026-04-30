@@ -4,7 +4,7 @@ from pathlib import Path
 from pydantic_settings import BaseSettings
 
 # Application version - single source of truth
-APP_VERSION = "0.4.2b1"
+APP_VERSION = "0.4.2b2"
 GITHUB_REPO = "kainpl/bamdude"
 
 # App directory - where the application is installed (for static files)
@@ -56,6 +56,14 @@ class Settings(BaseSettings):
 
     # API
     api_prefix: str = "/api/v1"
+
+    # Slicer-API sidecar URLs (B.4 — server-side slicing). Per-install overrides
+    # live in the settings table (``orcaslicer_api_url`` / ``bambu_studio_api_url``)
+    # and take priority; these env defaults fire when the settings keys are
+    # empty (the default state for fresh installs that haven't touched the
+    # sidecar yet).
+    slicer_api_url: str = "http://localhost:3003"
+    bambu_studio_api_url: str = "http://localhost:3001"
 
     # Auth — sliding-session refresh cookie Secure attribute. ``None`` (default)
     # = auto-detect from request scheme / ``X-Forwarded-Proto``: if the user is

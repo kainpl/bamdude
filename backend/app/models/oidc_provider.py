@@ -2,7 +2,17 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
@@ -13,7 +23,7 @@ class OIDCProvider(Base):
     """OpenID Connect provider configuration.
 
     Supports any standards-compliant OIDC provider such as PocketID,
-    Authentik, Keycloak, Authelia, Google, etc.
+    Authentik, Keycloak, Authelia, Google, Azure Entra ID, etc.
 
     The issuer_url must point to the root issuer (e.g. ``https://id.example.com``).
     The OIDC discovery document is fetched from
@@ -21,6 +31,22 @@ class OIDCProvider(Base):
     """
 
     __tablename__ = "oidc_providers"
+    __table_args__ = (
+        # Defense-in-depth for the application-level auto-link guard. Blocks
+        # only the genuinely-unsafe combo (Fall B): auto_link with
+        # email_claim='email' AND require_email_verified=False — an
+        # attacker-controlled IdP could present an unverified email matching a
+        # local account. Custom claims (Fall C, e.g. Azure Entra ID's
+        # preferred_username/upn) never perform an email_verified gate, so
+        # they're safe and not blocked. Enforced on PostgreSQL via ALTER TABLE
+        # in m031; SQLite installs rely on the application-level guard
+        # (`_enforce_auto_link_safety`) since adding a CHECK constraint to an
+        # existing SQLite table requires a full table rewrite.
+        CheckConstraint(
+            "auto_link_existing_accounts = 0 OR email_claim != 'email' OR require_email_verified = 1",
+            name="ck_auto_link_requires_verified_email_claim",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     # Human-readable name shown on the login button (e.g. "PocketID", "Google")
@@ -50,6 +76,20 @@ class OIDCProvider(Base):
     # operators must explicitly opt-in to prevent an attacker-controlled IdP from
     # silently hijacking local accounts via email matching (M-2 fix).
     auto_link_existing_accounts: Mapped[bool] = mapped_column(Boolean, default=False)
+    # JWT claim name used as the email identity (default "email"). Set to
+    # "preferred_username" or "upn" for Azure Entra ID, which does not send
+    # email_verified — using a custom claim skips the email_verified check
+    # entirely and is the recommended Azure configuration. Has no interaction
+    # with require_email_verified when set to a non-"email" value: custom
+    # claims never perform an email_verified check regardless.
+    email_claim: Mapped[str] = mapped_column(String(64), default="email", server_default="email")
+    # When True (default), the "email" claim is only trusted when
+    # email_verified=True. Set to False to accept the email even when
+    # email_verified is absent — required for providers like Azure Entra ID
+    # that never send email_verified and where a custom claim (email_claim
+    # != "email") is not preferred. Has no effect when email_claim is not
+    # "email": the custom-claim path never performs an email_verified check.
+    require_email_verified: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
     # Optional icon URL (SVG/PNG) shown on the login button
     icon_url: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

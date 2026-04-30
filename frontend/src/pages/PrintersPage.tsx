@@ -593,6 +593,28 @@ function ThermometerHalf({ className }: { className?: string }) {
   );
 }
 
+// Nozzle icon — schematic hot-end view (filament body + heater block + tip).
+// Added for visual parity with the thermometer icons on the dual-nozzle card
+// that previously had no icon at all (#1115).
+function NozzleIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <rect x="9.2" y="3.4" width="5.6" height="8.1" />
+      <rect x="6" y="11.5" width="12.1" height="3.7" />
+      <path d="M 7.3 15.2 L 12.1 19.6 L 16.7 15.2" />
+    </svg>
+  );
+}
+
 // Thermometer SVG - fully filled (red - same as humidity bad)
 function ThermometerFull({ className }: { className?: string }) {
   return (
@@ -2920,7 +2942,8 @@ function PrinterCard({
                       filamentInfo={filamentInfo}
                     >
                       <div className="text-center px-3 py-1.5 bg-bambu-dark rounded-lg h-full flex flex-col justify-center items-center cursor-default" title={t('printers.activeNozzle', { nozzle: activeNozzle === 'L' ? t('common.left') : t('common.right') })}>
-                        <div className="flex items-center gap-2 mb-1">
+                        <NozzleIcon className="w-3.5 h-3.5 mb-0.5 text-amber-400" />
+                        <div className="flex items-center gap-2">
                           <span className={`text-[11px] font-bold ${activeNozzle === 'L' ? 'text-amber-400' : 'text-gray-500'}`}>
                             L{leftNozzleSlot?.nozzle_diameter ? ` ${leftNozzleSlot.nozzle_diameter}` : ''}
                           </span>
@@ -3567,18 +3590,6 @@ function PrinterCard({
                                             extruderId: mappedExtruderId,
                                           }),
                                         }}
-                                        inventory={spoolmanEnabled ? undefined : {
-                                          onAssignSpool: () => setAssignSpoolModal({
-                                            printerId: printer.id,
-                                            amsId: ams.id,
-                                            trayId: slotIdx,
-                                            trayInfo: {
-                                              type: '',
-                                              color: '',
-                                              location: `${getAmsLabel(ams.id, ams.tray.length)} Slot ${slotIdx + 1}`,
-                                            },
-                                          }),
-                                        }}
                                       >
                                         {slotVisual}
                                       </EmptySlotHoverCard>
@@ -3885,18 +3896,6 @@ function PrinterCard({
                                         extruderId: mappedExtruderId,
                                       }),
                                     }}
-                                    inventory={spoolmanEnabled ? undefined : {
-                                      onAssignSpool: () => setAssignSpoolModal({
-                                        printerId: printer.id,
-                                        amsId: ams.id,
-                                        trayId: htSlotId,
-                                        trayInfo: {
-                                          type: '',
-                                          color: '',
-                                          location: getAmsLabel(ams.id, ams.tray.length),
-                                        },
-                                      }),
-                                    }}
                                   >
                                     {slotVisual}
                                   </EmptySlotHoverCard>
@@ -4097,18 +4096,6 @@ function PrinterCard({
                                           trayId: slotTrayId,
                                           trayCount: 1,
                                           extruderId: isDualNozzle ? (extTrayId === 254 ? 1 : 0) : undefined,
-                                        }),
-                                      }}
-                                      inventory={spoolmanEnabled ? undefined : {
-                                        onAssignSpool: () => setAssignSpoolModal({
-                                          printerId: printer.id,
-                                          amsId: 255,
-                                          trayId: slotTrayId,
-                                          trayInfo: {
-                                            type: '',
-                                            color: '',
-                                            location: extLabel || t('printers.external'),
-                                          },
                                         }),
                                       }}
                                     >
@@ -6636,13 +6623,16 @@ export function PrintersPage() {
   const selectByState = useCallback((state: string) => {
     if (!printers) return;
     const ids = printers.filter(p => {
-      const st = queryClient.getQueryData<{ connected: boolean; state: string | null }>(['printerStatus', p.id]);
+      const st = queryClient.getQueryData<{ connected: boolean; state: string | null; hms_errors?: HMSError[] }>(['printerStatus', p.id]);
       if (!st?.connected) return state === 'offline';
+      const hmsErrors = st.hms_errors ? filterKnownHMSErrors(st.hms_errors) : [];
       switch (state) {
         case 'printing': return st.state === 'RUNNING';
         case 'paused': return st.state === 'PAUSE';
-        case 'finished': return st.state === 'FINISH';
-        case 'error': return st.state === 'FAILED';
+        // FAILED without active HMS is the post-cancel terminal state —
+        // group with FINISH. Only known-HMS escalates to "error".
+        case 'finished': return st.state === 'FINISH' || (st.state === 'FAILED' && hmsErrors.length === 0);
+        case 'error': return hmsErrors.length > 0;
         case 'idle': return st.state === 'IDLE';
         default: return false;
       }
@@ -6720,8 +6710,10 @@ export function PrintersPage() {
         switch (statusFilter) {
           case 'printing': return status.state === 'RUNNING';
           case 'paused':   return status.state === 'PAUSE';
-          case 'finished': return status.state === 'FINISH';
-          case 'error':    return status.state === 'FAILED' || hmsErrors.length > 0;
+          // FAILED without active HMS is the post-cancel terminal state —
+          // group with FINISH. Only known-HMS escalates to "error".
+          case 'finished': return status.state === 'FINISH' || (status.state === 'FAILED' && hmsErrors.length === 0);
+          case 'error':    return hmsErrors.length > 0;
           case 'idle':     return status.state !== 'RUNNING' && status.state !== 'PAUSE' && status.state !== 'FINISH' && status.state !== 'FAILED' && hmsErrors.length === 0;
           case 'offline':  return false; // Connected printers are never offline
           default:         return true;

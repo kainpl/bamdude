@@ -33,6 +33,10 @@ class Permission(StrEnum):
     ARCHIVES_DELETE_ALL = "archives:delete_all"
     ARCHIVES_REPRINT_OWN = "archives:reprint_own"
     ARCHIVES_REPRINT_ALL = "archives:reprint_all"
+    # Bulk hard-delete archives past the auto-purge age threshold (#1008
+    # follow-up). Admin-only by default — split from delete_all so a
+    # delegated operator can't accidentally cull months of print history.
+    ARCHIVES_PURGE = "archives:purge"
 
     # Queue
     QUEUE_READ = "queue:read"
@@ -50,9 +54,21 @@ class Permission(StrEnum):
     LIBRARY_UPDATE_ALL = "library:update_all"
     LIBRARY_DELETE_OWN = "library:delete_own"
     LIBRARY_DELETE_ALL = "library:delete_all"
+    # Bulk hard-delete past the trash retention window (#1008). Admin-only by
+    # default — separate from delete_all so an operator can't accidentally
+    # purge thousands of files. Same axis applies to ARCHIVES_PURGE below.
+    LIBRARY_PURGE = "library:purge"
     # Notes (gh#3): viewers can post their own notes without library:update.
     # Edit/delete of someone else's note is enforced at route level.
     LIBRARY_NOTES_WRITE = "library:notes_write"
+
+    # MakerWorld integration (B.5 — 0.5.x cycle). VIEW gates the page +
+    # /resolve + /recent-imports. IMPORT additionally lets the user click
+    # Import (which downloads and writes a LibraryFile). Split because
+    # browsing public MakerWorld metadata is harmless, but a user without
+    # cloud-auth + library upload shouldn't trigger downloads.
+    MAKERWORLD_VIEW = "makerworld:view"
+    MAKERWORLD_IMPORT = "makerworld:import"
 
     # Projects
     PROJECTS_READ = "projects:read"
@@ -178,6 +194,7 @@ PERMISSION_CATEGORIES = {
         Permission.ARCHIVES_DELETE_ALL,
         Permission.ARCHIVES_REPRINT_OWN,
         Permission.ARCHIVES_REPRINT_ALL,
+        Permission.ARCHIVES_PURGE,
     ],
     "Queue": [
         Permission.QUEUE_READ,
@@ -195,7 +212,12 @@ PERMISSION_CATEGORIES = {
         Permission.LIBRARY_UPDATE_ALL,
         Permission.LIBRARY_DELETE_OWN,
         Permission.LIBRARY_DELETE_ALL,
+        Permission.LIBRARY_PURGE,
         Permission.LIBRARY_NOTES_WRITE,
+    ],
+    "MakerWorld": [
+        Permission.MAKERWORLD_VIEW,
+        Permission.MAKERWORLD_IMPORT,
     ],
     "Projects": [
         Permission.PROJECTS_READ,
@@ -338,6 +360,9 @@ DEFAULT_GROUPS = {
             Permission.LIBRARY_UPDATE_OWN.value,
             Permission.LIBRARY_DELETE_OWN.value,
             Permission.LIBRARY_NOTES_WRITE.value,
+            # MakerWorld - browse + import
+            Permission.MAKERWORLD_VIEW.value,
+            Permission.MAKERWORLD_IMPORT.value,
             # Projects - full access
             Permission.PROJECTS_READ.value,
             Permission.PROJECTS_CREATE.value,
@@ -405,6 +430,7 @@ DEFAULT_GROUPS = {
             Permission.QUEUE_READ.value,
             Permission.LIBRARY_READ.value,
             Permission.LIBRARY_NOTES_WRITE.value,
+            Permission.MAKERWORLD_VIEW.value,
             Permission.PROJECTS_READ.value,
             Permission.INVENTORY_READ.value,
             Permission.INVENTORY_VIEW_ASSIGNMENTS.value,

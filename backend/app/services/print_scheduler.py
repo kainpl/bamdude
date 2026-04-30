@@ -88,6 +88,26 @@ class PrintScheduler:
         self._drying_in_progress: dict[int, float] = {}
         # Staggered start: rolling slots for electrical load management
         self._stagger_slots: list[_StaggerSlot] = []
+        # Defensive in-memory dispatch hold (#1157 ported from upstream v0.2.4b1):
+        # a printer that just received a project_file command must not get a
+        # second dispatch until either it transitions out of pre_state OR the
+        # hard timeout expires. The H2D Pro can take 80–210 s to flip
+        # FINISH→PREPARE after project_file, and during that window the
+        # PrinterQueue.status='printing' DB seed is empirically unreliable on
+        # multi-plate batches (same-file plates double-/triple-dispatched onto
+        # the same printer 30 s apart). Keyed in-memory per printer; cleared by
+        # the watchdog on success or revert. Pure additive — sits alongside
+        # _is_printer_idle() and the DB seed.
+        # printer_id -> (monotonic_started_at, pre_state, pre_subtask_id)
+        self._dispatch_holds: dict[int, tuple[float, str, str | None]] = {}
+        # Minimum cooldown between dispatches to the same printer (covers the
+        # H2D's project_file digestion window).
+        self._dispatch_min_cooldown = 60.0
+        # Hard timeout — drop the hold even if we never observed a transition,
+        # so a lost MQTT session can't lock a printer out of the queue forever.
+        # Matches the watchdog timeout (90 s) plus a safety margin so the
+        # watchdog's release runs first on the unhappy path.
+        self._dispatch_max_hold = 180.0
 
     async def run(self):
         """Main loop - check queue every interval."""
@@ -151,6 +171,17 @@ class PrintScheduler:
                 .where(PrinterQueue.printer_id.is_not(None))
             )
             busy_printers: set[int] = {pid for (pid,) in busy_result.all() if pid is not None}
+
+            # Defense-in-depth (#1157): augment busy_printers with any printer
+            # still inside its post-dispatch hold window. The DB seed above can
+            # miss in-flight items in a multi-plate batch — same-file plates
+            # were being dispatched 30 s apart while the H2D was still digesting
+            # the first project_file. The hold is keyed in-memory and released
+            # by the watchdog on the success path, so it adds a layer that
+            # doesn't depend on DB row visibility or completion-callback timing.
+            for held_printer_id in list(self._dispatch_holds.keys()):
+                if self._printer_in_dispatch_hold(held_printer_id):
+                    busy_printers.add(held_printer_id)
 
             # Cache per-printer require_plate_clear setting
             _plate_clear_cache: dict[int, bool] = {}
@@ -410,7 +441,7 @@ class PrintScheduler:
             if archive:
                 file_path = settings.base_dir / archive.file_path
         elif item.library_file_id:
-            result = await db.execute(select(LibraryFile).where(LibraryFile.id == item.library_file_id))
+            result = await db.execute(LibraryFile.active().where(LibraryFile.id == item.library_file_id))
             library_file = result.scalar_one_or_none()
             if library_file:
                 lib_path = Path(library_file.file_path)
@@ -873,6 +904,70 @@ class PrintScheduler:
                 return f"Staggered start: waiting for {', '.join(heating)} to heat up"
         return "Staggered start: waiting for interval"
 
+    def _mark_printer_dispatched(
+        self,
+        printer_id: int,
+        pre_state: str | None,
+        pre_subtask_id: str | None,
+    ) -> None:
+        """Record that a print command was just sent to ``printer_id``.
+
+        Held until either the watchdog observes a state/subtask transition
+        (success path) or the hard timeout expires. See ``_dispatch_holds``.
+        """
+        if not pre_state:
+            # No pre_state means we can't detect a transition — fall back to a
+            # pure time-based hold using empty string as a sentinel that won't
+            # match any real printer state.
+            pre_state = ""
+        self._dispatch_holds[printer_id] = (time.monotonic(), pre_state, pre_subtask_id)
+
+    def _release_dispatch_hold(self, printer_id: int) -> None:
+        """Drop the dispatch hold for ``printer_id`` (called by the watchdog)."""
+        self._dispatch_holds.pop(printer_id, None)
+
+    def _printer_in_dispatch_hold(self, printer_id: int) -> bool:
+        """True if ``printer_id`` is still inside its post-dispatch hold window.
+
+        Returns False (and clears the hold) once any of these are true:
+          - hard timeout (``_dispatch_max_hold``) has elapsed
+          - the printer has transitioned out of pre_state and we're past the
+            minimum cooldown
+          - the printer's subtask_id has advanced past pre_subtask_id and we're
+            past the minimum cooldown
+        Otherwise the printer is held — caller should treat it as busy.
+        """
+        entry = self._dispatch_holds.get(printer_id)
+        if not entry:
+            return False
+        started_at, pre_state, pre_subtask_id = entry
+        elapsed = time.monotonic() - started_at
+
+        if elapsed >= self._dispatch_max_hold:
+            self._dispatch_holds.pop(printer_id, None)
+            return False
+
+        # Without a pre_state we can't detect a transition — fall back to the
+        # min cooldown alone, then drop the hold.
+        if not pre_state:
+            if elapsed >= self._dispatch_min_cooldown:
+                self._dispatch_holds.pop(printer_id, None)
+                return False
+            return True
+
+        status = printer_manager.get_status(printer_id)
+        current_state = getattr(status, "state", None) if status else None
+        current_subtask_id = getattr(status, "subtask_id", None) if status else None
+        transitioned = (current_state is not None and current_state != pre_state) or (
+            pre_subtask_id is not None and current_subtask_id is not None and current_subtask_id != pre_subtask_id
+        )
+
+        if transitioned and elapsed >= self._dispatch_min_cooldown:
+            self._dispatch_holds.pop(printer_id, None)
+            return False
+
+        return True
+
     def _is_printer_idle(self, printer_id: int, require_plate_clear: bool = True) -> bool:
         """Check if a printer is connected and idle."""
         if not printer_manager.is_connected(printer_id):
@@ -1292,7 +1387,7 @@ class PrintScheduler:
             if archive:
                 return archive.filename.replace(".gcode.3mf", "").replace(".3mf", "")
         if item.library_file_id:
-            result = await db.execute(select(LibraryFile).where(LibraryFile.id == item.library_file_id))
+            result = await db.execute(LibraryFile.active().where(LibraryFile.id == item.library_file_id))
             library_file = result.scalar_one_or_none()
             if library_file:
                 return library_file.filename.replace(".gcode.3mf", "").replace(".3mf", "")
@@ -1364,7 +1459,7 @@ class PrintScheduler:
             file_path = settings.base_dir / archive.file_path
 
         elif item.library_file_id:
-            result = await db.execute(select(LibraryFile).where(LibraryFile.id == item.library_file_id))
+            result = await db.execute(LibraryFile.active().where(LibraryFile.id == item.library_file_id))
             library_file = result.scalar_one_or_none()
             if not library_file:
                 await self._fail_item(db, item, "Library file not found")
@@ -1425,6 +1520,7 @@ class PrintScheduler:
             "use_ams": item.use_ams,
             "execute_swap_macros": item.execute_swap_macros,
             "swap_macro_events": swap_events,
+            "gcode_injection": item.gcode_injection,
         }
 
         if archive:
@@ -1495,6 +1591,20 @@ class PrintScheduler:
         _post_status = printer_manager.get_status(item.queue_id)
         _pre_state = _post_status.state if _post_status else None
         _pre_subtask_id = _post_status.subtask_id if _post_status else None
+        # Capture gcode_file at dispatch time so the watchdog can distinguish
+        # #1150 (slow parse — command landed, file changed on the printer) from
+        # #887/#936 (half-broken session — publish swallowed, file unchanged).
+        # Used only on the timeout path. Ported from upstream v0.2.4b1 (#1150).
+        _pre_gcode_file = _post_status.gcode_file if _post_status else None
+
+        # Hold the printer against further dispatches until the watchdog
+        # confirms the printer transitioned (or until the hard timeout).
+        # Prevents multi-plate batches from triple-dispatching onto the same
+        # H2D Pro while it digests the first project_file (#1157, ported from
+        # upstream v0.2.4b1). Marked even when pre_state is None so a
+        # disconnected-at-dispatch printer still gets a time-based hold.
+        self._mark_printer_dispatched(item.queue_id, _pre_state, _pre_subtask_id)
+
         if _pre_state:
             asyncio.create_task(
                 self._watchdog_print_start(
@@ -1503,6 +1613,7 @@ class PrintScheduler:
                     _pre_state,
                     _pre_subtask_id,
                     swap_start_fired="swap_mode_start" in swap_events,
+                    pre_gcode_file=_pre_gcode_file,
                 )
             )
 
@@ -1546,6 +1657,7 @@ class PrintScheduler:
         swap_start_fired: bool = False,
         timeout: float = 90.0,
         poll_interval: float = 3.0,
+        pre_gcode_file: str | None = None,
     ) -> None:
         """Revert a queue item if the printer never acknowledges the start command.
 
@@ -1580,15 +1692,29 @@ class PrintScheduler:
         force-reconnect the MQTT session so subsequent commands land.
         """
         deadline = time.monotonic() + timeout
+        last_status = None  # Captured for #1150 gcode_file discriminator on timeout
         while time.monotonic() < deadline:
             await asyncio.sleep(poll_interval)
             status = printer_manager.get_status(printer_id)
             if not status:
-                return  # Printer disconnected — don't mess with the DB
+                # Printer disconnected — don't mess with the DB. Drop the
+                # in-memory dispatch hold (#1157) too so a fresh dispatch can
+                # retry once the printer comes back; the hard timeout would
+                # otherwise hold the printer unnecessarily.
+                scheduler._release_dispatch_hold(printer_id)
+                return
+            last_status = status
             if status.state != pre_state:
-                return  # Printer picked up the job (state change)
+                # Printer picked up the job (state change) — release the
+                # post-dispatch hold so the next pending item for this printer
+                # can be evaluated normally (#1157).
+                scheduler._release_dispatch_hold(printer_id)
+                return
             if pre_subtask_id and status.subtask_id and status.subtask_id != pre_subtask_id:
-                return  # subtask_id advanced — command landed even though state hasn't flipped yet
+                # subtask_id advanced — command landed even though state
+                # hasn't flipped yet (#1157 release).
+                scheduler._release_dispatch_hold(printer_id)
+                return
 
         if swap_start_fired:
             logger.error(
@@ -1603,6 +1729,9 @@ class PrintScheduler:
             )
         else:
             # No swap side-effects on the physical printer — safe to revert.
+            # Drop the in-memory dispatch hold (#1157) so the retry isn't
+            # blocked by it.
+            scheduler._release_dispatch_hold(printer_id)
             async with async_session() as db:
                 item = await db.get(PrintQueueItem, queue_item_id)
                 if not item or item.status != "printing":
@@ -1627,12 +1756,33 @@ class PrintScheduler:
             except Exception:  # pragma: no cover — import failure is non-fatal
                 pass
 
-        # Same half-broken-session recovery as background_dispatch: force the
-        # MQTT client to reconnect so the next dispatch lands without a power cycle.
+        # Same #1150 / #887/#936 discriminator as background_dispatch: if the
+        # printer's gcode_file changed since pre-dispatch, the project_file
+        # command landed and the printer is parsing — a forced reconnect mid-
+        # parse triggers 0500_4003 ("can't parse print file") on P1P firmware
+        # 01.10.00.00 (slow ~135s parse). If gcode_file is unchanged, the
+        # publish was silently swallowed (#887/#936) and the original
+        # force_reconnect recovery is what we want. Caveat: in the rare retry-
+        # same-file slow-parse scenario the gcode_file looks identical pre/post
+        # publish, so the watchdog falls through to reconnect and the user
+        # still hits 0500_4003 on that retry — accepted to avoid breaking the
+        # half-broken-session recovery path. Ported from upstream v0.2.4b1.
         client = printer_manager.get_client(printer_id)
-        if client and hasattr(client, "force_reconnect_stale_session"):
+        current_gcode_file = getattr(last_status, "gcode_file", None) if last_status else None
+        publish_landed = current_gcode_file is not None and current_gcode_file != pre_gcode_file
+        if publish_landed:
+            logger.warning(
+                "Queue item %s: gcode_file changed to %r (was %r) — printer "
+                "received the command and is parsing slowly. Skipping forced "
+                "MQTT reconnect to avoid 0500_4003 mid-parse (#1150).",
+                queue_item_id,
+                current_gcode_file,
+                pre_gcode_file,
+            )
+        elif client and hasattr(client, "force_reconnect_stale_session"):
             client.force_reconnect_stale_session(
-                f"queue print command unacknowledged after {timeout:.0f}s (state still {pre_state})"
+                f"queue print command unacknowledged after {timeout:.0f}s "
+                f"(state still {pre_state}, gcode_file {current_gcode_file!r})"
             )
 
 

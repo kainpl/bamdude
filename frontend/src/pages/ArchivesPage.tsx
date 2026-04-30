@@ -54,7 +54,9 @@ import {
   ArrowUpNarrowWide,
   ArrowDownWideNarrow,
   DownloadCloud,
+  Cog,
 } from 'lucide-react';
+import { MakerWorldIcon } from '../components/BrandIcons';
 import { api } from '../api/client';
 import { openInSlicer, type SlicerType } from '../utils/slicer';
 import { getArchiveStatusBadge } from '../utils/archiveStatus';
@@ -66,8 +68,10 @@ import { Card, CardContent } from '../components/Card';
 import { Button } from '../components/Button';
 import { ModelViewerModal } from '../components/ModelViewerModal';
 import { PrintModal } from '../components/PrintModal';
+import { SliceModal } from '../components/SliceModal';
 import { UploadModal } from '../components/UploadModal';
 import { ConfirmModal } from '../components/ConfirmModal';
+import { PurgeArchivesModal } from '../components/PurgeArchivesModal';
 import { EditArchiveModal } from '../components/EditArchiveModal';
 import { ContextMenu, type ContextMenuItem } from '../components/ContextMenu';
 import { BatchTagModal } from '../components/BatchTagModal';
@@ -182,8 +186,11 @@ function ArchiveCard({
   const { showToast } = useToast();
   const { hasPermission, canModify } = useAuth();
   const isMobile = useIsMobile();
+  const { data: cardSettings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
+  const useSlicerApi: boolean = !!(cardSettings as Record<string, unknown> | undefined)?.use_slicer_api;
   const [showViewer, setShowViewer] = useState(false);
   const [showReprint, setShowReprint] = useState(false);
+  const [showSlice, setShowSlice] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showEdit, setShowEdit] = useState(false);
   const [showTimelapse, setShowTimelapse] = useState(false);
@@ -428,10 +435,22 @@ function ArchiveCard({
           openInSlicerWithToken(archive.id, filename, 'file', preferredSlicer);
         },
       },
+      ...(useSlicerApi ? [{
+        label: t('slice.actionServerSide', { defaultValue: 'Slice (server-side)' }),
+        icon: <Cog className="w-4 h-4" />,
+        onClick: () => setShowSlice(true),
+        disabled: !archive.file_path || !hasPermission('library:upload'),
+        title: !archive.file_path ? t('archives.card.noFileForReprint') : !hasPermission('library:upload') ? t('fileManager.noPermissionSlice', { defaultValue: 'You do not have permission to slice' }) : undefined,
+      }] : []),
     ]),
     {
       label: archive.external_url ? t('archives.menu.externalLink') : t('archives.menu.viewOnMakerWorld'),
-      icon: <Globe className="w-4 h-4" />,
+      // Icon mirrors the label: ``external_url`` overrides → generic Globe;
+      // otherwise (MakerWorld plate OR disabled "no link" entry whose label
+      // still reads "View on MakerWorld") show the MakerWorld glyph.
+      icon: archive.external_url
+        ? <Globe className="w-4 h-4" />
+        : <MakerWorldIcon className="w-4 h-4" />,
       onClick: () => {
         const url = archive.external_url || archive.makerworld_url;
         if (url) window.open(url, '_blank');
@@ -1191,7 +1210,11 @@ function ArchiveCard({
                   : t('archives.card.noExternalLink')
             }
           >
-            <Globe className={`w-3 h-3 sm:w-4 sm:h-4 ${!archive.external_url && !archive.makerworld_url ? 'opacity-20' : ''}`} />
+            {archive.external_url ? (
+              <Globe className="w-3 h-3 sm:w-4 sm:h-4" />
+            ) : (
+              <MakerWorldIcon className={`w-3 h-3 sm:w-4 sm:h-4 ${!archive.makerworld_url ? 'opacity-20' : ''}`} />
+            )}
           </Button>
           <Button
             variant="secondary"
@@ -1244,6 +1267,14 @@ function ArchiveCard({
           archiveId={archive.id}
           archiveName={archive.print_name || archive.filename}
           onClose={() => setShowReprint(false)}
+        />
+      )}
+
+      {/* Server-side slice modal */}
+      {showSlice && (
+        <SliceModal
+          source={{ kind: 'archive', id: archive.id, filename: archive.filename }}
+          onClose={() => setShowSlice(false)}
         />
       )}
 
@@ -1509,10 +1540,12 @@ function ArchiveListRow({
   const { data: rowSettings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
   const timeFormat: TimeFormat = (rowSettings as Record<string, string> | undefined)?.time_format as TimeFormat || 'system';
   const dateFormat: DateFormat = (rowSettings as Record<string, string> | undefined)?.date_format as DateFormat || 'system';
+  const useSlicerApi: boolean = !!(rowSettings as Record<string, unknown> | undefined)?.use_slicer_api;
   const [showEdit, setShowEdit] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showReprint, setShowReprint] = useState(false);
   const [showSchedule, setShowSchedule] = useState(false);
+  const [showSlice, setShowSlice] = useState(false);
   const [showViewer, setShowViewer] = useState(false);
   const [showTimelapse, setShowTimelapse] = useState(false);
   const [showTimelapseSelect, setShowTimelapseSelect] = useState(false);
@@ -1710,10 +1743,22 @@ function ArchiveListRow({
           openInSlicerWithToken(archive.id, filename, 'file', preferredSlicer);
         },
       },
+      ...(useSlicerApi ? [{
+        label: t('slice.actionServerSide', { defaultValue: 'Slice (server-side)' }),
+        icon: <Cog className="w-4 h-4" />,
+        onClick: () => setShowSlice(true),
+        disabled: !archive.file_path || !hasPermission('library:upload'),
+        title: !archive.file_path ? t('archives.card.noFileForReprint') : !hasPermission('library:upload') ? t('fileManager.noPermissionSlice', { defaultValue: 'You do not have permission to slice' }) : undefined,
+      }] : []),
     ]),
     {
       label: archive.external_url ? t('archives.menu.externalLink') : t('archives.menu.viewOnMakerWorld'),
-      icon: <Globe className="w-4 h-4" />,
+      // Icon mirrors the label: ``external_url`` overrides → generic Globe;
+      // otherwise (MakerWorld plate OR disabled "no link" entry whose label
+      // still reads "View on MakerWorld") show the MakerWorld glyph.
+      icon: archive.external_url
+        ? <Globe className="w-4 h-4" />
+        : <MakerWorldIcon className="w-4 h-4" />,
       onClick: () => {
         const url = archive.external_url || archive.makerworld_url;
         if (url) window.open(url, '_blank');
@@ -2108,7 +2153,11 @@ function ArchiveListRow({
               onClick={() => window.open((archive.external_url || archive.makerworld_url)!, '_blank')}
               title={archive.external_url ? t('archives.card.externalLink') : t('archives.menu.viewOnMakerWorld')}
             >
-              <Globe className="w-4 h-4" />
+              {archive.external_url ? (
+                <Globe className="w-4 h-4" />
+              ) : (
+                <MakerWorldIcon className="w-4 h-4" />
+              )}
             </Button>
           )}
           <Button
@@ -2180,6 +2229,14 @@ function ArchiveListRow({
           archiveId={archive.id}
           archiveName={archive.print_name || archive.filename}
           onClose={() => setShowReprint(false)}
+        />
+      )}
+
+      {/* Server-side slice modal */}
+      {showSlice && (
+        <SliceModal
+          source={{ kind: 'archive', id: archive.id, filename: archive.filename }}
+          onClose={() => setShowSlice(false)}
         />
       )}
 
@@ -2406,14 +2463,19 @@ function ArchiveListRow({
 
 type SortOption = 'date-desc' | 'date-asc' | 'name-asc' | 'name-desc' | 'size-desc' | 'size-asc';
 type ViewMode = 'grid' | 'list' | 'calendar';
-type Collection = 'all' | 'recent' | 'this-week' | 'this-month' | 'favorites' | 'failed' | 'duplicates';
+type Collection = 'all' | 'recent' | 'this-week' | 'this-month' | 'favorites' | 'not-printed' | 'printed' | 'failed' | 'duplicates';
 
+// `not-printed` and `printed` are server-side filters in
+// backend/app/services/archive.py — see the audit B.3 entry for the
+// status-set rationale.
 const collections: { id: Collection; labelKey: string; icon: React.ReactNode }[] = [
   { id: 'all', labelKey: 'archives.page.collection.all', icon: <FolderOpen className="w-4 h-4" /> },
   { id: 'recent', labelKey: 'archives.page.collection.recent', icon: <Clock className="w-4 h-4" /> },
   { id: 'this-week', labelKey: 'archives.page.collection.thisWeek', icon: <Calendar className="w-4 h-4" /> },
   { id: 'this-month', labelKey: 'archives.page.collection.thisMonth', icon: <Calendar className="w-4 h-4" /> },
   { id: 'favorites', labelKey: 'archives.page.collection.favorites', icon: <Star className="w-4 h-4" /> },
+  { id: 'not-printed', labelKey: 'archives.page.collection.notPrinted', icon: <Upload className="w-4 h-4" /> },
+  { id: 'printed', labelKey: 'archives.page.collection.printed', icon: <Printer className="w-4 h-4" /> },
   { id: 'failed', labelKey: 'archives.page.collection.failed', icon: <AlertCircle className="w-4 h-4" /> },
   { id: 'duplicates', labelKey: 'archives.page.collection.duplicates', icon: <Copy className="w-4 h-4" /> },
 ];
@@ -2422,7 +2484,7 @@ export function ArchivesPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
-  const { hasAnyPermission } = useAuth();
+  const { hasAnyPermission, hasPermission } = useAuth();
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const [search, setSearch] = useState('');
@@ -2466,6 +2528,7 @@ export function ArchivesPage() {
     (localStorage.getItem('archiveFilterFileType') as 'all' | 'gcode' | 'source') || 'all'
   );
   const [showUpload, setShowUpload] = useState(false);
+  const [showPurgeModal, setShowPurgeModal] = useState(false);
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
@@ -2589,6 +2652,22 @@ export function ArchivesPage() {
   const { data: projects } = useQuery({
     queryKey: ['projects'],
     queryFn: () => api.getProjects(),
+  });
+
+  // Archive trash count for the header badge (#1008 follow-up). Empty/error
+  // is silently treated as zero so a broken trash endpoint doesn't break
+  // the Archives page.
+  const { data: archiveTrashCount } = useQuery({
+    queryKey: ['archive-trash-count'],
+    queryFn: async () => {
+      try {
+        const res = await api.listArchiveTrash(1, 0);
+        return res.total;
+      } catch {
+        return 0;
+      }
+    },
+    staleTime: 30_000,
   });
 
   const { data: settings } = useQuery({
@@ -3065,6 +3144,32 @@ export function ArchivesPage() {
               {t('archives.page.select')}
             </Button>
           )}
+          {hasPermission('archives:purge') && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowPurgeModal(true)}
+              title={t('archivePurge.headerTooltip')}
+            >
+              <Trash2 className="w-4 h-4 mr-2" />
+              {t('archivePurge.headerButton')}
+            </Button>
+          )}
+          {hasAnyPermission('archives:delete_own', 'archives:delete_all') && (
+            <Link
+              to="/archives/trash"
+              className="inline-flex items-center px-3 py-1.5 text-sm rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary transition-colors"
+              title={t('archiveTrash.headerTooltip')}
+            >
+              <Trash2 className="w-4 h-4 mr-2" />
+              {t('archiveTrash.headerButton')}
+              {typeof archiveTrashCount === 'number' && archiveTrashCount > 0 && (
+                <span className="ml-1.5 px-1.5 py-0.5 text-xs rounded-full bg-bambu-green/20 text-bambu-green">
+                  {archiveTrashCount}
+                </span>
+              )}
+            </Link>
+          )}
         </div>
       </div>
 
@@ -3412,6 +3517,10 @@ export function ArchivesPage() {
           }}
           initialFiles={uploadFiles}
         />
+      )}
+
+      {showPurgeModal && (
+        <PurgeArchivesModal onClose={() => setShowPurgeModal(false)} />
       )}
 
       {/* Bulk Delete Confirmation */}

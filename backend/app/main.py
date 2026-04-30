@@ -13,6 +13,7 @@ from sqlalchemy import delete, or_, select, text
 from backend.app.api.routes import (
     ams_history,
     api_keys,
+    archive_purge,
     archives,
     auth,
     auto_queue,
@@ -28,10 +29,12 @@ from backend.app.api.routes import (
     kprofiles,
     library,
     library_notes,
+    library_trash,
     local_backup,
     local_presets,
     macros,
     maintenance,
+    makerworld,
     metrics,
     mfa,
     notification_templates,
@@ -43,6 +46,8 @@ from backend.app.api.routes import (
     printers,
     projects,
     settings as settings_routes,
+    slice_jobs,
+    slicer_presets,
     smart_plugs,
     spoolman,
     support,
@@ -216,16 +221,37 @@ check_dependencies()
 # Configure logging - LOG_LEVEL env var controls the level directly
 log_level_str = app_settings.log_level.upper()
 log_level = getattr(logging, log_level_str, logging.INFO)
-log_format = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
+# Trace ID column ([-] when no request scope is active — startup, MQTT
+# callbacks, scheduled tasks not chained from a request — so the column
+# stays visually aligned and missing values are obvious in grep). See
+# backend/app/core/trace.py for the ContextVar that feeds this slot.
+log_format = "%(asctime)s %(levelname)s [%(name)s] [%(trace_id)s] %(message)s"
 
 # Create root logger
 root_logger = logging.getLogger()
 root_logger.setLevel(log_level)
 
+# Trace-ID injection: this filter populates record.trace_id from the
+# per-request ContextVar so the format string above can reference it.
+# Attached to each HANDLER (not the root logger) because Python's
+# logging semantics only invoke a logger's filters on records that
+# *originated* at that logger — records propagated up from child
+# loggers (every named logger in the app) never trigger root's filter.
+# Putting it on the handlers means every record any handler emits gets
+# trace_id injected just before the formatter runs, regardless of which
+# logger created the record. Without this, the formatter raises
+# KeyError on every child-logger record and the stdlib logging machinery
+# silently drops it — exactly the "logs/bamdude.log only shows logs
+# partially" failure mode (audit A.28). See backend/app/core/trace.py.
+from backend.app.core.trace import TraceIDFilter  # noqa: E402
+
+_trace_id_filter = TraceIDFilter()
+
 # Console handler - always enabled
 console_handler = logging.StreamHandler()
 console_handler.setLevel(log_level)
 console_handler.setFormatter(logging.Formatter(log_format))
+console_handler.addFilter(_trace_id_filter)
 root_logger.addHandler(console_handler)
 
 # File handler - only in production or if explicitly enabled
@@ -239,8 +265,28 @@ if app_settings.log_to_file:
     )
     file_handler.setLevel(log_level)
     file_handler.setFormatter(logging.Formatter(log_format))
+    file_handler.addFilter(_trace_id_filter)
     root_logger.addHandler(file_handler)
     logging.info("Logging to file: %s", log_file)
+
+    # Pipe uvicorn's HTTP access log to bamdude.log too. Uvicorn ships its
+    # access logger with propagate=False by default, so without this attach
+    # there is no on-disk record of which endpoint triggered a server-state
+    # change — leaving incident triage to eyeball-correlate timestamps
+    # across separate streams. Filtered to write methods only
+    # (POST/PUT/PATCH/DELETE) so the high-volume status-poll GETs from the
+    # frontend don't churn the rotation window faster than it's useful.
+    from backend.app.core.logging_filters import WriteRequestsOnlyFilter  # noqa: E402
+
+    uvicorn_access_logger = logging.getLogger("uvicorn.access")
+    uvicorn_access_logger.addHandler(file_handler)
+    uvicorn_access_logger.addFilter(WriteRequestsOnlyFilter())
+    # Uvicorn's access logger has propagate=False (its own default), so
+    # the root-attached TraceIDFilter never sees these records. Attach a
+    # second filter instance directly to the access logger so HTTP access
+    # lines carry the same trace ID column as the application logs they
+    # correlate with.
+    uvicorn_access_logger.addFilter(TraceIDFilter())
 
 # Reduce noise from third-party libraries in production
 if not app_settings.debug:
@@ -248,6 +294,12 @@ if not app_settings.debug:
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("paho.mqtt").setLevel(logging.WARNING)
+
+# Drop SQLAlchemy pool noise driven by Starlette's BaseHTTPMiddleware
+# cancellation propagation on client disconnect (#1112 follow-up).
+from backend.app.core.logging_filters import CancelledPoolNoiseFilter  # noqa: E402
+
+logging.getLogger("sqlalchemy.pool").addFilter(CancelledPoolNoiseFilter())
 
 logging.info("BamDude starting - debug=%s, log_level=%s", app_settings.debug, log_level_str)
 
@@ -295,6 +347,78 @@ _bed_cooldown_tasks: dict[int, asyncio.Task] = {}
 # as "cancelled" (stopped by user) so the correct notification email is sent.
 _user_stopped_printers: set[int] = set()
 
+
+# HMS short-code → human-readable failure reason. Used by on_print_complete when
+# status="failed" to label the print's failure_reason in archives.
+#
+# Earlier code matched on `module` alone (e.g. "any module 0x0C HMS → Layer shift"),
+# which was wrong on two counts:
+#   1. Real layer-shift codes live in module 0x03 (per Bambu wiki), not 0x0C.
+#   2. Module 0x0C is "Motion Controller" — a broad category that also covers
+#      cameras, visual markers, AND the H2D firmware emits 0x0C HMS codes
+#      (e.g. 0C00_001B) as part of its user-cancel sequence. Matching on the
+#      module alone caused user-cancellations to be archived as "Layer shift"
+#      failures.
+# We now match by full short code only — anything not in this map leaves
+# failure_reason=None rather than guessing.
+_HMS_FAILURE_REASONS: dict[str, str] = {
+    # Layer shift / step loss
+    "0300_4057": "Layer shift",
+    "0300_4068": "Layer shift",
+    "0300_800C": "Layer shift",
+    # Filament runout (printer-side & per-AMS-slot)
+    "0300_8004": "Filament runout",
+    "0700_8011": "Filament runout",
+    "0701_8011": "Filament runout",
+    "0702_8011": "Filament runout",
+    "0703_8011": "Filament runout",
+    "0704_8011": "Filament runout",
+    "0705_8011": "Filament runout",
+    "0706_8011": "Filament runout",
+    "0707_8011": "Filament runout",
+    "07FF_8011": "Filament runout",
+    # Clogged nozzle / extruder
+    "0300_4006": "Clogged nozzle",
+    "0300_8016": "Clogged nozzle",
+    "0300_801C": "Clogged nozzle",
+    "0700_8003": "Clogged nozzle",
+    "0700_8007": "Clogged nozzle",
+    "0700_8013": "Clogged nozzle",
+    "0701_8003": "Clogged nozzle",
+    "0701_8007": "Clogged nozzle",
+    "0701_8013": "Clogged nozzle",
+    "0702_8003": "Clogged nozzle",
+}
+
+
+def _hms_short_code(attr: int, code: int | str) -> str:
+    """Build the canonical "MMMM_CCCC" HMS short code from raw attr/code values."""
+    if isinstance(code, str):
+        code_int = int(code.replace("0x", ""), 16) if code else 0
+    else:
+        code_int = int(code or 0)
+    attr_int = int(attr or 0)
+    return f"{(attr_int >> 16) & 0xFFFF:04X}_{code_int & 0xFFFF:04X}"
+
+
+def derive_failure_reason(status: str, hms_errors: list[dict] | None) -> str | None:
+    """Derive a human-readable failure_reason for an archived print.
+
+    Returns "User cancelled" for cancelled/aborted prints; for failed prints,
+    returns the first matching reason from _HMS_FAILURE_REASONS, or None when
+    no HMS code matches (don't guess — null is honest).
+    """
+    if status in ("aborted", "cancelled"):
+        return "User cancelled"
+    if status != "failed":
+        return None
+    for err in hms_errors or []:
+        short_code = _hms_short_code(err.get("attr", 0), err.get("code", 0))
+        if short_code in _HMS_FAILURE_REASONS:
+            return _HMS_FAILURE_REASONS[short_code]
+    return None
+
+
 # Track created_by_id for expected prints so the user email can be sent even when
 # the archive itself doesn't have created_by_id set (e.g. library-file-based prints).
 # {(printer_id, filename): created_by_id}
@@ -311,6 +435,35 @@ _expected_print_registered_at: dict[tuple[int, str], float] = {}
 # Cleanup loop interval
 _EXPECTED_PRINT_CLEANUP_INTERVAL: int = 15 * 60  # 15 minutes
 _expected_prints_cleanup_task: asyncio.Task | None = None
+
+
+# Per-printer lock that serialises the spool-assignment block of
+# `on_ams_change` (auto-unlink stale + auto-assign new) when MQTT bursts
+# deliver multiple AMS updates for the same printer in quick succession
+# (~30 ms apart, observed in the wild on H2D + dual AMS).
+#
+# Without this serialisation, two concurrent on_ams_change callbacks each
+# read "no assignment for (printer, ams, tray)", each call auto_assign_spool,
+# and the second commit hits
+#   IntegrityError: duplicate key value violates unique constraint
+#                   "spool_assignment_printer_id_ams_id_tray_id_key"
+# SQLite's WAL serial-write semantics had been silently swallowing the race
+# until optional Postgres support landed (asyncpg allows true concurrent
+# transactions and surfaces the constraint violation).
+#
+# Scope is intentionally narrow: only the auto-assign block is inside the
+# lock. The Spoolman sync (network-bound, idempotent) stays outside.
+# Per-printer scope keeps unrelated printers fully parallel.
+_ams_assignment_locks: dict[int, asyncio.Lock] = {}
+
+
+def _get_ams_assignment_lock(printer_id: int) -> asyncio.Lock:
+    """Return the per-printer assignment lock, creating it on first use."""
+    lock = _ams_assignment_locks.get(printer_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _ams_assignment_locks[printer_id] = lock
+    return lock
 
 
 async def _get_plug_energy(plug, db) -> dict | None:
@@ -546,6 +699,34 @@ async def _bump_library_file_usage(db, library_file_id: int | None) -> None:
         return
     lib_file.print_count = (lib_file.print_count or 0) + 1
     lib_file.last_printed_at = datetime.now(timezone.utc)
+
+
+def _format_hms_error_summary(hms_errors: list[dict]) -> str | None:
+    """Build a human-readable failure reason from MQTT hms_errors for
+    PrintQueueItem.error_message (#1111).
+
+    Each entry has keys: code ('0x4038'), attr (32-bit int), module, severity.
+    The short code used for the hms_errors.py lookup table is 'MMMM_EEEE' —
+    module from attr bits 16-31, error from the numeric part of code. Falls
+    back to the raw short code when no description is on file. Returns None
+    for an empty list so callers can leave error_message unset.
+    """
+    if not hms_errors:
+        return None
+    from backend.app.services.hms_errors import get_error_description
+
+    parts: list[str] = []
+    for err in hms_errors:
+        try:
+            code_str = str(err.get("code", "")).replace("0x", "")
+            error_num = int(code_str, 16) if code_str else 0
+            module_num = (int(err.get("attr", 0)) >> 16) & 0xFFFF
+            short_code = f"{module_num:04X}_{error_num:04X}"
+        except (TypeError, ValueError):
+            continue
+        description = get_error_description(short_code)
+        parts.append(f"[{short_code}] {description}" if description else f"[{short_code}]")
+    return "; ".join(parts) if parts else None
 
 
 async def _bump_library_file_usage_if_completed(db, item, queue_status: str) -> None:
@@ -966,9 +1147,16 @@ async def on_ams_change(printer_id: int, ams_data: list):
     except Exception as e:
         logger.warning("Spool assignment cleanup failed: %s", e, exc_info=True)
 
-    # Auto-manage inventory spools from AMS tray data (skip if Spoolman manages AMS)
+    # Auto-manage inventory spools from AMS tray data (skip if Spoolman
+    # manages AMS). Serialised per-printer via _ams_assignment_locks: MQTT
+    # bursts can deliver two AMS pushes ~30 ms apart, and without the lock
+    # both callbacks read "no existing assignment" for the same
+    # (printer, ams, tray) and race to INSERT, hitting the
+    # spool_assignment_printer_id_ams_id_tray_id_key unique constraint on
+    # Postgres. SQLite's WAL serialises writes so the bug stayed latent
+    # there. See _ams_assignment_locks comment for details.
     try:
-        async with async_session() as db:
+        async with _get_ams_assignment_lock(printer_id), async_session() as db:
             from backend.app.api.routes.settings import get_setting
             from backend.app.models.spool_assignment import SpoolAssignment as SA
             from backend.app.services.spool_tag_matcher import (
@@ -2976,6 +3164,15 @@ async def on_print_complete(printer_id: int, data: dict):
 
                 queue_item.status = queue_status
                 queue_item.completed_at = datetime.now(timezone.utc)
+                # #1111: pre-RUNNING failures (FAILED from PREPARE/SLICING)
+                # arrive without a queue_item.error_message because the print
+                # never reached the runtime layer that normally populates it.
+                # Synthesise from the live HMS list so the user sees e.g.
+                # "[0500_4038] The nozzle diameter in sliced file is not
+                # consistent with the current nozzle setting" instead of a
+                # blank reason.
+                if queue_status == "failed" and not queue_item.error_message:
+                    queue_item.error_message = _format_hms_error_summary(data.get("hms_errors") or [])
 
                 # Bump usage counters on the source library file so admins can
                 # sort by "last printed" and (eventually) auto-purge stale
@@ -3316,33 +3513,35 @@ async def on_print_complete(printer_id: int, data: dict):
             service = ArchiveService(db)
             status = data.get("status", "completed")
 
-            # Auto-detect failure reason
-            failure_reason = None
-            if status == "aborted":
-                failure_reason = "User cancelled"
-                logger.info("[ARCHIVE] Print was aborted by user, setting failure_reason='User cancelled'")
-            elif status == "failed":
-                # Try to determine failure reason from HMS errors
-                hms_errors = data.get("hms_errors", [])
-                if hms_errors:
-                    logger.info("[ARCHIVE] HMS errors at failure: %s", hms_errors)
-                    # Map known HMS error modules to failure reasons
-                    # Module 0x07 = Filament, 0x0C = MC (Motion Controller), etc.
-                    for err in hms_errors:
-                        module = err.get("module", 0)
-                        if module == 0x07:  # Filament module
-                            failure_reason = "Filament runout"
-                            break
-                        elif module == 0x0C:  # Motion controller
-                            failure_reason = "Layer shift"
-                            break
-                        elif module == 0x05:  # Nozzle/extruder
-                            failure_reason = "Clogged nozzle"
-                            break
-                    if failure_reason:
-                        logger.info("[ARCHIVE] Detected failure_reason from HMS: %s", failure_reason)
-                else:
-                    logger.info("[ARCHIVE] No HMS errors available to determine failure reason")
+            # Back-fill created_by_id on reprint when NULL (#730 follow-up,
+            # audit A.21). Reprint reuses the source archive row instead of
+            # creating a new one, so an archive that was auto-created from a
+            # printer-initiated print (created_by_id=NULL) would otherwise
+            # stay unattributed forever — Print Log credited the reprinter
+            # via _print_user_info but the Statistics per-user filter reads
+            # archive.created_by_id and stayed unassigned. When we have a
+            # print-session user AND the archive has no attribution yet,
+            # credit the current user. Never overwrite existing attribution.
+            _print_user_id = _print_user_info.get("user_id") if _print_user_info else None
+            if _print_user_id is not None:
+                from backend.app.models.archive import PrintArchive as _ArchiveForAttr
+
+                _attr_archive = await db.get(_ArchiveForAttr, archive_id)
+                if _attr_archive is not None and _attr_archive.created_by_id is None:
+                    _attr_archive.created_by_id = _print_user_id
+                    await db.commit()
+
+            # Auto-detect failure reason via curated short-code map (see
+            # _HMS_FAILURE_REASONS). Module-based heuristics mislabel H2D
+            # user-cancels (module 0x0C cancel echo) as "Layer shift".
+            hms_errors = data.get("hms_errors", []) if status == "failed" else None
+            if hms_errors:
+                logger.info("[ARCHIVE] HMS errors at failure: %s", hms_errors)
+            failure_reason = derive_failure_reason(status, hms_errors)
+            if failure_reason:
+                logger.info("[ARCHIVE] failure_reason=%r (status=%s)", failure_reason, status)
+            elif status == "failed" and hms_errors:
+                logger.info("[ARCHIVE] HMS errors present but none matched a known failure-reason short code")
 
             await service.update_archive_status(
                 archive_id,
@@ -4257,6 +4456,13 @@ def stop_expected_prints_cleanup() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
+    # Install Windows-only asyncio Proactor cleanup-RST filter (#1113) before
+    # anything else can spawn tasks that might trip it. The filter is a no-op
+    # on non-Windows hosts.
+    from backend.app.core.asyncio_handlers import install_proactor_reset_filter
+
+    install_proactor_reset_filter()
+
     await init_db()
 
     # Register an app-scoped httpx client for Bambu Cloud services so
@@ -4271,6 +4477,32 @@ async def lifespan(app: FastAPI):
 
     _shared_cloud_http_client = _httpx.AsyncClient(timeout=30.0)
     set_shared_http_client(_shared_cloud_http_client)
+
+    # Slicer-API sidecar HTTP pool (Phase 1 of 0.5.x slicer cycle). Separate
+    # pool because slice_with_profiles can block for several minutes on
+    # complex H2D models — a 30 s timeout would chew through the cloud
+    # client's per-request budget. The sidecar lives at localhost (or the
+    # operator's configured URL) and is rarely cross-host, so connection
+    # pooling savings are smaller than for cloud — but keeping it shared
+    # avoids constructing fresh clients per slice request.
+    from backend.app.services.slicer_api import (
+        set_shared_http_client as _set_shared_slicer_http_client,
+    )
+
+    _shared_slicer_http_client = _httpx.AsyncClient(timeout=300.0)
+    _set_shared_slicer_http_client(_shared_slicer_http_client)
+
+    # MakerWorld API client pool (Phase 5 of 0.5.x cycle). 30 s budget
+    # matches MakerWorld's actual API SLA; the 3MF download streams via a
+    # dedicated 60 s read timeout inside ``download_3mf`` so a slow signed
+    # CDN doesn't starve metadata calls. Reused across resolve / status /
+    # import / recent so a single page load doesn't open four pools.
+    from backend.app.services.makerworld import (
+        set_shared_http_client as _set_shared_makerworld_http_client,
+    )
+
+    _shared_makerworld_http_client = _httpx.AsyncClient(timeout=30.0)
+    _set_shared_makerworld_http_client(_shared_makerworld_http_client)
 
     # Fix queue items stuck with invalid "aborted" status (should be "cancelled").
     # This can happen when a print was cancelled mid-print on versions before this fix.
@@ -4534,6 +4766,25 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logging.getLogger(__name__).warning("Failed to start archive cleanup service: %s", e)
 
+    # Library trash sweeper + auto-purge (#1008). Runs every 15 min: hard-deletes
+    # rows whose deleted_at is older than the retention window AND, if enabled,
+    # moves files older than the auto-purge threshold to trash (24h-throttled).
+    try:
+        from backend.app.services.library_trash import library_trash_service
+
+        await library_trash_service.start_scheduler()
+    except Exception as e:
+        logging.getLogger(__name__).warning("Failed to start library trash sweeper: %s", e)
+
+    # Archive auto-purge sweeper (#1008 follow-up). Same 15-min cadence,
+    # 24h-throttled, opt-in via Settings.
+    try:
+        from backend.app.services.archive_purge import archive_purge_service
+
+        await archive_purge_service.start_scheduler()
+    except Exception as e:
+        logging.getLogger(__name__).warning("Failed to start archive auto-purge sweeper: %s", e)
+
     yield
 
     # Shutdown
@@ -4560,12 +4811,32 @@ async def lifespan(app: FastAPI):
         await archive_cleanup_service.stop()
     except Exception:
         pass
+    try:
+        from backend.app.services.library_trash import library_trash_service
+
+        library_trash_service.stop_scheduler()
+    except Exception:
+        pass
+    try:
+        from backend.app.services.archive_purge import archive_purge_service
+
+        archive_purge_service.stop_scheduler()
+    except Exception:
+        pass
     notification_service.stop_digest_scheduler()
     git_backup_service.stop_scheduler()
     local_backup_service.stop_scheduler()
     stop_ams_history_recording()
     stop_runtime_tracking()
     stop_camera_cleanup()
+    # Tear down all camera fan-out broadcasters (#1089) so subscribers exit
+    # cleanly and pump tasks don't outlive the asyncio loop.
+    try:
+        from backend.app.services.camera_fanout import shutdown_all_broadcasters
+
+        await shutdown_all_broadcasters()
+    except Exception as e:
+        logging.warning("Failed to shut down camera broadcasters: %s", e)
     stop_expected_prints_cleanup()
     printer_manager.disconnect_all()
     await close_spoolman_client()
@@ -4580,6 +4851,24 @@ async def lifespan(app: FastAPI):
     # Drop the shared Bambu Cloud HTTP client we registered at startup.
     set_shared_http_client(None)
     await _shared_cloud_http_client.aclose()
+
+    # Cancel any in-flight slice jobs + drop the shared slicer HTTP client.
+    from backend.app.services.slice_dispatch import slice_dispatch as _slice_dispatch
+    from backend.app.services.slicer_api import (
+        set_shared_http_client as _set_shared_slicer_http_client_off,
+    )
+
+    await _slice_dispatch.shutdown()
+    _set_shared_slicer_http_client_off(None)
+    await _shared_slicer_http_client.aclose()
+
+    # Drop the shared MakerWorld HTTP client.
+    from backend.app.services.makerworld import (
+        set_shared_http_client as _set_shared_makerworld_http_client_off,
+    )
+
+    _set_shared_makerworld_http_client_off(None)
+    await _shared_makerworld_http_client.aclose()
 
     # Checkpoint WAL and close all database connections
     try:
@@ -4663,6 +4952,13 @@ PUBLIC_API_PATTERNS = [
     # Obico ML API fetches JPEG frames by one-shot nonce (issue #172 follow-up).
     # The nonce itself is the credential: 32-byte random, single-use, ~30s TTL.
     "/obico/cached-frame/",  # /obico/cached-frame/{nonce}
+    # MakerWorld thumbnail proxy (B.5 — 0.5.x cycle). <img> tags can't send
+    # Authorization headers and would 401 every image; the upstream is
+    # MakerWorld's *public* CDN (anyone visiting makerworld.com can fetch
+    # without auth) and the route's SSRF guard restricts the upstream host
+    # to the MakerWorld CDN allowlist, so this can't be abused as a
+    # generic open proxy.
+    "/makerworld/thumbnail",
 ]
 
 
@@ -4854,21 +5150,90 @@ async def security_headers_middleware(request, call_next):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "SAMEORIGIN"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    response.headers["Content-Security-Policy"] = (
-        "default-src 'self'; "
-        "script-src 'self'; "
-        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-        "img-src 'self' data: blob:; "
-        "media-src 'self' blob:; "
-        "connect-src 'self' ws: wss:; "
-        "font-src 'self' data: https://fonts.gstatic.com; "
-        "object-src 'none'; "
-        "base-uri 'self'; "
-        "frame-src 'self' http: https:; "
-        "frame-ancestors 'none';"
-    )
+    if request.url.path in ("/docs", "/redoc", "/docs/oauth2-redirect"):
+        # FastAPI's built-in Swagger UI / ReDoc pages load assets from
+        # cdn.jsdelivr.net and bootstrap with an inline <script>, so the
+        # default CSP would render a blank page (audit A.38).
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+            "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; "
+            "img-src 'self' data: blob: https://fastapi.tiangolo.com https://cdn.redoc.ly; "
+            "connect-src 'self'; "
+            "font-src 'self' data: https://fonts.gstatic.com; "
+            "worker-src 'self' blob:; "
+            "object-src 'none'; "
+            "base-uri 'self'; "
+            "frame-ancestors 'none';"
+        )
+    else:
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self'; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "img-src 'self' data: blob:; "
+            "media-src 'self' blob:; "
+            "connect-src 'self' ws: wss:; "
+            "font-src 'self' data: https://fonts.gstatic.com; "
+            "object-src 'none'; "
+            "base-uri 'self'; "
+            "frame-src 'self' http: https:; "
+            "frame-ancestors 'none';"
+        )
     if request.url.scheme == "https":
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
+
+
+@app.middleware("http")
+async def trace_id_middleware(request, call_next):
+    """Stamp every HTTP request with a trace ID and echo it back (audit B.12).
+
+    Decorated AFTER auth_middleware + security_headers_middleware on
+    purpose: Starlette stacks @app.middleware decorators LIFO, so the
+    last-decorated runs first inbound. Putting the trace stamp last
+    makes it the OUTERMOST layer, which means every line emitted on the
+    way down to the route handler — including the auth-middleware's
+    early 401/503 returns and the security-headers stamping — all carry
+    the same trace ID. If we put it before auth, those layers' logs
+    would be stamped with the *previous* request's ID — useless for
+    correlation.
+
+    Honours an inbound ``X-Trace-Id`` header so callers running their
+    own tracing can correlate their span IDs with our log lines, but
+    only if the value passes the whitelist gate in
+    ``backend.app.core.trace.normalise_inbound_trace_id`` — anything
+    rejected (too long, contains control chars, etc.) silently triggers
+    a freshly minted server-side ID rather than failing the request.
+
+    The minted (or echoed) ID is set on a ContextVar so that every log
+    record emitted during the request — application logs *and* uvicorn's
+    access log — carries it via TraceIDFilter, and is also written to
+    the ``X-Trace-Id`` response header so clients can pin a server-side
+    log search to the exact request they made.
+    """
+    from backend.app.core.trace import (
+        generate_trace_id,
+        normalise_inbound_trace_id,
+        trace_id_var,
+    )
+
+    inbound = normalise_inbound_trace_id(request.headers.get("X-Trace-Id"))
+    trace_id = inbound if inbound is not None else generate_trace_id()
+
+    token = trace_id_var.set(trace_id)
+    try:
+        response = await call_next(request)
+    finally:
+        # Reset the ContextVar so a record emitted in a totally
+        # unrelated background task that just happens to inherit this
+        # context doesn't keep referencing this request's ID forever.
+        # In practice ContextVar.reset is best-effort under asyncio
+        # task-spawn semantics, but the cost is one attribute write so
+        # we may as well do it.
+        trace_id_var.reset(token)
+
+    response.headers["X-Trace-Id"] = trace_id
     return response
 
 
@@ -4878,11 +5243,17 @@ app.include_router(mfa.router, prefix=app_settings.api_prefix)
 app.include_router(users.router, prefix=app_settings.api_prefix)
 app.include_router(groups.router, prefix=app_settings.api_prefix)
 app.include_router(printers.router, prefix=app_settings.api_prefix)
+# archive_purge must come BEFORE archives so its `/archives/trash/*` routes
+# don't get swallowed by archives' `/archives/{archive_id}` catch-all.
+app.include_router(archive_purge.router, prefix=app_settings.api_prefix)
 app.include_router(archives.router, prefix=app_settings.api_prefix)
 app.include_router(inventory.router, prefix=app_settings.api_prefix)
 app.include_router(settings_routes.router, prefix=app_settings.api_prefix)
 app.include_router(cloud.router, prefix=app_settings.api_prefix)
 app.include_router(local_presets.router, prefix=app_settings.api_prefix)
+app.include_router(slicer_presets.router, prefix=app_settings.api_prefix)
+app.include_router(slice_jobs.router, prefix=app_settings.api_prefix)
+app.include_router(makerworld.router, prefix=app_settings.api_prefix)
 app.include_router(smart_plugs.router, prefix=app_settings.api_prefix)
 app.include_router(print_queue.router, prefix=app_settings.api_prefix)
 app.include_router(auto_queue.router, prefix=app_settings.api_prefix)
@@ -4900,6 +5271,8 @@ app.include_router(external_links.router, prefix=app_settings.api_prefix)
 app.include_router(projects.router, prefix=app_settings.api_prefix)
 app.include_router(library.router, prefix=app_settings.api_prefix)
 app.include_router(library_notes.router, prefix=app_settings.api_prefix)
+app.include_router(library_trash.router, prefix=app_settings.api_prefix)
+# archive_purge router is registered above before archives.router (route order).
 app.include_router(api_keys.router, prefix=app_settings.api_prefix)
 app.include_router(webhook.router, prefix=app_settings.api_prefix)
 app.include_router(ams_history.router, prefix=app_settings.api_prefix)
@@ -4941,10 +5314,23 @@ if app_settings.static_dir.exists() and any(app_settings.static_dir.iterdir()):
 
 @app.get("/")
 async def serve_frontend():
-    """Serve the React frontend."""
+    """Serve the React frontend.
+
+    ``Cache-Control: no-cache, must-revalidate`` so the browser always
+    revalidates ``index.html`` against the server (returning 304 if
+    unchanged). Without this, browsers cache the HTML aggressively and
+    keep referencing rotated-out hashed asset filenames after a deploy,
+    which surfaces as "the UI is broken until I hard-refresh". The
+    hashed asset bundles under ``/assets/*`` keep their default long-
+    lived caching — only the document that points at them needs to
+    revalidate.
+    """
     index_file = app_settings.static_dir / "index.html"
     if index_file.exists():
-        return FileResponse(index_file)
+        return FileResponse(
+            index_file,
+            headers={"Cache-Control": "no-cache, must-revalidate"},
+        )
     return {
         "message": "BamDude API",
         "docs": "/docs",
@@ -4996,7 +5382,12 @@ async def serve_sw_register():
 # Catch-all route for React Router (must be last)
 @app.get("/{full_path:path}")
 async def serve_spa(full_path: str):
-    """Serve React app for client-side routing."""
+    """Serve React app for client-side routing.
+
+    Same ``Cache-Control: no-cache, must-revalidate`` as ``serve_frontend``
+    so deep-links into client-side routes (``/printers``, ``/queue``, …)
+    don't cache stale HTML pointing at rotated-out asset bundles.
+    """
     # Don't intercept API routes - raise proper 404 so FastAPI can handle redirects
     if full_path.startswith("api/"):
         from fastapi import HTTPException
@@ -5005,6 +5396,9 @@ async def serve_spa(full_path: str):
 
     index_file = app_settings.static_dir / "index.html"
     if index_file.exists():
-        return FileResponse(index_file)
+        return FileResponse(
+            index_file,
+            headers={"Cache-Control": "no-cache, must-revalidate"},
+        )
 
     return {"error": "Frontend not built"}

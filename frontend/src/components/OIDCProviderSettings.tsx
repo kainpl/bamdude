@@ -19,8 +19,16 @@ const EMPTY_FORM: OIDCProviderCreate = {
   is_enabled: true,
   auto_create_users: false,
   auto_link_existing_accounts: false,
+  email_claim: 'email',
+  require_email_verified: true,
   icon_url: undefined,
 };
+
+// Common email-claim choices: PocketID/Authentik/Keycloak/Authelia/Google
+// all use the standard 'email' claim. Azure Entra ID never sends
+// email_verified, so the recommended config there is preferred_username
+// (or upn for Active Directory hybrid setups).
+const EMAIL_CLAIM_PRESETS = ['email', 'preferred_username', 'upn'];
 
 // ─── Provider form (create / edit) ───────────────────────────────────────────
 function ProviderForm({
@@ -94,9 +102,26 @@ function ProviderForm({
           <label className={labelCls}>{t('settings.oidc.form.iconUrl')}</label>
           <input className={inputCls} value={form.icon_url ?? ''} onChange={(e) => set('icon_url', e.target.value || undefined)} placeholder="https://..." />
         </div>
+        <div>
+          <label className={labelCls}>{t('settings.oidc.form.emailClaim')}</label>
+          <input
+            className={inputCls}
+            list="oidc-email-claim-presets"
+            value={form.email_claim ?? 'email'}
+            onChange={(e) => set('email_claim', e.target.value || 'email')}
+            placeholder="email"
+          />
+          <datalist id="oidc-email-claim-presets">
+            {EMAIL_CLAIM_PRESETS.map((claim) => <option key={claim} value={claim} />)}
+          </datalist>
+          <p className="text-bambu-gray text-xs mt-1">{t('settings.oidc.form.emailClaimHelp')}</p>
+        </div>
       </div>
 
-      <div className="flex flex-wrap gap-6 pt-2">
+      {/* Toggles laid out as a 2-column grid so the new "Require email_verified"
+          toggle doesn't push the row into a wrap that hides existing toggles
+          (A.32 — upstream's reflow bug). */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
         <label className="flex items-center gap-3 cursor-pointer">
           <Toggle checked={form.is_enabled ?? true} onChange={(v) => set('is_enabled', v)} />
           <span className="text-white text-sm">{t('settings.oidc.form.enabled')}</span>
@@ -113,6 +138,21 @@ function ProviderForm({
           <div>
             <p className="text-white text-sm">{t('settings.oidc.form.autoLink')}</p>
             <p className="text-bambu-gray text-xs">{t('settings.oidc.form.autoLinkDesc')}</p>
+          </div>
+        </label>
+        <label className="flex items-center gap-3 cursor-pointer">
+          <Toggle
+            checked={form.require_email_verified ?? true}
+            onChange={(v) => set('require_email_verified', v)}
+            disabled={(form.email_claim ?? 'email') !== 'email'}
+          />
+          <div>
+            <p className="text-white text-sm">{t('settings.oidc.form.requireEmailVerified')}</p>
+            <p className="text-bambu-gray text-xs">
+              {(form.email_claim ?? 'email') !== 'email'
+                ? t('settings.oidc.form.requireEmailVerifiedNAForCustomClaim')
+                : t('settings.oidc.form.requireEmailVerifiedDesc')}
+            </p>
           </div>
         </label>
       </div>
@@ -304,6 +344,8 @@ export function OIDCProviderSettings() {
                     is_enabled: provider.is_enabled,
                     auto_create_users: provider.auto_create_users,
                     auto_link_existing_accounts: provider.auto_link_existing_accounts,
+                    email_claim: provider.email_claim,
+                    require_email_verified: provider.require_email_verified,
                     icon_url: provider.icon_url ?? undefined,
                   }}
                   onSave={(data) => updateMutation.mutate({ id: provider.id, data })}
@@ -335,6 +377,16 @@ export function OIDCProviderSettings() {
                   <dt className="text-bambu-gray">{t('settings.oidc.form.autoLink')}</dt>
                   <dd className={provider.auto_link_existing_accounts ? 'text-green-400' : 'text-bambu-gray'}>
                     {provider.auto_link_existing_accounts ? t('common.yes') : t('common.no')}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-bambu-gray">{t('settings.oidc.form.emailClaim')}</dt>
+                  <dd className="text-white font-mono">{provider.email_claim}</dd>
+                </div>
+                <div>
+                  <dt className="text-bambu-gray">{t('settings.oidc.form.requireEmailVerified')}</dt>
+                  <dd className={provider.require_email_verified ? 'text-green-400' : 'text-bambu-gray'}>
+                    {provider.require_email_verified ? t('common.yes') : t('common.no')}
                   </dd>
                 </div>
               </dl>

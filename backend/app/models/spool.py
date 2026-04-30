@@ -55,6 +55,27 @@ class Spool(Base):
     data_origin: Mapped[str | None] = mapped_column(String(20))  # How data was populated: manual, rfid_auto, nfc_link
     tag_type: Mapped[str | None] = mapped_column(String(20))  # Tag vendor: bambulab, generic, etc.
     archived_at: Mapped[datetime | None] = mapped_column(DateTime)  # NULL = active
+
+    # B.1 — Multi-colour gradient stops for filaments with more than one
+    # colour (gradient, multicolour, dual/tri-colour). Stored as
+    # comma-separated 6- or 8-char hex tokens without `#`. Empty/NULL means
+    # solid (uses ``rgba``). Up to 8 stops.
+    extra_colors: Mapped[str | None] = mapped_column(String(255))
+    # B.1 — Visual effect overlay independent of subtype: sparkle, wood,
+    # marble, glow, matte, silk, galaxy, rainbow, metal, translucent.
+    # Purely a rendering hint — does not affect MQTT/firmware.
+    effect_type: Mapped[str | None] = mapped_column(String(20))
+
+    # B.8 — User-defined category ("Production", "Prototype", "Client A")
+    # for filtering and per-group low-stock thresholds. Free text; the form
+    # autocompletes from categories already present on other spools.
+    category: Mapped[str | None] = mapped_column(String(50))
+    # B.8 — Per-spool override of the global inventory low-stock threshold
+    # (%, 1..99). NULL falls back to the global ``low_stock_threshold``
+    # setting. Lets users mark production spools with a higher threshold
+    # without changing the global default.
+    low_stock_threshold_pct: Mapped[int | None] = mapped_column(Integer)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 

@@ -57,6 +57,7 @@ from backend.app.models.user import User
 from backend.app.models.user_otp_code import UserOTPCode
 from backend.app.models.user_totp import UserTOTP
 from backend.app.schemas.auth import (
+    AUTO_LINK_REQUIREMENTS_ERROR,
     AdminDisable2FARequest,
     BackupCodesResponse,
     EmailOTPDisableRequest,
@@ -370,6 +371,130 @@ def _assert_totp_not_replayed(totp_obj: pyotp.TOTP, totp_record: UserTOTP, code:
         accepted_counter = totp_obj.timecode(now)  # fallback (should not happen after verify())
 
     totp_record.accept_counter(accepted_counter)
+
+
+# ---------------------------------------------------------------------------
+# OIDC email-claim resolution helpers (B.16, A.31)
+# ---------------------------------------------------------------------------
+
+_EMAIL_SHAPE_RE = re.compile(r"[^\s@]+@[^\s@]+\.[^\s@]+")
+
+
+def _is_valid_email_shaped(value: str | None) -> bool:
+    """Shape-check a claim value before treating it as an email address.
+
+    Used by both Fall A (standard ``email`` claim with require_email_verified)
+    and Fall C (custom claim like Azure ``preferred_username``/``upn``).
+    Without this, providers that mark numeric user IDs or tenant strings as
+    ``email_verified=True`` would slip through the Fall A path.
+    """
+    if not value or len(value) > 255:
+        return False
+    return _EMAIL_SHAPE_RE.fullmatch(value) is not None
+
+
+def _enforce_auto_link_safety(provider: OIDCProvider) -> None:
+    """Block the unsafe combo (``auto_link`` + ``email`` claim + ``require_ev=False``).
+
+    Mirrors the Pydantic ``model_validator`` on OIDCProviderCreate/Update — re-runs
+    after the route's setattr loop so partial updates spanning two requests can't
+    sneak through (each request validates fine alone; only the combined final
+    state is unsafe). Raises HTTP 422 with the same error string the frontend
+    form already maps for the schema-level rejection.
+    """
+    if provider.auto_link_existing_accounts and provider.email_claim == "email" and not provider.require_email_verified:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=AUTO_LINK_REQUIREMENTS_ERROR,
+        )
+
+
+def _resolve_provider_email(provider: OIDCProvider, claims: dict, provider_sub: str) -> str | None:
+    """Extract the email identity from OIDC ID-token claims for the given provider.
+
+    Three resolution paths:
+      Fall C — ``email_claim != "email"`` (custom claim, e.g. Azure
+               ``preferred_username``/``upn``): shape-check only, no
+               email_verified gate. Recommended Azure configuration.
+      Fall A — ``email_claim == "email"`` + ``require_email_verified=True``
+               (default): strict, ``email_verified`` must be True.
+      Fall B — ``email_claim == "email"`` + ``require_email_verified=False``:
+               permissive, explicit ``email_verified=False`` drops the email,
+               absent/None keeps it. Required for legacy IdPs that never send
+               ``email_verified``; only safe when the operator deliberately
+               trusts the provider not to surface unverified emails.
+
+    Returns a lowercased + stripped email string, or None when the claim is
+    absent / fails the shape check / fails the verified gate.
+    """
+    provider_id = provider.id
+    raw_claim_value = claims.get(provider.email_claim)
+    if raw_claim_value is not None and not isinstance(raw_claim_value, str):
+        # Non-string claim (list, int, etc.) — would crash on .lower().
+        logger.warning(
+            "OIDC provider %d: email_claim %r has unexpected type %s for sub=%r, ignoring",
+            provider_id,
+            provider.email_claim,
+            type(raw_claim_value).__name__,
+            provider_sub,
+        )
+        raw_claim_value = None
+    raw_email: str | None = raw_claim_value.lower().strip() if raw_claim_value else None
+
+    if provider.email_claim != "email":
+        # Fall C: custom claim — no email_verified gate, just shape-check.
+        if raw_email and _is_valid_email_shaped(raw_email):
+            return raw_email
+        if raw_email:
+            logger.warning(
+                "OIDC provider %d: email_claim %r value failed shape check for sub=%r, ignoring",
+                provider_id,
+                provider.email_claim,
+                provider_sub,
+            )
+        return None
+
+    email_verified = claims.get("email_verified")
+    if provider.require_email_verified:
+        # Fall A: strict — fail closed unless email_verified is explicitly True.
+        if raw_email and not _is_valid_email_shaped(raw_email):
+            logger.warning(
+                "OIDC provider %d: email claim failed shape check for sub=%r, ignoring",
+                provider_id,
+                provider_sub,
+            )
+            return None
+        if email_verified is True:
+            return raw_email
+        if raw_email:
+            logger.info(
+                "OIDC provider %d: ignoring email for sub=%r because email_verified=%r",
+                provider_id,
+                provider_sub,
+                email_verified,
+            )
+        return None
+
+    # Fall B: permissive — explicit False drops, absent/None keeps.
+    if raw_email and not _is_valid_email_shaped(raw_email):
+        logger.warning(
+            "OIDC provider %d: email claim failed shape check for sub=%r, ignoring",
+            provider_id,
+            provider_sub,
+        )
+        return None
+    if email_verified is False:
+        return None
+    if email_verified is not True:
+        # Log only when permissive path actually fires (ev absent/None),
+        # not on every successful login.
+        logger.info(
+            "OIDC provider %r (%d): accepting email for sub=%r without email_verified claim (permissive mode)",
+            provider.name,
+            provider.id,
+            provider_sub,
+        )
+    return raw_email
 
 
 # ---------------------------------------------------------------------------
@@ -1077,8 +1202,15 @@ async def create_oidc_provider(
         scopes=body.scopes,
         is_enabled=body.is_enabled,
         auto_create_users=body.auto_create_users,
+        auto_link_existing_accounts=body.auto_link_existing_accounts,
+        email_claim=body.email_claim,
+        require_email_verified=body.require_email_verified,
         icon_url=body.icon_url,
     )
+    # Defense-in-depth: re-checks the safety guard against the constructed
+    # ORM object so any future code path that bypasses Pydantic validation
+    # (direct ORM use, scripts) still hits the same gate.
+    _enforce_auto_link_safety(provider)
     db.add(provider)
     await db.commit()
     await db.refresh(provider)
@@ -1102,6 +1234,11 @@ async def update_oidc_provider(
         if field == "issuer_url" and value:
             value = value.rstrip("/")
         setattr(provider, field, value)
+
+    # Combined-State-Guard: after applying partial updates, re-check the
+    # final in-memory state. Catches the case where two requests each pass
+    # schema validation alone but together produce the unsafe combo.
+    _enforce_auto_link_safety(provider)
 
     await db.commit()
     await db.refresh(provider)
@@ -1391,23 +1528,9 @@ async def oidc_callback(
         if not provider_sub:
             return RedirectResponse(url=f"{frontend_error_url}missing_sub_claim", status_code=302)
 
-        # C1: Only trust the email claim when the provider explicitly marks it verified.
-        # Treating absent email_verified as verified enables account-takeover: an attacker
-        # could register an unverified email with an IdP and auto-link to an existing account.
-        # Fail closed: require email_verified == True; absent/False both drop the email.
-        raw_email: str | None = claims.get("email")
-        email_verified = claims.get("email_verified")
-        if email_verified is not True:
-            if raw_email:
-                logger.info(
-                    "OIDC provider %d: ignoring email for sub=%r because email_verified=%r",
-                    provider_id,
-                    provider_sub,
-                    email_verified,
-                )
-            provider_email: str | None = None
-        else:
-            provider_email = raw_email
+        # Resolve email via the provider's configured claim + verified policy.
+        # See _resolve_provider_email docstring for Fall A/B/C semantics.
+        provider_email: str | None = _resolve_provider_email(provider, claims, provider_sub)
 
         # ── Step 4: Resolve / create user ────────────────────────────────────
         try:

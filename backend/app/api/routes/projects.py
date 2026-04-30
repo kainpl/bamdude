@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.app.api.routes.library import get_library_dir
-from backend.app.core.auth import RequirePermission
+from backend.app.core.auth import RequireCameraStreamToken, RequirePermission
 from backend.app.core.config import settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -264,6 +264,8 @@ async def list_projects(
                 queue_count=queue_count,
                 progress_percent=progress_percent,
                 archives=archive_previews,
+                url=project.url,
+                cover_image_filename=project.cover_image_filename,
             )
         )
 
@@ -298,6 +300,7 @@ async def create_project(
         priority=data.priority,
         budget=data.budget,
         parent_id=data.parent_id,
+        url=data.url,
     )
     db.add(project)
     await db.flush()
@@ -315,6 +318,8 @@ async def create_project(
         target_parts_count=project.target_parts_count,
         notes=project.notes,
         attachments=project.attachments,
+        url=project.url,
+        cover_image_filename=project.cover_image_filename,
         tags=project.tags,
         due_date=project.due_date,
         priority=project.priority,
@@ -365,6 +370,8 @@ async def list_templates(
                 queue_count=0,
                 progress_percent=None,
                 archives=[],
+                url=project.url,
+                cover_image_filename=project.cover_image_filename,
             )
         )
 
@@ -438,6 +445,8 @@ async def create_project_from_template(
         target_parts_count=project.target_parts_count,
         notes=project.notes,
         attachments=project.attachments,
+        url=project.url,
+        cover_image_filename=project.cover_image_filename,
         tags=project.tags,
         due_date=project.due_date,
         priority=project.priority,
@@ -521,6 +530,8 @@ async def get_project(
         target_parts_count=project.target_parts_count,
         notes=project.notes,
         attachments=project.attachments,
+        url=project.url,
+        cover_image_filename=project.cover_image_filename,
         tags=project.tags,
         due_date=project.due_date,
         priority=project.priority,
@@ -577,6 +588,10 @@ async def update_project(
         project.priority = data.priority
     if "budget" in data.model_fields_set:
         project.budget = data.budget
+    if "url" in data.model_fields_set:
+        # Allow explicit clear via null. The validator already rejected
+        # non-http(s) inputs, so anything reaching here is safe to store.
+        project.url = data.url
     if data.parent_id is not None:
         # Verify parent exists and prevent circular reference
         if data.parent_id == project_id:
@@ -613,6 +628,8 @@ async def update_project(
         target_parts_count=project.target_parts_count,
         notes=project.notes,
         attachments=project.attachments,
+        url=project.url,
+        cover_image_filename=project.cover_image_filename,
         tags=project.tags,
         due_date=project.due_date,
         priority=project.priority,
@@ -995,6 +1012,145 @@ async def delete_attachment(
         "message": "Attachment deleted",
         "attachments": project.attachments,
     }
+
+
+# ============ B.2 (#1155) — Project cover image ============
+
+# Cover-image upload accepts only common web-renderable image types.
+# Subset of ALLOWED_ATTACHMENT_EXTENSIONS minus .svg/.ico because those
+# don't render well as a card thumbnail.
+COVER_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+COVER_IMAGE_CONTENT_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
+
+
+@router.post("/{project_id}/cover-image")
+async def upload_project_cover_image(
+    project_id: int,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+):
+    """Upload (or replace) the project's cover image (#1155).
+
+    Stored alongside other attachments but tracked via
+    ``Project.cover_image_filename`` so swap/delete operations don't
+    touch the attachments list. Replaces any existing cover image — the
+    prior file is deleted on disk before the new one lands so a stuck
+    filesystem reference can't accumulate orphaned images.
+    """
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    original_name = file.filename or "cover"
+    ext = os.path.splitext(original_name)[1].lower()
+    if ext not in COVER_IMAGE_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cover image must be one of {sorted(COVER_IMAGE_EXTENSIONS)}",
+        )
+
+    attachments_dir = get_project_attachments_dir(project_id)
+    attachments_dir.mkdir(parents=True, exist_ok=True)
+
+    # Remove the previous cover-image file from disk first so we don't
+    # accumulate orphans when users repeatedly replace it. Best-effort:
+    # a missing/locked file shouldn't block a successful replacement.
+    if project.cover_image_filename:
+        old_path = attachments_dir / project.cover_image_filename
+        if old_path.exists():
+            try:
+                os.remove(old_path)
+            except OSError as e:
+                logger.warning("Failed to delete old cover image %s: %s", old_path, e)
+
+    unique_filename = f"cover_{uuid.uuid4().hex}{ext}"
+    file_path = attachments_dir / unique_filename
+    try:
+        with open(file_path, "wb") as f:
+            content = await file.read()
+            f.write(content)
+    except OSError as e:
+        logger.error("Failed to save cover image: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to save cover image") from e
+
+    project.cover_image_filename = unique_filename
+    db.add(project)
+    await db.flush()
+
+    return {
+        "status": "success",
+        "filename": unique_filename,
+        "size": len(content),
+    }
+
+
+@router.get("/{project_id}/cover-image")
+async def get_project_cover_image(
+    project_id: int,
+    db: AsyncSession = Depends(get_db),
+    _=RequireCameraStreamToken,
+):
+    """Stream the project's cover image (#1155).
+
+    Browsers can't attach ``Authorization: Bearer ...`` to ``<img src>``
+    requests, so this route accepts the same ``?token=`` stream
+    credential as ``/archives/{id}/thumbnail``. The frontend wraps URLs
+    via ``withStreamToken``.
+    """
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if not project.cover_image_filename:
+        raise HTTPException(status_code=404, detail="No cover image set")
+
+    file_path = get_project_attachments_dir(project_id) / project.cover_image_filename
+    if not file_path.exists():
+        # DB references a file that vanished from disk — clear the
+        # dangling reference so future GETs get a clean 404 instead of
+        # repeatedly touching the filesystem.
+        logger.warning("Cover image file missing for project %s: %s", project_id, file_path)
+        project.cover_image_filename = None
+        await db.flush()
+        raise HTTPException(status_code=404, detail="Cover image file not found")
+
+    ext = os.path.splitext(project.cover_image_filename)[1].lower()
+    media_type = COVER_IMAGE_CONTENT_TYPES.get(ext, "application/octet-stream")
+    return FileResponse(file_path, media_type=media_type)
+
+
+@router.delete("/{project_id}/cover-image")
+async def delete_project_cover_image(
+    project_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PROJECTS_UPDATE),
+):
+    """Remove the project's cover image (#1155)."""
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    if project.cover_image_filename:
+        file_path = get_project_attachments_dir(project_id) / project.cover_image_filename
+        if file_path.exists():
+            try:
+                os.remove(file_path)
+            except OSError as e:
+                logger.warning("Failed to delete cover image file %s: %s", file_path, e)
+        project.cover_image_filename = None
+        db.add(project)
+        await db.flush()
+
+    return {"status": "success"}
 
 
 # ============ Phase 7: BOM Endpoints ============
@@ -1592,6 +1748,8 @@ async def import_project(
         target_parts_count=project.target_parts_count,
         notes=project.notes,
         attachments=project.attachments,
+        url=project.url,
+        cover_image_filename=project.cover_image_filename,
         tags=project.tags,
         due_date=project.due_date,
         priority=project.priority,
@@ -1765,6 +1923,8 @@ async def import_project_file(
         target_parts_count=project.target_parts_count,
         notes=project.notes,
         attachments=project.attachments,
+        url=project.url,
+        cover_image_filename=project.cover_image_filename,
         tags=project.tags,
         due_date=project.due_date,
         priority=project.priority,

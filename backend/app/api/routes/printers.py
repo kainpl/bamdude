@@ -2273,6 +2273,18 @@ async def stop_print(
     if not success:
         raise HTTPException(500, "Failed to stop print")
 
+    # Mark this printer as user-stopped so on_print_complete reclassifies
+    # the resulting "failed"/"aborted" MQTT status as "cancelled" — otherwise
+    # the HMS heuristic in _dispatch_archive_update would mislabel
+    # user-cancels (e.g. the H2D's cancel-sequence module-0x0C HMS) as a
+    # genuine failure with reason="Layer shift".
+    try:
+        from backend.app.main import mark_printer_stopped_by_user
+
+        mark_printer_stopped_by_user(printer_id)
+    except Exception as _mark_err:
+        logger.warning("Failed to mark printer %s as user-stopped: %s", printer_id, _mark_err)
+
     return {"success": True, "message": "Print stop command sent"}
 
 

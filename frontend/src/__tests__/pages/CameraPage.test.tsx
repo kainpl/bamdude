@@ -32,7 +32,7 @@ const mockPrinter = {
 };
 
 // Custom render for CameraPage which needs specific route params
-function renderCameraPage(printerId: number) {
+function renderCameraPage(printerId: number, search = '') {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false, gcTime: 0 },
@@ -43,7 +43,7 @@ function renderCameraPage(printerId: number) {
   return rtlRender(
     <QueryClientProvider client={queryClient}>
       <I18nextProvider i18n={i18n}>
-        <MemoryRouter initialEntries={[`/cameras/${printerId}`]}>
+        <MemoryRouter initialEntries={[`/cameras/${printerId}${search}`]}>
           <ThemeProvider>
             <AuthProvider>
               <ToastProvider>
@@ -79,6 +79,13 @@ describe('CameraPage', () => {
       }),
       http.get('/api/v1/printers/:id/camera/status', () => {
         return HttpResponse.json({ active: true, stalled: false });
+      }),
+      // Camera stream-token gate: <img src> can't send Authorization headers,
+      // so the camera URL goes via a short-lived query-param token. Tests
+      // need this mocked or `streamTokenValue` stays null and the <img> src
+      // is empty (#1131 fps assertions can't see the URL otherwise).
+      http.post('/api/v1/printers/camera/stream-token', () => {
+        return HttpResponse.json({ token: 'test-stream-token' });
       })
     );
   });
@@ -123,6 +130,67 @@ describe('CameraPage', () => {
       // Just verify no crash during render
       await waitFor(() => {
         expect(document.body).toBeInTheDocument();
+      });
+    });
+  });
+
+  describe('fps URL parameter (#1131)', () => {
+    // Stream URL only renders once a stream token is available. The page's
+    // `useQuery` for the token is gated on `!!user`, which is unauthenticated
+    // in tests; the `getStreamToken()` module fallback wins instead, so set
+    // it directly per fps test. Cleared in afterEach so other tests aren't
+    // contaminated.
+    beforeEach(async () => {
+      const { setStreamToken } = await import('../../api/client');
+      setStreamToken('test-stream-token');
+    });
+    afterEach(async () => {
+      const { setStreamToken } = await import('../../api/client');
+      setStreamToken(null);
+    });
+
+    it('defaults to fps=15 when no query parameter is provided', async () => {
+      renderCameraPage(1);
+
+      await waitFor(() => {
+        const src = (document.querySelector('img') as HTMLImageElement | null)?.getAttribute('src') || '';
+        expect(src).toContain('fps=15');
+      });
+    });
+
+    it('honors fps query parameter from URL', async () => {
+      renderCameraPage(1, '?fps=5');
+
+      await waitFor(() => {
+        const src = (document.querySelector('img') as HTMLImageElement | null)?.getAttribute('src') || '';
+        expect(src).toContain('fps=5');
+      });
+    });
+
+    it('clamps fps above 30 to 30', async () => {
+      renderCameraPage(1, '?fps=60');
+
+      await waitFor(() => {
+        const src = (document.querySelector('img') as HTMLImageElement | null)?.getAttribute('src') || '';
+        expect(src).toContain('fps=30');
+      });
+    });
+
+    it('clamps fps below 1 to 1', async () => {
+      renderCameraPage(1, '?fps=0');
+
+      await waitFor(() => {
+        const src = (document.querySelector('img') as HTMLImageElement | null)?.getAttribute('src') || '';
+        expect(src).toContain('fps=1');
+      });
+    });
+
+    it('falls back to 15 for non-numeric fps', async () => {
+      renderCameraPage(1, '?fps=invalid');
+
+      await waitFor(() => {
+        const src = (document.querySelector('img') as HTMLImageElement | null)?.getAttribute('src') || '';
+        expect(src).toContain('fps=15');
       });
     });
   });

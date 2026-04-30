@@ -10,6 +10,7 @@ export default {
     projects: 'Проєкти',
     inventory: 'Філамент',
     files: 'Файли',
+    makerworld: 'MakerWorld',
     notifications: 'Сповіщення',
     settings: 'Налаштування',
     system: 'Система',
@@ -19,7 +20,6 @@ export default {
     updateAvailable: 'Доступне оновлення: v{{version}}',
     updateAvailableBanner: 'Доступна версія {{version}}!',
     viewUpdate: 'Переглянути оновлення',
-    viewOnGithub: 'Переглянути на GitHub',
     viewOnGitHubIcon: 'Переглянути на GitHub',
     docs: 'Документація',
     telegramSupport: 'Telegram-група підтримки',
@@ -27,7 +27,7 @@ export default {
     switchToLight: 'Світла тема',
     switchToDark: 'Темна тема',
     smartSwitches: 'Розумні вимикачі',
-    logout: 'Вийти',
+    logout: 'Вийти'
   },
 
   // Common
@@ -42,23 +42,13 @@ export default {
     confirm: 'Підтвердити',
     loading: 'Завантаження...',
     reconnecting: 'Відновлюю з\'єднання…',
-    hourShort: 'г',
-    minuteShort: 'хв',
     gramShort: 'г',
     error: 'Помилка',
-    success: 'Успіх',
-    warning: 'Попередження',
     enabled: 'Увімкнено',
     disabled: 'Вимкнено',
     yes: 'Так',
     no: 'Ні',
-    on: 'Увімк.',
-    off: 'Вимк.',
     all: 'Усі',
-    none: 'Немає',
-    search: 'Пошук',
-    filter: 'Фільтр',
-    sort: 'Сортування',
     refresh: 'Оновити',
     download: 'Завантажити',
     upload: 'Завантажити',
@@ -69,10 +59,7 @@ export default {
     name: 'Назва',
     description: 'Опис',
     date: 'Дата',
-    time: 'Час',
     hours: 'годин',
-    minutes: 'хвилин',
-    seconds: 'секунд',
     days: 'днів',
     enable: 'Увімкнути',
     disable: 'Вимкнути',
@@ -80,8 +67,6 @@ export default {
     noPrinters: 'Принтери не налаштовані',
     noData: 'Дані відсутні',
     linkNotFound: 'Посилання не знайдено',
-    required: 'Обов\'язкове',
-    optional: 'Необов\'язкове',
     dismiss: 'Закрити',
     apply: 'Застосувати',
     reset: 'Скинути',
@@ -89,28 +74,16 @@ export default {
     import: 'Імпорт',
     clear: 'Очистити',
     selectAll: 'Вибрати все',
-    deselectAll: 'Зняти вибір',
-    noChange: '- Без змін -',
-    unchanged: 'Без змін',
-    unassigned: 'Не призначено',
     unknown: 'Невідомо',
     unknownError: 'Невідома помилка',
     today: 'Сьогодні',
     tomorrow: 'Завтра',
-    asap: 'Якнайшвидше',
     overdue: 'Прострочено',
-    now: 'Зараз',
     collapse: 'Згорнути',
     expand: 'Розгорнути',
-    viewArchive: 'Переглянути архів',
-    viewInFileManager: 'Переглянути у файловому менеджері',
-    addedBy: 'Додав {{username}}',
     prints: 'друків',
     more: '+{{count}} ще',
-    ascending: 'За зростанням',
-    descending: 'За спаданням',
     printer: 'Принтер',
-    remove: 'Видалити',
     type: 'Тип',
     print: 'Друк',
     rename: 'Перейменувати',
@@ -119,12 +92,9 @@ export default {
     duplicate: 'Дублювати',
     left: 'Ліворуч',
     right: 'Праворуч',
-    previous: 'Попередня',
-    next: 'Наступна',
     showingRange: '{{from}}-{{to}} з {{total}}',
-    perPage: 'на сторінку',
     show: 'Показати',
-    total: 'всього',
+    total: 'всього'
   },
 
   // Printers page
@@ -136,25 +106,21 @@ export default {
       selectAll: 'Обрати всі',
       selectByState: 'За статусом',
       selectByLocation: 'За локацією',
-      noneApplicable: 'Немає відповідних принтерів',
       actionComplete: '{{count}} принтер(ів) оновлено',
       actions: {
         stop: 'Зупинити',
         pause: 'Пауза',
         resume: 'Продовжити',
         clearHMS: 'Очистити HMS',
-        clearPlate: 'Очистити стіл',
-      },
+        clearPlate: 'Очистити стіл'
+      }
     },
     editPrinter: 'Редагувати принтер',
-    deletePrinter: 'Видалити принтер',
-    printerName: 'Назва принтера',
     serialNumber: 'Серійний номер',
     ipAddress: 'IP-адреса / Ім\'я хоста',
     accessCode: 'Код доступу',
     model: 'Модель',
     nozzleCount: 'Кількість сопел',
-    autoArchive: 'Автоматична архівація',
     cleanupAfterPrint: 'Очищення після друку',
     mqttConnectionTimeout: 'Тайм-аут з\'єднання MQTT',
     swapMode: 'Swap Mode увімкнено',
@@ -167,7 +133,7 @@ export default {
       problem: 'Проблема',
       error: 'Помилка',
       finished: 'Завершено',
-      unknown: 'Невідомо',
+      unknown: 'Невідомо'
     },
     // Pluralised labels used in the StatusSummaryBar. i18next resolves the
     // right plural form from the `count` option; the {{count}} isn't injected
@@ -188,21 +154,13 @@ export default {
       problem_one: 'проблема',
       problem_few: 'проблеми',
       problem_many: 'проблем',
-      problem_other: 'проблем',
+      problem_other: 'проблем'
     },
     temperatures: {
       nozzle: 'Сопло',
       bed: 'Стіл',
-      chamber: 'Камера',
+      chamber: 'Камера'
     },
-    progress: '{{percent}}% завершено',
-    timeRemaining: 'Залишилось {{time}}',
-    deleteConfirm: 'Ви впевнені, що хочете видалити "{{name}}"?',
-    maintenanceOk: 'Обслуговування в нормі',
-    maintenanceWarning: '{{count}} попередження',
-    maintenanceWarning_plural: '{{count}} попереджень',
-    maintenanceDue: '{{count}} потребує уваги',
-    maintenanceDue_plural: '{{count}} потребують уваги',
     // Sort options
     sort: {
       name: 'Назва',
@@ -210,14 +168,14 @@ export default {
       model: 'Модель',
       location: 'Розташування',
       ascending: 'Сортувати за зростанням',
-      descending: 'Сортувати за спаданням',
+      descending: 'Сортувати за спаданням'
     },
     // Card size
     cardSize: {
       small: 'Маленькі картки',
       medium: 'Середні картки',
       large: 'Великі картки',
-      extraLarge: 'Дуже великі картки',
+      extraLarge: 'Дуже великі картки'
     },
     // Controls
     hideOffline: 'Приховати офлайн',
@@ -229,7 +187,7 @@ export default {
     noSearchResults: 'Жоден принтер не відповідає пошуку чи фільтрам',
     filter: {
       allStatuses: 'Усі статуси',
-      allLocations: 'Усі локації',
+      allLocations: 'Усі локації'
     },
     // Printer card
     readyToPrint: 'Готовий до друку',
@@ -253,7 +211,7 @@ export default {
       weak: 'Слабкий',
       fair: 'Задовільний',
       good: 'Добрий',
-      excellent: 'Відмінний',
+      excellent: 'Відмінний'
     },
     // Maintenance
     maintenanceUpToDate: 'Обслуговування актуальне - натисніть для перегляду',
@@ -270,14 +228,10 @@ export default {
     autoOffAfterPrint: 'Автовимкнення після друку',
     autoOffExecuted: 'Автовимкнення виконано - увімкніть принтер для скидання',
     // HMS errors
-    hmsErrors: 'Помилки HMS',
-    viewHmsErrors: 'Переглянути {{count}} помилок HMS',
     // Actions
     resume: 'Продовжити',
     pause: 'Призупинити',
     stop: 'Зупинити',
-    camera: 'Камера',
-    skipObject: 'Пропустити об\'єкт',
     reconnect: 'Перепідключити',
     mqttDebug: 'Налагодження MQTT',
     maintenanceHistory: 'Історія обслуговування',
@@ -298,7 +252,7 @@ export default {
       nozzleOffset: 'Зміщення сопел',
       nozzleOffsetDesc: 'Калібрує зміщення між двома соплами (H2D)',
       highTempHeatbed: 'Високотемпературне калібрування столу',
-      highTempHeatbedDesc: 'Калібрування столу при підвищеній температурі для високотемпературних матеріалів',
+      highTempHeatbedDesc: 'Калібрування столу при підвищеній температурі для високотемпературних матеріалів'
     },
     printerInformation: 'Інформація',
     copyToClipboard: 'Копіювати',
@@ -316,7 +270,7 @@ export default {
     sdCardMissing: 'SD-карта не виявлена. Друки, що зберігають файли на принтері, не стартонуть; вставте карту або вимкніть «Зберігати надіслані файли».',
     door: {
       open: 'Дверцята камери відчинені',
-      closed: 'Дверцята камери зачинені',
+      closed: 'Дверцята камери зачинені'
     },
     totalPrintHours: 'Годин друку',
     activeNozzle: 'Активне: сопло {{nozzle}}',
@@ -339,29 +293,15 @@ export default {
     nozzleHighFlow: 'Високий потік',
     nozzleStandardFlow: 'Стандартний',
     // Firmware
-    firmwareUpdate: 'Оновлення прошивки',
-    firmwareInstructions: 'На сенсорному екрані принтера перейдіть до',
-    firmwareNav: 'Перейдіть до',
-    settings: 'Налаштування',
     firmware: 'Прошивка',
     // Discovery
-    discoverPrinters: 'Знайти принтери',
-    searching: 'Пошук...',
-    manualEntry: 'Ввести вручну',
-    addFromCloud: 'Додати з хмари',
     // Toast messages
     toast: {
-      printerDeleted: 'Принтер видалено',
       missingSpoolAssignment: 'Друк розпочато на {{printer}}. Відсутнє призначення котушки для: {{slots}}',
-      printerAdded: 'Принтер додано',
-      printerUpdated: 'Принтер оновлено',
       failedToDelete: 'Не вдалося видалити принтер',
       failedToAdd: 'Не вдалося додати принтер',
       failedToUpdate: 'Не вдалося оновити принтер',
-      commandSent: 'Команду відправлено',
       failedToSendCommand: 'Не вдалося відправити команду',
-      turnedOn: '{{name}} увімкнено',
-      failedToPowerOn: 'Не вдалося увімкнути {{name}}',
       scriptTriggered: 'Скрипт запущено',
       printStopped: 'Друк зупинено',
       printPaused: 'Друк призупинено',
@@ -385,31 +325,31 @@ export default {
       plateCheckDisabled: 'Перевірку платформи вимкнено',
       calibrationSaved: 'Калібрування збережено!',
       calibrationFailed: 'Помилка калібрування',
-      rfidRereadInitiated: 'Перечитування RFID розпочато',
+      rfidRereadInitiated: 'Перечитування RFID розпочато'
     },
     // Connection status
     connection: {
       connected: 'Підключено',
-      offline: 'Офлайн',
+      offline: 'Офлайн'
     },
     plateStatus: {
       markCleared: 'Позначити плиту як очищену',
       cleared: 'Плита чиста',
       notCleared: 'Плита не очищена',
-      inUse: 'Плита в роботі',
+      inUse: 'Плита в роботі'
     },
     // Queue info
     queue: {
       inQueue_one: '{{count}} друк у черзі',
       inQueue_few: '{{count}} друки у черзі',
       inQueue_many: '{{count}} друків у черзі',
-      inQueue_other: '{{count}} друків у черзі',
+      inQueue_other: '{{count}} друків у черзі'
     },
     // Controls section
     controls: 'Керування',
     // RFID
     rfid: {
-      reread: 'Перечитати RFID',
+      reread: 'Перечитати RFID'
     },
     bedJog: {
       title: 'Перемістити стіл',
@@ -422,7 +362,7 @@ export default {
       notHomedMessage: 'Принтер не відгомлено після останнього друку. Спочатку запустіть авто-відгомлення для безпечного позиціонування (паркує голову, потім відгомлює X, Y та Z), або рухайте так — програмні обмежувачі буде вимкнено.',
       homeZ: 'Авто-відгомлення',
       moveAnyway: 'Рухати все одно',
-      homingStarted: 'Авто-відгомлення принтера…',
+      homingStarted: 'Авто-відгомлення принтера…'
     },
     // Permissions
     permission: {
@@ -433,18 +373,14 @@ export default {
       noFiles: 'У вас немає дозволу на доступ до файлів принтера',
       noAmsRfid: 'У вас немає дозволу перечитувати RFID AMS',
       noSmartPlugControl: 'У вас немає дозволу керувати розумними розетками',
-      noCamera: 'У вас немає дозволу переглядати камери',
+      noCamera: 'У вас немає дозволу переглядати камери'
     },
     // Add/Edit modal
     modal: {
-      addTitle: 'Додати принтер',
-      editTitle: 'Редагувати принтер',
       myPrinter: 'Мій принтер',
       selectModel: 'Оберіть модель...',
       locationGroup: 'Розташування / Група (необов\'язково)',
       locationPlaceholder: 'напр., Майстерня, Офіс, Підвал',
-      autoArchiveLabel: 'Автоматично архівувати завершені друки',
-      autoArchiveWarning: 'Без автоархівування не працюватиме історія друків, статистика, відстеження витрат та календар активності для цього принтера.',
       cleanupAfterPrintLabel: 'Видаляти файли друку з SD-карти після друку (за замовчуванням файли переміщуються в кеш)',
       mqttConnectionTimeoutLabel: 'Тайм-аут з\'єднання MQTT',
       mqttConnectionTimeoutHint: 'секунд (0 = вимкнено)',
@@ -457,7 +393,7 @@ export default {
       requirePlateClearHint: 'Черга чекатиме підтвердження що стіл очищено перед наступним друком',
       fromPrinterSettings: 'З налаштувань принтера',
       modelOptional: 'Модель (необов\'язково)',
-      saveChanges: 'Зберегти зміни',
+      saveChanges: 'Зберегти зміни'
     },
     // Skip objects
     skipObjects: {
@@ -467,17 +403,13 @@ export default {
       title: 'Пропустити об\'єкти',
       matchIdsInfo: 'Зіставте ідентифікатори з дисплеєм принтера',
       printerShowsIds: 'Екран принтера показує ідентифікатори об\'єктів на платформі',
-      skipSelected: 'Пропустити вибрані',
-      skipping: 'Пропускаємо...',
-      noObjectsSelected: 'Об\'єкти не вибрано',
-      selectObjectsToSkip: 'Виберіть об\'єкти, які потрібно пропустити в поточному друці',
       skipped: 'пропущено',
       objectsSkipped: 'Об\'єкти пропущено',
       activeCount: '{{count}} активних',
       waitForLayer: 'Зачекайте шар 2+, щоб пропустити об\'єкти (зараз шар {{layer}})',
       skip: 'Пропустити',
       confirmTitle: 'Пропустити об\'єкт?',
-      confirmMessage: 'Ви впевнені, що хочете пропустити "{{name}}"? Це неможливо скасувати.',
+      confirmMessage: 'Ви впевнені, що хочете пропустити "{{name}}"? Це неможливо скасувати.'
     },
     // Confirm modals
     confirm: {
@@ -500,23 +432,15 @@ export default {
       powerOffTitle: 'Вимкнути принтер',
       powerOffMessage: 'Ви впевнені, що хочете вимкнути живлення "{{name}}"?',
       powerOffWarning: 'УВАГА: "{{name}}" зараз друкує! Ви впевнені, що хочете вимкнути живлення? Це перерве друк і може пошкодити принтер.',
-      powerOffButton: 'Вимкнути',
+      powerOffButton: 'Вимкнути'
     },
     // Discovery
     discovery: {
-      title: 'Знайти принтери',
-      searching: 'Пошук...',
       scanning: 'Сканування...',
       scanProgress: 'Сканування... {{scanned}}/{{total}}',
-      foundPrinters: 'Знайдено {{count}} принтер(ів)',
-      noPrintersFound: 'Принтерів не знайдено',
       noPrintersFoundSubnet: 'Принтерів у вказаній підмережі не знайдено.',
       noPrintersFoundNetwork: 'Принтерів у мережі не знайдено.',
       allConfigured: 'Усі знайдені принтери вже налаштовані.',
-      alreadyAdded: 'Вже додано',
-      select: 'Вибрати',
-      manualEntry: 'Ввести вручну',
-      addFromCloud: 'Додати з хмари',
       subnetToScan: 'Підмережа для сканування',
       dockerNote: 'Виявлено Docker. Введіть підмережу принтера в нотації CIDR. Потрібен network_mode: host у docker-compose.yml.',
       scanSubnet: 'Сканувати підмережу на принтери',
@@ -525,7 +449,7 @@ export default {
       scanningNetwork: 'Сканування мережі...',
       serialRequired: 'Потрібен серійний номер',
       unknown: 'Невідомо',
-      failedToStart: 'Не вдалося розпочати пошук',
+      failedToStart: 'Не вдалося розпочати пошук'
     },
     // AMS Drying
     drying: {
@@ -536,11 +460,9 @@ export default {
       hours: 'годин',
       timeRemaining: 'Залишилось {{time}}',
       active: 'Сушіння',
-      notSupported: 'Сушіння не підтримується',
       powerRequired: 'Підключіть адаптер живлення AMS для увімкнення сушіння',
       startingDrying: 'Запуск сушіння...',
-      stoppingDrying: 'Зупинка сушіння...',
-      rotateTray: 'Обертати котушку під час сушіння',
+      rotateTray: 'Обертати котушку під час сушіння'
     },
     // Filaments section
     filaments: 'Філамент',
@@ -550,7 +472,6 @@ export default {
     // Firmware
     firmwareUpdateAvailable: 'Доступне оновлення прошивки: {{current}} → {{latest}}',
     firmwareUpToDate: 'Прошивка {{version}} - Актуальна',
-    firmwareUpdateButton: 'Оновити',
     // Plate detection
     plateDetection: {
       noPermission: 'У вас немає дозволу оновлювати принтери',
@@ -577,7 +498,7 @@ export default {
       calibrating: 'Калібрування...',
       calibrateEmptyPlate: 'Калібрувати',
       adding: 'Додавання...',
-      addReference: 'Додати зразок ({{count}}/{{max}})',
+      addReference: 'Додати зразок ({{count}}/{{max}})'
     },
     // Speed
     speed: {
@@ -585,13 +506,13 @@ export default {
       silent: 'Тихий (50%)',
       standard: 'Стандартний (100%)',
       sport: 'Спорт (124%)',
-      ludicrous: 'Максимальний (166%)',
+      ludicrous: 'Максимальний (166%)'
     },
     // Fans
     fans: {
       partCooling: 'Вентилятор охолодження деталі',
       auxiliary: 'Допоміжний вентилятор',
-      chamber: 'Вентилятор камери',
+      chamber: 'Вентилятор камери'
     },
     // HMS errors
     clickToViewHmsErrors: 'Натисніть для перегляду помилок HMS',
@@ -606,7 +527,7 @@ export default {
       firmwareVersion: 'Прошивка',
       save: 'Зберегти',
       clear: 'Очистити',
-      noEditPermission: 'У вас немає дозволу перейменовувати блоки AMS',
+      noEditPermission: 'У вас немає дозволу перейменовувати блоки AMS'
     },
     // Firmware modal
     firmwareModal: {
@@ -634,7 +555,7 @@ export default {
       installed: 'Встановлена',
       newerBadge: 'новіша',
       olderBadge: 'старіша',
-      currentBadge: 'поточна',
+      currentBadge: 'поточна'
     },
     accessCodePlaceholder: 'Залиште порожнім, щоб зберегти поточний',
     // ROI editor
@@ -642,33 +563,19 @@ export default {
       title: 'Область виявлення (ROI)',
       xStart: 'X початок',
       yStart: 'Y початок',
-      width: 'Ширина',
-      height: 'Висота',
-      instruction: 'Налаштуйте область виявлення для фокусування на платформі. Зелена рамка в попередньому перегляді показує поточну область.',
+      instruction: 'Налаштуйте область виявлення для фокусування на платформі. Зелена рамка в попередньому перегляді показує поточну область.'
     },
     developerModeWarning: 'Режим розробника LAN не увімкнений на: {{names}}. Деякі функції можуть не працювати.',
     howToEnable: 'Як увімкнути',
     incompatibleFile: 'Цей файл було нарізано для {{slicedFor}}, але цей принтер - {{printerModel}}',
     dropNotPrintable: 'Друкувати можна лише файли .gcode та .gcode.3mf',
     dropToPrint: 'Перетягніть для друку',
-    cannotPrint: 'Принтер зайнятий',
+    cannotPrint: 'Принтер зайнятий'
   },
 
   // Archives page
   archives: {
-    title: 'Архів друку',
     searchPlaceholder: 'Пошук в архівах...',
-    filterByPrinter: 'Фільтр за принтером',
-    filterByStatus: 'Фільтр за статусом',
-    sortBy: 'Сортувати за',
-    sortNewest: 'Спочатку нові',
-    sortOldest: 'Спочатку старі',
-    sortName: 'Назва',
-    sortDuration: 'Тривалість',
-    sortLargest: 'Спочатку великі',
-    sortSmallest: 'Спочатку малі',
-    sortSize: 'Розмір',
-    noArchives: 'Архівів не знайдено',
     noArchivesSearch: 'Архіви не відповідають вашому запиту',
     originalPrintNotVisible: 'Оригінальний друк не видно - спробуйте очистити фільтри',
     noArchivesYet: 'Архівів ще немає',
@@ -679,27 +586,11 @@ export default {
     gridView: 'Сітка',
     listView: 'Список',
     calendarView: 'Календар',
-    logView: 'Журнал друку',
     manageTags: 'Керування тегами',
     showFailedPrints: 'Показати невдалі друки',
     hideFailedPrints: 'Приховати невдалі друки',
     hideDuplicates: 'Приховати дублікати',
     viewOriginalPrint: 'Натисніть для перегляду оригінального друку (#{{id}})',
-    printTime: 'Час друку',
-    filamentUsed: 'Використано філаменту',
-    cost: 'Вартість',
-    reprint: 'Передрукувати',
-    preview: 'Попередній перегляд',
-    deleteArchive: 'Видалити архів',
-    deleteConfirm: 'Ви впевнені, що хочете видалити цей архів?',
-    favorite: 'Обране',
-    unfavorite: 'Видалити з обраного',
-    viewDetails: 'Детальніше',
-    status: {
-      completed: 'Завершено',
-      failed: 'Невдалий',
-      stopped: 'Зупинений',
-    },
     toast: {
       source3mfAttached: 'Вихідний 3MF прикріплено: {{filename}}',
       downloadRecovered: '3MF завантажено з принтера та прикріплено',
@@ -734,7 +625,7 @@ export default {
       failedDeleteArchives: 'Не вдалося видалити архіви',
       failedUpdateFavorites: 'Не вдалося оновити обране',
       exportDownloaded: 'Експорт завантажено',
-      exportFailed: 'Помилка експорту',
+      exportFailed: 'Помилка експорту'
     },
     menu: {
       retryDownload: 'Повторити завантаження 3MF',
@@ -773,7 +664,13 @@ export default {
       noProjectsAvailable: 'Проєктів немає',
       select: 'Вибрати',
       deselect: 'Зняти вибір',
-      delete: 'Видалити',
+      delete: 'Видалити'
+    },
+    platePicker: {
+      title: 'Виберіть плату',
+      hint: 'Багатоплатний файл — виберіть, з якою платою працювати',
+      plateLabel: 'Плата {{index}}',
+      objectCount: '{{count}} об\'єктів',
     },
     permission: {
       noReprint: 'У вас немає дозволу на передрук цього архіву',
@@ -782,8 +679,7 @@ export default {
       noUploadFiles: 'У вас немає дозволу завантажувати файли',
       noDownload: 'У вас немає дозволу завантажувати архіви',
       noCopyLink: 'У вас немає дозволу копіювати посилання для завантаження',
-      noDelete: 'У вас немає дозволу видаляти цей архів',
-      noCreate: 'У вас немає дозволу створювати архіви',
+      noDelete: 'У вас немає дозволу видаляти цей архів'
     },
     card: {
       previousPlate: 'Попередня платформа',
@@ -799,8 +695,6 @@ export default {
       stopped: 'зупинено',
       aborted: 'скасовано',
       printingClickHint: 'Клік — відкрити принтер',
-      duplicate: 'дублікат',
-      duplicateTitle: 'Ця модель вже друкувалася раніше',
       openSource3mf: 'Відкрити вихідний 3MF у Bambu Studio (правий клік для додаткових параметрів)',
       downloadF3d: 'Завантажити файл дизайну Fusion 360',
       viewTimelapse: 'Переглянути таймлапс',
@@ -812,10 +706,6 @@ export default {
       gcode: 'GCODE',
       source: 'ВИХІДНИЙ',
       project: 'Проєкт: {{name}}',
-      estimated: 'Очікувано: {{time}}',
-      actual: 'Фактично: {{time}}',
-      accuracy: 'Точність: {{percent}}%',
-      filament: '{{weight}}г',
       layer: '{{count}} шар',
       layers: '{{count}} шарів',
       object: '{{count}} об\'єкт',
@@ -839,7 +729,7 @@ export default {
       preview3d: '3D-перегляд',
       download: 'Завантажити',
       edit: 'Редагувати',
-      delete: 'Видалити',
+      delete: 'Видалити'
     },
     modal: {
       deleteArchive: 'Видалити архів',
@@ -857,7 +747,7 @@ export default {
       selectTimelapseDesc: 'Автоматичний збіг не знайдено. Виберіть таймлапс для цього друку:',
       deleteArchives: 'Видалити архіви',
       deleteArchivesConfirm: 'Ви впевнені, що хочете видалити {{count}} архів(ів)? Цю дію неможливо скасувати.',
-      deleteCount: 'Видалити {{count}}',
+      deleteCount: 'Видалити {{count}}'
     },
     page: {
       collection: {
@@ -866,27 +756,21 @@ export default {
         thisWeek: 'Цей тиждень',
         thisMonth: 'Цей місяць',
         favorites: 'Обрані',
+        notPrinted: 'Не друковані',
+        printed: 'Друковані',
         failed: 'Невдалі друки',
-        duplicates: 'Дублікати',
+        duplicates: 'Дублікати'
       },
       title: 'Архів',
-      printsCount: '{{filtered}} з {{total}} друків',
       dropFilesHere: 'Перетягніть файли .3mf сюди',
-      releaseToUpload: 'Відпустіть для завантаження',
       only3mfSupported: 'Підтримуються лише файли .3mf',
-      close: 'Закрити',
       selected: '{{count}} вибрано',
       selectAll: 'Вибрати все',
       tags: 'Теги',
       project: 'Проєкт',
       favorite: 'Обране',
-      delete: 'Видалити',
       toggledFavorites: 'Обране змінено для {{count}} архів(ів)',
-      failedUpdateFavorites: 'Не вдалося оновити обране',
       archivesDeleted: '{{count}} архів(ів) видалено',
-      failedDeleteArchives: 'Не вдалося видалити архіви',
-      photoDeleted: 'Фото видалено',
-      failedDeletePhoto: 'Не вдалося видалити фото',
       allPrinters: 'Усі принтери',
       allMaterials: 'Усі матеріали',
       allFiles: 'Усі файли',
@@ -907,15 +791,14 @@ export default {
       exportAsCsv: 'Експорт у CSV',
       exportAsExcel: 'Експорт у Excel',
       compare: 'Порівняти ({{count}})',
-      select: 'Вибрати',
-      upload3mf: 'Завантажити 3MF',
+      select: 'Вибрати'
     },
     calendar: {
       totalPrints: 'Друки (30 днів)',
       successful: 'Успішні',
       failed: 'Невдалі',
       noPrints: 'Друків за цей день немає',
-      selectDay: 'Оберіть день для перегляду друків',
+      selectDay: 'Оберіть день для перегляду друків'
     },
     list: {
       name: 'Назва',
@@ -923,54 +806,25 @@ export default {
       date: 'Дата',
       size: 'Розмір',
       actions: 'Дії',
-      hasTimelapse: 'Має таймлапс',
-    },
-    log: {
-      date: 'Дата',
-      printName: 'Назва друку',
-      printer: 'Принтер',
-      user: 'Користувач',
-      status: 'Статус',
-      duration: 'Тривалість',
-      filament: 'Філамент',
-      allPrinters: 'Усі принтери',
-      allUsers: 'Усі користувачі',
-      allStatuses: 'Усі статуси',
-      cancelled: 'Скасовано',
-      skipped: 'Пропущено',
-      dateFrom: 'Від',
-      dateTo: 'До',
-      noEntries: 'Записів журналу друку не знайдено',
-      showing: 'Показано {{count}} з {{total}} записів',
-      rowsPerPage: 'Рядків',
-      page: 'Сторінка',
-      prev: 'Попередня',
-      next: 'Наступна',
-      clearLog: 'Очистити журнал',
-      clearLogTitle: 'Очистити журнал друку',
-      clearLogConfirm: 'Усі записи журналу друку будуть безповоротно видалені. Архіви та елементи черги не постраждають. Цю дію неможливо скасувати. Ви впевнені?',
-      clearLogButton: 'Очистити все',
-      cleared: '{{count}} записів журналу очищено',
-      clearFailed: 'Не вдалося очистити журнал друку',
-    },
+      hasTimelapse: 'Має таймлапс'
+    }
   },
 
   // Queue page
   queue: {
     title: 'Черга друку',
-    subtitle: 'Плануйте та керуйте завданнями друку',
     addToQueue: 'Додати до черги',
     source: {
       external: 'Зовнішній',
       bamdude_direct: 'Прямий',
-      bamdude_queue: 'Черга',
+      bamdude_queue: 'Черга'
     },
     stagger: {
       slots: 'Stagger: {{occupied}}/{{capacity}} слотів зайнято',
       nextFreeIn: 'наступний вільний через {{duration}}',
       allFree: 'Всі слоти вільні',
       heating: 'нагрів столу',
-      intervalWait: 'відновлення сітки',
+      intervalWait: 'відновлення сітки'
     },
     // Print modal
     print: 'Друкувати',
@@ -989,58 +843,19 @@ export default {
     adding: 'Додавання...',
     addingProgress: 'Додавання {{current}}/{{total}}...',
     savingProgress: 'Збереження {{current}}/{{total}}...',
-    clearQueue: 'Очистити чергу',
-    clearHistory: 'Очистити історію',
-    emptyQueue: 'Черга порожня',
-    position: 'Позиція',
-    scheduledTime: 'Запланований час',
-    moveUp: 'Вгору',
-    moveDown: 'Вниз',
-    startNow: 'Почати зараз',
-    printingInProgress: 'Друк виконується...',
-    viewArchive: 'Переглянути архів',
-    viewInFileManager: 'Переглянути у Файловому менеджері',
-    itemCount: '{{count}} елемент',
-    itemCount_plural: '{{count}} елементів',
-    dragToReorder: 'Перетягніть для зміни порядку (лише ASAP)',
-    reorderHint: 'Позиція впливає лише на елементи ASAP. Заплановані елементи виконуються у встановлений час.',
-    addedBy: 'Додав(ла) {{name}}',
     nextInQueue: 'Наступний у черзі',
     clearPlate: 'Очистити стіл і почати наступний',
     clearPlateSuccess: 'Стіл очищено - готовий до наступного друку',
     plateReady: 'Стіл очищено - готовий до наступного друку',
-    plateNumber: 'Платформа {{index}}',
     // Sections
-    sections: {
-      currentlyPrinting: 'Зараз друкується',
-      queued: 'У черзі',
-      history: 'Історія',
-    },
     // Status
-    status: {
-      pending: 'Очікує',
-      waiting: 'Чекає',
-      printing: 'Друкується',
-      paused: 'Призупинено',
-      completed: 'Завершено',
-      failed: 'Помилка',
-      skipped: 'Пропущено',
-      cancelled: 'Скасовано',
-    },
     // Summary cards
-    summary: {
-      printing: 'Друкується',
-      queued: 'У черзі',
-      totalTime: 'Загальний час черги',
-      totalWeight: 'Загальна вага черги',
-      history: 'Історія',
-    },
     // Stats bar (top of queue page)
     stats: {
       printing: 'Друкується',
       pending: 'У черзі',
       estimatedRemaining: 'Залишилось',
-      errors: 'Помилок',
+      errors: 'Помилок'
     },
     // Timeline view
     timeline: {
@@ -1060,118 +875,21 @@ export default {
       cancelItemSuccess: 'Завдання скасовано',
       cancelItemFailed: 'Не вдалося скасувати завдання',
       cancelBatchSuccess: 'Скасовано {{count}} завдань',
-      cancelBatchFailed: 'Не вдалося скасувати партію',
+      cancelBatchFailed: 'Не вдалося скасувати партію'
     },
     // Filters
-    filter: {
-      allPrinters: 'Усі принтери',
-      unassigned: 'Не призначено',
-      allStatus: 'Усі статуси',
-      allLocations: 'Усі розташування',
-      any: 'Будь-який',
-    },
     // Sort
-    sort: {
-      byPosition: 'За позицією',
-      byName: 'За назвою',
-      byPrinter: 'За принтером',
-      bySchedule: 'За розкладом',
-      byDate: 'За датою',
-      ascendingOldest: 'За зростанням (старіші першими)',
-      descendingNewest: 'За спаданням (новіші першими)',
-    },
     // Badges
-    badges: {
-      staged: 'Підготовлено',
-      autoPowerOff: 'Автовимкнення',
-    },
     // Empty state
-    empty: {
-      title: 'Немає запланованих друків',
-      description: 'Заплануйте друк зі сторінки Архівів через опцію "Запланувати" у контекстному меню, або перетягніть файли для початку.',
-    },
     // Time
-    time: {
-      asap: 'Якнайшвидше',
-      overdue: 'Прострочено',
-      now: 'Зараз',
-      lessThanMinute: 'Менше хвилини',
-      inMinutes: 'Через {{count}} хв',
-      inHours: 'Через {{count}} год',
-    },
     // Actions
-    actions: {
-      stopPrint: 'Зупинити друк',
-      startPrint: 'Почати друк',
-      requeue: 'Повернути в чергу',
-    },
     // Bulk edit
-    bulkEdit: {
-      title: 'Редагувати {{count}} елемент',
-      title_plural: 'Редагувати {{count}} елементів',
-      description: 'До вибраних елементів будуть застосовані лише змінені налаштування.',
-      printer: 'Принтер',
-      noChange: '- Без змін -',
-      queueOptions: 'Параметри черги',
-      staged: 'Підготовлено (ручний запуск)',
-      autoPowerOff: 'Автовимкнення після друку',
-      printOptions: 'Параметри друку',
-      bedLevelling: 'Вирівнювання столу',
-      flowCalibration: 'Калібрування потоку',
-      layerInspection: 'Інспекція першого шару',
-      timelapse: 'Таймлапс',
-      useAms: 'Використовувати AMS',
-      applyChanges: 'Застосувати зміни',
-      selectAll: 'Вибрати все',
-      deselectAll: 'Зняти вибір',
-      selected: '{{count}} вибрано',
-      editSelected: 'Редагувати вибрані',
-      cancelSelected: 'Скасувати вибрані',
-    },
     // Confirmations
-    confirm: {
-      cancelTitle: 'Скасувати запланований друк',
-      cancelMessage: 'Ви впевнені, що хочете скасувати "{{name}}"?',
-      stopTitle: 'Зупинити друк',
-      stopMessage: 'Ви впевнені, що хочете зупинити поточний друк "{{name}}"? Це скасує завдання друку на принтері.',
-      removeTitle: 'Видалити з історії',
-      removeMessage: 'Ви впевнені, що хочете видалити "{{name}}" з історії черги?',
-      clearHistoryTitle: 'Очистити історію',
-      clearHistoryMessage: 'Ви впевнені, що хочете видалити всі {{count}} елементів з історії?',
-      cancelButton: 'Скасувати друк',
-      stopButton: 'Зупинити друк',
-      thisPrint: 'цей друк',
-      thisItem: 'цей елемент',
-    },
     // Toast messages
     toast: {
-      cancelled: 'Елемент черги скасовано',
-      cancelFailed: 'Не вдалося скасувати елемент',
-      removed: 'Елемент черги видалено',
-      removeFailed: 'Не вдалося видалити елемент',
-      stopped: 'Друк зупинено',
-      stopFailed: 'Не вдалося зупинити друк',
-      released: 'Друк відправлено в чергу',
-      startFailed: 'Не вдалося почати друк',
-      reorderFailed: 'Не вдалося змінити порядок черги',
-      historyCleared: 'Очищено {{count}} елементів історії',
-      clearHistoryFailed: 'Не вдалося очистити історію',
-      updateFailed: 'Не вдалося оновити елементи',
-      bulkCancelled: 'Скасовано {{count}} елементів',
-      bulkCancelFailed: 'Не вдалося скасувати елементи',
+      cancelled: 'Елемент черги скасовано'
     },
     // Permissions
-    permissions: {
-      noStopPrint: 'У вас немає дозволу зупиняти друк',
-      noStartPrint: 'У вас немає дозволу починати друк',
-      noEdit: 'У вас немає дозволу редагувати цей елемент черги',
-      noCancel: 'У вас немає дозволу скасовувати цей елемент черги',
-      noRequeue: 'У вас немає дозволу повертати елементи в чергу',
-      noRemove: 'У вас немає дозволу видаляти цей елемент черги',
-      noClearHistory: 'У вас немає дозволу очищати всю історію',
-      noEditItems: 'У вас немає дозволу редагувати елементи черги',
-      noCancelItems: 'У вас немає дозволу скасовувати елементи черги',
-    },
   },
 
   // QueueCard component
@@ -1180,7 +898,7 @@ export default {
       idle: 'Очікує',
       printing: 'Друкує',
       paused: 'Призупинено',
-      error: 'Помилка',
+      error: 'Помилка'
     },
     pauseQueue: 'Призупинити чергу',
     resumeQueue: 'Відновити чергу',
@@ -1207,14 +925,13 @@ export default {
       unsetManualStart: 'Вимкнути ручний старт',
       viewArchive: 'Показати архів',
       retry: 'Повторити',
-      more: 'Більше',
+      more: 'Більше'
     },
     issues: {
-      header: 'Проблеми ({{count}})',
+      header: 'Проблеми ({{count}})'
     },
     batch: {
       label: 'Пачка {{count}}',
-      size: '{{count}} в пачці',
       cancelTitle: 'Скасувати елемент пачки',
       cancelAll: 'Скасувати всі {{count}} копій',
       cancelOne: 'Скасувати тільки цю копію',
@@ -1223,14 +940,14 @@ export default {
       cloneAll: 'Клонувати всю пачку ({{count}} копій)',
       cloneOne: 'Додати ще 1 копію в пачку',
       cloneBatch: 'Клонувати всю пачку',
-      sizeHint: 'Цей елемент є частиною пачки з {{count}} копій.',
+      sizeHint: 'Цей елемент є частиною пачки з {{count}} копій.'
     },
     footer: {
       pending: '{{count}} в очікуванні',
       done: '{{count}} завершено',
       failed: '{{count}} з помилкою',
       cancelled: '{{count}} скасовано',
-      viewArchivesTitle: 'Відкрити архів для цього принтера',
+      viewArchivesTitle: 'Відкрити архів для цього принтера'
     },
     goToPrinter: 'Відкрити сторінку принтера',
     toast: {
@@ -1248,7 +965,7 @@ export default {
       retrying: 'Повторна спроба в черзі',
       manualStartToggled: 'Ручний старт перемкнуто',
       batchCancelled: 'Пачку скасовано',
-      batchCloned: 'Пачку клоновано',
+      batchCloned: 'Пачку клоновано'
     },
     viewCompact: 'Компактний вигляд',
     viewExpanded: 'Розгорнутий вигляд',
@@ -1258,9 +975,7 @@ export default {
     noPending: 'Немає елементів в очікуванні',
     pending: 'в очікуванні',
     manualStart: 'Вручну',
-    statusPrinting: 'Друкує:',
-    statusError: 'помилка',
-    ungrouped: 'Без розташування',
+    ungrouped: 'Без розташування'
   },
 
   backgroundDispatch: {
@@ -1274,12 +989,13 @@ export default {
     cancelDispatchJob: 'Скасувати завдання відправки',
     cancel: 'Скасувати',
     cancelling: 'Скасування\u2026',
+    awaitingPrinter: 'Очікування принтера\u2026',
     status: {
       dispatched: 'Відправлено',
       processing: 'Обробляється',
       completed: 'Завершено',
       failed: 'Помилка',
-      cancelled: 'Скасовано',
+      cancelled: 'Скасовано'
     },
     toast: {
       cancellingUpload: 'Скасування завантаження...',
@@ -1287,8 +1003,8 @@ export default {
       cancelFailed: 'Не вдалося скасувати відправку',
       completeWithFailures: 'Фонову відправку завершено: {{completed}} успішно, {{failed}} з помилками',
       completeSuccess: 'Фонову відправку завершено: {{completed}} успішно',
-      printStartedRemaining: '{{completed}} друків розпочато, ще {{remaining}} відправляється...',
-    },
+      printStartedRemaining: '{{completed}} друків розпочато, ще {{remaining}} відправляється...'
+    }
   },
 
   // Авто-черга (роутер над per-printer чергами)
@@ -1304,39 +1020,26 @@ export default {
     assignNow: 'Призначити зараз',
     cancelled: 'Елемент авто-черги скасовано',
     assigned: 'Елемент авто-черги призначено',
-    batchCancelled: 'Скасовано {{count}} елементів партії',
+    batchCancelled: 'Скасовано {{count}} елементів партії'
   },
 
   // Statistics page
   stats: {
     title: 'Статистика',
     subtitle: '',
-    overview: 'Огляд',
     totalPrints: 'Всього друків',
     successRate: 'Рівень успішності',
-    totalPrintTime: 'Загальний час друку',
     printTime: 'Час друку',
-    totalFilament: 'Всього використано філаменту',
     filamentUsed: 'Використано філаменту',
     filamentCost: 'Вартість філаменту',
-    totalCost: 'Загальна вартість',
     energyUsed: 'Використано енергії',
     energyCost: 'Вартість енергії',
     energyWarmingUpTooltip: 'Збір погодинних знімків лічильників ще триває. Підсумки за діапазон стануть точними, коли з\'явиться щонайменше один знімок до початку діапазону. Перші значення можуть бути занижені.',
-    averagePrintTime: 'Середній час друку',
-    printsPerDay: 'Друків на день',
-    byPrinter: 'За принтером',
     printsByPrinter: 'Друки за принтером',
     byMaterial: 'За матеріалом',
-    byMonth: 'За місяцем',
-    last7Days: 'Останні 7 днів',
-    last30Days: 'Останні 30 днів',
-    last90Days: 'Останні 90 днів',
-    allTime: 'За весь час',
     // Widgets
     quickStats: 'Швидка статистика',
     printActivity: 'Активність друку',
-    filamentTypes: 'Типи філаменту',
     filamentTrends: 'Тренди філаменту',
     failureAnalysis: 'Аналіз помилок',
     timeAccuracy: 'Точність часу',
@@ -1378,7 +1081,6 @@ export default {
     usageOverTime: 'Використання з часом',
     filamentByWeight: 'Вага',
     printDuration: 'Тривалість друку',
-    printerUtilization: 'Завантаженість принтера',
     filamentSuccess: 'Успішність за матеріалом',
     printHabits: 'Звички друку',
     printTimeOfDay: 'Час друку протягом доби',
@@ -1411,33 +1113,17 @@ export default {
       'all-time': 'За весь час',
       'custom': 'Довільний діапазон',
       from: 'Від',
-      to: 'До',
-    },
+      to: 'До'
+    }
   },
 
   // Maintenance page
   maintenance: {
     title: 'Обслуговування',
-    overview: 'Огляд',
     allOk: 'Усе обслуговування в актуальному стані',
     dueCount: '{{count}} потребує уваги',
-    dueCount_plural: '{{count}} потребують уваги',
     warningCount: '{{count}} попередження',
-    warningCount_plural: '{{count}} попереджень',
     totalPrintTime: 'Загальний час друку',
-    nextMaintenance: 'Наступне обслуговування',
-    nothingDue: 'Нічого не заплановано',
-    tasks: 'Завдання',
-    lastPerformed: 'Останнє виконання',
-    interval: 'Інтервал',
-    hoursRemaining: '{{hours}}г залишилось',
-    hoursOverdue: '{{hours}}г прострочено',
-    markDone: 'Позначити виконаним',
-    performMaintenance: 'Виконати обслуговування',
-    history: 'Історія',
-    noHistory: 'Немає історії обслуговування',
-    editPrintHours: 'Редагувати години друку',
-    currentHours: 'Поточні години',
     // Tabs
     statusTab: 'Стан',
     historyTab: 'Історія',
@@ -1498,24 +1184,6 @@ export default {
     printersAssignedClick: '{{count}} принтерів призначено - натисніть для керування',
     removeFromPrinter: 'Видалити з цього принтера',
     // Types
-    types: {
-      lubricateCarbonRods: 'Змастити карбонові стрижні',
-      lubricateRails: 'Змастити лінійні напрямні',
-      cleanNozzle: 'Очистити сопло/хотенд',
-      checkBelts: 'Перевірити натяг ременів',
-      cleanBuildPlate: 'Очистити стіл',
-      checkExtruder: 'Перевірити шестерні екструдера',
-      checkCooling: 'Перевірити вентилятори охолодження',
-      generalInspection: 'Загальний огляд',
-      cleanCarbonRods: 'Очистити карбонові стрижні',
-      lubricateSteelRods: 'Змастити сталеві стрижні',
-      cleanSteelRods: 'Очистити сталеві стрижні',
-      cleanLinearRails: 'Очистити лінійні напрямні',
-      checkPtfeTube: 'Перевірити PTFE трубку',
-      replaceHepaFilter: 'Замінити HEPA фільтр',
-      replaceCarbonFilter: 'Замінити вугільний фільтр',
-      lubricateLeftNozzleRail: 'Змастити ліву напрямну сопла',
-    },
     // Toast
     maintenanceComplete: 'Обслуговування позначено як виконане',
     typeUpdated: 'Тип обслуговування оновлено',
@@ -1542,7 +1210,7 @@ export default {
     allModels: 'Усі моделі',
     addModel: 'Додати модель',
     // Configure link
-    configureSettings: 'Налаштувати типи та інтервали обслуговування',
+    configureSettings: 'Налаштувати типи та інтервали обслуговування'
   },
 
   // Settings page
@@ -1563,7 +1231,7 @@ export default {
       users: 'Автентифікація',
       backup: 'Резервна копія',
       emailAuth: 'Email автентифікація',
-      ldap: 'LDAP',
+      ldap: 'LDAP'
     },
     // LDAP settings
     ldap: {
@@ -1599,8 +1267,8 @@ export default {
         serverRequired: 'URL LDAP сервера є обов\'язковим',
         searchBaseRequired: 'Базовий DN пошуку є обов\'язковим',
         enableAuthFirst: 'Спочатку увімкніть автентифікацію',
-        configureLdapFirst: 'Спочатку збережіть налаштування LDAP',
-      },
+        configureLdapFirst: 'Спочатку збережіть налаштування LDAP'
+      }
     },
     // Email settings
     email: {
@@ -1635,96 +1303,39 @@ export default {
         requiredFields: "Будь ласка, заповніть усі обов'язкові поля",
         usernameRequired: "Ім'я користувача обов'язкове, коли автентифікацію увімкнено",
         enterTestEmail: 'Будь ласка, введіть тестову email адресу',
-        smtpServerAndEmail: 'Будь ласка, заповніть SMTP сервер та Email відправника перед тестуванням',
-        usernamePasswordRequired: "Ім'я користувача та пароль обов'язкові, коли автентифікацію увімкнено",
         configureSmtpFirst: 'Будь ласка, спочатку налаштуйте та протестуйте SMTP',
-        enableAuthFirst: 'Будь ласка, спочатку увімкніть автентифікацію для використання функцій на основі email.',
+        enableAuthFirst: 'Будь ласка, спочатку увімкніть автентифікацію для використання функцій на основі email.'
       },
       // Success messages
       success: {
-        settingsSaved: 'Налаштування SMTP успішно збережено',
+        settingsSaved: 'Налаштування SMTP успішно збережено'
       },
       // Security options
       securityOptions: {
         starttls: 'STARTTLS (Порт 587)',
         ssl: 'SSL/TLS (Порт 465)',
-        none: 'Немає (Порт 25)',
+        none: 'Немає (Порт 25)'
       },
       // Authentication options
       authOptions: {
         enabled: 'Увімкнено',
-        disabled: 'Вимкнено',
-      },
+        disabled: 'Вимкнено'
+      }
     },
     appearance: 'Зовнішній вигляд',
-    notifications: 'Сповіщення',
     smartPlugs: 'Розумні розетки',
-    spoolman: 'Spoolman',
     updates: 'Оновлення',
     language: 'Мова',
     languageDescription: 'Виберіть бажану мову',
-    theme: 'Тема',
-    themeLight: 'Світла',
-    themeDark: 'Темна',
-    themeSystem: 'Системна',
     defaultView: 'Вигляд за замовчуванням',
     defaultViewDescription: 'Сторінка, яка відображається при відкритті додатку',
-    checkForUpdates: 'Перевірити оновлення',
-    autoUpdate: 'Автооновлення',
     currentVersion: 'Поточна версія',
-    latestVersion: 'Остання версія',
-    upToDate: 'У вас актуальна версія',
-    updateAvailable: 'Доступне оновлення',
     // Notifications
     bedCooledThreshold: 'Поріг охолодження столу',
-    bedCooledThresholdDescription: 'Температура, нижче якої стіл вважається охолодженим після друку',
     userNotificationsEnabled: 'Сповіщення користувачів',
     userNotificationsEnabledDescription: 'Увімкнути меню сповіщень користувачів та email сповіщення про події друку. Потребує розширеної автентифікації.',
-    userNotificationsDisabledHint: 'Увімкніть розширену автентифікацію для використання сповіщень користувачів.',
-    notificationProviders: 'Провайдери сповіщень',
     addProvider: 'Додати провайдер',
-    editProvider: 'Редагувати провайдер',
-    providerType: 'Тип провайдера',
-    testNotification: 'Тестове сповіщення',
-    testSuccess: 'Тестове сповіщення успішно надіслано',
-    testFailed: 'Не вдалося надіслати тестове сповіщення',
-    quietHours: 'Тихі години',
-    quietHoursDescription: 'Не турбувати протягом цих годин',
-    quietHoursStart: 'Початок',
-    quietHoursEnd: 'Кінець',
-    events: {
-      title: 'Події сповіщень',
-      printStart: 'Друк розпочато',
-      printComplete: 'Друк завершено',
-      printFailed: 'Друк невдалий',
-      printStopped: 'Друк зупинено',
-      printProgress: 'Етапи прогресу',
-      printProgressDescription: 'Сповіщати при 25%, 50%, 75%',
-      printerOffline: 'Принтер офлайн',
-      printerError: 'Помилка принтера',
-      filamentLow: 'Мало філаменту',
-      maintenanceDue: 'Потрібне обслуговування',
-      maintenanceDueDescription: 'Сповіщати, коли потрібне обслуговування',
-    },
     // Smart Plugs
-    smartPlug: {
-      title: 'Розумні розетки',
-      add: 'Додати розумну розетку',
-      edit: 'Редагувати розумну розетку',
-      name: 'Назва',
-      ipAddress: 'IP адреса',
-      linkedPrinter: 'Прив\'язаний принтер',
-      autoOn: 'Автоувімкнення',
-      autoOnDescription: 'Увімкнути при початку друку',
-      autoOff: 'Автовимкнення',
-      autoOffDescription: 'Вимкнути після завершення друку',
-      offDelay: 'Затримка вимкнення',
-      offDelayMinutes: 'Хвилин після друку',
-      offDelayTemp: 'Коли сопло нижче температури',
-      currentState: 'Поточний стан',
-      turnOn: 'Увімкнути',
-      turnOff: 'Вимкнути',
-    },
     // Filament Tracking Mode
     filamentTracking: 'Відстеження філаменту',
     filamentTrackingDesc: 'Оберіть спосіб відстеження котушок. Можна використовувати вбудований інвентар або підключити зовнішній сервер Spoolman.',
@@ -1740,7 +1351,7 @@ export default {
       save: 'Зберегти шаблон',
       resetDefault: 'Скинути до типового',
       saved: 'Шаблон збережено',
-      saveFailed: 'Не вдалось зберегти шаблон',
+      saveFailed: 'Не вдалось зберегти шаблон'
     },
     disableFilamentWarnings: 'Вимкнути попередження про філамент',
     disableFilamentWarningsDesc: 'Не показувати попередження про недостатню кількість філаменту при друку або додаванні в чергу',
@@ -1813,8 +1424,6 @@ export default {
     noProvidersDescription: 'Додайте провайдер для отримання сповіщень.',
     noTemplatesAvailable: 'Немає доступних шаблонів. Перезапустіть бекенд для створення шаблонів за замовчуванням.',
     // API permissions
-    apiPermissionView: 'Перегляд стану принтера та черги',
-    apiPermissionEdit: 'Додавання та видалення елементів черги друку',
     // API keys
     apiKeysEmptyTitle: 'Немає API ключів',
     apiKeysEmptyDescription: 'Створіть API ключ для інтеграції із зовнішніми сервісами.',
@@ -1823,12 +1432,7 @@ export default {
     noGroupsFound: 'Груп не знайдено',
     noGroupsAvailable: 'Немає доступних груп',
     passwordsDoNotMatch: 'Паролі не збігаються',
-    systemGroupWarning: 'Назви системних груп не можна змінювати',
     // Auth disabled
-    authDisabledTitle: 'Автентифікацію вимкнено',
-    authDisabledFeature1: 'Вимагати вхід для доступу до системи',
-    authDisabledFeature2: 'Створення кількох користувачів з дозволами на основі груп',
-    authDisabledFeature3: 'Контроль доступу з 50+ гранульованими дозволами',
     // User deletion
     userHasCreated: 'Цей користувач створив:',
     userItemsQuestion: 'Що ви хочете зробити з цими елементами?',
@@ -1874,7 +1478,7 @@ export default {
       addToQueue: 'Додати до черги друку',
       pausePrint: 'Призупинити друк',
       resumePrint: 'Продовжити друк',
-      stopPrint: 'Зупинити друк',
+      stopPrint: 'Зупинити друк'
     },
     apiBrowser: 'API браузер',
     apiBrowserDescription: 'Досліджуйте та тестуйте всі доступні API ендпоінти.',
@@ -1932,9 +1536,6 @@ export default {
     // User management
     authentication: 'Автентифікація',
     authEnabledDescription: 'Ваш екземпляр захищено автентифікацією користувачів',
-    authDisabledDescription: 'Увімкніть для вимоги входу та керування доступом користувачів',
-    authDisabledMessage: 'Увімкніть автентифікацію для створення облікових записів, керування дозволами та захисту вашого екземпляра BamDude.',
-    enableAuthentication: 'Увімкнути автентифікацію',
     currentUser: 'Поточний користувач',
     changePassword: 'Змінити пароль',
     admin: 'Адміністратор',
@@ -1970,14 +1571,11 @@ export default {
     deleteGroupMessage: 'Ви впевнені, що хочете видалити цю групу? Користувачі в цій групі втратять ці дозволи.',
     deleteGroup: 'Видалити групу',
     // Modal: Disable auth
-    disableAuthenticationTitle: 'Вимкнути автентифікацію',
-    disableAuthenticationMessage: 'Ви впевнені, що хочете вимкнути автентифікацію? Це зробить ваш екземпляр BamDude доступним без входу. Усі користувачі залишаться в базі даних, але автентифікацію буде вимкнено.',
-    disableAuthentication: 'Вимкнути автентифікацію',
     // Additional settings
     configureBamdude: 'Налаштувати BamDude',
     search: {
       placeholder: 'Пошук у налаштуваннях…',
-      noResults: 'Нічого не знайдено',
+      noResults: 'Нічого не знайдено'
     },
     systemDefault: 'Системне значення',
     archiveSettings: 'Налаштування архіву',
@@ -1998,16 +1596,12 @@ export default {
     macroDescriptionPlaceholder: 'Опціональна примітка - версія, автор, особливості використання…',
     macroEnabled: 'Увімкнено',
     macroBuiltIn: 'Вбудований',
-    macroCustom: 'Користувацький',
     macroDeleteConfirm: 'Видалити цей користувацький макрос?',
-    macroLines: 'рядків',
-    macroAwaitingResponse: 'Очікуємо відповідь принтера...',
-    noMacros: 'Немає макросів для цього принтера',
     macroEvents: {
       swap_mode_start: 'Swap Mode. Старт',
       swap_mode_change_table: 'Swap Mode. Зміна столу',
       print_started: 'Старт друку',
-      print_finished: 'Завершення друку',
+      print_finished: 'Завершення друку'
     },
     macroActionType: 'Тип дії',
     macroActionTypeGcode: 'G-код',
@@ -2018,7 +1612,7 @@ export default {
     macroDelayHint: '0 = виконати одразу при події. Корисно щоб пропустити фазу прогріву.',
     mqttActions: {
       chamberLightOff: 'Вимкнути світло камери',
-      chamberLightOn: 'Увімкнути світло камери',
+      chamberLightOn: 'Увімкнути світло камери'
     },
     newWindow: 'Нове вікно',
     embeddedOverlay: 'Вбудоване накладання',
@@ -2049,14 +1643,11 @@ export default {
     availableMetrics: 'Доступні метрики',
     editUser: 'Редагувати користувача',
     deleteUserTitle: 'Видалити користувача',
-    groupName: 'Назва групи',
     // Placeholders
     leaveEmptyForAnonymous: 'Залиште порожнім для анонімного',
     leaveEmptyForNoAuth: 'Залиште порожнім без автентифікації',
     enterNewPassword: 'Введіть новий пароль',
     confirmNewPassword: 'Підтвердіть новий пароль',
-    enterGroupName: 'Введіть назву групи',
-    enterDescriptionOptional: 'Введіть опис (необов\'язково)',
     enterCurrentPassword: 'Введіть поточний пароль',
     enterNewPasswordMin6: 'Введіть новий пароль (мін. 6 символів)',
     toast: {
@@ -2067,20 +1658,15 @@ export default {
       uiPreferencesReset: 'Налаштування інтерфейсу скинуто. Оновлення...',
       databaseOptimized: 'Базу даних оптимізовано ({{size}} МБ)',
       databaseOptimizeFailed: 'Не вдалося оптимізувати базу даних',
-      authDisabled: 'Автентифікацію успішно вимкнено',
-      authDisableFailed: 'Не вдалося вимкнути автентифікацію',
       apiKeyCreated: 'API ключ створено',
       apiKeyDeleted: 'API ключ видалено',
       userCreated: 'Користувача успішно створено',
       userUpdated: 'Користувача успішно оновлено',
       userDeleted: 'Користувача успішно видалено',
-      groupCreated: 'Групу успішно створено',
-      groupUpdated: 'Групу успішно оновлено',
       groupDeleted: 'Групу успішно видалено',
       fillRequiredFields: "Будь ласка, заповніть усі обов'язкові поля",
       passwordsDoNotMatch: 'Паролі не збігаються',
       passwordTooShort: 'Пароль повинен містити щонайменше 6 символів',
-      enterGroupName: 'Будь ласка, введіть назву групи',
       settingsSaved: 'Налаштування збережено',
       cameraSettingsSaved: 'Налаштування камери збережено',
       enterCameraUrl: 'Будь ласка, введіть URL камери',
@@ -2088,6 +1674,7 @@ export default {
       connectionFailed: 'Помилка підключення',
       testFailed: 'Тест не вдався',
       cameraConnected: 'Камеру підключено{{resolution}}',
+      noPermissionUpdate: 'У вас немає дозволу змінювати налаштування'
     },
     testConnection: 'Тест підключення',
     catalog: {
@@ -2126,7 +1713,7 @@ export default {
       deleteSelected: 'Видалити вибрані',
       bulkDeleteConfirm: 'Ви впевнені, що хочете видалити {{count}} записів?',
       bulkDeleted: 'Видалено {{count}} записів',
-      bulkDeleteFailed: 'Не вдалося видалити записи',
+      bulkDeleteFailed: 'Не вдалося видалити записи'
     },
     colorCatalog: {
       title: 'Каталог кольорів',
@@ -2169,7 +1756,7 @@ export default {
       deleteSelected: 'Видалити вибрані',
       bulkDeleteConfirm: 'Ви впевнені, що хочете видалити {{count}} кольорів?',
       bulkDeleted: 'Видалено {{count}} кольорів',
-      bulkDeleteFailed: 'Не вдалося видалити кольори',
+      bulkDeleteFailed: 'Не вдалося видалити кольори'
     },
     // General tab
     dateFormat: 'Формат дати',
@@ -2183,6 +1770,21 @@ export default {
     defaultPrinterDescription: 'Попередньо вибирати цей принтер для завантажень, передруків та інших операцій.',
     slicerBambuStudio: 'Bambu Studio',
     slicerOrcaSlicer: 'OrcaSlicer',
+    orcaslicerKnownIssuesWarning: 'OrcaSlicer 2.3.2 / 2.4.0-dev мають відомі баги CLI, що блокують нарізання багатьох 3MF, створених у BambuStudio — див. upstream-issues #12426 (SIGSEGV на розмальованих мультиекструдерних файлах) та #13386 (надто суворе перевіряння діапазону параметрів). Bambu Studio рекомендовано, доки upstream-виправлення не вийдуть.',
+    gcodeInjection: 'Вставка G-code',
+    gcodeInjectionDescription: 'Налаштуйте власний G-code для вставки на старті та/або в кінці друку для систем авто-друку як Farmloop, SwapMod, AutoClear та Printflow 3D. Сніпети налаштовуються per printer model і застосовуються коли "Вставити G-code" увімкнено в елементі черги.',
+    gcodeInjectionNoPrinters: 'Принтерів не знайдено. Додайте принтери, щоб налаштувати G-code сніпети.',
+    gcodeConfigured: 'Налаштовано',
+    gcodeStartLabel: 'Start G-code',
+    gcodeStartPlaceholder: 'G-code, що додається перед стартом друку...',
+    gcodeEndLabel: 'End G-code',
+    gcodeEndPlaceholder: 'G-code, що додається після завершення друку...',
+    useSlicerApi: 'Увімкнути серверне нарізання',
+    useSlicerApiDescription: 'Показувати дію «Нарізати» для файлів STL/3MF/STEP. Потрібен запущений HTTP-sidecar OrcaSlicer або BambuStudio.',
+    orcaslicerApiUrl: 'URL API OrcaSlicer',
+    orcaslicerApiUrlDescription: 'Порожнє значення повертає до значення SLICER_API_URL з оточення.',
+    bambuStudioApiUrl: 'URL API BambuStudio',
+    bambuStudioApiUrlDescription: 'Порожнє значення повертає до значення BAMBU_STUDIO_API_URL з оточення.',
     sidebarOrderDescription: 'Перетягніть елементи в бічній панелі для зміни порядку. Скинути до порядку за замовчуванням тут.',
     setDefault: 'Встановити за замовчуванням',
     sidebarOrderSetDefaultHint: 'Встановити за замовчуванням застосовує поточний порядок меню для користувачів, які не налаштували свій.',
@@ -2245,7 +1847,7 @@ export default {
       daysAgo: 'д тому',
       in: 'через',
       minutes: 'хв',
-      hours: 'г',
+      hours: 'г'
     },
     // Camera
     camera: 'Камера',
@@ -2280,7 +1882,6 @@ export default {
     bamdudeSoftware: 'Програмне забезпечення BamDude',
     autoCheckDescription: 'Автоматично перевіряти наявність нових версій при запуску',
     checkNow: 'Перевірити зараз',
-    updateAvailableVersion: 'Доступне оновлення: v{{version}}',
     releaseNotes: 'Примітки до релізу',
     updateViaDocker: 'Оновити через Docker Compose:',
     installUpdate: 'Встановити оновлення',
@@ -2398,7 +1999,7 @@ export default {
       newBackupCodes: 'Нові резервні коди',
       linkedAccounts: 'Прив\'язані SSO-акаунти',
       linkedAccountsDesc: 'Ці зовнішні провайдери автентифікації прив\'язані до вашого акаунта.',
-      oidcUnlinked: 'Акаунт відв\'язано.',
+      oidcUnlinked: 'Акаунт відв\'язано.'
     },
     oidc: {
       title: 'SSO / OIDC провайдери',
@@ -2423,66 +2024,19 @@ export default {
         autoCreateDesc: 'Автоматично створювати локальний акаунт при першому вході.',
         autoLink: 'Авто-прив\'язка існуючих акаунтів',
         autoLinkDesc: 'Прив\'язувати локальні акаунти за збігом email при першому вході.',
+        emailClaim: 'Email claim',
+        emailClaimHelp: 'JWT claim, який використовується як email-ідентичність. За замовчуванням "email". Для Azure Entra ID встановіть "preferred_username" або "upn" — Azure не надсилає email_verified, а кастомний claim пропускає цю перевірку.',
+        requireEmailVerified: 'Вимагати email_verified',
+        requireEmailVerifiedDesc: 'Довіряти стандартному claim "email" лише коли провайдер явно встановлює email_verified=true. Вимкніть для застарілих IdP, які не надсилають цей claim. Обов\'язково ON, коли увімкнено авто-прив\'язку з "email" claim.',
+        requireEmailVerifiedNAForCustomClaim: 'Не застосовується — кастомні claim ніколи не звертаються до email_verified.',
         secretHint: 'залишіть порожнім для збереження',
-        secretPlaceholder: 'новий secret',
-      },
-    },
+        secretPlaceholder: 'новий secret'
+      }
+    }
   },
 
   // Notifications (for push notifications)
-  notification: {
-    printStarted: {
-      title: 'Друк розпочато',
-      body: '{{printer}}: {{filename}} почав друкуватися',
-    },
-    printCompleted: {
-      title: 'Друк завершено',
-      body: '{{printer}}: {{filename}} успішно завершено',
-    },
-    printFailed: {
-      title: 'Друк невдалий',
-      body: '{{printer}}: {{filename}} завершився з помилкою',
-    },
-    printStopped: {
-      title: 'Друк зупинено',
-      body: '{{printer}}: {{filename}} було зупинено',
-    },
-    printProgress: {
-      title: 'Прогрес друку',
-      body: '{{printer}}: {{filename}} виконано на {{percent}}%',
-    },
-    printerOffline: {
-      title: 'Принтер офлайн',
-      body: '{{printer}} не в мережі',
-    },
-    printerError: {
-      title: 'Помилка принтера',
-      body: '{{printer}}: {{error}}',
-    },
-    filamentLow: {
-      title: 'Мало філаменту',
-      body: '{{printer}}: філамент закінчується',
-    },
-    maintenanceDue: {
-      title: 'Потрібне обслуговування',
-      body: '{{printer}}: {{items}} потребують уваги',
-    },
-  },
-
   // Errors
-  errors: {
-    generic: 'Щось пішло не так',
-    networkError: 'Помилка мережі. Перевірте підключення.',
-    notFound: 'Не знайдено',
-    unauthorized: 'Не авторизовано',
-    serverError: 'Помилка сервера',
-    validationError: 'Перевірте введені дані',
-    printerConnectionFailed: 'Не вдалося підключитися до принтера',
-    saveFailed: 'Не вдалося зберегти зміни',
-    deleteFailed: 'Не вдалося видалити',
-    loadFailed: 'Не вдалося завантажити дані',
-  },
-
   // HMS Errors modal
   hmsErrors: {
     title: 'Помилки - {{name}}',
@@ -2491,7 +2045,7 @@ export default {
     clearInstructions: 'Очистіть помилки на принтері, щоб прибрати їх тут.',
     clearErrors: 'Очистити помилки',
     clearSuccess: 'Помилки HMS очищено',
-    clearFailed: 'Не вдалося очистити помилки HMS',
+    clearFailed: 'Не вдалося очистити помилки HMS'
   },
 
   // MQTT Debug modal
@@ -2509,10 +2063,7 @@ export default {
     startLogging: 'Почати запис',
     stopLogging: 'Зупинити запис',
     clearLog: 'Очистити журнал',
-    topic: 'Тема',
-    timestamp: 'Мітка часу',
-    direction: 'Напрямок',
-    all: 'Усі',
+    all: 'Усі'
   },
 
   // Printer File Manager modal (printer internal storage)
@@ -2525,22 +2076,13 @@ export default {
     deleteFiles: 'Видалити {{count}} файлів',
     deleteFileConfirm: 'Видалити "{{name}}"? Це не можна скасувати.',
     deleteFilesConfirm: 'Видалити {{count}} вибраних файлів? Це не можна скасувати.',
-    noFiles: 'Немає файлів на принтері',
-    loadingFiles: 'Завантаження файлів...',
-    failedToLoad: 'Не вдалося завантажити файли',
     toast: {
       filesDeleted: 'Видалено {{count}} файлів',
-      deleteFailed: 'Помилка видалення: {{error}}',
-    },
+      deleteFailed: 'Помилка видалення: {{error}}'
+    }
   },
 
   // Confirmations
-  confirm: {
-    delete: 'Ви впевнені, що хочете видалити це?',
-    unsavedChanges: 'У вас є незбережені зміни. Ви впевнені, що хочете покинути сторінку?',
-    clearQueue: 'Ви впевнені, що хочете очистити чергу?',
-  },
-
   // Login page
   login: {
     title: 'Вхід в BamDude',
@@ -2578,7 +2120,7 @@ export default {
       accountInactive: 'Ваш обліковий запис неактивний',
       userResolutionFailed: 'Не вдалося розв\'язати ваш акаунт',
       internalError: 'Внутрішня помилка під час OIDC-входу',
-      tokenExchangeFailed: 'Помилка обміну OIDC-token',
+      tokenExchangeFailed: 'Помилка обміну OIDC-token'
     },
     forgotPasswordTitle: 'Забули пароль',
     forgotPasswordMessage: 'Якщо ви забули пароль, зверніться до системного адміністратора для його скидання.',
@@ -2606,7 +2148,7 @@ export default {
       backToLogin: 'Назад до входу',
       passwordsDoNotMatch: 'Паролі не співпадають',
       passwordTooShort: 'Пароль повинен мати щонайменше 8 символів',
-      resetFailed: 'Помилка скидання пароля. Посилання, можливо, застаріле.',
+      resetFailed: 'Помилка скидання пароля. Посилання, можливо, застаріле.'
     },
     twoFA: {
       title: 'Двофакторна автентифікація',
@@ -2632,8 +2174,8 @@ export default {
       signInWith: 'Увійти через {{provider}}',
       enterCode: 'Введіть код підтвердження',
       sendCodeFailed: 'Не вдалося надіслати код',
-      invalidCode: 'Невірний код. Спробуйте ще.',
-    },
+      invalidCode: 'Невірний код. Спробуйте ще.'
+    }
   },
 
   // Setup page
@@ -2657,8 +2199,8 @@ export default {
       authEnabledAdminCreated: 'Адміністратора створено - вітаємо в BamDude',
       enterBothCredentials: "Введіть ім'я та пароль адміністратора",
       passwordsDoNotMatch: 'Паролі не збігаються',
-      passwordTooShort: 'Пароль повинен містити щонайменше 6 символів',
-    },
+      passwordTooShort: 'Пароль повинен містити щонайменше 6 символів'
+    }
   },
 
   // Password change
@@ -2674,19 +2216,18 @@ export default {
     passwordTooShort: 'Пароль повинен містити щонайменше 6 символів',
     changing: 'Зміна...',
     success: 'Пароль успішно змінено',
-    failed: 'Не вдалося змінити пароль',
+    failed: 'Не вдалося змінити пароль'
   },
 
   // Plate detection alert
   plateAlert: {
     title: 'Друк призупинено!',
     message: 'Виявлено об\'єкти на столі друку. Друк було автоматично призупинено. Очистіть стіл та продовжіть друк.',
-    understand: 'Зрозуміло',
+    understand: 'Зрозуміло'
   },
 
   // Camera page
   camera: {
-    title: 'Перегляд камери',
     invalidPrinterId: 'Невірний ID принтера',
     live: 'Наживо',
     snapshot: 'Знімок',
@@ -2697,76 +2238,45 @@ export default {
     connectingToCamera: 'Підключення до камери...',
     capturingSnapshot: 'Захоплення знімка...',
     connectionLost: 'З\'єднання втрачено',
-    connectionFailed: 'Помилка підключення камери',
     reconnecting: 'Перепідключення через {{countdown}}с... (спроба {{attempt}}/{{max}})',
     reconnectNow: 'Перепідключити зараз',
     cameraUnavailable: 'Камера недоступна',
     cameraUnavailableDesc: 'Переконайтеся, що принтер увімкнений та підключений.',
-    noCamera: 'Камера недоступна',
     retry: 'Повторити',
     cameraStream: 'Потік камери',
     zoomOut: 'Зменшити',
     zoomIn: 'Збільшити',
     resetZoom: 'Скинути масштаб',
-    recording: 'Запис',
-    startRecording: 'Почати запис',
-    stopRecording: 'Зупинити запис',
-    chamberLight: 'Перемкнути підсвітку камери',
+    chamberLight: 'Перемкнути підсвітку камери'
   },
 
   // Groups management
   groups: {
-    title: 'Керування групами',
-    subtitle: 'Керуйте групами дозволів для контролю доступу',
-    backToSettings: 'Повернутися до Налаштувань',
-    createGroup: 'Створити групу',
-    noPermission: 'У вас немає дозволу для доступу до цієї сторінки.',
-    systemLabel: 'Системна',
     system: {
       administrators: {
         name: 'Адміністратори',
-        description: 'Повний доступ до всіх функцій та налаштувань',
+        description: 'Повний доступ до всіх функцій та налаштувань'
       },
       operators: {
         name: 'Оператори',
-        description: 'Керування принтерами, чергою та архівами, перегляд налаштувань',
+        description: 'Керування принтерами, чергою та архівами, перегляд налаштувань'
       },
       viewers: {
         name: 'Глядачі',
-        description: 'Доступ лише для читання до принтерів, архівів та черги',
-      },
+        description: 'Доступ лише для читання до принтерів, архівів та черги'
+      }
     },
-    noDescription: 'Без опису',
-    usersCount: '{{count}} користувачів',
-    permissionsCount: '{{count}} дозволів',
-    edit: 'Редагувати',
-    delete: 'Видалити',
     toast: {
       created: 'Групу успішно створено',
       updated: 'Групу успішно оновлено',
-      deleted: 'Групу успішно видалено',
-      enterGroupName: 'Будь ласка, введіть назву групи',
-    },
-    modal: {
-      editGroup: 'Редагувати групу',
-      createGroup: 'Створити групу',
-      cancel: 'Скасувати',
-      saving: 'Збереження...',
-      creating: 'Створення...',
-      saveChanges: 'Зберегти зміни',
+      enterGroupName: 'Будь ласка, введіть назву групи'
     },
     form: {
       groupName: 'Назва групи',
       groupNamePlaceholder: 'Введіть назву групи',
       systemGroupWarning: 'Назви системних груп не можна змінювати',
       description: 'Опис',
-      descriptionPlaceholder: "Введіть опис (необов'язково)",
-      permissions: 'Дозволи ({{count}} вибрано)',
-    },
-    deleteModal: {
-      title: 'Видалити групу',
-      message: 'Ви впевнені, що хочете видалити цю групу? Користувачі в цій групі втратять ці дозволи.',
-      confirm: 'Видалити групу',
+      descriptionPlaceholder: "Введіть опис (необов'язково)"
     },
     editor: {
       title: 'Редагувати групу',
@@ -2775,47 +2285,21 @@ export default {
       selectAll: 'Вибрати все',
       clearAll: 'Очистити все',
       permissionsSelected: '{{count}} вибрано',
-      noResults: 'Немає дозволів, що відповідають пошуку',
-    },
+      noResults: 'Немає дозволів, що відповідають пошуку'
+    }
   },
 
   // Users management
   users: {
-    title: 'Керування користувачами',
-    subtitle: 'Керуйте користувачами та їхнім доступом до BamDude',
-    backToSettings: 'Повернутися до Налаштувань',
-    createUser: 'Створити користувача',
-    noPermission: 'У вас немає дозволу для доступу до цієї сторінки.',
-    admin: 'Адміністратор',
-    noGroups: 'Без груп',
-    active: 'Активний',
-    inactive: 'Неактивний',
-    edit: 'Редагувати',
-    delete: 'Видалити',
     system: 'Системний',
     noGroupsAvailable: 'Немає доступних груп',
-    table: {
-      username: "Ім'я користувача",
-      groups: 'Групи',
-      status: 'Стан',
-      actions: 'Дії',
-    },
-    toast: {
-      created: 'Користувача успішно створено',
-      updated: 'Користувача успішно оновлено',
-      deleted: 'Користувача успішно видалено',
-      fillRequired: "Будь ласка, заповніть усі обов'язкові поля",
-      passwordsDoNotMatch: 'Паролі не збігаються',
-      passwordTooShort: 'Пароль повинен містити щонайменше 6 символів',
-    },
     modal: {
       createUser: 'Створити користувача',
-      editUser: 'Редагувати користувача',
       cancel: 'Скасувати',
       creating: 'Створення...',
       saving: 'Збереження...',
       saveChanges: 'Зберегти зміни',
-      advancedAuthSubtitle: 'з розширеною автентифікацією',
+      advancedAuthSubtitle: 'з розширеною автентифікацією'
     },
     form: {
       username: "Ім'я користувача",
@@ -2823,24 +2307,14 @@ export default {
       email: 'Email',
       emailPlaceholder: 'user@example.com',
       password: 'Пароль',
-      passwordPlaceholder: 'Введіть пароль',
-      confirmPassword: 'Підтвердити пароль',
-      confirmPasswordPlaceholder: 'Підтвердіть пароль',
-      newPasswordPlaceholder: 'Введіть новий пароль',
-      confirmNewPasswordPlaceholder: 'Підтвердіть новий пароль',
       leaveBlankToKeep: 'залиште порожнім, щоб зберегти поточний',
       groups: 'Групи',
       optional: "необов'язково",
       autoGeneratedPassword: 'Безпечний пароль буде автоматично згенеровано та надіслано користувачу електронною поштою.',
       passwordManagedByAdvancedAuth: 'Пароль керується розширеною автентифікацією. Використовуйте "Скинути пароль" для надсилання нового пароля користувачу електронною поштою.',
       resetPassword: 'Скинути пароль',
-      resettingPassword: 'Скидання пароля...',
-    },
-    deleteModal: {
-      title: 'Видалити користувача',
-      message: 'Ви впевнені, що хочете видалити цього користувача? Цю дію не можна скасувати.',
-      confirm: 'Видалити користувача',
-    },
+      resettingPassword: 'Скидання пароля...'
+    }
   },
 
   // Stream overlay
@@ -2858,8 +2332,8 @@ export default {
       finished: 'Завершено',
       failed: 'Помилка',
       idle: 'Простоює',
-      unknown: 'Невідомо',
-    },
+      unknown: 'Невідомо'
+    }
   },
 
   // Profiles
@@ -2869,18 +2343,15 @@ export default {
     tabs: {
       cloud: 'Хмарні профілі',
       local: 'Локальні профілі',
-      kprofiles: 'K-профілі',
+      kprofiles: 'K-профілі'
     },
     localProfiles: {
-      title: 'Локальні профілі',
-      subtitle: 'Імпорт та керування пресетами слайсера з OrcaSlicer',
       import: 'Імпорт профілів',
       importDesc: 'Перетягніть файли .bbscfg, .bbsflmt, .orca_filament, .zip або .json сюди',
       importing: 'Імпорт...',
       search: 'Пошук локальних пресетів...',
       noPresets: 'Локальних пресетів ще немає',
       badge: 'Локальний',
-      edit: 'Редагувати',
       delete: 'Видалити',
       cancel: 'Скасувати',
       deleteConfirmTitle: 'Видалити пресет',
@@ -2901,23 +2372,16 @@ export default {
         importSuccess: '{{count}} пресетів імпортовано',
         importSkipped: '{{count}} пресетів пропущено (дублікати)',
         importError: '{{count}} помилок при імпорті',
-        deleted: 'Пресет видалено',
-        updated: 'Пресет оновлено',
-      },
+        deleted: 'Пресет видалено'
+      }
     },
     connectedAs: 'Підключено як',
     logout: 'Вийти',
     noLogoutPermission: 'У вас немає дозволу на вихід',
     failedToLoad: 'Не вдалося завантажити профілі',
     retry: 'Повторити',
-    time: {
-      justNow: 'Щойно',
-      minsAgo: '{{count}}хв тому',
-      hoursAgo: '{{count}}год тому',
-      daysAgo: '{{count}}дн тому',
-    },
     toast: {
-      loggedOut: 'Вихід виконано',
+      loggedOut: 'Вихід виконано'
     },
     login: {
       title: 'Підключення до Bambu Cloud',
@@ -2943,8 +2407,8 @@ export default {
         loggedIn: 'Вхід успішний',
         codeSent: 'Код підтвердження надіслано на email',
         enterTotp: 'Введіть код з вашого додатку автентифікатора',
-        tokenSet: 'Токен успішно встановлено',
-      },
+        tokenSet: 'Токен успішно встановлено'
+      }
     },
     presets: {
       myPreset: 'Мій пресет (редагований)',
@@ -2959,15 +2423,14 @@ export default {
       types: {
         filament: 'Пресет філаменту',
         printer: 'Пресет принтера',
-        process: 'Пресет процесу',
+        process: 'Пресет процесу'
       },
       toast: {
         deleted: 'Пресет видалено',
         created: 'Пресет створено',
         updated: 'Пресет оновлено',
-        duplicated: 'Пресет дубльовано',
         fieldAdded: 'Поле "{{key}}" додано',
-        exported: 'Пресет експортовано',
+        exported: 'Пресет експортовано'
       },
       baseLabel: 'Базовий: {{name}}',
       currentLabel: 'Поточний: {{name}}',
@@ -2988,7 +2451,7 @@ export default {
       // CreatePresetModal - Tabs
       tabs: {
         common: 'Основні',
-        allFields: 'Усі поля',
+        allFields: 'Усі поля'
       },
       // CreatePresetModal - All Fields Tab
       availableFields: 'Доступні поля',
@@ -3014,7 +2477,7 @@ export default {
       noOverridesToSave: 'Немає перевизначень для збереження як шаблон',
       noSettingId: 'Неможливо оновити: відсутній ID налаштування',
       noTemplatesSelected: 'Немає доступних шаблонів',
-      templateApplied: 'Шаблон застосовано:',
+      templateApplied: 'Шаблон застосовано:'
     },
     cloudView: {
       searchPlaceholder: 'Пошук пресетів...',
@@ -3037,7 +2500,7 @@ export default {
       columns: {
         filament: 'Філамент',
         process: 'Процес',
-        printer: 'Принтер',
+        printer: 'Принтер'
       },
       noFilamentPresets: 'Немає пресетів філаменту',
       noProcessPresets: 'Немає пресетів процесу',
@@ -3053,12 +2516,12 @@ export default {
         all: 'Усі',
         myPresets: 'Мої пресети',
         builtIn: 'Вбудовані',
-        process: 'Процес',
+        process: 'Процес'
       },
       // Permissions
       noTemplatesPermission: 'У вас немає дозволу керувати шаблонами',
       noRefreshPermission: 'У вас немає дозволу оновлювати профілі',
-      noCreatePermission: 'У вас немає дозволу створювати пресети',
+      noCreatePermission: 'У вас немає дозволу створювати пресети'
     },
     diff: {
       title: 'Порівняння пресетів',
@@ -3072,7 +2535,7 @@ export default {
       changes: 'Тільки зміни',
       noDifferences: 'Відмінностей не знайдено',
       noFieldsMatch: 'Жодне поле не відповідає вашому пошуку',
-      field: 'Поле',
+      field: 'Поле'
     },
     templates: {
       title: 'Швидкі шаблони',
@@ -3093,9 +2556,9 @@ export default {
         deleted: 'Шаблон видалено',
         updated: 'Шаблон оновлено',
         created: 'Шаблон створено',
-        applied: 'Шаблон застосовано',
-      },
-    },
+        applied: 'Шаблон застосовано'
+      }
+    }
   },
 
   // Support/Debug
@@ -3139,7 +2602,7 @@ export default {
     notItem5: 'URL-адреси вебхуків',
     notItem6: 'Ваше ім\'я хоста або ім\'я користувача',
     notItem7: 'IP-адреси',
-    privacyNote: 'Електронні адреси в логах замінюються на [EMAIL], назви принтерів на [PRINTER], серійні номери на [SERIAL], а IP-адреси на [IP].',
+    privacyNote: 'Електронні адреси в логах замінюються на [EMAIL], назви принтерів на [PRINTER], серійні номери на [SERIAL], а IP-адреси на [IP].'
   },
 
   // File manager
@@ -3161,7 +2624,286 @@ export default {
     deleteConfirmTitle: 'Видалити нотатку',
     deleteConfirmMessage: 'Видалити цю нотатку? Дію не можна скасувати.',
     unknownAuthor: 'Невідомий',
-    anonymous: 'Анонімно',
+    anonymous: 'Анонімно'
+  },
+
+  makerworld: {
+    title: 'MakerWorld',
+    description: 'Вставте URL моделі MakerWorld, щоб імпортувати та надрукувати її прямо з BamDude — без переходу до Bambu Handy.',
+    pasteUrlHeader: 'Імпорт з MakerWorld',
+    pasteUrlPlaceholder: 'https://makerworld.com/en/models/… або будь-яке MakerWorld-посилання',
+    resolveButton: 'Завантажити',
+    signInRequiredTitle: 'Для завантаження потрібен Bambu Cloud',
+    signInRequiredBody: 'Перегляд моделі працює без входу, але MakerWorld вимагає акаунт Bambu Cloud для скачування 3MF-файлів.',
+    openCloudSettings: 'Відкрити налаштування Cloud',
+    untitledModel: 'Без назви',
+    byCreator: 'автор {{name}}',
+    downloadsCount: '{{count}} завантажень',
+    licensePrefix: 'Ліцензія',
+    alreadyImported: 'Вже в бібліотеці',
+    openOnMakerworld: 'Відкрити на MakerWorld',
+    alreadyInLibrary: 'Ця модель вже у вашій бібліотеці — знайдіть її у Файловий менеджер → MakerWorld',
+    importSuccess: 'Імпортовано {{filename}} — збережено в Файловий менеджер → MakerWorld',
+    platesHeader: 'Плати ({{count}})',
+    plateDefaultName: 'Плата {{n}}',
+    materialCount: '{{count}} філаментів',
+    amsRequired: 'Потрібен AMS',
+    slicedFor: 'Нарізано для {{printer}}',
+    alsoCompatible: 'Також сумісно: {{printers}}',
+    importToLibrary: 'Зберегти',
+    sliceIn: 'Зберегти й нарізати в {{slicer}}',
+    disclaimer: 'Інтеграція MakerWorld використовує спільнотні API-ендпоінти. BamDude не пов\'язаний і не схвалений MakerWorld чи Bambu Lab.',
+    lastImportSuccess: 'Імпортовано в бібліотеку',
+    lastImportAlreadyInLibrary: 'Вже в бібліотеці',
+    viewInLibrary: 'Переглянути у файловому менеджері',
+    openInBambuStudio: 'Відкрити в Bambu Studio',
+    openInOrcaSlicer: 'Відкрити в OrcaSlicer',
+    importTo: 'Імпортувати у файловий менеджер',
+    recentImportsHeader: 'Останні імпорти',
+    phaseResolving: 'Завантаження інформації',
+    phaseDownloading: 'Завантаження файлу',
+    folderAuto: 'MakerWorld (за замовчуванням)',
+    importAll: 'Імпортувати все',
+    importAllProgress: 'Імпорт {{current}}/{{total}}',
+    openGallery: 'Відкрити галерею зображень',
+    galleryPrev: 'Попереднє зображення',
+    galleryNext: 'Наступне зображення',
+    deleteImport: 'Видалити з бібліотеки',
+    importDeleting: 'Видалення…',
+    importDeleted: 'Видалено з бібліотеки',
+    confirmDelete: 'Видалити {{filename}} з бібліотеки? Це видалить локальний файл, але плату можна повторно імпортувати з MakerWorld.',
+    errors: {
+      resolveFailed: 'Не вдалося завантажити інформацію про модель MakerWorld.',
+      downloadFailed: 'Завантаження не вдалося. Спробуйте ще раз.',
+      deleteFailed: 'Не вдалося видалити файл з бібліотеки.',
+    },
+  },
+
+  slice: {
+    title: 'Нарізати модель',
+    action: 'Нарізати',
+    actionServerSide: 'Нарізати (на сервері)',
+    enqueuing: 'Надсилання завдання нарізання…',
+    loadingPresets: 'Завантаження пресетів…',
+    presetsLoadFailed: 'Не вдалося завантажити пресети. Відкрийте Налаштування → Профілі, щоб імпортувати їх, або увійдіть у Bambu Cloud.',
+    printer: 'Профіль принтера',
+    process: 'Профіль процесу',
+    filament: 'Профіль філаменту',
+    filamentSlot: 'Філамент {{index}} ({{type}})',
+    notUsedByPlate: '— не використовується цією платою',
+    selectPreset: '— Виберіть пресет —',
+    noPresetsForSlot: 'Немає доступних пресетів',
+    allPresetsRequired: 'Потрібно вибрати всі пресети',
+    analyzingPlateFilaments: 'Аналіз філаментів плати…',
+    analyzingPlateFilamentsHint: 'Виконується попереднє нарізання, щоб визначити, які слоти AMS використовує ця плата. Кешується після — повторне відкриття миттєве.',
+    previewToast: 'Аналіз {{name}} — {{elapsed}}',
+    previewWithProgress: 'Аналіз {{name}} — {{stage}} ({{percent}}%) — {{elapsed}}',
+    runningToast: 'Нарізання {{name}} — {{elapsed}}',
+    runningWithProgress: '{{name}} — {{stage}} ({{percent}}%) — {{elapsed}}',
+    queuedToast: 'У черзі: {{name}} — {{elapsed}}',
+    completedToast: 'Нарізано {{name}}',
+    failedToast: 'Нарізання {{name}} не вдалося: {{detail}}',
+    failed: 'Помилка нарізання',
+    printerMismatch: 'Цей 3MF було нарізано для {{source}}, але ви вибрали {{target}}. Слайсер CLI не може перенарізати 3MF для іншого принтера — відкрийте джерело в Bambu Studio, змініть принтер та переекспортуйте.',
+    tier: {
+      local: 'Імпортовані',
+      cloud: 'Cloud',
+      standard: 'Стандартні',
+    },
+    cloud: {
+      notAuthenticated: 'Увійдіть у Bambu Cloud (Налаштування → Профілі → Cloud), щоб побачити свої cloud-пресети.',
+      expired: 'Сесія Bambu Cloud закінчилася — увійдіть знову, щоб оновити cloud-пресети.',
+      unreachable: 'Bambu Cloud зараз недоступний. Локальні та стандартні пресети все одно працюють.',
+    },
+  },
+
+  libraryTrash: {
+    title: 'Кошик',
+    headerButton: 'Кошик',
+    headerTooltip: 'Переглянути файли, переміщені в кошик',
+    backToFiles: 'Назад до Файлового менеджера',
+    subtitleAdmin: 'Видалені файли зберігаються тут {{days}} днів, потім автоматично видаляються. Цей перегляд показує файли в кошику для всіх користувачів.',
+    subtitleUser: 'Видалені файли зберігаються тут {{days}} днів, потім автоматично видаляються.',
+    loading: 'Завантаження кошика…',
+    loadError: 'Не вдалося завантажити кошик.',
+    empty: 'Кошик порожній.',
+    summary: '{{count}} файлів · {{size}}',
+    emptyTrash: 'Очистити кошик',
+    restore: 'Відновити',
+    purgeNow: 'Видалити зараз',
+    autoPurgeIn: 'Автовидалення через {{when}}',
+    anyMoment: 'будь-який момент',
+    oneDay: '1 день',
+    nDays: '{{count}} днів',
+    days: 'днів',
+    retentionLabel: 'Автовидалення через',
+    selectAll: 'Виділити все',
+    selectOne: 'Виділити {{filename}}',
+    selectionCount: 'виділено: {{count}}',
+    bulkRestore: 'Відновити виділене',
+    bulkPurge: 'Видалити виділене',
+    col: {
+      filename: 'Файл',
+      folder: 'Папка',
+      size: 'Розмір',
+      deleted: 'Переміщено в кошик',
+      autoPurge: 'Автовидалення',
+      owner: 'Власник',
+      actions: 'Дії',
+    },
+    confirm: {
+      purgeTitle: 'Видалити остаточно?',
+      purgeBody: '{{filename}} буде видалено з диска без можливості відновлення.',
+      emptyTitle: 'Очистити кошик?',
+      emptyBody: 'Усі {{count}} файлів буде видалено з диска. Це неможливо скасувати.',
+      bulkPurgeTitle: 'Видалити виділені файли остаточно?',
+      bulkPurgeBody: '{{count}} виділені файли буде видалено з диска без можливості відновлення.',
+      cta: 'Видалити остаточно',
+    },
+    toast: {
+      restored: 'Файл відновлено.',
+      restoreFailed: 'Не вдалося відновити файл.',
+      purged: 'Файл видалено остаточно.',
+      purgeFailed: 'Не вдалося видалити файл. {{message}}',
+      pinnedByArchives: 'Не можна видалити: {{count}} активних архів(ів) ще посилається на цей файл. Спочатку перемістіть архіви в кошик.',
+      emptied: 'Видалено {{count}} файл(ів) з кошика.',
+      emptiedSomeSkipped: 'Видалено {{deleted}} файл(ів); {{skipped}} закріплених активними архівами пропущено.',
+      emptyFailed: 'Не вдалося очистити кошик.',
+      retentionSaved: 'Автовидалення встановлено на {{days}} днів.',
+      retentionFailed: 'Не вдалося зберегти налаштування зберігання.',
+      bulkRestored: 'Відновлено {{count}} файл(ів).',
+      bulkPurged: 'Видалено {{count}} файл(ів).',
+    },
+  },
+
+  libraryPurge: {
+    title: 'Очистка старих файлів',
+    headerButton: 'Очистити старі',
+    headerTooltip: 'Масово перемістити старі файли в кошик',
+    description: 'Очистити стару бібліотеку за один раз. Файли з історією друку старіють за датою останнього друку; файли без історії — за датою завантаження.',
+    ageLabel: 'Перемістити файли старші за',
+    days: 'днів',
+    includeNeverPrinted: 'Включити файли, які ніколи не друкувалися',
+    effectsTitle: 'Що відбувається при натисканні Очистити',
+    effect1: 'Файли, що відповідають критеріям, переміщуються в Кошик — вони ще не видаляються з диска.',
+    effect2: 'Ви можете відновити їх з Кошика в будь-який момент до закінчення вікна зберігання.',
+    effect3: 'Після закінчення зберігання sweeper кошика видаляє їх з диска назавжди.',
+    effect4: 'Файли в зовнішніх (linked) папках пропускаються — BamDude ніколи не видаляє байти, які йому не належать.',
+    previewLoading: 'Перевірка кількості файлів…',
+    previewFailed: 'Не вдалося отримати попередній перегляд очистки.',
+    previewSummary: '{{count}} файлів · {{size}} буде переміщено в кошик',
+    andMore: '…і ще {{count}}',
+    warning: 'Файли в кошику все одно займають місце до закінчення вікна зберігання. Очистіть Кошик потім, щоб одразу звільнити диск.',
+    confirmCta: 'Перемістити {{count}} в кошик',
+    purging: 'Переміщення в кошик…',
+    toast: {
+      success: 'Переміщено {{count}} файл(ів) в кошик.',
+      failed: 'Не вдалося очистити файли.',
+    },
+  },
+
+  libraryAutoPurge: {
+    sectionTitle: 'Кошик бібліотеки',
+    retentionLabel: 'Зберігання в кошику',
+    retentionDescription: 'Скільки видалені файли лежать у кошику, поки sweeper хард-видалить їх з диска. 1–365 днів. Файли, закріплені активним архівом, чекають доки архів теж не потрапить у кошик.',
+    enableLabel: 'Авто-очистка старих файлів',
+    enableDescription: 'Запускає admin-очистку раз на день. Файли спочатку йдуть у Кошик — не видаляються одразу.',
+    ageLabel: 'Авто-очистка файлів старших за',
+    ageDescription: 'Мінімум 7 днів, максимум 10 років. Використовує те ж саме правило віку, що й кнопка Очистити вручну.',
+    days: 'днів',
+    includeNeverPrinted: 'Включити файли, які ніколи не друкувалися',
+    saveFailed: 'Не вдалося зберегти налаштування авто-очистки.',
+  },
+
+  archivePurge: {
+    headerButton: 'Очистити старі',
+    headerTooltip: 'Масово перемістити старі архіви в кошик',
+    title: 'Очистка старих архівів',
+    description: 'Перемістити стару історію друку в кошик архівів. Кожен архів старіє за датою найостаннішого завершеного друку — повторний друк архіву оновлює його вік, тому активна робота ніколи не очищається.',
+    ageLabel: 'Перемістити архіви, не друковані за останні',
+    days: 'днів',
+    effectsTitle: 'Що відбувається при натисканні Очистити',
+    effect1: 'Архіви, що відповідають критеріям, переміщуються в Кошик — вони ще не видаляються з диска.',
+    effect2: 'Ви можете відновити їх з Кошика в будь-який момент до закінчення вікна зберігання.',
+    effect3: 'Після закінчення sweeper кошика хард-видаляє їх (3MF, мініатюру, timelapse, фото).',
+    effect4: 'Повторний друк архіву оновлює його часовий лічильник, тому архіви, які ви ще використовуєте, в безпеці.',
+    previewLoading: 'Перевірка кількості архівів…',
+    previewFailed: 'Не вдалося отримати попередній перегляд очистки.',
+    previewSummary: '{{count}} архівів · {{size}} буде переміщено в кошик',
+    andMore: '…і ще {{count}}',
+    warning: 'Архіви в кошику все одно займають місце до закінчення вікна зберігання. Очистіть Кошик потім, щоб одразу звільнити диск.',
+    confirmCta: 'Перемістити {{count}} в кошик',
+    purging: 'Переміщення в кошик…',
+    toast: {
+      success: 'Переміщено {{count}} архів(ів) в кошик.',
+      failed: 'Не вдалося очистити архіви.',
+    },
+  },
+
+  archiveAutoPurge: {
+    sectionTitle: 'Кошик архівів',
+    retentionLabel: 'Зберігання в кошику',
+    retentionDescription: 'Скільки архіви в кошику залишаються відновлюваними, поки sweeper хард-видалить їх разом з 3MF, мініатюрою, timelapse та фотографіями. 1–365 днів.',
+    enableLabel: 'Авто-очистка старих архівів',
+    enableDescription: 'Раз на день переміщує в кошик архіви, які не друкувалися протягом порогу. Повторний друк архіву скидає лічильник. Sweeper кошика хард-видаляє після вікна зберігання.',
+    ageLabel: 'Авто-переміщення архівів, не друкованих за останні',
+    ageDescription: 'Мінімум 7 днів, максимум 10 років. На основі найостаннішого завершеного друку — повторний друк архіву оновлює його вік. Переміщує архіви в кошик, де вони залишаються відновлюваними до закінчення вікна.',
+    days: 'днів',
+    saveFailed: 'Не вдалося зберегти налаштування авто-очистки.',
+  },
+
+  archiveTrash: {
+    title: 'Кошик архівів',
+    headerButton: 'Кошик',
+    headerTooltip: 'Переглянути архіви в кошику',
+    backToArchives: 'Назад до Архівів',
+    subtitleAdmin: 'Архіви в кошику зберігаються {{days}} днів, потім авто-видаляються разом з файлами. Цей перегляд показує архіви в кошику для всіх користувачів.',
+    subtitleUser: 'Архіви в кошику зберігаються {{days}} днів, потім авто-видаляються разом з файлами.',
+    loading: 'Завантаження кошика…',
+    loadError: 'Не вдалося завантажити кошик архівів.',
+    empty: 'Кошик архівів порожній.',
+    summary: '{{count}} архівів · {{size}}',
+    emptyTrash: 'Очистити кошик',
+    restore: 'Відновити',
+    purgeNow: 'Видалити зараз',
+    autoPurgeIn: 'Авто-видалення через {{when}}',
+    days: 'днів',
+    retentionLabel: 'Авто-видалення через',
+    selectAll: 'Виділити все',
+    selectOne: 'Виділити {{filename}}',
+    selectionCount: 'виділено: {{count}}',
+    bulkRestore: 'Відновити виділене',
+    bulkPurge: 'Видалити виділене',
+    col: {
+      filename: 'Архів',
+      printName: 'Назва друку',
+      size: 'Розмір',
+      deleted: 'Переміщено в кошик',
+      autoPurge: 'Авто-видалення',
+      owner: 'Власник',
+      actions: 'Дії',
+    },
+    confirm: {
+      purgeTitle: 'Видалити архів остаточно?',
+      purgeBody: '{{filename}} та його файли (3MF, мініатюра, timelapse, фото) буде видалено з диска без можливості відновлення.',
+      emptyTitle: 'Очистити кошик архівів?',
+      emptyBody: 'Усі {{count}} архівів буде видалено з диска разом з файлами. Це неможливо скасувати.',
+      bulkPurgeTitle: 'Видалити виділені архіви остаточно?',
+      bulkPurgeBody: '{{count}} виділені архіви буде видалено з диска разом з файлами.',
+      cta: 'Видалити остаточно',
+    },
+    toast: {
+      restored: 'Архів відновлено.',
+      restoreFailed: 'Не вдалося відновити архів.',
+      purged: 'Архів видалено остаточно.',
+      purgeFailed: 'Не вдалося видалити архів.',
+      emptied: 'Видалено {{count}} архів(ів) з кошика.',
+      emptyFailed: 'Не вдалося очистити кошик архівів.',
+      retentionSaved: 'Авто-видалення встановлено на {{days}} днів.',
+      retentionFailed: 'Не вдалося зберегти налаштування зберігання.',
+      bulkRestored: 'Відновлено {{count}} архів(ів).',
+      bulkPurged: 'Видалено {{count}} архів(ів).',
+    },
   },
 
   fileManager: {
@@ -3171,6 +2913,10 @@ export default {
     plateSlot: 'Слот',
     plateGallery: 'Галерея плит',
     multiPlateBadgeTooltip: 'Мульті-плейт-файл — кілька плит для друку',
+    source: {
+      makerworldImported: 'Імпортовано з MakerWorld',
+      openOriginal: 'Відкрити на MakerWorld',
+    },
     uploadFiles: 'Завантажити файли',
     newFolder: 'Нова папка',
     folderName: 'Назва папки',
@@ -3209,14 +2955,12 @@ export default {
     threemfExtractionInfo: 'Модель принтера, матеріал, колір та налаштування друку будуть автоматично витягнуті з 3MF файлів.',
     willBeExtracted: 'Буде витягнуто',
     filesExtracted: '{{count}} файлів розпаковано',
-    uploadComplete: 'Завантаження завершено: {{succeeded}} успішно',
     uploadFailed: 'Помилка завантаження',
     zipFilesFailed: '{{count}} файлів з помилками',
     uploading: 'Завантаження...',
     changeLink: 'Змінити прив\'язку...',
     linkTo: 'Прив\'язати до...',
     linkToProjectOrArchive: 'Прив\'язати до проєкту або архіву',
-    addToQueue: 'Додати до черги',
     schedulePrint: 'Запланувати',
     generateThumbnail: 'Згенерувати мініатюру',
     generateThumbnails: 'Згенерувати мініатюри',
@@ -3230,10 +2974,8 @@ export default {
     size: 'Розмір',
     free: 'Вільно',
     allFiles: 'Усі файли',
-    wrap: 'Перенос',
     enableTextWrapping: 'Увімкнути перенос тексту',
     disableTextWrapping: 'Вимкнути перенос тексту',
-    collapse: 'Згорнути',
     collapseFoldersByDefault: 'Згортати папки за замовчуванням',
     expandFoldersByDefault: 'Розгортати папки за замовчуванням',
     dragToResizeTooltip: 'Перетягніть для зміни розміру, подвійний клік для скидання',
@@ -3245,7 +2987,6 @@ export default {
     selectAll: 'Вибрати все',
     deselectAll: 'Зняти вибір',
     selected: '{{count}} вибрано',
-    adding: 'Додавання...',
     loadingFiles: 'Завантаження файлів...',
     folderIsEmpty: 'Папка порожня',
     noFilesYet: 'Файлів ще немає',
@@ -3267,6 +3008,7 @@ export default {
     noPermissionDeleteFolder: 'У вас немає дозволу видаляти папки',
     noPermissionPrint: 'У вас немає дозволу друкувати',
     noPermissionAddToQueue: 'У вас немає дозволу додавати до черги',
+    noPermissionSlice: 'У вас немає дозволу нарізати моделі',
     noPermissionDownload: 'У вас немає дозволу завантажувати файли',
     noPermissionRenameFile: 'У вас немає дозволу перейменовувати цей файл',
     noPermissionGenerateThumbnail: 'У вас немає дозволу генерувати мініатюри',
@@ -3299,9 +3041,6 @@ export default {
       fileUnlinked: "Файл від'єднано від проєкту",
       externalFolderLinked: "Зовнішню папку прив'язано та просканено",
       folderScanned: 'Сканування завершено: {{added}} додано, {{removed}} видалено',
-      addedToQueue: '{{count}} файлів додано до черги',
-      addedToQueuePartial: '{{added}} файлів додано, {{failed}} з помилками',
-      failedToAddToQueue: 'Не вдалося додати файли: {{error}}',
       fileRenamed: 'Файл перейменовано',
       folderRenamed: 'Папку перейменовано',
       thumbnailsGenerated: 'Згенеровано {{count}} мініатюр',
@@ -3309,8 +3048,8 @@ export default {
       noStlMissingThumbnails: 'Немає STL файлів без мініатюр',
       failedToGenerateThumbnails: 'Не вдалося згенерувати мініатюри: {{error}}',
       thumbnailGenerated: 'Мініатюру згенеровано',
-      failedToGenerateThumbnail: 'Не вдалося згенерувати мініатюру: {{error}}',
-    },
+      failedToGenerateThumbnail: 'Не вдалося згенерувати мініатюру: {{error}}'
+    }
   },
 
   // Projects
@@ -3320,26 +3059,27 @@ export default {
     newProject: 'Новий проєкт',
     editProject: 'Редагувати проєкт',
     deleteProject: 'Видалити проєкт',
-    projectName: 'Назва проєкту',
-    description: 'Опис',
     noProjects: 'Проєктів ще немає',
     noProjectsFiltered: 'Немає проєктів зі статусом "{{status}}"',
     noProjectsFilteredHelp: 'У вас немає проєктів зі статусом "{{status}}". Проєкти з\'являться тут, коли їхній статус зміниться.',
     createFirst: 'Створіть ваш перший проєкт для організації пов\'язаних друків, відстеження прогресу та керування збірками.',
     createFirstButton: 'Створити перший проєкт',
     create: 'Створити',
-    files: 'Файли',
-    prints: 'Друки',
     plates: 'платформ',
     parts: 'деталей',
-    lastModified: 'Остання зміна',
     deleteConfirm: 'Ви впевнені, що хочете видалити цей проєкт? Архіви та елементи черги будуть від\'єднані, але не видалені.',
-    addFiles: 'Додати файли',
-    removeFile: 'Видалити файл',
-    viewDetails: 'Переглянути деталі',
     // Modal fields
     namePlaceholder: 'напр., Збірка Voron 2.4',
     descriptionPlaceholder: 'Необов\'язковий опис...',
+    urlLabel: 'URL',
+    urlPlaceholder: 'https://makerworld.com/...',
+    urlInvalid: 'URL має починатися з http:// або https://',
+    openExternalUrl: 'Відкрити URL проєкту',
+    coverImageLabel: 'Обкладинка',
+    coverImageAlt: 'Обкладинка проєкту',
+    coverImageUpload: 'Завантажити',
+    coverImageReplace: 'Замінити',
+    coverImageRemove: 'Видалити',
     color: 'Колір',
     targetPlates: 'Цільова кількість платформ',
     targetPlatesPlaceholder: 'напр., 25',
@@ -3364,7 +3104,7 @@ export default {
       empty: 'Поки що немає шаблонів',
       emptyHint: 'Збережіть проєкт як шаблон зі сторінки деталей - і повторно використовуйте його тут, щоб створювати нові проєкти з тим самим BOM, тегами та налаштуваннями.',
       createFromTemplate: 'Створити проєкт',
-      deleteTemplate: 'Видалити шаблон',
+      deleteTemplate: 'Видалити шаблон'
     },
     done: 'Готово',
     completed: 'завершено',
@@ -3397,8 +3137,8 @@ export default {
       importFailed: 'Помилка імпорту',
       exported: 'Проєкти експортовано (лише метадані)',
       createdFromTemplate: 'Проєкт створено з шаблону',
-      templateDeleted: 'Шаблон видалено',
-    },
+      templateDeleted: 'Шаблон видалено'
+    }
   },
 
   // Project detail page
@@ -3415,18 +3155,18 @@ export default {
     status: {
       active: 'Активний',
       completed: 'Завершений',
-      archived: 'Архівований',
+      archived: 'Архівований'
     },
     priority: {
       low: 'Низький',
       normal: 'Звичайний',
       high: 'Високий',
-      urgent: 'Терміновий',
+      urgent: 'Терміновий'
     },
     dueDate: {
       overdue: 'Прострочено',
       today: 'Сьогодні термін',
-      daysLeft: '{{count}} днів залишилось',
+      daysLeft: '{{count}} днів залишилось'
     },
     progress: {
       platesProgress: 'Прогрес платформ',
@@ -3434,7 +3174,7 @@ export default {
       printJobs: 'завдань друку',
       parts: 'деталей',
       percentComplete: '{{percent}}% завершено',
-      remaining: '{{count}} залишилось',
+      remaining: '{{count}} залишилось'
     },
     stats: {
       printJobs: 'Завдання друку',
@@ -3443,7 +3183,7 @@ export default {
       failed: '{{count}} невдалих',
       partsPrinted: '{{count}} деталей надруковано',
       printTime: 'Час друку',
-      filamentUsed: 'Використано філаменту',
+      filamentUsed: 'Використано філаменту'
     },
     cost: {
       title: 'Відстеження витрат',
@@ -3453,23 +3193,22 @@ export default {
       total: 'Всього',
       includesBom: 'вкл. BOM',
       budget: 'Бюджет',
-      remaining: 'Залишок',
+      remaining: 'Залишок'
     },
     subProjects: {
-      title: 'Підпроєкти ({{count}})',
+      title: 'Підпроєкти ({{count}})'
     },
     notes: {
       title: 'Нотатки',
       noEditPermission: 'У вас немає дозволу редагувати нотатки',
       placeholder: 'Додайте нотатки про цей проєкт...',
-      empty: 'Нотаток ще немає. Натисніть Редагувати, щоб додати.',
+      empty: 'Нотаток ще немає. Натисніть Редагувати, щоб додати.'
     },
     files: {
       title: 'Файли',
       linkFolders: "Прив'яжіть папки з Файлового менеджера",
       forQuickAccess: 'до цього проєкту для швидкого доступу.',
       fileCount: '{{count}} файлів',
-      noFiles: 'У цій папці немає файлів.',
       print: 'Друкувати',
       addToQueue: 'У чергу',
       empty: "Папки не прив'язані. Перейдіть до Файлового менеджера та прив'яжіть папку до цього проєкту.",
@@ -3483,7 +3222,7 @@ export default {
       totalFilament: 'Філамент',
       totalTime: 'Час',
       totalCost: 'Вартість',
-      costHint: '@ {{currency}}{{rate}}/кг',
+      costHint: '@ {{currency}}{{rate}}/кг'
     },
     bom: {
       title: 'Специфікація матеріалів',
@@ -3504,33 +3243,31 @@ export default {
       noEditPermission: 'У вас немає дозволу редагувати деталі',
       noDeletePermission: 'У вас немає дозволу видаляти деталі',
       totalCost: 'Загальна вартість:',
-      empty: 'Немає деталей у специфікації. Додайте комплектуючі, електроніку або інші компоненти для відстеження закупівель.',
+      empty: 'Немає деталей у специфікації. Додайте комплектуючі, електроніку або інші компоненти для відстеження закупівель.'
     },
     timeline: {
       title: 'Хронологія активності',
-      empty: 'Активності ще немає.',
+      empty: 'Активності ще немає.'
     },
     template: {
       saveAsTemplate: 'Зберегти як шаблон',
-      noCreatePermission: 'У вас немає дозволу створювати шаблони',
+      noCreatePermission: 'У вас немає дозволу створювати шаблони'
     },
     queue: {
       title: 'Черга',
       viewAll: 'Переглянути всі',
-      printing: '{{count}} друкується',
-      queued: '{{count}} у черзі',
+      queued: '{{count}} у черзі'
     },
     prints: {
-      title: 'Друки ({{count}})',
+      title: 'Друки ({{count}})'
     },
     toast: {
       projectUpdated: 'Проєкт оновлено',
       partAdded: 'Деталь додано',
       partRemoved: 'Деталь видалено',
-      exportFailed: 'Помилка експорту',
       projectExported: 'Проєкт експортовано',
-      templateCreated: 'Шаблон створено',
-    },
+      templateCreated: 'Шаблон створено'
+    }
   },
 
   // System info
@@ -3570,71 +3307,32 @@ export default {
     available: 'доступно',
     cores: 'Ядра',
     usage: 'Використання',
-    cpuUsage: 'Використання CPU',
     os: 'Операційна система',
     architecture: 'Архітектура',
     python: 'Python',
-    bootTime: 'Час запуску',
-    platform: 'Платформа',
-    networkInfo: 'Мережева інформація',
-    logs: 'Журнали',
-    debugMode: 'Режим налагодження',
-    enableDebug: 'Увімкнути журналювання налагодження',
-    disableDebug: 'Вимкнути журналювання налагодження',
-    downloadLogs: 'Завантажити журнали',
-    clearLogs: 'Очистити журнали',
-    dockerInfo: 'Інформація Docker',
-    containerName: 'Назва контейнера',
-    imageName: 'Назва образу',
+    bootTime: 'Час запуску'
   },
 
   // Library (K Profiles)
-  library: {
-    title: 'Бібліотека філаментів',
-    addFilament: 'Додати філамент',
-    editFilament: 'Редагувати філамент',
-    deleteFilament: 'Видалити філамент',
-    vendor: 'Виробник',
-    material: 'Матеріал',
-    color: 'Колір',
-    kFactor: 'K фактор',
-    temperature: 'Температура',
-    noFilaments: 'Немає філаментів у бібліотеці',
-    deleteConfirm: 'Ви впевнені, що хочете видалити цей філамент?',
-    importFromPrinter: 'Імпорт з принтера',
-    exportToFile: 'Експорт у файл',
-  },
-
   // Spoolman
   spoolman: {
-    title: 'Інтеграція Spoolman',
-    enabled: 'Spoolman увімкнено',
-    url: 'URL Spoolman',
-    connected: 'Підключено',
-    disconnected: 'Не підключено',
-    testConnection: 'Тест підключення',
     sync: 'Синхронізувати',
-    syncing: 'Синхронізація...',
-    lastSync: 'Остання синхронізація',
     linkToSpoolman: "Прив'язати до Spoolman",
     openInSpoolman: 'Відкрити в Spoolman',
     unlinkSpool: "Від'єднати котушку",
     unlinkConfirmTitle: "Від'єднати котушку?",
     unlinkConfirmMessage: "Це від'єднає котушку від Spoolman. Дані котушки в Spoolman залишаться без змін.",
     selectSpool: 'Виберіть котушку',
-    noUnlinkedSpools: "Немає від'єднаних котушок",
     linkSuccess: "Котушку успішно прив'язано до Spoolman",
     linkFailed: "Не вдалося прив'язати котушку",
     unlinkSuccess: "Котушку успішно від'єднано від Spoolman",
     unlinkFailed: "Не вдалося від'єднати котушку",
     spoolId: 'ID котушки',
     fillSourceLabel: '(Spoolman)',
-    weight: 'Вага',
-    remaining: 'Залишок',
     disableWeightSync: 'Вимкнути синхронізацію оцінки ваги AMS',
     disableWeightSyncDesc: 'Не оновлювати залишкову ємність за оцінками AMS. Використовуйте, якщо надаєте перевагу відстеженню Spoolman замість відсоткових оцінок AMS. Нові котушки все ще використовуватимуть оцінку AMS як початкову вагу.',
     reportPartialUsage: 'Звітувати часткове використання для невдалих друків',
-    reportPartialUsageDesc: 'Коли друк не вдається або скасовується, звітувати про використаний філамент на основі прогресу шарів.',
+    reportPartialUsageDesc: 'Коли друк не вдається або скасовується, звітувати про використаний філамент на основі прогресу шарів.'
   },
 
   // Inventory
@@ -3646,6 +3344,8 @@ export default {
     selectMaterial: 'Виберіть матеріал...',
     subtype: 'Підтип',
     brand: 'Бренд',
+    category: 'Категорія',
+    categoryNone: 'Без категорії',
     searchBrand: 'Пошук бренду...',
     useCustomBrand: 'Використати "{{brand}}"',
     useCustomMaterial: 'Використати власний матеріал: {{material}}',
@@ -3669,21 +3369,27 @@ export default {
     lotPlaceholder: 'напр. 3',
     autoIncrementLots: 'Авто-нумерація лотів (1…N)',
     measuredWeightError: 'Виміряна вага повинна бути від {{min}}г до {{max}}г.',
-    slicerFilament: 'Філамент слайсера',
-    slicerFilamentName: 'Назва пресету слайсера',
     slicerPreset: 'Пресет слайсера',
     searchPresets: 'Пошук пресетів філаменту...',
     selectedPreset: 'Вибрано',
     noPresetsFound: 'Пресети не знайдено',
-    tempOverrides: 'Перевизначення температури',
     note: 'Примітка',
     notePlaceholder: 'Будь-які додаткові примітки про цю котушку...',
+    // RFID button rename (was "Delete Tag" — confusing because it sounded
+    // like a taxonomy delete; this clears the RFID tag/UUID off the spool
+    // record, the spool itself stays).
+    clearRfid: 'Очистити RFID мітку',
+    rfidCleared: 'RFID мітку очищено',
+    spoolmanMixedContentTitle: 'Spoolman неможливо вбудувати через HTTP',
+    spoolmanMixedContentBody: 'Браузер блокує HTTP-вміст усередині HTTPS-сторінки, тому iframe Spoolman залишається порожнім. BamDude завантажений через HTTPS, але Spoolman налаштований на http:// URL.',
+    spoolmanMixedContentFixReverseProxy: 'Найкраще рішення: розмістити Spoolman за тим самим reverse-proxy, що й BamDude, щоб обидва були доступні через HTTPS.',
+    spoolmanMixedContentFixOpenNewTab: 'Обхідний шлях: відкрити Spoolman у новій вкладці — окремі вкладки не підпадають під правило mixed-content.',
+    spoolmanOpenInNewTab: 'Відкрити Spoolman у новій вкладці',
     archive: 'Архівувати',
     restore: 'Відновити',
     noSpools: 'Котушок ще немає. Додайте першу котушку для початку.',
     noManualSpools: 'Немає вручну доданих котушок. Спочатку додайте котушку до інвентарю.',
-    kProfiles: 'K-профілі',
-    addKProfile: 'Додати K-профіль',
+    noAvailableSpools: 'Немає доступних котушок. Додайте котушку до інвентарю або від\'єднайте її від іншого слота.',
     assignSpool: 'Призначити котушку',
     unassignSpool: 'Зняти призначення',
     assignSuccess: 'Котушку призначено та слот AMS налаштовано',
@@ -3693,9 +3399,6 @@ export default {
     assigning: 'Призначення...',
     searchSpools: 'Пошук котушок...',
     showAllSpools: 'Показати всі котушки',
-    allMaterials: 'Усі матеріали',
-    filterByBrand: 'Фільтр за брендом...',
-    showArchived: 'Показати архівовані',
     quickAdd: 'Швидке додавання (запас)',
     quantity: 'Кількість',
     stock: 'Запас',
@@ -3708,7 +3411,6 @@ export default {
     spoolRestored: 'Котушку відновлено',
     deleteConfirm: 'Ви впевнені, що хочете видалити цю котушку? Це не можна скасувати.',
     archiveConfirm: 'Ви впевнені, що хочете архівувати цю котушку?',
-    advancedSettings: 'Розширені налаштування',
     // Tabs
     filamentInfoTab: 'Інформація про філамент',
     paProfileTab: 'PA профіль',
@@ -3755,9 +3457,6 @@ export default {
     sinceTracking: 'З початку відстеження',
     loadedInAms: 'Завантажено в AMS/Ext',
     remaining: 'Залишок',
-    weightCheck: 'Перевірка ваги',
-    lastWeighed: 'Останнє зважування',
-    neverWeighed: 'Ніколи не зважувалось',
     search: 'Пошук котушок...',
     showing: 'Показано',
     to: 'до',
@@ -3776,7 +3475,6 @@ export default {
     clearFilters: 'Очистити фільтри',
     table: 'Таблиця',
     cards: 'Картки',
-    net: 'Нетто',
     // Grouping
     groupSimilar: 'Групувати',
     groupedSpools: '{{count}} однакових котушок',
@@ -3816,7 +3514,7 @@ export default {
       cost_per_kg: 'Вартість/кг',
       weight_check: 'Перевірка ваги',
       filament_diameter: 'Діаметр',
-      lot: 'Лот',
+      lot: 'Лот'
     },
     columnsLabel: 'Стовпці',
     configureColumns: 'Налаштувати стовпці',
@@ -3830,16 +3528,9 @@ export default {
     hideColumn: 'Приховати стовпець',
     showColumn: 'Показати стовпець',
     // Tag linking
-    linkToSpool: "Прив'язати до котушки",
-    tagLinked: "Тег прив'язано до котушки",
-    tagLinkFailed: "Не вдалося прив'язати тег",
-    tagAlreadyLinked: "Тег вже прив'язано до іншої котушки",
-    unknownTag: 'Виявлено невідомий RFID тег',
     // Usage history
     usageHistory: 'Історія використання',
     noUsageHistory: 'Використання ще не записано',
-    printName: 'Назва друку',
-    weightConsumed: 'Вага використана',
     clearHistory: 'Очистити',
     historyCleared: 'Історію використання очищено',
     fillSourceLabel: '(Інв)',
@@ -3849,67 +3540,55 @@ export default {
     assignMismatchConfirm: 'Призначити все одно',
     assignPartialMismatchMessage: 'Матеріал котушки "{{spoolMaterial}}" схожий, але не точно відповідає "{{trayMaterial}}" у {{location}}. Продовжити?',
     assignProfileMismatchMessage: 'Профіль котушки "{{spoolProfile}}" не відповідає профілю лотку "{{trayProfile}}" у {{location}}. Продовжити?',
+    spoolForm: {
+      category: 'Категорія',
+      categoryPlaceholder: 'Виробництво',
+      lowStockOverride: 'Поріг низьк. запасу (%)',
+      lowStockOverridePlaceholder: 'Як глобальний',
+      extraColors: 'Додаткові кольори',
+      extraColorsHelp: 'Список hex-токенів через кому (6 або 8 символів), до 8. Порожньо = суцільний колір.',
+      effectType: 'Візуальний ефект',
+      effectNone: 'Без ефекту',
+      effects: {
+        sparkle: 'Іскристий',
+        silk: 'Шовк',
+        matte: 'Матовий',
+        glow: 'Світиться',
+        wood: 'Дерево',
+        marble: 'Мармур',
+        galaxy: 'Галактика',
+        rainbow: 'Веселка',
+        metal: 'Метал',
+        translucent: 'Напівпрозорий'
+      }
+    }
   },
 
   // Timelapse
-  timelapse: {
-    title: 'Таймлапс',
-    create: 'Створити таймлапс',
-    download: 'Завантажити',
-    delete: 'Видалити',
-    preview: 'Попередній перегляд',
-    frameRate: 'Частота кадрів',
-    quality: 'Якість',
-    processing: 'Обробка...',
-    noTimelapses: 'Немає доступних таймлапсів',
-  },
-
   // AMS
   ams: {
-    title: 'AMS',
-    slot: 'Слот',
-    empty: 'Порожній',
     emptySlot: 'Порожній слот',
-    unknown: 'Невідомо',
-    humidity: 'Вологість',
-    temperature: 'Температура',
-    filamentType: 'Тип філаменту',
-    filamentColor: 'Колір',
-    remaining: 'Залишок',
-    history: 'Історія AMS',
-    noHistory: 'Немає доступної історії',
     configureSlot: 'Налаштувати слот',
-    externalSpool: 'Зовнішня котушка',
     profile: 'Профіль',
     kFactor: 'K фактор',
     fill: 'Заповнити',
-    configure: 'Налаштувати',
-    used: 'використано',
-    remainingUnit: 'залишилось',
+    configure: 'Налаштувати'
   },
 
   // Print modal
   printModal: {
-    title: 'Почати друк',
     selectPrinter: 'Виберіть принтер',
-    selectPlate: 'Виберіть платформу',
     filamentMapping: 'Призначення філаменту',
     filamentTypeNotFound: 'Тип не знайдено',
     filamentColorMismatch: 'Колір не збігається',
     filamentReady: 'Готово',
     totalCost: 'Загальна вартість:',
     slotRemainingShort: ' - {{grams}}г залишилось',
-    printSettings: 'Налаштування друку',
     bedLeveling: 'Вирівнювання столу',
     flowCalibration: 'Калібрування потоку',
     layerInspection: 'Інспекція першого шару',
     timelapse: 'Таймлапс',
-    startPrint: 'Почати друк',
-    addToQueue: 'Додати до черги',
     cancel: 'Скасувати',
-    noPrintersAvailable: 'Немає доступних принтерів',
-    printerBusy: 'Принтер зайнятий',
-    printerOffline: 'Принтер офлайн',
     sameTypeDifferentColor: 'Той самий тип, інший колір',
     filamentTypeNotLoaded: 'Тип філаменту не завантажено',
     openCalendar: 'Відкрити календар',
@@ -3929,6 +3608,8 @@ export default {
     timelapseDesc: 'Запис таймлапс-відео',
     meshModeFastCheck: 'Швидка перевірка вібрації',
     meshModeFastCheckDesc: 'Запускається один раз перед друком, щоб переконатися, що натяг ременів у нормі. Вимкніть, щоб пропустити для цього друку.',
+    gcodeInjection: 'Вставити G-code-сніпети',
+    gcodeInjectionDesc: 'Вставити налаштовані оператором сніпети для цієї моделі принтера у gcode пластини на MACHINE_START_GCODE_END (старт) та в кінці файлу (енд). Налаштуйте сніпети у Налаштування → Принтери → G-code Сніпети.',
     // Swap-макроси (видно тільки якщо вибрано принтер зі swap-режимом)
     swapMacros: 'Swap-макроси',
     executeSwapMacros: 'Виконувати swap-макроси',
@@ -3954,7 +3635,7 @@ export default {
       targetLocation: 'Фільтр локації',
       anyLocation: 'Будь-яка локація',
       forceColorMatch: 'Точний збіг кольору',
-      forceColorMatchDesc: 'Чекати принтер із точно такими ж завантаженими кольорами.',
+      forceColorMatchDesc: 'Чекати принтер із точно такими ж завантаженими кольорами.'
     },
 
     // ScheduleOptions
@@ -4023,34 +3704,20 @@ export default {
     filamentOverrideHint: 'Замініть оригінальний вибір філаменту на філаменти, доступні на обраних принтерах.',
     originalFilament: 'Оригінал',
     resetToOriginal: 'Скинути до оригіналу',
-    forceColorMatch: 'Примусова відповідність кольору',
+    forceColorMatch: 'Примусова відповідність кольору'
   },
 
   // Backup
   backup: {
-    title: 'Резервне копіювання та відновлення',
-    createBackup: 'Створити резервну копію',
     restoreBackup: 'Відновити з копії',
     restoreDescription: 'Замінити всі дані з файлу резервної копії',
-    downloadBackup: 'Завантажити резервну копію',
-    uploadBackup: 'Завантажити резервну копію',
-    lastBackup: 'Остання копія',
     autoBackup: 'Автоматичне копіювання',
     backupNow: 'Створити зараз',
-    restoreWarning: 'Увага: відновлення з резервної копії перезапише всі поточні дані.',
-    includeArchives: 'Включити архіви',
-    includeSettings: 'Включити налаштування',
-    includeProfiles: 'Включити профілі',
-    backupSuccess: 'Резервну копію успішно створено',
-    restoreSuccess: 'Резервну копію успішно відновлено',
-    backupFailed: 'Помилка створення резервної копії',
-    restoreFailed: 'Помилка відновлення',
     restoreNote: 'Віртуальний принтер буде зупинено під час відновлення',
 
     // Git Backup
     gitBackup: 'Резервне копіювання Git',
     enabled: 'Увімкнено',
-    cloudLoginRequired: 'Потрібен вхід до Bambu Cloud. Увійдіть у Профілі \u2192 Хмарні профілі для увімкнення резервного копіювання Git.',
     cloudLoginRequiredShort: 'Потрібен вхід до хмари',
     gitDescription: 'Автоматично синхронізуйте профілі до приватного Git-репозиторію для резервного копіювання та історії версій.',
     providerLabel: 'Провайдер',
@@ -4161,7 +3828,7 @@ export default {
       restore: 'Відновити з цієї копії',
       delete: 'Видалити цю копію',
       deleteConfirmTitle: 'Видалити копію',
-      deleteConfirmMessage: 'Видалити "{{filename}}"? Цю дію не можна скасувати.',
+      deleteConfirmMessage: 'Видалити "{{filename}}"? Цю дію не можна скасувати.'
     },
 
     // RestoreModal
@@ -4219,23 +3886,11 @@ export default {
       projects: 'Проєкти',
       pending_uploads: 'Очікувані завантаження',
       external_links: 'Зовнішні посилання',
-      api_keys: 'API ключі',
-    },
+      api_keys: 'API ключі'
+    }
   },
 
   // Tags
-  tags: {
-    title: 'Теги',
-    addTag: 'Додати тег',
-    editTag: 'Редагувати тег',
-    deleteTag: 'Видалити тег',
-    tagName: 'Назва тегу',
-    tagColor: 'Колір тегу',
-    noTags: 'Немає тегів',
-    deleteConfirm: 'Ви впевнені, що хочете видалити цей тег?',
-    manageTags: 'Керувати тегами',
-  },
-
   // Upload modal (archives)
   uploadModal: {
     title: 'Завантажити 3MF файли',
@@ -4246,8 +3901,7 @@ export default {
     uploaded: 'завантажено',
     failed: 'помилка',
     uploading: 'Завантаження...',
-    upload: 'Завантажити',
-    uploadFailed: 'Помилка завантаження',
+    upload: 'Завантажити'
   },
 
   // Edit Archive Modal
@@ -4264,7 +3918,6 @@ export default {
     notes: 'Нотатки',
     notesPlaceholder: 'Додайте нотатки про цей друк...',
     externalLink: 'Зовнішнє посилання',
-    externalLinkPlaceholder: 'https://printables.com/model/...',
     externalLinkHelp: 'Посилання на Printables, Thingiverse або інше джерело',
     tags: 'Теги',
     tagsPlaceholder: 'Додати теги...',
@@ -4278,7 +3931,6 @@ export default {
     photos: 'Фото друкованого результату',
     photosHelp: 'Натисніть +, щоб додати фото результату друку',
     printResult: 'Результат друку',
-    saving: 'Збереження...',
     // Failure reasons
     failureReasons: {
       adhesionFailure: 'Помилка адгезії',
@@ -4291,20 +3943,19 @@ export default {
       underExtrusion: 'Недоекструзія',
       powerFailure: 'Збій живлення',
       userCancelled: 'Скасовано користувачем',
-      other: 'Інше',
+      other: 'Інше'
     },
     // Archive statuses
     statuses: {
       completed: 'Завершено',
       failed: 'Помилка',
       aborted: 'Скасовано',
-      printing: 'Друкується',
-    },
+      printing: 'Друкується'
+    }
   },
 
   // K-Profiles
   kProfiles: {
-    title: 'K-профілі',
     noPrintersConfigured: 'Принтери не налаштовано',
     addPrinterInSettings: 'Додайте принтер у Налаштуваннях для керування K-профілями',
     noActivePrinters: 'Немає активних принтерів',
@@ -4366,19 +4017,19 @@ export default {
       notesHelp: 'Нотатки зберігаються в BamDude, не на принтері',
       syncing: 'Синхронізація з принтером...',
       savingExtruder: 'Збереження на екструдер {{current}}/{{total}}...',
-      pleaseWait: 'Зачекайте',
+      pleaseWait: 'Зачекайте'
     },
     // Delete confirmation
     deleteConfirm: {
       title: 'Видалити профіль',
       cannotUndo: 'Це не можна скасувати',
-      message: 'Ви впевнені, що хочете видалити "{{name}}" з принтера?',
+      message: 'Ви впевнені, що хочете видалити "{{name}}" з принтера?'
     },
     // Bulk delete
     bulkDelete: {
       title: 'Видалити профілі',
       cannotUndo: 'Це не можна скасувати',
-      message: 'Ви впевнені, що хочете видалити {{count}} вибраних профілів з принтера?',
+      message: 'Ви впевнені, що хочете видалити {{count}} вибраних профілів з принтера?'
     },
     // Toast
     toast: {
@@ -4393,8 +4044,7 @@ export default {
       invalidFileFormat: 'Невірний формат файлу',
       failedToParseImport: 'Не вдалося розібрати файл імпорту',
       failedToSaveBatch: 'Не вдалося зберегти K-профілі',
-      noteSaved: 'Нотатку збережено',
-      failedToSaveNote: 'Не вдалося зберегти нотатку',
+      failedToSaveNote: 'Не вдалося зберегти нотатку'
     },
     // Permissions
     permission: {
@@ -4403,8 +4053,8 @@ export default {
       noUpdate: 'У вас немає дозволу оновлювати K-профілі',
       noDelete: 'У вас немає дозволу видаляти K-профілі',
       noExport: 'У вас немає дозволу експортувати профілі',
-      noImport: 'У вас немає дозволу імпортувати профілі',
-    },
+      noImport: 'У вас немає дозволу імпортувати профілі'
+    }
   },
 
   // Virtual Printer
@@ -4414,18 +4064,18 @@ export default {
     stopped: 'Зупинено',
     description: {
       default: 'Увімкніть віртуальний принтер, який з\'являється в Bambu Studio та OrcaSlicer. Файли, надіслані на цей принтер, будуть архівовані без друку.',
-      proxy: 'Увімкніть проксі, що передає трафік слайсера на реальний принтер, дозволяючи друк з будь-якої мережі.',
+      proxy: 'Увімкніть проксі, що передає трафік слайсера на реальний принтер, дозволяючи друк з будь-якої мережі.'
     },
     enable: {
       title: 'Увімкнути віртуальний принтер',
       visibleInSlicer: 'Видимий як "BamDude" у виявленні слайсера',
       proxyingTo: 'Проксі до {{name}}',
-      notActive: 'Не активний',
+      notActive: 'Не активний'
     },
     model: {
       title: 'Модель принтера',
       description: 'Виберіть модель принтера для емуляції.',
-      restartWarning: 'Зміна моделі перезапустить віртуальний принтер',
+      restartWarning: 'Зміна моделі перезапустить віртуальний принтер'
     },
     accessCode: {
       title: 'Код доступу',
@@ -4434,7 +4084,7 @@ export default {
       placeholder: 'Введіть 8-символьний код',
       placeholderChange: 'Введіть новий код для зміни',
       hint: 'Повинен бути рівно 8 символів. Використовується слайсерами для автентифікації.',
-      charCount: '({{count}}/8)',
+      charCount: '({{count}}/8)'
     },
     targetPrinter: {
       title: 'Цільовий принтер',
@@ -4445,14 +4095,20 @@ export default {
       noPrinters: 'Принтери не налаштовано. Спочатку додайте принтер для режиму проксі.',
       clear: 'Очистити цільовий принтер',
       filteredBy: 'фільтр за {{model}}',
-      noMatchForModel: 'Немає принтерів моделі {{model}}. Виберіть іншу VP-модель або додайте відповідний принтер.',
+      noMatchForModel: 'Немає принтерів моделі {{model}}. Виберіть іншу VP-модель або додайте відповідний принтер.'
     },
     remoteInterface: {
       title: 'Перевизначення мережевого інтерфейсу',
       configured: 'Перевизначення інтерфейсу активне',
       optional: "Необов'язково - використовуйте, якщо автовизначення IP невірне (напр., кілька NIC, Docker, VPN)",
       placeholder: 'Автовизначення (за замовчуванням)...',
-      hint: 'Перевизначте IP адресу, що оголошується через SSDP та використовується в TLS сертифікаті. Корисно коли BamDude має кілька мережевих інтерфейсів.',
+      hint: 'Перевизначте IP адресу, що оголошується через SSDP та використовується в TLS сертифікаті. Корисно коли BamDude має кілька мережевих інтерфейсів.'
+    },
+    tailscale: {
+      title: 'Сертифікат Let\'s Encrypt через Tailscale',
+      description: 'Якщо ввімкнено — запросить у локального tailscale CLI сертифікат LE та оголошуватиме FQDN tailnet через SSDP. Слайсер підключатиметься за іменем хоста, що відповідає довіреному сертифікату (без ручного встановлення CA).',
+      activeFor: 'Активно — оголошується FQDN {{fqdn}}',
+      unavailable: 'Tailscale недоступний або LE сертифікат не вдалося отримати. Повертаємось до самопідписаного CA.'
     },
     mode: {
       title: 'Режим',
@@ -4467,28 +4123,34 @@ export default {
       fileManager: 'Файловий менеджер',
       fileManagerDesc: 'Зберегти безпосередньо у Файловий менеджер',
       proxy: 'Проксі',
-      proxyDesc: 'Передати на реальний принтер',
+      proxyDesc: 'Передати на реальний принтер'
+    },
+    archiveNameSource: {
+      title: 'Джерело назви архіву',
+      description: 'Звідки береться назва архіву коли слайсери вивантажують через віртуальний принтер.',
+      metadata: 'Метадані (print_name з 3MF)',
+      filename: 'Назва файлу (rename у діалозі слайсера)',
     },
     autoDispatch: {
       title: 'Автовідправка',
       description: 'Автоматично починати друк при додаванні до черги. Якщо вимкнено, друки чекають ручної відправки.',
       requiresTargetOrAuto: 'У режимі Queue для автовідправки потрібен Target Printer. Виберіть принтер, або увімкніть Auto-select printer щоб роутер авто-черги вибрав сам.',
-      activeButUnsafe: 'Автовідправка увімкнена, але Target Printer не вибрано — завантаження потрапить у Library. Виберіть Target Printer або увімкніть Auto-select printer.',
+      activeButUnsafe: 'Автовідправка увімкнена, але Target Printer не вибрано — завантаження потрапить у Library. Виберіть Target Printer або увімкніть Auto-select printer.'
     },
     autoSelectPrinter: {
       title: 'Автовибір принтера',
-      description: 'Якщо увімкнено, завантаження потрапляє у роутер авто-черги, який підбирає будь-який вільний принтер за моделлю + філаментами. Якщо вимкнено — завантаження йде в чергу конкретного принтера.',
+      description: 'Якщо увімкнено, завантаження потрапляє у роутер авто-черги, який підбирає будь-який вільний принтер за моделлю + філаментами. Якщо вимкнено — завантаження йде в чергу конкретного принтера.'
     },
     setupRequired: {
       title: 'Потрібне налаштування',
       description: 'Функція віртуального принтера вимагає додаткового налаштування системи. Це включає переадресацію портів, правила брандмауера та специфічні для платформи налаштування.',
-      readGuide: 'Прочитайте інструкцію перед увімкненням',
+      readGuide: 'Прочитайте інструкцію перед увімкненням'
     },
     howItWorks: {
       title: 'Як це працює',
       step1: 'У тій самій LAN віртуальні принтери з\'являються у вашому слайсері (Bambu Studio / OrcaSlicer) автоматично через виявлення. З інших мереж додайте їх вручну за IP адресою та кодом доступу.',
       step2: 'У режимах Архів, Перегляд, Черга та Файловий менеджер використовуйте кнопку "Надіслати" у слайсері для завантаження 3MF файлів у BamDude. Слайсер покаже "Друк успішний" - файл збережено, не надруковано.',
-      step3: 'У режимі Проксі віртуальний принтер передає весь трафік на реальний принтер - друк починається одразу, як при прямому підключенні.',
+      step3: 'У режимі Проксі віртуальний принтер передає весь трафік на реальний принтер - друк починається одразу, як при прямому підключенні.'
     },
     status: {
       title: 'Деталі стану',
@@ -4501,7 +4163,7 @@ export default {
       ftpPort: 'FTP порт',
       mqttPort: 'MQTT порт',
       ftpConnections: 'FTP з\'єднання',
-      mqttConnections: 'MQTT з\'єднання',
+      mqttConnections: 'MQTT з\'єднання'
     },
     toast: {
       updated: 'Налаштування віртуального принтера оновлено',
@@ -4514,32 +4176,32 @@ export default {
       created: 'Віртуальний принтер створено',
       failedToCreate: 'Не вдалося створити віртуальний принтер',
       deleted: 'Віртуальний принтер видалено',
-      failedToDelete: 'Не вдалося видалити віртуальний принтер',
+      failedToDelete: 'Не вдалося видалити віртуальний принтер'
     },
     list: {
       title: 'Віртуальні принтери',
       add: 'Додати',
       addFirst: 'Додати віртуальний принтер',
-      empty: 'Віртуальні принтери не налаштовано. Додайте один для початку.',
+      empty: 'Віртуальні принтери не налаштовано. Додайте один для початку.'
     },
     bindIp: {
       title: 'Інтерфейс прив\'язки',
       placeholder: 'Виберіть інтерфейс...',
-      hint: 'Мережевий інтерфейс для прив\'язки цього віртуального принтера. Повинен бути унікальним для кожного принтера.',
+      hint: 'Мережевий інтерфейс для прив\'язки цього віртуального принтера. Повинен бути унікальним для кожного принтера.'
     },
     proxy: {
-      accessCodeHint: 'У режимі проксі використовуйте код доступу цільового принтера в слайсері. З\'єднання прозоро пересилається на реальний принтер.',
+      accessCodeHint: 'У режимі проксі використовуйте код доступу цільового принтера в слайсері. З\'єднання прозоро пересилається на реальний принтер.'
     },
     addDialog: {
       title: 'Додати віртуальний принтер',
       name: 'Назва',
       hint: 'Код доступу, цільовий принтер та інші налаштування можна налаштувати після створення.',
-      create: 'Створити',
+      create: 'Створити'
     },
     deleteConfirm: {
       title: 'Видалити віртуальний принтер',
-      message: 'Ви впевнені, що хочете видалити "{{name}}"? Це зупинить усі сервіси для цього принтера.',
-    },
+      message: 'Ви впевнені, що хочете видалити "{{name}}"? Це зупинить усі сервіси для цього принтера.'
+    }
   },
 
   // Model Viewer
@@ -4547,7 +4209,7 @@ export default {
     openInSlicer: 'Відкрити у слайсері',
     tabs: {
       model: '3D модель',
-      gcode: 'Попередній перегляд G-code',
+      gcode: 'Попередній перегляд G-code'
     },
     notAvailable: 'недоступно',
     notSliced: 'не нарізано',
@@ -4565,35 +4227,16 @@ export default {
     pagination: {
       pageOf: 'Сторінка {{current}} з {{total}}',
       prev: 'Попередня',
-      next: 'Наступна',
+      next: 'Наступна'
     },
     errors: {
       failedToLoad: 'Не вдалося завантажити файл',
       noMeshes: 'Меші не знайдено у 3MF файлі',
-      unsupportedFormat: 'Непідтримуваний формат файлу',
-    },
+      unsupportedFormat: 'Непідтримуваний формат файлу'
+    }
   },
 
   // Maintenance type descriptions (built-in)
-  maintenanceDescriptions: {
-    lubricateCarbonRods: 'Нанесіть мастило на карбонові стрижні для плавного руху',
-    lubricateRails: 'Нанесіть мастило на лінійні напрямні для плавного руху',
-    cleanNozzle: 'Очистіть хотенд та сопло для запобігання засмічення',
-    checkBelts: 'Перевірте натяг ременів для точного друку',
-    cleanBuildPlate: 'Очистіть стіл для кращої адгезії',
-    checkExtruder: 'Огляньте шестерні екструдера на знос',
-    checkCooling: 'Переконайтеся, що вентилятори охолодження працюють справно',
-    generalInspection: 'Загальний огляд принтера',
-    cleanCarbonRods: 'Очистіть карбонові стрижні для зменшення тертя',
-    lubricateSteelRods: 'Нанесіть мастило на сталеві стрижні для плавного руху',
-    cleanSteelRods: 'Очистіть сталеві стрижні для зменшення тертя',
-    cleanLinearRails: 'Протріть лінійні напрямні для видалення пилу',
-    checkPtfeTube: 'Огляньте PTFE трубку на знос або пошкодження',
-    replaceHepaFilter: 'Замініть HEPA фільтр для якості повітря',
-    replaceCarbonFilter: 'Замініть вугільний фільтр',
-    lubricateLeftNozzleRail: 'Змастіть ліву напрямну сопла (серія H2)',
-  },
-
   // Smart Plugs
   smartPlugs: {
     offline: 'Офлайн',
@@ -4608,14 +4251,10 @@ export default {
       scanningNetwork: 'Сканування мережі...',
       chooseEntity: 'Виберіть сутність...',
       connectionFailed: 'Помилка підключення',
-      searchEntities: 'Пошук сутностей...',
-      searchPowerSensors: 'Пошук датчиків потужності...',
-      searchEnergySensors: 'Пошук датчиків енергії...',
       placeholders: {
         plugName: 'Розетка вітальні',
-        mqttStateOnValue: 'ON, true, 1',
-        mqttSameAsPower: 'Як тема потужності, або інша',
-      },
+        mqttStateOnValue: 'ON, true, 1'
+      }
     },
     // SmartPlugCard
     linkedTo: 'Прив\'язано до:',
@@ -4748,7 +4387,7 @@ export default {
     testConnection: 'Тест з\'єднання',
     connectionSuccess: 'З\'єднання успішне',
     noSwitchesInSwitchbar: 'Немає перемикачів у панелі',
-    enableSwitchbarHint: 'Увімкніть "Показати в панелі" в Налаштування > Розумні розетки',
+    enableSwitchbarHint: 'Увімкніть "Показати в панелі" в Налаштування > Розумні розетки'
   },
 
   // Notifications
@@ -4762,7 +4401,7 @@ export default {
       email: 'Email',
       discord: 'Discord',
       webhook: 'Webhook',
-      homeassistant: 'Home Assistant',
+      homeassistant: 'Home Assistant'
     },
     // Provider descriptions
     providerDescriptions: {
@@ -4773,7 +4412,7 @@ export default {
       pushover: 'Прості та надійні push-сповіщення',
       callmebot: 'Безкоштовні WhatsApp сповіщення через CallMeBot',
       webhook: 'Загальний HTTP POST на будь-який URL',
-      homeassistant: 'Постійні сповіщення у панелі Home Assistant',
+      homeassistant: 'Постійні сповіщення у панелі Home Assistant'
     },
     // NotificationProviderCard
     lastSuccess: 'Останнє: {{date}}',
@@ -4888,29 +4527,6 @@ export default {
     nameRequired: "Назва обов'язкова",
     fieldRequired: '{{field}} обов\'язкове',
     // Config field labels
-    phoneNumber: 'Номер телефону',
-    apiKey: 'API ключ',
-    serverUrl: 'URL сервера',
-    topic: 'Тема',
-    authToken: 'Токен автентифікації',
-    userKey: 'Ключ користувача',
-    appToken: 'Токен додатку',
-    priority: 'Пріоритет',
-    botToken: 'Токен бота',
-    chatId: 'ID чату',
-    smtpServer: 'SMTP сервер',
-    smtpPort: 'SMTP порт',
-    security: 'Безпека',
-    authentication: 'Автентифікація',
-    username: "Ім'я користувача",
-    password: 'Пароль',
-    fromEmail: 'Email відправника',
-    toEmail: 'Email одержувача',
-    webhookUrl: 'URL вебхука',
-    payloadFormat: 'Формат пейлоаду',
-    authorization: 'Авторизація',
-    titleFieldName: 'Назва поля заголовку',
-    messageFieldName: 'Назва поля повідомлення',
     // NotificationTemplateEditor
     editTemplate: 'Редагувати шаблон: {{name}}',
     titleLabel: 'Заголовок',
@@ -4970,7 +4586,7 @@ export default {
       printer_error: 'Помилка принтера',
       filament_low: 'Мало філаменту',
       maintenance_due: 'Потрібне обслуговування',
-      test: 'Тест',
+      test: 'Тест'
     },
     // User email notification preferences
     userEmail: {
@@ -4990,8 +4606,17 @@ export default {
       printJobStops: 'Зупинка завдання друку',
       printJobStopsDesc: 'Отримувати сповіщення, коли ваше завдання друку скасовано або зупинено.',
       saveSuccess: 'Налаштування сповіщень збережено.',
-      saveError: 'Не вдалося зберегти налаштування сповіщень.',
+      saveError: 'Не вдалося зберегти налаштування сповіщень.'
     },
+    eventPriority: {
+      sectionTitle: 'Пріоритет події (ntfy)',
+      helpNtfy: 'Перевизначити серверний пріоритет ntfy для кожної події. 1 = мін., 5 = терміново.',
+      min: '1 — Мін.',
+      low: '2 — Низький',
+      default: '3 — За замовч.',
+      high: '4 — Високий',
+      urgent: '5 — Терміново'
+    }
   },
 
   // Rich Text Editor
@@ -5005,7 +4630,7 @@ export default {
     alignCenter: 'Вирівняти по центру',
     alignRight: 'Вирівняти праворуч',
     addLink: 'Додати посилання',
-    removeLink: 'Видалити посилання',
+    removeLink: 'Видалити посилання'
   },
 
   // External Links
@@ -5017,162 +4642,15 @@ export default {
     noLinksHint: 'Натисніть "Додати посилання" щоб додати',
     deleteLink: 'Видалити посилання',
     deleteLinkConfirm: 'Ви впевнені, що хочете видалити "{{name}}"? Цю дію неможливо скасувати.',
-    removeCustomIcon: 'Видалити власну іконку',
-    openInNewTab: 'Відкрити в новій вкладці',
-    placeholders: {
-      linkName: 'Моє посилання',
-    },
+    openInNewTab: 'Відкрити в новій вкладці'
   },
 
   // Keyboard Shortcuts Modal
-  keyboardShortcuts: {
-    title: 'Комбінації клавіш',
-    navigation: 'Навігація',
-    archivesSection: 'Архіви',
-    kProfilesSection: 'K-профілі',
-    generalSection: 'Загальне',
-    shortcuts: {
-      goToPrinters: 'Перейти до принтерів',
-      goToArchives: 'Перейти до архівів',
-      goToQueue: 'Перейти до черги',
-      goToStats: 'Перейти до статистики',
-      goToProfiles: 'Перейти до хмарних профілів',
-      goToSettings: 'Перейти до налаштувань',
-      focusSearch: 'Фокус на пошуку',
-      openUploadModal: 'Відкрити вікно завантаження',
-      clearSelection: 'Очистити вибір / зняти фокус',
-      contextMenu: 'Контекстне меню на картках',
-      refreshProfiles: 'Оновити профілі',
-      newProfile: 'Новий профіль',
-      exitSelectionMode: 'Вийти з режиму вибору',
-      showHelp: 'Показати цю довідку',
-    },
-    footer: 'Натисніть Esc або клацніть за межами для закриття',
-  },
-
   // Notification Log
-  notificationLog: {
-    title: 'Журнал сповіщень',
-    events: {
-      printStarted: 'Друк розпочато',
-      printComplete: 'Друк завершено',
-      printFailed: 'Друк невдалий',
-      printStopped: 'Друк зупинено',
-      progress: 'Прогрес',
-      printerOffline: 'Принтер офлайн',
-      printerError: 'Помилка принтера',
-      lowFilament: 'Мало філаменту',
-      maintenanceDue: 'Потрібне обслуговування',
-      test: 'Тест',
-    },
-    timeAgo: {
-      justNow: 'Щойно',
-      minutesAgo: '{{minutes}}хв тому',
-      hoursAgo: '{{hours}}год тому',
-    },
-  },
-
   // Restore/Backup Modal
-  restoreBackup: {
-    title: 'Відновити резервну копію',
-    restoring: 'Відновлення...',
-    restoreComplete: 'Відновлення завершено',
-    restoreFailed: 'Відновлення не вдалося',
-    importSettings: 'Імпорт налаштувань з файлу резервної копії',
-    pleaseWait: 'Зачекайте, поки ваші дані відновлюються',
-    clickToSelect: 'Натисніть для вибору файлу (.json або .zip)',
-    howDuplicateHandling: 'Як обробляються дублікати:',
-    categories: {
-      printers: 'Принтери',
-      smartPlugs: 'Розумні розетки',
-      notificationProviders: 'Провайдери сповіщень',
-      filaments: 'Філаменти',
-      archives: 'Архіви',
-      pendingUploads: 'Очікувані завантаження',
-      settingsTemplates: 'Налаштування та шаблони',
-    },
-    matchingInfo: {
-      printers: 'за серійним номером',
-      smartPlugs: 'за IP адресою',
-      notificationProviders: 'за назвою',
-      filaments: 'за назвою + типом + брендом',
-      archives: 'за хешем вмісту',
-      pendingUploads: 'за назвою файлу',
-      settingsTemplates: 'завжди перезаписуються',
-    },
-    replaceExisting: 'Замінити існуючі дані',
-    keepExisting: 'Зберегти існуючі дані',
-    replaceDescription: 'Перезаписати елементи, що вже існують, даними з резервної копії',
-    keepDescription: 'Відновити лише елементи, яких ще немає',
-    caution: 'Увага:',
-    cautionText: 'Перезапис замінить ваші поточні конфігурації даними з резервної копії. Коди доступу принтерів ніколи не перезаписуються з міркувань безпеки.',
-    itemsRestored: 'Елементів відновлено',
-    itemsSkipped: 'Елементів пропущено',
-    restored: 'Відновлено',
-    skipped: 'Пропущено (вже існують)',
-    filesLabel: 'Файли (3MF, мініатюри тощо)',
-    newApiKeysGenerated: 'Згенеровано нові API ключі',
-    newApiKeysWarning: 'Ці ключі показуються лише один раз. Скопіюйте їх зараз!',
-    processingBackup: 'Обробка файлу резервної копії...',
-    noDataFound: 'У файлі резервної копії не знайдено даних для відновлення.',
-    failedToRestore: 'Не вдалося відновити. Перевірте формат файлу.',
-  },
-
   // Backup Export Modal
-  backupExport: {
-    title: 'Експорт резервної копії',
-    selectData: 'Виберіть дані для включення',
-    selectAll: 'Вибрати все',
-    selectNone: 'Зняти вибір',
-    categoryDescriptions: {
-      settings: 'Мова, тема, налаштування оновлень',
-      notifications: 'ntfy, Pushover, Discord тощо',
-      templates: 'Власні шаблони повідомлень',
-      smartPlugs: 'Конфігурації розеток Tasmota',
-      externalLinks: 'Посилання бічної панелі на зовнішні сервіси',
-      printers: 'Інформація про принтери (коди доступу виключено)',
-      plateDetection: 'Еталонні зображення порожнього столу',
-      filaments: 'Типи та вартість філаменту',
-      maintenance: 'Власні розклади обслуговування',
-      archives: 'Усі дані друку + файли (3MF, мініатюри, фото)',
-      projects: 'Проєкти, BOM елементи та вкладення',
-      pendingUploads: 'Завантаження віртуального принтера, що очікують перегляду',
-      apiKeys: 'API ключі вебхуків (нові ключі генеруються при імпорті)',
-    },
-    requiresPrinters: 'Потребує вибору Принтерів',
-    zipFileWarning: 'Буде створено ZIP файл.',
-    zipFileDescription: 'Включає всі 3MF файли, мініатюри, таймлапси та фото. Це може зайняти деякий час і створити великий файл.',
-    includeAccessCodes: 'Включити коди доступу',
-    includeAccessCodesDescription: 'Для перенесення на іншу машину',
-    includeAccessCodesWarning: 'Коди доступу будуть включені як відкритий текст. Зберігайте файл резервної копії в безпеці!',
-    categoriesSelected: '{{selectedCount}} категорій вибрано',
-  },
-
   // Pending Uploads Panel
-  pendingUploads: {
-    placeholders: {
-      notes: 'Додайте нотатки про цей друк...',
-    },
-    discardUpload: 'Відхилити завантаження',
-    archiveAllUploads: 'Архівувати всі завантаження',
-    discardAllUploads: 'Відхилити всі завантаження',
-    archive: 'Архівувати',
-    timeAgo: {
-      justNow: 'Щойно',
-      minutesAgo: '{{minutes}}хв тому',
-      hoursAgo: '{{hours}}год тому',
-      daysAgo: '{{days}}дн тому',
-    },
-  },
-
   // API Browser
-  apiBrowser: {
-    placeholders: {
-      requestBody: 'JSON тіло запиту...',
-      searchEndpoints: 'Пошук ендпоінтів...',
-    },
-  },
-
   // Configure AMS Slot Modal
   configureAmsSlot: {
     title: 'Налаштувати слот AMS',
@@ -5182,7 +4660,6 @@ export default {
     searchPresets: 'Пошук пресетів...',
     colorPlaceholder: 'Назва кольору або hex (напр., brown, FF8800)',
     clearCustomColor: 'Очистити власний колір',
-    noCloudPresets: 'Немає хмарних пресетів. Увійдіть до Bambu Cloud для синхронізації.',
     noPresetsAvailable: 'Немає доступних пресетів. Увійдіть до Bambu Cloud або імпортуйте локальні профілі.',
     noMatchingPresets: 'Відповідних пресетів не знайдено.',
     custom: 'Власний',
@@ -5205,86 +4682,23 @@ export default {
     resetSlot: 'Скинути слот',
     cancel: 'Скасувати',
     configuring: 'Налаштування...',
-    configureSlot: 'Налаштувати слот',
+    configureSlot: 'Налаштувати слот'
   },
 
   // Git Backup Settings
-  gitBackup: {
-    title: 'Резервне копіювання Git',
-    history: 'Історія',
-    downloadBackup: 'Завантажити резервну копію',
-    restoreBackup: 'Відновити резервну копію',
-    noBackupsYet: 'Копій ще немає',
-  },
-
   // Email Settings
-  emailSettings: {
-    placeholders: {
-      fromName: 'BamDude',
-    },
-  },
-
   // Tag Management Modal
-  tagManagement: {
-    searchTags: 'Пошук тегів...',
-    renameTag: 'Перейменувати тег',
-    deleteTag: 'Видалити тег',
-  },
-
   // Notification Template Editor
-  notificationTemplates: {
-    placeholders: {
-      title: 'Заголовок сповіщення...',
-      body: 'Тіло сповіщення...',
-    },
-  },
-
   // Batch Tag Modal
-  batchTag: {
-    placeholders: {
-      newTag: 'Введіть новий тег...',
-    },
-  },
-
   // Photo Gallery Modal
-  photoGallery: {
-    deletePhoto: 'Видалити фото',
-  },
-
   // Filament Hover Card
-  filamentHoverCard: {
-    copySpoolUuid: 'Скопіювати UUID котушки',
-  },
-
   // K Profiles View
-  kProfilesView: {
-    hasNote: 'Є нотатка',
-    copyProfile: 'Скопіювати профіль',
-  },
-
   // Layout/Navigation
-  layout: {
-    openMenu: 'Відкрити меню',
-    noPermissionSystemInfo: 'У вас немає дозволу переглядати системну інформацію',
-  },
-
   // Dashboard
-  dashboard: {
-    dragToReorder: 'Перетягніть для зміни порядку',
-    hideWidget: 'Приховати віджет',
-  },
-
   // Notification Provider Card
-  notificationProviderCard: {
-    deleteNotificationProvider: 'Видалити провайдер сповіщень',
-  },
-
   // File Manager Modal
   fileManagerModal: {
-    closeFileManager: 'Закрити файловий менеджер',
-    sortFiles: 'Сортувати файли',
-    goToParentFolder: 'Перейти до батьківської папки',
-    threeView: '3D перегляд',
+    threeView: '3D перегляд'
   },
 
   // Embedded Camera Viewer
@@ -5298,28 +4712,11 @@ export default {
     zoomOut: 'Зменшити',
     resetZoom: 'Скинути масштаб',
     zoomIn: 'Збільшити',
-    dragToResize: 'Перетягніть для зміни розміру',
+    dragToResize: 'Перетягніть для зміни розміру'
   },
 
   // Timelapse Viewer
-  timelapseViewer: {
-    skipBack5s: 'Назад на 5с',
-    skipForward5s: 'Вперед на 5с',
-  },
-
   // Notification Providers
-  notificationProviders: {
-    descriptions: {
-      email: 'Email сповіщення через SMTP',
-      telegram: 'Сповіщення через Telegram бот',
-      discord: 'Надсилання у Discord канал через вебхук',
-      ntfy: 'Безкоштовні push-сповіщення з можливістю самостійного хостингу',
-      pushover: 'Прості та надійні push-сповіщення',
-      callmebot: 'Безкоштовні WhatsApp сповіщення через CallMeBot',
-      webhook: 'Загальний HTTP POST на будь-який URL',
-    },
-  },
-
   // Log Viewer
   logViewer: {
     title: 'Журнали застосунку',
@@ -5335,29 +4732,12 @@ export default {
     noLogEntries: 'Записів журналу не знайдено',
     logFileEmpty: 'Файл журналу може бути порожнім або очищеним',
     autoRefreshing: 'Автооновлення кожні 2 секунди',
-    clickStartHint: 'Натисніть «Почати» для увімкнення потокового передавання журналів',
+    clickStartHint: 'Натисніть «Почати» для увімкнення потокового передавання журналів'
   },
 
   // Switchbar Popover
-  switchbarPopover: {
-    noSwitchesInSwitchbar: 'Немає перемикачів у панелі',
-  },
-
   // Project Page Modal
-  projectPageModal: {
-    placeholders: {
-      title: 'Заголовок',
-      designer: 'Дизайнер',
-      license: 'Ліцензія',
-      description: 'Введіть опис...',
-      profileTitle: 'Заголовок профілю',
-      profileDescription: 'Опис профілю...',
-    },
-  },
-
   // Spoolman Settings
-  spoolmanSettings: {},
-
   // Time
   time: {
     unknown: '-',
@@ -5369,7 +4749,7 @@ export default {
     hoursAgo: '{{count}}год тому',
     inHours: 'через {{count}}год',
     daysAgo: '{{count}}дн тому',
-    inDays: 'через {{count}}дн',
+    inDays: 'через {{count}}дн'
   },
 
   // Permission categories and actions (for group editor)
@@ -5398,7 +4778,7 @@ export default {
       backup: 'Резервне копіювання',
       cloud: 'Хмара',
       apiKeys: 'API-ключі',
-      userManagement: 'Керування користувачами',
+      userManagement: 'Керування користувачами'
     },
     actions: {
       read: 'Перегляд',
@@ -5413,7 +4793,7 @@ export default {
       scan: 'Сканування',
       backup: 'Резервне копіювання',
       restore: 'Відновлення',
-      auth: 'Автентифікація',
+      auth: 'Автентифікація'
     },
     labels: {
       printerFiles: 'Файли принтера',
@@ -5434,14 +4814,13 @@ export default {
       deleteOwnLibrary: 'Видалення власних файлів',
       deleteAllLibrary: 'Видалення всіх файлів',
       viewAssignments: 'Перегляд призначень котушок',
-      userEmailNotifications: 'Email-сповіщення користувача',
-    },
+      userEmailNotifications: 'Email-сповіщення користувача'
+    }
   },
   telegram: {
     title: 'Telegram-чати',
     addChat: 'Додати чат',
     editChat: 'Редагувати чат',
-    noChats: 'Telegram-чатів немає',
     noChatsDescription: 'Додайте Telegram-чат для доступу до бота та сповіщень.',
     registrationMode: 'Режим реєстрації',
     pending: 'Очікує',
@@ -5464,13 +4843,10 @@ export default {
     delete: 'Видалити',
     deleteTitle: 'Видалити чат',
     deleteMessage: 'Видалити Telegram-чат "{{label}}"? Цю дію не можна скасувати.',
-    botToken: 'Токен бота',
-    botTokenNotSet: 'Не налаштовано',
-    configure: 'Налаштувати',
     dailyDigest: 'Щоденний дайджест',
     cancel: 'Скасувати',
     save: 'Зберегти',
-    add: 'Додати',
+    add: 'Додати'
   },
   failureDetection: {
     title: 'AI-виявлення збоїв друку',
@@ -5502,6 +4878,53 @@ export default {
     activePrinters: 'Активні друки',
     noActivePrints: 'Зараз нема активних друків.',
     historyTitle: 'Останні події',
-    noHistory: 'Подій ще не було.',
+    noHistory: 'Подій ще не було.'
   },
+  cameraTokens: {
+    title: 'API-токени камери',
+    description: 'Довготривалі токени для вставки потоку камери в Home Assistant, Frigate, кіоски або будь-який інший інструмент, що потребує стабільного URL. Кожен токен дає доступ лише до перегляду камери і може бути відкликаний у будь-який момент.',
+    loading: 'Завантаження…',
+    confirmRevoke: {
+      title: 'Відкликати цей токен?',
+      body: 'Будь-який пристрій, що використовує "{{name}}", негайно втратить доступ. Це незворотно.',
+      cancel: 'Скасувати',
+      confirm: 'Відкликати',
+    },
+    create: {
+      title: 'Створити новий токен',
+      nameLabel: 'Назва токена',
+      namePlaceholder: 'напр. Home Assistant',
+      daysLabel: 'Днів до закінчення',
+      submit: 'Створити',
+      hint: 'Максимальний термін дії — 365 днів. Значення токена показується лише раз під час створення — скопіюйте його зараз.',
+    },
+    created: {
+      title: 'Токен створено — скопіюйте зараз',
+      warning: 'Це єдиний раз, коли цей токен буде видимий. Після закриття цього діалогу ви ніколи не зможете побачити його знову.',
+      copy: 'Копіювати',
+      dismiss: 'Я зберіг',
+    },
+    list: {
+      myTitle: 'Мої токени',
+      allTitle: 'Всі користувачі (вид адміна)',
+      empty: 'Токенів ще нема.',
+      name: 'Назва',
+      owner: 'Власник',
+      prefix: 'Префікс',
+      created: 'Створено',
+      expires: 'Спливає',
+      lastUsed: 'Востаннє використано',
+      revoke: 'Відкликати',
+      expired: 'Прострочений',
+    },
+    toast: {
+      created: 'Токен створено',
+      createFailed: 'Не вдалося створити токен',
+      revoked: 'Токен відкликано',
+      revokeFailed: 'Не вдалося відкликати токен',
+      loadFailed: 'Не вдалося завантажити токени',
+      copied: 'Скопійовано в буфер обміну',
+      copyFailed: 'Не вдалося скопіювати — виділіть і скопіюйте вручну',
+    },
+  }
 };

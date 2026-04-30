@@ -52,6 +52,19 @@ class HMSError:
     message: str = ""
 
 
+# HMS short codes the firmware emits during normal user-cancel sequences.
+# These aren't faults — they're status echoes that confirm the cancel happened.
+# Filtering them at parse-time keeps them out of state.hms_errors entirely,
+# so they don't drive the printer card's "X problem" badge, the red pip, or
+# any other consumer that treats hms_errors as the active-fault list.
+_HMS_USER_ACTION_CODES: frozenset[str] = frozenset(
+    {
+        "0300_400C",  # "The task was canceled."
+        "0500_400E",  # "Printing was cancelled."
+    }
+)
+
+
 @dataclass
 class KProfile:
     """Pressure advance (K) calibration profile from printer."""
@@ -425,31 +438,95 @@ class BambuMQTTClient:
             self.state.connected = False
             if self.on_state_change:
                 self.on_state_change(self.state)
-            # Force-close the underlying socket so paho's loop thread detects
-            # the broken connection and triggers auto-reconnect.  We don't call
-            # client.disconnect() because that's a clean disconnect and paho
-            # would NOT auto-reconnect afterwards.
             # Set flag so _on_disconnect knows this was intentional and skips
             # redundant state broadcast (we already set connected=False above).
+            # Route based on caller thread — see force_reconnect_stale_session.
+            # check_staleness is normally called from FastAPI handlers (async,
+            # gets the hard-reset path) but the router covers paho-thread
+            # callers too via socket-close fallback.
             self._stale_reconnecting = True
-            if self._client:
-                try:
-                    sock = self._client.socket()
-                    if sock:
-                        sock.close()
-                except Exception:
-                    pass  # Best-effort; paho loop will reconnect on next iteration
+            self._reset_client_for_reconnect()
         return self.state.connected
 
     def force_reconnect_stale_session(self, reason: str) -> None:
-        """Heal #887 half-broken session: telemetry keeps arriving but our
-        publishes no longer reach the printer. Closing the socket makes paho
-        drop and re-establish with a fresh session."""
+        """Heal #887/#936/#1136 half-broken session: telemetry keeps arriving
+        but our publishes don't reach the printer.
+
+        Two routing paths:
+
+        Async-context callers (background_dispatch dispatch deadline, FastAPI
+        handlers via check_staleness) → full client teardown + fresh
+        client_id. Wipes paho's client-side QoS 1 queue, which is exactly the
+        #1136 reproducer: an unacked ``project_file`` from the broken
+        session would otherwise replay on reconnect, mixing stale commands
+        into the next dispatch and triggering 0500_4003 SD R/W on the
+        printer.
+
+        Paho-network-thread callers (dev-mode probe + ams_filament_setting
+        zombie detection inside ``_update_state``) → socket-close fallback.
+        ``loop_stop()`` from inside the network thread would self-join and
+        deadlock; the safe pattern there is to close the socket and let
+        paho's own loop detect it and auto-reconnect on the same client.
+        Queue replay is theoretically possible from those paths but #1136
+        was specifically traced through the dispatch-deadline path which
+        now hard-resets.
+        """
         logger.warning("[%s] Forcing MQTT reconnect: %s", self.serial_number, reason)
         self._stale_reconnecting = True
         self.state.connected = False
         if self.on_state_change:
             self.on_state_change(self.state)
+        self._reset_client_for_reconnect()
+
+    def _reset_client_for_reconnect(self) -> None:
+        """Route between hard-reset and socket-close based on caller thread.
+
+        Hard-reset (preferred) requires we're not on paho's network thread,
+        since ``loop_stop()`` on the same thread deadlocks. Detect via
+        ``asyncio.get_running_loop()`` — paho's callback thread has no
+        loop; every legitimate hard-reset caller (FastAPI handlers,
+        background async tasks) does.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop is not None:
+            self._loop = loop
+            self._hard_reset_client()
+        else:
+            self._socket_close_for_reconnect()
+
+    def _hard_reset_client(self) -> None:
+        """Tear down the paho client entirely and rebuild it with a fresh
+        client_id, so the broker drops the old session and paho's local
+        QoS 1 queue is gone. Must NOT be called from paho's network thread.
+        """
+        old_client = self._client
+        self._client = None
+        if old_client is not None:
+            try:
+                old_client.disconnect()  # MQTT DISCONNECT — broker drops session
+            except Exception:
+                pass
+            try:
+                old_client.loop_stop()  # blocks briefly until network thread exits
+            except Exception:
+                pass
+        # Skip reconnect if no asyncio loop is available (test/pre-init).
+        if self._loop is None:
+            return
+        try:
+            self.connect(loop=self._loop)
+        except Exception as e:
+            logger.error("[%s] Hard reset reconnect failed: %s", self.serial_number, e)
+
+    def _socket_close_for_reconnect(self) -> None:
+        """Close the underlying socket so paho's loop thread detects the
+        broken connection and triggers auto-reconnect on the SAME client
+        instance. Safe from paho's own network thread.
+        """
         if self._client:
             try:
                 sock = self._client.socket()
@@ -2288,6 +2365,14 @@ class BambuMQTTClient:
                         # indicators that some firmware sends during normal printing.
                         if code < 0x4000:
                             continue
+                        # Skip user-action echoes — the printer firmware emits these
+                        # as part of normal user-cancel sequences. They're not faults
+                        # and shouldn't count toward "X problem" badges or surface as
+                        # red pips on the printer card. Backend's notification path
+                        # already suppresses 0500_400E for the same reason.
+                        short_code = f"{(attr >> 16) & 0xFFFF:04X}_{code & 0xFFFF:04X}"
+                        if short_code in _HMS_USER_ACTION_CODES:
+                            continue
                         self.state.hms_errors.append(
                             HMSError(
                                 code=f"0x{code:x}" if code else "0x0",
@@ -2324,23 +2409,30 @@ class BambuMQTTClient:
                         f"[{self.serial_number}] print_error: {print_error} (0x{print_error:08x}) -> short_code={short_code}"
                     )
 
-                    # Only add if not already in HMS errors (avoid duplicates)
-                    existing_short_codes = set()
-                    for e in self.state.hms_errors:
-                        # Extract short code from existing errors
-                        e_module = (e.attr >> 16) & 0xFFFF
-                        e_error = int(e.code.replace("0x", ""), 16) if e.code else 0
-                        existing_short_codes.add(f"{e_module:04X}_{e_error:04X}")
+                    # Same user-action filter as the hms[] branch above —
+                    # print_error carries the same cancel echoes (e.g.
+                    # 0500_400E) and they must not surface as faults on the
+                    # printer card.
+                    if short_code in _HMS_USER_ACTION_CODES:
+                        pass  # cancel echo — silently drop
+                    else:
+                        # Only add if not already in HMS errors (avoid duplicates)
+                        existing_short_codes = set()
+                        for e in self.state.hms_errors:
+                            # Extract short code from existing errors
+                            e_module = (e.attr >> 16) & 0xFFFF
+                            e_error = int(e.code.replace("0x", ""), 16) if e.code else 0
+                            existing_short_codes.add(f"{e_module:04X}_{e_error:04X}")
 
-                    if short_code not in existing_short_codes:
-                        self.state.hms_errors.append(
-                            HMSError(
-                                code=f"0x{error:x}",
-                                attr=print_error,  # Store full value for display
-                                module=module >> 8,  # High byte of module (e.g., 0x05)
-                                severity=3,  # Warning level for print_error
+                        if short_code not in existing_short_codes:
+                            self.state.hms_errors.append(
+                                HMSError(
+                                    code=f"0x{error:x}",
+                                    attr=print_error,  # Store full value for display
+                                    module=module >> 8,  # High byte of module (e.g., 0x05)
+                                    severity=3,  # Warning level for print_error
+                                )
                             )
-                        )
 
         # Parse home_flag first so SD-card / door detection below can use it.
         # Bit 8 = HAS_SDCARD_NORMAL, bit 9 = HAS_SDCARD_ABNORMAL, bit 11 = store-to-SD,
@@ -2731,6 +2823,13 @@ class BambuMQTTClient:
             and (
                 self._previous_gcode_state == "RUNNING"  # Normal transition
                 or (self._was_running and self._previous_gcode_state != self.state.state)  # After server restart
+                # Pre-print failure (#1111): printer rejected the job during setup
+                # — wrong nozzle size, AMS error, etc. The print never reaches
+                # RUNNING, so without this branch neither the RUNNING check nor
+                # _was_running match and the queue item stays stuck at "printing".
+                # Restricted to FAILED from pre-print states so a stale FAILED on
+                # first connection (prev=None) still can't accidentally fire.
+                or (self.state.state == "FAILED" and self._previous_gcode_state in ("PREPARE", "SLICING"))
             )
         )
         # For IDLE, only trigger if we just came from RUNNING (explicit abort/cancel)
@@ -3810,8 +3909,9 @@ class BambuMQTTClient:
         self._sequence_id += 1
 
         # Detect printer type by serial number prefix.
-        # Dual-nozzle families: H2D family ("094") and X2D ("20P9", #988).
-        is_dual_nozzle = self.serial_number.startswith(("094", "20P9"))
+        # Dual-nozzle families: H2 family — legacy "094" + post-2026 H2C
+        # batches "31B8B" (#1105); X2D — "20P9" (#988).
+        is_dual_nozzle = self.serial_number.startswith(("094", "20P9", "31B8B"))
 
         if is_dual_nozzle:
             # H2D format: uses extruder_id, nozzle_id, nozzle_diameter

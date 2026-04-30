@@ -14,6 +14,9 @@ import { MaintenancePage } from './pages/MaintenancePage';
 import { ProjectsPage } from './pages/ProjectsPage';
 import { ProjectDetailPage } from './pages/ProjectDetailPage';
 import { FileManagerPage } from './pages/FileManagerPage';
+import { LibraryTrashPage } from './pages/LibraryTrashPage';
+import { ArchiveTrashPage } from './pages/ArchiveTrashPage';
+import { MakerworldPage } from './pages/MakerworldPage';
 import { CameraPage } from './pages/CameraPage';
 import { StreamOverlayPage } from './pages/StreamOverlayPage';
 import { ExternalLinkPage } from './pages/ExternalLinkPage';
@@ -27,6 +30,7 @@ import { useWebSocket } from './hooks/useWebSocket';
 import { useStreamTokenSync } from './hooks/useCameraStreamToken';
 import { ThemeProvider } from './contexts/ThemeContext';
 import { ToastProvider } from './contexts/ToastContext';
+import { SliceJobTrackerProvider } from './contexts/SliceJobTrackerContext';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { ColorCatalogProvider } from './contexts/ColorCatalogContext';
 import { ConnectionProvider } from './contexts/ConnectionContext';
@@ -108,8 +112,14 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-function AdminRoute({ children }: { children: React.ReactNode }) {
-  const { loading, user, isAdmin, requiresSetup } = useAuth();
+function PermissionRoute({ permission, children }: { permission: string; children: React.ReactNode }) {
+  // Permission-gated route: any user holding the given permission can enter,
+  // not just admins. Individual components below this guard apply their own
+  // per-action permission checks (e.g. SettingsPage tabs each consult their
+  // own write permission). Used for pages where delegation is supported —
+  // settings:read grants read-only Settings, groups:create lets a delegated
+  // user open the new-group form, etc.
+  const { loading, user, hasPermission, requiresSetup } = useAuth();
 
   if (loading) {
     return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
@@ -119,13 +129,11 @@ function AdminRoute({ children }: { children: React.ReactNode }) {
     return <Navigate to="/setup" replace />;
   }
 
-  // Auth is always on; unauthenticated users always land on /login.
   if (!user) {
     return <Navigate to="/login" replace />;
   }
 
-  // If user is not admin, redirect to home
-  if (!isAdmin) {
+  if (!hasPermission(permission as Parameters<typeof hasPermission>[0])) {
     return <Navigate to="/" replace />;
   }
 
@@ -205,6 +213,7 @@ function App() {
           <AuthProvider>
             <ConnectionProvider>
             <ColorCatalogProvider>
+            <SliceJobTrackerProvider>
             <StreamTokenSync />
             <BrowserRouter>
               <Routes>
@@ -224,6 +233,7 @@ function App() {
                 <Route element={<ProtectedRoute><LanguageSync><WebSocketProvider><Layout /></WebSocketProvider></LanguageSync></ProtectedRoute>}>
                   <Route index element={<PrintersPage />} />
                   <Route path="archives" element={<ArchivesPage />} />
+                  <Route path="archives/trash" element={<ArchiveTrashPage />} />
                   <Route path="queue" element={<QueuePage />} />
                   <Route path="stats" element={<StatsPage />} />
                   <Route path="profiles" element={<ProfilesPage />} />
@@ -232,9 +242,11 @@ function App() {
                   <Route path="projects/:id" element={<ProjectDetailPage />} />
                   <Route path="inventory" element={<InventoryPage />} />
                   <Route path="files" element={<FileManagerPage />} />
-                  <Route path="settings" element={<AdminRoute><SettingsPage /></AdminRoute>} />
-                  <Route path="groups/new" element={<AdminRoute><GroupEditPage /></AdminRoute>} />
-                  <Route path="groups/:id/edit" element={<AdminRoute><GroupEditPage /></AdminRoute>} />
+                  <Route path="files/trash" element={<LibraryTrashPage />} />
+                  <Route path="makerworld" element={<PermissionRoute permission="makerworld:view"><MakerworldPage /></PermissionRoute>} />
+                  <Route path="settings" element={<PermissionRoute permission="settings:read"><SettingsPage /></PermissionRoute>} />
+                  <Route path="groups/new" element={<PermissionRoute permission="groups:create"><GroupEditPage /></PermissionRoute>} />
+                  <Route path="groups/:id/edit" element={<PermissionRoute permission="groups:update"><GroupEditPage /></PermissionRoute>} />
                   <Route path="users" element={<Navigate to="/settings?tab=users" replace />} />
                   <Route path="groups" element={<Navigate to="/settings?tab=users" replace />} />
                   <Route path="system" element={<SystemInfoPage />} />
@@ -243,6 +255,7 @@ function App() {
                 </Route>
               </Routes>
             </BrowserRouter>
+            </SliceJobTrackerProvider>
             </ColorCatalogProvider>
             </ConnectionProvider>
           </AuthProvider>

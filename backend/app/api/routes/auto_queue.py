@@ -186,7 +186,8 @@ async def add_to_auto_queue(
 
     library_file = None
     if data.library_file_id:
-        result = await db.execute(select(LibraryFile).where(LibraryFile.id == data.library_file_id))
+        # Trash bin (#1008): refuse to dispatch a soft-deleted source.
+        result = await db.execute(LibraryFile.active().where(LibraryFile.id == data.library_file_id))
         library_file = result.scalar_one_or_none()
         if not library_file:
             raise HTTPException(400, "Library file not found")

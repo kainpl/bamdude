@@ -151,6 +151,10 @@ class AppSettings(BaseModel):
         default="file_manager",
         description="Mode: 'print_queue' (archive + push directly to a per-printer queue), 'auto_queue' (archive + drop into the auto-queue router), 'file_manager' (save to library), or 'proxy' (transparent forward to a real printer)",
     )
+    virtual_printer_archive_name_source: str = Field(
+        default="metadata",
+        description="Source for the archive's display name on virtual-printer uploads: 'metadata' uses the 3MF's embedded print_name (default, matches Bambu's behavior), 'filename' uses the filename Bambu Studio sent over FTP (lets users rename via the slicer's 'send to printer' dialog).",
+    )
 
     # Dark mode theme settings
     dark_style: str = Field(default="classic", description="Dark mode style: classic, glow, vibrant")
@@ -214,6 +218,32 @@ class AppSettings(BaseModel):
         description="Preferred slicer: 'bambu_studio' or 'orcaslicer'",
     )
 
+    # Server-side slicing (B.4) — optional opt-in to route the Slice button
+    # through the in-app slicer-api sidecar instead of the OS slicer URI scheme.
+    use_slicer_api: bool = Field(
+        default=False,
+        description=(
+            "When true, the Slice button across File Manager / Archives / "
+            "MakerWorld dispatches a background job to the configured slicer-api "
+            "sidecar. Default off so existing installs see no change until they "
+            "explicitly stand up the sidecar Compose stack."
+        ),
+    )
+    orcaslicer_api_url: str = Field(
+        default="",
+        description=(
+            "Base URL of the OrcaSlicer-API sidecar (e.g. http://localhost:3003). "
+            "Empty string falls back to the SLICER_API_URL env default."
+        ),
+    )
+    bambu_studio_api_url: str = Field(
+        default="",
+        description=(
+            "Base URL of the BambuStudio-API sidecar (e.g. http://localhost:3001). "
+            "Empty string falls back to the BAMBU_STUDIO_API_URL env default."
+        ),
+    )
+
     # Prometheus metrics endpoint
     prometheus_enabled: bool = Field(default=False, description="Enable Prometheus metrics endpoint at /metrics")
     prometheus_token: str = Field(
@@ -226,6 +256,14 @@ class AppSettings(BaseModel):
         ge=0.1,
         le=99.9,
         description="Low stock threshold percentage (%) for inventory filtering and display",
+    )
+
+    # Auto-Print G-code Injection (#422). Per-model snippet library:
+    # ``{model: {"start_gcode": "...", "end_gcode": "..."}}`` JSON-encoded.
+    # Resolved by background_dispatch when a queue item has gcode_injection=True.
+    gcode_snippets: str = Field(
+        default="",
+        description="JSON: per-model G-code injection snippets {model: {start_gcode, end_gcode}}",
     )
 
     # User email notifications (requires Advanced Authentication)
@@ -335,6 +373,7 @@ class AppSettingsUpdate(BaseModel):
     virtual_printer_enabled: bool | None = None
     virtual_printer_access_code: str | None = None
     virtual_printer_mode: str | None = None
+    virtual_printer_archive_name_source: str | None = None
     dark_style: str | None = None
     dark_background: str | None = None
     dark_accent: str | None = None
@@ -360,6 +399,9 @@ class AppSettingsUpdate(BaseModel):
     library_disk_warning_gb: float | None = None
     camera_view_mode: str | None = None
     preferred_slicer: str | None = None
+    use_slicer_api: bool | None = None
+    orcaslicer_api_url: str | None = None
+    bambu_studio_api_url: str | None = None
     prometheus_enabled: bool | None = None
     prometheus_token: str | None = None
     low_stock_threshold: float | None = Field(default=None, ge=0.1, le=99.9)
@@ -386,6 +428,20 @@ class AppSettingsUpdate(BaseModel):
     obico_poll_interval: int | None = Field(default=None, ge=5, le=120)
     obico_enabled_printers: str | None = None
     default_sidebar_order: str | None = None
+    gcode_snippets: str | None = None
+
+    @field_validator("gcode_snippets")
+    @classmethod
+    def validate_gcode_snippets(cls, v: str | None) -> str | None:
+        if v is None or v == "":
+            return v
+        try:
+            parsed = json.loads(v)
+        except json.JSONDecodeError:
+            raise ValueError("gcode_snippets must be valid JSON or empty")
+        if not isinstance(parsed, dict):
+            raise ValueError("gcode_snippets must be a JSON object keyed by printer model")
+        return v
 
     @field_validator("ldap_group_mapping")
     @classmethod

@@ -1,11 +1,20 @@
 """3MF gcode post-processor — patches gcode inside a 3MF archive.
 
-Current patches:
+Current transforms:
     * **mesh_mode_fast_check_off** — comments out ``M970`` / ``M970.3``
       vibration-probe commands in the start gcode of every plate. These
       commands run the "Quick Vibration Check" (belt-tension pre-flight)
       before each print. Commenting them out is the only way to skip the
       check — there is no runtime MQTT parameter for it.
+    * **gcode_injection** (#422) — splices operator-defined start/end
+      snippets into one specific plate's gcode at
+      ``; MACHINE_START_GCODE_END`` (start) / EOF (end), with
+      ``{placeholder}`` substitution from the 3MF gcode header.
+
+When both transforms run on the same dispatch, ``apply_3mf_transforms``
+opens + rewrites the 3MF **once** instead of twice. Each transform is a
+function on the in-memory ``entry_data`` dict; md5 sidecars are
+recomputed only for plates that were actually modified.
 
 The patcher operates on a **copy** of the source file. The original in
 the library / archive dir is never modified so ``file_hash`` /
@@ -24,9 +33,25 @@ import re
 import shutil
 import tempfile
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class GcodeInjectionSpec:
+    """Per-dispatch G-code injection request (#422).
+
+    ``plate_id`` is 1-indexed; ``start_gcode`` / ``end_gcode`` are the
+    operator-defined snippets resolved from ``gcode_snippets`` for the
+    target printer model. Either side can be empty/None.
+    """
+
+    plate_id: int
+    start_gcode: str | None
+    end_gcode: str | None
+
 
 # Regex: uncommented M970 or M970.3 command (with optional parameters).
 # Anchored to line start with optional leading whitespace.
@@ -171,3 +196,142 @@ def patch_mesh_mode_fast_check(source_3mf: Path) -> tuple[Path, list[str]]:
         temp_path,
     )
     return temp_path, ["mesh_mode_fast_check_off"]
+
+
+def apply_3mf_transforms(
+    source_3mf: Path,
+    *,
+    mesh_mode_fast_check_off: bool = False,
+    gcode_injection: GcodeInjectionSpec | None = None,
+) -> tuple[Path, list]:
+    """Open the 3MF once, apply every requested transform, write once.
+
+    Folds the M970-commenting pass and the gcode-injection pass into a
+    single open/mutate/write cycle. Without this, dispatching a job that
+    needs both transforms would unzip + rezip the 3MF twice (once per
+    transform) and update md5 sidecars twice — wasted I/O on what can be
+    a 50+ MB file.
+
+    Returns ``(out_path, applied_patches)``.
+
+    * ``out_path`` is ``source_3mf`` (passthrough) when no transform
+      actually changed any byte (e.g. the operator toggled mesh-mode-fast
+      off but the file already has every M970 commented — common with
+      Swaplist exports). The caller can hand the source straight to FTP
+      and skip the temp-file cleanup.
+    * Otherwise it's a freshly-allocated temp file under
+      ``tempfile.mkdtemp(prefix='bamdude_patch_')``; the caller is
+      responsible for removing the parent dir after upload.
+    * ``applied_patches`` is the list to feed into ``archive_print``'s
+      ``applied_patches`` JSON column for chain-of-custody. Format mixes
+      strings (legacy ``"mesh_mode_fast_check_off"``) and dicts (richer
+      transforms like ``{"name": "gcode_injection", "plate_id": N}``).
+
+    Failures fall back to the original source — never raise. A snippet
+    typo or malformed 3MF can't take a print job down.
+    """
+    if not source_3mf.exists():
+        logger.warning("[PATCHER] Source file not found: %s", source_3mf)
+        return source_3mf, []
+
+    if not mesh_mode_fast_check_off and gcode_injection is None:
+        return source_3mf, []  # No-op — caller asked for no transforms.
+
+    # Open once into memory so each transform can mutate the same dict.
+    try:
+        with zipfile.ZipFile(source_3mf, "r") as zf_read:
+            all_entries = zf_read.namelist()
+            entry_data: dict[str, bytes] = {name: zf_read.read(name) for name in all_entries}
+    except (zipfile.BadZipFile, OSError) as e:
+        logger.warning("[PATCHER] Cannot read 3MF %s: %s", source_3mf, e)
+        return source_3mf, []
+
+    plate_entries = [n for n in all_entries if re.match(r"Metadata/[Pp]late_\d+\.gcode$", n)]
+    if not plate_entries:
+        return source_3mf, []
+
+    applied: list = []
+    modified_plates: set[str] = set()
+
+    if mesh_mode_fast_check_off:
+        total_commented = 0
+        for entry in plate_entries:
+            raw = entry_data[entry].decode("utf-8", errors="replace")
+            masked, placeholders = _mask_param_gcode(raw)
+            patched, count = _comment_m970(masked)
+            if count > 0:
+                total_commented += count
+                unmasked = _unmask_param_gcode(patched, placeholders)
+                entry_data[entry] = unmasked.encode("utf-8")
+                modified_plates.add(entry)
+        if total_commented > 0:
+            applied.append("mesh_mode_fast_check_off")
+            logger.info(
+                "[PATCHER] mesh_mode_fast_check_off: commented %d M970 line(s) across %d plate(s)",
+                total_commented,
+                len(plate_entries),
+            )
+
+    if gcode_injection is not None:
+        # Imported lazily to avoid a hard import cycle (gcode_injector
+        # itself doesn't depend on gcode_patcher, but tests stub the
+        # injector and we don't want patcher import to drag it in).
+        from backend.app.services.gcode_injector import (
+            _inject_start_at_marker,
+            _parse_3mf_gcode_header,
+            _substitute_placeholders,
+        )
+
+        target_name = f"Metadata/plate_{gcode_injection.plate_id}.gcode"
+        if target_name not in entry_data:
+            # Fall back to first plate so a stale plate_id from the queue
+            # item still produces a useful injection rather than silently
+            # no-op'ing — matches inject_gcode_into_3mf's own fallback.
+            target_name = plate_entries[0]
+        start_gc = (gcode_injection.start_gcode or "").strip()
+        end_gc = (gcode_injection.end_gcode or "").strip()
+        if start_gc or end_gc:
+            try:
+                content = entry_data[target_name].decode("utf-8", errors="replace")
+                header = _parse_3mf_gcode_header(content)
+                if start_gc:
+                    content = _inject_start_at_marker(content, _substitute_placeholders(start_gc, header))
+                if end_gc:
+                    content = content.rstrip("\n") + "\n" + _substitute_placeholders(end_gc, header) + "\n"
+                entry_data[target_name] = content.encode("utf-8")
+                modified_plates.add(target_name)
+                applied.append({"name": "gcode_injection", "plate_id": gcode_injection.plate_id})
+                logger.info(
+                    "[PATCHER] gcode_injection applied to %s (start=%d, end=%d)",
+                    target_name,
+                    len(start_gc),
+                    len(end_gc),
+                )
+            except Exception as exc:
+                # Don't take the print down on snippet typos / malformed 3MF.
+                logger.warning("[PATCHER] gcode_injection failed for %s: %s", target_name, exc)
+
+    if not modified_plates:
+        return source_3mf, []
+
+    # Recompute md5 sidecars only for the plates we actually touched.
+    for entry in modified_plates:
+        md5_entry = f"{entry}.md5"
+        if md5_entry in entry_data:
+            entry_data[md5_entry] = _md5_bytes(entry_data[entry]).encode("ascii")
+
+    temp_dir = tempfile.mkdtemp(prefix="bamdude_patch_")
+    temp_path = Path(temp_dir) / source_3mf.name
+    try:
+        # Copy first so non-deflate metadata (timestamps etc.) lines up
+        # with the original; then rewrite with mutated entry_data.
+        shutil.copy2(source_3mf, temp_path)
+        with zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_DEFLATED) as zf_write:
+            for name in all_entries:
+                zf_write.writestr(name, entry_data[name])
+    except Exception:
+        logger.exception("[PATCHER] Failed to write transformed 3MF %s", source_3mf.name)
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        return source_3mf, []
+
+    return temp_path, applied

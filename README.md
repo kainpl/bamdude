@@ -70,7 +70,7 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 ### Monitoring & Control
 - **Printer calibration** — bed leveling, vibration, motor noise, nozzle offset, high-temp heatbed (model-aware, from UI and Telegram bot)
 - Real-time printer status via WebSocket
-- Live camera streaming & snapshots
+- Live camera streaming & snapshots — **fan-out broadcaster** so multiple browser tabs / HA cards / Frigate share a single upstream connection (the printer itself only allows one)
 - Streaming overlay for OBS
 - External camera support (MJPEG, RTSP, USB)
 - Build plate empty detection
@@ -86,6 +86,7 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 - **Swap Mode** — A1 Mini / A1 plate swapper with multi-profile support (Kit, STL, JobOx), auto-detect swap files, per-job event selection (start sequence / change table), plate-clear auto-bypass
 - **Swap macro auto-execution** — `swap_mode_start` before print, `swap_mode_change_table` after print, with ACK + stg_cur completion tracking, queue pause on failure
 - **Quick Vibration Check toggle** — per-job toggle; when disabled, 3MF gcode post-processor comments out `M970` commands, recalculates MD5 sidecars, repacks archive
+- **Auto-Print G-code Injection** — per-job toggle that splices operator-defined snippets into the plate gcode at `; MACHINE_START_GCODE_END` (start) / EOF (end), with `{placeholder}` substitution from 3MF header (incl. PrusaSlicer→Bambu aliases). Snippets stored as per-printer-model JSON in settings; folded into the same single 3MF open/repack cycle as Quick Vibration Check so multi-plate 50+ MB files aren't unzipped twice
 - **G-code macros** — execute from printer menu, ACK-based MQTT confirmation, `stg_cur` completion tracking, real-time status on printer card
 - Model-aware maintenance types with history tracking and Excel export
 - Clear plate confirmation between prints
@@ -101,6 +102,7 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 - Folder structure with drag-and-drop
 - Print directly or add to queue
 - Duplicate detection
+- **Trash bin with restore** — soft-delete with configurable retention (default 30 days), background sweeper hard-deletes past the window, opt-in scheduled auto-purge for old library files + archives
 
 ### Projects
 - Group related prints
@@ -162,14 +164,17 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 - Archive, Review, Queue, **File Manager (NEW)**, or Proxy modes
 - **File Manager mode** — saves received 3MF files to the library instead of archiving or printing
 - SSDP discovery or manual IP
+- **Tailscale Let's Encrypt cert** — opt-in per-VP toggle; when on, asks the local `tailscale` CLI for an LE cert and advertises the tailnet FQDN over SSDP so slicers connect via a hostname matching a trusted cert (no manual CA install)
 
 ### Authentication
 - Group-based permissions (80+ granular)
 - JWT tokens, API key support
+- **OIDC (OpenID Connect)** — PocketID, Authentik, Keycloak, Authelia, Google, **Azure Entra ID** (`preferred_username` / `upn` claim, optional skip of `email_verified` gate)
 - LDAP/Active Directory with group mapping
 - Per-user Bambu Cloud accounts
 - Advanced Auth via Email (SMTP)
 - Per-user email notifications
+- **Long-lived camera-stream tokens** — per-user, named, revocable tokens with hard 365-day TTL for Home Assistant cards, Frigate inputs, and wall-mounted kiosks
 
 </td>
 </tr>

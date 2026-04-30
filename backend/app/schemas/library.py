@@ -137,6 +137,12 @@ class FileResponse(BaseModel):
 
     notes: str | None
 
+    # Provenance (m033) — populated for MakerWorld imports + slicer outputs.
+    # ``source_type`` ∈ {"makerworld", "sliced", ...}; ``source_url`` is the
+    # canonical link (e.g. MakerWorld profile URL). NULL for plain uploads.
+    source_type: str | None = None
+    source_url: str | None = None
+
     # Duplicate detection
     duplicates: list[FileDuplicate] | None = None
     duplicate_count: int = 0
@@ -189,6 +195,11 @@ class FileListResponse(BaseModel):
     sliced_for_model: str | None = None
     swap_compatible: bool = False
     is_multi_plate: bool = False
+    # Provenance (m033) — same semantics as ``FileResponse``. List endpoint
+    # surfaces them so the file card can show the "MakerWorld" / "Sliced"
+    # badge without a follow-up detail fetch.
+    source_type: str | None = None
+    source_url: str | None = None
     # Number of notes attached (gh#3) - drives the card icon variant
     # (MessageSquarePlus when 0, MessageSquare when >0).
     notes_count: int = 0

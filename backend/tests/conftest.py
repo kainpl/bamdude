@@ -76,6 +76,7 @@ async def test_engine():
         external_link,
         group,
         kprofile_note,
+        long_lived_token,
         maintenance,
         notification,
         notification_template,

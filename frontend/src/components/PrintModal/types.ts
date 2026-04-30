@@ -48,6 +48,8 @@ export interface PrintOptions {
   layer_inspect: boolean;
   timelapse: boolean;
   mesh_mode_fast_check: boolean;
+  /** Inject operator-defined G-code snippets at MACHINE_START_GCODE_END / EOF (#422). */
+  gcode_injection: boolean;
 }
 
 /**
@@ -59,6 +61,7 @@ export const DEFAULT_PRINT_OPTIONS: PrintOptions = {
   layer_inspect: false,
   timelapse: false,
   mesh_mode_fast_check: true,
+  gcode_injection: false,
 };
 
 /**

@@ -116,7 +116,27 @@ async def import_sqlite_to_postgres(engine, metadata, sqlite_path: Path) -> int:
                 table.constraints.remove(fk)
 
     async with engine.begin() as conn:
-        await conn.run_sync(metadata.drop_all)
+        # On PostgreSQL, plain metadata.drop_all only enumerates ORM-defined tables
+        # and emits non-CASCADE DROP TABLE. Orphan tables left over from removed
+        # features (e.g. legacy spoolman_* whose FKs still reference printers) then
+        # block the drop with DependentObjectsStillExistError, aborting the whole
+        # restore. Drop every public-schema table with CASCADE first so the orphans
+        # and their constraints come down alongside the ORM ones; restricted to
+        # schemaname='public' so a shared Postgres instance with non-BamDude data
+        # in other schemas isn't affected. SQLite is unaffected (no orphan-FK risk).
+        from backend.app.core.db_dialect import is_postgres
+
+        if is_postgres():
+            await conn.execute(
+                text(
+                    "DO $$ DECLARE r RECORD; "
+                    "BEGIN FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'public') LOOP "
+                    "EXECUTE 'DROP TABLE IF EXISTS public.' || quote_ident(r.tablename) || ' CASCADE'; "
+                    "END LOOP; END $$;"
+                )
+            )
+        else:
+            await conn.run_sync(metadata.drop_all)
         await conn.run_sync(metadata.create_all)
 
     # Restore FK definitions in metadata

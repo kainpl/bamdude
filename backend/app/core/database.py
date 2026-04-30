@@ -1,3 +1,5 @@
+import asyncio
+
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
@@ -99,11 +101,26 @@ async def get_db() -> AsyncSession:
         try:
             yield session
             await session.commit()
-        except Exception:
-            await session.rollback()
+        except BaseException:
+            # Catch BaseException (not just Exception) so CancelledError —
+            # raised when Starlette's BaseHTTPMiddleware cancels the inner
+            # task scope on client disconnect — also triggers rollback.
+            # `asyncio.shield` keeps the rollback running to completion even
+            # when the await itself gets cancelled by the same scope, so the
+            # SQLite write lock is released promptly instead of being held
+            # until the connection is GC'd ages later. On Postgres the same
+            # leak shape would surface as "QueuePool limit … overflow"
+            # instead of "database is locked" (#1112 follow-up).
+            try:
+                await asyncio.shield(session.rollback())
+            except BaseException:  # noqa: BLE001 — rollback failure must not mask the original
+                pass
             raise
         finally:
-            await session.close()
+            try:
+                await asyncio.shield(session.close())
+            except BaseException:  # noqa: BLE001 — close failure must not mask the original
+                pass
 
 
 async def init_db():
@@ -126,6 +143,7 @@ async def init_db():
         library,
         library_file_note,
         local_preset,
+        long_lived_token,
         macro,
         maintenance,
         notification,

@@ -9,6 +9,7 @@ const PRINT_OPTIONS_CONFIG = [
   { key: 'layer_inspect', labelKey: 'printModal.layerInspection', descKey: 'printModal.layerInspectionDesc' },
   { key: 'timelapse', labelKey: 'printModal.timelapse', descKey: 'printModal.timelapseDesc' },
   { key: 'mesh_mode_fast_check', labelKey: 'printModal.meshModeFastCheck', descKey: 'printModal.meshModeFastCheckDesc' },
+  { key: 'gcode_injection', labelKey: 'printModal.gcodeInjection', descKey: 'printModal.gcodeInjectionDesc' },
 ] as const;
 
 /**

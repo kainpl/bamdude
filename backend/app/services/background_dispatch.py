@@ -31,6 +31,7 @@ from backend.app.services.bambu_ftp import (
     upload_file_async,
     with_ftp_retry,
 )
+from backend.app.services.gcode_patcher import GcodeInjectionSpec
 from backend.app.services.printer_manager import printer_manager
 
 logger = logging.getLogger(__name__)
@@ -468,6 +469,51 @@ class BackgroundDispatchService:
         finally:
             self._job_event.set()
 
+    async def _build_injection_spec(
+        self,
+        *,
+        job: PrintDispatchJob,
+        printer_model: str | None,
+        plate_id: int,
+    ) -> GcodeInjectionSpec | None:
+        """Resolve the per-job injection spec from settings + per-printer model (#422).
+
+        Returns a ``GcodeInjectionSpec`` for ``apply_3mf_transforms`` to splice
+        in during its single open/write pass, or None when injection is off,
+        the printer model is unknown, or no snippets are configured for the
+        target model. The actual zip mutation lives in ``apply_3mf_transforms``
+        so M970-commenting and snippet-injection share one open/repack cycle
+        instead of two — important on multi-plate 50+ MB 3MFs.
+        """
+        if not job.options.get("gcode_injection"):
+            return None
+        if not printer_model:
+            logger.info("Dispatch job %s: gcode_injection on but no printer model, skipping", job.id)
+            return None
+        try:
+            import json as _json
+
+            from backend.app.api.routes.settings import get_setting
+
+            async with self._session_factory() as _sdb:
+                snippets_raw = await get_setting(_sdb, "gcode_snippets")
+            if not snippets_raw:
+                return None
+            snippets = _json.loads(snippets_raw)
+            model_snippets = snippets.get(printer_model, {}) if isinstance(snippets, dict) else {}
+            start_gc = (model_snippets.get("start_gcode") or "").strip()
+            end_gc = (model_snippets.get("end_gcode") or "").strip()
+            if not start_gc and not end_gc:
+                return None
+            return GcodeInjectionSpec(
+                plate_id=plate_id,
+                start_gcode=start_gc or None,
+                end_gcode=end_gc or None,
+            )
+        except Exception as exc:
+            logger.warning("Dispatch job %s: failed to resolve gcode_snippets (%s), skipping", job.id, exc)
+            return None
+
     async def _set_active_message(self, job: PrintDispatchJob, message: str):
         async with self._lock:
             active = self._active_jobs.get(job.id)
@@ -696,22 +742,35 @@ class BackgroundDispatchService:
             if not file_path.exists():
                 raise RuntimeError("Archive file not found")
 
-            # Gcode post-processing: patch 3MF if the operator toggled off
-            # the vibration fast-check.  The patcher works on a temp copy
-            # and returns the original path unchanged if nothing needed.
+            # Unified 3MF post-processing: M970 commenting (mesh-mode-fast-check
+            # off) and per-plate G-code injection (#422) share a single
+            # open/mutate/write pass instead of unzipping+rezipping the file
+            # twice. ``apply_3mf_transforms`` returns the source path unchanged
+            # when no transform actually mutated any byte (e.g. an already-
+            # patched Swaplist export, or an injection toggle without snippets
+            # configured for this printer model).
             upload_file_path = file_path
             _patch_cleanup_dir = None
-            if not job.options.get("mesh_mode_fast_check", True):
-                from backend.app.services.gcode_patcher import patch_mesh_mode_fast_check
+            inject_spec = await self._build_injection_spec(
+                job=job,
+                printer_model=printer_model,
+                plate_id=archive.plate_id or 1,
+            )
+            if not job.options.get("mesh_mode_fast_check", True) or inject_spec is not None:
+                from backend.app.services.gcode_patcher import apply_3mf_transforms
 
-                patched_path, patches = await asyncio.to_thread(patch_mesh_mode_fast_check, file_path)
-                if patches:
+                patched_path, patches = await asyncio.to_thread(
+                    apply_3mf_transforms,
+                    file_path,
+                    mesh_mode_fast_check_off=not job.options.get("mesh_mode_fast_check", True),
+                    gcode_injection=inject_spec,
+                )
+                if patches and patched_path != file_path:
                     upload_file_path = patched_path
                     _patch_cleanup_dir = patched_path.parent
-                    # Merge into applied_patches so archive_print persists the chain.
                     existing_patches = job.options.get("applied_patches") or []
                     job.options["applied_patches"] = existing_patches + patches
-                    logger.info("Dispatch job %s: 3MF patched (%s)", job.id, patches)
+                    logger.info("Dispatch job %s: 3MF transformed (%s)", job.id, patches)
 
             base_name = archive.filename
             if base_name.endswith(".gcode.3mf"):
@@ -901,9 +960,37 @@ class BackgroundDispatchService:
                     )
                     raise RuntimeError("Failed to start print")
 
-                pre_state = getattr(printer_manager.get_status(job.printer_id), "state", None)
+                # Wait for the printer to actually pick up the command before
+                # marking the dispatch job complete (#1042/#1134). MQTT-publish
+                # success only proves the command queued locally; the printer
+                # can still reject it (HMS error pending, half-broken session,
+                # SD card missing) and never transition. Until #1134 this
+                # watchdog was fire-and-forget — the job was reported
+                # successful and the user had no signal that the print never
+                # started. The uploaded file is intentionally left on the
+                # printer's SD card on timeout: the next dispatch will
+                # overwrite it via the existing delete-then-upload step, and
+                # the printer may still be in the middle of reading it if it
+                # picked up just past the timeout.
+                _post_status = printer_manager.get_status(job.printer_id)
+                pre_state = getattr(_post_status, "state", None)
+                pre_subtask_id = getattr(_post_status, "subtask_id", None)
+                pre_gcode_file = getattr(_post_status, "gcode_file", None)
                 if pre_state:
-                    asyncio.create_task(self._verify_print_response(job.printer_id, printer_name, pre_state))
+                    await self._set_active_message(job, f"Waiting for {printer_name} to acknowledge print...")
+                    transitioned = await self._verify_print_response(
+                        job.printer_id,
+                        printer_name,
+                        pre_state,
+                        pre_subtask_id=pre_subtask_id,
+                        pre_gcode_file=pre_gcode_file,
+                    )
+                    if not transitioned:
+                        raise RuntimeError(
+                            f"Printer did not acknowledge print command — state still {pre_state}. "
+                            f"Check the printer for a pending error (HMS code, plate-clear prompt, "
+                            f"SD card) and try again."
+                        )
 
                 # Register in-memory swap config for on_print_complete's fast
                 # path. Persistence to archive.extra_data (restart recovery)
@@ -995,7 +1082,7 @@ class BackgroundDispatchService:
         job.outcome = {"success": False, "archive_id": None, "error": None, "cancelled": False}
 
         async with async_session() as db:
-            lib_file = await db.scalar(select(LibraryFile).where(LibraryFile.id == job.source_id))
+            lib_file = await db.scalar(LibraryFile.active().where(LibraryFile.id == job.source_id))
             if not lib_file:
                 raise RuntimeError("File not found")
 
@@ -1023,20 +1110,30 @@ class BackgroundDispatchService:
             if not await printer_manager.ensure_fresh_connection_for_printer(printer):
                 raise RuntimeError("Can`t re-connect printer MQTT")
 
-            # Gcode post-processing: patch 3MF if the operator toggled off
-            # the vibration fast-check.
+            # Unified 3MF post-processing — same single-pass pipeline as the
+            # archive path above. See _maybe_inject_gcode → _build_injection_spec.
             upload_file_path = file_path
             _patch_cleanup_dir_lib = None
-            if not job.options.get("mesh_mode_fast_check", True):
-                from backend.app.services.gcode_patcher import patch_mesh_mode_fast_check
+            inject_spec_lib = await self._build_injection_spec(
+                job=job,
+                printer_model=printer_model,
+                plate_id=int(job.options.get("plate_id") or 1),
+            )
+            if not job.options.get("mesh_mode_fast_check", True) or inject_spec_lib is not None:
+                from backend.app.services.gcode_patcher import apply_3mf_transforms
 
-                patched_path, patches = await asyncio.to_thread(patch_mesh_mode_fast_check, file_path)
-                if patches:
+                patched_path, patches = await asyncio.to_thread(
+                    apply_3mf_transforms,
+                    file_path,
+                    mesh_mode_fast_check_off=not job.options.get("mesh_mode_fast_check", True),
+                    gcode_injection=inject_spec_lib,
+                )
+                if patches and patched_path != file_path:
                     upload_file_path = patched_path
                     _patch_cleanup_dir_lib = patched_path.parent
                     existing_patches = job.options.get("applied_patches") or []
                     job.options["applied_patches"] = existing_patches + patches
-                    logger.info("Dispatch job %s: 3MF patched (%s)", job.id, patches)
+                    logger.info("Dispatch job %s: 3MF transformed (%s)", job.id, patches)
 
             await self._set_active_message(job, f"Creating archive for {lib_file.filename}...")
             # Hold the startup-lock for the DB-write critical section only:
@@ -1332,9 +1429,31 @@ class BackgroundDispatchService:
                 except Exception as _e:
                     logger.debug("Stagger registration for direct dispatch failed: %s", _e)
 
-                pre_state = getattr(printer_manager.get_status(job.printer_id), "state", None)
+                # See _run_reprint_archive for rationale (#1042/#1134). Outer
+                # ``except Exception`` block already runs
+                # ``_mark_dispatch_archive_terminal(archive.id, "failed", ...)``
+                # so a RuntimeError raised here flips the freshly-created
+                # archive from "printing" → "failed" without leaving a
+                # phantom row for a print that never started.
+                _post_status = printer_manager.get_status(job.printer_id)
+                pre_state = getattr(_post_status, "state", None)
+                pre_subtask_id = getattr(_post_status, "subtask_id", None)
+                pre_gcode_file = getattr(_post_status, "gcode_file", None)
                 if pre_state:
-                    asyncio.create_task(self._verify_print_response(job.printer_id, printer_name, pre_state))
+                    await self._set_active_message(job, f"Waiting for {printer_name} to acknowledge print...")
+                    transitioned = await self._verify_print_response(
+                        job.printer_id,
+                        printer_name,
+                        pre_state,
+                        pre_subtask_id=pre_subtask_id,
+                        pre_gcode_file=pre_gcode_file,
+                    )
+                    if not transitioned:
+                        raise RuntimeError(
+                            f"Printer did not acknowledge print command — state still {pre_state}. "
+                            f"Check the printer for a pending error (HMS code, plate-clear prompt, "
+                            f"SD card) and try again."
+                        )
 
                 # Register the requesting user so per-user stats filter sees
                 # this print and the post-print notification has a recipient.
@@ -1403,38 +1522,78 @@ class BackgroundDispatchService:
         printer_id: int,
         printer_name: str,
         pre_state: str,
-        timeout: float = 15.0,
+        pre_subtask_id: str | None = None,
+        timeout: float = 90.0,
         poll_interval: float = 3.0,
-    ):
-        """Check if the printer responded to a print command.
+        pre_gcode_file: str | None = None,
+    ) -> bool:
+        """Wait for the printer to acknowledge a print command.
 
-        Runs as a fire-and-forget background task after start_print() succeeds.
-        If the printer's gcode_state hasn't changed within the timeout, logs a
-        warning for diagnostics (visible in support packages).
+        Returns True if the printer transitioned (state advanced past
+        ``pre_state`` or ``subtask_id`` advanced past ``pre_subtask_id``).
+        Returns False on timeout — in that case logs a warning and (when the
+        ``gcode_file`` discriminator says the publish didn't land) forces an
+        MQTT reconnect, mirroring the queue-side watchdog
+        (`_watchdog_print_start`). Caller surfaces the False result to the
+        user (typically by raising so the dispatch job is marked failed).
+
+        H2D can sit at FINISH for ~50 s after accepting `project_file` before
+        flipping to PREPARE; the printer echoes our per-dispatch identity
+        back as ``subtask_id`` on ``push_status`` first, so a subtask_id
+        change is a definitive "command landed" signal even while state is
+        still FINISH (#1078).
         """
         deadline = time.monotonic() + timeout
+        last_status = None  # captured for #1150 gcode_file discriminator on timeout
         while time.monotonic() < deadline:
             await asyncio.sleep(poll_interval)
             state = printer_manager.get_status(printer_id)
             if not state:
-                return  # Printer disconnected
+                # Printer momentarily not reporting — could be a brief MQTT
+                # disconnect mid-window. Keep polling rather than declaring
+                # failure on the first missed tick; the printer may reconnect
+                # within the remaining timeout and still surface a transition.
+                continue
+            last_status = state
             if state.state != pre_state:
-                return  # Printer responded
+                return True
+            if pre_subtask_id is not None and state.subtask_id is not None and state.subtask_id != pre_subtask_id:
+                return True
         logger.warning(
-            "Printer %s (%d) did not respond to print command within %.0fs (state still %s) - printer may need restart",
+            "Printer %s (%d) did not respond to print command within %.0fs "
+            "(state still %s, subtask_id still %s) — printer may need restart",
             printer_name,
             printer_id,
             timeout,
             pre_state,
+            pre_subtask_id,
         )
-        # Strong signal the MQTT session is half-broken (#887, #936): telemetry
-        # still arrives but our publishes don't reach the printer. Force a fresh
-        # session so the next dispatch can land without a power cycle.
-        client = printer_manager.get_client(printer_id)
-        if client:
-            client.force_reconnect_stale_session(
-                f"print command unacknowledged after {timeout:.0f}s (state still {pre_state})"
+        # P1P 0500_4003 discriminator (#1150): if `gcode_file` advanced from
+        # what we observed pre-dispatch, the printer accepted our project_file
+        # and is just slow-parsing on the SD-card MCU side. Forcing an MQTT
+        # reconnect mid-parse triggers 0500_4003. Only reconnect when
+        # `gcode_file` is unchanged — that's the half-broken-publish signal
+        # from #887 / #936.
+        current_gcode_file = getattr(last_status, "gcode_file", None) if last_status else None
+        publish_landed = current_gcode_file is not None and current_gcode_file != pre_gcode_file
+        if publish_landed:
+            logger.warning(
+                "Printer %s (%d): gcode_file changed to %r (was %r) — printer "
+                "received the command and is parsing slowly. Skipping forced "
+                "MQTT reconnect to avoid 0500_4003 mid-parse (#1150).",
+                printer_name,
+                printer_id,
+                current_gcode_file,
+                pre_gcode_file,
             )
+            return False
+        client = printer_manager.get_client(printer_id)
+        if client and hasattr(client, "force_reconnect_stale_session"):
+            client.force_reconnect_stale_session(
+                f"print command unacknowledged after {timeout:.0f}s "
+                f"(state still {pre_state}, gcode_file {current_gcode_file!r})"
+            )
+        return False
 
     @staticmethod
     async def _cleanup_sd_card_file(

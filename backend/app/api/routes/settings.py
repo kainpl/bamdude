@@ -675,6 +675,7 @@ async def get_virtual_printer_settings(
     model = await get_setting(db, "virtual_printer_model")
     target_printer_id = await get_setting(db, "virtual_printer_target_printer_id")
     remote_interface_ip = await get_setting(db, "virtual_printer_remote_interface_ip")
+    archive_name_source = await get_setting(db, "virtual_printer_archive_name_source")
 
     return {
         "enabled": enabled == "true" if enabled else False,
@@ -683,6 +684,7 @@ async def get_virtual_printer_settings(
         "model": model or DEFAULT_VIRTUAL_PRINTER_MODEL,
         "target_printer_id": int(target_printer_id) if target_printer_id else None,
         "remote_interface_ip": remote_interface_ip or "",
+        "archive_name_source": archive_name_source if archive_name_source in ("metadata", "filename") else "metadata",
         "status": virtual_printer_manager.get_status(),
     }
 
@@ -695,6 +697,7 @@ async def update_virtual_printer_settings(
     model: str = None,
     target_printer_id: int = None,
     remote_interface_ip: str = None,
+    archive_name_source: str = None,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
@@ -746,6 +749,15 @@ async def update_virtual_printer_settings(
         return JSONResponse(
             status_code=400,
             content={"detail": f"Invalid model. Must be one of: {', '.join(VIRTUAL_PRINTER_MODELS.keys())}"},
+        )
+
+    # Validate archive_name_source (B.14 / #1152): only two values are
+    # meaningful — anything else would silently fall back to 'metadata' on
+    # the read side and confuse the user about whether their toggle stuck.
+    if archive_name_source is not None and archive_name_source not in ("metadata", "filename"):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "archive_name_source must be 'metadata' or 'filename'"},
         )
 
     # Mode-specific validation and printer lookup
@@ -805,6 +817,8 @@ async def update_virtual_printer_settings(
         await set_setting(db, "virtual_printer_target_printer_id", str(target_printer_id))
     if remote_interface_ip is not None:
         await set_setting(db, "virtual_printer_remote_interface_ip", remote_interface_ip)
+    if archive_name_source is not None:
+        await set_setting(db, "virtual_printer_archive_name_source", archive_name_source)
     await db.commit()
     db.expire_all()
 

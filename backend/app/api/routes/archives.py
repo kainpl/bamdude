@@ -33,7 +33,11 @@ from backend.app.schemas.archive import (
     ReprintRequest,
 )
 from backend.app.services.archive import ArchiveService
-from backend.app.utils.threemf_tools import extract_nozzle_mapping_from_3mf
+from backend.app.utils.threemf_tools import (
+    extract_nozzle_mapping_from_3mf,
+    extract_project_filaments_from_3mf,
+    extract_source_printer_model_from_3mf,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -479,12 +483,15 @@ async def search_archives(
             select(PrintArchive)
             .options(selectinload(PrintArchive.project))
             .where(
-                (PrintArchive.print_name.ilike(like_pattern))
-                | (PrintArchive.filename.ilike(like_pattern))
-                | (PrintArchive.tags.ilike(like_pattern))
-                | (PrintArchive.notes.ilike(like_pattern))
-                | (PrintArchive.designer.ilike(like_pattern))
-                | (PrintArchive.filament_type.ilike(like_pattern))
+                (
+                    (PrintArchive.print_name.ilike(like_pattern))
+                    | (PrintArchive.filename.ilike(like_pattern))
+                    | (PrintArchive.tags.ilike(like_pattern))
+                    | (PrintArchive.notes.ilike(like_pattern))
+                    | (PrintArchive.designer.ilike(like_pattern))
+                    | (PrintArchive.filament_type.ilike(like_pattern))
+                ),
+                PrintArchive.deleted_at.is_(None),
             )
             .order_by(PrintArchive.created_at.desc())
         )
@@ -504,8 +511,12 @@ async def search_archives(
     if not matched_ids:
         return []
 
-    # Fetch full archive records for matched IDs
-    query = select(PrintArchive).options(selectinload(PrintArchive.project)).where(PrintArchive.id.in_(matched_ids))
+    # Fetch full archive records for matched IDs (excluding trashed).
+    query = (
+        select(PrintArchive)
+        .options(selectinload(PrintArchive.project))
+        .where(PrintArchive.id.in_(matched_ids), PrintArchive.deleted_at.is_(None))
+    )
 
     # Apply additional filters
     if printer_id:
@@ -1583,24 +1594,28 @@ async def delete_archive(
         )
     ),
 ):
-    """Delete an archive."""
+    """Soft-delete an archive (moves to the archive trash bin).
+
+    Stamps ``deleted_at`` and returns ``trashed=True``. Sweeper hard-deletes
+    after retention; users / admins can also restore from the trash UI or
+    hard-delete-now to bypass the window.
+    """
+    from backend.app.services.archive_purge import archive_purge_service
+
     user, can_modify_all = auth_result
 
-    # Get archive first to check ownership
-    result = await db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))
+    # Only operate on active archives — re-deleting a trashed row is a no-op.
+    result = await db.execute(PrintArchive.active().where(PrintArchive.id == archive_id))
     archive = result.scalar_one_or_none()
     if not archive:
         raise HTTPException(404, "Archive not found")
 
-    # Ownership check
     if not can_modify_all:
         if archive.created_by_id != user.id:
             raise HTTPException(403, "You can only delete your own archives")
 
-    service = ArchiveService(db)
-    if not await service.delete_archive(archive_id):
-        raise HTTPException(404, "Archive not found")
-    return {"status": "deleted"}
+    await archive_purge_service.move_to_trash(db, archive)
+    return {"status": "trashed", "trashed": True, "id": archive.id}
 
 
 @router.get("/{archive_id}/download")
@@ -2937,6 +2952,14 @@ async def get_archive_plates(
     if not file_path.is_file():
         raise HTTPException(404, "Archive file not found")
 
+    # SliceModal pre-check signal: the source 3MF's bound printer model.
+    source_printer_model: str | None = None
+    try:
+        with zipfile.ZipFile(file_path, "r") as zf:
+            source_printer_model = extract_source_printer_model_from_3mf(zf)
+    except (zipfile.BadZipFile, OSError):
+        pass
+
     # Fast path: read pre-computed plates from the archive's JSON metadata
     # (populated at archive_print() / attach_3mf_to_archive() + by m023
     # backfill). No ZIP open.
@@ -2958,6 +2981,7 @@ async def get_archive_plates(
             "filename": archive.filename,
             "plates": plates,
             "is_multi_plate": len(plates) > 1,
+            "source_printer_model": source_printer_model,
         }
 
     # Slow path: open ZIP + parse. Used for archives created before m023 ran.
@@ -2984,6 +3008,7 @@ async def get_archive_plates(
         "filename": archive.filename,
         "plates": plates,
         "is_multi_plate": len(plates) > 1,
+        "source_printer_model": source_printer_model,
     }
 
 
@@ -3018,10 +3043,55 @@ async def get_plate_thumbnail(
     raise HTTPException(404, f"Thumbnail for plate {plate_index} not found")
 
 
+async def _try_preview_slice_filaments(
+    db: AsyncSession,
+    *,
+    kind: str,
+    source_id: int,
+    plate_id: int,
+    file_path: Path,
+    request_id: str | None = None,
+) -> list[dict] | None:
+    """Run a preview slice via the user's configured sidecar so the filament
+    list endpoint can return real per-plate filaments for unsliced project
+    files. Returns ``None`` on any failure — the caller falls back to the
+    project-config heuristic. ``request_id`` flows through to the sidecar
+    for live progress on the SliceModal's inline spinner + toast."""
+    from backend.app.api.routes.settings import get_setting
+    from backend.app.services.slice_preview import get_preview_filaments
+
+    preferred = (await get_setting(db, "preferred_slicer")) or "bambu_studio"
+    if preferred == "orcaslicer":
+        configured = await get_setting(db, "orcaslicer_api_url")
+        api_url = (configured or settings.slicer_api_url).strip()
+    elif preferred == "bambu_studio":
+        configured = await get_setting(db, "bambu_studio_api_url")
+        api_url = (configured or settings.bambu_studio_api_url).strip()
+    else:
+        return None
+    if not api_url:
+        return None
+
+    try:
+        file_bytes = file_path.read_bytes()
+    except OSError:
+        return None
+    return await get_preview_filaments(
+        kind=kind,
+        source_id=source_id,
+        plate_id=plate_id,
+        file_bytes=file_bytes,
+        file_name=file_path.name,
+        api_url=api_url,
+        request_id=request_id,
+    )
+
+
 @router.get("/{archive_id}/filament-requirements")
 async def get_filament_requirements(
     archive_id: int,
     plate_id: int | None = None,
+    request_id: str | None = None,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.ARCHIVES_READ),
 ):
@@ -3033,6 +3103,9 @@ async def get_filament_requirements(
     Args:
         archive_id: The archive ID
         plate_id: Optional plate index to filter filaments for (for multi-plate files)
+        request_id: forwarded to the sidecar's preview-slice fallback for
+            unsliced project files; lets the SliceModal poll matching live
+            progress.
     """
     import defusedxml.ElementTree as ET
 
@@ -3092,6 +3165,7 @@ async def get_filament_requirements(
                                             "used_grams": round(used_grams, 1),
                                             "used_meters": float(used_m) if used_m else 0,
                                             "tray_info_idx": tray_info_idx,
+                                            "used_in_plate": True,
                                         }
                                     )
                             break
@@ -3122,8 +3196,33 @@ async def get_filament_requirements(
                                     "used_grams": round(used_grams, 1),
                                     "used_meters": float(used_m) if used_m else 0,
                                     "tray_info_idx": tray_info_idx,
+                                    "used_in_plate": True,
                                 }
                             )
+
+            # Unsliced project files: see library.py for full rationale.
+            # Return the FULL project_settings.config slot list with a
+            # used_in_plate flag derived from the preview slice; the
+            # CLI needs every slot pre-filled to avoid silent default
+            # substitution.
+            if not filaments:
+                project_filaments = extract_project_filaments_from_3mf(zf)
+                used_slot_ids: set[int] = set()
+                if project_filaments and plate_id is not None:
+                    preview = await _try_preview_slice_filaments(
+                        db,
+                        kind="archive",
+                        source_id=archive_id,
+                        plate_id=plate_id,
+                        file_path=file_path,
+                        request_id=request_id,
+                    )
+                    if preview is not None:
+                        used_slot_ids = {f["slot_id"] for f in preview}
+                fallback_all_used = not used_slot_ids
+                for f in project_filaments:
+                    f["used_in_plate"] = fallback_all_used or f["slot_id"] in used_slot_ids
+                filaments = project_filaments
 
             # Sort by slot ID
             filaments.sort(key=lambda x: x["slot_id"])
@@ -3779,3 +3878,110 @@ async def delete_f3d(
     await db.commit()
 
     return {"status": "deleted"}
+
+
+# =====================================================================
+# Server-side slicing — re-slice an archive's source (B.4 / Phase 1.D)
+# =====================================================================
+
+
+@router.post("/{archive_id}/slice", status_code=202)
+async def slice_archive(
+    archive_id: int,
+    request_body: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = RequirePermission(Permission.LIBRARY_UPLOAD),
+):
+    """Enqueue a slice job for an archive's source. Returns 202 + job_id;
+    the slice runs in the background, the caller polls
+    ``GET /slice-jobs/{id}``.
+
+    Source preference: ``source_3mf_path`` (the un-sliced project file the
+    user originally sent to slice) → ``file_path`` (the sliced 3MF/gcode
+    that actually printed).
+    """
+    from pathlib import Path
+
+    from backend.app.api.routes.library import slice_and_persist_as_archive
+    from backend.app.core.database import async_session
+    from backend.app.schemas.slicer import SliceRequest
+    from backend.app.services.slice_dispatch import (
+        http_exception_to_job_error,
+        slice_dispatch,
+    )
+
+    try:
+        request = SliceRequest.model_validate(request_body)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    archive = await db.get(PrintArchive, archive_id)
+    if archive is None:
+        raise HTTPException(status_code=404, detail="Archive not found")
+
+    src_relative = archive.source_3mf_path or archive.file_path
+    if not src_relative:
+        raise HTTPException(status_code=400, detail="Archive has no source file to slice")
+
+    src_path = Path(settings.base_dir) / src_relative
+    if not src_path.exists():
+        raise HTTPException(status_code=404, detail="Archive source file missing on disk")
+
+    raw_filename = archive.filename or src_path.name
+    src_lower = raw_filename.lower()
+    if not (
+        src_lower.endswith(".stl")
+        or src_lower.endswith(".3mf")
+        or src_lower.endswith(".step")
+        or src_lower.endswith(".stp")
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Archive's source file must be STL, 3MF, or STEP to slice",
+        )
+
+    # Match the library route: derive the sliced output's filename from
+    # ``print_name`` when set, so the new archive row's display name lines
+    # up with the source's display.
+    src_ext = Path(raw_filename).suffix.lower() or ".3mf"
+    src_filename = (
+        f"{archive.print_name.strip()}{src_ext}" if archive.print_name and archive.print_name.strip() else raw_filename
+    )
+
+    model_bytes = src_path.read_bytes()
+    archive_id_local = archive.id
+    user_id = current_user.id if current_user else None
+
+    async def _run(job_id: int):
+        async with async_session() as task_db:
+            # Re-fetch the source archive on the background-task session.
+            src_archive = await task_db.get(PrintArchive, archive_id_local)
+            if src_archive is None:
+                raise http_exception_to_job_error(
+                    HTTPException(status_code=404, detail="Archive disappeared during slice")
+                )
+            try:
+                response = await slice_and_persist_as_archive(
+                    task_db,
+                    model_bytes=model_bytes,
+                    model_filename=src_filename,
+                    request=request,
+                    source_archive=src_archive,
+                    current_user_id=user_id,
+                    job_id=job_id,
+                )
+            except HTTPException as exc:
+                raise http_exception_to_job_error(exc) from exc
+        return response.model_dump()
+
+    job = await slice_dispatch.enqueue(
+        kind="archive",
+        source_id=archive.id,
+        source_name=archive.print_name or archive.filename or f"archive {archive.id}",
+        run=_run,
+    )
+    return {
+        "job_id": job.id,
+        "status": job.status,
+        "status_url": f"/api/v1/slice-jobs/{job.id}",
+    }
