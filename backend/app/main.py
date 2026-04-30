@@ -45,6 +45,8 @@ from backend.app.api.routes import (
     printers,
     projects,
     settings as settings_routes,
+    slice_jobs,
+    slicer_presets,
     smart_plugs,
     spoolman,
     support,
@@ -4475,6 +4477,20 @@ async def lifespan(app: FastAPI):
     _shared_cloud_http_client = _httpx.AsyncClient(timeout=30.0)
     set_shared_http_client(_shared_cloud_http_client)
 
+    # Slicer-API sidecar HTTP pool (Phase 1 of 0.5.x slicer cycle). Separate
+    # pool because slice_with_profiles can block for several minutes on
+    # complex H2D models — a 30 s timeout would chew through the cloud
+    # client's per-request budget. The sidecar lives at localhost (or the
+    # operator's configured URL) and is rarely cross-host, so connection
+    # pooling savings are smaller than for cloud — but keeping it shared
+    # avoids constructing fresh clients per slice request.
+    from backend.app.services.slicer_api import (
+        set_shared_http_client as _set_shared_slicer_http_client,
+    )
+
+    _shared_slicer_http_client = _httpx.AsyncClient(timeout=300.0)
+    _set_shared_slicer_http_client(_shared_slicer_http_client)
+
     # Fix queue items stuck with invalid "aborted" status (should be "cancelled").
     # This can happen when a print was cancelled mid-print on versions before this fix.
     try:
@@ -4822,6 +4838,16 @@ async def lifespan(app: FastAPI):
     # Drop the shared Bambu Cloud HTTP client we registered at startup.
     set_shared_http_client(None)
     await _shared_cloud_http_client.aclose()
+
+    # Cancel any in-flight slice jobs + drop the shared slicer HTTP client.
+    from backend.app.services.slice_dispatch import slice_dispatch as _slice_dispatch
+    from backend.app.services.slicer_api import (
+        set_shared_http_client as _set_shared_slicer_http_client_off,
+    )
+
+    await _slice_dispatch.shutdown()
+    _set_shared_slicer_http_client_off(None)
+    await _shared_slicer_http_client.aclose()
 
     # Checkpoint WAL and close all database connections
     try:
@@ -5194,6 +5220,8 @@ app.include_router(inventory.router, prefix=app_settings.api_prefix)
 app.include_router(settings_routes.router, prefix=app_settings.api_prefix)
 app.include_router(cloud.router, prefix=app_settings.api_prefix)
 app.include_router(local_presets.router, prefix=app_settings.api_prefix)
+app.include_router(slicer_presets.router, prefix=app_settings.api_prefix)
+app.include_router(slice_jobs.router, prefix=app_settings.api_prefix)
 app.include_router(smart_plugs.router, prefix=app_settings.api_prefix)
 app.include_router(print_queue.router, prefix=app_settings.api_prefix)
 app.include_router(auto_queue.router, prefix=app_settings.api_prefix)
