@@ -9,9 +9,11 @@ sidecar shape mirrors ``AFKFelix/orca-slicer-api`` (multipart upload,
 with metadata in the ``X-Print-Time-Seconds`` / ``X-Filament-Used-G`` /
 ``X-Filament-Used-Mm`` headers).
 
-Pinned to upstream Bambuddy's ``maziggy/orca-slicer-api`` fork on the
-``bambuddy/profile-resolver`` branch — patches OrcaSlicer / BambuStudio CLI
-quirks the official upstream hasn't merged yet.
+Pinned to BamDude's ``kainpl/orca-slicer-api`` fork on the
+``bamdude/profile-resolver`` branch — patches OrcaSlicer / BambuStudio CLI
+quirks the official ``AFKFelix/orca-slicer-api`` upstream hasn't merged
+yet (inherits-chain resolver, sentinel-value strip, multi-filament input,
+``--pipe`` live progress).
 """
 
 import asyncio

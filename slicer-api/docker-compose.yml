@@ -1,9 +1,12 @@
 # Optional slicer-API sidecar stack for BamDude.
 #
 # Both services are HTTP wrappers around a slicer CLI: the same Node code
-# (`maziggy/orca-slicer-api`, `bambuddy/profile-resolver` branch) bundled
-# with a different binary in each image. BamDude talks to them via the
-# URLs configured in Settings → Profiles → Slicer API.
+# (`kainpl/orca-slicer-api`, `bamdude/profile-resolver` branch -- BamDude's
+# fork of the upstream `AFKFelix/orca-slicer-api` carrying the inherits-chain
+# resolver, sentinel-value strip, multi-filament + live-progress patches that
+# are required to slice real OrcaSlicer / BambuStudio GUI exports without
+# segfaulting the CLI). BamDude talks to them via the URLs configured in
+# Settings → Profiles → Slicer API.
 #
 #   bambu-studio-api  → host port 3001 (BambuStudio CLI)
 #   orca-slicer-api   → host port 3003 (OrcaSlicer CLI)
@@ -24,7 +27,7 @@
 services:
   orca-slicer-api:
     build:
-      context: https://github.com/maziggy/orca-slicer-api.git#bambuddy/profile-resolver
+      context: https://github.com/kainpl/orca-slicer-api.git#bamdude/profile-resolver
       dockerfile: Dockerfile
       args:
         ORCA_VERSION: "${ORCA_VERSION:-2.3.2}"
@@ -47,7 +50,7 @@ services:
 
   bambu-studio-api:
     build:
-      context: https://github.com/maziggy/orca-slicer-api.git#bambuddy/profile-resolver
+      context: https://github.com/kainpl/orca-slicer-api.git#bamdude/profile-resolver
       dockerfile: Dockerfile.bambu-studio
       args:
         BAMBU_VERSION: "${BAMBU_VERSION:-02.06.00.51}"

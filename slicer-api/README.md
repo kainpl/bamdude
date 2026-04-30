@@ -62,16 +62,20 @@ Leaving the URL field blank uses the `SLICER_API_URL` /
 
 ## Where the source lives
 
-Both images build from the
-[`maziggy/orca-slicer-api`](https://github.com/maziggy/orca-slicer-api)
-fork (`bambuddy/profile-resolver` branch). The Compose file uses
-Docker's git build context, so you don't need to clone it manually —
-Docker pulls the repo at build time.
+Both images build from
+[`kainpl/orca-slicer-api`](https://github.com/kainpl/orca-slicer-api)
+on the `bamdude/profile-resolver` branch — BamDude's fork of the
+upstream [`AFKFelix/orca-slicer-api`](https://github.com/AFKFelix/orca-slicer-api)
+HTTP wrapper. The Compose file uses Docker's git build context, so
+you don't need to clone the fork manually — Docker pulls it at build
+time.
 
-The fork patches AFKFelix's upstream wrapper with the `inherits:`
-chain resolver, `from: "User"` → `"system"` rewrite, `# ` clone-prefix
-strip, and sentinel-value strip — all empirically required to slice
-real GUI exports without segfaulting the CLI. Once those land
+The patch branch carries the `inherits:` chain resolver,
+`from: "User"` → `"system"` rewrite, `# ` clone-prefix strip,
+sentinel-value strip, multi-filament input + bundled-filament
+metadata for the SliceModal, and `--pipe` live-progress feed for the
+job-tracker toast — all empirically required to slice real OrcaSlicer
+/ BambuStudio GUI exports without segfaulting the CLI. Once those land
 upstream, this Compose file can be flipped to pull from
 `ghcr.io/afkfelix/orca-slicer-api` directly.
 
