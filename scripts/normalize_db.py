@@ -111,15 +111,54 @@ def _die(msg: str, code: int = 1) -> None:
 
 
 async def _init_target_schema() -> None:
-    """Run the BamDude init flow against the target file.
+    """Run the BamDude init flow against the target file, then re-create the
+    ORM tables so the column order matches the current Python model exactly.
 
     ``DATABASE_URL`` env var must already point at the target file before
     this function is called — config.py reads it at module import time.
+
+    Why the second pass: some migrations (notably m002) rebuild a table from
+    a frozen DDL snapshot. Columns that later migrations re-add via
+    ``ALTER TABLE ADD COLUMN`` end up appended at the end of the table
+    rather than at the position the current model declares — for example,
+    ``library_files.{print_count, deleted_at, source_type, source_url}``
+    are model-declared between ``file_metadata`` and ``created_by_id`` but
+    land at the very end of the table after migrations finish.
+
+    Fix: after ``init_db`` populates ``_migrations`` with every applied
+    version, drop every ORM-defined table and re-create from current model
+    metadata. ``_migrations`` itself is created by raw SQL in the migration
+    runner, so it isn't in ``Base.metadata`` and survives ``drop_all`` —
+    a fresh BamDude startup against the rebuilt file sees every migration
+    already applied and skips the upgrade phase. FTS5 triggers attached to
+    ``print_archives`` are dropped along with the table; we explicitly
+    re-attach them via m001's ``_setup_sqlite_fts``. The ``archive_fts``
+    virtual table itself is not in ``Base.metadata`` and persists across
+    the drop pass.
     """
     # Imported here so the env var override above takes effect first.
-    from backend.app.core.database import engine, init_db
+    from sqlalchemy import text
+
+    from backend.app.core.database import Base, engine, init_db
+    from backend.app.migrations.m001_bamdude_baseline import _setup_sqlite_fts
 
     await init_db()
+
+    async with engine.begin() as conn:
+        # FK off so DROP order across the dependency graph can't surface a
+        # constraint error mid-rebuild. Required even though the connect
+        # event doesn't enable FKs by default — defensive against future
+        # changes to ``_set_sqlite_pragmas``.
+        await conn.execute(text("PRAGMA foreign_keys = OFF"))
+        # FTS triggers fire AFTER INSERT/UPDATE/DELETE on print_archives;
+        # dropping print_archives auto-drops them, but explicit pre-drop
+        # keeps the SQLAlchemy DROP visitor from tripping over them.
+        for trigger in ("archive_fts_insert", "archive_fts_delete", "archive_fts_update"):
+            await conn.execute(text(f"DROP TRIGGER IF EXISTS {trigger}"))
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
+        await _setup_sqlite_fts(conn)
+
     await engine.dispose()
 
 
