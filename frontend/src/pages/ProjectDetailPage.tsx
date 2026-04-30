@@ -587,6 +587,7 @@ export function ProjectDetailPage() {
                     rel="noopener noreferrer"
                     className="text-bambu-gray hover:text-bambu-green transition-colors flex-shrink-0"
                     title={project.url}
+                    aria-label={t('projects.openExternalUrl')}
                   >
                     <ExternalLink className="w-4 h-4" />
                   </a>
