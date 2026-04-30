@@ -193,6 +193,139 @@ def _stored_file_path(abs_path: Path, is_external: bool) -> str:
     return str(abs_path) if is_external else to_relative_path(abs_path)
 
 
+async def save_3mf_bytes_to_library(
+    db: AsyncSession,
+    *,
+    content: bytes,
+    filename: str,
+    folder: LibraryFolder | None = None,
+    created_by_id: int | None = None,
+    source_type: str | None = None,
+    source_url: str | None = None,
+    extra_metadata: dict | None = None,
+    commit: bool = True,
+) -> tuple[LibraryFile, bool]:
+    """Persist raw 3MF / gcode bytes as a ``LibraryFile`` row.
+
+    Used by automated sources that already hold the full file in memory —
+    MakerWorld import (`source_type="makerworld"`, source_url=canonical URL)
+    and slicer output (`source_type="sliced"`, source_url=NULL). Multipart
+    uploads from the browser stay on the existing ``upload_file`` path,
+    which has its own ``UploadFile``-specific plumbing.
+
+    Returns ``(library_file, was_existing)``. When ``source_url`` is given
+    and a non-trashed row already references that URL, returns the existing
+    row immediately without rewriting bytes — that's the MakerWorld dedupe
+    hot path. ``was_existing=True`` also fires when a different row shares
+    the same content hash, so the caller can surface "already in library"
+    UX even for plain re-uploads of the same plate.
+    """
+
+    # Source-URL dedupe: MakerWorld re-imports of the same plate must not
+    # download + repack on every click. The route may also have done this
+    # check itself; doing it here too keeps the helper safe to call from
+    # paths that don't pre-check.
+    if source_url:
+        existing_by_url = (
+            await db.execute(LibraryFile.active().where(LibraryFile.source_url == source_url).limit(1))
+        ).scalar_one_or_none()
+        if existing_by_url is not None:
+            return existing_by_url, True
+
+    ext = os.path.splitext(filename)[1].lower()
+    file_type = ext[1:] if ext else "unknown"
+
+    file_path, is_external_upload = _resolve_upload_destination(folder, filename)
+    with open(file_path, "wb") as f:
+        f.write(content)
+
+    file_hash = calculate_file_hash(file_path)
+
+    metadata: dict = {}
+    thumbnail_path: str | None = None
+    thumbnails_dir = get_library_thumbnails_dir()
+
+    if ext == ".3mf":
+        try:
+            parser = ThreeMFParser(str(file_path))
+            raw_metadata = parser.parse()
+            thumbnail_data = raw_metadata.get("_thumbnail_data")
+            thumbnail_ext = raw_metadata.get("_thumbnail_ext", ".png")
+            if thumbnail_data:
+                thumb_filename = f"{uuid.uuid4().hex}{thumbnail_ext}"
+                thumb_path = thumbnails_dir / thumb_filename
+                with open(thumb_path, "wb") as f:
+                    f.write(thumbnail_data)
+                thumbnail_path = str(thumb_path)
+            metadata = _clean_3mf_metadata(raw_metadata)
+            try:
+                import zipfile as _zf
+
+                from backend.app.services.archive import parse_plates_from_3mf
+
+                with _zf.ZipFile(str(file_path), "r") as _zfh:
+                    plates_payload = parse_plates_from_3mf(_zfh)
+                if plates_payload:
+                    metadata["plates"] = plates_payload
+                    metadata["is_multi_plate"] = len(plates_payload) > 1
+            except Exception as _pe:
+                logger.debug("Per-plate parse for save_3mf failed (non-critical): %s", _pe)
+        except Exception as e:
+            logger.warning("Failed to parse 3MF (save_3mf %s): %s", filename, e)
+
+    elif ext == ".gcode":
+        try:
+            thumbnail_data = extract_gcode_thumbnail(file_path)
+            if thumbnail_data:
+                thumb_filename = f"{uuid.uuid4().hex}.png"
+                thumb_path = thumbnails_dir / thumb_filename
+                with open(thumb_path, "wb") as f:
+                    f.write(thumbnail_data)
+                thumbnail_path = str(thumb_path)
+        except Exception as e:
+            logger.warning("Failed to extract gcode thumbnail (save_3mf %s): %s", filename, e)
+
+    if extra_metadata:
+        metadata = {**metadata, **extra_metadata}
+
+    fname_lower = filename.lower()
+    swap_compatible = (
+        fname_lower.endswith((".swap.3mf", ".swaps.3mf")) or ".swap." in fname_lower or ".swaps." in fname_lower
+    )
+
+    # Hash-based "already in library" hint — the caller may use it to render
+    # an "exists already" badge. Independent of the source_url path above:
+    # two different MakerWorld profiles can produce byte-identical 3MFs.
+    dup_existing = (
+        await db.execute(LibraryFile.active().where(LibraryFile.file_hash == file_hash).limit(1))
+    ).scalar_one_or_none()
+    was_existing = dup_existing is not None
+
+    library_file = LibraryFile(
+        folder_id=folder.id if folder is not None else None,
+        is_external=is_external_upload,
+        filename=filename,
+        file_path=_stored_file_path(file_path, is_external_upload),
+        file_type=file_type,
+        file_size=len(content),
+        file_hash=file_hash,
+        thumbnail_path=to_relative_path(thumbnail_path) if thumbnail_path else None,
+        file_metadata=metadata or None,
+        created_by_id=created_by_id,
+        swap_compatible=swap_compatible,
+        source_type=source_type,
+        source_url=source_url,
+    )
+    db.add(library_file)
+    if commit:
+        await db.commit()
+        await db.refresh(library_file)
+    else:
+        await db.flush()
+
+    return library_file, was_existing
+
+
 class _MoveSkip(Exception):
     """Signalled by ``_move_file_bytes`` to skip a file with a user-visible reason.
 

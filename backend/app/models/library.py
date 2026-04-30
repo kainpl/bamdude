@@ -85,6 +85,12 @@ class LibraryFile(Base):
     # User notes
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Provenance — populated by MakerWorld import + slicer output (m033). NULL
+    # for plain uploads. ``source_url`` is indexed because MakerWorld dedup
+    # queries by canonical URL on every import.
+    source_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    source_url: Mapped[str | None] = mapped_column(String(512), nullable=True, index=True)
+
     # User tracking (Issue #206)
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 

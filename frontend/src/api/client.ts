@@ -5740,6 +5740,11 @@ export interface LibraryFile {
   object_count: number | null;
   sliced_for_model: string | null;
   swap_compatible: boolean;
+  // Provenance (m033) — populated for MakerWorld imports + slicer outputs.
+  // ``source_type`` ∈ {"makerworld", "sliced", ...}; ``source_url`` is the
+  // canonical link (e.g. MakerWorld profile URL). NULL for plain uploads.
+  source_type?: string | null;
+  source_url?: string | null;
 }
 
 export interface LibraryFileListItem {
@@ -5766,6 +5771,9 @@ export interface LibraryFileListItem {
   // Used to gate gallery rendering — single-plate files skip the per-card
   // gallery fetch entirely.
   is_multi_plate?: boolean;
+  // Provenance (m033) — same semantics as ``LibraryFile``.
+  source_type?: string | null;
+  source_url?: string | null;
   notes_count: number;
 }
 
