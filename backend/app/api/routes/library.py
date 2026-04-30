@@ -1455,6 +1455,477 @@ async def list_files(
     return file_list
 
 
+# =====================================================================
+# Server-side slicing (B.4 — Phase 1.D of 0.5.x cycle)
+# =====================================================================
+# Three helpers + the library-side slice route. The archive-side slice
+# route lives in archives.py and reuses ``slice_and_persist_as_archive``
+# below. Order: helpers first because ``slice_library_file`` and the
+# archive route both call into them.
+
+
+async def _run_slicer_with_fallback(
+    db: AsyncSession,
+    *,
+    model_bytes: bytes,
+    model_filename: str,
+    request,  # SliceRequest — typed loosely so the import doesn't shadow upload's local
+    current_user_id: int | None = None,
+    job_id: int | None = None,
+):
+    """Validate presets, dispatch to the right sidecar, run the slicer with
+    the auto-fallback for 3MF inputs whose ``--load-settings`` path crashes
+    the CLI. Returns ``(SliceResult, used_embedded_settings: bool)``. Raises
+    :class:`HTTPException` for any caller-facing error.
+
+    ``current_user_id`` is needed to resolve **cloud** presets — the cloud
+    token is per-user. For the legacy / local-only path it can be left
+    ``None``.
+
+    ``job_id``: when set, a request_id is generated and a parallel poller
+    pushes the sidecar's --pipe-fed progress events onto
+    :meth:`SliceDispatchService.set_progress` so the UI's persistent toast
+    can show "Generating G-code (75%)" instead of just elapsed time. Pass
+    ``None`` for synchronous routes that aren't tracked by the dispatcher.
+    """
+    from backend.app.api.routes.settings import get_setting
+    from backend.app.services.preset_resolver import resolve_preset_ref
+    from backend.app.services.slicer_api import (
+        SlicerApiServerError,
+        SlicerApiService,
+        SlicerApiUnavailableError,
+        SlicerInputError,
+    )
+
+    user: User | None = None
+    if current_user_id is not None:
+        user = await db.get(User, current_user_id)
+
+    presets: dict[str, str] = {}
+    refs = {
+        "printer": request.printer_preset,
+        "process": request.process_preset,
+    }
+    for slot, ref in refs.items():
+        assert ref is not None, "schema validator guarantees PresetRef is set"
+        presets[slot] = await resolve_preset_ref(db, user, ref, slot)
+    # Multi-color: resolve each filament slot in plate order. The schema
+    # validator backfills ``filament_presets`` from the legacy singular
+    # field for older single-color callers, so this list is non-empty.
+    filament_jsons: list[str] = []
+    for ref in request.filament_presets:
+        assert ref is not None, "schema validator guarantees filament list is non-None"
+        filament_jsons.append(await resolve_preset_ref(db, user, ref, "filament"))
+
+    # Slicer routing — pick the sidecar URL by preferred_slicer.
+    # The per-install URL setting (Settings UI → Slicer card) wins; an
+    # empty value falls back to the SLICER_API_URL / BAMBU_STUDIO_API_URL
+    # env defaults defined in core/config.py.
+    preferred = (await get_setting(db, "preferred_slicer")) or "bambu_studio"
+    if preferred == "orcaslicer":
+        configured = await get_setting(db, "orcaslicer_api_url")
+        api_url = (configured or app_settings.slicer_api_url).strip()
+    elif preferred == "bambu_studio":
+        configured = await get_setting(db, "bambu_studio_api_url")
+        api_url = (configured or app_settings.bambu_studio_api_url).strip()
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=(f"Unknown preferred_slicer setting: '{preferred}'. Expected 'orcaslicer' or 'bambu_studio'."),
+        )
+
+    # Forward original 3MF bytes — stripping Metadata/project_settings.config
+    # / model_settings.config / slice_info.config / cut_information.xml looks
+    # tempting (the theory being --load-settings would then take precedence
+    # cleanly) but breaks the CLI: model_settings.config carries the plate
+    # definitions the CLI needs to map ``--slice N`` to a real plate, and
+    # slice_info / project_settings supply baseline config the CLI's
+    # StaticPrintConfig pass needs at all. Stripping any of them caused the
+    # CLI to silently exit immediately after "Initializing
+    # StaticPrintConfigs" — exit code 0, no result.json, no stderr — which
+    # Node's child_process treated as failure and the slice service then
+    # masked by falling back to slice_without_profiles using the un-stripped
+    # bytes (and the source's embedded printer). Net effect: every 3MF slice
+    # with profiles silently produced wrong-printer output. Forwarding the
+    # original bytes lets --load-settings override the specific fields the
+    # user changed (printer/process/filament) while the embedded plate /
+    # model definitions remain intact.
+    is_3mf = model_filename.lower().endswith(".3mf")
+
+    used_embedded_settings = False
+    service = SlicerApiService(api_url)
+    progress_request_id: str | None = None
+    progress_callback = None
+    if job_id is not None:
+        from uuid import uuid4
+
+        from backend.app.services.slice_dispatch import slice_dispatch as _dispatch
+
+        progress_request_id = str(uuid4())
+
+        def _on_progress(snapshot: dict) -> None:
+            _dispatch.set_progress(job_id, snapshot)
+
+        progress_callback = _on_progress
+    try:
+        try:
+            result = await service.slice_with_profiles(
+                model_bytes=model_bytes,
+                model_filename=model_filename,
+                printer_profile_json=presets["printer"],
+                process_profile_json=presets["process"],
+                filament_profile_jsons=filament_jsons,
+                plate=request.plate,
+                export_3mf=request.export_3mf,
+                request_id=progress_request_id,
+                on_progress=progress_callback,
+            )
+        except SlicerApiServerError as exc:
+            if not is_3mf:
+                raise
+            logger.warning(
+                "Slicer CLI rejected --load-settings for %s (%s); retrying with embedded settings",
+                model_filename,
+                exc,
+            )
+            # Forward the same request_id + callback so the toast's live
+            # progress keeps updating across the fallback retry instead of
+            # going blank for the rest of the slice.
+            result = await service.slice_without_profiles(
+                model_bytes=model_bytes,
+                model_filename=model_filename,
+                plate=request.plate,
+                export_3mf=request.export_3mf,
+                request_id=progress_request_id,
+                on_progress=progress_callback,
+            )
+            used_embedded_settings = True
+    except SlicerInputError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except SlicerApiServerError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except SlicerApiUnavailableError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    finally:
+        await service.close()
+
+    return result, used_embedded_settings
+
+
+async def slice_and_persist(
+    db: AsyncSession,
+    *,
+    model_bytes: bytes,
+    model_filename: str,
+    folder_id: int | None,
+    extra_metadata: dict | None,
+    request,  # SliceRequest
+    current_user_id: int | None,
+    job_id: int | None = None,
+):
+    """Slice a model and save the result as a new ``LibraryFile`` in
+    ``folder_id`` (same folder as the source by convention).
+
+    Always exports as ``.gcode.3mf`` so the existing library thumbnail
+    pipeline works on the new file. Plain ``.gcode`` would have no embedded
+    thumbnail to extract.
+    """
+    from backend.app.schemas.slicer import SliceResponse
+
+    library_request = request.model_copy(update={"export_3mf": True})
+
+    result, used_embedded_settings = await _run_slicer_with_fallback(
+        db,
+        model_bytes=model_bytes,
+        model_filename=model_filename,
+        request=library_request,
+        current_user_id=current_user_id,
+        job_id=job_id,
+    )
+
+    base_name = model_filename.rsplit(".", 1)[0]
+    out_filename = f"{base_name}.gcode.3mf"
+    unique_name = f"{uuid.uuid4().hex}.gcode.3mf"
+    out_path = get_library_files_dir() / unique_name
+    out_path.write_bytes(result.content)
+
+    # Extract thumbnail from the produced 3MF so the library card shows a
+    # preview. Failures here aren't fatal — the file is still useful.
+    thumbnail_relative: str | None = None
+    parsed_metadata: dict = {}
+    try:
+        parser = ThreeMFParser(str(out_path))
+        parsed = parser.parse()
+        thumb_data = parsed.get("_thumbnail_data")
+        thumb_ext = parsed.get("_thumbnail_ext", ".png")
+        if thumb_data:
+            thumb_filename = f"{uuid.uuid4().hex}{thumb_ext}"
+            thumb_path = get_library_thumbnails_dir() / thumb_filename
+            thumb_path.write_bytes(thumb_data)
+            thumbnail_relative = to_relative_path(thumb_path)
+        cleaned = _clean_3mf_metadata(parsed)
+        if isinstance(cleaned, dict):
+            parsed_metadata = cleaned
+    except Exception as exc:
+        logger.warning("Failed to parse sliced 3MF metadata for %s: %s", out_filename, exc)
+
+    # The parsed 3MF metadata carries a ``print_name`` lifted from the source
+    # file's embedded settings (BambuStudio always sets this; OrcaSlicer
+    # often leaves it blank). The FileManager listing prefers print_name
+    # over filename for display, which makes a sliced row indistinguishable
+    # from its source. Drop print_name so the listing falls back to the
+    # actual filename — which already ends in ".gcode.3mf" and self-describes
+    # as the sliced output.
+    metadata: dict = {k: v for k, v in parsed_metadata.items() if k != "print_name"}
+    metadata.update(
+        {
+            "print_time_seconds": result.print_time_seconds,
+            "filament_used_g": result.filament_used_g,
+            "filament_used_mm": result.filament_used_mm,
+        }
+    )
+    if used_embedded_settings:
+        metadata["used_embedded_settings"] = True
+    if extra_metadata:
+        metadata.update(extra_metadata)
+
+    new_file = LibraryFile(
+        folder_id=folder_id,
+        filename=out_filename,
+        file_path=to_relative_path(out_path),
+        # Sliced output is a ``.gcode.3mf`` zip with embedded G-code, but the
+        # user-facing meaning is "ready-to-print G-code" — using ``"gcode"``
+        # gives it the same badge as plain .gcode files and distinguishes it
+        # from un-sliced ``.3mf`` source models.
+        file_type="gcode",
+        file_size=len(result.content),
+        file_hash=hashlib.sha256(result.content).hexdigest(),
+        thumbnail_path=thumbnail_relative,
+        file_metadata=metadata,
+        source_type="sliced",
+        created_by_id=current_user_id,
+    )
+    db.add(new_file)
+    await db.commit()
+    await db.refresh(new_file)
+
+    return SliceResponse(
+        library_file_id=new_file.id,
+        name=new_file.filename,
+        print_time_seconds=result.print_time_seconds,
+        filament_used_g=result.filament_used_g,
+        filament_used_mm=result.filament_used_mm,
+        used_embedded_settings=used_embedded_settings,
+    )
+
+
+async def slice_and_persist_as_archive(
+    db: AsyncSession,
+    *,
+    model_bytes: bytes,
+    model_filename: str,
+    request,  # SliceRequest
+    source_archive,  # PrintArchive — hint kept loose to avoid cyclic import
+    current_user_id: int | None,
+    job_id: int | None = None,
+):
+    """Slice a model and save the result as a new ``PrintArchive`` row,
+    inheriting printer / project / makerworld metadata from the source
+    archive. Always exports as a ``.gcode.3mf`` so the existing thumbnail
+    and plates infrastructure works on the new archive."""
+    from backend.app.schemas.slicer import SliceArchiveResponse
+
+    archive_request = request.model_copy(update={"export_3mf": True})
+
+    result, used_embedded_settings = await _run_slicer_with_fallback(
+        db,
+        model_bytes=model_bytes,
+        model_filename=model_filename,
+        request=archive_request,
+        job_id=job_id,
+        current_user_id=current_user_id,
+    )
+
+    base_name = model_filename.rsplit(".", 1)[0]
+    out_filename = f"{base_name}.gcode.3mf"
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    printer_folder = str(source_archive.printer_id) if source_archive.printer_id is not None else "unassigned"
+    archive_subdir = f"{timestamp}_{base_name}_sliced"
+    archive_dir = app_settings.archive_dir / printer_folder / archive_subdir
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    out_path = archive_dir / out_filename
+    out_path.write_bytes(result.content)
+
+    thumbnail_path: str | None = None
+    parsed_metadata: dict = {}
+    try:
+        parser = ThreeMFParser(str(out_path))
+        parsed = parser.parse()
+        thumb_data = parsed.get("_thumbnail_data")
+        thumb_ext = parsed.get("_thumbnail_ext", ".png")
+        if thumb_data:
+            thumb_dest = archive_dir / f"thumbnail{thumb_ext}"
+            thumb_dest.write_bytes(thumb_data)
+            thumbnail_path = str(thumb_dest.relative_to(app_settings.base_dir))
+        parsed_metadata = {k: v for k, v in parsed.items() if not k.startswith("_")}
+    except Exception as exc:
+        logger.warning("Failed to parse sliced 3MF metadata for %s: %s", out_filename, exc)
+
+    metadata = dict(source_archive.extra_data) if source_archive.extra_data else {}
+    metadata.update(parsed_metadata)
+    metadata.update(
+        {
+            "sliced_from_archive_id": source_archive.id,
+            "print_time_seconds": result.print_time_seconds,
+            "filament_used_g": result.filament_used_g,
+            "filament_used_mm": result.filament_used_mm,
+        }
+    )
+    if used_embedded_settings:
+        metadata["used_embedded_settings"] = True
+
+    # Prefer the actually-used filament list from the sliced output's
+    # slice_info.config (parsed_metadata.filament_* — only entries with
+    # used_g > 0). Falling back to the source_archive's list would
+    # surface every project-wide AMS slot, including ones the picked
+    # plate doesn't use.
+    new_filament_type = parsed_metadata.get("filament_type") or source_archive.filament_type
+    new_filament_color = parsed_metadata.get("filament_color") or source_archive.filament_color
+
+    new_archive = PrintArchive(
+        printer_id=source_archive.printer_id,
+        project_id=source_archive.project_id,
+        filename=out_filename,
+        file_path=str(out_path.relative_to(app_settings.base_dir)),
+        file_size=len(result.content),
+        content_hash=hashlib.sha256(result.content).hexdigest(),
+        thumbnail_path=thumbnail_path,
+        # Inherit identity from the source archive so the new entry shows up
+        # alongside its sibling in the archives list.
+        print_name=(source_archive.print_name or base_name) + " (re-sliced)",
+        print_time_seconds=result.print_time_seconds,
+        filament_used_grams=result.filament_used_g or None,
+        filament_type=new_filament_type,
+        filament_color=new_filament_color,
+        layer_height=source_archive.layer_height,
+        nozzle_diameter=source_archive.nozzle_diameter,
+        sliced_for_model=source_archive.sliced_for_model,
+        makerworld_url=source_archive.makerworld_url,
+        designer=source_archive.designer,
+        # Sliced-but-not-printed: keep status default ("completed") so it
+        # surfaces in the normal archives list, but do not stamp
+        # started/completed_at — the user hasn't actually printed it yet.
+        extra_data=metadata,
+    )
+    db.add(new_archive)
+    await db.commit()
+    await db.refresh(new_archive)
+
+    return SliceArchiveResponse(
+        archive_id=new_archive.id,
+        name=new_archive.print_name or out_filename,
+        print_time_seconds=result.print_time_seconds,
+        filament_used_g=result.filament_used_g,
+        filament_used_mm=result.filament_used_mm,
+        used_embedded_settings=used_embedded_settings,
+    )
+
+
+@router.post("/files/{file_id}/slice", status_code=202)
+async def slice_library_file(
+    file_id: int,
+    request_body: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD)),
+):
+    """Enqueue a slice job for a library file. Returns 202 + job_id; the
+    slice runs in the background, the caller polls ``GET /slice-jobs/{id}``.
+    """
+    from backend.app.core.database import async_session
+    from backend.app.schemas.slicer import SliceRequest
+    from backend.app.services.slice_dispatch import (
+        http_exception_to_job_error,
+        slice_dispatch,
+    )
+
+    # Validate the body via the schema explicitly so the route's loose
+    # ``dict`` annotation doesn't bypass the validator's preset normalisation
+    # + multi-slot promotion logic.
+    try:
+        request = SliceRequest.model_validate(request_body)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    src_result = await db.execute(LibraryFile.active().where(LibraryFile.id == file_id))
+    lib_file = src_result.scalar_one_or_none()
+    if not lib_file:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    src_lower = (lib_file.filename or "").lower()
+    if not (
+        src_lower.endswith(".stl")
+        or src_lower.endswith(".3mf")
+        or src_lower.endswith(".step")
+        or src_lower.endswith(".stp")
+    ):
+        raise HTTPException(status_code=400, detail="Source file must be STL, 3MF, or STEP")
+
+    src_path = to_absolute_path(lib_file.file_path)
+    if not src_path or not src_path.exists():
+        raise HTTPException(status_code=404, detail="Source file missing on disk")
+
+    # Capture inputs the bg task needs — the request DB session is closed
+    # before the background task runs.
+    model_bytes = src_path.read_bytes()
+    folder_id = lib_file.folder_id
+    source_lib_file_id = lib_file.id
+    user_id = current_user.id if current_user else None
+
+    # If the source has a ``print_name`` in its metadata (BambuStudio always
+    # sets this; OrcaSlicer often leaves it blank), derive the sliced
+    # output's filename from it instead of the raw filename. The source
+    # row's display already prefers print_name, so the sliced row's
+    # filename ("Piggo the piggy bank.gcode.3mf") will match the source's
+    # display name ("Piggo the piggy bank") with the gcode extension added.
+    src_print_name = None
+    if lib_file.file_metadata:
+        candidate = lib_file.file_metadata.get("print_name")
+        if isinstance(candidate, str) and candidate.strip():
+            src_print_name = candidate.strip()
+    src_ext = Path(lib_file.filename).suffix.lower() or ".3mf"
+    model_filename = f"{src_print_name}{src_ext}" if src_print_name else lib_file.filename
+
+    async def _run(job_id: int):
+        async with async_session() as task_db:
+            try:
+                response = await slice_and_persist(
+                    task_db,
+                    model_bytes=model_bytes,
+                    model_filename=model_filename,
+                    folder_id=folder_id,
+                    extra_metadata={"sliced_from_library_file_id": source_lib_file_id},
+                    request=request,
+                    current_user_id=user_id,
+                    job_id=job_id,
+                )
+            except HTTPException as exc:
+                raise http_exception_to_job_error(exc) from exc
+        return response.model_dump()
+
+    job = await slice_dispatch.enqueue(
+        kind="library_file",
+        source_id=lib_file.id,
+        source_name=lib_file.filename,
+        run=_run,
+    )
+    return {
+        "job_id": job.id,
+        "status": job.status,
+        "status_url": f"/api/v1/slice-jobs/{job.id}",
+    }
+
+
 @router.post("/files", response_model=FileUploadResponse)
 @router.post("/files/", response_model=FileUploadResponse)
 async def upload_file(
