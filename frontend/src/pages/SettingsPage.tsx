@@ -1057,6 +1057,9 @@ export function SettingsPage() {
       Number(settings.library_disk_warning_gb ?? 5) !== Number(localSettings.library_disk_warning_gb ?? 5) ||
       (settings.camera_view_mode ?? 'window') !== (localSettings.camera_view_mode ?? 'window') ||
       (settings.preferred_slicer ?? 'bambu_studio') !== (localSettings.preferred_slicer ?? 'bambu_studio') ||
+      (settings.use_slicer_api ?? false) !== (localSettings.use_slicer_api ?? false) ||
+      (settings.orcaslicer_api_url ?? '') !== (localSettings.orcaslicer_api_url ?? '') ||
+      (settings.bambu_studio_api_url ?? '') !== (localSettings.bambu_studio_api_url ?? '') ||
       settings.prometheus_enabled !== localSettings.prometheus_enabled ||
       settings.prometheus_token !== localSettings.prometheus_token ||
       (settings.user_notifications_enabled ?? true) !== (localSettings.user_notifications_enabled ?? true);
@@ -1134,6 +1137,9 @@ export function SettingsPage() {
         library_disk_warning_gb: localSettings.library_disk_warning_gb,
         camera_view_mode: localSettings.camera_view_mode,
         preferred_slicer: localSettings.preferred_slicer,
+        use_slicer_api: localSettings.use_slicer_api,
+        orcaslicer_api_url: localSettings.orcaslicer_api_url,
+        bambu_studio_api_url: localSettings.bambu_studio_api_url,
         prometheus_enabled: localSettings.prometheus_enabled,
         prometheus_token: localSettings.prometheus_token,
         user_notifications_enabled: localSettings.user_notifications_enabled,
@@ -1548,6 +1554,74 @@ export function SettingsPage() {
                 <p className="text-xs text-bambu-gray mt-1">
                   {t('settings.preferredSlicerDescription')}
                 </p>
+              </div>
+
+              {/* Server-side slicing sidecar (B.4 — Phase 2 of 0.5.x cycle).
+                  When the toggle is on, BamDude routes /slice requests to
+                  the running OrcaSlicer / BambuStudio HTTP sidecar so the
+                  user can slice 3MF/STL/STEP straight from the UI. The
+                  per-engine URL fields override the env defaults; both must
+                  be reachable from the BamDude container. */}
+              <div className="border-t border-bambu-dark-tertiary/40 pt-4 space-y-4">
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={localSettings.use_slicer_api ?? false}
+                    onChange={(e) => updateSetting('use_slicer_api', e.target.checked)}
+                    className="mt-0.5 w-4 h-4 rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                  />
+                  <span className="flex-1">
+                    <span className="block text-sm text-white">
+                      {t('settings.useSlicerApi', 'Enable server-side slicing')}
+                    </span>
+                    <span className="block text-xs text-bambu-gray mt-0.5">
+                      {t(
+                        'settings.useSlicerApiDescription',
+                        'Surface the Slice action on STL/3MF/STEP files. Requires a running OrcaSlicer or BambuStudio HTTP sidecar.',
+                      )}
+                    </span>
+                  </span>
+                </label>
+                {(localSettings.use_slicer_api ?? false) && (
+                  <>
+                    <div>
+                      <label className="block text-sm text-bambu-gray mb-1">
+                        {t('settings.orcaslicerApiUrl', 'OrcaSlicer API URL')}
+                      </label>
+                      <input
+                        type="text"
+                        value={localSettings.orcaslicer_api_url ?? ''}
+                        onChange={(e) => updateSetting('orcaslicer_api_url', e.target.value)}
+                        placeholder="http://localhost:3003"
+                        className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                      />
+                      <p className="text-xs text-bambu-gray mt-1">
+                        {t(
+                          'settings.orcaslicerApiUrlDescription',
+                          'Empty falls back to the SLICER_API_URL env default.',
+                        )}
+                      </p>
+                    </div>
+                    <div>
+                      <label className="block text-sm text-bambu-gray mb-1">
+                        {t('settings.bambuStudioApiUrl', 'BambuStudio API URL')}
+                      </label>
+                      <input
+                        type="text"
+                        value={localSettings.bambu_studio_api_url ?? ''}
+                        onChange={(e) => updateSetting('bambu_studio_api_url', e.target.value)}
+                        placeholder="http://localhost:3001"
+                        className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                      />
+                      <p className="text-xs text-bambu-gray mt-1">
+                        {t(
+                          'settings.bambuStudioApiUrlDescription',
+                          'Empty falls back to the BAMBU_STUDIO_API_URL env default.',
+                        )}
+                      </p>
+                    </div>
+                  </>
+                )}
               </div>
             </CardContent>
           </Card>

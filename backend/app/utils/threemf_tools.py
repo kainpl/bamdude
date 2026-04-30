@@ -437,3 +437,75 @@ def extract_filament_usage_from_3mf(file_path: Path, plate_id: int | None = None
         pass  # Return whatever usage data was collected before the error
 
     return filament_usage
+
+
+def extract_source_printer_model_from_3mf(zf: zipfile.ZipFile) -> str | None:
+    """Source 3MF's bound printer model from ``Metadata/project_settings.config``.
+
+    Returns e.g. ``"Bambu Lab A1"`` when the project was built for an A1, or
+    ``None`` when the file lacks the metadata or the field is absent. The
+    SliceModal uses this to warn the user before slicing if the chosen
+    printer profile targets a different model — the slicer CLI rejects
+    cross-printer slicing with rc=-16 and the result, when the strip + load
+    fallback masks it, is a misleadingly-tagged archive.
+    """
+    if "Metadata/project_settings.config" not in zf.namelist():
+        return None
+    try:
+        proj = json.loads(zf.read("Metadata/project_settings.config").decode())
+    except (ValueError, OSError):
+        return None
+    if not isinstance(proj, dict):
+        return None
+    model = proj.get("printer_model")
+    if isinstance(model, str) and model.strip():
+        return model.strip()
+    # Older Bambu Studio exports stored the model under
+    # ``printer_settings_id`` (e.g. "Bambu Lab A1 0.4 nozzle"); strip the
+    # nozzle suffix to get the canonical model name. Best-effort — if the
+    # field doesn't follow the convention we leave it as-is.
+    settings_id = proj.get("printer_settings_id")
+    if isinstance(settings_id, str) and settings_id.strip():
+        return re.sub(r"\s+0\.\d+\s+nozzle$", "", settings_id.strip())
+    return None
+
+
+def extract_project_filaments_from_3mf(zf: zipfile.ZipFile) -> list[dict]:
+    """Project-wide AMS slot config from ``Metadata/project_settings.config``.
+
+    Returns one dict per configured AMS slot in slot order (1-indexed), with
+    ``type`` and ``color`` populated from the project's ``filament_type`` and
+    ``filament_colour`` arrays. ``used_grams`` / ``used_meters`` are 0 because
+    project_settings carries the configuration, not per-print usage — the
+    fields exist for shape compatibility with the slice_info-derived list.
+
+    The SliceModal needs this on **unsliced** project files: slice_info.config
+    is empty until Bambu Studio has actually sliced the project, but the user
+    can still pick filament profiles for a slice we're about to perform.
+    """
+    if "Metadata/project_settings.config" not in zf.namelist():
+        return []
+    try:
+        proj = json.loads(zf.read("Metadata/project_settings.config").decode())
+    except (ValueError, OSError):
+        return []
+    if not isinstance(proj, dict):
+        return []
+    types_arr = proj.get("filament_type") or []
+    colors_arr = proj.get("filament_colour") or []
+    slot_count = max(
+        len(types_arr) if isinstance(types_arr, list) else 0,
+        len(colors_arr) if isinstance(colors_arr, list) else 0,
+    )
+    out: list[dict] = []
+    for i in range(slot_count):
+        out.append(
+            {
+                "slot_id": i + 1,
+                "type": types_arr[i] if i < len(types_arr) and isinstance(types_arr[i], str) else "",
+                "color": colors_arr[i] if i < len(colors_arr) and isinstance(colors_arr[i], str) else "",
+                "used_grams": 0,
+                "used_meters": 0,
+            }
+        )
+    return out

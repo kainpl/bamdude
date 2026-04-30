@@ -54,6 +54,7 @@ import {
   ArrowUpNarrowWide,
   ArrowDownWideNarrow,
   DownloadCloud,
+  Cog,
 } from 'lucide-react';
 import { api } from '../api/client';
 import { openInSlicer, type SlicerType } from '../utils/slicer';
@@ -66,6 +67,7 @@ import { Card, CardContent } from '../components/Card';
 import { Button } from '../components/Button';
 import { ModelViewerModal } from '../components/ModelViewerModal';
 import { PrintModal } from '../components/PrintModal';
+import { SliceModal } from '../components/SliceModal';
 import { UploadModal } from '../components/UploadModal';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { EditArchiveModal } from '../components/EditArchiveModal';
@@ -182,8 +184,11 @@ function ArchiveCard({
   const { showToast } = useToast();
   const { hasPermission, canModify } = useAuth();
   const isMobile = useIsMobile();
+  const { data: cardSettings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
+  const useSlicerApi: boolean = !!(cardSettings as Record<string, unknown> | undefined)?.use_slicer_api;
   const [showViewer, setShowViewer] = useState(false);
   const [showReprint, setShowReprint] = useState(false);
+  const [showSlice, setShowSlice] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showEdit, setShowEdit] = useState(false);
   const [showTimelapse, setShowTimelapse] = useState(false);
@@ -428,6 +433,13 @@ function ArchiveCard({
           openInSlicerWithToken(archive.id, filename, 'file', preferredSlicer);
         },
       },
+      ...(useSlicerApi ? [{
+        label: t('slice.actionServerSide', { defaultValue: 'Slice (server-side)' }),
+        icon: <Cog className="w-4 h-4" />,
+        onClick: () => setShowSlice(true),
+        disabled: !archive.file_path || !hasPermission('library:upload'),
+        title: !archive.file_path ? t('archives.card.noFileForReprint') : !hasPermission('library:upload') ? t('fileManager.noPermissionSlice', { defaultValue: 'You do not have permission to slice' }) : undefined,
+      }] : []),
     ]),
     {
       label: archive.external_url ? t('archives.menu.externalLink') : t('archives.menu.viewOnMakerWorld'),
@@ -1247,6 +1259,14 @@ function ArchiveCard({
         />
       )}
 
+      {/* Server-side slice modal */}
+      {showSlice && (
+        <SliceModal
+          source={{ kind: 'archive', id: archive.id, filename: archive.filename }}
+          onClose={() => setShowSlice(false)}
+        />
+      )}
+
       {/* Delete Confirmation */}
       {showDeleteConfirm && (
         <ConfirmModal
@@ -1509,10 +1529,12 @@ function ArchiveListRow({
   const { data: rowSettings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
   const timeFormat: TimeFormat = (rowSettings as Record<string, string> | undefined)?.time_format as TimeFormat || 'system';
   const dateFormat: DateFormat = (rowSettings as Record<string, string> | undefined)?.date_format as DateFormat || 'system';
+  const useSlicerApi: boolean = !!(rowSettings as Record<string, unknown> | undefined)?.use_slicer_api;
   const [showEdit, setShowEdit] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showReprint, setShowReprint] = useState(false);
   const [showSchedule, setShowSchedule] = useState(false);
+  const [showSlice, setShowSlice] = useState(false);
   const [showViewer, setShowViewer] = useState(false);
   const [showTimelapse, setShowTimelapse] = useState(false);
   const [showTimelapseSelect, setShowTimelapseSelect] = useState(false);
@@ -1710,6 +1732,13 @@ function ArchiveListRow({
           openInSlicerWithToken(archive.id, filename, 'file', preferredSlicer);
         },
       },
+      ...(useSlicerApi ? [{
+        label: t('slice.actionServerSide', { defaultValue: 'Slice (server-side)' }),
+        icon: <Cog className="w-4 h-4" />,
+        onClick: () => setShowSlice(true),
+        disabled: !archive.file_path || !hasPermission('library:upload'),
+        title: !archive.file_path ? t('archives.card.noFileForReprint') : !hasPermission('library:upload') ? t('fileManager.noPermissionSlice', { defaultValue: 'You do not have permission to slice' }) : undefined,
+      }] : []),
     ]),
     {
       label: archive.external_url ? t('archives.menu.externalLink') : t('archives.menu.viewOnMakerWorld'),
@@ -2180,6 +2209,14 @@ function ArchiveListRow({
           archiveId={archive.id}
           archiveName={archive.print_name || archive.filename}
           onClose={() => setShowReprint(false)}
+        />
+      )}
+
+      {/* Server-side slice modal */}
+      {showSlice && (
+        <SliceModal
+          source={{ kind: 'archive', id: archive.id, filename: archive.filename }}
+          onClose={() => setShowSlice(false)}
         />
       )}
 

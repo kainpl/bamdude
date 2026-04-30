@@ -33,7 +33,11 @@ from backend.app.schemas.archive import (
     ReprintRequest,
 )
 from backend.app.services.archive import ArchiveService
-from backend.app.utils.threemf_tools import extract_nozzle_mapping_from_3mf
+from backend.app.utils.threemf_tools import (
+    extract_nozzle_mapping_from_3mf,
+    extract_project_filaments_from_3mf,
+    extract_source_printer_model_from_3mf,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -2937,6 +2941,14 @@ async def get_archive_plates(
     if not file_path.is_file():
         raise HTTPException(404, "Archive file not found")
 
+    # SliceModal pre-check signal: the source 3MF's bound printer model.
+    source_printer_model: str | None = None
+    try:
+        with zipfile.ZipFile(file_path, "r") as zf:
+            source_printer_model = extract_source_printer_model_from_3mf(zf)
+    except (zipfile.BadZipFile, OSError):
+        pass
+
     # Fast path: read pre-computed plates from the archive's JSON metadata
     # (populated at archive_print() / attach_3mf_to_archive() + by m023
     # backfill). No ZIP open.
@@ -2958,6 +2970,7 @@ async def get_archive_plates(
             "filename": archive.filename,
             "plates": plates,
             "is_multi_plate": len(plates) > 1,
+            "source_printer_model": source_printer_model,
         }
 
     # Slow path: open ZIP + parse. Used for archives created before m023 ran.
@@ -2984,6 +2997,7 @@ async def get_archive_plates(
         "filename": archive.filename,
         "plates": plates,
         "is_multi_plate": len(plates) > 1,
+        "source_printer_model": source_printer_model,
     }
 
 
@@ -3018,10 +3032,55 @@ async def get_plate_thumbnail(
     raise HTTPException(404, f"Thumbnail for plate {plate_index} not found")
 
 
+async def _try_preview_slice_filaments(
+    db: AsyncSession,
+    *,
+    kind: str,
+    source_id: int,
+    plate_id: int,
+    file_path: Path,
+    request_id: str | None = None,
+) -> list[dict] | None:
+    """Run a preview slice via the user's configured sidecar so the filament
+    list endpoint can return real per-plate filaments for unsliced project
+    files. Returns ``None`` on any failure — the caller falls back to the
+    project-config heuristic. ``request_id`` flows through to the sidecar
+    for live progress on the SliceModal's inline spinner + toast."""
+    from backend.app.api.routes.settings import get_setting
+    from backend.app.services.slice_preview import get_preview_filaments
+
+    preferred = (await get_setting(db, "preferred_slicer")) or "bambu_studio"
+    if preferred == "orcaslicer":
+        configured = await get_setting(db, "orcaslicer_api_url")
+        api_url = (configured or settings.slicer_api_url).strip()
+    elif preferred == "bambu_studio":
+        configured = await get_setting(db, "bambu_studio_api_url")
+        api_url = (configured or settings.bambu_studio_api_url).strip()
+    else:
+        return None
+    if not api_url:
+        return None
+
+    try:
+        file_bytes = file_path.read_bytes()
+    except OSError:
+        return None
+    return await get_preview_filaments(
+        kind=kind,
+        source_id=source_id,
+        plate_id=plate_id,
+        file_bytes=file_bytes,
+        file_name=file_path.name,
+        api_url=api_url,
+        request_id=request_id,
+    )
+
+
 @router.get("/{archive_id}/filament-requirements")
 async def get_filament_requirements(
     archive_id: int,
     plate_id: int | None = None,
+    request_id: str | None = None,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.ARCHIVES_READ),
 ):
@@ -3033,6 +3092,9 @@ async def get_filament_requirements(
     Args:
         archive_id: The archive ID
         plate_id: Optional plate index to filter filaments for (for multi-plate files)
+        request_id: forwarded to the sidecar's preview-slice fallback for
+            unsliced project files; lets the SliceModal poll matching live
+            progress.
     """
     import defusedxml.ElementTree as ET
 
@@ -3092,6 +3154,7 @@ async def get_filament_requirements(
                                             "used_grams": round(used_grams, 1),
                                             "used_meters": float(used_m) if used_m else 0,
                                             "tray_info_idx": tray_info_idx,
+                                            "used_in_plate": True,
                                         }
                                     )
                             break
@@ -3122,8 +3185,33 @@ async def get_filament_requirements(
                                     "used_grams": round(used_grams, 1),
                                     "used_meters": float(used_m) if used_m else 0,
                                     "tray_info_idx": tray_info_idx,
+                                    "used_in_plate": True,
                                 }
                             )
+
+            # Unsliced project files: see library.py for full rationale.
+            # Return the FULL project_settings.config slot list with a
+            # used_in_plate flag derived from the preview slice; the
+            # CLI needs every slot pre-filled to avoid silent default
+            # substitution.
+            if not filaments:
+                project_filaments = extract_project_filaments_from_3mf(zf)
+                used_slot_ids: set[int] = set()
+                if project_filaments and plate_id is not None:
+                    preview = await _try_preview_slice_filaments(
+                        db,
+                        kind="archive",
+                        source_id=archive_id,
+                        plate_id=plate_id,
+                        file_path=file_path,
+                        request_id=request_id,
+                    )
+                    if preview is not None:
+                        used_slot_ids = {f["slot_id"] for f in preview}
+                fallback_all_used = not used_slot_ids
+                for f in project_filaments:
+                    f["used_in_plate"] = fallback_all_used or f["slot_id"] in used_slot_ids
+                filaments = project_filaments
 
             # Sort by slot ID
             filaments.sort(key=lambda x: x["slot_id"])

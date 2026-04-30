@@ -60,7 +60,11 @@ from backend.app.schemas.library import (
 from backend.app.services.archive import ThreeMFParser
 from backend.app.services.print_plan import ensure_plan_row, remove_plan_row, sync_plan_for_folder
 from backend.app.services.stl_thumbnail import generate_stl_thumbnail
-from backend.app.utils.threemf_tools import extract_nozzle_mapping_from_3mf
+from backend.app.utils.threemf_tools import (
+    extract_nozzle_mapping_from_3mf,
+    extract_project_filaments_from_3mf,
+    extract_source_printer_model_from_3mf,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -2582,7 +2586,23 @@ async def get_library_file_plates(
 
     # Only 3MF files have plates
     if not lib_file.filename.lower().endswith(".3mf"):
-        return {"file_id": file_id, "filename": lib_file.filename, "plates": [], "is_multi_plate": False}
+        return {
+            "file_id": file_id,
+            "filename": lib_file.filename,
+            "plates": [],
+            "is_multi_plate": False,
+            "source_printer_model": None,
+        }
+
+    # SliceModal pre-check signal: the source 3MF's bound printer model. The
+    # slicer CLI cannot re-slice for a different printer; surface this so
+    # the modal can warn the user before they pick a mismatched profile.
+    source_printer_model: str | None = None
+    try:
+        with zipfile.ZipFile(file_path, "r") as zf:
+            source_printer_model = extract_source_printer_model_from_3mf(zf)
+    except (zipfile.BadZipFile, OSError):
+        pass
 
     # Fast path: read pre-computed plates from the library file's JSON
     # metadata (populated at upload time + by m023 backfill). No ZIP open.
@@ -2604,6 +2624,7 @@ async def get_library_file_plates(
             "filename": lib_file.filename,
             "plates": plates,
             "is_multi_plate": len(plates) > 1,
+            "source_printer_model": source_printer_model,
         }
 
     # Slow path: open ZIP + parse. Used for files uploaded before m023 ran,
@@ -2632,6 +2653,7 @@ async def get_library_file_plates(
         "filename": lib_file.filename,
         "plates": plates,
         "is_multi_plate": len(plates) > 1,
+        "source_printer_model": source_printer_model,
     }
 
 
@@ -2666,10 +2688,57 @@ async def get_library_file_plate_thumbnail(
     raise HTTPException(status_code=404, detail=f"Thumbnail for plate {plate_index} not found")
 
 
+async def _try_preview_slice_filaments(
+    db: AsyncSession,
+    *,
+    kind: str,
+    source_id: int,
+    plate_id: int,
+    file_path: Path,
+    request_id: str | None = None,
+) -> list[dict] | None:
+    """Run a preview slice via the user's configured sidecar. Same shape as
+    the matching helper in archives.py — see that module for rationale.
+
+    ``request_id``: when supplied, forwarded to the sidecar so the
+    SliceModal's inline spinner + toast can poll the matching progress
+    endpoint and show "Generating G-code (45%)" for the preview as well.
+    """
+    from backend.app.api.routes.settings import get_setting
+    from backend.app.services.slice_preview import get_preview_filaments
+
+    preferred = (await get_setting(db, "preferred_slicer")) or "bambu_studio"
+    if preferred == "orcaslicer":
+        configured = await get_setting(db, "orcaslicer_api_url")
+        api_url = (configured or app_settings.slicer_api_url).strip()
+    elif preferred == "bambu_studio":
+        configured = await get_setting(db, "bambu_studio_api_url")
+        api_url = (configured or app_settings.bambu_studio_api_url).strip()
+    else:
+        return None
+    if not api_url:
+        return None
+
+    try:
+        file_bytes = file_path.read_bytes()
+    except OSError:
+        return None
+    return await get_preview_filaments(
+        kind=kind,
+        source_id=source_id,
+        plate_id=plate_id,
+        file_bytes=file_bytes,
+        file_name=file_path.name,
+        api_url=api_url,
+        request_id=request_id,
+    )
+
+
 @router.get("/files/{file_id}/filament-requirements")
 async def get_library_file_filament_requirements(
     file_id: int,
     plate_id: int | None = None,
+    request_id: str | None = None,
     db: AsyncSession = Depends(get_db),
     _: User | None = Depends(require_permission(Permission.LIBRARY_READ)),
 ):
@@ -2681,6 +2750,9 @@ async def get_library_file_filament_requirements(
     Args:
         file_id: The library file ID
         plate_id: Optional plate index to get filaments for a specific plate
+        request_id: forwarded to the sidecar's preview-slice fallback for
+            unsliced project files; lets the SliceModal's inline spinner +
+            toast poll matching live progress.
     """
     import defusedxml.ElementTree as ET
 
@@ -2748,6 +2820,11 @@ async def get_library_file_filament_requirements(
                                             "used_grams": round(used_grams, 1),
                                             "used_meters": float(used_m) if used_m else 0,
                                             "tray_info_idx": tray_info_idx,
+                                            # Sliced output already pre-filtered by used_g>0,
+                                            # so every entry that survives is in fact used by
+                                            # this plate. SliceModal uses the flag to enable/
+                                            # disable rows; print-dispatch consumers ignore it.
+                                            "used_in_plate": True,
                                         }
                                     )
                             break
@@ -2776,8 +2853,43 @@ async def get_library_file_filament_requirements(
                                     "used_grams": round(used_grams, 1),
                                     "used_meters": float(used_m) if used_m else 0,
                                     "tray_info_idx": tray_info_idx,
+                                    "used_in_plate": True,
                                 }
                             )
+
+            # Unsliced project files: slice_info had no per-plate data.
+            # Return the FULL project_settings.config AMS slot list so the
+            # slicer CLI receives a profile for every project slot
+            # (otherwise it silently fills the gap from embedded defaults
+            # — the source's grey support filament leaks into the output
+            # even when the user picked white). Use the preview slice to
+            # mark which slots the picked plate actually consumes; the
+            # SliceModal disables the unused rows so the user only
+            # interacts with the dropdowns that matter, while the backend
+            # still has the complete list to pass to the CLI.
+            if not filaments:
+                with zipfile.ZipFile(file_path, "r") as zf2:
+                    project_filaments = extract_project_filaments_from_3mf(zf2)
+                used_slot_ids: set[int] = set()
+                if project_filaments and plate_id is not None:
+                    preview = await _try_preview_slice_filaments(
+                        db,
+                        kind="library_file",
+                        source_id=file_id,
+                        plate_id=plate_id,
+                        file_path=file_path,
+                        request_id=request_id,
+                    )
+                    if preview is not None:
+                        used_slot_ids = {f["slot_id"] for f in preview}
+                # Default to "every slot is used" when preview-slice didn't
+                # produce data: better to over-enable dropdowns than
+                # under-enable and leave the user unable to pick a filament
+                # the plate actually uses.
+                fallback_all_used = not used_slot_ids
+                for f in project_filaments:
+                    f["used_in_plate"] = fallback_all_used or f["slot_id"] in used_slot_ids
+                filaments = project_filaments
 
             # Sort by slot ID
             filaments.sort(key=lambda x: x["slot_id"])

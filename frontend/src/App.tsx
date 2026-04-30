@@ -27,6 +27,7 @@ import { useWebSocket } from './hooks/useWebSocket';
 import { useStreamTokenSync } from './hooks/useCameraStreamToken';
 import { ThemeProvider } from './contexts/ThemeContext';
 import { ToastProvider } from './contexts/ToastContext';
+import { SliceJobTrackerProvider } from './contexts/SliceJobTrackerContext';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { ColorCatalogProvider } from './contexts/ColorCatalogContext';
 import { ConnectionProvider } from './contexts/ConnectionContext';
@@ -209,6 +210,7 @@ function App() {
           <AuthProvider>
             <ConnectionProvider>
             <ColorCatalogProvider>
+            <SliceJobTrackerProvider>
             <StreamTokenSync />
             <BrowserRouter>
               <Routes>
@@ -247,6 +249,7 @@ function App() {
                 </Route>
               </Routes>
             </BrowserRouter>
+            </SliceJobTrackerProvider>
             </ColorCatalogProvider>
             </ConnectionProvider>
           </AuthProvider>

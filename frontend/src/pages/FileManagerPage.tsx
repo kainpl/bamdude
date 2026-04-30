@@ -44,6 +44,7 @@ import {
   WrapText,
   ListCollapse,
   Layers,
+  Cog,
 } from 'lucide-react';
 import { api } from '../api/client';
 import type {
@@ -61,6 +62,7 @@ import { Button } from '../components/Button';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { LibraryPlateGalleryModal } from '../components/LibraryPlateGallery';
 import { PrintModal } from '../components/PrintModal';
+import { SliceModal } from '../components/SliceModal';
 import { ModelViewerModal } from '../components/ModelViewerModal';
 import { FileUploadModal } from '../components/FileUploadModal';
 import { LibraryFileNotesButton } from '../components/LibraryFileNotesButton';
@@ -782,6 +784,19 @@ function isSlicedFilename(filename: string): boolean {
   return lower.endsWith('.gcode') || lower.includes('.gcode.');
 }
 
+// Files that can be fed to the slicer sidecar (model geometry inputs).
+// Excludes .gcode.* (already sliced) and any other non-model formats.
+function isSliceableFilename(filename: string): boolean {
+  const lower = filename.toLowerCase();
+  if (lower.endsWith('.gcode') || lower.endsWith('.gcode.3mf')) return false;
+  return (
+    lower.endsWith('.stl') ||
+    lower.endsWith('.3mf') ||
+    lower.endsWith('.step') ||
+    lower.endsWith('.stp')
+  );
+}
+
 // File Card
 interface FileCardProps {
   file: LibraryFileListItem;
@@ -806,13 +821,15 @@ interface FileCardProps {
   t: TFunction;
 }
 
-function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedule, onPreview3d, onDownload, onRename, onGenerateThumbnail, onDelete }: {
+function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedule, onSlice, useSlicerApi, onPreview3d, onDownload, onRename, onGenerateThumbnail, onDelete }: {
   file: LibraryFileListItem;
   t: TFunction;
   hasPermission: (permission: Permission) => boolean;
   canModify: (resource: 'queue' | 'archives' | 'library', action: 'update' | 'delete' | 'reprint', createdById: number | null | undefined) => boolean;
   onPrint: (f: LibraryFileListItem) => void;
   onSchedule: (f: LibraryFileListItem) => void;
+  onSlice?: (f: LibraryFileListItem) => void;
+  useSlicerApi?: boolean;
   onPreview3d: (f: LibraryFileListItem) => void;
   onDownload: (id: number) => void;
   onRename: (f: LibraryFileListItem) => void;
@@ -889,6 +906,17 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
                   {t('fileManager.schedulePrint')}
                 </button>
               </>
+            )}
+            {onSlice && useSlicerApi && isSliceableFilename(file.filename) && (
+              <button
+                className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${hasPermission('library:upload') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'}`}
+                onClick={() => { if (hasPermission('library:upload')) { onSlice(file); setOpen(false); } }}
+                disabled={!hasPermission('library:upload')}
+                title={!hasPermission('library:upload') ? t('fileManager.noPermissionSlice', { defaultValue: 'You do not have permission to slice' }) : undefined}
+              >
+                <Cog className="w-3.5 h-3.5" />
+                {t('slice.action', { defaultValue: 'Slice' })}
+              </button>
             )}
             {(file.file_type === '3mf' || file.file_type === 'gcode' || file.file_type === 'stl') && (
               <button
@@ -1221,6 +1249,7 @@ export function FileManagerPage() {
   const [printFile, setPrintFile] = useState<LibraryFileListItem | null>(null);
   const [printMultiFile, setPrintMultiFile] = useState<LibraryFileListItem | null>(null);
   const [scheduleFile, setScheduleFile] = useState<LibraryFileListItem | null>(null);
+  const [sliceFile, setSliceFile] = useState<LibraryFileListItem | null>(null);
   const [renameItem, setRenameItem] = useState<{ type: 'file' | 'folder'; id: number; name: string } | null>(null);
   const [thumbnailVersions, setThumbnailVersions] = useState<Record<number, number>>({});
   const [viewerFile, setViewerFile] = useState<LibraryFileListItem | null>(null);
@@ -2459,6 +2488,8 @@ export function FileManagerPage() {
                         canModify={canModify}
                         onPrint={setPrintFile}
                         onSchedule={setScheduleFile}
+                        onSlice={setSliceFile}
+                        useSlicerApi={settings?.use_slicer_api ?? false}
                         onPreview3d={setViewerFile}
                         onDownload={handleDownload}
                         onRename={(f) => setRenameItem({ type: 'file', id: f.id, name: f.filename })}
@@ -2577,6 +2608,13 @@ export function FileManagerPage() {
             queryClient.invalidateQueries({ queryKey: ['library-files'] });
             queryClient.invalidateQueries({ queryKey: ['archives'] });
           }}
+        />
+      )}
+
+      {sliceFile && (
+        <SliceModal
+          source={{ kind: 'libraryFile', id: sliceFile.id, filename: sliceFile.filename }}
+          onClose={() => setSliceFile(null)}
         />
       )}
 
