@@ -62,6 +62,14 @@ class Permission(StrEnum):
     # Edit/delete of someone else's note is enforced at route level.
     LIBRARY_NOTES_WRITE = "library:notes_write"
 
+    # MakerWorld integration (B.5 — 0.5.x cycle). VIEW gates the page +
+    # /resolve + /recent-imports. IMPORT additionally lets the user click
+    # Import (which downloads and writes a LibraryFile). Split because
+    # browsing public MakerWorld metadata is harmless, but a user without
+    # cloud-auth + library upload shouldn't trigger downloads.
+    MAKERWORLD_VIEW = "makerworld:view"
+    MAKERWORLD_IMPORT = "makerworld:import"
+
     # Projects
     PROJECTS_READ = "projects:read"
     PROJECTS_CREATE = "projects:create"
@@ -207,6 +215,10 @@ PERMISSION_CATEGORIES = {
         Permission.LIBRARY_PURGE,
         Permission.LIBRARY_NOTES_WRITE,
     ],
+    "MakerWorld": [
+        Permission.MAKERWORLD_VIEW,
+        Permission.MAKERWORLD_IMPORT,
+    ],
     "Projects": [
         Permission.PROJECTS_READ,
         Permission.PROJECTS_CREATE,
@@ -348,6 +360,9 @@ DEFAULT_GROUPS = {
             Permission.LIBRARY_UPDATE_OWN.value,
             Permission.LIBRARY_DELETE_OWN.value,
             Permission.LIBRARY_NOTES_WRITE.value,
+            # MakerWorld - browse + import
+            Permission.MAKERWORLD_VIEW.value,
+            Permission.MAKERWORLD_IMPORT.value,
             # Projects - full access
             Permission.PROJECTS_READ.value,
             Permission.PROJECTS_CREATE.value,
@@ -415,6 +430,7 @@ DEFAULT_GROUPS = {
             Permission.QUEUE_READ.value,
             Permission.LIBRARY_READ.value,
             Permission.LIBRARY_NOTES_WRITE.value,
+            Permission.MAKERWORLD_VIEW.value,
             Permission.PROJECTS_READ.value,
             Permission.INVENTORY_READ.value,
             Permission.INVENTORY_VIEW_ASSIGNMENTS.value,

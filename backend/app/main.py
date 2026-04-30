@@ -34,6 +34,7 @@ from backend.app.api.routes import (
     local_presets,
     macros,
     maintenance,
+    makerworld,
     metrics,
     mfa,
     notification_templates,
@@ -4491,6 +4492,18 @@ async def lifespan(app: FastAPI):
     _shared_slicer_http_client = _httpx.AsyncClient(timeout=300.0)
     _set_shared_slicer_http_client(_shared_slicer_http_client)
 
+    # MakerWorld API client pool (Phase 5 of 0.5.x cycle). 30 s budget
+    # matches MakerWorld's actual API SLA; the 3MF download streams via a
+    # dedicated 60 s read timeout inside ``download_3mf`` so a slow signed
+    # CDN doesn't starve metadata calls. Reused across resolve / status /
+    # import / recent so a single page load doesn't open four pools.
+    from backend.app.services.makerworld import (
+        set_shared_http_client as _set_shared_makerworld_http_client,
+    )
+
+    _shared_makerworld_http_client = _httpx.AsyncClient(timeout=30.0)
+    _set_shared_makerworld_http_client(_shared_makerworld_http_client)
+
     # Fix queue items stuck with invalid "aborted" status (should be "cancelled").
     # This can happen when a print was cancelled mid-print on versions before this fix.
     try:
@@ -4849,6 +4862,14 @@ async def lifespan(app: FastAPI):
     _set_shared_slicer_http_client_off(None)
     await _shared_slicer_http_client.aclose()
 
+    # Drop the shared MakerWorld HTTP client.
+    from backend.app.services.makerworld import (
+        set_shared_http_client as _set_shared_makerworld_http_client_off,
+    )
+
+    _set_shared_makerworld_http_client_off(None)
+    await _shared_makerworld_http_client.aclose()
+
     # Checkpoint WAL and close all database connections
     try:
         async with engine.begin() as conn:
@@ -4931,6 +4952,13 @@ PUBLIC_API_PATTERNS = [
     # Obico ML API fetches JPEG frames by one-shot nonce (issue #172 follow-up).
     # The nonce itself is the credential: 32-byte random, single-use, ~30s TTL.
     "/obico/cached-frame/",  # /obico/cached-frame/{nonce}
+    # MakerWorld thumbnail proxy (B.5 — 0.5.x cycle). <img> tags can't send
+    # Authorization headers and would 401 every image; the upstream is
+    # MakerWorld's *public* CDN (anyone visiting makerworld.com can fetch
+    # without auth) and the route's SSRF guard restricts the upstream host
+    # to the MakerWorld CDN allowlist, so this can't be abused as a
+    # generic open proxy.
+    "/makerworld/thumbnail",
 ]
 
 
@@ -5222,6 +5250,7 @@ app.include_router(cloud.router, prefix=app_settings.api_prefix)
 app.include_router(local_presets.router, prefix=app_settings.api_prefix)
 app.include_router(slicer_presets.router, prefix=app_settings.api_prefix)
 app.include_router(slice_jobs.router, prefix=app_settings.api_prefix)
+app.include_router(makerworld.router, prefix=app_settings.api_prefix)
 app.include_router(smart_plugs.router, prefix=app_settings.api_prefix)
 app.include_router(print_queue.router, prefix=app_settings.api_prefix)
 app.include_router(auto_queue.router, prefix=app_settings.api_prefix)
