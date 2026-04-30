@@ -85,10 +85,14 @@ async def test_preview_ignores_recently_reprinted_archives(
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_manual_purge_deletes_old_archives(
+async def test_manual_purge_moves_old_archives_to_trash(
     async_client: AsyncClient, archive_factory, printer_factory, db_session
 ):
-    """POST /archives/purge hard-deletes archives older than the threshold."""
+    """POST /archives/purge moves archives older than the threshold to trash.
+
+    Behaviour changed from hard-delete to soft-delete (#1008 follow-up): the
+    sweeper hard-deletes after retention, users can restore in the meantime.
+    """
     from backend.app.models.archive import PrintArchive
 
     printer = await printer_factory()
@@ -106,21 +110,23 @@ async def test_manual_purge_deletes_old_archives(
         json={"older_than_days": 365},
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["deleted"] == 1
+    assert resp.json()["moved_to_trash"] == 1
 
     db_session.expire_all()
-    assert await db_session.get(PrintArchive, old_id) is None
-    assert await db_session.get(PrintArchive, fresh_id) is not None
+    # Old archive went to trash (deleted_at stamped); fresh untouched.
+    old_row = await db_session.get(PrintArchive, old_id)
+    fresh_row = await db_session.get(PrintArchive, fresh_id)
+    assert old_row is not None and old_row.deleted_at is not None
+    assert fresh_row is not None and fresh_row.deleted_at is None
 
 
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_auto_purge_runs_when_enabled(async_client: AsyncClient, archive_factory, printer_factory, db_session):
-    """With the toggle on, a stale archive is hard-deleted by the sweeper.
+    """With the toggle on, a stale archive is soft-deleted (moved to trash).
 
-    ``async_client`` is included solely so its fixture activates the module-level
-    ``async_session`` patches that let :meth:`purge_older_than`'s per-row
-    delete sessions reach the in-memory test database.
+    Behaviour changed (#1008 follow-up): auto-purge now stamps ``deleted_at``
+    instead of hard-deleting. The trash sweeper hard-deletes after retention.
     """
     from backend.app.models.archive import PrintArchive
     from backend.app.services.archive_purge import archive_purge_service
@@ -133,11 +139,12 @@ async def test_auto_purge_runs_when_enabled(async_client: AsyncClient, archive_f
 
     await archive_purge_service.set_settings(db_session, enabled=True, days=365)
 
-    deleted = await archive_purge_service._maybe_run_auto_purge(db_session)
-    assert deleted >= 1
+    moved = await archive_purge_service._maybe_run_auto_purge(db_session)
+    assert moved >= 1
 
     db_session.expire_all()
-    assert await db_session.get(PrintArchive, stale_id) is None
+    row = await db_session.get(PrintArchive, stale_id)
+    assert row is not None and row.deleted_at is not None
 
 
 @pytest.mark.asyncio
@@ -154,8 +161,8 @@ async def test_auto_purge_throttles_within_24h(async_client: AsyncClient, archiv
     await archive_purge_service.set_settings(db_session, enabled=True, days=365)
     await archive_purge_service._stamp_last_run(db_session, datetime.now(timezone.utc) - timedelta(hours=1))
 
-    deleted = await archive_purge_service._maybe_run_auto_purge(db_session)
-    assert deleted == 0
+    moved = await archive_purge_service._maybe_run_auto_purge(db_session)
+    assert moved == 0
 
 
 @pytest.mark.asyncio
@@ -174,8 +181,9 @@ async def test_auto_purge_skipped_when_disabled(
     await db_session.commit()
 
     await archive_purge_service.set_settings(db_session, enabled=False, days=365)
-    deleted = await archive_purge_service._maybe_run_auto_purge(db_session)
-    assert deleted == 0
+    moved = await archive_purge_service._maybe_run_auto_purge(db_session)
+    assert moved == 0
 
     db_session.expire_all()
-    assert await db_session.get(PrintArchive, stale_id) is not None
+    row = await db_session.get(PrintArchive, stale_id)
+    assert row is not None and row.deleted_at is None

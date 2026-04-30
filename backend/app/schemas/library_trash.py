@@ -57,3 +57,4 @@ class TrashSettings(BaseModel):
 
 class EmptyTrashResponse(BaseModel):
     deleted: int
+    skipped_pinned: int = 0

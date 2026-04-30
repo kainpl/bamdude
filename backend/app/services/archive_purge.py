@@ -1,13 +1,26 @@
-"""Archive auto-purge service (#1008 follow-up).
+"""Archive trash + auto-purge service (#1008 follow-up).
 
-Age-based hard-delete of print archives. Unlike the library trash flow there is
-no soft-delete intermediate — archives are historical print records, so the
-"undo" window the library bin provides doesn't apply here. A user who wants to
-keep an archive should download or favourite it before the purge window elapses.
+Two-stage archive deletion mirroring the library trash (#1008):
 
-The sweeper runs on the same 15-minute cadence as the library trash sweeper but
-throttles actual purge runs to once per 24h. Admins can also trigger a manual
-purge from the Settings UI.
+1. Users / admins soft-delete archives — the row stays in ``print_archives``
+   with ``deleted_at`` stamped; the on-disk bytes (3MF, thumbnail, timelapse,
+   photos) remain in place so a restore is a metadata-only operation.
+
+2. A background sweeper hard-deletes rows whose ``deleted_at`` is older than
+   the configured archive-trash retention window. Hard-delete goes through
+   :meth:`ArchiveService.delete_archive` so on-disk cleanup is the same as
+   manual hard-delete.
+
+Auto-purge (admin-configured age threshold) and manual purge both stamp
+``deleted_at`` rather than calling ``delete_archive`` directly, so the user
+has a restore window. Hard-deletion is opt-in via "Empty trash" / per-row
+"Delete now" buttons or happens automatically once retention elapses.
+
+Why a separate retention setting from library trash: archives carry print
+history that's expensive to recreate (no slicer round-trip) and may have
+operational value (failure investigation, energy/cost tracking). Operators
+running a tight ship may want a longer archive retention than library trash
+even when both bins have the same purpose.
 """
 
 from __future__ import annotations
@@ -16,7 +29,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core import database as _database
@@ -29,12 +42,17 @@ logger = logging.getLogger(__name__)
 AUTO_PURGE_ENABLED_KEY = "archive_auto_purge_enabled"
 AUTO_PURGE_DAYS_KEY = "archive_auto_purge_days"
 AUTO_PURGE_LAST_RUN_KEY = "archive_auto_purge_last_run"
+TRASH_RETENTION_KEY = "archive_trash_retention_days"
 
 DEFAULT_AUTO_PURGE_DAYS = 365
 # 7-day floor mirrors the library auto-purge; anything shorter treats archives
 # as ephemeral which is rarely what anyone wants.
 MIN_AUTO_PURGE_DAYS = 7
 MAX_AUTO_PURGE_DAYS = 3650
+
+DEFAULT_RETENTION_DAYS = 30
+MIN_RETENTION_DAYS = 1
+MAX_RETENTION_DAYS = 365
 
 
 def _age_cutoff(now: datetime, older_than_days: int) -> datetime:
@@ -56,7 +74,13 @@ def _last_activity_expr():
 
 
 class ArchivePurgeService:
-    """Manages archive auto-purge sweeper + admin-triggered manual purges."""
+    """Manages archive trash retention sweeper + admin-triggered manual purge.
+
+    Despite the name (kept for backward compat with the existing route /
+    settings keys), this service now implements the full two-stage trash flow:
+    soft-delete via ``purge_older_than`` / ``move_to_trash``, hard-delete via
+    the sweeper / ``hard_delete_now`` / ``empty_trash``.
+    """
 
     def __init__(self):
         self._scheduler_task: asyncio.Task | None = None
@@ -66,25 +90,26 @@ class ArchivePurgeService:
     async def start_scheduler(self):
         if self._scheduler_task is not None:
             return
-        logger.info("Starting archive auto-purge sweeper")
+        logger.info("Starting archive trash sweeper + auto-purge")
         self._scheduler_task = asyncio.create_task(self._scheduler_loop())
 
     def stop_scheduler(self):
         if self._scheduler_task:
             self._scheduler_task.cancel()
             self._scheduler_task = None
-            logger.info("Stopped archive auto-purge sweeper")
+            logger.info("Stopped archive trash sweeper")
 
     async def _scheduler_loop(self):
         while True:
             try:
                 await asyncio.sleep(self._check_interval)
                 async with _database.async_session() as db:
+                    await self._sweep(db)
                     await self._maybe_run_auto_purge(db)
             except asyncio.CancelledError:
                 break
             except Exception as e:  # pragma: no cover - defensive
-                logger.error("Error in archive auto-purge sweeper: %s", e)
+                logger.error("Error in archive trash sweeper: %s", e)
                 await asyncio.sleep(60)
 
     # ---- Settings -----------------------------------------------------
@@ -123,6 +148,35 @@ class ArchivePurgeService:
         await db.commit()
         return {"enabled": enabled, "days": clamped_days}
 
+    async def get_retention_days(self, db: AsyncSession | None = None) -> int:
+        if db is None:
+            async with _database.async_session() as session:
+                return await self._read_retention(session)
+        return await self._read_retention(db)
+
+    @staticmethod
+    async def _read_retention(db: AsyncSession) -> int:
+        result = await db.execute(select(Settings.value).where(Settings.key == TRASH_RETENTION_KEY))
+        raw = result.scalar_one_or_none()
+        if raw is None:
+            return DEFAULT_RETENTION_DAYS
+        try:
+            days = int(raw)
+        except (TypeError, ValueError):
+            return DEFAULT_RETENTION_DAYS
+        return max(MIN_RETENTION_DAYS, min(MAX_RETENTION_DAYS, days))
+
+    async def set_retention_days(self, db: AsyncSession, days: int) -> int:
+        clamped = max(MIN_RETENTION_DAYS, min(MAX_RETENTION_DAYS, int(days)))
+        result = await db.execute(select(Settings).where(Settings.key == TRASH_RETENTION_KEY))
+        row = result.scalar_one_or_none()
+        if row is None:
+            db.add(Settings(key=TRASH_RETENTION_KEY, value=str(clamped)))
+        else:
+            row.value = str(clamped)
+        await db.commit()
+        return clamped
+
     async def _get_last_run(self, db: AsyncSession) -> datetime | None:
         raw = await self._read_setting(db, AUTO_PURGE_LAST_RUN_KEY)
         if not raw:
@@ -147,15 +201,15 @@ class ArchivePurgeService:
         if last is not None and (now - last) < timedelta(hours=24):
             return 0
 
-        deleted = await self.purge_older_than(db, older_than_days=cfg["days"])
+        moved = await self.purge_older_than(db, older_than_days=cfg["days"])
         await self._stamp_last_run(db, now)
-        if deleted:
+        if moved:
             logger.info(
-                "Archive auto-purge: hard-deleted %d archive(s) (threshold=%d days)",
-                deleted,
+                "Archive auto-purge: moved %d archive(s) to trash (threshold=%d days)",
+                moved,
                 cfg["days"],
             )
-        return deleted
+        return moved
 
     # ---- Preview / purge ---------------------------------------------
 
@@ -176,7 +230,9 @@ class ArchivePurgeService:
         now = datetime.now(timezone.utc)
         cutoff = _age_cutoff(now, older_than_days)
         last_activity = _last_activity_expr()
-        clause = last_activity < cutoff
+        # Only count active (non-trashed) archives — trashed ones are already
+        # counted against the trash bin's own retention sweeper.
+        clause = (last_activity < cutoff) & PrintArchive.deleted_at.is_(None)
 
         count_result = await db.execute(select(func.count(PrintArchive.id)).where(clause))
         count = int(count_result.scalar() or 0)
@@ -197,36 +253,106 @@ class ArchivePurgeService:
         }
 
     async def purge_older_than(self, db: AsyncSession, older_than_days: int) -> int:
-        """Hard-delete archives older than ``older_than_days``. Returns count.
+        """Move archives older than ``older_than_days`` to the trash bin.
 
-        Delegates to :meth:`ArchiveService.delete_archive` for every row so the
-        on-disk cleanup (3MF, thumbnail, timelapse, photos) goes through the
-        same safety-checked path as manual deletion. Each delete runs in its
-        own session so a commit-per-row doesn't churn the caller's session
-        (and matches how the sweeper uses :func:`_database.async_session` in production).
+        Stamps ``deleted_at`` on matching rows so they disappear from listings
+        but remain restorable until the retention sweeper hard-deletes them.
+        Mirrors the library trash flow — operators have a window to recover an
+        archive that was purged in error.
         """
         if older_than_days < 1:
             return 0
         now = datetime.now(timezone.utc)
         cutoff = _age_cutoff(now, older_than_days)
+        clause = (_last_activity_expr() < cutoff) & PrintArchive.deleted_at.is_(None)
 
-        id_result = await db.execute(select(PrintArchive.id).where(_last_activity_expr() < cutoff))
+        id_result = await db.execute(select(PrintArchive.id).where(clause))
         ids = [row[0] for row in id_result.all()]
+        if not ids:
+            return 0
+
+        await db.execute(PrintArchive.__table__.update().where(PrintArchive.id.in_(ids)).values(deleted_at=now))
+        await db.commit()
+        logger.info(
+            "Archive purge: moved %d archive(s) to trash (older_than_days=%d)",
+            len(ids),
+            older_than_days,
+        )
+        return len(ids)
+
+    # ---- Trash operations ---------------------------------------------
+
+    @staticmethod
+    async def move_to_trash(db: AsyncSession, archive: PrintArchive) -> PrintArchive:
+        """Stamp ``deleted_at`` on a single archive (manual delete path)."""
+        archive.deleted_at = datetime.now(timezone.utc)
+        await db.commit()
+        await db.refresh(archive)
+        return archive
+
+    @staticmethod
+    async def restore(db: AsyncSession, archive: PrintArchive) -> PrintArchive:
+        """Clear ``deleted_at`` so the archive reappears in listings."""
+        archive.deleted_at = None
+        await db.commit()
+        await db.refresh(archive)
+        return archive
+
+    @staticmethod
+    async def hard_delete_now(archive_id: int) -> bool:
+        """Hard-delete an already-trashed archive bypassing the retention window.
+
+        Runs in its own session via ``ArchiveService.delete_archive`` so the
+        on-disk cleanup (3MF, thumbnail, timelapse, source 3MF, F3D, photos)
+        goes through the same safety-checked path as the sweeper. Caller
+        should verify the archive is in trash before invoking.
+        """
+        async with _database.async_session() as delete_db:
+            service = ArchiveService(delete_db)
+            return await service.delete_archive(archive_id)
+
+    async def empty_trash(self, db: AsyncSession) -> int:
+        """Hard-delete every trashed archive immediately. Returns the count."""
+        id_result = await db.execute(select(PrintArchive.id).where(PrintArchive.deleted_at.isnot(None)))
+        ids = [row[0] for row in id_result.all()]
+        if not ids:
+            return 0
+        deleted = 0
+        for archive_id in ids:
+            if await self.hard_delete_now(archive_id):
+                deleted += 1
+        if deleted:
+            logger.info("Archive trash emptied: hard-deleted %d archive(s)", deleted)
+        return deleted
+
+    # ---- Sweeper ------------------------------------------------------
+
+    async def _sweep(self, db: AsyncSession) -> int:
+        """Hard-delete trashed archive rows whose retention window has elapsed."""
+        retention = await self._read_retention(db)
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(days=retention)
+
+        result = await db.execute(
+            select(PrintArchive.id).where(
+                PrintArchive.deleted_at.isnot(None),
+                PrintArchive.deleted_at < cutoff,
+            )
+        )
+        ids = [row[0] for row in result.all()]
         if not ids:
             return 0
 
         deleted = 0
         for archive_id in ids:
-            async with _database.async_session() as delete_db:
-                service = ArchiveService(delete_db)
-                if await service.delete_archive(archive_id):
-                    deleted += 1
-        if deleted:
-            logger.info(
-                "Archive purge: hard-deleted %d archive(s) (older_than_days=%d)",
-                deleted,
-                older_than_days,
-            )
+            if await self.hard_delete_now(archive_id):
+                deleted += 1
+        # Defensive sweep — if delete_archive somehow left rows behind, drop
+        # the orphaned ``print_archives`` row so the sweeper doesn't get stuck
+        # re-processing it forever.
+        await db.execute(delete(PrintArchive).where(PrintArchive.id.in_(ids), PrintArchive.deleted_at.isnot(None)))
+        await db.commit()
+        logger.info("Archive trash sweeper: hard-deleted %d archive(s) past %d-day retention", deleted, retention)
         return deleted
 
 

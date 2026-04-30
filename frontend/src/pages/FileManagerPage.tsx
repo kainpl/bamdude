@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -66,6 +66,8 @@ import { SliceModal } from '../components/SliceModal';
 import { ModelViewerModal } from '../components/ModelViewerModal';
 import { FileUploadModal } from '../components/FileUploadModal';
 import { LibraryFileNotesButton } from '../components/LibraryFileNotesButton';
+import { PurgeOldFilesModal } from '../components/PurgeOldFilesModal';
+import { SourceBadge } from '../components/SourceBadge';
 import { useToast } from '../contexts/ToastContext';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { useAuth } from '../contexts/AuthContext';
@@ -995,6 +997,7 @@ function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, 
         )}
         {/* File type badge */}
         <div className="absolute top-2 right-2 flex items-center gap-1">
+          <SourceBadge sourceType={file.source_type} sourceUrl={file.source_url} variant="card" />
           {file.is_multi_plate && (
             <span
               className="text-xs px-1.5 py-0.5 bg-cyan-500/90 text-white rounded font-medium"
@@ -1243,6 +1246,7 @@ export function FileManagerPage() {
   const [showExternalFolderModal, setShowExternalFolderModal] = useState(false);
   const [showMoveModal, setShowMoveModal] = useState(false);
   const [showUploadModal, setShowUploadModal] = useState(false);
+  const [showPurgeModal, setShowPurgeModal] = useState(false);
   const [linkFolder, setLinkFolder] = useState<LibraryFolderTree | null>(null);
   const [linkFile, setLinkFile] = useState<LibraryFileListItem | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<{ type: 'file' | 'folder' | 'bulk'; id: number; count?: number } | null>(null);
@@ -1346,6 +1350,21 @@ export function FileManagerPage() {
   const { data: folders, isLoading: foldersLoading } = useQuery({
     queryKey: ['library-folders'],
     queryFn: () => api.getLibraryFolders(),
+  });
+
+  // Trash count for the header badge (#1008). Empty/error treated as zero so a
+  // broken trash endpoint doesn't break the File Manager.
+  const { data: trashCount } = useQuery({
+    queryKey: ['library-trash-count'],
+    queryFn: async () => {
+      try {
+        const res = await api.listLibraryTrash(1, 0);
+        return res.total;
+      } catch {
+        return 0;
+      }
+    },
+    staleTime: 30_000,
   });
 
   const { data: files, isLoading: filesLoading } = useQuery({
@@ -1799,6 +1818,32 @@ export function FileManagerPage() {
             <Upload className="w-4 h-4 mr-2" />
             {t('common.upload')}
           </Button>
+          {hasPermission('library:purge') && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowPurgeModal(true)}
+              title={t('libraryPurge.headerTooltip')}
+            >
+              <Trash2 className="w-4 h-4 mr-2" />
+              {t('libraryPurge.headerButton')}
+            </Button>
+          )}
+          {hasAnyPermission('library:delete_own', 'library:delete_all') && (
+            <Link
+              to="/files/trash"
+              className="inline-flex items-center px-3 py-1.5 text-sm rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary transition-colors"
+              title={t('libraryTrash.headerTooltip')}
+            >
+              <Trash2 className="w-4 h-4 mr-2" />
+              {t('libraryTrash.headerButton')}
+              {typeof trashCount === 'number' && trashCount > 0 && (
+                <span className="ml-1.5 px-1.5 py-0.5 text-xs rounded-full bg-bambu-green/20 text-bambu-green">
+                  {trashCount}
+                </span>
+              )}
+            </Link>
+          )}
         </div>
       </div>
 
@@ -2377,6 +2422,7 @@ export function FileManagerPage() {
                     )}
                     {/* Type */}
                     <div className="flex items-center gap-1">
+                      <SourceBadge sourceType={file.source_type} sourceUrl={file.source_url} variant="row" />
                       <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
                         file.file_type === '3mf' ? 'bg-bambu-green/20 text-bambu-green'
                         : file.file_type === 'gcode' ? 'bg-blue-500/20 text-blue-400'
@@ -2550,6 +2596,10 @@ export function FileManagerPage() {
           onClose={() => setShowUploadModal(false)}
           onUploadComplete={handleUploadComplete}
         />
+      )}
+
+      {showPurgeModal && (
+        <PurgeOldFilesModal onClose={() => setShowPurgeModal(false)} />
       )}
 
       {linkFolder && (

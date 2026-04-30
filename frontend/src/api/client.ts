@@ -1222,6 +1222,9 @@ export interface AppSettings {
   // back to env defaults configured on the server.
   orcaslicer_api_url?: string;
   bambu_studio_api_url?: string;
+  // Per-model auto-print G-code snippets (#422). JSON object keyed by printer
+  // model name → { start_gcode, end_gcode }. Empty string = none configured.
+  gcode_snippets?: string;
   // Prometheus metrics
   prometheus_enabled: boolean;
   prometheus_token: string;
@@ -2887,6 +2890,7 @@ export type Permission =
   | 'queue:reorder'
   | 'library:read' | 'library:upload'
   | 'library:update_own' | 'library:update_all' | 'library:delete_own' | 'library:delete_all'
+  | 'library:purge' | 'archives:purge'
   | 'projects:read' | 'projects:create' | 'projects:update' | 'projects:delete'
   | 'filaments:read' | 'filaments:create' | 'filaments:update' | 'filaments:delete'
   | 'inventory:read' | 'inventory:create' | 'inventory:update' | 'inventory:delete' | 'inventory:view_assignments'
@@ -5411,7 +5415,62 @@ export const api = {
       body: JSON.stringify(data),
     }),
   deleteLibraryFile: (id: number) =>
-    request<{ status: string; message: string }>(`/library/files/${id}`, { method: 'DELETE' }),
+    request<{ status: string; message: string; trashed: boolean }>(`/library/files/${id}`, { method: 'DELETE' }),
+
+  // ========== Library Trash (#1008) ==========
+  previewLibraryPurge: (olderThanDays: number, includeNeverPrinted: boolean = true) =>
+    request<LibraryPurgePreview>(
+      `/library/purge/preview?older_than_days=${olderThanDays}&include_never_printed=${includeNeverPrinted}`,
+    ),
+  executeLibraryPurge: (olderThanDays: number, includeNeverPrinted: boolean = true) =>
+    request<{ moved_to_trash: number }>('/library/purge', {
+      method: 'POST',
+      body: JSON.stringify({ older_than_days: olderThanDays, include_never_printed: includeNeverPrinted }),
+    }),
+  listLibraryTrash: (limit: number = 100, offset: number = 0) =>
+    request<LibraryTrashListResponse>(`/library/trash?limit=${limit}&offset=${offset}`),
+  restoreLibraryTrash: (fileId: number) =>
+    request<{ status: string; id: number }>(`/library/trash/${fileId}/restore`, { method: 'POST' }),
+  hardDeleteLibraryTrash: (fileId: number) =>
+    request<{ status: string }>(`/library/trash/${fileId}`, { method: 'DELETE' }),
+  emptyLibraryTrash: () =>
+    request<{ deleted: number; skipped_pinned: number }>('/library/trash', { method: 'DELETE' }),
+  getLibraryTrashSettings: () =>
+    request<LibraryTrashSettings>('/library/trash/settings'),
+  updateLibraryTrashSettings: (body: LibraryTrashSettings) =>
+    request<LibraryTrashSettings>('/library/trash/settings', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+
+  // ========== Archive trash + auto-purge (#1008 follow-up) ==========
+  previewArchivePurge: (olderThanDays: number) =>
+    request<ArchivePurgePreview>(`/archives/purge/preview?older_than_days=${olderThanDays}`),
+  executeArchivePurge: (olderThanDays: number) =>
+    request<{ moved_to_trash: number }>('/archives/purge', {
+      method: 'POST',
+      body: JSON.stringify({ older_than_days: olderThanDays }),
+    }),
+  getArchivePurgeSettings: () =>
+    request<ArchivePurgeSettings>('/archives/purge/settings'),
+  updateArchivePurgeSettings: (body: ArchivePurgeSettings) =>
+    request<ArchivePurgeSettings>('/archives/purge/settings', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  listArchiveTrash: (limit: number = 100, offset: number = 0) =>
+    request<ArchiveTrashListResponse>(`/archives/trash?limit=${limit}&offset=${offset}`),
+  restoreArchiveTrash: (archiveId: number) =>
+    request<{ status: string; id: number }>(`/archives/trash/${archiveId}/restore`, { method: 'POST' }),
+  hardDeleteArchiveTrash: (archiveId: number) =>
+    request<{ status: string }>(`/archives/trash/${archiveId}`, { method: 'DELETE' }),
+  emptyArchiveTrash: () => request<{ deleted: number }>('/archives/trash', { method: 'DELETE' }),
+  getArchiveTrashSettings: () => request<ArchiveTrashSettings>('/archives/trash/settings'),
+  updateArchiveTrashSettings: (body: ArchiveTrashSettings) =>
+    request<ArchiveTrashSettings>('/archives/trash/settings', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
 
   // Library file notes (gh#3)
   getLibraryFileNotes: (fileId: number) =>
@@ -5924,6 +5983,78 @@ export interface LibraryFileDuplicate {
   folder_id: number | null;
   folder_name: string | null;
   created_at: string;
+}
+
+// Library trash (#1008)
+export interface LibraryTrashItem {
+  id: number;
+  filename: string;
+  file_size: number;
+  thumbnail_path: string | null;
+  folder_id: number | null;
+  folder_name: string | null;
+  created_by_id: number | null;
+  created_by_username: string | null;
+  deleted_at: string;
+  auto_purge_at: string;
+}
+
+export interface LibraryTrashListResponse {
+  items: LibraryTrashItem[];
+  total: number;
+  retention_days: number;
+}
+
+export interface LibraryPurgePreview {
+  count: number;
+  total_bytes: number;
+  sample_filenames: string[];
+  older_than_days: number;
+  include_never_printed: boolean;
+}
+
+export interface LibraryTrashSettings {
+  retention_days: number;
+  auto_purge_enabled: boolean;
+  auto_purge_days: number;
+  auto_purge_include_never_printed: boolean;
+}
+
+export interface ArchivePurgePreview {
+  count: number;
+  total_bytes: number;
+  sample_filenames: string[];
+  older_than_days: number;
+}
+
+export interface ArchivePurgeSettings {
+  enabled: boolean;
+  days: number;
+}
+
+export interface ArchiveTrashItem {
+  id: number;
+  filename: string;
+  print_name: string | null;
+  file_size: number | null;
+  thumbnail_path: string | null;
+  printer_id: number | null;
+  project_id: number | null;
+  status: string | null;
+  created_by_id: number | null;
+  created_by_username: string | null;
+  deleted_at: string;
+  auto_purge_at: string;
+}
+
+export interface ArchiveTrashListResponse {
+  items: ArchiveTrashItem[];
+  total: number;
+  retention_days: number;
+}
+
+export interface ArchiveTrashSettings {
+  retention_days: number;
 }
 
 export interface LibraryFile {

@@ -683,6 +683,87 @@ export function SettingsPage() {
     queryFn: () => api.getLDAPStatus(),
   });
 
+  // Library trash settings (#1008). Separate endpoint from the generic
+  // /settings — persists retention window + auto-purge config. Admin-only.
+  const canPurge = hasPermission('library:purge');
+  const { data: trashSettings } = useQuery({
+    queryKey: ['library-trash-settings'],
+    queryFn: () => api.getLibraryTrashSettings(),
+    enabled: canPurge,
+  });
+
+  const updateTrashSettingsMutation = useMutation({
+    mutationFn: (body: {
+      retention_days: number;
+      auto_purge_enabled: boolean;
+      auto_purge_days: number;
+      auto_purge_include_never_printed: boolean;
+    }) => api.updateLibraryTrashSettings(body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['library-trash-settings'] });
+      showToast(t('settings.toast.settingsSaved'));
+    },
+    onError: (e: Error) => showToast(e.message || t('libraryAutoPurge.saveFailed'), 'error'),
+  });
+
+  const saveTrashSettings = (patch: Partial<{
+    retention_days: number;
+    auto_purge_enabled: boolean;
+    auto_purge_days: number;
+    auto_purge_include_never_printed: boolean;
+  }>) => {
+    if (!trashSettings) return;
+    updateTrashSettingsMutation.mutate({
+      retention_days: trashSettings.retention_days,
+      auto_purge_enabled: trashSettings.auto_purge_enabled,
+      auto_purge_days: trashSettings.auto_purge_days,
+      auto_purge_include_never_printed: trashSettings.auto_purge_include_never_printed,
+      ...patch,
+    });
+  };
+
+  // Archive auto-purge (#1008 follow-up).
+  const canPurgeArchives = hasPermission('archives:purge');
+  const { data: archivePurgeSettings } = useQuery({
+    queryKey: ['archive-purge-settings'],
+    queryFn: () => api.getArchivePurgeSettings(),
+    enabled: canPurgeArchives,
+  });
+
+  const updateArchivePurgeSettingsMutation = useMutation({
+    mutationFn: (body: { enabled: boolean; days: number }) => api.updateArchivePurgeSettings(body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['archive-purge-settings'] });
+      showToast(t('settings.toast.settingsSaved'));
+    },
+    onError: (e: Error) => showToast(e.message || t('archiveAutoPurge.saveFailed'), 'error'),
+  });
+
+  const saveArchivePurgeSettings = (patch: Partial<{ enabled: boolean; days: number }>) => {
+    if (!archivePurgeSettings) return;
+    updateArchivePurgeSettingsMutation.mutate({
+      enabled: archivePurgeSettings.enabled,
+      days: archivePurgeSettings.days,
+      ...patch,
+    });
+  };
+
+  // Archive trash retention. Separate from auto-purge trigger config.
+  const { data: archiveTrashSettings } = useQuery({
+    queryKey: ['archive-trash-settings'],
+    queryFn: () => api.getArchiveTrashSettings(),
+    enabled: canPurgeArchives,
+  });
+
+  const updateArchiveTrashSettingsMutation = useMutation({
+    mutationFn: (body: { retention_days: number }) => api.updateArchiveTrashSettings(body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['archive-trash-settings'] });
+      showToast(t('settings.toast.settingsSaved'));
+    },
+    onError: (e: Error) => showToast(e.message || t('archiveAutoPurge.saveFailed'), 'error'),
+  });
+
   // User management queries and mutations
   const { data: usersData = [], isLoading: usersLoading } = useQuery({
     queryKey: ['users'],
@@ -2654,6 +2735,110 @@ export function SettingsPage() {
             </CardContent>
           </Card>
 
+          {/* G-code Injection (#422) — per-printer-model start/end snippets
+              spliced into plate gcode at print time. Toggle lives in PrintModal;
+              this card is the place where operators define the snippets. */}
+          <Card>
+            <CardHeader>
+              <h3 className="text-base font-semibold text-white flex items-center gap-2">
+                <Code className="w-4 h-4 text-bambu-green" />
+                {t('settings.gcodeInjection')}
+              </h3>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <p className="text-xs text-bambu-gray">
+                {t('settings.gcodeInjectionDescription')}
+              </p>
+              {(() => {
+                const gcodeSnippets: Record<string, { start_gcode: string; end_gcode: string }> = (() => {
+                  try {
+                    return localSettings.gcode_snippets ? JSON.parse(localSettings.gcode_snippets) : {};
+                  } catch {
+                    return {};
+                  }
+                })();
+                const printerModels = [...new Set((printers || []).filter((p) => p.model).map((p) => p.model as string))].sort();
+
+                const updateSnippet = (model: string, field: 'start_gcode' | 'end_gcode', value: string) => {
+                  const updated = { ...gcodeSnippets };
+                  if (!updated[model]) {
+                    updated[model] = { start_gcode: '', end_gcode: '' };
+                  }
+                  updated[model][field] = value;
+                  if (!updated[model].start_gcode && !updated[model].end_gcode) {
+                    delete updated[model];
+                  }
+                  const newValue = Object.keys(updated).length > 0 ? JSON.stringify(updated) : '';
+                  setLocalSettings(prev => prev ? { ...prev, gcode_snippets: newValue } : null);
+                };
+
+                const saveGcodeSnippets = () => {
+                  if (localSettings.gcode_snippets !== settings?.gcode_snippets) {
+                    updateMutation.mutate({ gcode_snippets: localSettings.gcode_snippets });
+                  }
+                };
+
+                if (printerModels.length === 0) {
+                  return (
+                    <p className="text-sm text-bambu-gray italic">
+                      {t('settings.gcodeInjectionNoPrinters')}
+                    </p>
+                  );
+                }
+
+                return printerModels.map((model) => {
+                  const snippet = gcodeSnippets[model] || { start_gcode: '', end_gcode: '' };
+                  const hasContent = !!(snippet.start_gcode || snippet.end_gcode);
+                  return (
+                    <details
+                      key={model}
+                      open={hasContent}
+                      className="border border-bambu-dark-tertiary rounded-lg px-3 py-2 group"
+                    >
+                      <summary className="cursor-pointer flex items-center gap-2 list-none">
+                        <ChevronDown className="w-4 h-4 text-bambu-gray transition-transform group-open:rotate-180" />
+                        <h4 className="text-sm font-medium text-white">{model}</h4>
+                        {hasContent && (
+                          <span className="text-xs px-1.5 py-0.5 rounded bg-bambu-green/20 text-bambu-green">
+                            {t('settings.gcodeConfigured')}
+                          </span>
+                        )}
+                      </summary>
+                      <div className="space-y-2 mt-2">
+                        <div>
+                          <label className="block text-xs text-bambu-gray mb-1">
+                            {t('settings.gcodeStartLabel')}
+                          </label>
+                          <textarea
+                            value={snippet.start_gcode}
+                            onChange={(e) => updateSnippet(model, 'start_gcode', e.target.value)}
+                            onBlur={saveGcodeSnippets}
+                            placeholder={t('settings.gcodeStartPlaceholder')}
+                            rows={3}
+                            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-xs font-mono focus:outline-none focus:border-bambu-green resize-y"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-bambu-gray mb-1">
+                            {t('settings.gcodeEndLabel')}
+                          </label>
+                          <textarea
+                            value={snippet.end_gcode}
+                            onChange={(e) => updateSnippet(model, 'end_gcode', e.target.value)}
+                            onBlur={saveGcodeSnippets}
+                            placeholder={t('settings.gcodeEndPlaceholder')}
+                            rows={3}
+                            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-xs font-mono focus:outline-none focus:border-bambu-green resize-y"
+                          />
+                        </div>
+                      </div>
+                    </details>
+                  );
+                });
+              })()}
+            </CardContent>
+          </Card>
+
           {/* Archive Settings */}
           <Card>
             <CardHeader>
@@ -2712,6 +2897,88 @@ export function SettingsPage() {
                 onChangeEnabled={(v) => updateSetting('archive_3mf_retention_enabled', v)}
                 onChangeDays={(v) => updateSetting('archive_3mf_retention_days', v)}
               />
+
+              {/* Archive trash + auto-purge (#1008 follow-up). Admin-only —
+                  gated on archives:purge. Soft-deletes archives older than
+                  the threshold to the archive trash; sweeper hard-deletes
+                  after the trash retention window. */}
+              {canPurgeArchives && archivePurgeSettings && (
+                <div className="border-t border-bambu-dark-tertiary pt-3 mt-3 space-y-3">
+                  <div className="flex items-center gap-2">
+                    <Trash2 className="w-4 h-4 text-bambu-green" />
+                    <h3 className="text-sm font-semibold text-white">{t('archiveAutoPurge.sectionTitle')}</h3>
+                  </div>
+
+                  {/* Trash retention — how long deleted archives stay
+                      restorable before the sweeper hard-deletes their files. */}
+                  {archiveTrashSettings && (
+                    <div>
+                      <label className="block text-sm text-bambu-gray mb-1">
+                        {t('archiveAutoPurge.retentionLabel')}
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          min={1}
+                          max={365}
+                          value={archiveTrashSettings.retention_days}
+                          onChange={(e) =>
+                            updateArchiveTrashSettingsMutation.mutate({
+                              retention_days: Math.max(1, Math.min(365, parseInt(e.target.value || '0', 10) || 0)),
+                            })
+                          }
+                          className="w-24 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                        />
+                        <span className="text-bambu-gray">{t('archiveAutoPurge.days')}</span>
+                      </div>
+                      <p className="text-xs text-bambu-gray mt-1">
+                        {t('archiveAutoPurge.retentionDescription')}
+                      </p>
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-between pt-2 border-t border-bambu-dark-tertiary/50">
+                    <div>
+                      <p className="text-white">{t('archiveAutoPurge.enableLabel')}</p>
+                      <p className="text-sm text-bambu-gray">{t('archiveAutoPurge.enableDescription')}</p>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={archivePurgeSettings.enabled}
+                        onChange={(e) => saveArchivePurgeSettings({ enabled: e.target.checked })}
+                        className="sr-only peer"
+                      />
+                      <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                    </label>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm text-bambu-gray mb-1">
+                      {t('archiveAutoPurge.ageLabel')}
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        min={7}
+                        max={3650}
+                        disabled={!archivePurgeSettings.enabled}
+                        value={archivePurgeSettings.days}
+                        onChange={(e) =>
+                          saveArchivePurgeSettings({
+                            days: Math.max(7, Math.min(3650, parseInt(e.target.value || '0', 10) || 0)),
+                          })
+                        }
+                        className="w-24 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none disabled:opacity-50"
+                      />
+                      <span className="text-bambu-gray">{t('archiveAutoPurge.days')}</span>
+                    </div>
+                    <p className="text-xs text-bambu-gray mt-1">
+                      {t('archiveAutoPurge.ageDescription')}
+                    </p>
+                  </div>
+                </div>
+              )}
             </CardContent>
           </Card>
 
@@ -2744,6 +3011,95 @@ export function SettingsPage() {
                   {t('settings.lowDiskSpaceDescription')}
                 </p>
               </div>
+
+              {/* Library trash + auto-purge (#1008). Admin-only — without
+                  library:purge there's no way to trigger a bulk purge anyway. */}
+              {canPurge && trashSettings && (
+                <div className="border-t border-bambu-dark-tertiary pt-3 mt-3 space-y-3">
+                  <div className="flex items-center gap-2">
+                    <Trash2 className="w-4 h-4 text-bambu-green" />
+                    <h3 className="text-sm font-semibold text-white">{t('libraryAutoPurge.sectionTitle')}</h3>
+                  </div>
+
+                  {/* Trash retention — how long deleted files stay restorable
+                      before the sweeper hard-deletes their bytes. */}
+                  <div>
+                    <label className="block text-sm text-bambu-gray mb-1">
+                      {t('libraryAutoPurge.retentionLabel')}
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        min={1}
+                        max={365}
+                        value={trashSettings.retention_days}
+                        onChange={(e) =>
+                          saveTrashSettings({
+                            retention_days: Math.max(1, Math.min(365, parseInt(e.target.value || '0', 10) || 0)),
+                          })
+                        }
+                        className="w-24 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                      />
+                      <span className="text-bambu-gray">{t('libraryAutoPurge.days')}</span>
+                    </div>
+                    <p className="text-xs text-bambu-gray mt-1">
+                      {t('libraryAutoPurge.retentionDescription')}
+                    </p>
+                  </div>
+
+                  <div className="flex items-center justify-between pt-2 border-t border-bambu-dark-tertiary/50">
+                    <div>
+                      <p className="text-white">{t('libraryAutoPurge.enableLabel')}</p>
+                      <p className="text-sm text-bambu-gray">{t('libraryAutoPurge.enableDescription')}</p>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={trashSettings.auto_purge_enabled}
+                        onChange={(e) => saveTrashSettings({ auto_purge_enabled: e.target.checked })}
+                        className="sr-only peer"
+                      />
+                      <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                    </label>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm text-bambu-gray mb-1">
+                      {t('libraryAutoPurge.ageLabel')}
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        min={7}
+                        max={3650}
+                        disabled={!trashSettings.auto_purge_enabled}
+                        value={trashSettings.auto_purge_days}
+                        onChange={(e) =>
+                          saveTrashSettings({
+                            auto_purge_days: Math.max(7, Math.min(3650, parseInt(e.target.value || '0', 10) || 0)),
+                          })
+                        }
+                        className="w-24 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none disabled:opacity-50"
+                      />
+                      <span className="text-bambu-gray">{t('libraryAutoPurge.days')}</span>
+                    </div>
+                    <p className="text-xs text-bambu-gray mt-1">
+                      {t('libraryAutoPurge.ageDescription')}
+                    </p>
+                  </div>
+
+                  <label className="flex items-center gap-2 text-sm text-white cursor-pointer">
+                    <input
+                      type="checkbox"
+                      disabled={!trashSettings.auto_purge_enabled}
+                      checked={trashSettings.auto_purge_include_never_printed}
+                      onChange={(e) => saveTrashSettings({ auto_purge_include_never_printed: e.target.checked })}
+                      className="rounded border-bambu-dark-tertiary disabled:opacity-50"
+                    />
+                    {t('libraryAutoPurge.includeNeverPrinted')}
+                  </label>
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>

@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import settings as app_settings
 from backend.app.core.database import async_session
+from backend.app.models.archive import PrintArchive
 from backend.app.models.library import LibraryFile
 from backend.app.models.settings import Settings
 
@@ -329,8 +330,31 @@ class LibraryTrashService:
 
     # ---- Sweeper ------------------------------------------------------
 
+    @staticmethod
+    async def _active_archive_refs(db: AsyncSession, file_id: int) -> int:
+        """Count active (non-trashed) PrintArchive rows that reference this file.
+
+        Used by hard-delete paths so a library file isn't unlinked from disk
+        while live archives still need it for reprint / chain-of-custody.
+        Trashed archives don't count — the user has signalled they're OK with
+        the chain breaking once the archive trash retention also elapses.
+        """
+        result = await db.execute(
+            select(func.count(PrintArchive.id)).where(
+                PrintArchive.library_file_id == file_id,
+                PrintArchive.deleted_at.is_(None),
+            )
+        )
+        return int(result.scalar() or 0)
+
     async def _sweep(self, db: AsyncSession) -> int:
-        """Hard-delete trashed rows whose retention window has elapsed."""
+        """Hard-delete trashed rows whose retention window has elapsed.
+
+        Skips rows still referenced by active (non-trashed) archives — those
+        files are pinned until the referencing archives also trash out, since
+        otherwise a reprint of an active archive would lose its source 3MF
+        mid-flight.
+        """
         retention = await self._read_retention(db)
         now = datetime.now(timezone.utc)
         cutoff = now - timedelta(days=retention)
@@ -345,13 +369,27 @@ class LibraryTrashService:
         if not rows:
             return 0
 
-        deleted = 0
+        # Filter out rows still referenced by active archives. They wait —
+        # either the user restores them, or the referencing archive itself
+        # trashes out and the next sweep tick picks them up.
+        eligible_rows: list[LibraryFile] = []
+        pinned = 0
         for row in rows:
+            refs = await self._active_archive_refs(db, row.id)
+            if refs > 0:
+                pinned += 1
+                continue
+            eligible_rows.append(row)
+        if pinned:
+            logger.info("Library trash sweeper: %d row(s) pinned by active archive references — waiting", pinned)
+        if not eligible_rows:
+            return 0
+
+        deleted = 0
+        for row in eligible_rows:
             self._unlink_on_disk(row)
             deleted += 1
-        # Single DELETE is faster than N await db.delete() round-trips; we
-        # still need the Python loop above to unlink bytes on disk.
-        await db.execute(delete(LibraryFile).where(LibraryFile.id.in_([r.id for r in rows])))
+        await db.execute(delete(LibraryFile).where(LibraryFile.id.in_([r.id for r in eligible_rows])))
         await db.commit()
         logger.info("Library trash sweeper: hard-deleted %d row(s) past %d-day retention", deleted, retention)
         return deleted
@@ -379,10 +417,20 @@ class LibraryTrashService:
         return file
 
     async def hard_delete_now(self, db: AsyncSession, file: LibraryFile) -> None:
-        """Bypass retention and delete this trashed file + its bytes immediately."""
+        """Bypass retention and delete this trashed file + its bytes immediately.
+
+        Caller is expected to verify there are no active archive references
+        first (via :meth:`active_archive_references` or the count helper) and
+        return 409 to the user if there are. We don't raise here so the
+        sweeper / empty-trash path can keep its existing skip-and-log shape.
+        """
         self._unlink_on_disk(file)
         await db.delete(file)
         await db.commit()
+
+    async def active_archive_references(self, db: AsyncSession, file_id: int) -> int:
+        """Public wrapper around the internal counter — for routes / API."""
+        return await self._active_archive_refs(db, file_id)
 
 
 library_trash_service = LibraryTrashService()

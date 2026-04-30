@@ -591,6 +591,7 @@ function InventoryPage() {
   const [usageFilter, setUsageFilter] = useState<UsageFilter>('all');
   const [materialFilter, setMaterialFilter] = useState('');
   const [brandFilter, setBrandFilter] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('');
   const [spoolFilter, setSpoolFilter] = useState('');
   const [stockFilter, setStockFilter] = useState<'all' | 'stock' | 'configured'>('all');
   const [search, setSearch] = useState('');
@@ -783,6 +784,15 @@ function InventoryPage() {
       filtered = filtered.filter((s) => s.brand === brandFilter);
     }
 
+    // Category dropdown (#729) — '__none__' picks uncategorised spools.
+    if (categoryFilter) {
+      if (categoryFilter === '__none__') {
+        filtered = filtered.filter((s) => !s.category);
+      } else {
+        filtered = filtered.filter((s) => s.category === categoryFilter);
+      }
+    }
+
     // Spool name dropdown
     if (spoolFilter) {
       const catalogId = Number(spoolFilter);
@@ -818,7 +828,7 @@ function InventoryPage() {
     }
 
     return filtered;
-  }, [spools, archiveFilter, usageFilter, materialFilter, brandFilter, spoolFilter, stockFilter, search, spoolDisplayTemplate, lowStockThreshold]);
+  }, [spools, archiveFilter, usageFilter, materialFilter, brandFilter, categoryFilter, spoolFilter, stockFilter, search, spoolDisplayTemplate, lowStockThreshold]);
 
   // Reset page on filter changes
   const resetPage = () => setPageIndex(0);
@@ -831,9 +841,11 @@ function InventoryPage() {
     const nameB = (catalogMap[b]?.name || '').toLowerCase();
     return nameA.localeCompare(nameB);
   });
+  const uniqueCategories = [...new Set(spools?.map((s) => s.category?.trim()).filter(Boolean) as string[] || [])].sort();
+  const hasUncategorized = (spools ?? []).some((s) => !s.category);
 
   // Check if any filters are non-default
-  const hasActiveFilters = archiveFilter !== 'active' || usageFilter !== 'all' || !!materialFilter || !!brandFilter || !!spoolFilter || stockFilter !== 'all' || !!search;
+  const hasActiveFilters = archiveFilter !== 'active' || usageFilter !== 'all' || !!materialFilter || !!brandFilter || !!categoryFilter || !!spoolFilter || stockFilter !== 'all' || !!search;
 
   const handleColumnConfigSave = (config: ColumnConfig[]) => {
     setColumnConfig(config);
@@ -983,6 +995,7 @@ function InventoryPage() {
     setUsageFilter('all');
     setMaterialFilter('');
     setBrandFilter('');
+    setCategoryFilter('');
     setSpoolFilter('');
     setStockFilter('all');
     setSearch('');
@@ -1338,6 +1351,28 @@ function InventoryPage() {
             <option key={b} value={b}>{b}</option>
           ))}
         </select>
+
+        {/* Category dropdown chip (#729) — only render once at least one
+            spool carries a category, otherwise it's noise. */}
+        {(uniqueCategories.length > 0 || categoryFilter) && (
+          <select
+            value={categoryFilter}
+            onChange={(e) => { setCategoryFilter(e.target.value); resetPage(); }}
+            className={`px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors cursor-pointer focus:outline-none ${
+              categoryFilter
+                ? 'bg-bambu-green/20 text-bambu-green border-bambu-green/30'
+                : 'bg-transparent text-bambu-gray border-bambu-dark-tertiary hover:bg-bambu-dark-tertiary'
+            }`}
+          >
+            <option value="">{t('inventory.category')}</option>
+            {uniqueCategories.map((c) => (
+              <option key={c} value={c}>{c}</option>
+            ))}
+            {hasUncategorized && (
+              <option value="__none__">{t('inventory.categoryNone')}</option>
+            )}
+          </select>
+        )}
 
         {/* Spool name dropdown chip */}
         {uniqueSpoolCatalogIds.length > 0 && (

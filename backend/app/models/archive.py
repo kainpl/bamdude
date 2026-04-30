@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, Select, String, Text, func, select
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
@@ -111,8 +111,25 @@ class PrintArchive(Base):
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
+    # Soft-delete column (m034). When non-null the archive is in the trash:
+    # excluded from listings, dedup queries, project rollups, etc. Sweeper
+    # hard-deletes rows whose deleted_at is older than the archive trash
+    # retention window. Mirrors LibraryFile.deleted_at semantics.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+
     # User tracking (who uploaded/created this archive)
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+    @classmethod
+    def active(cls) -> "Select[tuple[PrintArchive]]":
+        """Select statement that excludes trashed archives.
+
+        Use this for any user-facing listing, dedup, project rollup, or
+        history query so trashed archives don't leak into normal flows.
+        Trash-specific endpoints build their own query with
+        ``deleted_at.isnot(None)``.
+        """
+        return select(cls).where(cls.deleted_at.is_(None))
 
     # Relationships
     printer: Mapped["Printer | None"] = relationship(back_populates="archives")

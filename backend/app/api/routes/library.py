@@ -1359,9 +1359,11 @@ async def list_files(
     if files:
         hashes = [f.file_hash for f in files if f.file_hash]
         if hashes:
+            # Trashed files are excluded — they are not a "source of truth" for
+            # dedup; a duplicate badge against a trashed sibling is misleading.
             dup_result = await db.execute(
                 select(LibraryFile.file_hash, func.count(LibraryFile.id))
-                .where(LibraryFile.file_hash.in_(hashes))
+                .where(LibraryFile.file_hash.in_(hashes), LibraryFile.deleted_at.is_(None))
                 .group_by(LibraryFile.file_hash)
             )
             hash_counts = {h: c - 1 for h, c in dup_result.all()}  # -1 to exclude self
@@ -1452,6 +1454,8 @@ async def list_files(
                 sliced_for_model=sliced_for_model,
                 swap_compatible=f.swap_compatible,
                 is_multi_plate=is_multi_plate,
+                source_type=f.source_type,
+                source_url=f.source_url,
                 notes_count=notes_counts.get(f.id, 0),
             )
         )
@@ -1970,8 +1974,12 @@ async def upload_file(
         # Calculate hash
         file_hash = calculate_file_hash(file_path)
 
-        # Check for duplicates
-        dup_result = await db.execute(select(LibraryFile.id).where(LibraryFile.file_hash == file_hash).limit(1))
+        # Check for duplicates — only against active (non-trashed) files. A
+        # trashed sibling has been deleted by the user and shouldn't pin a
+        # fresh upload to it.
+        dup_result = await db.execute(
+            select(LibraryFile.id).where(LibraryFile.file_hash == file_hash, LibraryFile.deleted_at.is_(None)).limit(1)
+        )
         duplicate_of = dup_result.scalar()
 
         # Extract metadata and thumbnail
@@ -3087,10 +3095,16 @@ async def get_file(
     duplicates = []
     duplicate_count = 0
     if file.file_hash:
+        # Trashed siblings are excluded from the duplicates panel — they're
+        # already deleted from the user's perspective.
         dup_result = await db.execute(
             select(LibraryFile, LibraryFolder.name)
             .outerjoin(LibraryFolder, LibraryFile.folder_id == LibraryFolder.id)
-            .where(LibraryFile.file_hash == file.file_hash, LibraryFile.id != file.id)
+            .where(
+                LibraryFile.file_hash == file.file_hash,
+                LibraryFile.id != file.id,
+                LibraryFile.deleted_at.is_(None),
+            )
         )
         for dup_file, dup_folder_name in dup_result.all():
             duplicates.append(
@@ -3146,6 +3160,8 @@ async def get_file(
         object_count=object_count,
         sliced_for_model=sliced_for_model,
         swap_compatible=file.swap_compatible,
+        source_type=file.source_type,
+        source_url=file.source_url,
     )
 
 

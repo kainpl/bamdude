@@ -3,7 +3,8 @@ import DOMPurify from 'dompurify';
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { AlertCircle, ArrowRight, Check, ChevronLeft, ChevronRight, Download, ExternalLink, FolderOpen, Globe, Images, Loader2, Trash2, X } from 'lucide-react';
+import { AlertCircle, ArrowRight, Check, ChevronLeft, ChevronRight, Download, ExternalLink, FolderOpen, Images, Loader2, Trash2, X } from 'lucide-react';
+import { MakerWorldIcon } from '../components/BrandIcons';
 
 import {
   api,
@@ -410,7 +411,7 @@ export function MakerworldPage() {
   return (
     <div className="p-6 max-w-screen-2xl mx-auto space-y-6">
       <div className="flex items-center gap-3">
-        <Globe className="w-7 h-7 text-brand-500" />
+        <MakerWorldIcon className="w-7 h-7 text-brand-500" />
         <h1 className="text-2xl font-bold">{t('makerworld.title')}</h1>
       </div>
 
@@ -895,7 +896,7 @@ export function MakerworldPage() {
                               className="inline-flex items-center justify-center h-7 w-7 rounded text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
                               title={t('makerworld.openOnMakerworld')}
                             >
-                              <Globe className="w-3.5 h-3.5" />
+                              <MakerWorldIcon className="w-3.5 h-3.5" />
                             </a>
                           )}
                         </div>

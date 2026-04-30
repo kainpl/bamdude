@@ -483,12 +483,15 @@ async def search_archives(
             select(PrintArchive)
             .options(selectinload(PrintArchive.project))
             .where(
-                (PrintArchive.print_name.ilike(like_pattern))
-                | (PrintArchive.filename.ilike(like_pattern))
-                | (PrintArchive.tags.ilike(like_pattern))
-                | (PrintArchive.notes.ilike(like_pattern))
-                | (PrintArchive.designer.ilike(like_pattern))
-                | (PrintArchive.filament_type.ilike(like_pattern))
+                (
+                    (PrintArchive.print_name.ilike(like_pattern))
+                    | (PrintArchive.filename.ilike(like_pattern))
+                    | (PrintArchive.tags.ilike(like_pattern))
+                    | (PrintArchive.notes.ilike(like_pattern))
+                    | (PrintArchive.designer.ilike(like_pattern))
+                    | (PrintArchive.filament_type.ilike(like_pattern))
+                ),
+                PrintArchive.deleted_at.is_(None),
             )
             .order_by(PrintArchive.created_at.desc())
         )
@@ -508,8 +511,12 @@ async def search_archives(
     if not matched_ids:
         return []
 
-    # Fetch full archive records for matched IDs
-    query = select(PrintArchive).options(selectinload(PrintArchive.project)).where(PrintArchive.id.in_(matched_ids))
+    # Fetch full archive records for matched IDs (excluding trashed).
+    query = (
+        select(PrintArchive)
+        .options(selectinload(PrintArchive.project))
+        .where(PrintArchive.id.in_(matched_ids), PrintArchive.deleted_at.is_(None))
+    )
 
     # Apply additional filters
     if printer_id:
@@ -1587,24 +1594,28 @@ async def delete_archive(
         )
     ),
 ):
-    """Delete an archive."""
+    """Soft-delete an archive (moves to the archive trash bin).
+
+    Stamps ``deleted_at`` and returns ``trashed=True``. Sweeper hard-deletes
+    after retention; users / admins can also restore from the trash UI or
+    hard-delete-now to bypass the window.
+    """
+    from backend.app.services.archive_purge import archive_purge_service
+
     user, can_modify_all = auth_result
 
-    # Get archive first to check ownership
-    result = await db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))
+    # Only operate on active archives — re-deleting a trashed row is a no-op.
+    result = await db.execute(PrintArchive.active().where(PrintArchive.id == archive_id))
     archive = result.scalar_one_or_none()
     if not archive:
         raise HTTPException(404, "Archive not found")
 
-    # Ownership check
     if not can_modify_all:
         if archive.created_by_id != user.id:
             raise HTTPException(403, "You can only delete your own archives")
 
-    service = ArchiveService(db)
-    if not await service.delete_archive(archive_id):
-        raise HTTPException(404, "Archive not found")
-    return {"status": "deleted"}
+    await archive_purge_service.move_to_trash(db, archive)
+    return {"status": "trashed", "trashed": True, "id": archive.id}
 
 
 @router.get("/{archive_id}/download")

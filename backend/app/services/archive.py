@@ -1261,9 +1261,11 @@ class ArchiveService:
 
         effective_hash = func.coalesce(PrintArchive.source_content_hash, PrintArchive.content_hash)
 
+        # Trashed archives are excluded — a duplicate badge against a trashed
+        # sibling is misleading; those rows are slated for hard-delete.
         result = await self.db.execute(
             select(effective_hash)
-            .where(PrintArchive.content_hash.isnot(None))
+            .where(PrintArchive.content_hash.isnot(None), PrintArchive.deleted_at.is_(None))
             .group_by(effective_hash)
             .having(func.count(PrintArchive.id) > 1)
         )
@@ -1273,7 +1275,11 @@ class ArchiveService:
         # This avoids marking different files with the same name as duplicates
         result = await self.db.execute(
             select(func.lower(PrintArchive.print_name), effective_hash)
-            .where(PrintArchive.print_name.isnot(None), PrintArchive.content_hash.isnot(None))
+            .where(
+                PrintArchive.print_name.isnot(None),
+                PrintArchive.content_hash.isnot(None),
+                PrintArchive.deleted_at.is_(None),
+            )
             .group_by(func.lower(PrintArchive.print_name), effective_hash)
             .having(func.count(PrintArchive.id) > 1)
         )
@@ -1305,6 +1311,7 @@ class ArchiveService:
                     and_(
                         effective_hash == content_hash,
                         PrintArchive.id != archive_id,
+                        PrintArchive.deleted_at.is_(None),
                     )
                 )
                 .order_by(PrintArchive.created_at.desc())
@@ -1324,7 +1331,7 @@ class ArchiveService:
         # Prefer strict name+hash matching when hash exists; fallback to name-only for legacy/manual
         # archives that may not have a content_hash.
         if print_name or makerworld_model_id:
-            conditions = [PrintArchive.id != archive_id]
+            conditions = [PrintArchive.id != archive_id, PrintArchive.deleted_at.is_(None)]
 
             name_conditions = []
             if print_name:
@@ -1422,13 +1429,16 @@ class ArchiveService:
         # (this file is itself the original someone patched before). The oldest
         # match wins — it's closest to the root of the chain.
         if source_content_hash is None:
+            # Trashed archives are excluded — a chain anchor in the trash is
+            # about to be hard-deleted, so reusing its hash would orphan us.
             chain_lookup = await self.db.execute(
                 select(func.coalesce(PrintArchive.source_content_hash, PrintArchive.content_hash))
                 .where(
                     or_(
                         PrintArchive.content_hash == content_hash,
                         PrintArchive.source_content_hash == content_hash,
-                    )
+                    ),
+                    PrintArchive.deleted_at.is_(None),
                 )
                 .order_by(PrintArchive.created_at.asc())
                 .limit(1)
@@ -1452,6 +1462,7 @@ class ArchiveService:
                 func.coalesce(PrintArchive.source_content_hash, PrintArchive.content_hash) == effective_hash,
                 PrintArchive.printer_id == printer_id,
                 PrintArchive.file_path.isnot(None),
+                PrintArchive.deleted_at.is_(None),
             )
             .limit(1)
         )
@@ -1798,14 +1809,22 @@ class ArchiveService:
             await self.db.rollback()
             return False
 
-    async def get_archive(self, archive_id: int) -> PrintArchive | None:
-        """Get an archive by ID with relationships loaded."""
+    async def get_archive(self, archive_id: int, *, include_trashed: bool = False) -> PrintArchive | None:
+        """Get an archive by ID with relationships loaded.
+
+        Trashed archives return None unless ``include_trashed=True`` so user-
+        facing GET /archives/{id} 404s on trashed rows. Internal callers (e.g.
+        the trash routes themselves, restore flows) pass the flag explicitly.
+        """
         from sqlalchemy.orm import selectinload
 
+        conditions = [PrintArchive.id == archive_id]
+        if not include_trashed:
+            conditions.append(PrintArchive.deleted_at.is_(None))
         result = await self.db.execute(
             select(PrintArchive)
             .options(selectinload(PrintArchive.created_by), selectinload(PrintArchive.project))
-            .where(PrintArchive.id == archive_id)
+            .where(*conditions)
         )
         return result.scalar_one_or_none()
 
@@ -1864,7 +1883,9 @@ class ArchiveService:
         """
         from sqlalchemy.orm import selectinload
 
-        filters = []
+        # Trashed archives never appear in the main listing — they live in
+        # the archive trash bin until restored or hard-deleted by the sweeper.
+        filters = [PrintArchive.deleted_at.is_(None)]
 
         # Printer / project filters
         if printer_id:

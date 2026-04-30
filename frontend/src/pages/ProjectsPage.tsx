@@ -21,6 +21,8 @@ import {
   Upload,
   Copy,
   ExternalLink,
+  Image as ImageIcon,
+  X,
 } from 'lucide-react';
 import { api } from '../api/client';
 import type { ProjectListItem, ProjectCreate, ProjectUpdate, ProjectImport, Permission } from '../api/client';
@@ -64,9 +66,52 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
   const [dueDate, setDueDate] = useState((project as ProjectListItem & { due_date?: string })?.due_date?.split('T')[0] || '');
   const [priority, setPriority] = useState((project as ProjectListItem & { priority?: string })?.priority || 'normal');
   const [budget, setBudget] = useState(project?.budget?.toString() || '');
+  const [url, setUrl] = useState(project?.url || '');
+  const [urlError, setUrlError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  const [coverImageFilename, setCoverImageFilename] = useState(project?.cover_image_filename || null);
+  const coverFileInputRef = useRef<HTMLInputElement>(null);
+  const [coverUploading, setCoverUploading] = useState(false);
+  const [coverCacheKey, setCoverCacheKey] = useState(0);
+
+  const handleCoverFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !project) return;
+    setCoverUploading(true);
+    try {
+      const result = await api.uploadProjectCoverImage(project.id, file);
+      setCoverImageFilename(result.filename);
+      setCoverCacheKey((k) => k + 1);
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+    } catch {
+      // Upload failed — keep existing cover in place.
+    } finally {
+      setCoverUploading(false);
+      if (coverFileInputRef.current) coverFileInputRef.current.value = '';
+    }
+  };
+
+  const handleRemoveCover = async () => {
+    if (!project) return;
+    setCoverUploading(true);
+    try {
+      await api.deleteProjectCoverImage(project.id);
+      setCoverImageFilename(null);
+      setCoverCacheKey((k) => k + 1);
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+    } finally {
+      setCoverUploading(false);
+    }
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    const trimmedUrl = url.trim();
+    if (trimmedUrl && !/^https?:\/\//i.test(trimmedUrl)) {
+      setUrlError(t('projects.urlInvalid'));
+      return;
+    }
+    setUrlError(null);
     onSave({
       name: name.trim(),
       description: description.trim() || undefined,
@@ -77,6 +122,9 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
       due_date: dueDate || undefined,
       priority,
       budget: budget.trim() ? parseFloat(budget) : null,
+      // Pydantic accepts null to clear the URL; "" would fail the http(s) check.
+      // Use undefined for create (omit) and null for edit-with-cleared-value.
+      url: project ? (trimmedUrl || null) : (trimmedUrl || undefined),
       ...(project && { status }),
     });
   };
@@ -117,6 +165,80 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
               rows={2}
             />
           </div>
+
+          {/* External URL (#1155) */}
+          <div>
+            <label className="block text-sm font-medium text-white mb-1">
+              {t('projects.urlLabel')}
+            </label>
+            <input
+              type="url"
+              value={url}
+              onChange={(e) => { setUrl(e.target.value); if (urlError) setUrlError(null); }}
+              className={`w-full bg-bambu-dark border rounded px-3 py-2 text-white placeholder-bambu-gray focus:outline-none ${
+                urlError ? 'border-red-500 focus:border-red-500' : 'border-bambu-dark-tertiary focus:border-bambu-green'
+              }`}
+              placeholder={t('projects.urlPlaceholder')}
+              maxLength={2048}
+            />
+            {urlError && <p className="text-xs text-red-400 mt-1">{urlError}</p>}
+          </div>
+
+          {/* Cover image (#1155) — only when editing; uploading needs a project_id.
+              New projects can add a cover after first save. */}
+          {project && (
+            <div>
+              <label className="block text-sm font-medium text-white mb-1">
+                {t('projects.coverImageLabel')}
+              </label>
+              <div className="flex items-center gap-3">
+                <div className="w-20 h-20 rounded bg-bambu-dark border border-bambu-dark-tertiary overflow-hidden flex items-center justify-center flex-shrink-0">
+                  {coverImageFilename ? (
+                    <img
+                      src={`${api.getProjectCoverImageUrl(project.id)}&v=${coverCacheKey}`}
+                      alt={t('projects.coverImageAlt')}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <ImageIcon className="w-6 h-6 text-bambu-gray" />
+                  )}
+                </div>
+                <div className="flex flex-col gap-2">
+                  <input
+                    ref={coverFileInputRef}
+                    type="file"
+                    accept="image/jpeg,image/png,image/gif,image/webp"
+                    onChange={handleCoverFileChange}
+                    className="hidden"
+                  />
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => coverFileInputRef.current?.click()}
+                    disabled={coverUploading}
+                  >
+                    {coverUploading ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Upload className="w-4 h-4 mr-1" />
+                    )}
+                    {coverImageFilename ? t('projects.coverImageReplace') : t('projects.coverImageUpload')}
+                  </Button>
+                  {coverImageFilename && (
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={handleRemoveCover}
+                      disabled={coverUploading}
+                    >
+                      <X className="w-4 h-4 mr-1" />
+                      {t('projects.coverImageRemove')}
+                    </Button>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
 
           <div>
             <label className="block text-sm font-medium text-white mb-1">

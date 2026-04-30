@@ -200,9 +200,27 @@ async def hard_delete_from_trash(
         )
     ),
 ):
-    """Permanently delete a single trashed file + its bytes. Irreversible."""
+    """Permanently delete a single trashed file + its bytes.
+
+    Returns 409 if any active (non-trashed) archive references the file —
+    deleting bytes still under reprint risk would break chain-of-custody. Trash
+    the referencing archives first or wait for the auto-purge to roll them out.
+    """
     user, can_modify_all = auth_result
     file = await _load_trashed_file(db, file_id, user, can_modify_all)
+    refs = await library_trash_service.active_archive_references(db, file.id)
+    if refs > 0:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "library_file_pinned_by_archives",
+                "active_references": refs,
+                "message": (
+                    f"Cannot delete: {refs} active archive(s) still reference this file. "
+                    "Trash the referencing archives first or wait for auto-purge."
+                ),
+            },
+        )
     await library_trash_service.hard_delete_now(db, file)
     return {"status": "success"}
 
@@ -219,7 +237,10 @@ async def empty_trash(
 ):
     """Permanently delete all trashed files in the caller's scope.
 
-    Regular users empty only their own trash; admins empty everyone's.
+    Files still referenced by active (non-trashed) archives are skipped —
+    they wait until the referencing archives also trash out. Returns the
+    counts of deleted-vs-skipped so the UI can surface why some entries
+    remain after an Empty Trash.
     """
     user, can_modify_all = auth_result
     conditions = [LibraryFile.deleted_at.isnot(None)]
@@ -231,10 +252,15 @@ async def empty_trash(
     rows_result = await db.execute(select(LibraryFile).where(*conditions))
     rows = rows_result.scalars().all()
     deleted = 0
+    skipped_pinned = 0
     for row in rows:
+        refs = await library_trash_service.active_archive_references(db, row.id)
+        if refs > 0:
+            skipped_pinned += 1
+            continue
         await library_trash_service.hard_delete_now(db, row)
         deleted += 1
-    return EmptyTrashResponse(deleted=deleted)
+    return EmptyTrashResponse(deleted=deleted, skipped_pinned=skipped_pinned)
 
 
 # ===================== Retention settings (admin only) =====================
