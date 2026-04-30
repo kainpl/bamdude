@@ -1761,6 +1761,7 @@ export default {
     defaultPrinterDescription: 'Pre-select this printer for uploads, reprints, and other operations.',
     slicerBambuStudio: 'Bambu Studio',
     slicerOrcaSlicer: 'OrcaSlicer',
+    orcaslicerKnownIssuesWarning: 'OrcaSlicer 2.3.2 / 2.4.0-dev have known CLI bugs that block slicing many Bambu-authored 3MFs — see upstream issues #12426 (segfault on painted multi-extruder files) and #13386 (parameter-range strict-validation reject). Bambu Studio is recommended until the upstream fixes land.',
     useSlicerApi: 'Enable server-side slicing',
     useSlicerApiDescription: 'Surface the Slice action on STL/3MF/STEP files. Requires a running OrcaSlicer or BambuStudio HTTP sidecar.',
     orcaslicerApiUrl: 'OrcaSlicer API URL',

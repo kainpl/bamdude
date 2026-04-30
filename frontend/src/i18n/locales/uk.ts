@@ -1769,6 +1769,7 @@ export default {
     defaultPrinterDescription: 'Попередньо вибирати цей принтер для завантажень, передруків та інших операцій.',
     slicerBambuStudio: 'Bambu Studio',
     slicerOrcaSlicer: 'OrcaSlicer',
+    orcaslicerKnownIssuesWarning: 'OrcaSlicer 2.3.2 / 2.4.0-dev мають відомі баги CLI, що блокують нарізання багатьох 3MF, створених у BambuStudio — див. upstream-issues #12426 (SIGSEGV на розмальованих мультиекструдерних файлах) та #13386 (надто суворе перевіряння діапазону параметрів). Bambu Studio рекомендовано, доки upstream-виправлення не вийдуть.',
     useSlicerApi: 'Увімкнути серверне нарізання',
     useSlicerApiDescription: 'Показувати дію «Нарізати» для файлів STL/3MF/STEP. Потрібен запущений HTTP-sidecar OrcaSlicer або BambuStudio.',
     orcaslicerApiUrl: 'URL API OrcaSlicer',
