@@ -33,8 +33,9 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 
-// Available icons for external links
-export const AVAILABLE_ICONS: { name: string; icon: LucideIcon }[] = [
+// Available icons for external links — internal-only; only
+// ``getIconByName`` and ``<IconPicker>`` consume the table.
+const AVAILABLE_ICONS: { name: string; icon: LucideIcon }[] = [
   { name: 'globe', icon: Globe },
   { name: 'link', icon: Link },
   { name: 'external-link', icon: ExternalLink },

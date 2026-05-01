@@ -333,10 +333,10 @@ export default {
       offline: 'Офлайн'
     },
     plateStatus: {
-      markCleared: 'Позначити плиту як очищену',
-      cleared: 'Плита чиста',
-      notCleared: 'Плита не очищена',
-      inUse: 'Плита в роботі'
+      markCleared: 'Позначити стіл як очищений',
+      cleared: 'Стіл чистий',
+      notCleared: 'Стіл не очищений',
+      inUse: 'Стіл в роботі'
     },
     // Queue info
     queue: {
@@ -359,7 +359,7 @@ export default {
       down: 'Стіл вниз',
       disabledWhilePrinting: 'Недоступно під час друку',
       notHomedTitle: 'Принтер не відгомлений',
-      notHomedMessage: 'Принтер не відгомлено після останнього друку. Спочатку запустіть авто-відгомлення для безпечного позиціонування (паркує голову, потім відгомлює X, Y та Z), або рухайте так — програмні обмежувачі буде вимкнено.',
+      notHomedMessage: 'Принтер не відгомлено після останнього друку. Спочатку запустіть авто-відгомлення для безпечного позиціонування (паркує голову, потім відгомлює X, Y та Z), або рухайте так - програмні обмежувачі буде вимкнено.',
       homeZ: 'Авто-відгомлення',
       moveAnyway: 'Рухати все одно',
       homingStarted: 'Авто-відгомлення принтера…'
@@ -595,7 +595,7 @@ export default {
       source3mfAttached: 'Вихідний 3MF прикріплено: {{filename}}',
       downloadRecovered: '3MF завантажено з принтера та прикріплено',
       downloadRetryFailed: 'Не вдалось повторити: FTP принтера недоступний або файла немає на SD',
-      downloadRetryInProgress: 'Уже виконується інша спроба для цього архіву — зачекайте',
+      downloadRetryInProgress: 'Уже виконується інша спроба для цього архіву - зачекайте',
       failedUploadSource3mf: 'Не вдалося завантажити вихідний 3MF',
       source3mfRemoved: 'Вихідний 3MF видалено',
       failedRemoveSource3mf: 'Не вдалося видалити вихідний 3MF',
@@ -667,10 +667,10 @@ export default {
       delete: 'Видалити'
     },
     platePicker: {
-      title: 'Виберіть плату',
-      hint: 'Багатоплатний файл — виберіть, з якою платою працювати',
-      plateLabel: 'Плата {{index}}',
-      objectCount: '{{count}} об\'єктів',
+      // title / hint / objectCount викинули разом зі standalone
+      // PlatePickerModal — лишається тільки лейбл плити (header SliceModal
+      // + плитки в SlicePlateSelector).
+      plateLabel: 'Плита {{index}}',
     },
     permission: {
       noReprint: 'У вас немає дозволу на передрук цього архіву',
@@ -694,7 +694,7 @@ export default {
       archived: 'архівовано',
       stopped: 'зупинено',
       aborted: 'скасовано',
-      printingClickHint: 'Клік — відкрити принтер',
+      printingClickHint: 'Клік - відкрити принтер',
       openSource3mf: 'Відкрити вихідний 3MF у Bambu Studio (правий клік для додаткових параметрів)',
       downloadF3d: 'Завантажити файл дизайну Fusion 360',
       viewTimelapse: 'Переглянути таймлапс',
@@ -952,7 +952,7 @@ export default {
     goToPrinter: 'Відкрити сторінку принтера',
     toast: {
       statusUpdated: 'Статус черги оновлено',
-      itemStarted: 'Знято з очікування — почнеться, коли дійде черга',
+      itemStarted: 'Знято з очікування - почнеться, коли дійде черга',
       paused: 'Друк поставлено на паузу',
       resumed: 'Друк відновлено',
       stopped: 'Друк зупинено',
@@ -1342,11 +1342,11 @@ export default {
     filamentChecks: 'Перевірки філаменту',
     spoolDisplayName: {
       title: 'Відображувана назва котушки',
-      description: 'Шаблон для побудови пошукової колонки "Назва" на сторінці філаменту. Пошук приймає часткові токени — "SUN Bl" знаходить "SUNLU PETG Black".',
+      description: 'Шаблон для побудови пошукової колонки "Назва" на сторінці філаменту. Пошук приймає часткові токени - "SUN Bl" знаходить "SUNLU PETG Black".',
       templateLabel: 'Шаблон',
-      templateHint: 'Використовуйте токени {placeholder} зі списку нижче. Невідомі placeholder\'и залишаються видимими — одруківки буде видно у прев\'ю.',
+      templateHint: 'Використовуйте токени {placeholder} зі списку нижче. Невідомі placeholder\'и залишаються видимими - одруківки буде видно у прев\'ю.',
       previewLabel: 'Прев\'ю',
-      previewFallback: '(у інвентарі немає котушок — показано приклад)',
+      previewFallback: '(у інвентарі немає котушок - показано приклад)',
       placeholdersLabel: 'Доступні placeholder\'и (клікніть, щоб додати)',
       save: 'Зберегти шаблон',
       resetDefault: 'Скинути до типового',
@@ -1529,7 +1529,7 @@ export default {
     staggerWaitForBed: 'Чекати нагріву столу',
     staggerWaitForBedDescription: 'Слот звільняється коли стіл досягає цільової температури (±1°C). Якщо вимкнено - слот звільняється одразу після старту друку.',
     staggerStrictForDirect: 'Строгий режим для прямого друку',
-    staggerStrictForDirectDescription: 'Коли увімкнено — Print Now / Reprint поважають stagger-cap і відмовляються стартувати, якщо немає вільного слота. Якщо вимкнено (дефолт) — прямі друки обходять cap, але після старту займають слот.',
+    staggerStrictForDirectDescription: 'Коли увімкнено - Print Now / Reprint поважають stagger-cap і відмовляються стартувати, якщо немає вільного слота. Якщо вимкнено (дефолт) - прямі друки обходять cap, але після старту займають слот.',
     printModal: 'Вікно друку',
     expandCustomMapping: 'Розгортати власне призначення за замовчуванням',
     expandCustomMappingDescription: 'При друку на кількох принтерах показувати призначення AMS для кожного принтера розгорнутим',
@@ -1770,7 +1770,7 @@ export default {
     defaultPrinterDescription: 'Попередньо вибирати цей принтер для завантажень, передруків та інших операцій.',
     slicerBambuStudio: 'Bambu Studio',
     slicerOrcaSlicer: 'OrcaSlicer',
-    orcaslicerKnownIssuesWarning: 'OrcaSlicer 2.3.2 / 2.4.0-dev мають відомі баги CLI, що блокують нарізання багатьох 3MF, створених у BambuStudio — див. upstream-issues #12426 (SIGSEGV на розмальованих мультиекструдерних файлах) та #13386 (надто суворе перевіряння діапазону параметрів). Bambu Studio рекомендовано, доки upstream-виправлення не вийдуть.',
+    orcaslicerKnownIssuesWarning: 'OrcaSlicer 2.3.2 / 2.4.0-dev мають відомі баги CLI, що блокують нарізання багатьох 3MF, створених у BambuStudio - див. upstream-issues #12426 (SIGSEGV на розмальованих мультиекструдерних файлах) та #13386 (надто суворе перевіряння діапазону параметрів). Bambu Studio рекомендовано, доки upstream-виправлення не вийдуть.',
     gcodeInjection: 'Вставка G-code',
     gcodeInjectionDescription: 'Налаштуйте власний G-code для вставки на старті та/або в кінці друку для систем авто-друку як Farmloop, SwapMod, AutoClear та Printflow 3D. Сніпети налаштовуються per printer model і застосовуються коли "Вставити G-code" увімкнено в елементі черги.',
     gcodeInjectionNoPrinters: 'Принтерів не знайдено. Додайте принтери, щоб налаштувати G-code сніпети.',
@@ -1834,7 +1834,7 @@ export default {
       nextRunHint: 'Щодня о 00:00 за часом сервера',
       previewLabel: 'Зараз під очистку',
       previewEmpty: 'Немає що очищати на цей момент.',
-      previewBody: '{{archives}} запис(ів) у {{groups}} групі(ах) — готово звільнити {{bytes}}',
+      previewBody: '{{archives}} запис(ів) у {{groups}} групі(ах) - готово звільнити {{bytes}}',
       runNow: 'Запустити очистку',
       runDone: 'Очищено {{archives}} запис(ів), звільнено {{bytes}}',
       confirmTitle: 'Запустити очистку зараз?',
@@ -1972,7 +1972,7 @@ export default {
       setupAuthApp: 'Налаштувати автентифікатор',
       setupInstructions: 'Відскануйте QR-код нижче своїм застосунком і підтвердьте кодом.',
       manualEntry: 'Не можна сканувати? Введіть секрет вручну:',
-      scannedContinue: 'Я відсканував(-ла) — продовжити',
+      scannedContinue: 'Я відсканував(-ла) - продовжити',
       enterCodeToConfirm: 'Введіть 6-значний код з застосунку для підтвердження.',
       activate: 'Активувати',
       disableTotp: 'Вимкнути автентифікатор',
@@ -2026,10 +2026,10 @@ export default {
         autoLink: 'Авто-прив\'язка існуючих акаунтів',
         autoLinkDesc: 'Прив\'язувати локальні акаунти за збігом email при першому вході.',
         emailClaim: 'Email claim',
-        emailClaimHelp: 'JWT claim, який використовується як email-ідентичність. За замовчуванням "email". Для Azure Entra ID встановіть "preferred_username" або "upn" — Azure не надсилає email_verified, а кастомний claim пропускає цю перевірку.',
+        emailClaimHelp: 'JWT claim, який використовується як email-ідентичність. За замовчуванням "email". Для Azure Entra ID встановіть "preferred_username" або "upn" - Azure не надсилає email_verified, а кастомний claim пропускає цю перевірку.',
         requireEmailVerified: 'Вимагати email_verified',
         requireEmailVerifiedDesc: 'Довіряти стандартному claim "email" лише коли провайдер явно встановлює email_verified=true. Вимкніть для застарілих IdP, які не надсилають цей claim. Обов\'язково ON, коли увімкнено авто-прив\'язку з "email" claim.',
-        requireEmailVerifiedNAForCustomClaim: 'Не застосовується — кастомні claim ніколи не звертаються до email_verified.',
+        requireEmailVerifiedNAForCustomClaim: 'Не застосовується - кастомні claim ніколи не звертаються до email_verified.',
         secretHint: 'залишіть порожнім для збереження',
         secretPlaceholder: 'новий secret'
       }
@@ -2107,7 +2107,7 @@ export default {
       providerError: 'Провайдер ідентифікації повернув помилку',
       missingParameters: 'У відповіді OIDC бракує обов\'язкових параметрів',
       invalidState: 'Стан OIDC недійсний або вже використаний',
-      stateExpired: 'Сесія входу OIDC застаріла — спробуйте ще раз',
+      stateExpired: 'Сесія входу OIDC застаріла - спробуйте ще раз',
       providerNotFound: 'Провайдера OIDC не знайдено',
       discoveryFailed: 'Не вдалося отримати discovery-документ OIDC',
       invalidDiscovery: 'Discovery-документ OIDC недійсний',
@@ -2115,7 +2115,7 @@ export default {
       badResponse: 'Непередбачена відповідь під час обміну OIDC-токеном',
       noIdToken: 'Провайдер OIDC не повернув ID-token',
       validationFailed: 'Помилка валідації OIDC-token',
-      nonceMismatch: 'Невідповідність nonce OIDC — можлива replay-атака',
+      nonceMismatch: 'Невідповідність nonce OIDC - можлива replay-атака',
       missingSubClaim: 'У OIDC-token відсутній sub claim',
       noLinkedAccount: 'Локальний акаунт не прив\'язаний до цього OIDC-ідентифікатора',
       accountInactive: 'Ваш обліковий запис неактивний',
@@ -2630,7 +2630,7 @@ export default {
 
   makerworld: {
     title: 'MakerWorld',
-    description: 'Вставте URL моделі MakerWorld, щоб імпортувати та надрукувати її прямо з BamDude — без переходу до Bambu Handy.',
+    description: 'Вставте URL моделі MakerWorld, щоб імпортувати та надрукувати її прямо з BamDude - без переходу до Bambu Handy.',
     pasteUrlHeader: 'Імпорт з MakerWorld',
     pasteUrlPlaceholder: 'https://makerworld.com/en/models/… або будь-яке MakerWorld-посилання',
     resolveButton: 'Завантажити',
@@ -2643,8 +2643,8 @@ export default {
     licensePrefix: 'Ліцензія',
     alreadyImported: 'Вже в бібліотеці',
     openOnMakerworld: 'Відкрити на MakerWorld',
-    alreadyInLibrary: 'Ця модель вже у вашій бібліотеці — знайдіть її у Файловий менеджер → MakerWorld',
-    importSuccess: 'Імпортовано {{filename}} — збережено в Файловий менеджер → MakerWorld',
+    alreadyInLibrary: 'Ця модель вже у вашій бібліотеці - знайдіть її у Файловий менеджер → MakerWorld',
+    importSuccess: 'Імпортовано {{filename}} - збережено в Файловий менеджер → MakerWorld',
     platesHeader: 'Плати ({{count}})',
     plateDefaultName: 'Плата {{n}}',
     materialCount: '{{count}} філаментів',
@@ -2691,23 +2691,22 @@ export default {
     process: 'Профіль процесу',
     filament: 'Профіль філаменту',
     filamentSlot: 'Філамент {{index}} ({{type}})',
-    notUsedByPlate: '— не використовується цією платою',
-    selectPreset: '— Виберіть пресет —',
+    notUsedByPlate: '- не використовується цією платою',
+    selectPreset: '- Виберіть пресет -',
     noPresetsForSlot: 'Немає доступних пресетів',
     allPresetsRequired: 'Потрібно вибрати всі пресети',
     analyzingPlateFilaments: 'Аналіз філаментів плати…',
-    analyzingPlateFilamentsHint: 'Виконується попереднє нарізання, щоб визначити, які слоти AMS використовує ця плата. Кешується після — повторне відкриття миттєве.',
-    previewToast: 'Аналіз {{name}} — {{elapsed}}',
-    previewWithProgress: 'Аналіз {{name}} — {{stage}} ({{percent}}%) — {{elapsed}}',
-    runningToast: 'Нарізання {{name}} — {{elapsed}}',
-    runningWithProgress: '{{name}} — {{stage}} ({{percent}}%) — {{elapsed}}',
-    queuedToast: 'У черзі: {{name}} — {{elapsed}}',
+    analyzingPlateFilamentsHint: 'Виконується попереднє нарізання, щоб визначити, які слоти AMS використовує ця плата. Кешується після - повторне відкриття миттєве.',
+    previewToast: 'Аналіз {{name}} - {{elapsed}}',
+    previewWithProgress: 'Аналіз {{name}} - {{stage}} ({{percent}}%) - {{elapsed}}',
+    runningToast: 'Нарізання {{name}} - {{elapsed}}',
+    runningWithProgress: '{{name}} - {{stage}} ({{percent}}%) - {{elapsed}}',
+    queuedToast: 'У черзі: {{name}} - {{elapsed}}',
     completedToast: 'Нарізано {{name}}',
     failedToast: 'Нарізання {{name}} не вдалося: {{detail}}',
     failed: 'Помилка нарізання',
-    printerMismatch: 'Цей 3MF було нарізано для {{source}}, але ви вибрали {{target}}. Слайсер CLI не може перенарізати 3MF для іншого принтера — відкрийте джерело в Bambu Studio, змініть принтер та переекспортуйте.',
+    printerMismatch: 'Цей 3MF було нарізано для {{source}}, але ви вибрали {{target}}. Слайсер CLI не може перенарізати 3MF для іншого принтера - відкрийте джерело в Bambu Studio, змініть принтер та переекспортуйте.',
     sidecarPicker: 'Нарізати в',
-    sidecarHeader: 'Sidecar',
     platePicker: {
       label: 'Виберіть плиту для нарізання',
     },
@@ -2716,7 +2715,7 @@ export default {
       cloud: 'Cloud',
       standard: 'Стандартні',
     },
-    // Назви столів зберігаємо англійськими — саме так вони звучать у самому
+    // Назви столів зберігаємо англійськими - саме так вони звучать у самому
     // слайсері та на коробці плити, перекладати "Engineering Plate" як
     // "Інженерний стіл" буде плутати.
     bedType: {
@@ -2729,7 +2728,7 @@ export default {
     },
     cloud: {
       notAuthenticated: 'Увійдіть у Bambu Cloud (Налаштування → Профілі → Cloud), щоб побачити свої cloud-пресети.',
-      expired: 'Сесія Bambu Cloud закінчилася — увійдіть знову, щоб оновити cloud-пресети.',
+      expired: 'Сесія Bambu Cloud закінчилася - увійдіть знову, щоб оновити cloud-пресети.',
       unreachable: 'Bambu Cloud зараз недоступний. Локальні та стандартні пресети все одно працюють.',
     },
   },
@@ -2760,6 +2759,17 @@ export default {
       sliced: 'SLICED',
       makerworld: 'MW',
       project: 'PROJ',
+    },
+    tagTooltips: {
+      '3mf': 'Контейнер 3MF - модель, плити та конфіг слайсера в одному файлі',
+      gcode: 'Містить G-code - можна одразу друкувати без повторного нарізання',
+      stl: 'STL-меш - вихідна геометрія, треба нарізати перед друком',
+      step: 'CAD-вихідник STEP - треба нарізати перед друком',
+      multiplate: 'Багатоплитний файл - оберіть з якою плитою працюємо',
+      swap: 'Сумісний з режимом swap (заміна плити по ходу друку)',
+      sliced: 'Нарізано BamDude - створено сайдкаром OrcaSlicer / BambuStudio',
+      makerworld: 'Імпортовано з MakerWorld - клік на бейдж у деталях файлу відкриває вихідну сторінку',
+      project: 'Прив\'язаний до проекту',
     },
     tagFilter: 'Теги',
     tagFilterClear: 'Скинути фільтр тегів',
@@ -2829,15 +2839,15 @@ export default {
     title: 'Очистка старих файлів',
     headerButton: 'Очистити старі',
     headerTooltip: 'Масово перемістити старі файли в кошик',
-    description: 'Очистити стару бібліотеку за один раз. Файли з історією друку старіють за датою останнього друку; файли без історії — за датою завантаження.',
+    description: 'Очистити стару бібліотеку за один раз. Файли з історією друку старіють за датою останнього друку; файли без історії - за датою завантаження.',
     ageLabel: 'Перемістити файли старші за',
     days: 'днів',
     includeNeverPrinted: 'Включити файли, які ніколи не друкувалися',
     effectsTitle: 'Що відбувається при натисканні Очистити',
-    effect1: 'Файли, що відповідають критеріям, переміщуються в Кошик — вони ще не видаляються з диска.',
+    effect1: 'Файли, що відповідають критеріям, переміщуються в Кошик - вони ще не видаляються з диска.',
     effect2: 'Ви можете відновити їх з Кошика в будь-який момент до закінчення вікна зберігання.',
     effect3: 'Після закінчення зберігання sweeper кошика видаляє їх з диска назавжди.',
-    effect4: 'Файли в зовнішніх (linked) папках пропускаються — BamDude ніколи не видаляє байти, які йому не належать.',
+    effect4: 'Файли в зовнішніх (linked) папках пропускаються - BamDude ніколи не видаляє байти, які йому не належать.',
     previewLoading: 'Перевірка кількості файлів…',
     previewFailed: 'Не вдалося отримати попередній перегляд очистки.',
     previewSummary: '{{count}} файлів · {{size}} буде переміщено в кошик',
@@ -2856,7 +2866,7 @@ export default {
     retentionLabel: 'Зберігання в кошику',
     retentionDescription: 'Скільки видалені файли лежать у кошику, поки sweeper хард-видалить їх з диска. 1–365 днів. Файли, закріплені активним архівом, чекають доки архів теж не потрапить у кошик.',
     enableLabel: 'Авто-очистка старих файлів',
-    enableDescription: 'Запускає admin-очистку раз на день. Файли спочатку йдуть у Кошик — не видаляються одразу.',
+    enableDescription: 'Запускає admin-очистку раз на день. Файли спочатку йдуть у Кошик - не видаляються одразу.',
     ageLabel: 'Авто-очистка файлів старших за',
     ageDescription: 'Мінімум 7 днів, максимум 10 років. Використовує те ж саме правило віку, що й кнопка Очистити вручну.',
     days: 'днів',
@@ -2868,11 +2878,11 @@ export default {
     headerButton: 'Очистити старі',
     headerTooltip: 'Масово перемістити старі архіви в кошик',
     title: 'Очистка старих архівів',
-    description: 'Перемістити стару історію друку в кошик архівів. Кожен архів старіє за датою найостаннішого завершеного друку — повторний друк архіву оновлює його вік, тому активна робота ніколи не очищається.',
+    description: 'Перемістити стару історію друку в кошик архівів. Кожен архів старіє за датою найостаннішого завершеного друку - повторний друк архіву оновлює його вік, тому активна робота ніколи не очищається.',
     ageLabel: 'Перемістити архіви, не друковані за останні',
     days: 'днів',
     effectsTitle: 'Що відбувається при натисканні Очистити',
-    effect1: 'Архіви, що відповідають критеріям, переміщуються в Кошик — вони ще не видаляються з диска.',
+    effect1: 'Архіви, що відповідають критеріям, переміщуються в Кошик - вони ще не видаляються з диска.',
     effect2: 'Ви можете відновити їх з Кошика в будь-який момент до закінчення вікна зберігання.',
     effect3: 'Після закінчення sweeper кошика хард-видаляє їх (3MF, мініатюру, timelapse, фото).',
     effect4: 'Повторний друк архіву оновлює його часовий лічильник, тому архіви, які ви ще використовуєте, в безпеці.',
@@ -2896,7 +2906,7 @@ export default {
     enableLabel: 'Авто-очистка старих архівів',
     enableDescription: 'Раз на день переміщує в кошик архіви, які не друкувалися протягом порогу. Повторний друк архіву скидає лічильник. Sweeper кошика хард-видаляє після вікна зберігання.',
     ageLabel: 'Авто-переміщення архівів, не друкованих за останні',
-    ageDescription: 'Мінімум 7 днів, максимум 10 років. На основі найостаннішого завершеного друку — повторний друк архіву оновлює його вік. Переміщує архіви в кошик, де вони залишаються відновлюваними до закінчення вікна.',
+    ageDescription: 'Мінімум 7 днів, максимум 10 років. На основі найостаннішого завершеного друку - повторний друк архіву оновлює його вік. Переміщує архіви в кошик, де вони залишаються відновлюваними до закінчення вікна.',
     days: 'днів',
     saveFailed: 'Не вдалося зберегти налаштування авто-очистки.',
   },
@@ -2962,7 +2972,6 @@ export default {
     plate: 'Плита',
     plateSlot: 'Слот',
     plateGallery: 'Галерея плит',
-    multiPlateBadgeTooltip: 'Мульті-плейт-файл — кілька плит для друку',
     source: {
       makerworldImported: 'Імпортовано з MakerWorld',
       openOriginal: 'Відкрити на MakerWorld',
@@ -2980,7 +2989,7 @@ export default {
     linkFolder: 'Прив\'язати папку',
     linkFolderDescription: 'Прив\'язати "{{name}}" до проєкту або архіву для швидкого доступу.',
     linkFile: 'Прив\'язати файл',
-    linkFileDescription: 'Прив\'язати "{{name}}" до проєкту — файл з\'явиться у плані друку цього проєкту.',
+    linkFileDescription: 'Прив\'язати "{{name}}" до проєкту - файл з\'явиться у плані друку цього проєкту.',
     linkToProject: 'Прив\'язати до проєкту',
     linkedToProject: 'Прив\'язано до проєкту (клік для зміни)',
     project: 'Проєкт',
@@ -3425,7 +3434,7 @@ export default {
     noPresetsFound: 'Пресети не знайдено',
     note: 'Примітка',
     notePlaceholder: 'Будь-які додаткові примітки про цю котушку...',
-    // RFID button rename (was "Delete Tag" — confusing because it sounded
+    // RFID button rename (was "Delete Tag" - confusing because it sounded
     // like a taxonomy delete; this clears the RFID tag/UUID off the spool
     // record, the spool itself stays).
     clearRfid: 'Очистити RFID мітку',
@@ -3433,7 +3442,7 @@ export default {
     spoolmanMixedContentTitle: 'Spoolman неможливо вбудувати через HTTP',
     spoolmanMixedContentBody: 'Браузер блокує HTTP-вміст усередині HTTPS-сторінки, тому iframe Spoolman залишається порожнім. BamDude завантажений через HTTPS, але Spoolman налаштований на http:// URL.',
     spoolmanMixedContentFixReverseProxy: 'Найкраще рішення: розмістити Spoolman за тим самим reverse-proxy, що й BamDude, щоб обидва були доступні через HTTPS.',
-    spoolmanMixedContentFixOpenNewTab: 'Обхідний шлях: відкрити Spoolman у новій вкладці — окремі вкладки не підпадають під правило mixed-content.',
+    spoolmanMixedContentFixOpenNewTab: 'Обхідний шлях: відкрити Spoolman у новій вкладці - окремі вкладки не підпадають під правило mixed-content.',
     spoolmanOpenInNewTab: 'Відкрити Spoolman у новій вкладці',
     archive: 'Архівувати',
     restore: 'Відновити',
@@ -3658,7 +3667,7 @@ export default {
     meshModeFastCheck: 'Швидка перевірка вібрації',
     meshModeFastCheckDesc: 'Запускається один раз перед друком, щоб переконатися, що натяг ременів у нормі. Вимкніть, щоб пропустити для цього друку.',
     gcodeInjection: 'Вставити G-code-сніпети',
-    gcodeInjectionDesc: 'Вставити налаштовані оператором сніпети для цієї моделі принтера у gcode пластини на MACHINE_START_GCODE_END (старт) та в кінці файлу (енд). Налаштуйте сніпети у Налаштування → Принтери → G-code Сніпети.',
+    gcodeInjectionDesc: 'Вставити налаштовані оператором сніпети для цієї моделі принтера у gcode плити на MACHINE_START_GCODE_END (старт) та в кінці файлу (енд). Налаштуйте сніпети у Налаштування → Принтери → G-code Сніпети.',
     // Swap-макроси (видно тільки якщо вибрано принтер зі swap-режимом)
     swapMacros: 'Swap-макроси',
     executeSwapMacros: 'Виконувати swap-макроси',
@@ -4155,8 +4164,8 @@ export default {
     },
     tailscale: {
       title: 'Сертифікат Let\'s Encrypt через Tailscale',
-      description: 'Якщо ввімкнено — запросить у локального tailscale CLI сертифікат LE та оголошуватиме FQDN tailnet через SSDP. Слайсер підключатиметься за іменем хоста, що відповідає довіреному сертифікату (без ручного встановлення CA).',
-      activeFor: 'Активно — оголошується FQDN {{fqdn}}',
+      description: 'Якщо ввімкнено - запросить у локального tailscale CLI сертифікат LE та оголошуватиме FQDN tailnet через SSDP. Слайсер підключатиметься за іменем хоста, що відповідає довіреному сертифікату (без ручного встановлення CA).',
+      activeFor: 'Активно - оголошується FQDN {{fqdn}}',
       unavailable: 'Tailscale недоступний або LE сертифікат не вдалося отримати. Повертаємось до самопідписаного CA.'
     },
     mode: {
@@ -4184,11 +4193,11 @@ export default {
       title: 'Автовідправка',
       description: 'Автоматично починати друк при додаванні до черги. Якщо вимкнено, друки чекають ручної відправки.',
       requiresTargetOrAuto: 'У режимі Queue для автовідправки потрібен Target Printer. Виберіть принтер, або увімкніть Auto-select printer щоб роутер авто-черги вибрав сам.',
-      activeButUnsafe: 'Автовідправка увімкнена, але Target Printer не вибрано — завантаження потрапить у Library. Виберіть Target Printer або увімкніть Auto-select printer.'
+      activeButUnsafe: 'Автовідправка увімкнена, але Target Printer не вибрано - завантаження потрапить у Library. Виберіть Target Printer або увімкніть Auto-select printer.'
     },
     autoSelectPrinter: {
       title: 'Автовибір принтера',
-      description: 'Якщо увімкнено, завантаження потрапляє у роутер авто-черги, який підбирає будь-який вільний принтер за моделлю + філаментами. Якщо вимкнено — завантаження йде в чергу конкретного принтера.'
+      description: 'Якщо увімкнено, завантаження потрапляє у роутер авто-черги, який підбирає будь-який вільний принтер за моделлю + філаментами. Якщо вимкнено - завантаження йде в чергу конкретного принтера.'
     },
     setupRequired: {
       title: 'Потрібне налаштування',
@@ -4660,11 +4669,11 @@ export default {
     eventPriority: {
       sectionTitle: 'Пріоритет події (ntfy)',
       helpNtfy: 'Перевизначити серверний пріоритет ntfy для кожної події. 1 = мін., 5 = терміново.',
-      min: '1 — Мін.',
-      low: '2 — Низький',
-      default: '3 — За замовч.',
-      high: '4 — Високий',
-      urgent: '5 — Терміново'
+      min: '1 - Мін.',
+      low: '2 - Низький',
+      default: '3 - За замовч.',
+      high: '4 - Високий',
+      urgent: '5 - Терміново'
     }
   },
 
@@ -4945,10 +4954,10 @@ export default {
       namePlaceholder: 'напр. Home Assistant',
       daysLabel: 'Днів до закінчення',
       submit: 'Створити',
-      hint: 'Максимальний термін дії — 365 днів. Значення токена показується лише раз під час створення — скопіюйте його зараз.',
+      hint: 'Максимальний термін дії - 365 днів. Значення токена показується лише раз під час створення - скопіюйте його зараз.',
     },
     created: {
-      title: 'Токен створено — скопіюйте зараз',
+      title: 'Токен створено - скопіюйте зараз',
       warning: 'Це єдиний раз, коли цей токен буде видимий. Після закриття цього діалогу ви ніколи не зможете побачити його знову.',
       copy: 'Копіювати',
       dismiss: 'Я зберіг',
@@ -4973,7 +4982,7 @@ export default {
       revokeFailed: 'Не вдалося відкликати токен',
       loadFailed: 'Не вдалося завантажити токени',
       copied: 'Скопійовано в буфер обміну',
-      copyFailed: 'Не вдалося скопіювати — виділіть і скопіюйте вручну',
+      copyFailed: 'Не вдалося скопіювати - виділіть і скопіюйте вручну',
     },
   }
 };

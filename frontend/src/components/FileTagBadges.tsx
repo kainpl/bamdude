@@ -31,11 +31,16 @@ export function FileTagBadges({ tags, compact = false }: FileTagBadgesProps) {
         const label = style ? t(`library.tags.${tag}`, style.label) : tag.toUpperCase();
         const bg = style?.bg ?? UNKNOWN_TAG_BG;
         const text = style?.text ?? UNKNOWN_TAG_TEXT;
+        // Tooltip describes what the tag means rather than echoing the
+        // visible short label. ``library.tagTooltips.{tag}`` keys live in
+        // both en + uk; falls back to the short label for unknown tags
+        // (so the title isn't empty / undefined).
+        const tooltip = t(`library.tagTooltips.${tag}`, { defaultValue: label });
         return (
           <span
             key={tag}
             className={`${sizing} ${bg} ${text} rounded font-medium tracking-tight`}
-            title={label}
+            title={tooltip}
           >
             {label}
           </span>

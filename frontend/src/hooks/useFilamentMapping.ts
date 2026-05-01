@@ -265,8 +265,11 @@ interface UseFilamentMappingResult {
 /**
  * Hook to build loaded filaments list from printer status.
  * Extracts filaments from all AMS units (regular and HT) and external spool.
+ *
+ * Internal — only ``useFilamentMapping`` consumes it; nobody outside this
+ * module needs the bare loaded-list view.
  */
-export function useLoadedFilaments(
+function useLoadedFilaments(
   printerStatus: PrinterStatus | undefined
 ): LoadedFilament[] {
   return useMemo(() => {

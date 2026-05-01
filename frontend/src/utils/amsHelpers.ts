@@ -178,16 +178,6 @@ export function getFallbackSpoolTag(printerSerial: string, amsId: number, trayId
 }
 
 /**
- * Get minimum datetime for scheduling (now + 1 minute).
- * Returns ISO string format for datetime-local input.
- */
-export function getMinDateTime(): string {
-  const now = new Date();
-  now.setMinutes(now.getMinutes() + 1);
-  return now.toISOString().slice(0, 16);
-}
-
-/**
  * Check if a scheduled time is a placeholder far-future date.
  * Placeholder dates (more than 6 months out) are treated as ASAP.
  */
