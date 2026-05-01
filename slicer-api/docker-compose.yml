@@ -25,6 +25,32 @@
 #   docker compose --profile bambu  up -d   # BambuStudio only
 #   docker compose --profile all    up -d   # both
 #
+# IMPORTANT — Docker Desktop 4.71 / compose v5.1.x bake bug:
+#   Docker Desktop's compose-plugin runs `docker compose build` through
+#   `docker buildx bake` by default, and in 4.71 (engine 29.4.x, buildx
+#   0.33.x-desktop) the bake-bridge fails on this file (and the upstream
+#   one) with an opaque `failed to execute bake: exit status 1` — no
+#   stage error, no Dockerfile read, just early termination. `COMPOSE_BAKE=
+#   false` does NOT disable it on this build. Workaround: force the
+#   legacy classic builder for the FIRST build (run once, image is then
+#   cached and `up -d` reuses it):
+#
+#     # PowerShell:
+#     $env:DOCKER_BUILDKIT="0"; $env:COMPOSE_DOCKER_CLI_BUILD="0"
+#     docker compose --profile all build
+#     $env:DOCKER_BUILDKIT=$null; $env:COMPOSE_DOCKER_CLI_BUILD=$null
+#
+#     # bash:
+#     DOCKER_BUILDKIT=0 COMPOSE_DOCKER_CLI_BUILD=0 \
+#       docker compose --profile all build
+#
+#   Or use buildx directly (BuildKit, parallel-friendly, faster):
+#     docker buildx bake -f docker-compose.yml orca-slicer-api
+#     docker buildx bake -f docker-compose.yml bambu-studio-api
+#
+#   After the build is cached, `docker compose --profile X up -d` works
+#   normally — the bug only fires during the build path.
+#
 # First build pulls the source from the fork over git (~5 min per service
 # — downloads the OrcaSlicer ~110 MB or BambuStudio ~220 MB AppImage)
 # and caches the image locally. Subsequent runs reuse the cache. Pin the

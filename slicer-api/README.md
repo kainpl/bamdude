@@ -38,6 +38,43 @@ curl http://localhost:3001/health   # bambu-studio-api
 curl http://localhost:3003/health   # orca-slicer-api
 ```
 
+> ### :warning: Docker Desktop 4.71 first-build workaround
+>
+> Docker Desktop 4.71 (engine 29.4.1, compose v5.1.x, buildx 0.33.x-desktop)
+> ships a broken `buildx bake` compose-bridge: `docker compose build`
+> dies immediately with `failed to execute bake: exit status 1` and no
+> further detail, regardless of profile shape. Setting `COMPOSE_BAKE=false`
+> does NOT disable it on this version.
+>
+> **Workaround — force the legacy classic builder for the first build only**
+> (image is then cached, and `compose up -d` reuses it without rebuilding):
+>
+> PowerShell:
+> ```powershell
+> $env:DOCKER_BUILDKIT = "0"; $env:COMPOSE_DOCKER_CLI_BUILD = "0"
+> docker compose --profile all build
+> $env:DOCKER_BUILDKIT = $null; $env:COMPOSE_DOCKER_CLI_BUILD = $null
+> docker compose --profile all up -d
+> ```
+>
+> bash / zsh:
+> ```bash
+> DOCKER_BUILDKIT=0 COMPOSE_DOCKER_CLI_BUILD=0 \
+>   docker compose --profile all build
+> docker compose --profile all up -d
+> ```
+>
+> Or call buildx directly (modern BuildKit, parallel-friendly, faster):
+> ```bash
+> docker buildx bake -f docker-compose.yml orca-slicer-api
+> docker buildx bake -f docker-compose.yml bambu-studio-api
+> docker compose --profile all up -d
+> ```
+>
+> Older Docker Desktop releases (4.70 and below) and Linux installs of
+> Docker CE behave normally — the bake bug is specific to this Desktop
+> build. We'll drop this note once Docker Desktop ships a fix.
+
 First build downloads the slicer's AppImage (~110 MB OrcaSlicer, ~220 MB
 BambuStudio) and compiles the Node wrapper. Takes 3–8 minutes per service.
 Subsequent runs reuse the local image — instant start.
