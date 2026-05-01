@@ -754,7 +754,7 @@ class BackgroundDispatchService:
             inject_spec = await self._build_injection_spec(
                 job=job,
                 printer_model=printer_model,
-                plate_id=archive.plate_id or 1,
+                plate_id=archive.plate_index or 1,
             )
             if not job.options.get("mesh_mode_fast_check", True) or inject_spec is not None:
                 from backend.app.services.gcode_patcher import apply_3mf_transforms
@@ -1177,6 +1177,17 @@ class BackgroundDispatchService:
                     swap_macro_events_pending=(
                         job.options.get("swap_macro_events")
                         if isinstance(job.options, dict) and job.options.get("execute_swap_macros")
+                        else None
+                    ),
+                    # Plate the user picked when scheduling — same value the
+                    # dispatch loop already uses for FTP filename / MQTT
+                    # start_print. Persisting it on the archive gives the
+                    # file-manager + 3D viewer a hard signal of "what was
+                    # actually printed" instead of guessing from filename
+                    # parsing or the print_name suffix.
+                    plate_index=(
+                        int(job.options.get("plate_id"))
+                        if isinstance(job.options, dict) and job.options.get("plate_id") is not None
                         else None
                     ),
                 )

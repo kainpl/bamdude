@@ -1,12 +1,12 @@
 import { useTranslation } from 'react-i18next';
-import { TAG_STYLES, UNKNOWN_TAG_BG, UNKNOWN_TAG_TEXT } from '../lib/fileTags';
+import { TAG_STYLES, UNKNOWN_TAG_BG, UNKNOWN_TAG_TEXT, sortTagsForDisplay } from '../lib/fileTags';
 
 // Composite badge row driven by ``LibraryFile.file_tags`` (m036). Replaces
 // the three independent inline badges the FileManager used to render
 // (primary file_type pill, MP for multi-plate, SWAP for swap-compatible)
-// and the separate provenance ``SourceBadge`` component. Backend computes
-// the tag list at every write site via ``compute_file_tags`` so this
-// component only renders — no derivation.
+// and folds in the provenance chip (orange ``MW`` for makerworld imports).
+// Backend computes the tag list at every write site via ``compute_file_tags``
+// so this component only renders — no derivation.
 //
 // Tag → visual mapping lives in ``lib/fileTags`` (single source of truth)
 // so the chip-row filter on the toolbar can reuse the same labels and
@@ -18,15 +18,35 @@ interface FileTagBadgesProps {
   // grid-card overlay (where horizontal space is tight). Default style
   // is used in the list view + detail panels.
   compact?: boolean;
+  /**
+   * Reading direction of the badge row.
+   *
+   * - ``rtl`` (default, used by the grid card overlay) — the format chip
+   *   anchors the right edge so the eye lands on the file's identity
+   *   first when scanning the corner of a card; broader context
+   *   (provenance / modifiers) fans left.
+   * - ``ltr`` (used by the list / table row) — the format chip leads
+   *   from the left so the row scans naturally with the rest of the
+   *   left-aligned columns; broader context trails right.
+   *
+   * Same precedence list either way — ``ltr`` is just the reverse.
+   */
+  direction?: 'rtl' | 'ltr';
 }
 
-export function FileTagBadges({ tags, compact = false }: FileTagBadgesProps) {
+export function FileTagBadges({ tags, compact = false, direction = 'rtl' }: FileTagBadgesProps) {
   const { t } = useTranslation();
   if (!tags || tags.length === 0) return null;
   const sizing = compact ? 'text-[10px] px-1 py-0.5' : 'text-xs px-1.5 py-0.5';
+  // Project the backend's semantic-emission order onto the display
+  // precedence in ``lib/fileTags`` so the row reads consistently
+  // regardless of which write path produced the row. ``ltr`` flips the
+  // sorted output so the format chip leads from the left.
+  const sorted = sortTagsForDisplay(tags);
+  const ordered = direction === 'ltr' ? [...sorted].reverse() : sorted;
   return (
     <div className="flex items-center gap-1 flex-wrap">
-      {tags.map((tag) => {
+      {ordered.map((tag) => {
         const style = TAG_STYLES[tag];
         const label = style ? t(`library.tags.${tag}`, style.label) : tag.toUpperCase();
         const bg = style?.bg ?? UNKNOWN_TAG_BG;

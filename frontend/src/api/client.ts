@@ -627,6 +627,10 @@ export interface Archive {
   bed_temperature: number | null;
   nozzle_temperature: number | null;
   sliced_for_model: string | null;  // Printer model this file was sliced for
+  // Which plate of the source 3MF was actually printed (m038). NULL for
+  // archives where the index couldn't be inferred (some legacy / external
+  // prints) — frontend falls back to "first plate" behaviour.
+  plate_index: number | null;
   status: string;
   started_at: string | null;
   completed_at: string | null;
@@ -4122,6 +4126,14 @@ export const api = {
       build_volume: { x: number; y: number; z: number };
       filament_colors: string[];
     }>(`/archives/${id}/capabilities`),
+  getLibraryFileCapabilities: (id: number) =>
+    request<{
+      has_model: boolean;
+      has_gcode: boolean;
+      has_source: boolean;
+      build_volume: { x: number; y: number; z: number };
+      filament_colors: string[];
+    }>(`/library/files/${id}/capabilities`),
   // Project Page
   getArchiveProjectPage: (id: number) =>
     request<{
@@ -5543,7 +5555,8 @@ export const api = {
   getLibraryFileThumbnailUrl: (id: number) => `${API_BASE}/library/files/${id}/thumbnail`,
   getLibraryFilePlateThumbnail: (id: number, plateIndex: number) =>
     `${API_BASE}/library/files/${id}/plate-thumbnail/${plateIndex}`,
-  getLibraryFileGcodeUrl: (id: number) => `${API_BASE}/library/files/${id}/gcode`,
+  getLibraryFileGcodeUrl: (id: number, plateId?: number | null) =>
+    `${API_BASE}/library/files/${id}/gcode${plateId != null ? `?plate_id=${plateId}` : ''}`,
   moveLibraryFiles: (fileIds: number[], folderId: number | null) =>
     request<{ status: string; moved: number }>('/library/files/move', {
       method: 'POST',

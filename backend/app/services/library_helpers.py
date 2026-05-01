@@ -55,23 +55,39 @@ def compute_file_tags(
 ) -> list[str]:
     """Composite tag list driving frontend badges + chip-row filter.
 
-    Order is stable — tags appear left-to-right in the UI in the order
-    emitted here:
+    Emission order here is grouped by semantics and is NOT the visual
+    display order — the frontend's ``sortTagsForDisplay`` helper sorts
+    by an explicit precedence list before rendering, so adjusting how
+    the row reads is a one-file frontend change.
 
-    1. **Format tags** (visual primary identity): ``3mf`` / ``gcode`` /
-       ``stl`` / ``step``. Sliced 3MFs get both ``gcode`` and ``3mf``
-       (composite badge), raw .gcode files get just ``gcode``.
-    2. **Structural tags**: ``multiplate``, ``swap``.
-    3. **Provenance tags**: ``sliced``, ``makerworld``, ``project``.
+    Tag groups emitted:
 
-    All inputs are taken explicitly so the m036 backfill migration can
-    reuse the helper exactly as the runtime write paths do.
+    - **Format** chips (one per file extension; ``.gcode.3mf`` gets the
+      composite ``gcode`` + ``3mf`` pair so the sliced container is
+      visually distinct from a raw ``.gcode``; ``.stp`` collapses to
+      the ``step`` chip).
+    - **Readiness / state** chips, mutually exclusive in practice:
+      ``sliced`` (BamDude sidecar output), ``project`` (unsliced
+      ``.3mf`` package), ``geometry`` (raw mesh / CAD — STL / OBJ /
+      STEP / STP).
+    - **Structural modifiers**: ``multiplate``, ``swap``.
+    - **Provenance**: ``makerworld``.
+
+    Note: ``project`` is no longer a provenance tag — m037 retired the
+    source-based ``project_*`` rule (near-empty hit rate) and re-purposed
+    the name for the file-type semantic above. ``sliced`` is no longer
+    grouped with provenance either (it answers the same "is it ready
+    to print" question as ``project`` / ``geometry``).
+
+    All inputs are taken explicitly so the m036/m037 backfill migrations
+    can reuse the helper exactly as the runtime write paths do.
     """
     tags: list[str] = []
     lower_name = filename.lower()
     is_sliced_3mf = lower_name.endswith(_SLICED_3MF_SUFFIX)
+    meta = file_metadata or {}
 
-    # Format tags
+    # Format chip(s).
     if file_type == "gcode":
         tags.append("gcode")
         if is_sliced_3mf:
@@ -80,24 +96,34 @@ def compute_file_tags(
         tags.append("3mf")
     elif file_type == "stl":
         tags.append("stl")
+    elif file_type == "obj":
+        tags.append("obj")
     elif file_type in ("step", "stp"):
         tags.append("step")
-    # Anything else (txt, gif, model, image…) gets no format tag —
-    # callers can still surface the raw file_type as a fallback badge.
+    # Anything else (txt, gif, image…) gets no format tag.
 
-    # Structural tags
-    meta = file_metadata or {}
+    # Readiness / state — mutually exclusive in practice. ``sliced``
+    # wins over the file-type-derived ``project`` / ``geometry`` because
+    # the source_type signal is more specific (a sliced .3mf is no
+    # longer a project).
+    if source_type == "sliced":
+        tags.append("sliced")
+    elif file_type == "3mf":
+        # ``detect_file_type`` already collapses sliced .gcode.3mf to
+        # ``"gcode"``, so file_type == "3mf" here means the row is an
+        # unsliced project package.
+        tags.append("project")
+    elif file_type in ("stl", "obj", "step", "stp"):
+        tags.append("geometry")
+
+    # Structural modifiers.
     if meta.get("is_multi_plate") or len(meta.get("plates") or []) > 1:
         tags.append("multiplate")
     if swap_compatible:
         tags.append("swap")
 
-    # Provenance tags
-    if source_type == "sliced":
-        tags.append("sliced")
-    elif source_type == "makerworld":
+    # Provenance.
+    if source_type == "makerworld":
         tags.append("makerworld")
-    elif source_type and source_type.startswith("project_"):
-        tags.append("project")
 
     return tags

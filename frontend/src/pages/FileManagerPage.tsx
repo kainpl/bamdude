@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { Link, useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -67,14 +67,15 @@ import { ModelViewerModal } from '../components/ModelViewerModal';
 import { FileUploadModal } from '../components/FileUploadModal';
 import { LibraryFileNotesButton } from '../components/LibraryFileNotesButton';
 import { PurgeOldFilesModal } from '../components/PurgeOldFilesModal';
-import { SourceBadge } from '../components/SourceBadge';
+import { TrashSplitButton } from '../components/TrashSplitButton';
+import { MakerWorldIcon } from '../components/BrandIcons';
 import { useToast } from '../contexts/ToastContext';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { useAuth } from '../contexts/AuthContext';
 import { formatDateTime, formatDuration, parseUTCDate, type TimeFormat, type DateFormat } from '../utils/date';
 import { formatFileSize } from '../utils/file';
 import { FileTagBadges } from '../components/FileTagBadges';
-import { KNOWN_FILE_TAGS, getTagStyle, hasTag, isSliced, isSliceable, isMultiPlate } from '../lib/fileTags';
+import { KNOWN_FILE_TAGS, getTagStyle, isSliced, isSliceable, isMultiPlate } from '../lib/fileTags';
 
 type SortField = 'name' | 'date' | 'size' | 'type';
 type SortDirection = 'asc' | 'desc';
@@ -673,8 +674,18 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
           <FolderOpen className="w-4 h-4 text-bambu-green flex-shrink-0" />
         )}
         <span className={`text-sm flex-1 min-w-0 ${wrapNames ? 'break-all' : 'truncate'}`} title={folder.name}>{folder.name}</span>
-        {/* Link indicator - clickable to change link */}
-        {isLinked && (
+        {/* Read-only indicator for external folders — non-interactive
+            metadata, kept adjacent to the name. */}
+        {isExternal && folder.external_readonly && (
+          <span title={t('fileManager.readOnly')}>
+            <Lock className="w-3 h-3 text-amber-400 flex-shrink-0" />
+          </span>
+        )}
+        {/* Order across all rows is strictly: link/unlink → count → menu,
+            so the count sits right next to the three-dots trigger and the
+            row's right edge stays vertically aligned regardless of whether
+            the folder is linked, external, or empty. */}
+        {isLinked ? (
           <button
             onClick={(e) => { e.stopPropagation(); onLink(folder); }}
             className="flex-shrink-0 flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 transition-colors"
@@ -687,18 +698,7 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
               <ArchiveIcon className="w-3 h-3" />
             )}
           </button>
-        )}
-        {/* Read-only indicator for external folders */}
-        {isExternal && folder.external_readonly && (
-          <span title={t('fileManager.readOnly')}>
-            <Lock className="w-3 h-3 text-amber-400 flex-shrink-0" />
-          </span>
-        )}
-        {folder.file_count > 0 && (
-          <span className="flex-shrink-0 text-xs text-bambu-gray">{folder.file_count}</span>
-        )}
-        {/* Quick link button - always visible for unlinked folders */}
-        {!isLinked && !isExternal && (
+        ) : !isExternal ? (
           <button
             onClick={(e) => { e.stopPropagation(); onLink(folder); }}
             className="flex-shrink-0 p-1 rounded hover:bg-bambu-dark-tertiary"
@@ -706,6 +706,9 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
           >
             <Link2 className="w-3.5 h-3.5 text-bambu-gray hover:text-bambu-green" />
           </button>
+        ) : null}
+        {folder.file_count > 0 && (
+          <span className="flex-shrink-0 text-xs text-bambu-gray">{folder.file_count}</span>
         )}
         <div className={`flex-shrink-0 flex items-center gap-0.5 transition-opacity ${wrapNames ? '' : 'opacity-0 group-hover:opacity-100'}`} onClick={(e) => e.stopPropagation()}>
           <div className="relative">
@@ -921,6 +924,18 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
                 {t('fileManagerModal.threeView')}
               </button>
             )}
+            {file.source_type === 'makerworld' && file.source_url && (
+              <a
+                href={file.source_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={() => setOpen(false)}
+                className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
+              >
+                <MakerWorldIcon className="w-3.5 h-3.5 text-white" />
+                {t('fileManager.source.openOriginal', { defaultValue: 'Open on MakerWorld' })}
+              </a>
+            )}
             <button
               className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${hasPermission('library:read') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'}`}
               onClick={() => { if (hasPermission('library:read')) { onDownload(file.id); setOpen(false); } }}
@@ -988,11 +1003,10 @@ function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, 
         )}
         {/* Composite badge row — driven by ``file_tags`` (m036). The
             backend computes the list at every write site so this just
-            renders. SourceBadge stays as a separate icon link because it
-            opens the external URL on click; the tag badges are pure
-            visual identity. */}
+            renders. Provenance (MakerWorld) ships as the orange ``MW``
+            chip inside FileTagBadges; the click-to-open-original action
+            lives in the three-dots menu. */}
         <div className="absolute top-2 right-2 flex items-center gap-1">
-          <SourceBadge sourceType={file.source_type} sourceUrl={file.source_url} variant="card" />
           <FileTagBadges tags={file.file_tags} compact />
         </div>
         {/* Plate-gallery overlay — sits directly above the notes button.
@@ -1100,7 +1114,7 @@ function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, 
         {showActions && (
           <>
             <div className="fixed inset-0 z-10" onClick={() => setShowActions(false)} />
-            <div className="absolute right-0 bottom-8 z-20 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl py-1 min-w-[140px]">
+            <div className="absolute right-0 bottom-8 z-20 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl py-1 w-[240px] whitespace-nowrap">
               {onPrint && isSliced(file) && (
                 <button
                   className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
@@ -1147,11 +1161,23 @@ function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, 
                   }`}
                   onClick={() => { if (hasPermission('library:read')) { onPreview3d(file); setShowActions(false); } }}
                   disabled={!hasPermission('library:read')}
-                  title={!hasPermission('library:read') ? 'You do not have permission to preview files' : undefined}
+                  title={!hasPermission('library:read') ? t('fileManager.noPermissionPreview', { defaultValue: 'You do not have permission to preview files' }) : undefined}
                 >
                   <Box className="w-3.5 h-3.5" />
-                  3D Preview
+                  {t('fileManagerModal.threeView')}
                 </button>
+              )}
+              {file.source_type === 'makerworld' && file.source_url && (
+                <a
+                  href={file.source_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={() => setShowActions(false)}
+                  className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
+                >
+                  <MakerWorldIcon className="w-3.5 h-3.5 text-white" />
+                  {t('fileManager.source.openOriginal', { defaultValue: 'Open on MakerWorld' })}
+                </a>
               )}
               <button
                 className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
@@ -1844,31 +1870,16 @@ export function FileManagerPage() {
             <Upload className="w-4 h-4 mr-2" />
             {t('common.upload')}
           </Button>
-          {hasPermission('library:purge') && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setShowPurgeModal(true)}
-              title={t('libraryPurge.headerTooltip')}
-            >
-              <Trash2 className="w-4 h-4 mr-2" />
-              {t('libraryPurge.headerButton')}
-            </Button>
-          )}
           {hasAnyPermission('library:delete_own', 'library:delete_all') && (
-            <Link
-              to="/files/trash"
-              className="inline-flex items-center px-3 py-1.5 text-sm rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary transition-colors"
-              title={t('libraryTrash.headerTooltip')}
-            >
-              <Trash2 className="w-4 h-4 mr-2" />
-              {t('libraryTrash.headerButton')}
-              {typeof trashCount === 'number' && trashCount > 0 && (
-                <span className="ml-1.5 px-1.5 py-0.5 text-xs rounded-full bg-bambu-green/20 text-bambu-green">
-                  {trashCount}
-                </span>
-              )}
-            </Link>
+            <TrashSplitButton
+              trashHref="/files/trash"
+              trashLabel={t('libraryTrash.headerButton')}
+              trashTooltip={t('libraryTrash.headerTooltip')}
+              count={trashCount}
+              onPurgeClick={hasPermission('library:purge') ? () => setShowPurgeModal(true) : undefined}
+              purgeLabel={t('libraryPurge.headerButton')}
+              purgeTooltip={t('libraryPurge.headerTooltip')}
+            />
           )}
         </div>
       </div>
@@ -2504,12 +2515,13 @@ export function FileManagerPage() {
                       </div>
                     )}
                     {/* Composite badge row — same vocabulary + colours as
-                        the grid view, just compact. SourceBadge is the
-                        clickable provenance icon (opens MakerWorld URL etc.);
-                        FileTagBadges renders the rest as labelled pills. */}
+                        the grid view, just compact and reading
+                        left-to-right (the row already scans LTR with
+                        the rest of the table columns, so the format
+                        chip leads from the left here, opposite of the
+                        grid card's right-anchored layout). */}
                     <div className="flex items-center gap-1 flex-wrap">
-                      <SourceBadge sourceType={file.source_type} sourceUrl={file.source_url} variant="row" />
-                      <FileTagBadges tags={file.file_tags} compact />
+                      <FileTagBadges tags={file.file_tags} compact direction="ltr" />
                     </div>
                     {/* Size */}
                     <div className="text-sm text-bambu-gray">{formatFileSize(file.file_size)}</div>
@@ -2522,8 +2534,10 @@ export function FileManagerPage() {
                     <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
                       {/* Plate gallery — leftmost so the eye scans the row
                           left-to-right with the most "what's inside" action
-                          first. Only multi-plate sliced .gcode.3mf qualifies. */}
-                      {isSliced(file) && hasTag(file.file_tags, '3mf') && isMultiPlate(file) && (
+                          first. Multi-plate 3MFs (sliced or unsliced
+                          MakerWorld/project imports) qualify; matches grid
+                          view's overlay condition. */}
+                      {isMultiPlate(file) && (
                         <button
                           onClick={() => setGalleryFile(file)}
                           className="p-1.5 rounded transition-colors hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green"
@@ -2551,10 +2565,15 @@ export function FileManagerPage() {
                           <Link2 className="w-4 h-4" />
                         </button>
                       ) : null}
+                      {/* Notes — always available, matches grid view's
+                          overlay button (line 1029). MakerWorld imports and
+                          unsliced project 3MFs deserve notes too. */}
+                      <LibraryFileNotesButton fileId={file.id} initialCount={file.notes_count} variant="inline" />
+                      {/* Print + Schedule — gated on isSliced because they
+                          send G-code to a printer. Unsliced 3MFs go through
+                          the slice modal first (separate button further down). */}
                       {isSliced(file) && (
                         <>
-                          {/* Notes (gh#3) - bare inline button, matches Print/Clock/Box styling */}
-                          <LibraryFileNotesButton fileId={file.id} initialCount={file.notes_count} variant="inline" />
                           <button
                             onClick={() => hasPermission('printers:control') && setPrintFile(file)}
                             className={`p-1.5 rounded transition-colors ${

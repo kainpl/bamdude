@@ -69,7 +69,11 @@ class TestComputeFileTags:
         )
         assert tags == ["gcode"]
 
-    def test_unsliced_3mf_only_3mf_tag(self):
+    def test_unsliced_3mf_emits_3mf_and_project(self):
+        # Unsliced .3mf carries both the format chip (``3mf``) and the
+        # readiness chip (``project``). Emission order is purely
+        # semantic — visual ordering happens on the frontend via
+        # ``sortTagsForDisplay``.
         tags = compute_file_tags(
             filename="project.3mf",
             file_type="3mf",
@@ -77,7 +81,7 @@ class TestComputeFileTags:
             source_type=None,
             swap_compatible=False,
         )
-        assert tags == ["3mf"]
+        assert tags == ["3mf", "project"]
 
     def test_stl_with_makerworld_provenance(self):
         tags = compute_file_tags(
@@ -87,7 +91,43 @@ class TestComputeFileTags:
             source_type="makerworld",
             swap_compatible=False,
         )
-        assert tags == ["stl", "makerworld"]
+        assert tags == ["stl", "geometry", "makerworld"]
+
+    def test_obj_emits_obj_and_geometry(self):
+        # OBJ wasn't recognised pre-m037 — it landed in the catch-all
+        # "no format tag" bucket. Now it gets both its own format chip
+        # AND the ``geometry`` readiness chip.
+        tags = compute_file_tags(
+            filename="model.obj",
+            file_type="obj",
+            file_metadata=None,
+            source_type=None,
+            swap_compatible=False,
+        )
+        assert tags == ["obj", "geometry"]
+
+    def test_step_emits_step_and_geometry(self):
+        tags = compute_file_tags(
+            filename="cad.step",
+            file_type="step",
+            file_metadata=None,
+            source_type=None,
+            swap_compatible=False,
+        )
+        assert tags == ["step", "geometry"]
+
+    def test_stp_collapses_to_step_format_chip(self):
+        # The ``.stp`` extension is the same CAD format as ``.step``;
+        # they share the ``step`` format chip so the filter doesn't
+        # split a single concept across two adjacent toggles.
+        tags = compute_file_tags(
+            filename="cad.stp",
+            file_type="stp",
+            file_metadata=None,
+            source_type=None,
+            swap_compatible=False,
+        )
+        assert tags == ["step", "geometry"]
 
     def test_multi_plate_via_metadata_flag(self):
         tags = compute_file_tags(
@@ -97,7 +137,7 @@ class TestComputeFileTags:
             source_type=None,
             swap_compatible=False,
         )
-        assert tags == ["3mf", "multiplate"]
+        assert tags == ["3mf", "project", "multiplate"]
 
     def test_multi_plate_via_plate_count(self):
         # Some rows pre-date m023's is_multi_plate flag and only carry
@@ -133,7 +173,9 @@ class TestComputeFileTags:
 
     def test_full_composite_for_sliced_multiplate_swap(self):
         # The full kitchen sink — sliced multi-plate swap-compatible 3MF
-        # imported from MakerWorld would have this many tags.
+        # produced by the BamDude sidecar. Emission order is purely
+        # semantic (format → readiness → modifiers → provenance); the
+        # frontend re-sorts for display.
         tags = compute_file_tags(
             filename="kitchen.gcode.3mf",
             file_type="gcode",
@@ -141,10 +183,13 @@ class TestComputeFileTags:
             source_type="sliced",
             swap_compatible=True,
         )
-        # Order matters — the UI renders left-to-right in this order.
-        assert tags == ["gcode", "3mf", "multiplate", "swap", "sliced"]
+        assert tags == ["gcode", "3mf", "sliced", "multiplate", "swap"]
 
-    def test_project_provenance(self):
+    def test_project_source_type_no_longer_emits_project_tag(self):
+        # Pre-m037, ``source_type`` starting with ``project_`` would emit
+        # the ``project`` tag as a provenance signal. Post-m037 the tag is
+        # reserved for "unsliced 3MF" (file-type semantic). This test pins
+        # the new behavior so a regression doesn't silently re-emit it.
         tags = compute_file_tags(
             filename="asset.stl",
             file_type="stl",
@@ -152,7 +197,10 @@ class TestComputeFileTags:
             source_type="project_zip_import",
             swap_compatible=False,
         )
-        assert "project" in tags
+        assert "project" not in tags
+        # STL still picks up its format + readiness chips despite the
+        # unrecognised provenance.
+        assert tags == ["stl", "geometry"]
 
     def test_unknown_format_yields_empty_format_tags(self):
         # Project-imported images / readme.txt / etc. don't get a format
@@ -177,4 +225,4 @@ class TestComputeFileTags:
             source_type=None,
             swap_compatible=False,
         )
-        assert tags == ["3mf"]
+        assert tags == ["3mf", "project"]

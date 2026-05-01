@@ -78,6 +78,12 @@ class ArchiveResponse(BaseModel):
 
     sliced_for_model: str | None = None  # Printer model this file was sliced for
 
+    # Which plate of the source 3MF was actually sent to the printer
+    # (m038). Frontend uses this to drive per-plate previews and to label
+    # the archive with its real plate number rather than guessing from
+    # the print_name suffix.
+    plate_index: int | None = None
+
     status: str
     started_at: datetime | None
     completed_at: datetime | None

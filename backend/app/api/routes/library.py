@@ -61,6 +61,7 @@ from backend.app.services.archive import ThreeMFParser
 from backend.app.services.library_helpers import compute_file_tags, detect_file_type
 from backend.app.services.print_plan import ensure_plan_row, remove_plan_row, sync_plan_for_folder
 from backend.app.services.stl_thumbnail import generate_stl_thumbnail
+from backend.app.services.threemf_capabilities import extract_3mf_capabilities
 from backend.app.utils.threemf_tools import (
     extract_nozzle_mapping_from_3mf,
     extract_project_filaments_from_3mf,
@@ -2783,6 +2784,83 @@ async def _try_preview_slice_filaments(
     )
 
 
+@router.get("/files/{file_id}/capabilities")
+async def get_library_file_capabilities(
+    file_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_READ)),
+):
+    """Viewer capabilities for a library file.
+
+    Tab visibility is driven by ``file_tags`` (m036) — the canonical
+    identity vocabulary the rest of the file manager already uses:
+
+    - ``gcode`` tag → G-code preview tab is meaningful (raw .gcode OR
+      sliced .gcode.3mf).
+    - ``project`` (unsliced .3mf project package) OR ``geometry`` (raw
+      mesh / CAD source — STL / OBJ / STEP) → 3D model tab is
+      meaningful.
+    - Sliced .gcode.3mf carries ``gcode`` + ``3mf`` but NOT ``project``
+      (the slicer rasterised the mesh into G-code lines), so it shows
+      only the G-code tab. This mirrors the archive route's policy of
+      not duplicating the mesh under "3D Model" when the bytes the
+      user would see there are already painted by the gcode preview.
+
+    Build volume + filament colours are parsed from the 3MF container
+    (when one exists) so the bed grid + extrusion colours under the
+    preview match the source. Non-container rows (.gcode / .stl /
+    .obj / .step) fall back to the X1/P1/A1 default volume and an
+    empty colour list — the file format itself carries no machine
+    config to extract.
+    """
+    result = await db.execute(select(LibraryFile).where(LibraryFile.id == file_id))
+    file = result.scalar_one_or_none()
+    if not file:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    tags = set(file.file_tags or [])
+    has_gcode = "gcode" in tags
+    has_model = "project" in tags or "geometry" in tags
+
+    # 3MF container? Worth parsing for build_volume + filament_colors.
+    # Includes both unsliced .3mf (carries ``3mf`` tag) and sliced
+    # .gcode.3mf (carries ``gcode`` + ``3mf``).
+    has_3mf_container = "3mf" in tags
+    default_volume = {"x": 256, "y": 256, "z": 256}
+
+    if not has_3mf_container:
+        return {
+            "has_model": has_model,
+            "has_gcode": has_gcode,
+            "has_source": False,
+            "build_volume": default_volume,
+            "filament_colors": [],
+        }
+
+    abs_path = to_absolute_path(file.file_path)
+    if not abs_path or not abs_path.exists():
+        raise HTTPException(status_code=404, detail="File not found on disk")
+
+    try:
+        caps = extract_3mf_capabilities(primary_path=abs_path)
+    except zipfile.BadZipFile as exc:
+        raise HTTPException(status_code=400, detail="Invalid 3MF file") from exc
+
+    return {
+        # Tag-based, not probe-based — sliced .gcode.3mf with embedded
+        # mesh entries should still hide the 3D tab per the policy
+        # documented above.
+        "has_model": has_model,
+        "has_gcode": has_gcode,
+        # Library files have no separate "source 3MF" sidecar — the row
+        # IS the source. Always False here so the frontend doesn't try
+        # to fetch a non-existent /source endpoint.
+        "has_source": False,
+        "build_volume": caps.build_volume,
+        "filament_colors": caps.filament_colors,
+    }
+
+
 @router.get("/files/{file_id}/filament-requirements")
 async def get_library_file_filament_requirements(
     file_id: int,
@@ -3483,10 +3561,18 @@ async def get_thumbnail(file_id: int, db: AsyncSession = Depends(get_db)):
 @router.get("/files/{file_id}/gcode")
 async def get_gcode(
     file_id: int,
+    plate_id: int | None = None,
     db: AsyncSession = Depends(get_db),
     _: User | None = Depends(require_permission(Permission.LIBRARY_READ)),
 ):
-    """Get gcode for a file (for preview)."""
+    """Get gcode for a file (for preview).
+
+    For multi-plate sliced 3MFs the caller passes ``plate_id`` to fetch
+    a specific plate's gcode (``Metadata/plate_{N}.gcode``). Without
+    ``plate_id`` we fall back to the first gcode entry — preserves the
+    original single-plate behaviour for callers (e.g. printer dispatch)
+    that don't know about the plates UI.
+    """
     result = await db.execute(select(LibraryFile).where(LibraryFile.id == file_id))
     file = result.scalar_one_or_none()
 
@@ -3506,14 +3592,28 @@ async def get_gcode(
     if file.file_type == "gcode" and not is_3mf_container:
         return FastAPIFileResponse(str(abs_path), media_type="text/plain")
     elif is_3mf_container:
-        # Extract gcode from 3mf
         try:
             with zipfile.ZipFile(str(abs_path), "r") as zf:
-                # Find gcode file
                 gcode_files = [n for n in zf.namelist() if n.endswith(".gcode")]
                 if not gcode_files:
                     raise HTTPException(status_code=404, detail="No gcode found in 3MF file")
-                gcode_content = zf.read(gcode_files[0])
+
+                target_name: str | None = None
+                if plate_id is not None:
+                    expected_suffix = f"plate_{plate_id}.gcode"
+                    target_name = next(
+                        (n for n in gcode_files if n.lower().endswith(expected_suffix)),
+                        None,
+                    )
+                    if target_name is None:
+                        raise HTTPException(
+                            status_code=404,
+                            detail=f"Plate {plate_id} gcode not found in 3MF",
+                        )
+                else:
+                    target_name = gcode_files[0]
+
+                gcode_content = zf.read(target_name)
                 from fastapi.responses import Response
 
                 return Response(content=gcode_content, media_type="text/plain")

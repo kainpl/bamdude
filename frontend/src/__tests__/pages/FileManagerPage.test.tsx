@@ -73,7 +73,7 @@ const mockFiles = [
     file_path: '/library/bracket.stl',
     file_size: 524288,
     file_type: 'stl',
-    file_tags: ['stl'],
+    file_tags: ['stl', 'geometry'],
     folder_id: null,
     thumbnail_path: null,
     print_name: null,
