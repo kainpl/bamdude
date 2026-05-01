@@ -23,6 +23,7 @@ Post-`0.4.2b2` fixes accumulating on the `feature/0.4.2b2-fixes` branch. Will fo
 ### Fixed
 
 - **A11y: external-link icon on project cards / detail page now has a meaningful screen-reader label.** Previously rendered with only `title={project.url}` so screen readers narrated the bare URL string. Now also passes `aria-label={t('projects.openExternalUrl')}`. (Restored from the upstream port — the key existed in en/uk locales but was never wired to the JSX.)
+- **Slice action now appears in File Manager grid view.** Previously the Slice button (and Print + Schedule, for that matter) only rendered in list-view rows — `FileCardProps` never received the `onSlice` / `useSlicerApi` props, so users on the default grid view saw no Slice entry on STL / 3MF / STEP / STP files even with server-side slicing fully configured. Card menu now shows it under the same condition as list view (`use_slicer_api` toggled on, sliceable extension, `library:upload` permission).
 
 ---
 

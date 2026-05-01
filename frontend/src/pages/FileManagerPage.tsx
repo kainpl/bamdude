@@ -809,6 +809,8 @@ interface FileCardProps {
   onDownload: (id: number) => void;
   onAddToQueue?: (id: number) => void;
   onPrint?: (file: LibraryFileListItem) => void;
+  onSlice?: (file: LibraryFileListItem) => void;
+  useSlicerApi?: boolean;
   onPreview3d?: (file: LibraryFileListItem) => void;
   onRename?: (file: LibraryFileListItem) => void;
   onLink?: (file: LibraryFileListItem) => void;
@@ -972,7 +974,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   );
 }
 
-function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, onAddToQueue, onPrint, onPreview3d, onRename, onLink, onGenerateThumbnail, onPlateGallery, thumbnailVersion, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
+function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, onAddToQueue, onPrint, onSlice, useSlicerApi, onPreview3d, onRename, onLink, onGenerateThumbnail, onPlateGallery, thumbnailVersion, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
   const [showActions, setShowActions] = useState(false);
 
   return (
@@ -1148,6 +1150,19 @@ function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, 
                 >
                   <Clock className="w-3.5 h-3.5" />
                   {t('fileManager.schedulePrint')}
+                </button>
+              )}
+              {onSlice && useSlicerApi && isSliceableFilename(file.filename) && (
+                <button
+                  className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
+                    hasPermission('library:upload') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
+                  }`}
+                  onClick={() => { if (hasPermission('library:upload')) { onSlice(file); setShowActions(false); } }}
+                  disabled={!hasPermission('library:upload')}
+                  title={!hasPermission('library:upload') ? t('fileManager.noPermissionSlice', { defaultValue: 'You do not have permission to slice' }) : undefined}
+                >
+                  <Cog className="w-3.5 h-3.5" />
+                  {t('slice.action', { defaultValue: 'Slice' })}
                 </button>
               )}
               {onPreview3d && (file.file_type === '3mf' || file.file_type === 'gcode' || file.file_type === 'stl') && (
@@ -2314,6 +2329,8 @@ export function FileManagerPage() {
                       if (file) setScheduleFile(file);
                     }}
                     onPrint={setPrintFile}
+                    onSlice={setSliceFile}
+                    useSlicerApi={settings?.use_slicer_api ?? false}
                     onPreview3d={setViewerFile}
                     onRename={(f) => setRenameItem({ type: 'file', id: f.id, name: f.filename })}
                     onLink={setLinkFile}
