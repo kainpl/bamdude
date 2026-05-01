@@ -2708,10 +2708,24 @@ export default {
     printerMismatch: 'Цей 3MF було нарізано для {{source}}, але ви вибрали {{target}}. Слайсер CLI не може перенарізати 3MF для іншого принтера — відкрийте джерело в Bambu Studio, змініть принтер та переекспортуйте.',
     sidecarPicker: 'Нарізати в',
     sidecarHeader: 'Sidecar',
+    platePicker: {
+      label: 'Виберіть плиту для нарізання',
+    },
     tier: {
       local: 'Імпортовані',
       cloud: 'Cloud',
       standard: 'Стандартні',
+    },
+    // Назви столів зберігаємо англійськими — саме так вони звучать у самому
+    // слайсері та на коробці плити, перекладати "Engineering Plate" як
+    // "Інженерний стіл" буде плутати.
+    bedType: {
+      label: 'Тип столу',
+      coolPlate: 'Cool Plate',
+      engineeringPlate: 'Engineering Plate',
+      highTempPlate: 'Smooth PEI / High Temp Plate',
+      texturedPeiPlate: 'Textured PEI Plate',
+      supertackPlate: 'Cool Plate SuperTack',
     },
     cloud: {
       notAuthenticated: 'Увійдіть у Bambu Cloud (Налаштування → Профілі → Cloud), щоб побачити свої cloud-пресети.',

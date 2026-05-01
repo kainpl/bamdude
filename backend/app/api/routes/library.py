@@ -1603,6 +1603,7 @@ async def _run_slicer_with_fallback(
                 filament_profile_jsons=filament_jsons,
                 plate=request.plate,
                 export_3mf=request.export_3mf,
+                bed_type=request.bed_type,
                 request_id=progress_request_id,
                 on_progress=progress_callback,
             )
@@ -1622,6 +1623,7 @@ async def _run_slicer_with_fallback(
                 model_filename=model_filename,
                 plate=request.plate,
                 export_3mf=request.export_3mf,
+                bed_type=request.bed_type,
                 request_id=progress_request_id,
                 on_progress=progress_callback,
             )

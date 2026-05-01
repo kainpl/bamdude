@@ -2698,10 +2698,23 @@ export default {
     printerMismatch: 'This 3MF was sliced for {{source}}, but you picked {{target}}. The slicer CLI cannot re-slice a 3MF for a different printer — open the source in Bambu Studio, change the printer, and re-export.',
     sidecarPicker: 'Slice with',
     sidecarHeader: 'Sidecars',
+    platePicker: {
+      label: 'Pick a plate to slice',
+    },
     tier: {
       local: 'Imported',
       cloud: 'Cloud',
       standard: 'Standard',
+    },
+    // Bed plate picker — five values from BambuStudio's ``curr_bed_type``
+    // enum. Labels mirror the slicer UI's wording so users recognise them.
+    bedType: {
+      label: 'Bed plate',
+      coolPlate: 'Cool Plate',
+      engineeringPlate: 'Engineering Plate',
+      highTempPlate: 'Smooth PEI / High Temp Plate',
+      texturedPeiPlate: 'Textured PEI Plate',
+      supertackPlate: 'Cool Plate SuperTack',
     },
     cloud: {
       notAuthenticated: 'Sign in to Bambu Cloud (Settings → Profiles → Cloud) to see your cloud presets.',

@@ -1476,6 +1476,13 @@ export interface PresetRef {
   id: string;
 }
 
+export type BedType =
+  | 'Cool Plate'
+  | 'Engineering Plate'
+  | 'High Temp Plate'
+  | 'Textured PEI Plate'
+  | 'Supertack Plate';
+
 export interface SliceRequest {
   printer_preset_id?: number;
   process_preset_id?: number;
@@ -1495,6 +1502,12 @@ export interface SliceRequest {
   // slicer can be picked per source file. Falls back to the global
   // preferred_slicer setting when omitted.
   slicer?: 'orcaslicer' | 'bambu_studio';
+  // Bed plate override — forwarded to the sidecar as ``bedType``, becomes
+  // ``--curr-bed-type`` on the slicer CLI. Without this the CLI falls back
+  // to the source 3MF's per-plate bed_type (when present) and finally to
+  // "Cool Plate" (the upstream default — wrong for X1/A1 users who actually
+  // use Textured PEI / SuperTack).
+  bed_type?: BedType;
 }
 
 export interface SlicerHealth {

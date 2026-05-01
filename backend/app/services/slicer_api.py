@@ -219,6 +219,7 @@ class SlicerApiService:
         filament_profile_jsons: list[str],
         plate: int | None = None,
         export_3mf: bool = False,
+        bed_type: str | None = None,
         request_id: str | None = None,
         on_progress: Callable[[dict], None] | None = None,
     ) -> SliceResult:
@@ -269,6 +270,11 @@ class SlicerApiService:
             data["plate"] = str(plate)
         if export_3mf:
             data["exportType"] = "3mf"
+        if bed_type is not None:
+            # Sidecar's ``SlicingSettings.bedType`` → ``--curr-bed-type`` CLI
+            # arg. Empty string falls back to slicer-internal default, so we
+            # only set the field when the caller passed a real value.
+            data["bedType"] = bed_type
         if request_id is not None:
             data["requestId"] = request_id
 
@@ -320,6 +326,7 @@ class SlicerApiService:
         model_filename: str,
         plate: int | None = None,
         export_3mf: bool = False,
+        bed_type: str | None = None,
         request_id: str | None = None,
         on_progress: Callable[[dict], None] | None = None,
     ) -> SliceResult:
@@ -347,6 +354,8 @@ class SlicerApiService:
             data["plate"] = str(plate)
         if export_3mf:
             data["exportType"] = "3mf"
+        if bed_type is not None:
+            data["bedType"] = bed_type
         if request_id is not None:
             data["requestId"] = request_id
 
