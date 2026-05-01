@@ -22,7 +22,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.api.routes.cloud import get_stored_token
 from backend.app.core.auth import require_permission
-from backend.app.core.config import settings as app_settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.local_preset import LocalPreset
@@ -243,30 +242,16 @@ async def _fetch_bundled_presets(db: AsyncSession) -> dict[str, list[UnifiedPres
 async def _resolve_slicer_api_url(db: AsyncSession) -> str | None:
     """Pick the sidecar URL the bundled-listing fetch should hit.
 
-    The user's ``preferred_slicer`` setting decides which sidecar BamDude
-    talks to, and the per-install URL setting overrides the env default.
-    A user who prefers Bambu Studio gets the *bambu-studio-api* sidecar's
-    bundled list; a user who prefers OrcaSlicer gets the *orca-slicer-api*
-    sidecar's bundled list. Without this branch the listing would always
-    hit OrcaSlicer (port 3003) even for BambuStudio installs (port 3001),
-    leaving the Standard tier permanently empty for them.
+    Thin wrapper over :func:`backend.app.services.slicer_routing.resolve_sidecar_url`
+    -- the bundled-tier listing always uses the global preferred slicer
+    (it has no per-request context to read a slicer override from).
+    Returns ``None`` (empty bundled tier) on misconfiguration rather than
+    raising, since the modal's preset listing is informational.
     """
-    from backend.app.api.routes.settings import get_setting
+    from backend.app.services.slicer_routing import resolve_sidecar_url
 
-    preferred = (await get_setting(db, "preferred_slicer")) or "bambu_studio"
-    if preferred == "orcaslicer":
-        configured = await get_setting(db, "orcaslicer_api_url")
-        url = (configured or app_settings.slicer_api_url).strip()
-    elif preferred == "bambu_studio":
-        configured = await get_setting(db, "bambu_studio_api_url")
-        url = (configured or app_settings.bambu_studio_api_url).strip()
-    else:
-        # Unknown preference — return None so the bundled tier is empty
-        # rather than crashing the modal. The slice route raises 400 here;
-        # we degrade silently because the modal's listing is informational.
-        logger.warning("Unknown preferred_slicer setting: %r — bundled tier disabled", preferred)
-        return None
-    return url or None
+    _, url = await resolve_sidecar_url(db)
+    return url
 
 
 def _dedupe_by_name(
@@ -353,6 +338,75 @@ async def list_unified_presets(
         standard=UnifiedPresetsBySlot(**standard),
         cloud_status=cloud_status,
     )
+
+
+# Per-slicer health cache: ``{(kind, url): (timestamp, payload)}``. 30 s TTL
+# keeps a tab's modal-render-time check off the wire while the user clicks
+# around, but is still tight enough that a sidecar that just came up (e.g.
+# user ran ``docker compose up`` after opening the modal) becomes available
+# within half a minute. Cache is process-local; a fleet running multiple
+# BamDude workers re-checks per-worker, which is fine -- the hit is one
+# 5 s-timeout HTTP GET.
+_HEALTH_TTL_SECONDS = 30.0
+_health_cache: dict[tuple[str, str], tuple[float, dict]] = {}
+
+
+@router.get("/health/{slicer}")
+async def get_slicer_health(
+    slicer: str,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_READ)),
+):
+    """Probe a sidecar's ``GET /health`` endpoint and return its status.
+
+    Used by the SliceModal radio to dim an unreachable slicer option and
+    by Settings → Profiles → Slicer API to render a green/red indicator
+    next to each URL field. ``slicer`` must be ``orcaslicer`` or
+    ``bambu_studio``.
+
+    Response shape:
+
+    - ``{healthy: true, version: "2.3.2"}`` when the sidecar replied 2xx.
+    - ``{healthy: false, error: "<message>", url: "..."}`` when the URL
+      is empty, the sidecar is unreachable, or it replied non-2xx. URL
+      is included so the modal can show "BambuStudio at <url> unreachable".
+
+    Cached 30 s per ``(slicer, resolved_url)`` to keep the modal-render
+    poll off the wire under fast clicks.
+    """
+    import time
+
+    import httpx
+
+    from backend.app.services.slicer_routing import resolve_sidecar_url, slicer_label
+
+    chosen, api_url = await resolve_sidecar_url(db, slicer_override=slicer)
+    if chosen is None:
+        raise HTTPException(status_code=400, detail=f"Unknown slicer: '{slicer}'.")
+    if not api_url:
+        return {"healthy": False, "error": f"{slicer_label(chosen)} API URL is not configured.", "url": None}
+
+    cache_key = (chosen, api_url)
+    now = time.monotonic()
+    cached = _health_cache.get(cache_key)
+    if cached and (now - cached[0]) < _HEALTH_TTL_SECONDS:
+        return cached[1]
+
+    payload: dict
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(f"{api_url}/health")
+        if response.status_code >= 200 and response.status_code < 300:
+            body = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+            version = body.get("version") or body.get("checks", {}).get("orcaslicer", {}).get("version")
+            payload = {"healthy": True, "url": api_url, "version": version}
+        else:
+            payload = {"healthy": False, "url": api_url, "error": f"sidecar returned HTTP {response.status_code}"}
+    except httpx.RequestError as exc:
+        payload = {"healthy": False, "url": api_url, "error": f"sidecar unreachable: {type(exc).__name__}"}
+
+    _health_cache[cache_key] = (now, payload)
+    return payload
 
 
 @router.get("/preview-progress/{request_id}")

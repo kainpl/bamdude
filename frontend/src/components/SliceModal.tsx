@@ -1,4 +1,5 @@
 import { Cloud, CloudOff, Cog, Loader2, X } from 'lucide-react';
+type SlicerKind = 'orcaslicer' | 'bambu_studio';
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery } from '@tanstack/react-query';
@@ -249,6 +250,67 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // the user picks one (or implicitly for single-plate sources).
   const [selectedPlate, setSelectedPlate] = useState<number | null>(null);
 
+  // Per-job slicer picker (B.4 follow-up). Visible only when both sidecars
+  // are reachable — otherwise the global preferred_slicer setting is the
+  // sole sensible target and the picker would just be misleading. The pick
+  // is persisted per (source kind, source id) in localStorage so re-slicing
+  // the same file defaults to the user's last choice; first-time defaults
+  // to the global preferred_slicer.
+  const settingsQuery = useQuery({
+    queryKey: ['settings'],
+    queryFn: api.getSettings,
+    staleTime: 60_000,
+  });
+  // Backend caches the health response per (kind, url) for 30 s — these
+  // two queries hit the network at most once per modal open, even if the
+  // SliceModal re-mounts a few times during the user's flow.
+  const orcaHealthQuery = useQuery({
+    queryKey: ['slicerHealth', 'orcaslicer'],
+    queryFn: () => api.getSlicerHealth('orcaslicer'),
+    staleTime: 30_000,
+    retry: false,
+  });
+  const bambuHealthQuery = useQuery({
+    queryKey: ['slicerHealth', 'bambu_studio'],
+    queryFn: () => api.getSlicerHealth('bambu_studio'),
+    staleTime: 30_000,
+    retry: false,
+  });
+  const orcaHealthy = orcaHealthQuery.data?.healthy === true;
+  const bambuHealthy = bambuHealthQuery.data?.healthy === true;
+  const showSlicerPicker = orcaHealthy && bambuHealthy;
+
+  const slicerPickStorageKey = `bamdude:slicer-pick:${source.kind}:${source.id}`;
+  const [pickedSlicer, setPickedSlicer] = useState<SlicerKind | null>(() => {
+    if (typeof localStorage === 'undefined') return null;
+    try {
+      const stored = localStorage.getItem(slicerPickStorageKey);
+      return stored === 'orcaslicer' || stored === 'bambu_studio' ? stored : null;
+    } catch {
+      return null;
+    }
+  });
+  // First-time default = global preferred_slicer. Only fires once both
+  // health probes resolve; subsequent renders keep whatever the user picked.
+  useEffect(() => {
+    if (!showSlicerPicker || pickedSlicer != null) return;
+    const preferred = settingsQuery.data?.preferred_slicer;
+    if (preferred === 'orcaslicer' || preferred === 'bambu_studio') {
+      setPickedSlicer(preferred);
+    } else {
+      setPickedSlicer('bambu_studio');
+    }
+  }, [showSlicerPicker, pickedSlicer, settingsQuery.data?.preferred_slicer]);
+  // Persist user's pick across modal opens.
+  useEffect(() => {
+    if (pickedSlicer == null || typeof localStorage === 'undefined') return;
+    try {
+      localStorage.setItem(slicerPickStorageKey, pickedSlicer);
+    } catch {
+      /* private mode / quota — silently skip */
+    }
+  }, [pickedSlicer, slicerPickStorageKey]);
+
   const platesQuery = useQuery({
     queryKey: ['slicePlates', source.kind, source.id],
     queryFn: async () => {
@@ -368,6 +430,10 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
         // omit otherwise so the backend default applies for STL / single-plate
         // 3MF sources where the concept doesn't apply.
         ...(selectedPlate != null ? { plate: selectedPlate } : {}),
+        // Per-job slicer override. Only sent when the picker is actually
+        // visible to the user (both sidecars healthy) AND the user picked
+        // something — otherwise the global preferred_slicer setting decides.
+        ...(showSlicerPicker && pickedSlicer != null ? { slicer: pickedSlicer } : {}),
       };
       if (source.kind === 'libraryFile') {
         return api.sliceLibraryFile(source.id, body);
@@ -493,6 +559,13 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
           {presetsQuery.data && (
             <>
               <CloudStatusBanner status={presetsQuery.data.cloud_status} />
+              {showSlicerPicker && (
+                <SlicerPicker
+                  value={pickedSlicer}
+                  onChange={setPickedSlicer}
+                  disabled={isEnqueuing}
+                />
+              )}
               <PresetDropdown
                 label={t('slice.printer', 'Printer profile')}
                 slot="printer"
@@ -724,5 +797,57 @@ function PresetDropdown({ label, slot, data, value, onChange, disabled, swatchCo
         ))}
       </select>
     </label>
+  );
+}
+
+// Per-job slicer toggle. Only mounted when both sidecars are healthy
+// (parent gates on `showSlicerPicker`), so the radios here are always
+// active — no offline state to render.
+function SlicerPicker({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: SlicerKind | null;
+  onChange: (next: SlicerKind) => void;
+  disabled?: boolean;
+}) {
+  const { t } = useTranslation();
+  const options: { kind: SlicerKind; label: string }[] = [
+    { kind: 'orcaslicer', label: 'OrcaSlicer' },
+    { kind: 'bambu_studio', label: 'BambuStudio' },
+  ];
+  return (
+    <fieldset className="space-y-1">
+      <legend className="text-xs text-bambu-gray mb-1">
+        {t('slice.sidecarPicker', 'Slice with')}
+      </legend>
+      <div className="flex gap-2">
+        {options.map((opt) => {
+          const isSelected = value === opt.kind;
+          return (
+            <label
+              key={opt.kind}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-md border text-sm cursor-pointer transition-colors ${
+                isSelected
+                  ? 'border-bambu-green bg-bambu-green/10 text-white'
+                  : 'border-bambu-dark-tertiary text-bambu-gray hover:text-white hover:border-bambu-gray'
+              } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+            >
+              <input
+                type="radio"
+                name="slicer-pick"
+                value={opt.kind}
+                checked={isSelected}
+                disabled={disabled}
+                onChange={() => onChange(opt.kind)}
+                className="accent-bambu-green"
+              />
+              <span>{opt.label}</span>
+            </label>
+          );
+        })}
+      </div>
+    </fieldset>
   );
 }

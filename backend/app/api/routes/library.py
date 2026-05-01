@@ -1496,7 +1496,6 @@ async def _run_slicer_with_fallback(
     can show "Generating G-code (75%)" instead of just elapsed time. Pass
     ``None`` for synchronous routes that aren't tracked by the dispatcher.
     """
-    from backend.app.api.routes.settings import get_setting
     from backend.app.services.preset_resolver import resolve_preset_ref
     from backend.app.services.slicer_api import (
         SlicerApiServerError,
@@ -1504,6 +1503,7 @@ async def _run_slicer_with_fallback(
         SlicerApiUnavailableError,
         SlicerInputError,
     )
+    from backend.app.services.slicer_routing import resolve_sidecar_url, slicer_label
 
     user: User | None = None
     if current_user_id is not None:
@@ -1525,21 +1525,23 @@ async def _run_slicer_with_fallback(
         assert ref is not None, "schema validator guarantees filament list is non-None"
         filament_jsons.append(await resolve_preset_ref(db, user, ref, "filament"))
 
-    # Slicer routing — pick the sidecar URL by preferred_slicer.
-    # The per-install URL setting (Settings UI → Slicer card) wins; an
-    # empty value falls back to the SLICER_API_URL / BAMBU_STUDIO_API_URL
-    # env defaults defined in core/config.py.
-    preferred = (await get_setting(db, "preferred_slicer")) or "bambu_studio"
-    if preferred == "orcaslicer":
-        configured = await get_setting(db, "orcaslicer_api_url")
-        api_url = (configured or app_settings.slicer_api_url).strip()
-    elif preferred == "bambu_studio":
-        configured = await get_setting(db, "bambu_studio_api_url")
-        api_url = (configured or app_settings.bambu_studio_api_url).strip()
-    else:
+    # Slicer routing — per-request override on the SliceRequest wins over
+    # the global preferred_slicer setting; per-install URL setting wins
+    # over the SLICER_API_URL / BAMBU_STUDIO_API_URL env defaults from
+    # core/config.py.
+    chosen, api_url = await resolve_sidecar_url(db, slicer_override=request.slicer)
+    if chosen is None:
         raise HTTPException(
             status_code=400,
-            detail=(f"Unknown preferred_slicer setting: '{preferred}'. Expected 'orcaslicer' or 'bambu_studio'."),
+            detail="Unknown preferred_slicer setting. Expected 'orcaslicer' or 'bambu_studio'.",
+        )
+    if not api_url:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{slicer_label(chosen)} API URL is empty -- configure it in Settings → "
+                "Profiles → Slicer API, or pick a different slicer in the Slice modal."
+            ),
         )
 
     # Forward original 3MF bytes — stripping Metadata/project_settings.config
@@ -2711,19 +2713,17 @@ async def _try_preview_slice_filaments(
     ``request_id``: when supplied, forwarded to the sidecar so the
     SliceModal's inline spinner + toast can poll the matching progress
     endpoint and show "Generating G-code (45%)" for the preview as well.
-    """
-    from backend.app.api.routes.settings import get_setting
-    from backend.app.services.slice_preview import get_preview_filaments
 
-    preferred = (await get_setting(db, "preferred_slicer")) or "bambu_studio"
-    if preferred == "orcaslicer":
-        configured = await get_setting(db, "orcaslicer_api_url")
-        api_url = (configured or app_settings.slicer_api_url).strip()
-    elif preferred == "bambu_studio":
-        configured = await get_setting(db, "bambu_studio_api_url")
-        api_url = (configured or app_settings.bambu_studio_api_url).strip()
-    else:
-        return None
+    The preview always uses the global ``preferred_slicer`` setting (no
+    per-request override): the modal calls this BEFORE the user has chosen
+    a slicer, just to discover which AMS slots the plate touches. Routing
+    by the user's pick would mean two preview slices on different sidecars
+    if the user switches the radio.
+    """
+    from backend.app.services.slice_preview import get_preview_filaments
+    from backend.app.services.slicer_routing import resolve_sidecar_url
+
+    _, api_url = await resolve_sidecar_url(db)
     if not api_url:
         return None
 

@@ -1777,6 +1777,7 @@ export default {
     orcaslicerApiUrlDescription: 'Empty falls back to the SLICER_API_URL env default.',
     bambuStudioApiUrl: 'BambuStudio API URL',
     bambuStudioApiUrlDescription: 'Empty falls back to the BAMBU_STUDIO_API_URL env default.',
+    bothSlicersHint: 'When both URLs are set and reachable, the Slice modal lets you pick which slicer to use per file.',
     sidebarOrderDescription: 'Drag items in the sidebar to reorder. Reset to default order here.',
     setDefault: 'Set Default',
     sidebarOrderSetDefaultHint: 'Set default applies the current menu order to users who haven\'t customized theirs.',
@@ -2695,6 +2696,7 @@ export default {
     failedToast: 'Slicing {{name}} failed: {{detail}}',
     failed: 'Slice failed',
     printerMismatch: 'This 3MF was sliced for {{source}}, but you picked {{target}}. The slicer CLI cannot re-slice a 3MF for a different printer — open the source in Bambu Studio, change the printer, and re-export.',
+    sidecarPicker: 'Slice with',
     tier: {
       local: 'Imported',
       cloud: 'Cloud',

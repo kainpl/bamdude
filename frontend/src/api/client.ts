@@ -1490,6 +1490,18 @@ export interface SliceRequest {
   filament_presets?: PresetRef[];
   plate?: number;
   export_3mf?: boolean;
+  // Per-job slicer override. When the user has both OrcaSlicer and
+  // BambuStudio sidecars configured, the SliceModal exposes a radio so the
+  // slicer can be picked per source file. Falls back to the global
+  // preferred_slicer setting when omitted.
+  slicer?: 'orcaslicer' | 'bambu_studio';
+}
+
+export interface SlicerHealth {
+  healthy: boolean;
+  url: string | null;
+  version?: string;
+  error?: string;
 }
 
 // GET /api/v1/slicer/presets — unified listing across cloud / local / standard.
@@ -5699,6 +5711,12 @@ export const api = {
   // the browser from hitting /slice/progress/{id} directly).
   getPreviewSliceProgress: (requestId: string) =>
     request<SliceJobProgress | null>(`/slicer/preview-progress/${requestId}`),
+  // Reachability probe for a single sidecar — used by the SliceModal to
+  // disable a radio option when the picked slicer is offline. The backend
+  // caches results for 30 s per (kind, url) so render-time polls don't hit
+  // the wire on every dropdown open.
+  getSlicerHealth: (slicer: 'orcaslicer' | 'bambu_studio') =>
+    request<SlicerHealth>(`/slicer/health/${slicer}`),
 
   // Local Presets (OrcaSlicer imports)
   getLocalPresets: () =>

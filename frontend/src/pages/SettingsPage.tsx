@@ -1684,6 +1684,12 @@ export function SettingsPage() {
                 </label>
                 {(localSettings.use_slicer_api ?? false) && (
                   <>
+                    <p className="text-xs text-bambu-gray/80 italic">
+                      {t(
+                        'settings.bothSlicersHint',
+                        'When both URLs are set and reachable, the Slice modal lets you pick which slicer to use per file.',
+                      )}
+                    </p>
                     <div>
                       <label className="block text-sm text-bambu-gray mb-1">
                         {t('settings.orcaslicerApiUrl', 'OrcaSlicer API URL')}

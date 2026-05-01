@@ -6,6 +6,26 @@ All notable changes to BamDude will be documented in this file.
 
 ---
 
+## [Unreleased]
+
+Post-`0.4.2b2` fixes accumulating on the `feature/0.4.2b2-fixes` branch. Will fold into the next dated release.
+
+### Added
+
+- **`scripts/normalize_db.py`** — rebuild a BamDude SQLite database with the canonical schema. Runs the full init flow (`create_all` + every migration) on a fresh target file, then drops + re-creates the ORM tables once more so column order matches the current Python model exactly even on tables affected by historical `recreate_table` migrations (e.g. `library_files` had `print_count` / `deleted_at` / `source_type` / `source_url` appended at the end of the table because m002 dropped them with frozen DDL and m013/m029/m033 re-added via `ALTER TABLE`; they're now back at their model-declared positions). Source DB is renamed to `.bak.<timestamp>`, target moves into place. Useful when an SQLite file accumulated structural drift the in-place migrations can't undo.
+
+### Changed
+
+- **Slicer-API Compose: explicit profiles for both services.** Both `orca-slicer-api` and `bambu-studio-api` now live behind explicit profiles. Pick `--profile orca` (OrcaSlicer only), `--profile bambu` (BambuStudio only), or `--profile all` (both). A bare `docker compose up -d` (no profile) now starts nothing — previously it started OrcaSlicer alone.
+- **Per-job slicer picker in the Slice modal.** When both OrcaSlicer and BambuStudio sidecars are configured *and* reachable, the Slice modal now shows a "Slice with" radio so you can target one slicer per file (the global *Preferred slicer* setting is still the default). The pick is remembered per source file (localStorage) so re-slicing the same file defaults to your last choice. Backed by a new `GET /api/v1/slicer/health/{slicer}` reachability probe (30 s in-process cache) and a per-request `slicer` field on `SliceRequest`. When only one sidecar is reachable the picker stays hidden — there's nothing to pick.
+- **Slicer-API sidecar source: forked to BamDude-controlled repo.** Both sidecar images now build from `https://github.com/kainpl/orca-slicer-api.git#bamdude/profile-resolver` (BamDude's peer-fork of `AFKFelix/orca-slicer-api`) instead of the previous `maziggy/orca-slicer-api#bambuddy/profile-resolver`. Wire protocol unchanged — isolates BamDude from a third-party fork's lifecycle (force-push, branch rename, deletion). First `docker compose build` after upgrade re-fetches from the new URL.
+
+### Fixed
+
+- **A11y: external-link icon on project cards / detail page now has a meaningful screen-reader label.** Previously rendered with only `title={project.url}` so screen readers narrated the bare URL string. Now also passes `aria-label={t('projects.openExternalUrl')}`. (Restored from the upstream port — the key existed in en/uk locales but was never wired to the JSX.)
+
+---
+
 ## [0.4.2b2] - 2026-04-30
 
 Second beta of the 0.4.2 cycle. Image: `ghcr.io/kainpl/bamdude:0.4.2b2` / `kainpl/bamdude:0.4.2b2`. Pin the exact tag — `:latest` still tracks 0.4.1.

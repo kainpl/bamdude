@@ -69,6 +69,14 @@ class SliceRequest(BaseModel):
         default=False,
         description="If true, request a 3MF response with embedded G-code instead of raw G-code.",
     )
+    slicer: Literal["orcaslicer", "bambu_studio"] | None = Field(
+        default=None,
+        description=(
+            "Per-job slicer override. When the user has both OrcaSlicer and BambuStudio "
+            "URLs configured, the SliceModal exposes a radio so the slicer can be picked "
+            "per source file. Falls back to the global preferred_slicer setting when null."
+        ),
+    )
 
     @model_validator(mode="after")
     def normalise_preset_refs(self) -> "SliceRequest":

@@ -1785,6 +1785,7 @@ export default {
     orcaslicerApiUrlDescription: 'Порожнє значення повертає до значення SLICER_API_URL з оточення.',
     bambuStudioApiUrl: 'URL API BambuStudio',
     bambuStudioApiUrlDescription: 'Порожнє значення повертає до значення BAMBU_STUDIO_API_URL з оточення.',
+    bothSlicersHint: 'Коли обидва URL задані та доступні, модальне вікно «Нарізати» дозволяє вибрати потрібний слайсер для кожного файлу.',
     sidebarOrderDescription: 'Перетягніть елементи в бічній панелі для зміни порядку. Скинути до порядку за замовчуванням тут.',
     setDefault: 'Встановити за замовчуванням',
     sidebarOrderSetDefaultHint: 'Встановити за замовчуванням застосовує поточний порядок меню для користувачів, які не налаштували свій.',
@@ -2705,6 +2706,7 @@ export default {
     failedToast: 'Нарізання {{name}} не вдалося: {{detail}}',
     failed: 'Помилка нарізання',
     printerMismatch: 'Цей 3MF було нарізано для {{source}}, але ви вибрали {{target}}. Слайсер CLI не може перенарізати 3MF для іншого принтера — відкрийте джерело в Bambu Studio, змініть принтер та переекспортуйте.',
+    sidecarPicker: 'Нарізати в',
     tier: {
       local: 'Імпортовані',
       cloud: 'Cloud',

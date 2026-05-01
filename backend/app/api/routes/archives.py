@@ -3056,19 +3056,16 @@ async def _try_preview_slice_filaments(
     list endpoint can return real per-plate filaments for unsliced project
     files. Returns ``None`` on any failure — the caller falls back to the
     project-config heuristic. ``request_id`` flows through to the sidecar
-    for live progress on the SliceModal's inline spinner + toast."""
-    from backend.app.api.routes.settings import get_setting
-    from backend.app.services.slice_preview import get_preview_filaments
+    for live progress on the SliceModal's inline spinner + toast.
 
-    preferred = (await get_setting(db, "preferred_slicer")) or "bambu_studio"
-    if preferred == "orcaslicer":
-        configured = await get_setting(db, "orcaslicer_api_url")
-        api_url = (configured or settings.slicer_api_url).strip()
-    elif preferred == "bambu_studio":
-        configured = await get_setting(db, "bambu_studio_api_url")
-        api_url = (configured or settings.bambu_studio_api_url).strip()
-    else:
-        return None
+    Always uses the global ``preferred_slicer`` setting -- the per-job
+    slicer override on ``SliceRequest.slicer`` is consulted only by the
+    real slice routes, not by the modal's filament-discovery preview.
+    """
+    from backend.app.services.slice_preview import get_preview_filaments
+    from backend.app.services.slicer_routing import resolve_sidecar_url
+
+    _, api_url = await resolve_sidecar_url(db)
     if not api_url:
         return None
 

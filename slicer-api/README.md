@@ -15,16 +15,25 @@ Enable the API path by:
 
 ## Quick start
 
+Both services live behind explicit profiles, so you pick exactly which
+slicer(s) to run. A bare `docker compose up -d` (no profile) starts
+nothing — you must include `--profile orca`, `--profile bambu`, or
+`--profile all`.
+
 ```bash
 cd slicer-api/
 cp .env.example .env       # edit ports / versions if you like
 
-# OrcaSlicer only (default profile):
-docker compose up -d
+# OrcaSlicer only:
+docker compose --profile orca up -d
 curl http://localhost:3003/health
 
-# Both slicers:
+# BambuStudio only:
 docker compose --profile bambu up -d
+curl http://localhost:3001/health
+
+# Both:
+docker compose --profile all up -d
 curl http://localhost:3001/health   # bambu-studio-api
 curl http://localhost:3003/health   # orca-slicer-api
 ```
@@ -81,15 +90,16 @@ upstream, this Compose file can be flipped to pull from
 
 ## Updating
 
-Bump the versions in `.env`, then:
+Bump the versions in `.env`, then rebuild whichever profile(s) you run:
 
 ```bash
-docker compose --profile bambu build --no-cache
-docker compose --profile bambu up -d
+docker compose --profile all build --no-cache
+docker compose --profile all up -d
 ```
 
-`--no-cache` is needed because the Dockerfile downloads the AppImage
-inline; Docker won't re-fetch it on a version change otherwise.
+(Substitute `orca` / `bambu` for `all` if you only run one.) `--no-cache`
+is needed because the Dockerfile downloads the AppImage inline; Docker
+won't re-fetch it on a version change otherwise.
 
 ## Troubleshooting
 
