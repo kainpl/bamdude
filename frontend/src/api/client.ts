@@ -6085,6 +6085,15 @@ export interface LibraryFile {
   filename: string;
   file_path: string;
   file_type: string;
+  // Composite tag array (m036) — drives badges + chip-row filter in the
+  // file-manager. See ``compute_file_tags`` on the backend for the value
+  // vocabulary. Examples:
+  //   ['gcode']                         — raw .gcode upload
+  //   ['gcode', '3mf', 'sliced']        — server-side slicer output
+  //   ['3mf', 'multiplate']             — un-sliced multi-plate 3MF
+  //   ['stl', 'makerworld']             — STL pulled from MakerWorld
+  //   ['gcode', '3mf', 'multiplate', 'swap', 'sliced']  — the works
+  file_tags: string[];
   file_size: number;
   file_hash: string | null;
   thumbnail_path: string | null;
@@ -6119,6 +6128,8 @@ export interface LibraryFileListItem {
   is_external: boolean;
   filename: string;
   file_type: string;
+  // Composite tag array — see ``LibraryFile.file_tags``.
+  file_tags: string[];
   file_size: number;
   thumbnail_path: string | null;
   duplicate_count: number;

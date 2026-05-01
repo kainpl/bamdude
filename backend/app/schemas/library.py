@@ -126,6 +126,12 @@ class FileResponse(BaseModel):
     filename: str
     file_path: str
     file_type: str
+    # Composite tag array driving frontend badges + chip-row filter
+    # (m036). Computed by ``services.library_helpers.compute_file_tags``;
+    # stays consistent with ``file_type`` / ``file_metadata`` /
+    # ``source_type`` / ``swap_compatible``. See ``LibraryFile.file_tags``
+    # for the value vocabulary.
+    file_tags: list[str] = []
     file_size: int
     file_hash: str | None
     thumbnail_path: str | None
@@ -179,6 +185,8 @@ class FileListResponse(BaseModel):
     is_external: bool = False
     filename: str
     file_type: str
+    # Composite tag array — see ``FileResponse.file_tags``.
+    file_tags: list[str] = []
     file_size: int
     thumbnail_path: str | None
     duplicate_count: int = 0
@@ -251,6 +259,10 @@ class FileUploadResponse(BaseModel):
     id: int
     filename: str
     file_type: str
+    # Composite tag array — see ``FileResponse.file_tags``. Surfaced on
+    # the upload response so the frontend can update its file list with
+    # the right badge composition without a follow-up GET.
+    file_tags: list[str] = []
     file_size: int
     thumbnail_path: str | None
     duplicate_of: int | None = None  # ID of existing file with same hash

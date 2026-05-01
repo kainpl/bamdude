@@ -58,6 +58,7 @@ from backend.app.schemas.library import (
     ZipExtractResult,
 )
 from backend.app.services.archive import ThreeMFParser
+from backend.app.services.library_helpers import compute_file_tags, detect_file_type
 from backend.app.services.print_plan import ensure_plan_row, remove_plan_row, sync_plan_for_folder
 from backend.app.services.stl_thumbnail import generate_stl_thumbnail
 from backend.app.utils.threemf_tools import (
@@ -237,7 +238,7 @@ async def save_3mf_bytes_to_library(
             return existing_by_url, True
 
     ext = os.path.splitext(filename)[1].lower()
-    file_type = ext[1:] if ext else "unknown"
+    file_type = detect_file_type(filename)
 
     file_path, is_external_upload = _resolve_upload_destination(folder, filename)
     with open(file_path, "wb") as f:
@@ -311,6 +312,13 @@ async def save_3mf_bytes_to_library(
         filename=filename,
         file_path=_stored_file_path(file_path, is_external_upload),
         file_type=file_type,
+        file_tags=compute_file_tags(
+            filename=filename,
+            file_type=file_type,
+            file_metadata=metadata or None,
+            source_type=source_type,
+            swap_compatible=swap_compatible,
+        ),
         file_size=len(content),
         file_hash=file_hash,
         thumbnail_path=to_relative_path(thumbnail_path) if thumbnail_path else None,
@@ -1191,17 +1199,16 @@ async def scan_external_folder(
             except OSError:
                 continue
 
-            file_type = ext[1:] if ext else "unknown"
-            # For compound extensions, use the meaningful part
-            if file_type in ("3mf",) and len(filepath.suffixes) >= 2:
-                inner = filepath.suffixes[-2].lower()
-                if inner == ".gcode":
-                    file_type = "gcode.3mf"
+            file_type = detect_file_type(filepath.name)
+            # Sliced 3MFs (`.gcode.3mf`) collapse to file_type='gcode' but
+            # still need the 3MF parser path for thumbnail + plate cache.
+            # Branch by container suffix, not primary type.
+            is_3mf_container = filepath.name.lower().endswith(".3mf")
 
             # Extract thumbnail for 3mf files
             thumbnail_path = None
             file_metadata = None
-            if file_type == "3mf":
+            if is_3mf_container:
                 try:
                     parser = ThreeMFParser(str(filepath))
                     meta = parser.parse()
@@ -1241,8 +1248,9 @@ async def scan_external_folder(
                 except Exception as e:
                     logger.debug("Failed to generate STL thumbnail for external %s: %s", filepath, e)
 
-            # Extract gcode thumbnail
-            if file_type == "gcode" and thumbnail_path is None:
+            # Extract gcode thumbnail — only for raw .gcode files; sliced
+            # .gcode.3mf already went through the 3MF parser branch above.
+            if file_type == "gcode" and not is_3mf_container and thumbnail_path is None:
                 thumb_data = extract_gcode_thumbnail(filepath)
                 if thumb_data:
                     thumb_dir = get_library_thumbnails_dir()
@@ -1263,6 +1271,13 @@ async def scan_external_folder(
                 filename=filename,
                 file_path=file_path_str,
                 file_type=file_type,
+                file_tags=compute_file_tags(
+                    filename=filename,
+                    file_type=file_type,
+                    file_metadata=file_metadata,
+                    source_type=None,
+                    swap_compatible=False,
+                ),
                 file_size=stat.st_size,
                 file_hash=None,  # Skip hashing external files for performance
                 thumbnail_path=thumbnail_path,
@@ -1441,6 +1456,7 @@ async def list_files(
                 is_external=f.is_external,
                 filename=f.filename,
                 file_type=f.file_type,
+                file_tags=f.file_tags or [],
                 file_size=f.file_size,
                 thumbnail_path=f.thumbnail_path,
                 duplicate_count=hash_counts.get(f.file_hash, 0) if f.file_hash else 0,
@@ -1706,8 +1722,17 @@ async def slice_and_persist(
         # Sliced output is a ``.gcode.3mf`` zip with embedded G-code, but the
         # user-facing meaning is "ready-to-print G-code" — using ``"gcode"``
         # gives it the same badge as plain .gcode files and distinguishes it
-        # from un-sliced ``.3mf`` source models.
+        # from un-sliced ``.3mf`` source models. ``compute_file_tags`` adds
+        # both ``gcode`` AND ``3mf`` tags so the composite badge restores
+        # the visual distinction in the UI.
         file_type="gcode",
+        file_tags=compute_file_tags(
+            filename=out_filename,
+            file_type="gcode",
+            file_metadata=metadata,
+            source_type="sliced",
+            swap_compatible=False,
+        ),
         file_size=len(result.content),
         file_hash=hashlib.sha256(result.content).hexdigest(),
         thumbnail_path=thumbnail_relative,
@@ -1952,8 +1977,7 @@ async def upload_file(
 
         filename = file.filename
         ext = os.path.splitext(filename)[1].lower()
-        # Handle files without extension
-        file_type = ext[1:] if ext else "unknown"
+        file_type = detect_file_type(filename)
 
         # Verify folder exists if specified
         target_folder: LibraryFolder | None = None
@@ -2067,6 +2091,13 @@ async def upload_file(
             filename=filename,
             file_path=_stored_file_path(file_path, is_external_upload),
             file_type=file_type,
+            file_tags=compute_file_tags(
+                filename=filename,
+                file_type=file_type,
+                file_metadata=metadata if metadata else None,
+                source_type=None,
+                swap_compatible=swap_compatible,
+            ),
             file_size=len(content),
             file_hash=file_hash,
             thumbnail_path=to_relative_path(thumbnail_path) if thumbnail_path else None,
@@ -2082,6 +2113,7 @@ async def upload_file(
             id=library_file.id,
             filename=library_file.filename,
             file_type=library_file.file_type,
+            file_tags=library_file.file_tags or [],
             file_size=library_file.file_size,
             thumbnail_path=library_file.thumbnail_path,
             duplicate_of=duplicate_of,
@@ -2231,7 +2263,7 @@ async def extract_zip_file(
                     # Extract file
                     filename = os.path.basename(zip_path)
                     ext = os.path.splitext(filename)[1].lower()
-                    file_type = ext[1:] if ext else "unknown"
+                    file_type = detect_file_type(filename)
 
                     # Generate unique filename for storage
                     unique_filename = f"{uuid.uuid4().hex}{ext}"
@@ -2308,6 +2340,13 @@ async def extract_zip_file(
                         filename=filename,
                         file_path=to_relative_path(file_path),
                         file_type=file_type,
+                        file_tags=compute_file_tags(
+                            filename=filename,
+                            file_type=file_type,
+                            file_metadata=metadata if metadata else None,
+                            source_type=None,
+                            swap_compatible=False,
+                        ),
                         file_size=len(file_content),
                         file_hash=file_hash,
                         thumbnail_path=to_relative_path(thumbnail_path) if thumbnail_path else None,
@@ -3456,9 +3495,15 @@ async def get_gcode(
     if not abs_path or not abs_path.exists():
         raise HTTPException(status_code=404, detail="File not found on disk")
 
-    if file.file_type == "gcode":
+    # Branch by container, not by primary file_type — sliced 3MFs collapse
+    # to file_type='gcode' (m035) but are still zip containers and need
+    # the embedded-gcode extraction path. Filename suffix is the only
+    # cheap way to tell raw .gcode from .gcode.3mf without opening the
+    # bytes (and the bytes can be huge).
+    is_3mf_container = file.filename.lower().endswith(".3mf")
+    if file.file_type == "gcode" and not is_3mf_container:
         return FastAPIFileResponse(str(abs_path), media_type="text/plain")
-    elif file.file_type == "3mf":
+    elif is_3mf_container:
         # Extract gcode from 3mf
         try:
             with zipfile.ZipFile(str(abs_path), "r") as zf:

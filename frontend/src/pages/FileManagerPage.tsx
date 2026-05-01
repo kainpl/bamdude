@@ -73,6 +73,8 @@ import { useIsMobile } from '../hooks/useIsMobile';
 import { useAuth } from '../contexts/AuthContext';
 import { formatDateTime, formatDuration, parseUTCDate, type TimeFormat, type DateFormat } from '../utils/date';
 import { formatFileSize } from '../utils/file';
+import { FileTagBadges } from '../components/FileTagBadges';
+import { KNOWN_FILE_TAGS, getTagStyle, hasTag, isSliced, isSliceable, isMultiPlate } from '../lib/fileTags';
 
 type SortField = 'name' | 'date' | 'size' | 'type';
 type SortDirection = 'asc' | 'desc';
@@ -780,24 +782,11 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
   );
 }
 
-// Helper to check if a file is sliced (printable)
-function isSlicedFilename(filename: string): boolean {
-  const lower = filename.toLowerCase();
-  return lower.endsWith('.gcode') || lower.includes('.gcode.');
-}
-
-// Files that can be fed to the slicer sidecar (model geometry inputs).
-// Excludes .gcode.* (already sliced) and any other non-model formats.
-function isSliceableFilename(filename: string): boolean {
-  const lower = filename.toLowerCase();
-  if (lower.endsWith('.gcode') || lower.endsWith('.gcode.3mf')) return false;
-  return (
-    lower.endsWith('.stl') ||
-    lower.endsWith('.3mf') ||
-    lower.endsWith('.step') ||
-    lower.endsWith('.stp')
-  );
-}
+// Slice-related predicates moved to ``lib/fileTags`` so FileCard /
+// FileListActions / ProjectDetailPage / bulk-action handlers all read
+// from the same ``file_tags`` source. ``isSliced(file)`` /
+// ``isSliceable(file)`` / ``isMultiPlate(file)`` replace the two
+// filename-suffix helpers that used to live here.
 
 // File Card
 interface FileCardProps {
@@ -891,7 +880,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
             }}
             className="z-[60] bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl py-1 whitespace-nowrap"
           >
-            {isSlicedFilename(file.filename) && (
+            {isSliced(file) && (
               <>
                 <button
                   className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${hasPermission('printers:control') ? 'text-bambu-green hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'}`}
@@ -911,7 +900,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
                 </button>
               </>
             )}
-            {onSlice && useSlicerApi && isSliceableFilename(file.filename) && (
+            {onSlice && useSlicerApi && isSliceable(file) && (
               <button
                 className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${hasPermission('library:upload') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'}`}
                 onClick={() => { if (hasPermission('library:upload')) { onSlice(file); setOpen(false); } }}
@@ -997,34 +986,20 @@ function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, 
         ) : (
           <FileBox className="w-12 h-12 text-bambu-gray/30" />
         )}
-        {/* File type badge */}
+        {/* Composite badge row — driven by ``file_tags`` (m036). The
+            backend computes the list at every write site so this just
+            renders. SourceBadge stays as a separate icon link because it
+            opens the external URL on click; the tag badges are pure
+            visual identity. */}
         <div className="absolute top-2 right-2 flex items-center gap-1">
           <SourceBadge sourceType={file.source_type} sourceUrl={file.source_url} variant="card" />
-          {file.is_multi_plate && (
-            <span
-              className="text-xs px-1.5 py-0.5 bg-cyan-500/90 text-white rounded font-medium"
-              title={t('fileManager.multiPlateBadgeTooltip')}
-            >
-              MP
-            </span>
-          )}
-          {file.swap_compatible && (
-            <span className="text-xs px-1.5 py-0.5 bg-amber-500/90 text-white rounded font-medium">SWAP</span>
-          )}
-          <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
-            file.file_type === '3mf' ? 'bg-bambu-green/90 text-white'
-            : file.file_type === 'gcode' ? 'bg-blue-500/90 text-white'
-            : file.file_type === 'stl' ? 'bg-purple-500/90 text-white'
-            : 'bg-bambu-gray/90 text-white'
-          }`}>
-            {file.file_type.toUpperCase()}
-          </span>
+          <FileTagBadges tags={file.file_tags} compact />
         </div>
         {/* Plate-gallery overlay — sits directly above the notes button.
             Only multi-plate sliced 3MFs render it; opens the modal handled
             by FileManagerPage so the same dialog instance is shared with
             the list-mode action button. */}
-        {file.is_multi_plate && onPlateGallery && (
+        {isMultiPlate(file) && onPlateGallery && (
           <div className="absolute bottom-8 left-2" onClick={(e) => e.stopPropagation()}>
             <div className="relative inline-block">
               <button
@@ -1126,7 +1101,7 @@ function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, 
           <>
             <div className="fixed inset-0 z-10" onClick={() => setShowActions(false)} />
             <div className="absolute right-0 bottom-8 z-20 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl py-1 min-w-[140px]">
-              {onPrint && isSlicedFilename(file.filename) && (
+              {onPrint && isSliced(file) && (
                 <button
                   className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
                     hasPermission('printers:control') ? 'text-bambu-green hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
@@ -1139,7 +1114,7 @@ function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, 
                   {t('common.print')}
                 </button>
               )}
-              {onAddToQueue && isSlicedFilename(file.filename) && (
+              {onAddToQueue && isSliced(file) && (
                 <button
                   className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
                     hasPermission('queue:create') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
@@ -1152,7 +1127,7 @@ function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, 
                   {t('fileManager.schedulePrint')}
                 </button>
               )}
-              {onSlice && useSlicerApi && isSliceableFilename(file.filename) && (
+              {onSlice && useSlicerApi && isSliceable(file) && (
                 <button
                   className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
                     hasPermission('library:upload') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
@@ -1333,6 +1308,26 @@ export function FileManagerPage() {
   // Filter and sort state (persist sort preferences to localStorage)
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState<string>('all');
+  // Tag chip-row — additive on top of `filterType`. AND across selected
+  // tags so the user can express "sliced multi-plate 3MFs" by activating
+  // both `sliced` and `multiplate`. Persisted to localStorage so a
+  // power-user's filter survives page reloads.
+  const [filterTags, setFilterTags] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem('library-filter-tags');
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed.filter((t) => typeof t === 'string') : [];
+    } catch {
+      return [];
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem('library-filter-tags', JSON.stringify(filterTags));
+    } catch {
+      /* private mode / quota — silently skip */
+    }
+  }, [filterTags]);
   const [filterUsername, setFilterUsername] = useState('');
   const [sortField, setSortField] = useState<SortField>(() => {
     const saved = localStorage.getItem('library-sort-field');
@@ -1425,6 +1420,16 @@ export function FileManagerPage() {
     if (filterType !== 'all') {
       result = result.filter((f) => f.file_type === filterType);
     }
+    // Tag chip-row filter — every selected tag must be present (AND).
+    // ``file_tags`` defaults to ``[]`` on the server side so older rows
+    // before m036 (impossible in practice — backfill runs on upgrade)
+    // would simply not match and silently drop. That's intentional: a
+    // user with a tag chip active expects to see only tagged rows.
+    if (filterTags.length > 0) {
+      result = result.filter((f) =>
+        filterTags.every((tag) => (f.file_tags ?? []).includes(tag)),
+      );
+    }
 
     // Apply username filter
     if (filterUsername.trim()) {
@@ -1455,7 +1460,7 @@ export function FileManagerPage() {
     });
 
     return result;
-  }, [files, searchQuery, filterType, filterUsername, sortField, sortDirection]);
+  }, [files, searchQuery, filterType, filterTags, filterUsername, sortField, sortDirection]);
 
   // Check if disk space is low
   const isDiskSpaceLow = useMemo(() => {
@@ -1675,17 +1680,14 @@ export function FileManagerPage() {
     onError: (error: Error) => showToast(error.message, 'error'),
   });
 
-  // Helper to check if a file is sliced (printable)
-  const isSlicedFile = useCallback((filename: string) => {
-    const lower = filename.toLowerCase();
-    return lower.endsWith('.gcode') || lower.includes('.gcode.');
-  }, []);
-
-  // Get sliced files from selection
+  // Get sliced files from selection — predicate now reads from
+  // ``file_tags`` via the shared ``isSliced`` helper instead of a
+  // local filename-suffix scan, so bulk-print actions agree with the
+  // per-row Print button on what counts as "printable".
   const selectedSlicedFiles = useMemo(() => {
     if (!files) return [];
-    return files.filter(f => selectedFiles.includes(f.id) && isSlicedFile(f.filename));
-  }, [files, selectedFiles, isSlicedFile]);
+    return files.filter((f) => selectedFiles.includes(f.id) && isSliced(f));
+  }, [files, selectedFiles]);
 
   // Handlers
   const handleFileSelect = useCallback((id: number) => {
@@ -2168,6 +2170,61 @@ export function FileManagerPage() {
               </div>
             </div>
 
+            {/* Tag chip-row — additive multi-select on top of the type
+                dropdown. Each chip toggles AND-membership so users can
+                express "sliced multi-plate 3MFs" by activating both
+                ``sliced`` and ``multiplate``. Only renders the chips
+                whose tag actually appears on at least one of the loaded
+                files — keeps the row tight on installs that don't use
+                e.g. MakerWorld. */}
+            {(() => {
+              const presentTags = new Set<string>();
+              for (const f of files ?? []) {
+                for (const tag of f.file_tags ?? []) presentTags.add(tag);
+              }
+              const visibleChips = KNOWN_FILE_TAGS.filter((t) => presentTags.has(t));
+              if (visibleChips.length === 0) return null;
+              return (
+                <div className="flex items-center gap-1 flex-wrap pt-2 border-t border-bambu-dark-tertiary">
+                  <span className="text-xs text-bambu-gray mr-1">{t('library.tagFilter')}:</span>
+                  {visibleChips.map((tag) => {
+                    const active = filterTags.includes(tag);
+                    const style = getTagStyle(tag);
+                    const label = style ? t(`library.tags.${tag}`, style.label) : tag.toUpperCase();
+                    return (
+                      <button
+                        key={tag}
+                        type="button"
+                        onClick={() =>
+                          setFilterTags((current) =>
+                            current.includes(tag)
+                              ? current.filter((c) => c !== tag)
+                              : [...current, tag],
+                          )
+                        }
+                        className={`text-xs px-2 py-0.5 rounded font-medium transition-colors ${
+                          active
+                            ? `${style?.bg ?? 'bg-bambu-gray/70'} ${style?.text ?? 'text-white'}`
+                            : 'bg-bambu-dark border border-bambu-dark-tertiary text-bambu-gray hover:text-white hover:border-bambu-gray'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
+                  {filterTags.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setFilterTags([])}
+                      className="text-xs px-2 py-0.5 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary transition-colors"
+                    >
+                      {t('library.tagFilterClear')}
+                    </button>
+                  )}
+                </div>
+              );
+            })()}
+
             {/* Selection row - rendered inside the same panel as a second row. */}
             {filteredAndSortedFiles.length > 0 && (
               <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-bambu-dark-tertiary">
@@ -2437,28 +2494,13 @@ export function FileManagerPage() {
                         )}
                       </div>
                     )}
-                    {/* Type */}
-                    <div className="flex items-center gap-1">
+                    {/* Composite badge row — same vocabulary + colours as
+                        the grid view, just compact. SourceBadge is the
+                        clickable provenance icon (opens MakerWorld URL etc.);
+                        FileTagBadges renders the rest as labelled pills. */}
+                    <div className="flex items-center gap-1 flex-wrap">
                       <SourceBadge sourceType={file.source_type} sourceUrl={file.source_url} variant="row" />
-                      <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
-                        file.file_type === '3mf' ? 'bg-bambu-green/20 text-bambu-green'
-                        : file.file_type === 'gcode' ? 'bg-blue-500/20 text-blue-400'
-                        : file.file_type === 'stl' ? 'bg-purple-500/20 text-purple-400'
-                        : 'bg-bambu-gray/20 text-bambu-gray'
-                      }`}>
-                        {file.file_type.toUpperCase()}
-                      </span>
-                      {file.swap_compatible && (
-                        <span className="text-[10px] px-1 py-0.5 bg-amber-500/20 text-amber-400 rounded">SWAP</span>
-                      )}
-                      {file.is_multi_plate && (
-                        <span
-                          className="text-[10px] px-1 py-0.5 bg-cyan-500/20 text-cyan-400 rounded"
-                          title={t('fileManager.multiPlateBadgeTooltip')}
-                        >
-                          MP
-                        </span>
-                      )}
+                      <FileTagBadges tags={file.file_tags} compact />
                     </div>
                     {/* Size */}
                     <div className="text-sm text-bambu-gray">{formatFileSize(file.file_size)}</div>
@@ -2472,7 +2514,7 @@ export function FileManagerPage() {
                       {/* Plate gallery — leftmost so the eye scans the row
                           left-to-right with the most "what's inside" action
                           first. Only multi-plate sliced .gcode.3mf qualifies. */}
-                      {file.file_type === '3mf' && isSlicedFilename(file.filename) && file.is_multi_plate && (
+                      {isSliced(file) && hasTag(file.file_tags, '3mf') && isMultiPlate(file) && (
                         <button
                           onClick={() => setGalleryFile(file)}
                           className="p-1.5 rounded transition-colors hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green"
@@ -2500,7 +2542,7 @@ export function FileManagerPage() {
                           <Link2 className="w-4 h-4" />
                         </button>
                       ) : null}
-                      {isSlicedFilename(file.filename) && (
+                      {isSliced(file) && (
                         <>
                           {/* Notes (gh#3) - bare inline button, matches Print/Clock/Box styling */}
                           <LibraryFileNotesButton fileId={file.id} initialCount={file.notes_count} variant="inline" />

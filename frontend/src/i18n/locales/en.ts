@@ -2697,6 +2697,7 @@ export default {
     failed: 'Slice failed',
     printerMismatch: 'This 3MF was sliced for {{source}}, but you picked {{target}}. The slicer CLI cannot re-slice a 3MF for a different printer — open the source in Bambu Studio, change the printer, and re-export.',
     sidecarPicker: 'Slice with',
+    sidecarHeader: 'Sidecars',
     tier: {
       local: 'Imported',
       cloud: 'Cloud',
@@ -2707,6 +2708,40 @@ export default {
       expired: 'Bambu Cloud session expired — sign in again to refresh your cloud presets.',
       unreachable: 'Bambu Cloud is unreachable right now. Local and standard presets still work.',
     },
+  },
+
+  slicerHealth: {
+    sectionTitle: 'Slicer Sidecars',
+    sectionDescription: 'Live status of the OrcaSlicer / BambuStudio HTTP sidecars BamDude calls for server-side slicing. Configure URLs in Settings → Profiles → Slicer API.',
+    notEnabled: 'Server-side slicing is disabled in Settings → Profiles → Slicer API.',
+    checking: 'Checking {{label}}…',
+    ready: '{{label}} ready (v{{version}})',
+    unreachable: '{{label}} unreachable: {{error}}',
+    statusChecking: 'checking…',
+    statusReady: 'ready · v{{version}}',
+    statusOffline: 'offline',
+    cardReady: 'Ready · v{{version}}',
+    cardOffline: 'Offline',
+    active: 'active',
+  },
+
+  library: {
+    // Composite tag labels (m036). Surfaced by ``<FileTagBadges>`` in the
+    // file manager and by the chip-row filter. Short, all-caps for badge
+    // density. Keep en + uk in sync.
+    tags: {
+      '3mf': '3MF',
+      gcode: 'GCODE',
+      stl: 'STL',
+      step: 'STEP',
+      multiplate: 'MP',
+      swap: 'SWAP',
+      sliced: 'SLICED',
+      makerworld: 'MW',
+      project: 'PROJ',
+    },
+    tagFilter: 'Tags',
+    tagFilterClear: 'Clear tag filter',
   },
 
   libraryTrash: {

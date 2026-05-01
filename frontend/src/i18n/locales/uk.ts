@@ -2707,6 +2707,7 @@ export default {
     failed: 'Помилка нарізання',
     printerMismatch: 'Цей 3MF було нарізано для {{source}}, але ви вибрали {{target}}. Слайсер CLI не може перенарізати 3MF для іншого принтера — відкрийте джерело в Bambu Studio, змініть принтер та переекспортуйте.',
     sidecarPicker: 'Нарізати в',
+    sidecarHeader: 'Sidecar',
     tier: {
       local: 'Імпортовані',
       cloud: 'Cloud',
@@ -2717,6 +2718,37 @@ export default {
       expired: 'Сесія Bambu Cloud закінчилася — увійдіть знову, щоб оновити cloud-пресети.',
       unreachable: 'Bambu Cloud зараз недоступний. Локальні та стандартні пресети все одно працюють.',
     },
+  },
+
+  slicerHealth: {
+    sectionTitle: 'Slicer-sidecar\'и',
+    sectionDescription: 'Поточний стан HTTP-sidecar\'ів OrcaSlicer / BambuStudio, які BamDude викликає для server-side слайсингу. URL налаштовуються у Settings → Profiles → Slicer API.',
+    notEnabled: 'Server-side слайсинг вимкнено у Settings → Profiles → Slicer API.',
+    checking: 'Перевірка {{label}}…',
+    ready: '{{label}} готовий (v{{version}})',
+    unreachable: '{{label}} недоступний: {{error}}',
+    statusChecking: 'перевірка…',
+    statusReady: 'готовий · v{{version}}',
+    statusOffline: 'офлайн',
+    cardReady: 'Готовий · v{{version}}',
+    cardOffline: 'Офлайн',
+    active: 'активний',
+  },
+
+  library: {
+    tags: {
+      '3mf': '3MF',
+      gcode: 'GCODE',
+      stl: 'STL',
+      step: 'STEP',
+      multiplate: 'MP',
+      swap: 'SWAP',
+      sliced: 'SLICED',
+      makerworld: 'MW',
+      project: 'PROJ',
+    },
+    tagFilter: 'Теги',
+    tagFilterClear: 'Скинути фільтр тегів',
   },
 
   libraryTrash: {

@@ -682,6 +682,31 @@ endsolid cube"""
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_upload_sliced_gcode_3mf_collapses_to_gcode_type(self, async_client: AsyncClient, db_session):
+        """Sliced ``.gcode.3mf`` upload must end up with file_type='gcode'
+        and file_tags including BOTH 'gcode' and '3mf'.
+
+        Pre-m035 the upload route stored ``file_type='3mf'`` for sliced
+        outputs (because the trailing extension is ``.3mf``), inconsistent
+        with the slicer-output route which stored ``"gcode"``. Helper +
+        m035 backfill close this gap. Test guards the regression.
+        """
+        # Empty content — ThreeMFParser will fail on the not-a-zip but
+        # the failure is non-fatal (logged) and shouldn't affect file_type.
+        files = {"file": ("output.gcode.3mf", b"not really a zip", "application/octet-stream")}
+        response = await async_client.post("/api/v1/library/files", files=files)
+        assert response.status_code == 200
+        result = response.json()
+        assert result["filename"] == "output.gcode.3mf"
+        assert result["file_type"] == "gcode", "Sliced 3MF must collapse to file_type='gcode'"
+        # Composite tags carry both formats so the UI can render the
+        # green 3MF + blue GCODE badge pair the user expects.
+        tags = result.get("file_tags") or []
+        assert "gcode" in tags
+        assert "3mf" in tags
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_upload_file_with_stl_thumbnail_param(self, async_client: AsyncClient, db_session):
         """Verify file upload accepts generate_stl_thumbnails parameter."""
         # Create a simple STL file

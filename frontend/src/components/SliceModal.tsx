@@ -1,4 +1,4 @@
-import { Cloud, CloudOff, Cog, Loader2, X } from 'lucide-react';
+import { Check, Cloud, CloudOff, Cog, Loader2, X, XCircle } from 'lucide-react';
 type SlicerKind = 'orcaslicer' | 'bambu_studio';
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -15,6 +15,7 @@ import {
 } from '../api/client';
 import { useSliceJobTracker } from '../contexts/SliceJobTrackerContext';
 import { useToast } from '../contexts/ToastContext';
+import { useSlicerHealth } from '../hooks/useSlicerHealth';
 import { PlatePickerModal } from './PlatePickerModal';
 import type { PlateFilament } from '../types/plates';
 import { normalizeColorForCompare, colorsAreSimilar } from '../utils/amsHelpers';
@@ -290,17 +291,48 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
       return null;
     }
   });
-  // First-time default = global preferred_slicer. Only fires once both
-  // health probes resolve; subsequent renders keep whatever the user picked.
+  // Auto-select / default pick logic. Two cases beyond "user already picked":
+  //
+  //   1. Only one sidecar is healthy → lock to that one. Stops the modal
+  //      from defaulting to a global preferred_slicer that's offline,
+  //      and visually reflects "you have one option" in the picker cards.
+  //
+  //   2. Both healthy → first-time default to the global preferred_slicer
+  //      (same as before). Subsequent renders keep whatever the user picked
+  //      (persisted via localStorage on a separate effect).
+  //
+  // Also: if the user previously picked a sidecar that is now offline,
+  // override to the healthy one. Otherwise the Slice button would silently
+  // submit an offline-targeted request and fail at backend.
   useEffect(() => {
-    if (!showSlicerPicker || pickedSlicer != null) return;
+    if (orcaHealthQuery.isLoading || bambuHealthQuery.isLoading) return;
+    const onlyOrca = orcaHealthy && !bambuHealthy;
+    const onlyBambu = bambuHealthy && !orcaHealthy;
+    if (onlyOrca) {
+      if (pickedSlicer !== 'orcaslicer') setPickedSlicer('orcaslicer');
+      return;
+    }
+    if (onlyBambu) {
+      if (pickedSlicer !== 'bambu_studio') setPickedSlicer('bambu_studio');
+      return;
+    }
+    if (!showSlicerPicker) return; // neither healthy — leave as-is
+    if (pickedSlicer != null) return;
     const preferred = settingsQuery.data?.preferred_slicer;
     if (preferred === 'orcaslicer' || preferred === 'bambu_studio') {
       setPickedSlicer(preferred);
     } else {
       setPickedSlicer('bambu_studio');
     }
-  }, [showSlicerPicker, pickedSlicer, settingsQuery.data?.preferred_slicer]);
+  }, [
+    showSlicerPicker,
+    orcaHealthy,
+    bambuHealthy,
+    orcaHealthQuery.isLoading,
+    bambuHealthQuery.isLoading,
+    pickedSlicer,
+    settingsQuery.data?.preferred_slicer,
+  ]);
   // Persist user's pick across modal opens.
   useEffect(() => {
     if (pickedSlicer == null || typeof localStorage === 'undefined') return;
@@ -433,7 +465,12 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
         // Per-job slicer override. Only sent when the picker is actually
         // visible to the user (both sidecars healthy) AND the user picked
         // something — otherwise the global preferred_slicer setting decides.
-        ...(showSlicerPicker && pickedSlicer != null ? { slicer: pickedSlicer } : {}),
+        // Send `slicer` whenever we have a concrete pick (user-chosen,
+        // auto-locked because only one is healthy, or persisted from
+        // localStorage). Backend falls back to the global preferred_slicer
+        // setting only when the field is omitted — and that path is fine
+        // when neither side reports state yet (loading).
+        ...(pickedSlicer != null ? { slicer: pickedSlicer } : {}),
       };
       if (source.kind === 'libraryFile') {
         return api.sliceLibraryFile(source.id, body);
@@ -559,13 +596,18 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
           {presetsQuery.data && (
             <>
               <CloudStatusBanner status={presetsQuery.data.cloud_status} />
-              {showSlicerPicker && (
-                <SlicerPicker
-                  value={pickedSlicer}
-                  onChange={setPickedSlicer}
-                  disabled={isEnqueuing}
-                />
-              )}
+              {/* Slicer picker — two big card-buttons matching the
+                  "Filament Tracking" pattern in Settings. Each card carries
+                  its own live health status (version / offline / checking)
+                  pulled from the same shared React Query cache. Always
+                  renders so the user sees what's available even when only
+                  one sidecar is up; offline ones are disabled and can't
+                  be picked. */}
+              <SlicerPicker
+                value={pickedSlicer}
+                onChange={setPickedSlicer}
+                disabled={isEnqueuing}
+              />
               <PresetDropdown
                 label={t('slice.printer', 'Printer profile')}
                 slot="printer"
@@ -800,9 +842,15 @@ function PresetDropdown({ label, slot, data, value, onChange, disabled, swatchCo
   );
 }
 
-// Per-job slicer toggle. Only mounted when both sidecars are healthy
-// (parent gates on `showSlicerPicker`), so the radios here are always
-// active — no offline state to render.
+// Per-job slicer picker, card-style — mirrors the "Filament Tracking"
+// section in Settings. Two big card-buttons, each carrying a live
+// reachability badge (version / offline / checking) so the user sees
+// what's available WITHOUT a separate status strip cluttering the modal.
+//
+// Disabled cards (sidecar offline) cannot be picked. When only one is
+// healthy the modal still works — the parent state pre-selects whatever
+// is reachable; if neither, the Slice button will surface the real
+// error from the backend at submit time.
 function SlicerPicker({
   value,
   onChange,
@@ -818,36 +866,97 @@ function SlicerPicker({
     { kind: 'bambu_studio', label: 'BambuStudio' },
   ];
   return (
-    <fieldset className="space-y-1">
-      <legend className="text-xs text-bambu-gray mb-1">
+    <fieldset>
+      <legend className="text-xs text-bambu-gray mb-2">
         {t('slice.sidecarPicker', 'Slice with')}
       </legend>
-      <div className="flex gap-2">
-        {options.map((opt) => {
-          const isSelected = value === opt.kind;
-          return (
-            <label
-              key={opt.kind}
-              className={`flex items-center gap-2 px-3 py-1.5 rounded-md border text-sm cursor-pointer transition-colors ${
-                isSelected
-                  ? 'border-bambu-green bg-bambu-green/10 text-white'
-                  : 'border-bambu-dark-tertiary text-bambu-gray hover:text-white hover:border-bambu-gray'
-              } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
-            >
-              <input
-                type="radio"
-                name="slicer-pick"
-                value={opt.kind}
-                checked={isSelected}
-                disabled={disabled}
-                onChange={() => onChange(opt.kind)}
-                className="accent-bambu-green"
-              />
-              <span>{opt.label}</span>
-            </label>
-          );
-        })}
+      <div className="grid grid-cols-2 gap-3">
+        {options.map((opt) => (
+          <SlicerPickerCard
+            key={opt.kind}
+            kind={opt.kind}
+            label={opt.label}
+            selected={value === opt.kind}
+            outerDisabled={!!disabled}
+            onSelect={() => onChange(opt.kind)}
+          />
+        ))}
       </div>
     </fieldset>
+  );
+}
+
+function SlicerPickerCard({
+  kind,
+  label,
+  selected,
+  outerDisabled,
+  onSelect,
+}: {
+  kind: SlicerKind;
+  label: string;
+  selected: boolean;
+  outerDisabled: boolean;
+  onSelect: () => void;
+}) {
+  const { t } = useTranslation();
+  const { data, isLoading } = useSlicerHealth(kind);
+  const healthy = data?.healthy === true;
+  const version = data?.version ?? null;
+  const error = data?.error ?? null;
+  // Disable when the outer modal is busy OR the sidecar isn't reachable
+  // — clicking an offline card can't lead to a successful slice.
+  const isDisabled = outerDisabled || isLoading || !healthy;
+
+  // Status text shown as the card's "description" line.
+  const statusLabel = isLoading
+    ? t('slicerHealth.statusChecking', 'checking…')
+    : healthy
+      ? t('slicerHealth.cardReady', { version: version ?? '?', defaultValue: 'Ready · v{{version}}' })
+      : t('slicerHealth.cardOffline', 'Offline');
+
+  // Color tones — same pattern as Settings' Filament Tracking cards:
+  // green for selected, gray for unselected; faded for disabled-offline.
+  const baseClass = selected
+    ? 'border-bambu-green bg-bambu-green/10'
+    : isDisabled
+      ? 'border-bambu-dark-tertiary bg-bambu-dark/50 opacity-60 cursor-not-allowed'
+      : 'border-bambu-dark-tertiary bg-bambu-dark hover:border-bambu-gray/50';
+  const iconClass = selected ? 'text-bambu-green' : healthy ? 'text-bambu-gray' : 'text-red-400';
+  const titleClass = selected ? 'text-white' : 'text-bambu-gray';
+  const descClass = selected ? 'text-bambu-gray' : 'text-bambu-gray/60';
+
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        if (!isDisabled) onSelect();
+      }}
+      disabled={isDisabled}
+      className={`p-3 rounded-lg border-2 text-left transition-colors ${baseClass}`}
+    >
+      <div className="flex items-center gap-2 mb-1.5">
+        {isLoading ? (
+          <Loader2 className={`w-4 h-4 animate-spin ${iconClass}`} />
+        ) : healthy ? (
+          <Cog className={`w-4 h-4 ${iconClass}`} />
+        ) : (
+          <XCircle className={`w-4 h-4 ${iconClass}`} />
+        )}
+        <span className={`text-sm font-medium ${titleClass}`}>{label}</span>
+      </div>
+      <p className={`text-xs ${descClass}`}>{statusLabel}</p>
+      {/* Show the sidecar error inline when offline so a stale URL or
+          DNS failure doesn't require a hover-tooltip to discover. */}
+      {!isLoading && !healthy && error && (
+        <p className="text-xs text-red-400/80 mt-1 break-words">{error}</p>
+      )}
+      {selected && healthy && (
+        <div className="flex items-center gap-1 mt-2">
+          <Check className="w-3 h-3 text-bambu-green" />
+          <span className="text-xs text-bambu-green">{t('slicerHealth.active', 'active')}</span>
+        </div>
+      )}
+    </button>
   );
 }
