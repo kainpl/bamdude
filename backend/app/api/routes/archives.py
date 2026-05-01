@@ -1734,9 +1734,15 @@ async def get_thumbnail(
     """Get the thumbnail image.
 
     Note: Unauthenticated - loaded via <img> tags which can't send auth headers.
+
+    Trashed archives are intentionally accessible here so the trash UI can
+    render previews next to the filename. The metadata is already exposed
+    via the trash listing endpoint, so a thumbnail-only access leak is a
+    no-op surface — the trashed row is otherwise visible to anyone the
+    listing serves.
     """
     service = ArchiveService(db)
-    archive = await service.get_archive(archive_id)
+    archive = await service.get_archive(archive_id, include_trashed=True)
     if not archive or not archive.thumbnail_path:
         raise HTTPException(404, "Thumbnail not found")
 

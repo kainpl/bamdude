@@ -2791,6 +2791,7 @@ export default {
     bulkRestore: 'Відновити виділене',
     bulkPurge: 'Видалити виділене',
     col: {
+      preview: 'Прев\'ю',
       filename: 'Файл',
       folder: 'Папка',
       size: 'Розмір',
@@ -2923,6 +2924,7 @@ export default {
     bulkRestore: 'Відновити виділене',
     bulkPurge: 'Видалити виділене',
     col: {
+      preview: 'Прев\'ю',
       filename: 'Архів',
       printName: 'Назва друку',
       size: 'Розмір',

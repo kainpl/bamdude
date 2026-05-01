@@ -348,6 +348,14 @@ function ArchiveCard({
     mutationFn: () => api.deleteArchive(archive.id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['archives'] });
+      // Soft-delete shifts the row into the archive trash table —
+      // refresh both the trash badge counter on this page's header and
+      // the trash list query so a follow-up navigation to the archive
+      // trash page picks the new row up immediately. Without this the
+      // global 60s staleTime keeps the trash queries on a snapshot that
+      // pre-dates this delete.
+      queryClient.invalidateQueries({ queryKey: ['archive-trash'] });
+      queryClient.invalidateQueries({ queryKey: ['archive-trash-count'] });
       showToast(t('archives.toast.archiveDeleted'));
     },
     onError: () => {
@@ -1668,6 +1676,14 @@ function ArchiveListRow({
     mutationFn: () => api.deleteArchive(archive.id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['archives'] });
+      // Soft-delete shifts the row into the archive trash table —
+      // refresh both the trash badge counter on this page's header and
+      // the trash list query so a follow-up navigation to the archive
+      // trash page picks the new row up immediately. Without this the
+      // global 60s staleTime keeps the trash queries on a snapshot that
+      // pre-dates this delete.
+      queryClient.invalidateQueries({ queryKey: ['archive-trash'] });
+      queryClient.invalidateQueries({ queryKey: ['archive-trash-count'] });
       showToast(t('archives.toast.archiveDeleted'));
     },
     onError: () => {
@@ -2688,6 +2704,8 @@ export function ArchivesPage() {
     onSuccess: (count) => {
       queryClient.invalidateQueries({ queryKey: ['archives'] });
       queryClient.invalidateQueries({ queryKey: ['archive-filter-options'] });
+      queryClient.invalidateQueries({ queryKey: ['archive-trash'] });
+      queryClient.invalidateQueries({ queryKey: ['archive-trash-count'] });
       setSelectedIds(new Set());
       showToast(t('archives.page.archivesDeleted', { count }));
     },

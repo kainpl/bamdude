@@ -1533,6 +1533,13 @@ export function FileManagerPage() {
       queryClient.invalidateQueries({ queryKey: ['library-files'] });
       queryClient.invalidateQueries({ queryKey: ['library-folders'] });
       queryClient.invalidateQueries({ queryKey: ['library-stats'] });
+      // Soft-delete moves the row into the trash table — refresh both the
+      // header badge counter and the trash list so navigating to the
+      // trash page picks the new row up immediately. Without this the
+      // global 60s staleTime on QueryClient (App.tsx) keeps the trash
+      // queries on a stale snapshot that pre-dates this delete.
+      queryClient.invalidateQueries({ queryKey: ['library-trash'] });
+      queryClient.invalidateQueries({ queryKey: ['library-trash-count'] });
       setSelectedFiles((prev) => prev.filter((id) => id !== deleteConfirm?.id));
       setDeleteConfirm(null);
       showToast(t('fileManager.toast.fileDeleted'), 'success');
@@ -1549,6 +1556,8 @@ export function FileManagerPage() {
       queryClient.invalidateQueries({ queryKey: ['library-files'] });
       queryClient.invalidateQueries({ queryKey: ['library-folders'] });
       queryClient.invalidateQueries({ queryKey: ['library-stats'] });
+      queryClient.invalidateQueries({ queryKey: ['library-trash'] });
+      queryClient.invalidateQueries({ queryKey: ['library-trash-count'] });
       showToast(t('fileManager.toast.filesDeleted', { count: fileIds.length }), 'success');
       setSelectedFiles([]);
       setDeleteConfirm(null);

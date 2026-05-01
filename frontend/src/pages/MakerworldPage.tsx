@@ -251,6 +251,12 @@ export function MakerworldPage() {
     onSuccess: (_data, { profileId }) => {
       queryClient.invalidateQueries({ queryKey: ['library-files'] });
       queryClient.invalidateQueries({ queryKey: ['library-folders'] });
+      // Soft-delete lands the row in the library trash; keep the trash
+      // badge / list in sync so a follow-up trip to /files/trash reflects
+      // the import that was just removed (60s global staleTime would
+      // otherwise serve a stale snapshot).
+      queryClient.invalidateQueries({ queryKey: ['library-trash'] });
+      queryClient.invalidateQueries({ queryKey: ['library-trash-count'] });
       queryClient.invalidateQueries({ queryKey: ['makerworld-recent-imports'] });
       setImportsByProfile((prev) => {
         const next = { ...prev };

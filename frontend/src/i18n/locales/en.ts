@@ -2783,6 +2783,7 @@ export default {
     bulkRestore: 'Restore selected',
     bulkPurge: 'Delete selected',
     col: {
+      preview: 'Preview',
       filename: 'File',
       folder: 'Folder',
       size: 'Size',
@@ -2915,6 +2916,7 @@ export default {
     bulkRestore: 'Restore selected',
     bulkPurge: 'Delete selected',
     col: {
+      preview: 'Preview',
       filename: 'Archive',
       printName: 'Print name',
       size: 'Size',

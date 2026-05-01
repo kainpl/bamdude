@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { ArrowLeft, RotateCcw, Save, Trash2, Loader2 } from 'lucide-react';
+import { ArrowLeft, ImageOff, RotateCcw, Save, Trash2, Loader2 } from 'lucide-react';
 
 import { api } from '../api/client';
 import { Button } from '../components/Button';
@@ -311,6 +311,7 @@ export function LibraryTrashPage() {
                       className="rounded border-bambu-dark-tertiary cursor-pointer"
                     />
                   </th>
+                  <th className="px-3 py-2 w-14" aria-label={t('libraryTrash.col.preview', { defaultValue: 'Preview' })} />
                   <th className="px-3 py-2 font-medium">{t('libraryTrash.col.filename')}</th>
                   <th className="px-3 py-2 font-medium">{t('libraryTrash.col.folder')}</th>
                   <th className="px-3 py-2 font-medium text-right">{t('libraryTrash.col.size')}</th>
@@ -331,6 +332,28 @@ export function LibraryTrashPage() {
                         aria-label={t('libraryTrash.selectOne', { filename: item.filename })}
                         className="rounded border-bambu-dark-tertiary cursor-pointer"
                       />
+                    </td>
+                    <td className="px-3 py-2">
+                      {/* Thumbnail preview — fixed 10×10 tile so a long
+                          filename column doesn't reflow when some rows
+                          have a thumb and others don't. Backend serves
+                          ``/library/files/{id}/thumbnail`` for trashed
+                          rows too (lookup is by id, no deleted_at gate). */}
+                      <div className="w-10 h-10 rounded bg-bambu-dark border border-bambu-dark-tertiary overflow-hidden flex items-center justify-center">
+                        {item.thumbnail_path ? (
+                          <img
+                            src={api.getLibraryFileThumbnailUrl(item.id)}
+                            alt=""
+                            className="w-full h-full object-cover"
+                            loading="lazy"
+                            onError={(e) => {
+                              (e.currentTarget as HTMLImageElement).style.display = 'none';
+                            }}
+                          />
+                        ) : (
+                          <ImageOff className="w-4 h-4 text-bambu-gray/50" aria-hidden />
+                        )}
+                      </div>
                     </td>
                     <td
                       className="px-3 py-2 text-white truncate max-w-md"
