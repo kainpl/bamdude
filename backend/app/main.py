@@ -2090,13 +2090,17 @@ async def on_print_start(printer_id: int, data: dict):
             temp_path = None
             downloaded_filename = None
 
-        # Post-download content-hash adoption: second safety net in case the
-        # pre-download name check missed (e.g. an older BamDude version had
-        # flipped the original archive to "cancelled" via the now-removed
-        # stale heuristic, so a name+status="printing" lookup came up empty).
-        # If the same bytes already have a row on this printer, adopt it
-        # instead of creating a duplicate — even if the row is in a terminal
-        # status, flip it back to "printing" because the printer clearly is.
+        # Post-download content-hash adoption: secondary safety net for the
+        # mid-print recovery case (BamDude restarted while a print was active
+        # → MQTT replay fires on_print_start, but pre-download name lookup
+        # missed because of a name normalisation quirk). Only adopts archives
+        # that are STILL in-flight on this printer (status="printing" with no
+        # completed_at). Terminal-status rows (completed/failed/cancelled) are
+        # NEVER touched: when a user reprints the same file from the printer
+        # screen, the prior history must stay intact and the new run must get
+        # its own archive row. The earlier "flip terminal back to printing"
+        # behaviour ate users' history when one file was reprinted across
+        # multiple printers from the screen.
         if temp_path:
             from backend.app.services.archive import ArchiveService as _ArchiveSvc
 
@@ -2104,6 +2108,8 @@ async def on_print_start(printer_id: int, data: dict):
             hash_match_result = await db.execute(
                 select(PrintArchive)
                 .where(PrintArchive.printer_id == printer_id)
+                .where(PrintArchive.status == "printing")
+                .where(PrintArchive.completed_at.is_(None))
                 .where(PrintArchive.file_path != "")
                 .where(
                     or_(
@@ -2117,16 +2123,9 @@ async def on_print_start(printer_id: int, data: dict):
             hash_match = hash_match_result.scalar_one_or_none()
             if hash_match is not None:
                 logger.info(
-                    "Adopting existing archive %s by content_hash match (status was %s)",
+                    "Adopting in-flight archive %s by content_hash match",
                     hash_match.id,
-                    hash_match.status,
                 )
-                if hash_match.status != "printing":
-                    hash_match.status = "printing"
-                    hash_match.failure_reason = None
-                    if hash_match.completed_at:
-                        hash_match.completed_at = None
-                    await db.commit()
                 # Backfill subtask_id so the next restart skips the content_hash path.
                 if subtask_id and hash_match.subtask_id is None:
                     hash_match.subtask_id = subtask_id
