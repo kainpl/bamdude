@@ -159,7 +159,12 @@ describe('ModelViewerModal', () => {
       });
     });
 
-    it('shows not available label when model is not available', async () => {
+    it('hides 3D Model tab when has_model is false', async () => {
+      // Per the 0.4.2b3 capability rework, unavailable tabs are no longer
+      // rendered with a "(not available)" suffix — the tab bar collapses to
+      // whichever capabilities exist for that source. has_gcode stays true
+      // so we have at least one tab to render (the bar itself only renders
+      // when there's something to show).
       server.use(
         http.get('/api/v1/archives/:id/capabilities', () => {
           return HttpResponse.json({
@@ -178,11 +183,12 @@ describe('ModelViewerModal', () => {
       );
 
       await waitFor(() => {
-        expect(screen.getByText('(not available)')).toBeInTheDocument();
+        expect(screen.getByText('G-code Preview')).toBeInTheDocument();
       });
+      expect(screen.queryByText('3D Model')).not.toBeInTheDocument();
     });
 
-    it('shows not sliced label when gcode is not available', async () => {
+    it('hides G-code tab when has_gcode is false', async () => {
       server.use(
         http.get('/api/v1/archives/:id/capabilities', () => {
           return HttpResponse.json({
@@ -201,32 +207,9 @@ describe('ModelViewerModal', () => {
       );
 
       await waitFor(() => {
-        expect(screen.getByText('(not sliced)')).toBeInTheDocument();
+        expect(screen.getByText('3D Model')).toBeInTheDocument();
       });
-    });
-
-    it('disables tab when capability is not available', async () => {
-      server.use(
-        http.get('/api/v1/archives/:id/capabilities', () => {
-          return HttpResponse.json({
-            ...mockCapabilities,
-            has_gcode: false,
-          });
-        })
-      );
-
-      render(
-        <ModelViewerModal
-          archiveId={1}
-          title="Test Model"
-          onClose={mockOnClose}
-        />
-      );
-
-      await waitFor(() => {
-        const gcodeTab = screen.getByText('G-code Preview').closest('button');
-        expect(gcodeTab).toBeDisabled();
-      });
+      expect(screen.queryByText('G-code Preview')).not.toBeInTheDocument();
     });
   });
 
