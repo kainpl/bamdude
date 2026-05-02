@@ -4285,7 +4285,7 @@ export default {
     pickPlate: 'Pick a plate',
     pickPlatePrompt: 'Pick a plate from the panel above to preview it.',
     plateNumber: 'Plate {{number}}',
-    plateCount: '{{count}} plate',
+    plateCount_one: '{{count}} plate',
     plateCount_other: '{{count}} plates',
     objectCount: '{{count}} object',
     objectCount_other: '{{count}} objects',

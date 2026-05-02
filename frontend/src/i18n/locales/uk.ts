@@ -4282,7 +4282,7 @@ export default {
     pickPlate: 'Виберіть плиту',
     pickPlatePrompt: 'Виберіть плиту в панелі вище, щоб переглянути її.',
     plateNumber: 'Плита {{number}}',
-    plateCount: '{{count}} плита',
+    plateCount_one: '{{count}} плита',
     plateCount_few: '{{count}} плити',
     plateCount_many: '{{count}} плит',
     plateCount_other: '{{count}} плит',
