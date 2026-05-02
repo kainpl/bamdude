@@ -72,6 +72,7 @@ import { SliceModal } from '../components/SliceModal';
 import { UploadModal } from '../components/UploadModal';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { PurgeArchivesModal } from '../components/PurgeArchivesModal';
+import { TrashSplitButton } from '../components/TrashSplitButton';
 import { EditArchiveModal } from '../components/EditArchiveModal';
 import { ContextMenu, type ContextMenuItem } from '../components/ContextMenu';
 import { BatchTagModal } from '../components/BatchTagModal';
@@ -348,6 +349,14 @@ function ArchiveCard({
     mutationFn: () => api.deleteArchive(archive.id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['archives'] });
+      // Soft-delete shifts the row into the archive trash table —
+      // refresh both the trash badge counter on this page's header and
+      // the trash list query so a follow-up navigation to the archive
+      // trash page picks the new row up immediately. Without this the
+      // global 60s staleTime keeps the trash queries on a snapshot that
+      // pre-dates this delete.
+      queryClient.invalidateQueries({ queryKey: ['archive-trash'] });
+      queryClient.invalidateQueries({ queryKey: ['archive-trash-count'] });
       showToast(t('archives.toast.archiveDeleted'));
     },
     onError: () => {
@@ -1256,6 +1265,7 @@ function ArchiveCard({
           archiveId={archive.id}
           title={archive.print_name || archive.filename}
           fileType={getArchiveFileType(archive.filename)}
+          archivePlateIndex={archive.plate_index}
           onClose={() => setShowViewer(false)}
         />
       )}
@@ -1668,6 +1678,14 @@ function ArchiveListRow({
     mutationFn: () => api.deleteArchive(archive.id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['archives'] });
+      // Soft-delete shifts the row into the archive trash table —
+      // refresh both the trash badge counter on this page's header and
+      // the trash list query so a follow-up navigation to the archive
+      // trash page picks the new row up immediately. Without this the
+      // global 60s staleTime keeps the trash queries on a snapshot that
+      // pre-dates this delete.
+      queryClient.invalidateQueries({ queryKey: ['archive-trash'] });
+      queryClient.invalidateQueries({ queryKey: ['archive-trash-count'] });
       showToast(t('archives.toast.archiveDeleted'));
     },
     onError: () => {
@@ -2218,6 +2236,7 @@ function ArchiveListRow({
           archiveId={archive.id}
           title={archive.print_name || archive.filename}
           fileType={getArchiveFileType(archive.filename)}
+          archivePlateIndex={archive.plate_index}
           onClose={() => setShowViewer(false)}
         />
       )}
@@ -2688,6 +2707,8 @@ export function ArchivesPage() {
     onSuccess: (count) => {
       queryClient.invalidateQueries({ queryKey: ['archives'] });
       queryClient.invalidateQueries({ queryKey: ['archive-filter-options'] });
+      queryClient.invalidateQueries({ queryKey: ['archive-trash'] });
+      queryClient.invalidateQueries({ queryKey: ['archive-trash-count'] });
       setSelectedIds(new Set());
       showToast(t('archives.page.archivesDeleted', { count }));
     },
@@ -3144,31 +3165,16 @@ export function ArchivesPage() {
               {t('archives.page.select')}
             </Button>
           )}
-          {hasPermission('archives:purge') && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setShowPurgeModal(true)}
-              title={t('archivePurge.headerTooltip')}
-            >
-              <Trash2 className="w-4 h-4 mr-2" />
-              {t('archivePurge.headerButton')}
-            </Button>
-          )}
           {hasAnyPermission('archives:delete_own', 'archives:delete_all') && (
-            <Link
-              to="/archives/trash"
-              className="inline-flex items-center px-3 py-1.5 text-sm rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary transition-colors"
-              title={t('archiveTrash.headerTooltip')}
-            >
-              <Trash2 className="w-4 h-4 mr-2" />
-              {t('archiveTrash.headerButton')}
-              {typeof archiveTrashCount === 'number' && archiveTrashCount > 0 && (
-                <span className="ml-1.5 px-1.5 py-0.5 text-xs rounded-full bg-bambu-green/20 text-bambu-green">
-                  {archiveTrashCount}
-                </span>
-              )}
-            </Link>
+            <TrashSplitButton
+              trashHref="/archives/trash"
+              trashLabel={t('archiveTrash.headerButton')}
+              trashTooltip={t('archiveTrash.headerTooltip')}
+              count={archiveTrashCount}
+              onPurgeClick={hasPermission('archives:purge') ? () => setShowPurgeModal(true) : undefined}
+              purgeLabel={t('archivePurge.headerButton')}
+              purgeTooltip={t('archivePurge.headerTooltip')}
+            />
           )}
         </div>
       </div>

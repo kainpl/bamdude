@@ -627,6 +627,10 @@ export interface Archive {
   bed_temperature: number | null;
   nozzle_temperature: number | null;
   sliced_for_model: string | null;  // Printer model this file was sliced for
+  // Which plate of the source 3MF was actually printed (m038). NULL for
+  // archives where the index couldn't be inferred (some legacy / external
+  // prints) — frontend falls back to "first plate" behaviour.
+  plate_index: number | null;
   status: string;
   started_at: string | null;
   completed_at: string | null;
@@ -1476,6 +1480,13 @@ export interface PresetRef {
   id: string;
 }
 
+export type BedType =
+  | 'Cool Plate'
+  | 'Engineering Plate'
+  | 'High Temp Plate'
+  | 'Textured PEI Plate'
+  | 'Supertack Plate';
+
 export interface SliceRequest {
   printer_preset_id?: number;
   process_preset_id?: number;
@@ -1490,6 +1501,24 @@ export interface SliceRequest {
   filament_presets?: PresetRef[];
   plate?: number;
   export_3mf?: boolean;
+  // Per-job slicer override. When the user has both OrcaSlicer and
+  // BambuStudio sidecars configured, the SliceModal exposes a radio so the
+  // slicer can be picked per source file. Falls back to the global
+  // preferred_slicer setting when omitted.
+  slicer?: 'orcaslicer' | 'bambu_studio';
+  // Bed plate override — forwarded to the sidecar as ``bedType``, becomes
+  // ``--curr-bed-type`` on the slicer CLI. Without this the CLI falls back
+  // to the source 3MF's per-plate bed_type (when present) and finally to
+  // "Cool Plate" (the upstream default — wrong for X1/A1 users who actually
+  // use Textured PEI / SuperTack).
+  bed_type?: BedType;
+}
+
+export interface SlicerHealth {
+  healthy: boolean;
+  url: string | null;
+  version?: string;
+  error?: string;
 }
 
 // GET /api/v1/slicer/presets — unified listing across cloud / local / standard.
@@ -4097,6 +4126,14 @@ export const api = {
       build_volume: { x: number; y: number; z: number };
       filament_colors: string[];
     }>(`/archives/${id}/capabilities`),
+  getLibraryFileCapabilities: (id: number) =>
+    request<{
+      has_model: boolean;
+      has_gcode: boolean;
+      has_source: boolean;
+      build_volume: { x: number; y: number; z: number };
+      filament_colors: string[];
+    }>(`/library/files/${id}/capabilities`),
   // Project Page
   getArchiveProjectPage: (id: number) =>
     request<{
@@ -5518,7 +5555,8 @@ export const api = {
   getLibraryFileThumbnailUrl: (id: number) => `${API_BASE}/library/files/${id}/thumbnail`,
   getLibraryFilePlateThumbnail: (id: number, plateIndex: number) =>
     `${API_BASE}/library/files/${id}/plate-thumbnail/${plateIndex}`,
-  getLibraryFileGcodeUrl: (id: number) => `${API_BASE}/library/files/${id}/gcode`,
+  getLibraryFileGcodeUrl: (id: number, plateId?: number | null) =>
+    `${API_BASE}/library/files/${id}/gcode${plateId != null ? `?plate_id=${plateId}` : ''}`,
   moveLibraryFiles: (fileIds: number[], folderId: number | null) =>
     request<{ status: string; moved: number }>('/library/files/move', {
       method: 'POST',
@@ -5699,6 +5737,12 @@ export const api = {
   // the browser from hitting /slice/progress/{id} directly).
   getPreviewSliceProgress: (requestId: string) =>
     request<SliceJobProgress | null>(`/slicer/preview-progress/${requestId}`),
+  // Reachability probe for a single sidecar — used by the SliceModal to
+  // disable a radio option when the picked slicer is offline. The backend
+  // caches results for 30 s per (kind, url) so render-time polls don't hit
+  // the wire on every dropdown open.
+  getSlicerHealth: (slicer: 'orcaslicer' | 'bambu_studio') =>
+    request<SlicerHealth>(`/slicer/health/${slicer}`),
 
   // Local Presets (OrcaSlicer imports)
   getLocalPresets: () =>
@@ -6067,6 +6111,15 @@ export interface LibraryFile {
   filename: string;
   file_path: string;
   file_type: string;
+  // Composite tag array (m036) — drives badges + chip-row filter in the
+  // file-manager. See ``compute_file_tags`` on the backend for the value
+  // vocabulary. Examples:
+  //   ['gcode']                         — raw .gcode upload
+  //   ['gcode', '3mf', 'sliced']        — server-side slicer output
+  //   ['3mf', 'multiplate']             — un-sliced multi-plate 3MF
+  //   ['stl', 'makerworld']             — STL pulled from MakerWorld
+  //   ['gcode', '3mf', 'multiplate', 'swap', 'sliced']  — the works
+  file_tags: string[];
   file_size: number;
   file_hash: string | null;
   thumbnail_path: string | null;
@@ -6101,6 +6154,8 @@ export interface LibraryFileListItem {
   is_external: boolean;
   filename: string;
   file_type: string;
+  // Composite tag array — see ``LibraryFile.file_tags``.
+  file_tags: string[];
   file_size: number;
   thumbnail_path: string | null;
   duplicate_count: number;

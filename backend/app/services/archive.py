@@ -109,8 +109,28 @@ class ThreeMFParser:
                             self.metadata["sliced_for_model"] = normalized
                         break
 
-                # Find the plate element (single-plate exports only have one plate)
-                plate = root.find(".//plate")
+                # Find the plate element. Single-plate exports only have one,
+                # but multi-plate containers carry every plate's metadata side
+                # by side. When ``self.plate_number`` is set (caller knows
+                # which plate ran) prefer the matching ``<plate>`` element so
+                # print_time / weight / printable_objects / per-slot filament
+                # usage all reflect the printed plate, not whatever happened
+                # to be plate 1 in the container.
+                plate = None
+                if self.plate_number:
+                    for candidate in root.findall(".//plate"):
+                        for meta in candidate.findall("metadata"):
+                            if meta.get("key") == "index":
+                                try:
+                                    if int(meta.get("value", "")) == self.plate_number:
+                                        plate = candidate
+                                        break
+                                except ValueError:
+                                    continue
+                        if plate is not None:
+                            break
+                if plate is None:
+                    plate = root.find(".//plate")
 
                 if plate is not None:
                     # Extract metadata from plate element
@@ -226,8 +246,21 @@ class ThreeMFParser:
             if not gcode_files:
                 return
 
-            # Read first 4KB of G-code (header contains metadata)
+            # Pick the actually-printed plate's gcode when known —
+            # ``total_layers`` and ``printer_model`` differ between
+            # plates of a multi-plate container (e.g. plate 1 might
+            # be 200 layers, plate 5 might be 80). Falls back to the
+            # first gcode entry when the requested plate isn't in
+            # the container or no plate was specified.
             gcode_path = gcode_files[0]
+            if self.plate_number:
+                expected_suffix = f"plate_{self.plate_number}.gcode"
+                preferred = next(
+                    (n for n in gcode_files if n.lower().endswith(expected_suffix)),
+                    None,
+                )
+                if preferred is not None:
+                    gcode_path = preferred
             with zf.open(gcode_path) as f:
                 header = f.read(4096).decode("utf-8", errors="ignore")
 
@@ -1385,6 +1418,7 @@ class ArchiveService:
         library_file_id: int | None = None,
         swap_macro_events_pending: list[str] | None = None,
         prefer_filename_for_name: bool = False,
+        plate_index: int | None = None,
     ) -> PrintArchive | None:
         """Archive a 3MF file with metadata.
 
@@ -1535,9 +1569,28 @@ class ArchiveService:
             if match:
                 plate_number = int(match.group(1))
 
+        # Resolve "which plate ran" BEFORE parsing so the parser's
+        # thumbnail extraction + slice_info filtering both align with
+        # the actually-printed plate. Priority:
+        #   1. Caller-supplied (queue item / dispatch options) — what
+        #      the user picked before the print started.
+        #   2. ``plate_number`` from the printer's gcode filename
+        #      ("Metadata/plate_N.gcode") — what MQTT saw on the wire.
+        #   3. After parse(): ``parser.plate_number`` — slice_info
+        #      single-plate-export fallback when neither (1) nor (2)
+        #      was available.
+        # The thumbnail + per-plate slice_info both honour the value
+        # passed to the constructor, so a multi-plate container of
+        # which plate 5 was printed produces an archive with plate 5's
+        # thumbnail, print_time, weight, and per-slot filament usage —
+        # not plate 1's.
+        plate_for_parser = plate_index or plate_number
+
         # Parse 3MF metadata
-        parser = ThreeMFParser(dest_file, plate_number=plate_number)
+        parser = ThreeMFParser(dest_file, plate_number=plate_for_parser)
         metadata = parser.parse()
+
+        resolved_plate_index = plate_for_parser or parser.plate_number
 
         # Per-plate cache so the gallery / list endpoint doesn't reopen the
         # ZIP every time. Same idea as the library upload route.
@@ -1601,6 +1654,13 @@ class ArchiveService:
             quantity = len(printable_objects)
             logger.debug("Auto-detected %s parts from 3MF printable objects", quantity)
 
+        # Mirror the resolved plate index into ``extra_data['plate_id']`` so
+        # the existing reader in ``queue_virtual.py`` finds it for VP-recreate
+        # flows. Column is the source of truth; the JSON copy keeps the
+        # legacy contract working without an extra reader rewrite.
+        if resolved_plate_index is not None:
+            metadata["plate_id"] = resolved_plate_index
+
         # Create archive record
         archive = PrintArchive(
             printer_id=printer_id,
@@ -1622,6 +1682,7 @@ class ArchiveService:
             bed_temperature=metadata.get("bed_temperature"),
             nozzle_temperature=metadata.get("nozzle_temperature"),
             sliced_for_model=metadata.get("sliced_for_model"),
+            plate_index=resolved_plate_index,
             makerworld_url=metadata.get("makerworld_url"),
             designer=metadata.get("designer"),
             status=status,
@@ -1705,7 +1766,13 @@ class ArchiveService:
                 return False
 
             # Parse 3MF metadata (reuse the same parser as archive_print).
-            parser = ThreeMFParser(dest_file)
+            # Pass the archive's recorded plate_index so per-plate
+            # thumbnail + slice_info come from the actually-printed
+            # plate, not whatever happened to be plate 1 in the
+            # container. None for legacy/external rows where the index
+            # is unknown — parser falls back to slice_info's first
+            # plate, matching pre-m038 behaviour.
+            parser = ThreeMFParser(dest_file, plate_number=archive.plate_index)
             metadata = parser.parse()
 
             # Per-plate cache populated alongside the rest of the metadata.

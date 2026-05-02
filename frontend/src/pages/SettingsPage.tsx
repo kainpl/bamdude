@@ -43,6 +43,7 @@ import { useTheme, type ThemeStyle, type DarkBackground, type LightBackground, t
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Palette, Search } from 'lucide-react';
 import { registerSettingsSearch, getSettingsSearchEntries } from '../lib/settingsSearch';
+import { SlicerHealthIndicator } from '../components/SlicerHealthIndicator';
 
 const validTabs = ['general', 'printing', 'filament', 'notifications', 'plugs', 'network', 'virtual-printer', 'apikeys', 'failure-detection', 'users', 'backup'] as const;
 type TabType = typeof validTabs[number];
@@ -1684,10 +1685,19 @@ export function SettingsPage() {
                 </label>
                 {(localSettings.use_slicer_api ?? false) && (
                   <>
+                    <p className="text-xs text-bambu-gray/80 italic">
+                      {t(
+                        'settings.bothSlicersHint',
+                        'When both URLs are set and reachable, the Slice modal lets you pick which slicer to use per file.',
+                      )}
+                    </p>
                     <div>
-                      <label className="block text-sm text-bambu-gray mb-1">
-                        {t('settings.orcaslicerApiUrl', 'OrcaSlicer API URL')}
-                      </label>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-sm text-bambu-gray">
+                          {t('settings.orcaslicerApiUrl', 'OrcaSlicer API URL')}
+                        </label>
+                        <SlicerHealthIndicator slicer="orcaslicer" variant="inline" />
+                      </div>
                       <input
                         type="text"
                         value={localSettings.orcaslicer_api_url ?? ''}
@@ -1703,9 +1713,12 @@ export function SettingsPage() {
                       </p>
                     </div>
                     <div>
-                      <label className="block text-sm text-bambu-gray mb-1">
-                        {t('settings.bambuStudioApiUrl', 'BambuStudio API URL')}
-                      </label>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-sm text-bambu-gray">
+                          {t('settings.bambuStudioApiUrl', 'BambuStudio API URL')}
+                        </label>
+                        <SlicerHealthIndicator slicer="bambu_studio" variant="inline" />
+                      </div>
                       <input
                         type="text"
                         value={localSettings.bambu_studio_api_url ?? ''}

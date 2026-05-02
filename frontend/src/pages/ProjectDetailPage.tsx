@@ -54,12 +54,7 @@ import { PrintModal } from '../components/PrintModal';
 // Project edit modal (reused from ProjectsPage)
 import { ProjectModal } from './ProjectsPage';
 import { getCurrencySymbol } from '../utils/currency';
-
-// Returns true for sliced (printable) files: .gcode and .gcode.3mf
-function isSlicedFilename(filename: string): boolean {
-  const lower = filename.toLowerCase();
-  return lower.endsWith('.gcode') || lower.endsWith('.gcode.3mf');
-}
+import { isSliced } from '../lib/fileTags';
 
 function formatFilament(grams: number): string {
   if (grams >= 1000) {
@@ -587,6 +582,7 @@ export function ProjectDetailPage() {
                     rel="noopener noreferrer"
                     className="text-bambu-gray hover:text-bambu-green transition-colors flex-shrink-0"
                     title={project.url}
+                    aria-label={t('projects.openExternalUrl')}
                   >
                     <ExternalLink className="w-4 h-4" />
                   </a>
@@ -1020,7 +1016,7 @@ export function ProjectDetailPage() {
                   const isFirst = idx === 0;
                   const isLast = idx === printPlan.items.length - 1;
                   const file = filesById.get(item.library_file_id);
-                  const printable = file ? isSlicedFilename(file.filename) : false;
+                  const printable = file ? isSliced(file) : false;
                   return (
                     <div
                       key={item.id}

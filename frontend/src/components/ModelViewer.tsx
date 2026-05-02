@@ -596,6 +596,7 @@ export function ModelViewer({
   const modelGroupRef = useRef<THREE.Group | null>(null);
   const plateRef = useRef<THREE.Mesh | null>(null);
   const gridRef = useRef<THREE.GridHelper | null>(null);
+  const volumeBoxRef = useRef<THREE.Box3Helper | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [parsedData, setParsedData] = useState<Parsed3MFData | null>(null);
@@ -663,6 +664,25 @@ export function ModelViewer({
     plate.position.y = -0.5; // Slightly below Y=0 so models sit on top
     scene.add(plate);
     plateRef.current = plate;
+
+    // Build-volume wireframe — mirrors what gcode-preview draws around
+    // the print volume, so 3D-model and G-code previews use the same
+    // visual cue for "this is the printable cuboid". Box3Helper drives
+    // its own transform from ``box.center`` every frame (overriding any
+    // ``.position`` the caller sets), so we have to encode the world
+    // coordinates directly into the Box3: (0, 0, 0) to (bedX, bedZ,
+    // bedY) places the cuboid corner at world origin, matching the
+    // plate + grid that get translated to the same corner-at-origin
+    // layout in the post-load positioning block.
+    const volumeBox = new THREE.Box3(
+      new THREE.Vector3(0, 0, 0),
+      new THREE.Vector3(buildVolume.x, buildVolume.z, buildVolume.y),
+    );
+    const volumeBoxHelper = new THREE.Box3Helper(volumeBox, 0x666666);
+    (volumeBoxHelper.material as THREE.LineBasicMaterial).transparent = true;
+    (volumeBoxHelper.material as THREE.LineBasicMaterial).opacity = 0.55;
+    scene.add(volumeBoxHelper);
+    volumeBoxRef.current = volumeBoxHelper;
 
     // Animation loop - keep it simple for reliability
     let animationId: number;
@@ -831,6 +851,12 @@ export function ModelViewer({
       gridRef.current.position.x = plateCenterX;
       gridRef.current.position.z = plateCenterZ;
     }
+
+    // volumeBoxRef intentionally not repositioned here — Box3Helper
+    // overwrites ``.position`` from ``box.center`` on every frame, so
+    // the world coordinates are encoded directly into the Box3 at
+    // construction (corner at origin, same layout as the centred plate
+    // + grid above).
 
     // Recalculate bounding box after positioning
     const finalBox = new THREE.Box3().setFromObject(group);

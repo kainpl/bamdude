@@ -10,8 +10,8 @@ Three sources, three paths:
                 caller's stored cloud token. Result is the full slicer-shape
                 preset JSON the sidecar can ingest directly.
 - **standard** — emit a stub ``{name, inherits, from: "system", type}``.
-                 The sidecar's ``bambuddy/profile-resolver`` branch already
-                 walks ``inherits:`` against
+                 The sidecar's ``bamdude/profile-resolver`` branch (in
+                 ``kainpl/orca-slicer-api``) already walks ``inherits:`` against
                  ``BUNDLED_PROFILES_PATH/<category>/<name>.json`` during
                  ``materializeProfile`` and merges parent-then-child, so the
                  stub flattens out to the bundled content with no round-trip

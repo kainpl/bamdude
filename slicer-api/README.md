@@ -15,19 +15,65 @@ Enable the API path by:
 
 ## Quick start
 
+Both services live behind explicit profiles, so you pick exactly which
+slicer(s) to run. A bare `docker compose up -d` (no profile) starts
+nothing — you must include `--profile orca`, `--profile bambu`, or
+`--profile all`.
+
 ```bash
 cd slicer-api/
 cp .env.example .env       # edit ports / versions if you like
 
-# OrcaSlicer only (default profile):
-docker compose up -d
+# OrcaSlicer only:
+docker compose --profile orca up -d
 curl http://localhost:3003/health
 
-# Both slicers:
+# BambuStudio only:
 docker compose --profile bambu up -d
+curl http://localhost:3001/health
+
+# Both:
+docker compose --profile all up -d
 curl http://localhost:3001/health   # bambu-studio-api
 curl http://localhost:3003/health   # orca-slicer-api
 ```
+
+> ### :warning: Docker Desktop 4.71 first-build workaround
+>
+> Docker Desktop 4.71 (engine 29.4.1, compose v5.1.x, buildx 0.33.x-desktop)
+> ships a broken `buildx bake` compose-bridge: `docker compose build`
+> dies immediately with `failed to execute bake: exit status 1` and no
+> further detail, regardless of profile shape. Setting `COMPOSE_BAKE=false`
+> does NOT disable it on this version.
+>
+> **Workaround — force the legacy classic builder for the first build only**
+> (image is then cached, and `compose up -d` reuses it without rebuilding):
+>
+> PowerShell:
+> ```powershell
+> $env:DOCKER_BUILDKIT = "0"; $env:COMPOSE_DOCKER_CLI_BUILD = "0"
+> docker compose --profile all build
+> $env:DOCKER_BUILDKIT = $null; $env:COMPOSE_DOCKER_CLI_BUILD = $null
+> docker compose --profile all up -d
+> ```
+>
+> bash / zsh:
+> ```bash
+> DOCKER_BUILDKIT=0 COMPOSE_DOCKER_CLI_BUILD=0 \
+>   docker compose --profile all build
+> docker compose --profile all up -d
+> ```
+>
+> Or call buildx directly (modern BuildKit, parallel-friendly, faster):
+> ```bash
+> docker buildx bake -f docker-compose.yml orca-slicer-api
+> docker buildx bake -f docker-compose.yml bambu-studio-api
+> docker compose --profile all up -d
+> ```
+>
+> Older Docker Desktop releases (4.70 and below) and Linux installs of
+> Docker CE behave normally — the bake bug is specific to this Desktop
+> build. We'll drop this note once Docker Desktop ships a fix.
 
 First build downloads the slicer's AppImage (~110 MB OrcaSlicer, ~220 MB
 BambuStudio) and compiles the Node wrapper. Takes 3–8 minutes per service.
@@ -62,30 +108,35 @@ Leaving the URL field blank uses the `SLICER_API_URL` /
 
 ## Where the source lives
 
-Both images build from the
-[`maziggy/orca-slicer-api`](https://github.com/maziggy/orca-slicer-api)
-fork (`bambuddy/profile-resolver` branch). The Compose file uses
-Docker's git build context, so you don't need to clone it manually —
-Docker pulls the repo at build time.
+Both images build from
+[`kainpl/orca-slicer-api`](https://github.com/kainpl/orca-slicer-api)
+on the `bamdude/profile-resolver` branch — BamDude's fork of the
+upstream [`AFKFelix/orca-slicer-api`](https://github.com/AFKFelix/orca-slicer-api)
+HTTP wrapper. The Compose file uses Docker's git build context, so
+you don't need to clone the fork manually — Docker pulls it at build
+time.
 
-The fork patches AFKFelix's upstream wrapper with the `inherits:`
-chain resolver, `from: "User"` → `"system"` rewrite, `# ` clone-prefix
-strip, and sentinel-value strip — all empirically required to slice
-real GUI exports without segfaulting the CLI. Once those land
+The patch branch carries the `inherits:` chain resolver,
+`from: "User"` → `"system"` rewrite, `# ` clone-prefix strip,
+sentinel-value strip, multi-filament input + bundled-filament
+metadata for the SliceModal, and `--pipe` live-progress feed for the
+job-tracker toast — all empirically required to slice real OrcaSlicer
+/ BambuStudio GUI exports without segfaulting the CLI. Once those land
 upstream, this Compose file can be flipped to pull from
 `ghcr.io/afkfelix/orca-slicer-api` directly.
 
 ## Updating
 
-Bump the versions in `.env`, then:
+Bump the versions in `.env`, then rebuild whichever profile(s) you run:
 
 ```bash
-docker compose --profile bambu build --no-cache
-docker compose --profile bambu up -d
+docker compose --profile all build --no-cache
+docker compose --profile all up -d
 ```
 
-`--no-cache` is needed because the Dockerfile downloads the AppImage
-inline; Docker won't re-fetch it on a version change otherwise.
+(Substitute `orca` / `bambu` for `all` if you only run one.) `--no-cache`
+is needed because the Dockerfile downloads the AppImage inline; Docker
+won't re-fetch it on a version change otherwise.
 
 ## Troubleshooting
 

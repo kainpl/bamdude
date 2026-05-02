@@ -349,7 +349,7 @@ export default {
       down: 'Move plate down',
       disabledWhilePrinting: 'Disabled while printing',
       notHomedTitle: 'Printer is not homed',
-      notHomedMessage: 'The printer has not been homed since the last print. Run auto-home first for safe positioning (parks the toolhead, then homes X, Y, and Z), or move anyway — soft endstops will be bypassed.',
+      notHomedMessage: 'The printer has not been homed since the last print. Run auto-home first for safe positioning (parks the toolhead, then homes X, Y, and Z), or move anyway - soft endstops will be bypassed.',
       homeZ: 'Auto Home',
       moveAnyway: 'Move anyway',
       homingStarted: 'Auto-homing printer…'
@@ -585,8 +585,8 @@ export default {
       source3mfAttached: 'Source 3MF attached: {{filename}}',
       failedUploadSource3mf: 'Failed to upload source 3MF',
       downloadRecovered: '3MF downloaded from printer and attached',
-      downloadRetryFailed: 'Retry failed — printer FTP unreachable or file no longer on SD',
-      downloadRetryInProgress: 'Another retry is already running for this archive — please wait',
+      downloadRetryFailed: 'Retry failed - printer FTP unreachable or file no longer on SD',
+      downloadRetryInProgress: 'Another retry is already running for this archive - please wait',
       source3mfRemoved: 'Source 3MF removed',
       failedRemoveSource3mf: 'Failed to remove source 3MF',
       f3dAttached: 'F3D attached: {{filename}}',
@@ -657,10 +657,10 @@ export default {
       delete: 'Delete'
     },
     platePicker: {
-      title: 'Pick a plate',
-      hint: 'Multi-plate file — choose which plate to operate on',
+      // ``title`` / ``hint`` / ``objectCount`` were dropped with the
+      // standalone PlatePickerModal — only the per-plate label is still
+      // referenced (SliceModal header + SlicePlateSelector tile).
       plateLabel: 'Plate {{index}}',
-      objectCount: '{{count}} objects',
     },
     permission: {
       noReprint: 'You do not have permission to reprint this archive',
@@ -946,7 +946,7 @@ export default {
     goToPrinter: 'Open printer page',
     toast: {
       statusUpdated: 'Queue status updated',
-      itemStarted: 'Released — will print when queue reaches it',
+      itemStarted: 'Released - will print when queue reaches it',
       paused: 'Print paused',
       resumed: 'Print resumed',
       stopped: 'Print stopped',
@@ -1334,11 +1334,11 @@ export default {
     filamentChecks: 'Filament checks',
     spoolDisplayName: {
       title: 'Spool display name',
-      description: 'Template used to build a searchable "Name" column on the Filaments page. Search accepts partial tokens — typing "SUN Bl" finds "SUNLU PETG Black".',
+      description: 'Template used to build a searchable "Name" column on the Filaments page. Search accepts partial tokens - typing "SUN Bl" finds "SUNLU PETG Black".',
       templateLabel: 'Template',
       templateHint: 'Use {placeholder} tokens from the reference below. Unknown placeholders stay visible so typos surface in the preview.',
       previewLabel: 'Preview',
-      previewFallback: '(no spools in inventory — using sample data)',
+      previewFallback: '(no spools in inventory - using sample data)',
       placeholdersLabel: 'Available placeholders (click to append)',
       save: 'Save template',
       resetDefault: 'Reset to default',
@@ -1603,8 +1603,8 @@ export default {
     macroDelaySeconds: 'Delay before firing (seconds)',
     macroDelayHint: '0 = fire immediately on event. Useful for letting heat-up / PREPARE finish first.',
     mqttActions: {
-      chamberLightOff: 'Chamber light — off',
-      chamberLightOn: 'Chamber light — on'
+      chamberLightOff: 'Chamber light - off',
+      chamberLightOn: 'Chamber light - on'
     },
     newWindow: 'New Window',
     embeddedOverlay: 'Embedded Overlay',
@@ -1762,7 +1762,7 @@ export default {
     defaultPrinterDescription: 'Pre-select this printer for uploads, reprints, and other operations.',
     slicerBambuStudio: 'Bambu Studio',
     slicerOrcaSlicer: 'OrcaSlicer',
-    orcaslicerKnownIssuesWarning: 'OrcaSlicer 2.3.2 / 2.4.0-dev have known CLI bugs that block slicing many Bambu-authored 3MFs — see upstream issues #12426 (segfault on painted multi-extruder files) and #13386 (parameter-range strict-validation reject). Bambu Studio is recommended until the upstream fixes land.',
+    orcaslicerKnownIssuesWarning: 'OrcaSlicer 2.3.2 / 2.4.0-dev have known CLI bugs that block slicing many Bambu-authored 3MFs - see upstream issues #12426 (segfault on painted multi-extruder files) and #13386 (parameter-range strict-validation reject). Bambu Studio is recommended until the upstream fixes land.',
     gcodeInjection: 'G-code Injection',
     gcodeInjectionDescription: 'Configure custom G-code to inject at the start and/or end of prints for auto-print systems like Farmloop, SwapMod, AutoClear, and Printflow 3D. Snippets are configured per printer model and applied when "Inject G-code" is enabled on a queue item.',
     gcodeInjectionNoPrinters: 'No printers found. Add printers to configure G-code snippets.',
@@ -1777,6 +1777,7 @@ export default {
     orcaslicerApiUrlDescription: 'Empty falls back to the SLICER_API_URL env default.',
     bambuStudioApiUrl: 'BambuStudio API URL',
     bambuStudioApiUrlDescription: 'Empty falls back to the BAMBU_STUDIO_API_URL env default.',
+    bothSlicersHint: 'When both URLs are set and reachable, the Slice modal lets you pick which slicer to use per file.',
     sidebarOrderDescription: 'Drag items in the sidebar to reorder. Reset to default order here.',
     setDefault: 'Set Default',
     sidebarOrderSetDefaultHint: 'Set default applies the current menu order to users who haven\'t customized theirs.',
@@ -1825,7 +1826,7 @@ export default {
       nextRunHint: 'Daily at 00:00 server time',
       previewLabel: 'Currently eligible',
       previewEmpty: 'Nothing to clean up right now.',
-      previewBody: '{{archives}} archive(s) in {{groups}} group(s) — {{bytes}} ready to free',
+      previewBody: '{{archives}} archive(s) in {{groups}} group(s) - {{bytes}} ready to free',
       runNow: 'Run cleanup now',
       runDone: 'Cleared {{archives}} archive(s), freed {{bytes}}',
       confirmTitle: 'Run cleanup now?',
@@ -1963,7 +1964,7 @@ export default {
       setupAuthApp: 'Set up Authenticator App',
       setupInstructions: 'Scan the QR code below with your authenticator app, then confirm with a code.',
       manualEntry: 'Can\'t scan? Enter this secret manually:',
-      scannedContinue: 'I\'ve scanned the code — continue',
+      scannedContinue: 'I\'ve scanned the code - continue',
       enterCodeToConfirm: 'Enter the 6-digit code from your authenticator app to confirm setup.',
       activate: 'Activate',
       disableTotp: 'Disable Authenticator',
@@ -2015,10 +2016,10 @@ export default {
         autoLink: 'Auto-link existing accounts',
         autoLinkDesc: 'Link existing local accounts by matching email on first login.',
         emailClaim: 'Email claim',
-        emailClaimHelp: 'JWT claim used as the email identity. Default "email". For Azure Entra ID set "preferred_username" or "upn" — Azure does not send email_verified, and a custom claim skips that gate entirely.',
+        emailClaimHelp: 'JWT claim used as the email identity. Default "email". For Azure Entra ID set "preferred_username" or "upn" - Azure does not send email_verified, and a custom claim skips that gate entirely.',
         requireEmailVerified: 'Require email_verified',
         requireEmailVerifiedDesc: 'Only trust the standard "email" claim when the provider explicitly sets email_verified=true. Disable for legacy IdPs that never send the claim. Required ON when auto-link is on with the "email" claim.',
-        requireEmailVerifiedNAForCustomClaim: 'Not used — custom claims never consult email_verified.',
+        requireEmailVerifiedNAForCustomClaim: 'Not used - custom claims never consult email_verified.',
         secretHint: 'leave blank to keep current',
         secretPlaceholder: 'new secret'
       }
@@ -2096,7 +2097,7 @@ export default {
       providerError: 'The identity provider returned an error',
       missingParameters: 'OIDC callback is missing required parameters',
       invalidState: 'OIDC state is invalid or has already been used',
-      stateExpired: 'OIDC login session expired — please try again',
+      stateExpired: 'OIDC login session expired - please try again',
       providerNotFound: 'OIDC provider not found',
       discoveryFailed: 'Failed to fetch OIDC discovery document',
       invalidDiscovery: 'OIDC discovery document is invalid',
@@ -2104,7 +2105,7 @@ export default {
       badResponse: 'Unexpected response during OIDC token exchange',
       noIdToken: 'OIDC provider did not return an ID token',
       validationFailed: 'OIDC token validation failed',
-      nonceMismatch: 'OIDC nonce mismatch — possible replay attack',
+      nonceMismatch: 'OIDC nonce mismatch - possible replay attack',
       missingSubClaim: 'OIDC token is missing the sub claim',
       noLinkedAccount: 'No local account is linked to this OIDC identity',
       accountInactive: 'Your account is inactive',
@@ -2619,7 +2620,7 @@ export default {
 
   makerworld: {
     title: 'MakerWorld',
-    description: 'Paste a MakerWorld model URL to import and print it directly from BamDude — without leaving for the Bambu Handy app.',
+    description: 'Paste a MakerWorld model URL to import and print it directly from BamDude - without leaving for the Bambu Handy app.',
     pasteUrlHeader: 'Import from MakerWorld',
     pasteUrlPlaceholder: 'https://makerworld.com/en/models/… or paste any MakerWorld link',
     resolveButton: 'Resolve',
@@ -2632,8 +2633,8 @@ export default {
     licensePrefix: 'License',
     alreadyImported: 'Already in library',
     openOnMakerworld: 'Open on MakerWorld',
-    alreadyInLibrary: 'This model is already in your library — find it in File Manager → MakerWorld',
-    importSuccess: 'Imported {{filename}} — saved to File Manager → MakerWorld',
+    alreadyInLibrary: 'This model is already in your library - find it in File Manager → MakerWorld',
+    importSuccess: 'Imported {{filename}} - saved to File Manager → MakerWorld',
     platesHeader: 'Plates ({{count}})',
     plateDefaultName: 'Plate {{n}}',
     materialCount: '{{count}} filaments',
@@ -2680,31 +2681,96 @@ export default {
     process: 'Process profile',
     filament: 'Filament profile',
     filamentSlot: 'Filament {{index}} ({{type}})',
-    notUsedByPlate: '— not used by this plate',
-    selectPreset: '— Select a preset —',
+    notUsedByPlate: '- not used by this plate',
+    selectPreset: '- Select a preset -',
     noPresetsForSlot: 'No presets available',
     allPresetsRequired: 'All presets must be selected',
     analyzingPlateFilaments: 'Analyzing plate filaments…',
-    analyzingPlateFilamentsHint: 'Running a preview slice to discover which AMS slots this plate uses. Cached after — re-opening is instant.',
-    previewToast: 'Analyzing {{name}} — {{elapsed}}',
-    previewWithProgress: 'Analyzing {{name}} — {{stage}} ({{percent}}%) — {{elapsed}}',
-    runningToast: 'Slicing {{name}} — {{elapsed}}',
-    runningWithProgress: '{{name}} — {{stage}} ({{percent}}%) — {{elapsed}}',
-    queuedToast: 'Queued: {{name}} — {{elapsed}}',
+    analyzingPlateFilamentsHint: 'Running a preview slice to discover which AMS slots this plate uses. Cached after - re-opening is instant.',
+    previewToast: 'Analyzing {{name}} - {{elapsed}}',
+    previewWithProgress: 'Analyzing {{name}} - {{stage}} ({{percent}}%) - {{elapsed}}',
+    runningToast: 'Slicing {{name}} - {{elapsed}}',
+    runningWithProgress: '{{name}} - {{stage}} ({{percent}}%) - {{elapsed}}',
+    queuedToast: 'Queued: {{name}} - {{elapsed}}',
     completedToast: 'Sliced {{name}}',
     failedToast: 'Slicing {{name}} failed: {{detail}}',
     failed: 'Slice failed',
-    printerMismatch: 'This 3MF was sliced for {{source}}, but you picked {{target}}. The slicer CLI cannot re-slice a 3MF for a different printer — open the source in Bambu Studio, change the printer, and re-export.',
+    printerMismatch: 'This 3MF was sliced for {{source}}, but you picked {{target}}. The slicer CLI cannot re-slice a 3MF for a different printer - open the source in Bambu Studio, change the printer, and re-export.',
+    sidecarPicker: 'Slice with',
+    platePicker: {
+      label: 'Pick a plate to slice',
+    },
     tier: {
       local: 'Imported',
       cloud: 'Cloud',
       standard: 'Standard',
     },
+    // Bed plate picker - five values from BambuStudio's ``curr_bed_type``
+    // enum. Labels mirror the slicer UI's wording so users recognise them.
+    bedType: {
+      label: 'Bed plate',
+      coolPlate: 'Cool Plate',
+      engineeringPlate: 'Engineering Plate',
+      highTempPlate: 'Smooth PEI / High Temp Plate',
+      texturedPeiPlate: 'Textured PEI Plate',
+      supertackPlate: 'Cool Plate SuperTack',
+    },
     cloud: {
       notAuthenticated: 'Sign in to Bambu Cloud (Settings → Profiles → Cloud) to see your cloud presets.',
-      expired: 'Bambu Cloud session expired — sign in again to refresh your cloud presets.',
+      expired: 'Bambu Cloud session expired - sign in again to refresh your cloud presets.',
       unreachable: 'Bambu Cloud is unreachable right now. Local and standard presets still work.',
     },
+  },
+
+  slicerHealth: {
+    sectionTitle: 'Slicer Sidecars',
+    sectionDescription: 'Live status of the OrcaSlicer / BambuStudio HTTP sidecars BamDude calls for server-side slicing. Configure URLs in Settings → Profiles → Slicer API.',
+    notEnabled: 'Server-side slicing is disabled in Settings → Profiles → Slicer API.',
+    checking: 'Checking {{label}}…',
+    ready: '{{label}} ready (v{{version}})',
+    unreachable: '{{label}} unreachable: {{error}}',
+    statusChecking: 'checking…',
+    statusReady: 'ready · v{{version}}',
+    statusOffline: 'offline',
+    cardReady: 'Ready · v{{version}}',
+    cardOffline: 'Offline',
+    active: 'active',
+  },
+
+  library: {
+    // Composite tag labels (m036). Surfaced by ``<FileTagBadges>`` in the
+    // file manager and by the chip-row filter. Short, all-caps for badge
+    // density. Keep en + uk in sync.
+    tags: {
+      '3mf': '3MF',
+      gcode: 'GCODE',
+      stl: 'STL',
+      obj: 'OBJ',
+      step: 'STEP',
+      project: 'PROJ',
+      geometry: 'GEO',
+      multiplate: 'MP',
+      swap: 'SWAP',
+      sliced: 'SLICED',
+      makerworld: 'MW',
+    },
+    // Hover tooltips for the badge pills - describes what the tag means
+    // for the user instead of the redundant short label.
+    tagTooltips: {
+      '3mf': '3MF container - bundles model, plate layout, and slicer config in one file',
+      gcode: 'Has G-code - ready to send to a printer without re-slicing',
+      stl: 'STL mesh - raw model geometry, needs to be sliced before printing',
+      obj: 'OBJ mesh - raw model geometry, needs to be sliced before printing',
+      step: 'STEP CAD source - needs to be sliced before printing',
+      project: 'Unsliced 3MF project package - needs to be sliced before printing',
+      geometry: 'Raw geometry (STL / OBJ / STEP) - needs to be sliced before printing',
+      multiplate: 'Multi-plate file - pick which plate to operate on',
+      swap: 'Compatible with swap mode (mid-print plate swap)',
+      sliced: 'Sliced by BamDude - produced by the OrcaSlicer / BambuStudio sidecar',
+      makerworld: 'Imported from MakerWorld - click the badge in the file detail to open the source page',
+    },
+    tagFilter: 'Tags',
+    tagFilterClear: 'Clear tag filter',
   },
 
   libraryTrash: {
@@ -2733,6 +2799,7 @@ export default {
     bulkRestore: 'Restore selected',
     bulkPurge: 'Delete selected',
     col: {
+      preview: 'Preview',
       filename: 'File',
       folder: 'Folder',
       size: 'Size',
@@ -2775,10 +2842,10 @@ export default {
     days: 'days',
     includeNeverPrinted: 'Include files that have never been printed',
     effectsTitle: 'What happens when you click Purge',
-    effect1: 'Matching files are moved to Trash — they are not deleted from disk yet.',
+    effect1: 'Matching files are moved to Trash - they are not deleted from disk yet.',
     effect2: 'You can restore them from Trash at any time until the retention window expires.',
     effect3: 'After retention, the trash sweeper permanently removes them from disk.',
-    effect4: 'Files in external (linked) folders are skipped — BamDude never deletes bytes it does not own.',
+    effect4: 'Files in external (linked) folders are skipped - BamDude never deletes bytes it does not own.',
     previewLoading: 'Checking how many files match…',
     previewFailed: 'Could not preview the purge.',
     previewSummary: '{{count}} files · {{size}} would move to trash',
@@ -2797,7 +2864,7 @@ export default {
     retentionLabel: 'Trash retention',
     retentionDescription: 'How long deleted files stay in the trash bin before the sweeper hard-deletes their bytes. 1–365 days. Files pinned by an active archive wait until the archive is also trashed.',
     enableLabel: 'Auto-purge old files',
-    enableDescription: 'Runs the admin purge once per day. Files go to Trash first — they are not deleted immediately.',
+    enableDescription: 'Runs the admin purge once per day. Files go to Trash first - they are not deleted immediately.',
     ageLabel: 'Auto-purge files older than',
     ageDescription: 'Minimum 7 days, maximum 10 years. Uses the same age rule as the manual Purge button.',
     days: 'days',
@@ -2809,11 +2876,11 @@ export default {
     headerButton: 'Purge old',
     headerTooltip: 'Bulk-move old archives to trash',
     title: 'Purge old archives',
-    description: 'Move old print history into the archive trash bin. Each archive is aged by its most recent print completion — reprinting an archive refreshes its age, so active work is never purged.',
+    description: 'Move old print history into the archive trash bin. Each archive is aged by its most recent print completion - reprinting an archive refreshes its age, so active work is never purged.',
     ageLabel: 'Move archives not printed in the last',
     days: 'days',
     effectsTitle: 'What happens when you click Purge',
-    effect1: 'Matching archives are moved to Trash — they are not deleted from disk yet.',
+    effect1: 'Matching archives are moved to Trash - they are not deleted from disk yet.',
     effect2: 'You can restore them from Trash at any time until the retention window expires.',
     effect3: 'After retention, the trash sweeper hard-deletes them (3MF, thumbnail, timelapse, photos).',
     effect4: 'Reprinting an archive refreshes its age clock, so archives you still use are safe.',
@@ -2837,7 +2904,7 @@ export default {
     enableLabel: 'Auto-purge old archives',
     enableDescription: 'Once per day, moves archives that have not been printed within the threshold to the archive trash bin. Reprinting an archive resets the clock. The trash sweeper hard-deletes after the retention window.',
     ageLabel: 'Auto-move archives not printed in the last',
-    ageDescription: 'Minimum 7 days, maximum 10 years. Based on the most recent print completion — reprinting an archive refreshes its age. Moves archives to trash, where they remain restorable until retention elapses.',
+    ageDescription: 'Minimum 7 days, maximum 10 years. Based on the most recent print completion - reprinting an archive refreshes its age. Moves archives to trash, where they remain restorable until retention elapses.',
     days: 'days',
     saveFailed: 'Could not save auto-purge settings.',
   },
@@ -2865,6 +2932,7 @@ export default {
     bulkRestore: 'Restore selected',
     bulkPurge: 'Delete selected',
     col: {
+      preview: 'Preview',
       filename: 'Archive',
       printName: 'Print name',
       size: 'Size',
@@ -2902,7 +2970,6 @@ export default {
     plate: 'Plate',
     plateSlot: 'Slot',
     plateGallery: 'Plate gallery',
-    multiPlateBadgeTooltip: 'Multi-plate file — multiple build plates inside',
     source: {
       makerworldImported: 'Imported from MakerWorld',
       openOriginal: 'Open on MakerWorld',
@@ -3000,6 +3067,7 @@ export default {
     noPermissionAddToQueue: 'You do not have permission to add to queue',
     noPermissionSlice: 'You do not have permission to slice',
     noPermissionDownload: 'You do not have permission to download files',
+    noPermissionPreview: 'You do not have permission to preview files',
     noPermissionRenameFile: 'You do not have permission to rename this file',
     noPermissionGenerateThumbnail: 'You do not have permission to generate thumbnails',
     noPermissionDeleteFile: 'You do not have permission to delete this file',
@@ -3373,7 +3441,7 @@ export default {
     noPresetsFound: 'No presets found',
     note: 'Note',
     notePlaceholder: 'Any additional notes about this spool...',
-    // RFID button rename (was "Delete Tag" — confusing because it sounded
+    // RFID button rename (was "Delete Tag" - confusing because it sounded
     // like a taxonomy delete; this clears the RFID tag/UUID off the spool
     // record, the spool itself stays).
     clearRfid: 'Clear RFID Tag',
@@ -3381,12 +3449,11 @@ export default {
     spoolmanMixedContentTitle: 'Spoolman cannot be embedded over HTTP',
     spoolmanMixedContentBody: 'Your browser blocks HTTP content inside HTTPS pages, so the Spoolman iframe stays blank. BamDude is loaded over HTTPS but Spoolman is configured at an http:// URL.',
     spoolmanMixedContentFixReverseProxy: 'Best fix: put Spoolman behind the same reverse proxy as BamDude so both are reachable over HTTPS.',
-    spoolmanMixedContentFixOpenNewTab: 'Workaround: open Spoolman in a new tab — standalone tabs are not subject to the mixed-content rule.',
+    spoolmanMixedContentFixOpenNewTab: 'Workaround: open Spoolman in a new tab - standalone tabs are not subject to the mixed-content rule.',
     spoolmanOpenInNewTab: 'Open Spoolman in new tab',
     archive: 'Archive',
     restore: 'Restore',
     noSpools: 'No spools yet. Add your first spool to get started.',
-    noManualSpools: 'No manually added spools available. Add a spool to your inventory first.',
     noAvailableSpools: 'No spools available. Add a spool to your inventory or unassign one from another slot first.',
     assignSpool: 'Assign Spool',
     unassignSpool: 'Unassign',
@@ -4106,7 +4173,7 @@ export default {
     tailscale: {
       title: 'Use Tailscale Let\'s Encrypt cert',
       description: 'When on, asks the local tailscale CLI for an LE cert and advertises the tailnet FQDN over SSDP. Slicers connect via a hostname that matches the trusted cert (no manual CA install).',
-      activeFor: 'Active — broadcasting tailnet FQDN {{fqdn}}',
+      activeFor: 'Active - broadcasting tailnet FQDN {{fqdn}}',
       unavailable: 'Tailscale is not available or LE cert provisioning failed. Falling back to the self-signed CA.'
     },
     mode: {
@@ -4134,7 +4201,7 @@ export default {
       title: 'Auto-dispatch',
       description: 'Automatically start prints when added to queue. When off, prints wait for manual dispatch.',
       requiresTargetOrAuto: 'In Queue mode, Auto-dispatch needs a Target Printer. Pick one, or enable Auto-select printer for the auto-queue router to find one for you.',
-      activeButUnsafe: 'Auto-dispatch is on but the Target Printer is empty — uploads will fall through to the library. Pick a Target Printer or enable Auto-select printer.'
+      activeButUnsafe: 'Auto-dispatch is on but the Target Printer is empty - uploads will fall through to the library. Pick a Target Printer or enable Auto-select printer.'
     },
     autoSelectPrinter: {
       title: 'Auto-select printer',
@@ -4210,10 +4277,13 @@ export default {
       model: '3D Model',
       gcode: 'G-code Preview'
     },
-    notAvailable: 'not available',
-    notSliced: 'not sliced',
+    buildVolumeLabel: 'Bed',
+    buildVolumeUnit: 'mm',
+    buildVolumeTooltip: 'Build volume drawn under the preview — parsed from the 3MF (printable_area + printable_height) when present, otherwise the X1/P1/A1 default 256×256×256.',
     plates: 'Plates',
     allPlates: 'All Plates',
+    pickPlate: 'Pick a plate',
+    pickPlatePrompt: 'Pick a plate from the panel above to preview it.',
     plateNumber: 'Plate {{number}}',
     plateCount: '{{count}} plate',
     plateCount_other: '{{count}} plates',
@@ -4610,11 +4680,11 @@ export default {
     eventPriority: {
       sectionTitle: 'Event priority (ntfy)',
       helpNtfy: 'Override the ntfy server-side priority per event. 1 = min, 5 = urgent.',
-      min: '1 — Min',
-      low: '2 — Low',
-      default: '3 — Default',
-      high: '4 — High',
-      urgent: '5 — Urgent'
+      min: '1 - Min',
+      low: '2 - Low',
+      default: '3 - Default',
+      high: '4 - High',
+      urgent: '5 - Urgent'
     }
   },
 
@@ -4896,10 +4966,10 @@ export default {
       namePlaceholder: 'e.g. Home Assistant',
       daysLabel: 'Days until expiry',
       submit: 'Create',
-      hint: 'Maximum lifetime is 365 days. The token value is shown only once on creation — copy it now.',
+      hint: 'Maximum lifetime is 365 days. The token value is shown only once on creation - copy it now.',
     },
     created: {
-      title: 'Token created — copy it now',
+      title: 'Token created - copy it now',
       warning: 'This is the only time this token will be visible. After you close this dialog you can never view it again.',
       copy: 'Copy',
       dismiss: "I've saved it",
@@ -4924,7 +4994,7 @@ export default {
       revokeFailed: 'Failed to revoke token',
       loadFailed: 'Failed to load tokens',
       copied: 'Copied to clipboard',
-      copyFailed: 'Copy failed — select and copy manually',
+      copyFailed: 'Copy failed - select and copy manually',
     },
   }
 };

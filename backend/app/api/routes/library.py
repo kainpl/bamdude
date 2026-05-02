@@ -58,8 +58,10 @@ from backend.app.schemas.library import (
     ZipExtractResult,
 )
 from backend.app.services.archive import ThreeMFParser
+from backend.app.services.library_helpers import compute_file_tags, detect_file_type
 from backend.app.services.print_plan import ensure_plan_row, remove_plan_row, sync_plan_for_folder
 from backend.app.services.stl_thumbnail import generate_stl_thumbnail
+from backend.app.services.threemf_capabilities import extract_3mf_capabilities
 from backend.app.utils.threemf_tools import (
     extract_nozzle_mapping_from_3mf,
     extract_project_filaments_from_3mf,
@@ -237,7 +239,7 @@ async def save_3mf_bytes_to_library(
             return existing_by_url, True
 
     ext = os.path.splitext(filename)[1].lower()
-    file_type = ext[1:] if ext else "unknown"
+    file_type = detect_file_type(filename)
 
     file_path, is_external_upload = _resolve_upload_destination(folder, filename)
     with open(file_path, "wb") as f:
@@ -311,6 +313,13 @@ async def save_3mf_bytes_to_library(
         filename=filename,
         file_path=_stored_file_path(file_path, is_external_upload),
         file_type=file_type,
+        file_tags=compute_file_tags(
+            filename=filename,
+            file_type=file_type,
+            file_metadata=metadata or None,
+            source_type=source_type,
+            swap_compatible=swap_compatible,
+        ),
         file_size=len(content),
         file_hash=file_hash,
         thumbnail_path=to_relative_path(thumbnail_path) if thumbnail_path else None,
@@ -1191,17 +1200,16 @@ async def scan_external_folder(
             except OSError:
                 continue
 
-            file_type = ext[1:] if ext else "unknown"
-            # For compound extensions, use the meaningful part
-            if file_type in ("3mf",) and len(filepath.suffixes) >= 2:
-                inner = filepath.suffixes[-2].lower()
-                if inner == ".gcode":
-                    file_type = "gcode.3mf"
+            file_type = detect_file_type(filepath.name)
+            # Sliced 3MFs (`.gcode.3mf`) collapse to file_type='gcode' but
+            # still need the 3MF parser path for thumbnail + plate cache.
+            # Branch by container suffix, not primary type.
+            is_3mf_container = filepath.name.lower().endswith(".3mf")
 
             # Extract thumbnail for 3mf files
             thumbnail_path = None
             file_metadata = None
-            if file_type == "3mf":
+            if is_3mf_container:
                 try:
                     parser = ThreeMFParser(str(filepath))
                     meta = parser.parse()
@@ -1241,8 +1249,9 @@ async def scan_external_folder(
                 except Exception as e:
                     logger.debug("Failed to generate STL thumbnail for external %s: %s", filepath, e)
 
-            # Extract gcode thumbnail
-            if file_type == "gcode" and thumbnail_path is None:
+            # Extract gcode thumbnail — only for raw .gcode files; sliced
+            # .gcode.3mf already went through the 3MF parser branch above.
+            if file_type == "gcode" and not is_3mf_container and thumbnail_path is None:
                 thumb_data = extract_gcode_thumbnail(filepath)
                 if thumb_data:
                     thumb_dir = get_library_thumbnails_dir()
@@ -1263,6 +1272,13 @@ async def scan_external_folder(
                 filename=filename,
                 file_path=file_path_str,
                 file_type=file_type,
+                file_tags=compute_file_tags(
+                    filename=filename,
+                    file_type=file_type,
+                    file_metadata=file_metadata,
+                    source_type=None,
+                    swap_compatible=False,
+                ),
                 file_size=stat.st_size,
                 file_hash=None,  # Skip hashing external files for performance
                 thumbnail_path=thumbnail_path,
@@ -1441,6 +1457,7 @@ async def list_files(
                 is_external=f.is_external,
                 filename=f.filename,
                 file_type=f.file_type,
+                file_tags=f.file_tags or [],
                 file_size=f.file_size,
                 thumbnail_path=f.thumbnail_path,
                 duplicate_count=hash_counts.get(f.file_hash, 0) if f.file_hash else 0,
@@ -1496,7 +1513,6 @@ async def _run_slicer_with_fallback(
     can show "Generating G-code (75%)" instead of just elapsed time. Pass
     ``None`` for synchronous routes that aren't tracked by the dispatcher.
     """
-    from backend.app.api.routes.settings import get_setting
     from backend.app.services.preset_resolver import resolve_preset_ref
     from backend.app.services.slicer_api import (
         SlicerApiServerError,
@@ -1504,6 +1520,7 @@ async def _run_slicer_with_fallback(
         SlicerApiUnavailableError,
         SlicerInputError,
     )
+    from backend.app.services.slicer_routing import resolve_sidecar_url, slicer_label
 
     user: User | None = None
     if current_user_id is not None:
@@ -1525,21 +1542,23 @@ async def _run_slicer_with_fallback(
         assert ref is not None, "schema validator guarantees filament list is non-None"
         filament_jsons.append(await resolve_preset_ref(db, user, ref, "filament"))
 
-    # Slicer routing — pick the sidecar URL by preferred_slicer.
-    # The per-install URL setting (Settings UI → Slicer card) wins; an
-    # empty value falls back to the SLICER_API_URL / BAMBU_STUDIO_API_URL
-    # env defaults defined in core/config.py.
-    preferred = (await get_setting(db, "preferred_slicer")) or "bambu_studio"
-    if preferred == "orcaslicer":
-        configured = await get_setting(db, "orcaslicer_api_url")
-        api_url = (configured or app_settings.slicer_api_url).strip()
-    elif preferred == "bambu_studio":
-        configured = await get_setting(db, "bambu_studio_api_url")
-        api_url = (configured or app_settings.bambu_studio_api_url).strip()
-    else:
+    # Slicer routing — per-request override on the SliceRequest wins over
+    # the global preferred_slicer setting; per-install URL setting wins
+    # over the SLICER_API_URL / BAMBU_STUDIO_API_URL env defaults from
+    # core/config.py.
+    chosen, api_url = await resolve_sidecar_url(db, slicer_override=request.slicer)
+    if chosen is None:
         raise HTTPException(
             status_code=400,
-            detail=(f"Unknown preferred_slicer setting: '{preferred}'. Expected 'orcaslicer' or 'bambu_studio'."),
+            detail="Unknown preferred_slicer setting. Expected 'orcaslicer' or 'bambu_studio'.",
+        )
+    if not api_url:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{slicer_label(chosen)} API URL is empty -- configure it in Settings → "
+                "Profiles → Slicer API, or pick a different slicer in the Slice modal."
+            ),
         )
 
     # Forward original 3MF bytes — stripping Metadata/project_settings.config
@@ -1585,6 +1604,7 @@ async def _run_slicer_with_fallback(
                 filament_profile_jsons=filament_jsons,
                 plate=request.plate,
                 export_3mf=request.export_3mf,
+                bed_type=request.bed_type,
                 request_id=progress_request_id,
                 on_progress=progress_callback,
             )
@@ -1604,6 +1624,7 @@ async def _run_slicer_with_fallback(
                 model_filename=model_filename,
                 plate=request.plate,
                 export_3mf=request.export_3mf,
+                bed_type=request.bed_type,
                 request_id=progress_request_id,
                 on_progress=progress_callback,
             )
@@ -1704,8 +1725,17 @@ async def slice_and_persist(
         # Sliced output is a ``.gcode.3mf`` zip with embedded G-code, but the
         # user-facing meaning is "ready-to-print G-code" — using ``"gcode"``
         # gives it the same badge as plain .gcode files and distinguishes it
-        # from un-sliced ``.3mf`` source models.
+        # from un-sliced ``.3mf`` source models. ``compute_file_tags`` adds
+        # both ``gcode`` AND ``3mf`` tags so the composite badge restores
+        # the visual distinction in the UI.
         file_type="gcode",
+        file_tags=compute_file_tags(
+            filename=out_filename,
+            file_type="gcode",
+            file_metadata=metadata,
+            source_type="sliced",
+            swap_compatible=False,
+        ),
         file_size=len(result.content),
         file_hash=hashlib.sha256(result.content).hexdigest(),
         thumbnail_path=thumbnail_relative,
@@ -1950,8 +1980,7 @@ async def upload_file(
 
         filename = file.filename
         ext = os.path.splitext(filename)[1].lower()
-        # Handle files without extension
-        file_type = ext[1:] if ext else "unknown"
+        file_type = detect_file_type(filename)
 
         # Verify folder exists if specified
         target_folder: LibraryFolder | None = None
@@ -2065,6 +2094,13 @@ async def upload_file(
             filename=filename,
             file_path=_stored_file_path(file_path, is_external_upload),
             file_type=file_type,
+            file_tags=compute_file_tags(
+                filename=filename,
+                file_type=file_type,
+                file_metadata=metadata if metadata else None,
+                source_type=None,
+                swap_compatible=swap_compatible,
+            ),
             file_size=len(content),
             file_hash=file_hash,
             thumbnail_path=to_relative_path(thumbnail_path) if thumbnail_path else None,
@@ -2080,6 +2116,7 @@ async def upload_file(
             id=library_file.id,
             filename=library_file.filename,
             file_type=library_file.file_type,
+            file_tags=library_file.file_tags or [],
             file_size=library_file.file_size,
             thumbnail_path=library_file.thumbnail_path,
             duplicate_of=duplicate_of,
@@ -2229,7 +2266,7 @@ async def extract_zip_file(
                     # Extract file
                     filename = os.path.basename(zip_path)
                     ext = os.path.splitext(filename)[1].lower()
-                    file_type = ext[1:] if ext else "unknown"
+                    file_type = detect_file_type(filename)
 
                     # Generate unique filename for storage
                     unique_filename = f"{uuid.uuid4().hex}{ext}"
@@ -2306,6 +2343,13 @@ async def extract_zip_file(
                         filename=filename,
                         file_path=to_relative_path(file_path),
                         file_type=file_type,
+                        file_tags=compute_file_tags(
+                            filename=filename,
+                            file_type=file_type,
+                            file_metadata=metadata if metadata else None,
+                            source_type=None,
+                            swap_compatible=False,
+                        ),
                         file_size=len(file_content),
                         file_hash=file_hash,
                         thumbnail_path=to_relative_path(thumbnail_path) if thumbnail_path else None,
@@ -2711,19 +2755,17 @@ async def _try_preview_slice_filaments(
     ``request_id``: when supplied, forwarded to the sidecar so the
     SliceModal's inline spinner + toast can poll the matching progress
     endpoint and show "Generating G-code (45%)" for the preview as well.
-    """
-    from backend.app.api.routes.settings import get_setting
-    from backend.app.services.slice_preview import get_preview_filaments
 
-    preferred = (await get_setting(db, "preferred_slicer")) or "bambu_studio"
-    if preferred == "orcaslicer":
-        configured = await get_setting(db, "orcaslicer_api_url")
-        api_url = (configured or app_settings.slicer_api_url).strip()
-    elif preferred == "bambu_studio":
-        configured = await get_setting(db, "bambu_studio_api_url")
-        api_url = (configured or app_settings.bambu_studio_api_url).strip()
-    else:
-        return None
+    The preview always uses the global ``preferred_slicer`` setting (no
+    per-request override): the modal calls this BEFORE the user has chosen
+    a slicer, just to discover which AMS slots the plate touches. Routing
+    by the user's pick would mean two preview slices on different sidecars
+    if the user switches the radio.
+    """
+    from backend.app.services.slice_preview import get_preview_filaments
+    from backend.app.services.slicer_routing import resolve_sidecar_url
+
+    _, api_url = await resolve_sidecar_url(db)
     if not api_url:
         return None
 
@@ -2740,6 +2782,83 @@ async def _try_preview_slice_filaments(
         api_url=api_url,
         request_id=request_id,
     )
+
+
+@router.get("/files/{file_id}/capabilities")
+async def get_library_file_capabilities(
+    file_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = Depends(require_permission(Permission.LIBRARY_READ)),
+):
+    """Viewer capabilities for a library file.
+
+    Tab visibility is driven by ``file_tags`` (m036) — the canonical
+    identity vocabulary the rest of the file manager already uses:
+
+    - ``gcode`` tag → G-code preview tab is meaningful (raw .gcode OR
+      sliced .gcode.3mf).
+    - ``project`` (unsliced .3mf project package) OR ``geometry`` (raw
+      mesh / CAD source — STL / OBJ / STEP) → 3D model tab is
+      meaningful.
+    - Sliced .gcode.3mf carries ``gcode`` + ``3mf`` but NOT ``project``
+      (the slicer rasterised the mesh into G-code lines), so it shows
+      only the G-code tab. This mirrors the archive route's policy of
+      not duplicating the mesh under "3D Model" when the bytes the
+      user would see there are already painted by the gcode preview.
+
+    Build volume + filament colours are parsed from the 3MF container
+    (when one exists) so the bed grid + extrusion colours under the
+    preview match the source. Non-container rows (.gcode / .stl /
+    .obj / .step) fall back to the X1/P1/A1 default volume and an
+    empty colour list — the file format itself carries no machine
+    config to extract.
+    """
+    result = await db.execute(select(LibraryFile).where(LibraryFile.id == file_id))
+    file = result.scalar_one_or_none()
+    if not file:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    tags = set(file.file_tags or [])
+    has_gcode = "gcode" in tags
+    has_model = "project" in tags or "geometry" in tags
+
+    # 3MF container? Worth parsing for build_volume + filament_colors.
+    # Includes both unsliced .3mf (carries ``3mf`` tag) and sliced
+    # .gcode.3mf (carries ``gcode`` + ``3mf``).
+    has_3mf_container = "3mf" in tags
+    default_volume = {"x": 256, "y": 256, "z": 256}
+
+    if not has_3mf_container:
+        return {
+            "has_model": has_model,
+            "has_gcode": has_gcode,
+            "has_source": False,
+            "build_volume": default_volume,
+            "filament_colors": [],
+        }
+
+    abs_path = to_absolute_path(file.file_path)
+    if not abs_path or not abs_path.exists():
+        raise HTTPException(status_code=404, detail="File not found on disk")
+
+    try:
+        caps = extract_3mf_capabilities(primary_path=abs_path)
+    except zipfile.BadZipFile as exc:
+        raise HTTPException(status_code=400, detail="Invalid 3MF file") from exc
+
+    return {
+        # Tag-based, not probe-based — sliced .gcode.3mf with embedded
+        # mesh entries should still hide the 3D tab per the policy
+        # documented above.
+        "has_model": has_model,
+        "has_gcode": has_gcode,
+        # Library files have no separate "source 3MF" sidecar — the row
+        # IS the source. Always False here so the frontend doesn't try
+        # to fetch a non-existent /source endpoint.
+        "has_source": False,
+        "build_volume": caps.build_volume,
+        "filament_colors": caps.filament_colors,
+    }
 
 
 @router.get("/files/{file_id}/filament-requirements")
@@ -3442,10 +3561,18 @@ async def get_thumbnail(file_id: int, db: AsyncSession = Depends(get_db)):
 @router.get("/files/{file_id}/gcode")
 async def get_gcode(
     file_id: int,
+    plate_id: int | None = None,
     db: AsyncSession = Depends(get_db),
     _: User | None = Depends(require_permission(Permission.LIBRARY_READ)),
 ):
-    """Get gcode for a file (for preview)."""
+    """Get gcode for a file (for preview).
+
+    For multi-plate sliced 3MFs the caller passes ``plate_id`` to fetch
+    a specific plate's gcode (``Metadata/plate_{N}.gcode``). Without
+    ``plate_id`` we fall back to the first gcode entry — preserves the
+    original single-plate behaviour for callers (e.g. printer dispatch)
+    that don't know about the plates UI.
+    """
     result = await db.execute(select(LibraryFile).where(LibraryFile.id == file_id))
     file = result.scalar_one_or_none()
 
@@ -3456,17 +3583,37 @@ async def get_gcode(
     if not abs_path or not abs_path.exists():
         raise HTTPException(status_code=404, detail="File not found on disk")
 
-    if file.file_type == "gcode":
+    # Branch by container, not by primary file_type — sliced 3MFs collapse
+    # to file_type='gcode' (m035) but are still zip containers and need
+    # the embedded-gcode extraction path. Filename suffix is the only
+    # cheap way to tell raw .gcode from .gcode.3mf without opening the
+    # bytes (and the bytes can be huge).
+    is_3mf_container = file.filename.lower().endswith(".3mf")
+    if file.file_type == "gcode" and not is_3mf_container:
         return FastAPIFileResponse(str(abs_path), media_type="text/plain")
-    elif file.file_type == "3mf":
-        # Extract gcode from 3mf
+    elif is_3mf_container:
         try:
             with zipfile.ZipFile(str(abs_path), "r") as zf:
-                # Find gcode file
                 gcode_files = [n for n in zf.namelist() if n.endswith(".gcode")]
                 if not gcode_files:
                     raise HTTPException(status_code=404, detail="No gcode found in 3MF file")
-                gcode_content = zf.read(gcode_files[0])
+
+                target_name: str | None = None
+                if plate_id is not None:
+                    expected_suffix = f"plate_{plate_id}.gcode"
+                    target_name = next(
+                        (n for n in gcode_files if n.lower().endswith(expected_suffix)),
+                        None,
+                    )
+                    if target_name is None:
+                        raise HTTPException(
+                            status_code=404,
+                            detail=f"Plate {plate_id} gcode not found in 3MF",
+                        )
+                else:
+                    target_name = gcode_files[0]
+
+                gcode_content = zf.read(target_name)
                 from fastapi.responses import Response
 
                 return Response(content=gcode_content, media_type="text/plain")

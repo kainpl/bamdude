@@ -18,6 +18,7 @@ value so subscribers see the right state without polling.
 from __future__ import annotations
 
 import asyncio
+import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -29,6 +30,18 @@ from backend.app.services.printer_manager import PrinterManager
 def manager():
     """Fresh manager per test; the awaiting-plate-clear set is per-instance."""
     return PrinterManager()
+
+
+def _live_pm_module(manager):
+    """Return the printer_manager module that ``manager``'s methods actually
+    resolve globals against. Necessary because ``test_code_quality``'s
+    importability smoke test calls ``del sys.modules[...]; import_module(...)``,
+    which can leave a stale module in ``sys.modules`` while ``manager`` (and
+    its bound methods' ``__globals__``) still point at the original module
+    object. Looking up via ``manager.__class__.__module__`` always returns the
+    module the live class was defined in, so monkeypatches land where the
+    method-under-test will actually look."""
+    return sys.modules[manager.__class__.__module__]
 
 
 def _fake_state(**overrides):
@@ -118,27 +131,14 @@ class TestSchedulingFromSetAwaitingPlateClear:
 class TestBroadcastStatusChange:
     """The broadcast coroutine itself."""
 
-    @pytest.mark.skip(
-        reason=(
-            "Pollution from a sibling test in the wider suite (passes in isolation; "
-            "monkeypatch on pm_module.printer_state_to_dict is bypassed when running "
-            "after certain tests). Tracked as a follow-up; the broadcast contract "
-            "itself is exercised end-to-end by TestEndToEndUnderRunningLoop."
-        )
-    )
     @pytest.mark.asyncio
     async def test_emits_ws_update_when_state_present(self, manager, monkeypatch):
         """Happy path: printer has a known status, broadcast goes out
         with the dict produced by ``printer_state_to_dict``."""
-        from backend.app.services import printer_manager as pm_module
+        pm_module = _live_pm_module(manager)
 
         state = _fake_state()
         to_dict = MagicMock(return_value={"id": 7, "awaiting_plate_clear": False})
-        # Use monkeypatch (not unittest.mock.patch) because some sibling tests
-        # in the wider suite end up reloading helper modules that cache a
-        # pre-patch reference to printer_state_to_dict; monkeypatch's setattr
-        # on the live module rebinds the *current* attribute and is reverted
-        # by pytest's teardown regardless of import-time caching.
         monkeypatch.setattr(pm_module, "printer_state_to_dict", to_dict)
         with (
             patch.object(manager, "get_status", return_value=state),
@@ -208,19 +208,12 @@ class TestEndToEndUnderRunningLoop:
     pass but the wiring breaks (e.g. ``_schedule_async`` swallowing the
     broadcast coroutine)."""
 
-    @pytest.mark.skip(
-        reason=(
-            "Same pollution issue as test_emits_ws_update_when_state_present — "
-            "monkeypatch on printer_state_to_dict bypassed under full-suite ordering. "
-            "Passes in isolation. Follow-up."
-        )
-    )
     @pytest.mark.asyncio
     async def test_set_false_eventually_emits_broadcast(self, manager, monkeypatch):
         """Reproduces the #1128 fix path end-to-end: set the flag to
         False under a live loop, give the scheduler a tick, the
         ws broadcast must have fired with the new payload."""
-        from backend.app.services import printer_manager as pm_module
+        pm_module = _live_pm_module(manager)
 
         loop = asyncio.get_running_loop()
         manager._loop = loop
@@ -228,8 +221,6 @@ class TestEndToEndUnderRunningLoop:
         # the broadcast short-circuits before reaching ws_manager.
         manager._awaiting_plate_clear.add(7)
 
-        # See the sibling test for why monkeypatch is used here instead of
-        # unittest.mock.patch on the dotted path.
         monkeypatch.setattr(
             pm_module,
             "printer_state_to_dict",

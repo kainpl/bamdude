@@ -1,6 +1,6 @@
 [project]
 name = "bamdude"
-version = "0.4.2b2"
+version = "0.4.2b3"
 description = "Self-hosted print archive, management and automation system for Bambu Lab 3D printers"
 requires-python = ">=3.10"
 

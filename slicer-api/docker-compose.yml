@@ -1,9 +1,12 @@
 # Optional slicer-API sidecar stack for BamDude.
 #
 # Both services are HTTP wrappers around a slicer CLI: the same Node code
-# (`maziggy/orca-slicer-api`, `bambuddy/profile-resolver` branch) bundled
-# with a different binary in each image. BamDude talks to them via the
-# URLs configured in Settings → Profiles → Slicer API.
+# (`kainpl/orca-slicer-api`, `bamdude/profile-resolver` branch -- BamDude's
+# fork of the upstream `AFKFelix/orca-slicer-api` carrying the inherits-chain
+# resolver, sentinel-value strip, multi-filament + live-progress patches that
+# are required to slice real OrcaSlicer / BambuStudio GUI exports without
+# segfaulting the CLI). BamDude talks to them via the URLs configured in
+# Settings → Profiles → Slicer API.
 #
 #   bambu-studio-api  → host port 3001 (BambuStudio CLI)
 #   orca-slicer-api   → host port 3003 (OrcaSlicer CLI)
@@ -12,19 +15,51 @@
 # which is why the OrcaSlicer sidecar sits on 3003. Override either port
 # in `.env` (see `.env.example`) if you don't run BamDude on this host.
 #
+# Both services live behind explicit profiles so the user picks exactly
+# which slicer(s) they want; a bare `docker compose up -d` (no profile)
+# starts nothing.
+#
 # Usage:
 #   cd slicer-api/
-#   docker compose up -d                       # starts OrcaSlicer only
-#   docker compose --profile bambu up -d       # starts both
+#   docker compose --profile orca   up -d   # OrcaSlicer only
+#   docker compose --profile bambu  up -d   # BambuStudio only
+#   docker compose --profile all    up -d   # both
 #
-# First build pulls the source from the fork over git (~5 min — downloads
-# the BambuStudio AppImage, ~220 MB) and caches the image locally.
-# Subsequent runs reuse the cache. Pin the slicer versions via .env.
+# IMPORTANT — Docker Desktop 4.71 / compose v5.1.x bake bug:
+#   Docker Desktop's compose-plugin runs `docker compose build` through
+#   `docker buildx bake` by default, and in 4.71 (engine 29.4.x, buildx
+#   0.33.x-desktop) the bake-bridge fails on this file (and the upstream
+#   one) with an opaque `failed to execute bake: exit status 1` — no
+#   stage error, no Dockerfile read, just early termination. `COMPOSE_BAKE=
+#   false` does NOT disable it on this build. Workaround: force the
+#   legacy classic builder for the FIRST build (run once, image is then
+#   cached and `up -d` reuses it):
+#
+#     # PowerShell:
+#     $env:DOCKER_BUILDKIT="0"; $env:COMPOSE_DOCKER_CLI_BUILD="0"
+#     docker compose --profile all build
+#     $env:DOCKER_BUILDKIT=$null; $env:COMPOSE_DOCKER_CLI_BUILD=$null
+#
+#     # bash:
+#     DOCKER_BUILDKIT=0 COMPOSE_DOCKER_CLI_BUILD=0 \
+#       docker compose --profile all build
+#
+#   Or use buildx directly (BuildKit, parallel-friendly, faster):
+#     docker buildx bake -f docker-compose.yml orca-slicer-api
+#     docker buildx bake -f docker-compose.yml bambu-studio-api
+#
+#   After the build is cached, `docker compose --profile X up -d` works
+#   normally — the bug only fires during the build path.
+#
+# First build pulls the source from the fork over git (~5 min per service
+# — downloads the OrcaSlicer ~110 MB or BambuStudio ~220 MB AppImage)
+# and caches the image locally. Subsequent runs reuse the cache. Pin the
+# slicer versions via .env.
 
 services:
   orca-slicer-api:
     build:
-      context: https://github.com/maziggy/orca-slicer-api.git#bambuddy/profile-resolver
+      context: https://github.com/kainpl/orca-slicer-api.git#bamdude/profile-resolver
       dockerfile: Dockerfile
       args:
         ORCA_VERSION: "${ORCA_VERSION:-2.3.2}"
@@ -44,10 +79,13 @@ services:
       timeout: 5s
       start_period: 10s
       retries: 3
+    profiles:
+      - orca
+      - all
 
   bambu-studio-api:
     build:
-      context: https://github.com/maziggy/orca-slicer-api.git#bambuddy/profile-resolver
+      context: https://github.com/kainpl/orca-slicer-api.git#bamdude/profile-resolver
       dockerfile: Dockerfile.bambu-studio
       args:
         BAMBU_VERSION: "${BAMBU_VERSION:-02.06.00.51}"
@@ -69,3 +107,4 @@ services:
       retries: 3
     profiles:
       - bambu
+      - all

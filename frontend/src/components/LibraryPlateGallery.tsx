@@ -20,7 +20,10 @@ interface Props {
  * thumbnail, name, stats (print time, total weight, instance count) and
  * per-filament breakdown.
  */
-export function LibraryPlateGallery({ fileId }: Props) {
+// Internal-only — LibraryPlateGalleryModal below is the single consumer
+// (kept as a separate component so the modal frame can wrap the gallery
+// without forcing every caller to deal with focus/escape handling).
+function LibraryPlateGallery({ fileId }: Props) {
   const { t } = useTranslation();
   const { data, isLoading } = useQuery({
     queryKey: ['library-file-plates', fileId],

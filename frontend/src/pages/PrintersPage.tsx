@@ -1089,7 +1089,9 @@ function mapModelCode(ssdpModel: string | null): string {
 //  • User-defined friendly name (editable, protected by printers:update)
 //  • AMS serial number
 //  • AMS firmware version
-export function AmsNameHoverCard({
+//
+// Internal — rendered twice in PrintersPage; not consumed elsewhere.
+function AmsNameHoverCard({
   ams,
   printerId,
   label,

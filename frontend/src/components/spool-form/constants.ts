@@ -6,9 +6,6 @@ export const MATERIALS = [
   'PA-CF', 'PETG-CF', 'PLA-CF',
 ];
 
-// Common spool weights
-export const WEIGHTS = [250, 500, 750, 1000, 2000, 3000];
-
 // Default brand options (will be augmented with cloud presets)
 export const DEFAULT_BRANDS = [
   'Bambu', 'PolyLite', 'PolyTerra', 'eSUN', 'Overture',
@@ -41,8 +38,10 @@ export const QUICK_COLORS: ColorPreset[] = [
   { name: 'Silver', hex: 'C0C0C0' },
 ];
 
-// Extended color palette (shown when expanded)
-export const EXTENDED_COLORS: ColorPreset[] = [
+// Extended color palette (shown when expanded). Internal-only — only
+// ``ALL_COLORS`` is consumed externally; this constant exists so the
+// ``QUICK_COLORS`` set can stay logically separate.
+const EXTENDED_COLORS: ColorPreset[] = [
   // Reds
   { name: 'Dark Red', hex: '8B0000' },
   { name: 'Crimson', hex: 'DC143C' },

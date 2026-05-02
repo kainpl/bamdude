@@ -33,6 +33,7 @@ from backend.app.schemas.archive import (
     ReprintRequest,
 )
 from backend.app.services.archive import ArchiveService
+from backend.app.services.threemf_capabilities import extract_3mf_capabilities
 from backend.app.utils.threemf_tools import (
     extract_nozzle_mapping_from_3mf,
     extract_project_filaments_from_3mf,
@@ -1734,9 +1735,15 @@ async def get_thumbnail(
     """Get the thumbnail image.
 
     Note: Unauthenticated - loaded via <img> tags which can't send auth headers.
+
+    Trashed archives are intentionally accessible here so the trash UI can
+    render previews next to the filename. The metadata is already exposed
+    via the trash listing endpoint, so a thumbnail-only access leak is a
+    no-op surface — the trashed row is otherwise visible to anyone the
+    listing serves.
     """
     service = ArchiveService(db)
-    archive = await service.get_archive(archive_id)
+    archive = await service.get_archive(archive_id, include_trashed=True)
     if not archive or not archive.thumbnail_path:
         raise HTTPException(404, "Thumbnail not found")
 
@@ -2522,8 +2529,6 @@ async def get_archive_capabilities(
     _: User | None = RequirePermission(Permission.ARCHIVES_READ),
 ):
     """Check what viewing capabilities are available for this 3MF file."""
-    import defusedxml.ElementTree as ET
-
     service = ArchiveService(db)
     archive = await service.get_archive(archive_id)
     if not archive:
@@ -2533,205 +2538,30 @@ async def get_archive_capabilities(
     if not file_path.is_file():
         raise HTTPException(404, "File not found")
 
-    has_model = False
-    has_gcode = False
-    has_source = False
-    build_volume = {"x": 256, "y": 256, "z": 256}  # Default to X1/P1 size
-    filament_colors: list[str] = []
-
-    # Check if source 3MF exists - this is where actual mesh data typically lives
-    source_path = None
+    source_path: Path | None = None
     if archive.source_3mf_path:
-        source_path = settings.base_dir / archive.source_3mf_path
-        if source_path.exists():
-            has_source = True
-
-    # Helper function to check for mesh data and extract colors from a 3MF file
-    def extract_3mf_info(zf_path: Path) -> tuple[bool, list[str], dict]:
-        """Extract mesh presence, colors, and build volume from a 3MF file."""
-        found_mesh = False
-        colors: list[str] = []
-        volume = {"x": 256, "y": 256, "z": 256}
-
-        try:
-            with zipfile.ZipFile(zf_path, "r") as zf:
-                names = zf.namelist()
-
-                # Check for 3D model - look for actual mesh data
-                for name in names:
-                    if name.endswith(".model"):
-                        try:
-                            content = zf.read(name).decode("utf-8")
-                            if "<vertex" in content or "<mesh" in content:
-                                found_mesh = True
-                                break
-                        except Exception:
-                            pass  # Skip unreadable .model entries in archive
-
-                # Extract filament colors from project_settings.config
-                if "Metadata/project_settings.config" in names:
-                    try:
-                        config_content = zf.read("Metadata/project_settings.config").decode("utf-8")
-                        config_data = json.loads(config_content)
-
-                        # Parse printable_area: ['0x0', '256x0', '256x256', '0x256']
-                        printable_area = config_data.get("printable_area", [])
-                        if printable_area and len(printable_area) >= 3:
-                            max_x = 0
-                            max_y = 0
-                            for coord in printable_area:
-                                if "x" in coord:
-                                    parts = coord.split("x")
-                                    if len(parts) == 2:
-                                        try:
-                                            x, y = int(parts[0]), int(parts[1])
-                                            max_x = max(max_x, x)
-                                            max_y = max(max_y, y)
-                                        except ValueError:
-                                            pass  # Skip non-numeric printable_area coordinate
-                            if max_x > 0 and max_y > 0:
-                                volume["x"] = max_x
-                                volume["y"] = max_y
-
-                        # Parse printable_height
-                        printable_height = config_data.get("printable_height")
-                        if printable_height:
-                            try:
-                                volume["z"] = int(printable_height)
-                            except (ValueError, TypeError):
-                                pass  # Skip unparseable printable_height value
-
-                        # Extract filament colors
-                        raw_colors = config_data.get("filament_colour", [])
-                        if raw_colors:
-                            for color in raw_colors:
-                                if color and isinstance(color, str):
-                                    colors.append(color)
-                    except Exception:
-                        pass  # Skip malformed project_settings.config
-        except zipfile.BadZipFile:
-            pass  # File is not a valid zip/3MF archive
-
-        return found_mesh, colors, volume
-
-    # First check source 3MF for mesh data and colors (preferred for 3D model viewing)
-    if has_source and source_path:
-        source_has_mesh, source_colors, source_volume = extract_3mf_info(source_path)
-        if source_has_mesh:
-            has_model = True
-        if source_colors:
-            filament_colors = source_colors
-        if source_volume["x"] != 256 or source_volume["y"] != 256 or source_volume["z"] != 256:
-            build_volume = source_volume
+        candidate = settings.base_dir / archive.source_3mf_path
+        if candidate.exists():
+            source_path = candidate
 
     try:
-        with zipfile.ZipFile(file_path, "r") as zf:
-            names = zf.namelist()
+        caps = extract_3mf_capabilities(primary_path=file_path, source_path=source_path)
+    except zipfile.BadZipFile as exc:
+        raise HTTPException(400, "Invalid 3MF file") from exc
 
-            # Check for G-code in the sliced file
-            has_gcode = any(n.startswith("Metadata/") and n.endswith(".gcode") for n in names)
-
-            # Check for 3D model in sliced file (fallback if no source)
-            if not has_model:
-                for name in names:
-                    if name.endswith(".model"):
-                        try:
-                            content = zf.read(name).decode("utf-8")
-                            if "<vertex" in content or "<mesh" in content:
-                                has_model = True
-                                break
-                        except Exception:
-                            pass  # Skip unreadable .model entries in archive
-
-            # Extract filament colors from slice_info.config (for gcode preview)
-            # These are the actual filaments used in the print, indexed by tool/extruder
-            slice_colors: list[str] = []
-            if "Metadata/slice_info.config" in names:
-                try:
-                    slice_content = zf.read("Metadata/slice_info.config").decode("utf-8")
-                    root = ET.fromstring(slice_content)
-
-                    filaments = root.findall(".//filament")
-                    filament_map: dict[int, str] = {}
-                    for f in filaments:
-                        fid = f.get("id")
-                        fcolor = f.get("color")
-                        used_g = f.get("used_g", "0")
-                        try:
-                            used_amount = float(used_g)
-                        except (ValueError, TypeError):
-                            used_amount = 0
-
-                        if fid is not None and fcolor:
-                            try:
-                                tool_id = int(fid) - 1
-                                if tool_id >= 0 and used_amount > 0:
-                                    filament_map[tool_id] = fcolor
-                            except ValueError:
-                                pass  # Skip filament entry with non-numeric ID
-
-                    if filament_map:
-                        max_tool = max(filament_map.keys())
-                        for i in range(max_tool + 1):
-                            slice_colors.append(filament_map.get(i, "#00AE42"))
-                except Exception:
-                    pass  # Skip malformed slice_info.config XML
-
-            # Use slice_info colors if we don't have colors from source yet
-            if not filament_colors and slice_colors:
-                filament_colors = slice_colors
-
-            # Extract build volume from sliced file if not already set from source
-            if build_volume["x"] == 256 and build_volume["y"] == 256:
-                if "Metadata/project_settings.config" in names:
-                    try:
-                        config_content = zf.read("Metadata/project_settings.config").decode("utf-8")
-                        config_data = json.loads(config_content)
-
-                        printable_area = config_data.get("printable_area", [])
-                        if printable_area and len(printable_area) >= 3:
-                            max_x = 0
-                            max_y = 0
-                            for coord in printable_area:
-                                if "x" in coord:
-                                    parts = coord.split("x")
-                                    if len(parts) == 2:
-                                        try:
-                                            x, y = int(parts[0]), int(parts[1])
-                                            max_x = max(max_x, x)
-                                            max_y = max(max_y, y)
-                                        except ValueError:
-                                            pass  # Skip non-numeric printable_area coordinate
-                            if max_x > 0 and max_y > 0:
-                                build_volume["x"] = max_x
-                                build_volume["y"] = max_y
-
-                        printable_height = config_data.get("printable_height")
-                        if printable_height:
-                            try:
-                                build_volume["z"] = int(printable_height)
-                            except (ValueError, TypeError):
-                                pass  # Skip unparseable printable_height value
-
-                        # Fallback colors from project_settings if still empty
-                        if not filament_colors:
-                            raw_colors = config_data.get("filament_colour", [])
-                            if raw_colors:
-                                for color in raw_colors:
-                                    if color and isinstance(color, str):
-                                        filament_colors.append(color)
-                    except Exception:
-                        pass  # Skip malformed project_settings.config
-
-    except zipfile.BadZipFile:
-        raise HTTPException(400, "Invalid 3MF file")
+    # 3D-model tab is only meaningful when an unsliced source 3MF is
+    # available and contains mesh data. The sliced container's embedded
+    # mesh is already rasterised into the G-code preview, so re-rendering
+    # it under "3D Model" duplicates information and confuses users —
+    # they expect 3D to mean "the original model before slicing".
+    has_model = caps.has_mesh_in_source
 
     return {
         "has_model": has_model,
-        "has_gcode": has_gcode,
-        "has_source": has_source,
-        "build_volume": build_volume,
-        "filament_colors": filament_colors,
+        "has_gcode": caps.has_gcode,
+        "has_source": source_path is not None,
+        "build_volume": caps.build_volume,
+        "filament_colors": caps.filament_colors,
     }
 
 
@@ -2741,7 +2571,14 @@ async def get_gcode(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.ARCHIVES_READ),
 ):
-    """Extract and return G-code from the 3MF file."""
+    """Extract and return G-code from the 3MF file.
+
+    For archives where ``plate_index`` is known (set at archive_print
+    time, m038 backfill for legacy rows) we serve that specific plate's
+    gcode — matches what was actually printed. Without it we fall back
+    to the first gcode entry, preserving the legacy single-plate
+    behaviour.
+    """
     service = ArchiveService(db)
     archive = await service.get_archive(archive_id)
     if not archive:
@@ -2761,8 +2598,22 @@ async def get_gcode(
                     "No G-code found. This file hasn't been sliced yet - G-code is only available after slicing in Bambu Studio.",
                 )
 
-            # Get the first plate's G-code (usually plate_1.gcode)
-            gcode_content = zf.read(gcode_files[0]).decode("utf-8")
+            target_name: str | None = None
+            if archive.plate_index is not None:
+                expected_suffix = f"plate_{archive.plate_index}.gcode"
+                target_name = next(
+                    (n for n in gcode_files if n.lower().endswith(expected_suffix)),
+                    None,
+                )
+                # Don't 404 the whole request just because the recorded
+                # plate isn't in the container — fall back to the first
+                # gcode so the user still sees something. Catches legacy
+                # archives whose plate_index was backfilled from the name
+                # suffix even though the container only has plate_1.
+            if target_name is None:
+                target_name = gcode_files[0]
+
+            gcode_content = zf.read(target_name).decode("utf-8")
             return Response(content=gcode_content, media_type="text/plain")
     except zipfile.BadZipFile:
         raise HTTPException(400, "Invalid 3MF file")
@@ -3056,19 +2907,16 @@ async def _try_preview_slice_filaments(
     list endpoint can return real per-plate filaments for unsliced project
     files. Returns ``None`` on any failure — the caller falls back to the
     project-config heuristic. ``request_id`` flows through to the sidecar
-    for live progress on the SliceModal's inline spinner + toast."""
-    from backend.app.api.routes.settings import get_setting
-    from backend.app.services.slice_preview import get_preview_filaments
+    for live progress on the SliceModal's inline spinner + toast.
 
-    preferred = (await get_setting(db, "preferred_slicer")) or "bambu_studio"
-    if preferred == "orcaslicer":
-        configured = await get_setting(db, "orcaslicer_api_url")
-        api_url = (configured or settings.slicer_api_url).strip()
-    elif preferred == "bambu_studio":
-        configured = await get_setting(db, "bambu_studio_api_url")
-        api_url = (configured or settings.bambu_studio_api_url).strip()
-    else:
-        return None
+    Always uses the global ``preferred_slicer`` setting -- the per-job
+    slicer override on ``SliceRequest.slicer`` is consulted only by the
+    real slice routes, not by the modal's filament-discovery preview.
+    """
+    from backend.app.services.slice_preview import get_preview_filaments
+    from backend.app.services.slicer_routing import resolve_sidecar_url
+
+    _, api_url = await resolve_sidecar_url(db)
     if not api_url:
         return None
 

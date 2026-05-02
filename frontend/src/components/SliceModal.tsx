@@ -1,9 +1,11 @@
-import { Cloud, CloudOff, Cog, Loader2, X } from 'lucide-react';
+import { Check, Cloud, CloudOff, Cog, Loader2, X, XCircle } from 'lucide-react';
+type SlicerKind = 'orcaslicer' | 'bambu_studio';
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import {
   api,
+  type BedType,
   type PresetRef,
   type PresetSource,
   type SliceJobProgress,
@@ -14,7 +16,8 @@ import {
 } from '../api/client';
 import { useSliceJobTracker } from '../contexts/SliceJobTrackerContext';
 import { useToast } from '../contexts/ToastContext';
-import { PlatePickerModal } from './PlatePickerModal';
+import { useSlicerHealth } from '../hooks/useSlicerHealth';
+import { SlicePlateSelector } from './SlicePlateSelector';
 import type { PlateFilament } from '../types/plates';
 import { normalizeColorForCompare, colorsAreSimilar } from '../utils/amsHelpers';
 
@@ -36,6 +39,28 @@ type Slot = 'printer' | 'process' | 'filament';
 // distinct from the listing endpoint's dedup order and only affects what
 // the SliceModal renders / pre-picks.
 const SLICE_MODAL_TIER_ORDER = ['local', 'cloud', 'standard'] as const;
+
+type OwnerFilter = 'all' | 'custom' | 'builtin';
+
+// Mirrors the regex on the Profiles page (`pages/ProfilesPage.tsx::isUserPreset`)
+// — Bambu Cloud encodes user-created presets with these setting_id prefixes,
+// everything else is bundled. Tier mapping for the slice modal:
+//   - local tier  → always custom (user imported the .json themselves)
+//   - cloud tier  → custom when setting_id matches the regex below
+//   - standard    → always built-in (sidecar bundle)
+const _USER_CLOUD_PRESET_RE = /^(P[FPM]US|PF\d|PP\d)/;
+
+function isCustomPreset(p: UnifiedPreset): boolean {
+  if (p.source === 'local') return true;
+  if (p.source === 'standard') return false;
+  return _USER_CLOUD_PRESET_RE.test(p.id);
+}
+
+function matchesOwnerFilter(p: UnifiedPreset, filter: OwnerFilter): boolean {
+  if (filter === 'all') return true;
+  const custom = isCustomPreset(p);
+  return filter === 'custom' ? custom : !custom;
+}
 
 function pickDefault(by: UnifiedPresetsResponse, slot: Slot): PresetRef | null {
   for (const tier of SLICE_MODAL_TIER_ORDER) {
@@ -244,10 +269,164 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // each slot from the source plate's required (type, colour).
   const [filamentPresets, setFilamentPresets] = useState<(PresetRef | null)[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  // Owner filter for the preset dropdowns — same 3-state model as the
+  // ProfilesPage filter (``all`` / ``custom`` ("My presets") /
+  // ``builtin``). Persisted in localStorage so a user who always picks
+  // their own profiles doesn't have to flip the toggle on every modal
+  // open. Default ``all`` keeps the existing behaviour for first-time
+  // users / fresh browsers.
+  const [filterOwner, setFilterOwner] = useState<OwnerFilter>(() => {
+    if (typeof localStorage === 'undefined') return 'all';
+    try {
+      const stored = localStorage.getItem('bamdude:slice-modal:filter-owner');
+      return stored === 'custom' || stored === 'builtin' ? stored : 'all';
+    } catch {
+      return 'all';
+    }
+  });
+  useEffect(() => {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      localStorage.setItem('bamdude:slice-modal:filter-owner', filterOwner);
+    } catch {
+      /* private mode / quota — silently skip */
+    }
+  }, [filterOwner]);
+
+  // Bed plate override sent to the slicer as ``--curr-bed-type``. Default
+  // ``Textured PEI Plate`` matches the factory plate shipped with X1C / P1S
+  // / H2D — the modern Bambu lineup the majority of our users own. A1 /
+  // A1-mini owners who run Smooth PEI (SuperTack) will flip this once and
+  // localStorage persists the pick, so subsequent slices land on the right
+  // adhesion temps without re-clicking. Without this override the slicer
+  // CLI defaults to "Cool Plate", which produces the wrong first-layer bed
+  // temperature for any X1/A1 user with a default plate.
+  const [bedType, setBedType] = useState<BedType>(() => {
+    if (typeof localStorage === 'undefined') return 'Textured PEI Plate';
+    try {
+      const stored = localStorage.getItem('bamdude:slice-modal:bed-type');
+      const allowed: BedType[] = [
+        'Cool Plate',
+        'Engineering Plate',
+        'High Temp Plate',
+        'Textured PEI Plate',
+        'Supertack Plate',
+      ];
+      return (allowed as string[]).includes(stored ?? '') ? (stored as BedType) : 'Textured PEI Plate';
+    } catch {
+      return 'Textured PEI Plate';
+    }
+  });
+  useEffect(() => {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      localStorage.setItem('bamdude:slice-modal:bed-type', bedType);
+    } catch {
+      /* private mode / quota — silently skip */
+    }
+  }, [bedType]);
+  // When the owner filter narrows the visible set, any current selection
+  // that no longer matches must drop to null — otherwise the dropdown
+  // would render an out-of-section value the user can no longer see in
+  // the list, and clicking Slice would submit a preset they didn't
+  // (re-)pick under the new filter. Pre-pick effect won't re-fire because
+  // its dep is presetsQuery.data only.
   // null = plate not yet picked (or single-plate / non-3MF — picker is skipped
   // and we'll backfill 1 at submit time). Set to a 1-indexed plate number once
   // the user picks one (or implicitly for single-plate sources).
   const [selectedPlate, setSelectedPlate] = useState<number | null>(null);
+
+  // Per-job slicer picker (B.4 follow-up). Visible only when both sidecars
+  // are reachable — otherwise the global preferred_slicer setting is the
+  // sole sensible target and the picker would just be misleading. The pick
+  // is persisted per (source kind, source id) in localStorage so re-slicing
+  // the same file defaults to the user's last choice; first-time defaults
+  // to the global preferred_slicer.
+  const settingsQuery = useQuery({
+    queryKey: ['settings'],
+    queryFn: api.getSettings,
+    staleTime: 60_000,
+  });
+  // Backend caches the health response per (kind, url) for 30 s — these
+  // two queries hit the network at most once per modal open, even if the
+  // SliceModal re-mounts a few times during the user's flow.
+  const orcaHealthQuery = useQuery({
+    queryKey: ['slicerHealth', 'orcaslicer'],
+    queryFn: () => api.getSlicerHealth('orcaslicer'),
+    staleTime: 30_000,
+    retry: false,
+  });
+  const bambuHealthQuery = useQuery({
+    queryKey: ['slicerHealth', 'bambu_studio'],
+    queryFn: () => api.getSlicerHealth('bambu_studio'),
+    staleTime: 30_000,
+    retry: false,
+  });
+  const orcaHealthy = orcaHealthQuery.data?.healthy === true;
+  const bambuHealthy = bambuHealthQuery.data?.healthy === true;
+  const showSlicerPicker = orcaHealthy && bambuHealthy;
+
+  const slicerPickStorageKey = `bamdude:slicer-pick:${source.kind}:${source.id}`;
+  const [pickedSlicer, setPickedSlicer] = useState<SlicerKind | null>(() => {
+    if (typeof localStorage === 'undefined') return null;
+    try {
+      const stored = localStorage.getItem(slicerPickStorageKey);
+      return stored === 'orcaslicer' || stored === 'bambu_studio' ? stored : null;
+    } catch {
+      return null;
+    }
+  });
+  // Auto-select / default pick logic. Two cases beyond "user already picked":
+  //
+  //   1. Only one sidecar is healthy → lock to that one. Stops the modal
+  //      from defaulting to a global preferred_slicer that's offline,
+  //      and visually reflects "you have one option" in the picker cards.
+  //
+  //   2. Both healthy → first-time default to the global preferred_slicer
+  //      (same as before). Subsequent renders keep whatever the user picked
+  //      (persisted via localStorage on a separate effect).
+  //
+  // Also: if the user previously picked a sidecar that is now offline,
+  // override to the healthy one. Otherwise the Slice button would silently
+  // submit an offline-targeted request and fail at backend.
+  useEffect(() => {
+    if (orcaHealthQuery.isLoading || bambuHealthQuery.isLoading) return;
+    const onlyOrca = orcaHealthy && !bambuHealthy;
+    const onlyBambu = bambuHealthy && !orcaHealthy;
+    if (onlyOrca) {
+      if (pickedSlicer !== 'orcaslicer') setPickedSlicer('orcaslicer');
+      return;
+    }
+    if (onlyBambu) {
+      if (pickedSlicer !== 'bambu_studio') setPickedSlicer('bambu_studio');
+      return;
+    }
+    if (!showSlicerPicker) return; // neither healthy — leave as-is
+    if (pickedSlicer != null) return;
+    const preferred = settingsQuery.data?.preferred_slicer;
+    if (preferred === 'orcaslicer' || preferred === 'bambu_studio') {
+      setPickedSlicer(preferred);
+    } else {
+      setPickedSlicer('bambu_studio');
+    }
+  }, [
+    showSlicerPicker,
+    orcaHealthy,
+    bambuHealthy,
+    orcaHealthQuery.isLoading,
+    bambuHealthQuery.isLoading,
+    pickedSlicer,
+    settingsQuery.data?.preferred_slicer,
+  ]);
+  // Persist user's pick across modal opens.
+  useEffect(() => {
+    if (pickedSlicer == null || typeof localStorage === 'undefined') return;
+    try {
+      localStorage.setItem(slicerPickStorageKey, pickedSlicer);
+    } catch {
+      /* private mode / quota — silently skip */
+    }
+  }, [pickedSlicer, slicerPickStorageKey]);
 
   const platesQuery = useQuery({
     queryKey: ['slicePlates', source.kind, source.id],
@@ -264,7 +443,15 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
     !!platesQuery.data?.is_multi_plate && (platesQuery.data?.plates?.length ?? 0) > 1;
   // Single-plate / non-3MF / fetch failure: skip the picker, default to plate 1
   // at submit time so the backend's existing default behaviour is preserved.
+  // Multi-plate: auto-pick the first plate on load so the filament-reqs +
+  // presets queries fire immediately (the inline ``<SlicePlateSelector>``
+  // lets the user reassign without blocking the rest of the modal).
   const needsPlatePicker = isMultiPlate && selectedPlate == null;
+  useEffect(() => {
+    if (!isMultiPlate || selectedPlate != null) return;
+    const first = platesQuery.data?.plates?.[0]?.index;
+    if (first != null) setSelectedPlate(first);
+  }, [isMultiPlate, selectedPlate, platesQuery.data]);
 
   // Per-plate filament requirements via the same endpoint the print/schedule
   // modal uses. Reusing it here keeps the SliceModal honest with whatever
@@ -346,6 +533,30 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
     });
   }, [presetsQuery.data, filamentSlots]);
 
+  // Clear any current preset selection that no longer satisfies the
+  // owner filter (resolves the picked id against the loaded preset
+  // catalogue and drops the value if the resolved entry — or its absence
+  // — fails ``matchesOwnerFilter``). The pre-pick effects above won't
+  // re-fire because their dep is presetsQuery.data, so the dropdowns
+  // surface the placeholder option until the user re-picks under the
+  // narrower filter.
+  useEffect(() => {
+    if (!presetsQuery.data) return;
+    const data = presetsQuery.data;
+    const lookup = (slot: Slot, ref: PresetRef | null): UnifiedPreset | null => {
+      if (!ref) return null;
+      return data[ref.source][slot].find((p) => p.id === ref.id) ?? null;
+    };
+    const dropIfStale = (slot: Slot, ref: PresetRef | null): PresetRef | null => {
+      const found = lookup(slot, ref);
+      if (!found) return ref;
+      return matchesOwnerFilter(found, filterOwner) ? ref : null;
+    };
+    setPrinterPreset((cur) => dropIfStale('printer', cur));
+    setProcessPreset((cur) => dropIfStale('process', cur));
+    setFilamentPresets((cur) => cur.map((ref) => dropIfStale('filament', ref)));
+  }, [filterOwner, presetsQuery.data]);
+
   const enqueueMutation = useMutation({
     mutationFn: async () => {
       if (
@@ -368,6 +579,20 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
         // omit otherwise so the backend default applies for STL / single-plate
         // 3MF sources where the concept doesn't apply.
         ...(selectedPlate != null ? { plate: selectedPlate } : {}),
+        // Per-job slicer override. Only sent when the picker is actually
+        // visible to the user (both sidecars healthy) AND the user picked
+        // something — otherwise the global preferred_slicer setting decides.
+        // Send `slicer` whenever we have a concrete pick (user-chosen,
+        // auto-locked because only one is healthy, or persisted from
+        // localStorage). Backend falls back to the global preferred_slicer
+        // setting only when the field is omitted — and that path is fine
+        // when neither side reports state yet (loading).
+        ...(pickedSlicer != null ? { slicer: pickedSlicer } : {}),
+        // Bed plate override → sidecar's ``bedType`` form field →
+        // ``--curr-bed-type`` CLI flag. Always sent (5-option picker
+        // never has a "use slicer default" entry — silently letting
+        // the CLI fall back to "Cool Plate" is the bug we're fixing).
+        bed_type: bedType,
       };
       if (source.kind === 'libraryFile') {
         return api.sliceLibraryFile(source.id, body);
@@ -409,29 +634,19 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // visible: clicking it would silently fall back to embedded settings and
   // produce a wrong-printer file, the exact UX bug the warning is here to
   // prevent. Only re-enable when the user picks a matching profile (or
-  // cloud preset whose name we can't parse).
+  // cloud preset whose name we can't parse). Multi-plate sources also need
+  // an explicit plate pick so the slicer (and the filament-reqs query
+  // that feeds the dropdowns) target the right plate.
   const isReady =
     printerPreset != null &&
     processPreset != null &&
     filamentPresets.length > 0 &&
     filamentPresets.every((r) => r != null) &&
-    !printerMismatch;
+    !printerMismatch &&
+    (!isMultiPlate || selectedPlate != null);
   const isEnqueuing = enqueueMutation.isPending;
 
-  // Step 1: plate picker for multi-plate 3MF sources. Cancelling closes the
-  // entire flow (matches the existing PlatePickerModal contract used by the
-  // archive g-code-viewer entry point).
-  if (needsPlatePicker && platesQuery.data) {
-    return (
-      <PlatePickerModal
-        plates={platesQuery.data.plates}
-        onSelect={(plateIndex) => setSelectedPlate(plateIndex)}
-        onClose={onClose}
-      />
-    );
-  }
-
-  // Step 2 (or only step for single-plate / non-3MF / load-failure): preset
+  // Single-screen layout: preset picker
   // picker. While the plates query is in-flight we still render the shell
   // because the presets query is gated on it; the loader covers both.
   return (
@@ -471,6 +686,21 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          {/* Inline plate picker for multi-plate sources. Visually mirrors
+              ``PrintModal/PlateSelector`` so the slice + print flows feel
+              consistent (vertical paginator strip + big details card).
+              Renders above the other sections so the user sees their
+              plate context first; switching plates re-keys the
+              filament-reqs query so the dropdowns below realign to the
+              new plate's required (type, color) automatically. */}
+          {isMultiPlate && platesQuery.data && (
+            <SlicePlateSelector
+              plates={platesQuery.data.plates}
+              selectedPlate={selectedPlate}
+              onSelect={setSelectedPlate}
+              disabled={isEnqueuing}
+            />
+          )}
           {/* Preset listing loader — printer/process dropdowns can't render
               without it. Plate query reuses the same spinner since it's
               also blocking. */}
@@ -493,6 +723,31 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
           {presetsQuery.data && (
             <>
               <CloudStatusBanner status={presetsQuery.data.cloud_status} />
+              {/* Slicer picker — two big card-buttons matching the
+                  "Filament Tracking" pattern in Settings. Each card carries
+                  its own live health status (version / offline / checking)
+                  pulled from the same shared React Query cache. Always
+                  renders so the user sees what's available even when only
+                  one sidecar is up; offline ones are disabled and can't
+                  be picked. */}
+              <SlicerPicker
+                value={pickedSlicer}
+                onChange={setPickedSlicer}
+                disabled={isEnqueuing}
+              />
+              {/* Bed plate picker — five values from BambuStudio's
+                  ``curr_bed_type`` enum. Always sent on slice (the slicer
+                  CLI's silent fallback to "Cool Plate" is the bug we're
+                  fixing for STL / pure-3MF inputs). Default Textured PEI
+                  matches the factory plate on X1C / P1S / H2D; A1 owners
+                  flip to SuperTack once and localStorage persists. */}
+              <BedTypePicker value={bedType} onChange={setBedType} disabled={isEnqueuing} />
+              {/* Owner filter — same 3-state model as the ProfilesPage
+                  filter ("All" / "My presets" / "Built-in"). Applies to
+                  every dropdown below in one shot, so the user sees
+                  consistent ownership across printer / process / filament
+                  picks. Persisted in localStorage. */}
+              <PresetOwnerFilter value={filterOwner} onChange={setFilterOwner} disabled={isEnqueuing} />
               <PresetDropdown
                 label={t('slice.printer', 'Printer profile')}
                 slot="printer"
@@ -500,6 +755,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                 value={printerPreset}
                 onChange={setPrinterPreset}
                 disabled={isEnqueuing}
+                ownerFilter={filterOwner}
               />
               <PresetDropdown
                 label={t('slice.process', 'Process profile')}
@@ -508,6 +764,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                 value={processPreset}
                 onChange={setProcessPreset}
                 disabled={isEnqueuing}
+                ownerFilter={filterOwner}
               />
               {/* Filament reqs may need a server-side preview-slice for
                   unsliced project files (single-pass, then cached). Show a
@@ -557,6 +814,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                       }
                       disabled={isEnqueuing || !isUsed}
                       swatchColor={filamentSlots.length > 1 ? slot.color : undefined}
+                      ownerFilter={filterOwner}
                     />
                   );
                 })
@@ -666,9 +924,14 @@ interface PresetDropdownProps {
   // filament slots so the user can see at a glance which slot they're
   // configuring against the source 3MF's per-slot colour.
   swatchColor?: string;
+  // 3-state owner filter mirroring ProfilesPage: 'all' shows everything,
+  // 'custom' keeps user-imported (local) and user-created cloud presets,
+  // 'builtin' keeps standard + bundled cloud presets. Applied per-section
+  // so empty tiers collapse out the same way as the unfiltered case.
+  ownerFilter?: OwnerFilter;
 }
 
-function PresetDropdown({ label, slot, data, value, onChange, disabled, swatchColor }: PresetDropdownProps) {
+function PresetDropdown({ label, slot, data, value, onChange, disabled, swatchColor, ownerFilter = 'all' }: PresetDropdownProps) {
   const { t } = useTranslation();
 
   const sections: { tierLabel: string; entries: UnifiedPreset[] }[] = useMemo(() => {
@@ -683,10 +946,10 @@ function PresetDropdown({ label, slot, data, value, onChange, disabled, swatchCo
     return tiers
       .map(({ key, label: lk, fallback }) => ({
         tierLabel: t(lk, fallback),
-        entries: (data[key] as UnifiedPresetsBySlot)[slot],
+        entries: (data[key] as UnifiedPresetsBySlot)[slot].filter((p) => matchesOwnerFilter(p, ownerFilter)),
       }))
       .filter((s) => s.entries.length > 0);
-  }, [data, slot, t]);
+  }, [data, slot, t, ownerFilter]);
 
   const totalEntries = sections.reduce((sum, s) => sum + s.entries.length, 0);
 
@@ -724,5 +987,218 @@ function PresetDropdown({ label, slot, data, value, onChange, disabled, swatchCo
         ))}
       </select>
     </label>
+  );
+}
+
+// Per-job slicer picker, card-style — mirrors the "Filament Tracking"
+// section in Settings. Two big card-buttons, each carrying a live
+// reachability badge (version / offline / checking) so the user sees
+// what's available WITHOUT a separate status strip cluttering the modal.
+//
+// Disabled cards (sidecar offline) cannot be picked. When only one is
+// healthy the modal still works — the parent state pre-selects whatever
+// is reachable; if neither, the Slice button will surface the real
+// error from the backend at submit time.
+function SlicerPicker({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: SlicerKind | null;
+  onChange: (next: SlicerKind) => void;
+  disabled?: boolean;
+}) {
+  const { t } = useTranslation();
+  const options: { kind: SlicerKind; label: string }[] = [
+    { kind: 'orcaslicer', label: 'OrcaSlicer' },
+    { kind: 'bambu_studio', label: 'BambuStudio' },
+  ];
+  return (
+    <fieldset>
+      <legend className="text-xs text-bambu-gray mb-2">
+        {t('slice.sidecarPicker', 'Slice with')}
+      </legend>
+      <div className="grid grid-cols-2 gap-3">
+        {options.map((opt) => (
+          <SlicerPickerCard
+            key={opt.kind}
+            kind={opt.kind}
+            label={opt.label}
+            selected={value === opt.kind}
+            outerDisabled={!!disabled}
+            onSelect={() => onChange(opt.kind)}
+          />
+        ))}
+      </div>
+    </fieldset>
+  );
+}
+
+function SlicerPickerCard({
+  kind,
+  label,
+  selected,
+  outerDisabled,
+  onSelect,
+}: {
+  kind: SlicerKind;
+  label: string;
+  selected: boolean;
+  outerDisabled: boolean;
+  onSelect: () => void;
+}) {
+  const { t } = useTranslation();
+  const { data, isLoading } = useSlicerHealth(kind);
+  const healthy = data?.healthy === true;
+  const version = data?.version ?? null;
+  const error = data?.error ?? null;
+  // Disable when the outer modal is busy OR the sidecar isn't reachable
+  // — clicking an offline card can't lead to a successful slice.
+  const isDisabled = outerDisabled || isLoading || !healthy;
+
+  // Status text shown as the card's "description" line.
+  const statusLabel = isLoading
+    ? t('slicerHealth.statusChecking', 'checking…')
+    : healthy
+      ? t('slicerHealth.cardReady', { version: version ?? '?', defaultValue: 'Ready · v{{version}}' })
+      : t('slicerHealth.cardOffline', 'Offline');
+
+  // Color tones — same pattern as Settings' Filament Tracking cards:
+  // green for selected, gray for unselected; faded for disabled-offline.
+  const baseClass = selected
+    ? 'border-bambu-green bg-bambu-green/10'
+    : isDisabled
+      ? 'border-bambu-dark-tertiary bg-bambu-dark/50 opacity-60 cursor-not-allowed'
+      : 'border-bambu-dark-tertiary bg-bambu-dark hover:border-bambu-gray/50';
+  const iconClass = selected ? 'text-bambu-green' : healthy ? 'text-bambu-gray' : 'text-red-400';
+  const titleClass = selected ? 'text-white' : 'text-bambu-gray';
+  const descClass = selected ? 'text-bambu-gray' : 'text-bambu-gray/60';
+
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        if (!isDisabled) onSelect();
+      }}
+      disabled={isDisabled}
+      className={`p-3 rounded-lg border-2 text-left transition-colors ${baseClass}`}
+    >
+      <div className="flex items-center gap-2 mb-1.5">
+        {isLoading ? (
+          <Loader2 className={`w-4 h-4 animate-spin ${iconClass}`} />
+        ) : healthy ? (
+          <Cog className={`w-4 h-4 ${iconClass}`} />
+        ) : (
+          <XCircle className={`w-4 h-4 ${iconClass}`} />
+        )}
+        <span className={`text-sm font-medium ${titleClass}`}>{label}</span>
+      </div>
+      <p className={`text-xs ${descClass}`}>{statusLabel}</p>
+      {/* Show the sidecar error inline when offline so a stale URL or
+          DNS failure doesn't require a hover-tooltip to discover. */}
+      {!isLoading && !healthy && error && (
+        <p className="text-xs text-red-400/80 mt-1 break-words">{error}</p>
+      )}
+      {selected && healthy && (
+        <div className="flex items-center gap-1 mt-2">
+          <Check className="w-3 h-3 text-bambu-green" />
+          <span className="text-xs text-bambu-green">{t('slicerHealth.active', 'active')}</span>
+        </div>
+      )}
+    </button>
+  );
+}
+
+// Bed plate picker — single-select dropdown over the five values
+// BambuStudio's ``curr_bed_type`` enum accepts (libslic3r/PrintConfig.cpp
+// :1069+). Forwarded as ``bed_type`` on the SliceRequest, becomes
+// ``--curr-bed-type`` on the slicer CLI. Compact dropdown rather than a
+// 5-tile grid because four of the five values are uncommon; a wide tile
+// row would dominate the modal for a setting most users flip once.
+function BedTypePicker({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: BedType;
+  onChange: (next: BedType) => void;
+  disabled?: boolean;
+}) {
+  const { t } = useTranslation();
+  const options: { value: BedType; labelKey: string; fallback: string }[] = [
+    { value: 'Cool Plate', labelKey: 'slice.bedType.coolPlate', fallback: 'Cool Plate' },
+    { value: 'Engineering Plate', labelKey: 'slice.bedType.engineeringPlate', fallback: 'Engineering Plate' },
+    { value: 'High Temp Plate', labelKey: 'slice.bedType.highTempPlate', fallback: 'Smooth PEI / High Temp Plate' },
+    { value: 'Textured PEI Plate', labelKey: 'slice.bedType.texturedPeiPlate', fallback: 'Textured PEI Plate' },
+    { value: 'Supertack Plate', labelKey: 'slice.bedType.supertackPlate', fallback: 'Cool Plate SuperTack' },
+  ];
+  return (
+    <label className="block">
+      <span className="text-xs text-bambu-gray mb-1 block">
+        {t('slice.bedType.label', 'Bed plate')}
+      </span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value as BedType)}
+        disabled={disabled}
+        className="w-full px-3 py-2 rounded-md bg-bambu-dark border border-bambu-dark-tertiary text-white text-sm focus:outline-none focus:border-bambu-gray disabled:opacity-50"
+      >
+        {options.map((opt) => (
+          <option key={opt.value} value={opt.value}>
+            {t(opt.labelKey, opt.fallback)}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+// Compact 3-button segmented control for the owner filter — same semantic
+// model as the Profiles page filter ("All" / "My presets" / "Built-in"),
+// but rendered inline as a segmented row to keep the modal vertically
+// dense (the Profiles page can afford a full-width dropdown). Reuses the
+// existing ``profiles.cloudView.filters.*`` translation keys so we don't
+// fork copy.
+function PresetOwnerFilter({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: OwnerFilter;
+  onChange: (next: OwnerFilter) => void;
+  disabled?: boolean;
+}) {
+  const { t } = useTranslation();
+  const options: { key: OwnerFilter; label: string }[] = [
+    { key: 'all', label: t('profiles.cloudView.filters.all', 'All') },
+    { key: 'custom', label: t('profiles.cloudView.filters.myPresets', 'My Presets') },
+    { key: 'builtin', label: t('profiles.cloudView.filters.builtIn', 'Built-in') },
+  ];
+  return (
+    <fieldset>
+      <legend className="text-xs text-bambu-gray mb-1">
+        {t('profiles.cloudView.filters.owner', 'Owner')}
+      </legend>
+      <div className="inline-flex rounded-md border border-bambu-dark-tertiary overflow-hidden">
+        {options.map((opt) => {
+          const selected = value === opt.key;
+          const cls = selected
+            ? 'bg-bambu-green/20 text-white'
+            : 'bg-bambu-dark text-bambu-gray hover:text-white';
+          return (
+            <button
+              key={opt.key}
+              type="button"
+              onClick={() => onChange(opt.key)}
+              disabled={disabled}
+              className={`px-3 py-1.5 text-xs transition-colors disabled:opacity-50 ${cls}`}
+              aria-pressed={selected}
+            >
+              {opt.label}
+            </button>
+          );
+        })}
+      </div>
+    </fieldset>
   );
 }

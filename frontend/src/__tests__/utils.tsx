@@ -76,13 +76,3 @@ export * from '@testing-library/react';
 
 // Override render with our custom render
 export { customRender as render };
-
-/**
- * Create a test QueryClient with custom configuration.
- */
-export { createTestQueryClient };
-
-/**
- * Helper to wait for async operations.
- */
-export const waitForAsync = () => new Promise((resolve) => setTimeout(resolve, 0));

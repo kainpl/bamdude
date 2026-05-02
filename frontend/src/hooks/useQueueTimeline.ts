@@ -54,10 +54,10 @@ interface Input {
 }
 
 /**
- * Derives per-printer timeline lanes from queue data. Pure calculation - call
- * inside a React component with useMemo via the useQueueTimeline hook below.
+ * Derives per-printer timeline lanes from queue data. Pure calculation —
+ * internal helper for ``useQueueTimeline`` (memoised for React callers).
  */
-export function buildQueueTimeline({
+function buildQueueTimeline({
   queues,
   items,
   printers,

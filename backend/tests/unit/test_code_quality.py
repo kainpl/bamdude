@@ -217,12 +217,17 @@ class TestModuleImports:
     def test_all_modules_importable(self):
         """Verify all Python modules can be imported without errors.
 
-        This catches syntax errors and missing dependencies.
+        This catches syntax errors and missing dependencies. Forces a fresh
+        import (deleting from sys.modules first) so module-body side effects
+        are re-exercised, then restores the original module objects so
+        sibling tests don't see two competing instances of the same module
+        — a class imported before this test would otherwise diverge from
+        ``sys.modules[name]`` and break monkeypatches that target the live
+        module dict.
         """
         import importlib
         import sys
 
-        # Modules to test importing
         modules = [
             "backend.app.main",
             "backend.app.services.bambu_mqtt",
@@ -232,15 +237,25 @@ class TestModuleImports:
             "backend.app.services.smart_plug_manager",
         ]
 
+        original_modules = {name: sys.modules.get(name) for name in modules}
         errors = []
-        for module_name in modules:
-            try:
-                # Remove from cache first to ensure fresh import
-                if module_name in sys.modules:
-                    del sys.modules[module_name]
-                importlib.import_module(module_name)
-            except Exception as e:
-                errors.append(f"{module_name}: {type(e).__name__}: {e}")
+        try:
+            for module_name in modules:
+                try:
+                    if module_name in sys.modules:
+                        del sys.modules[module_name]
+                    importlib.import_module(module_name)
+                except Exception as e:
+                    errors.append(f"{module_name}: {type(e).__name__}: {e}")
+        finally:
+            # Restore the pre-test module objects so any class/function
+            # references already captured by other test modules continue
+            # to resolve against the same module dict that's in sys.modules.
+            for name, original in original_modules.items():
+                if original is not None:
+                    sys.modules[name] = original
+                elif name in sys.modules:
+                    del sys.modules[name]
 
         if errors:
             pytest.fail("Failed to import modules:\n" + "\n".join(errors))

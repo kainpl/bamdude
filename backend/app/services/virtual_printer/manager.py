@@ -266,11 +266,16 @@ class VirtualPrinterInstance:
             )
             from backend.app.models.library import LibraryFile
             from backend.app.services.archive import ThreeMFParser
+            from backend.app.services.library_helpers import compute_file_tags, detect_file_type
 
             async with self._session_factory() as db:
                 filename = file_path.name
                 ext = file_path.suffix.lower()
-                file_type = ext[1:] if ext else "unknown"
+                # Sliced 3MFs uploaded via the slicer's "Send to printer"
+                # carry a ``.gcode.3mf`` suffix; the helper collapses both
+                # that and plain ``.3mf`` to canonical primary types so VP
+                # entries match the file_manager's badging.
+                file_type = detect_file_type(filename)
 
                 library_files_dir = get_library_files_dir()
                 unique_filename = f"{uuid.uuid4().hex}{ext}"
@@ -343,6 +348,13 @@ class VirtualPrinterInstance:
                     filename=filename,
                     file_path=to_relative_path(dest_path),
                     file_type=file_type,
+                    file_tags=compute_file_tags(
+                        filename=filename,
+                        file_type=file_type,
+                        file_metadata=metadata,
+                        source_type=None,
+                        swap_compatible=False,
+                    ),
                     file_size=file_path.stat().st_size,
                     file_hash=file_hash,
                     thumbnail_path=to_relative_path(thumbnail_path) if thumbnail_path else None,

@@ -67,7 +67,21 @@ class LibraryFile(Base):
     # File info
     filename: Mapped[str] = mapped_column(String(255))  # Original filename
     file_path: Mapped[str] = mapped_column(String(500))  # Storage path
-    file_type: Mapped[str] = mapped_column(String(10))  # "3mf" or "gcode"
+    # Primary format identity — singular value: "3mf"/"gcode"/"stl"/"step"/
+    # "stp"/"unknown". Sliced 3MFs (container ".gcode.3mf") collapse to
+    # "gcode" so the file-manager surfaces them under the same affordances
+    # as raw .gcode files. Composite identity (e.g. "sliced 3MF carries
+    # both gcode and 3mf badges") lives in ``file_tags`` below — this
+    # column stays single-string so legacy filters / FTS / Telegram
+    # listings keep working unchanged.
+    file_type: Mapped[str] = mapped_column(String(10))
+    # Composite tag array driving frontend badges + chip-row multi-select
+    # filter. Computed by :func:`services.library_helpers.compute_file_tags`
+    # at every write site; the m036 migration backfills existing rows from
+    # ``file_type`` + ``file_metadata`` + ``source_type`` + ``swap_compatible``.
+    # Tags currently emitted: format (3mf/gcode/stl/step), structure
+    # (multiplate/swap), provenance (sliced/makerworld/project).
+    file_tags: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list, server_default="[]")
     file_size: Mapped[int] = mapped_column(Integer)
     file_hash: Mapped[str | None] = mapped_column(String(64))  # SHA256 for duplicate detection
     thumbnail_path: Mapped[str | None] = mapped_column(String(500))
@@ -75,12 +89,11 @@ class LibraryFile(Base):
     # Extracted metadata (from 3MF parser)
     file_metadata: Mapped[dict | None] = mapped_column(JSON)
 
-    # Usage tracking
-    print_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
-    last_printed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    # Increment on successful queue completion only (failed/cancelled don't count)
-    # so the field reflects successful usage rather than attempt count (#1008).
+    # Usage tracking. Increment on successful queue completion only
+    # (failed/cancelled don't count) so the field reflects successful
+    # usage rather than attempt count (#1008).
     print_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    last_printed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     # User notes
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)

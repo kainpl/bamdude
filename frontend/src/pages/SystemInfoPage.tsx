@@ -21,10 +21,12 @@ import {
   Download,
   Headphones,
   FolderOpen,
+  Cog,
 } from 'lucide-react';
 import { api, supportApi } from '../api/client';
 import { Card } from '../components/Card';
 import { LogViewer } from '../components/LogViewer';
+import { SlicerHealthIndicator } from '../components/SlicerHealthIndicator';
 import { formatDateTime, type TimeFormat } from '../utils/date';
 
 function formatBytes(bytes: number): string {
@@ -220,6 +222,33 @@ export function SystemInfoPage() {
             value={systemInfo.system.hostname}
           />
         </div>
+      </Section>
+
+      {/* Slicer Sidecars — live reachability of OrcaSlicer / BambuStudio
+          HTTP sidecars. Always rendered so a user toggling the feature
+          off doesn't wonder why a section disappeared; if disabled in
+          Settings, surface a one-liner instead of cards. Each card
+          auto-refreshes every 30 s, mirroring this page's main poll. */}
+      <Section title={t('slicerHealth.sectionTitle', 'Slicer Sidecars')} icon={Cog}>
+        <p className="text-sm text-bambu-gray mb-4">
+          {t(
+            'slicerHealth.sectionDescription',
+            'Live status of the OrcaSlicer / BambuStudio HTTP sidecars BamDude calls for server-side slicing. Configure URLs in Settings → Profiles → Slicer API.',
+          )}
+        </p>
+        {settings?.use_slicer_api ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <SlicerHealthIndicator slicer="orcaslicer" variant="card" pollMs={30000} />
+            <SlicerHealthIndicator slicer="bambu_studio" variant="card" pollMs={30000} />
+          </div>
+        ) : (
+          <p className="text-sm text-amber-200 bg-amber-900/20 border border-amber-700/40 rounded p-3">
+            {t(
+              'slicerHealth.notEnabled',
+              'Server-side slicing is disabled in Settings → Profiles → Slicer API.',
+            )}
+          </p>
+        )}
       </Section>
 
       {/* Support & Troubleshooting */}

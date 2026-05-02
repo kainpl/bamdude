@@ -45,6 +45,7 @@ from backend.app.schemas.project import (
     ProjectUpdate,
     TimelineEvent,
 )
+from backend.app.services.library_helpers import compute_file_tags, detect_file_type
 
 logger = logging.getLogger(__name__)
 
@@ -1886,16 +1887,18 @@ async def import_project_file(
             file_disk_path.parent.mkdir(parents=True, exist_ok=True)
             file_disk_path.write_bytes(file_content)
 
-            # Determine file type
-            ext = Path(relative_path).suffix.lower()
-            if ext in [".stl", ".3mf", ".obj"]:
-                file_type = "model"
-            elif ext in [".gcode"]:
-                file_type = "gcode"
-            elif ext in [".jpg", ".jpeg", ".png", ".gif", ".webp"]:
-                file_type = "image"
-            else:
-                file_type = "other"
+            # Determine file type via the shared helper so project-imported
+            # assets render with the same badge / filter semantics as files
+            # uploaded directly. Falls back to "image"/"other" buckets that
+            # this code originally used for non-printable assets so existing
+            # rows keep behaving the same.
+            file_type = detect_file_type(relative_path)
+            if file_type == "unknown":
+                ext = Path(relative_path).suffix.lower()
+                if ext in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
+                    file_type = "image"
+                else:
+                    file_type = "other"
 
             # Create library file record
             lib_file = LibraryFile(
@@ -1903,6 +1906,13 @@ async def import_project_file(
                 filename=relative_path,
                 file_path=f"{folder_name}/{relative_path}",
                 file_type=file_type,
+                file_tags=compute_file_tags(
+                    filename=relative_path,
+                    file_type=file_type,
+                    file_metadata=None,
+                    source_type=None,
+                    swap_compatible=False,
+                ),
                 file_size=len(file_content),
                 is_external=False,
             )

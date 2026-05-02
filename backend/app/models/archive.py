@@ -74,6 +74,15 @@ class PrintArchive(Base):
     # Printer model this file was sliced for (extracted from 3MF metadata)
     sliced_for_model: Mapped[str | None] = mapped_column(String(50), nullable=True)
 
+    # Which plate of the source 3MF was actually sent to the printer (m038).
+    # 1-indexed. NULL for: archives created before m038 where the index
+    # couldn't be backfilled, single-plate prints where the distinction
+    # is meaningless, and external prints whose plate origin is unknown.
+    # Powers the per-plate gcode + 3D preview in ModelViewerModal so the
+    # archive shows what was actually printed (not just the first plate
+    # in the container).
+    plate_index: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+
     # Print result
     status: Mapped[str] = mapped_column(String(20), default="completed")
     started_at: Mapped[datetime | None] = mapped_column(DateTime)

@@ -475,6 +475,7 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
                     onClick={(e) => e.stopPropagation()}
                     className="text-bambu-gray hover:text-bambu-green transition-colors flex-shrink-0"
                     title={project.url}
+                    aria-label={t('projects.openExternalUrl')}
                   >
                     <ExternalLink className="w-3.5 h-3.5" />
                   </a>

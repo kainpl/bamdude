@@ -88,13 +88,3 @@ export function openInSlicer(downloadUrl: string, slicer: SlicerType = 'bambu_st
 export function buildDownloadUrl(path: string): string {
   return `${window.location.origin}${path}`;
 }
-
-/**
- * Convenience function to open an archive in the slicer
- * @param path - The API path to the archive
- * @param slicer - Which slicer to use (defaults to bambu_studio)
- */
-export function openArchiveInSlicer(path: string, slicer: SlicerType = 'bambu_studio'): void {
-  const downloadUrl = buildDownloadUrl(path);
-  openInSlicer(downloadUrl, slicer);
-}

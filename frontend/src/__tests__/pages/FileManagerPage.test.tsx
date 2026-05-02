@@ -48,13 +48,18 @@ const mockFolders = [
   },
 ];
 
+// Composite tag arrays mirror what the m036 backfill emits — the new
+// FileManager predicates (``isSliced`` / ``isSliceable``) read ``file_tags``,
+// not filename suffixes, so the test mocks have to carry the same shape the
+// API ships.
 const mockFiles = [
   {
     id: 1,
     filename: 'benchy.gcode.3mf',
     file_path: '/library/benchy.gcode.3mf',
     file_size: 1048576,
-    file_type: '3mf',
+    file_type: 'gcode',
+    file_tags: ['gcode', '3mf', 'sliced'],
     folder_id: null,
     thumbnail_path: '/thumbnails/1.png',
     print_name: 'Benchy',
@@ -68,6 +73,7 @@ const mockFiles = [
     file_path: '/library/bracket.stl',
     file_size: 524288,
     file_type: 'stl',
+    file_tags: ['stl', 'geometry'],
     folder_id: null,
     thumbnail_path: null,
     print_name: null,
@@ -80,7 +86,8 @@ const mockFiles = [
     filename: 'cube.gcode.3mf',
     file_path: '/library/cube.gcode.3mf',
     file_size: 2048576,
-    file_type: '3mf',
+    file_type: 'gcode',
+    file_tags: ['gcode', '3mf', 'sliced'],
     folder_id: null,
     thumbnail_path: '/thumbnails/3.png',
     print_name: 'Cube',

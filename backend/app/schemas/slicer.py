@@ -69,6 +69,38 @@ class SliceRequest(BaseModel):
         default=False,
         description="If true, request a 3MF response with embedded G-code instead of raw G-code.",
     )
+    # Bed plate override (sidecar maps to ``--curr-bed-type``). Mirrors the
+    # five enum values BambuStudio's ``curr_bed_type`` accepts (see
+    # libslic3r/PrintConfig.cpp:1069+). Without this override the CLI falls
+    # back to per-plate value baked into the source 3MF (when present) and
+    # finally to ``Cool Plate`` (the upstream config default) — wrong for
+    # Textured PEI users on STL inputs. The SliceModal sends this from a
+    # dedicated picker so adhesion temps land on the actual plate.
+    bed_type: (
+        Literal[
+            "Cool Plate",
+            "Engineering Plate",
+            "High Temp Plate",
+            "Textured PEI Plate",
+            "Supertack Plate",
+        ]
+        | None
+    ) = Field(
+        default=None,
+        description=(
+            "Override the slicer's ``curr_bed_type``. Forwarded to the sidecar's "
+            "``bedType`` form field which becomes ``--curr-bed-type`` on the CLI. "
+            "Null leaves the slicer's own resolution (3MF embedded → config default)."
+        ),
+    )
+    slicer: Literal["orcaslicer", "bambu_studio"] | None = Field(
+        default=None,
+        description=(
+            "Per-job slicer override. When the user has both OrcaSlicer and BambuStudio "
+            "URLs configured, the SliceModal exposes a radio so the slicer can be picked "
+            "per source file. Falls back to the global preferred_slicer setting when null."
+        ),
+    )
 
     @model_validator(mode="after")
     def normalise_preset_refs(self) -> "SliceRequest":

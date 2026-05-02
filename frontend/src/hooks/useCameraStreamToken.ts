@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { api, setStreamToken, getStreamToken, withStreamToken } from '../api/client';
+import { api, setStreamToken, getStreamToken } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 
 /**
@@ -97,12 +97,4 @@ export function useStreamTokenSync() {
     document.addEventListener('error', handleError, true);
     return () => document.removeEventListener('error', handleError, true);
   }, [user, queryClient]);
-}
-
-/**
- * Hook for components that need to wrap URLs with the stream token.
- * Returns a withToken function that appends ?token=xxx.
- */
-export function useCameraStreamToken() {
-  return { withToken: withStreamToken };
 }
