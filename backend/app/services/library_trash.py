@@ -18,10 +18,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
-from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import settings as app_settings
@@ -49,6 +51,10 @@ AUTO_PURGE_ENABLED_KEY = "library_auto_purge_enabled"
 AUTO_PURGE_DAYS_KEY = "library_auto_purge_days"
 AUTO_PURGE_INCLUDE_NEVER_PRINTED_KEY = "library_auto_purge_include_never_printed"
 AUTO_PURGE_LAST_RUN_KEY = "library_auto_purge_last_run"
+# Persist the result count alongside the timestamp so a server restart between
+# the auto-tick and the next status read doesn't downgrade the UI to "count
+# was lost". 0 is a valid count ("ran, found nothing") and is shown as such.
+AUTO_PURGE_LAST_MOVED_KEY = "library_auto_purge_last_moved"
 DEFAULT_AUTO_PURGE_DAYS = 90
 MIN_AUTO_PURGE_DAYS = 7  # anything shorter is begging for accidents
 MAX_AUTO_PURGE_DAYS = 3650
@@ -98,6 +104,30 @@ def _purge_filter(cutoff: datetime, include_never_printed: bool):
     )
 
 
+@dataclass(slots=True)
+class LibraryPurgeRunResult:
+    """Outcome of one library auto-purge tick.
+
+    Mirrors the shape of ``archive_cleanup_service.CleanupRunResult`` so the
+    settings UI can render "last run" / "next run" cards uniformly across
+    the two bins. ``moved`` is the count of files that were stamped with
+    ``deleted_at`` (sent to trash); ``files_purged`` is reserved for a
+    future hard-delete telemetry add — kept zero today since trash sweep
+    runs on the same loop and its count is logged separately.
+    """
+
+    started_at: datetime
+    finished_at: datetime | None = None
+    moved: int = 0
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "started_at": self.started_at.isoformat(),
+            "finished_at": self.finished_at.isoformat() if self.finished_at else None,
+            "moved": self.moved,
+        }
+
+
 class LibraryTrashService:
     """Manages the trash retention sweeper and admin-triggered bulk purges."""
 
@@ -106,6 +136,10 @@ class LibraryTrashService:
         # Tick every 15 minutes — the window is a day, so this is plenty
         # responsive without burning CPU.
         self._check_interval = 900
+        # Most-recent auto-purge tick result (in-memory, restart-volatile).
+        # Surfaced through ``/library/trash/settings`` so the Settings UI can
+        # show "last run / next run" cards alongside the toggle.
+        self._last_result: LibraryPurgeRunResult | None = None
 
     async def start_scheduler(self):
         """Start the background sweeper task (idempotent)."""
@@ -237,9 +271,19 @@ class LibraryTrashService:
         except ValueError:
             return None
 
-    async def _stamp_last_auto_purge_run(self, db: AsyncSession, when: datetime) -> None:
+    async def _stamp_last_auto_purge_run(self, db: AsyncSession, when: datetime, moved: int) -> None:
         await self._write_setting(db, AUTO_PURGE_LAST_RUN_KEY, when.isoformat())
+        await self._write_setting(db, AUTO_PURGE_LAST_MOVED_KEY, str(int(moved)))
         await db.commit()
+
+    async def _read_last_moved(self, db: AsyncSession) -> int | None:
+        raw = await self._read_setting(db, AUTO_PURGE_LAST_MOVED_KEY)
+        if raw is None:
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
 
     async def _maybe_run_auto_purge(self, db: AsyncSession) -> int:
         """If auto-purge is enabled and >=24h has elapsed since the last run, run it.
@@ -247,6 +291,10 @@ class LibraryTrashService:
         Returns the number of files moved to trash (0 if disabled or throttled).
         The 24h throttle means a 15-minute sweeper cadence still only triggers
         one actual purge per day, keeping the DB churn predictable.
+
+        ``purge_older_than`` itself stamps ``last_run`` + records the
+        ``LibraryPurgeRunResult`` — so manual purges through the admin
+        endpoint also push the 24h cycle forward.
         """
         cfg = await self.get_auto_purge_settings(db)
         if not cfg["enabled"]:
@@ -262,10 +310,68 @@ class LibraryTrashService:
             older_than_days=cfg["days"],
             include_never_printed=cfg["include_never_printed"],
         )
-        await self._stamp_last_auto_purge_run(db, now)
         if moved:
             logger.info("Library auto-purge: moved %d file(s) to trash (threshold=%d days)", moved, cfg["days"])
         return moved
+
+    @property
+    def last_result(self) -> LibraryPurgeRunResult | None:
+        """Most-recent in-memory auto-purge tick result. None before first run."""
+        return self._last_result
+
+    async def get_status(self, db: AsyncSession) -> dict[str, Any]:
+        """Return ``{enabled, days, include_never_printed, last_run, next_run_at}``.
+
+        ``last_run`` mirrors the in-memory ``LibraryPurgeRunResult`` (restart-
+        volatile — comes back as None after a process restart even if the
+        persistent ``library_auto_purge_last_run`` setting still has the
+        timestamp). When the in-memory result is gone but the persistent
+        timestamp exists, ``last_run.finished_at`` is set to that timestamp
+        and ``moved`` is reported as -1 to signal "we know it ran but the
+        count was lost on restart" — UI shows the time without a count.
+
+        ``next_run_at`` is the earliest future moment the auto-purge can
+        fire: ``last_persisted + 24h`` (clamped to now if already past).
+        When auto-purge has never run, it's the next scheduler tick (~15
+        min from now). NULL when auto-mode is disabled.
+        """
+        cfg = await self.get_auto_purge_settings(db)
+        last_persisted = await self._get_last_auto_purge_run(db)
+        last_moved_persisted = await self._read_last_moved(db)
+
+        last_run: dict[str, Any] | None = None
+        if self._last_result is not None:
+            last_run = self._last_result.as_dict()
+        elif last_persisted is not None:
+            # Server restarted between the run and now. Pull the count from
+            # the persisted setting if it's there (writes by ``purge_older_than``
+            # since the introduction of AUTO_PURGE_LAST_MOVED_KEY); fall back
+            # to the -1 sentinel only for legacy stamps that pre-date that key.
+            last_run = {
+                "started_at": last_persisted.isoformat(),
+                "finished_at": last_persisted.isoformat(),
+                "moved": last_moved_persisted if last_moved_persisted is not None else -1,
+            }
+
+        next_run_at: datetime | None = None
+        if cfg["enabled"]:
+            now = datetime.now(timezone.utc)
+            if last_persisted is None:
+                # Never run yet — next tick is at most one ``_check_interval``
+                # away. Add a small fudge so the UI shows "in N minutes"
+                # rather than always "in 15 min" exactly.
+                next_run_at = now + timedelta(seconds=self._check_interval)
+            else:
+                candidate = last_persisted + timedelta(hours=24)
+                next_run_at = candidate if candidate > now else now
+
+        return {
+            "enabled": cfg["enabled"],
+            "days": cfg["days"],
+            "include_never_printed": cfg["include_never_printed"],
+            "last_run": last_run,
+            "next_run_at": next_run_at.isoformat() if next_run_at else None,
+        }
 
     # ---- Preview / purge ---------------------------------------------
 
@@ -308,11 +414,18 @@ class LibraryTrashService:
         older_than_days: int,
         include_never_printed: bool = True,
     ) -> int:
-        """Move matching files to trash (stamps ``deleted_at``). Returns count."""
+        """Move matching files to trash (stamps ``deleted_at``). Returns count.
+
+        Stamps ``library_auto_purge_last_run`` + records the in-memory
+        ``LibraryPurgeRunResult`` regardless of caller (auto-tick or admin
+        manual purge). That way a manual run through the admin UI also
+        resets the 24h auto-cycle — admins shouldn't get an unexpected
+        second purge tick a few minutes after they cleaned up by hand.
+        """
         if older_than_days < 1:
             return 0
-        now = datetime.now(timezone.utc)
-        cutoff = _age_cutoff(now, older_than_days)
+        started = datetime.now(timezone.utc)
+        cutoff = _age_cutoff(started, older_than_days)
         clause = _purge_filter(cutoff, include_never_printed)
 
         # We need the IDs so callers can audit or display them if they want.
@@ -320,13 +433,19 @@ class LibraryTrashService:
         # uploads — the clause already excludes rows with deleted_at set.
         id_result = await db.execute(select(LibraryFile.id).where(clause))
         ids = [row[0] for row in id_result.all()]
-        if not ids:
-            return 0
+        moved = len(ids)
+        if moved:
+            await db.execute(LibraryFile.__table__.update().where(LibraryFile.id.in_(ids)).values(deleted_at=started))
+            await db.commit()
+            logger.info("Library purge: moved %d file(s) to trash (older_than_days=%d)", moved, older_than_days)
 
-        await db.execute(LibraryFile.__table__.update().where(LibraryFile.id.in_(ids)).values(deleted_at=now))
-        await db.commit()
-        logger.info("Library purge: moved %d file(s) to trash (older_than_days=%d)", len(ids), older_than_days)
-        return len(ids)
+        # Stamp + record the result on every successful call (even when
+        # nothing was moved — "ran it, found nothing" is still a run).
+        result = LibraryPurgeRunResult(started_at=started, moved=moved)
+        result.finished_at = datetime.now(timezone.utc)
+        self._last_result = result
+        await self._stamp_last_auto_purge_run(db, started, moved)
+        return moved
 
     # ---- Sweeper ------------------------------------------------------
 
@@ -389,7 +508,21 @@ class LibraryTrashService:
         for row in eligible_rows:
             self._unlink_on_disk(row)
             deleted += 1
-        await db.execute(delete(LibraryFile).where(LibraryFile.id.in_([r.id for r in eligible_rows])))
+        eligible_ids = [r.id for r in eligible_rows]
+        # Detach archive rows BEFORE deleting library files. The FK column
+        # ``print_archives.library_file_id`` is declared ``ON DELETE SET
+        # NULL``, but SQLite ignores FK actions unless ``PRAGMA
+        # foreign_keys = ON`` is set on every connection — which BamDude
+        # deliberately doesn't (would require a separate audit of every
+        # other FK in the schema). Without this explicit UPDATE the
+        # archive rows would be left with stale ``library_file_id``
+        # pointers to a now-gone library file. The two route-side delete
+        # paths in ``api/routes/library.py`` already do the same thing —
+        # this brings the sweeper + hard_delete_now in line with them.
+        await db.execute(
+            update(PrintArchive).where(PrintArchive.library_file_id.in_(eligible_ids)).values(library_file_id=None)
+        )
+        await db.execute(delete(LibraryFile).where(LibraryFile.id.in_(eligible_ids)))
         await db.commit()
         logger.info("Library trash sweeper: hard-deleted %d row(s) past %d-day retention", deleted, retention)
         return deleted
@@ -423,8 +556,16 @@ class LibraryTrashService:
         first (via :meth:`active_archive_references` or the count helper) and
         return 409 to the user if there are. We don't raise here so the
         sweeper / empty-trash path can keep its existing skip-and-log shape.
+
+        Trashed archives that still reference this row by hash get their
+        ``library_file_id`` blanked out (not cascade-deleted) — see the
+        comment in ``_sweep`` for why we do this in code rather than relying
+        on the schema-level ``ON DELETE SET NULL``.
         """
         self._unlink_on_disk(file)
+        await db.execute(
+            update(PrintArchive).where(PrintArchive.library_file_id == file.id).values(library_file_id=None)
+        )
         await db.delete(file)
         await db.commit()
 

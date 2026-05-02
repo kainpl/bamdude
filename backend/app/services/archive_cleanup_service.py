@@ -56,11 +56,11 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import settings as app_settings
@@ -102,15 +102,33 @@ class CleanupRunResult:
         }
 
 
+LAST_RUN_KEY = "archive_3mf_cleanup_last_run"
+# Persist the result alongside the timestamp so server restarts between the
+# auto-tick and the next status read don't downgrade the UI to "count was
+# lost". Zero is a valid count ("ran, found nothing eligible") and is shown
+# as such after restart.
+LAST_RUN_ARCHIVES_CLEARED_KEY = "archive_3mf_cleanup_last_archives_cleared"
+LAST_RUN_BYTES_FREED_KEY = "archive_3mf_cleanup_last_bytes_freed"
+# Auto-tick cadence + period (mirrors library auto-purge).
+TICK_INTERVAL_SECONDS = 900
+AUTO_PERIOD_HOURS = 24
+
+
 class ArchiveCleanupService:
-    """Background daily loop + on-demand "run now" hook."""
+    """Background drift-mode loop + on-demand "run now" hook.
+
+    The loop ticks every ``TICK_INTERVAL_SECONDS`` (15 min) and runs the
+    sweep at most once per ``AUTO_PERIOD_HOURS`` (24h) — anchored to the
+    *previous successful run* (persisted in ``settings.LAST_RUN_KEY``)
+    rather than wall-clock midnight. Manual ``run_now()`` calls also stamp
+    ``LAST_RUN_KEY`` so the auto-cycle resets after an ad-hoc run.
+    """
 
     def __init__(self):
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
         self._last_result: CleanupRunResult | None = None
-        self._next_run_at: datetime | None = None
-        # Guard against an admin clicking "Run now" while the cron tick
+        # Guard against an admin clicking "Run now" while the auto-tick
         # is mid-sweep.  Both paths await the same lock.
         self._lock = asyncio.Lock()
 
@@ -147,33 +165,94 @@ class ArchiveCleanupService:
     def last_result(self) -> CleanupRunResult | None:
         return self._last_result
 
-    @property
-    def next_run_at(self) -> datetime | None:
-        return self._next_run_at
+    async def get_status(self) -> dict[str, Any]:
+        """Return ``{enabled, days, last_run, next_run_at}`` for the UI.
 
-    async def run_now(self) -> CleanupRunResult:
-        """Trigger one sweep immediately, regardless of the daily cron.
+        ``last_run`` mirrors the in-memory ``CleanupRunResult`` when one
+        exists. After a process restart that result is gone but the
+        persisted ``LAST_RUN_KEY`` timestamp may still be there — in that
+        case we synthesize a result with ``archives_cleared=-1`` so the UI
+        knows "we know it ran but the count is gone, see logs".
 
-        Returns the run summary; same shape as ``last_result`` after the
-        scheduled tick.  Respects the same enabled/days settings as the
-        cron path — disabled → empty no-op result.
-        """
-        async with self._lock:
-            return await self._run_once()
-
-    async def preview(self) -> dict[str, Any]:
-        """Dry-run: compute what *would* be cleared right now without
-        touching disk or DB.  Used by the settings UI to show
-        "X archives, Y MB to free" before the operator commits.
+        ``next_run_at`` is the earliest moment the auto-tick can fire:
+        ``last + 24h`` (clamped to now) when ``LAST_RUN_KEY`` exists, or
+        ``now + tick_interval`` for never-run-yet enabled state. NULL when
+        auto-mode is off.
         """
         async with async_session() as db:
             enabled, days = await self._read_settings(db)
-            if not enabled:
-                return {"enabled": False, "days": days, "groups": 0, "archives": 0, "bytes": 0}
+            last_persisted = await self._read_last_run(db)
+            last_archives_persisted = await self._read_int_setting(db, LAST_RUN_ARCHIVES_CLEARED_KEY)
+            last_bytes_persisted = await self._read_int_setting(db, LAST_RUN_BYTES_FREED_KEY)
+
+        last_run: dict[str, Any] | None = None
+        if self._last_result is not None:
+            last_run = self._last_result.as_dict()
+        elif last_persisted is not None:
+            ts = last_persisted.isoformat()
+            # Server restarted between the run and now. Pull the count from
+            # the persisted setting if it's there (writes by ``_run_once``
+            # since the introduction of LAST_RUN_ARCHIVES_CLEARED_KEY); fall
+            # back to the -1 sentinel only for legacy stamps that pre-date it.
+            last_run = {
+                "started_at": ts,
+                "finished_at": ts,
+                "groups_scanned": 0,
+                "groups_skipped_active_print": 0,
+                "groups_skipped_queue": 0,
+                "groups_skipped_library": 0,
+                "groups_cleared": 0,
+                "archives_cleared": last_archives_persisted if last_archives_persisted is not None else -1,
+                "bytes_freed": last_bytes_persisted if last_bytes_persisted is not None else 0,
+                "errors": [],
+            }
+
+        next_run_at: datetime | None = None
+        if enabled:
+            now = datetime.now(timezone.utc)
+            if last_persisted is None:
+                next_run_at = now + timedelta(seconds=TICK_INTERVAL_SECONDS)
+            else:
+                candidate = last_persisted + timedelta(hours=AUTO_PERIOD_HOURS)
+                next_run_at = candidate if candidate > now else now
+
+        return {
+            "enabled": enabled,
+            "days": days,
+            "last_run": last_run,
+            "next_run_at": next_run_at.isoformat() if next_run_at else None,
+        }
+
+    async def run_now(self, override_days: int | None = None) -> CleanupRunResult:
+        """Trigger one sweep immediately, regardless of the daily cron.
+
+        Returns the run summary; same shape as ``last_result`` after the
+        scheduled tick.  Bypasses the ``enabled`` setting (which only gates
+        the daily auto-tick). Pass ``override_days`` to use an ad-hoc
+        threshold instead of the saved ``archive_3mf_retention_days``.
+        """
+        async with self._lock:
+            return await self._run_once(override_days=override_days)
+
+    async def preview(self, override_days: int | None = None) -> dict[str, Any]:
+        """Dry-run: compute what *would* be cleared right now without
+        touching disk or DB.  Used by the settings UI + Archives modal to
+        show "X archives, Y MB to free" before the operator commits.
+
+        Always computes — the ``enabled`` flag in settings only gates the
+        daily auto-tick. Manual ``Run now`` (and this preview) honours the
+        configured ``days`` threshold (or ``override_days`` when supplied)
+        regardless. The returned ``enabled`` field is informational so the
+        UI can hint "auto-mode is off, but a manual run will still fire"
+        without disabling the button.
+        """
+        async with async_session() as db:
+            enabled, settings_days = await self._read_settings(db)
+            days = max(1, int(override_days)) if override_days is not None else settings_days
             cutoff = self._cutoff_utc(days)
             plan = await self._plan_groups(db, cutoff, dry_run=True)
         return {
-            "enabled": True,
+            "enabled": enabled,
             "days": days,
             "cutoff": cutoff.isoformat(),
             "groups": plan["cleared_groups"],
@@ -181,22 +260,24 @@ class ArchiveCleanupService:
             "bytes": plan["bytes"],
         }
 
-    # ---------------------------------------------------------------- daily loop
+    # ---------------------------------------------------------------- auto-tick loop
 
     async def _loop(self) -> None:
-        """Sleep until the next local-midnight tick, run, repeat."""
+        """Tick every 15 min, run the sweep when 24h has elapsed since
+        the previous successful run (auto + manual both count).
+
+        Drift-mode anchored to ``LAST_RUN_KEY`` rather than wall-clock
+        midnight — matches the library auto-purge cadence so the two bins
+        behave identically. ``enabled=False`` skips the run; ``last_run``
+        timestamp is NOT consumed by skip ticks, so the next time auto is
+        re-enabled the gap-check still sees the genuine last run.
+        """
         while not self._stop.is_set():
             try:
-                wait_for = self._seconds_until_next_local_midnight()
-                self._next_run_at = datetime.now() + timedelta(seconds=wait_for)
-                logger.info(
-                    "[ARCHIVE-CLEANUP] next run in %.0f s (at %s local)",
-                    wait_for,
-                    self._next_run_at.strftime("%Y-%m-%d %H:%M:%S"),
-                )
-                # Sleep in chunks so the stop event can break us out promptly
-                # on shutdown without waiting up to ~24 h.
-                deadline = asyncio.get_running_loop().time() + wait_for
+                # Tick first, then evaluate — same shape as the library
+                # trash sweeper. Sleep in 60 s chunks so the stop event
+                # breaks us out promptly on shutdown.
+                deadline = asyncio.get_running_loop().time() + TICK_INTERVAL_SECONDS
                 while not self._stop.is_set():
                     remaining = deadline - asyncio.get_running_loop().time()
                     if remaining <= 0:
@@ -209,6 +290,19 @@ class ArchiveCleanupService:
                         return  # stop was set
                 if self._stop.is_set():
                     return
+
+                # Drift-mode auto-tick: gated by ``enabled`` + 24h window.
+                # Manual ``run_now()`` bypasses this gate but still stamps
+                # ``LAST_RUN_KEY``, so a manual run resets the auto-cycle.
+                async with async_session() as db:
+                    enabled, _days = await self._read_settings(db)
+                    if not enabled:
+                        logger.debug("[ARCHIVE-CLEANUP] auto-mode disabled, skipping tick")
+                        continue
+                    last = await self._read_last_run(db)
+
+                if last is not None and (datetime.now(timezone.utc) - last) < timedelta(hours=AUTO_PERIOD_HOURS):
+                    continue
 
                 async with self._lock:
                     await self._run_once()
@@ -226,23 +320,73 @@ class ArchiveCleanupService:
                     return
 
     @staticmethod
-    def _seconds_until_next_local_midnight() -> float:
-        now = datetime.now()
-        next_midnight = datetime.combine(now.date() + timedelta(days=1), time(0, 0))
-        return max(60.0, (next_midnight - now).total_seconds())
+    async def _read_last_run(db: AsyncSession) -> datetime | None:
+        from backend.app.api.routes.settings import get_setting
+
+        raw = await get_setting(db, LAST_RUN_KEY)
+        if not raw:
+            return None
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    async def _read_int_setting(db: AsyncSession, key: str) -> int | None:
+        from backend.app.api.routes.settings import get_setting
+
+        raw = await get_setting(db, key)
+        if raw is None:
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    async def _stamp_last_run(when: datetime, archives_cleared: int, bytes_freed: int) -> None:
+        """Persist ``LAST_RUN_KEY`` + the result count so subsequent auto-ticks
+        skip until 24h has passed AND a server restart between the run and
+        the next status read can show the real count instead of the
+        ``-1`` "lost on restart" sentinel. Called from ``_run_once`` so
+        both auto and manual paths push the timer forward and persist the
+        count uniformly.
+        """
+        from backend.app.models.settings import Settings
+
+        async with async_session() as db:
+            iso = when.isoformat()
+            for key, value in (
+                (LAST_RUN_KEY, iso),
+                (LAST_RUN_ARCHIVES_CLEARED_KEY, str(int(archives_cleared))),
+                (LAST_RUN_BYTES_FREED_KEY, str(int(bytes_freed))),
+            ):
+                result = await db.execute(select(Settings).where(Settings.key == key))
+                row = result.scalar_one_or_none()
+                if row is None:
+                    db.add(Settings(key=key, value=value))
+                else:
+                    row.value = value
+            await db.commit()
 
     # ---------------------------------------------------------------- core run
 
-    async def _run_once(self) -> CleanupRunResult:
+    async def _run_once(self, override_days: int | None = None) -> CleanupRunResult:
+        """Execute one sweep using ``override_days`` or the saved threshold.
+
+        Does NOT consult the ``enabled`` setting — caller decides whether to
+        respect it. The daily loop checks ``enabled`` before invoking us;
+        manual ``run_now()`` deliberately bypasses the gate so admins can
+        clean up on demand without flipping the auto-mode toggle.
+
+        ``override_days`` lets manual callers (e.g. the Archives page
+        modal) pass an ad-hoc threshold without touching the saved value.
+        """
         result = CleanupRunResult(started_at=datetime.now(timezone.utc))
         try:
             async with async_session() as db:
-                enabled, days = await self._read_settings(db)
-                if not enabled:
-                    logger.info("[ARCHIVE-CLEANUP] feature disabled, skipping run")
-                    result.finished_at = datetime.now(timezone.utc)
-                    self._last_result = result
-                    return result
+                _enabled, settings_days = await self._read_settings(db)
+                days = max(1, int(override_days)) if override_days is not None else settings_days
                 cutoff = self._cutoff_utc(days)
                 logger.info(
                     "[ARCHIVE-CLEANUP] sweep starting (retention=%d days, cutoff=%s)",
@@ -264,6 +408,15 @@ class ArchiveCleanupService:
         finally:
             result.finished_at = datetime.now(timezone.utc)
             self._last_result = result
+            # Both auto-ticks and manual ``run_now()`` calls land here, so
+            # stamping unconditionally means a manual run also resets the
+            # 24h auto-cycle. Failed sweeps still stamp — re-trying every
+            # 15 min on a permanent error would spam the loop. Operators
+            # see the error in the result + logs and can fix root cause.
+            try:
+                await self._stamp_last_run(result.started_at, result.archives_cleared, result.bytes_freed)
+            except Exception as exc:  # pragma: no cover — defensive
+                logger.warning("[ARCHIVE-CLEANUP] failed to stamp last_run: %s", exc)
             logger.info(
                 "[ARCHIVE-CLEANUP] sweep done: cleared %d group(s), %d archive(s), %s bytes",
                 result.groups_cleared,
@@ -302,35 +455,81 @@ class ArchiveCleanupService:
 
         Logic:
 
-        1. SELECT every archive with a populated ``file_path`` (no point
-           "clearing" an already-empty row).
-        2. Bucket rows by ``COALESCE(source_content_hash, content_hash)``.
-           Rows with neither hash get unique singleton keys (we still
-           want to consider them — they predate the chain feature).
-        3. For each bucket, find the newest ``completed_at`` (falling
-           back to ``created_at`` on rows that never finished).
-        4. If that newest timestamp is on or after the cutoff → keep
-           the whole bucket (still hot).
-        5. Otherwise check skip rules row-by-row; if any row vetoes,
-           skip the whole bucket (don't half-clear a design).
-        6. Otherwise apply the cleanup transactionally: delete files,
+        1. SQL-side pre-filter: ``GROUP BY effective_hash`` over rows with
+           a populated ``file_path``, count groups + find the newest
+           timestamp per group. Only buckets whose newest timestamp is
+           older than ``cutoff`` get loaded into Python — saves memory
+           on installs with thousands of archives where most groups are
+           hot.
+        2. Load the full ``PrintArchive`` rows for those expired buckets
+           in one query.
+        3. Per bucket, check skip rules; if any row vetoes, skip the
+           whole bucket (don't half-clear a design — leaving some copies
+           on disk while wiping others is worse than not cleaning at all).
+        4. Otherwise apply the cleanup transactionally: delete files,
            blank ``file_path`` on every row in the bucket, commit.
 
-        ``dry_run=True`` exits before step 6 — useful for the preview
-        endpoint that the UI hits before showing "Run now" stats.
+        ``dry_run=True`` exits before step 4 — used by the preview
+        endpoint before the operator commits to "Run now".
+
+        Bucket key uses ``COALESCE(source_content_hash, content_hash)``
+        — defence-in-depth around the always-fill invariant (m039+).
+        Rows without a usable hash (theoretical post-m039) get a
+        unique singleton key so they're still considered individually.
         """
+        # Stats we need: total bucket count for telemetry. One round-trip
+        # to count all buckets (hot or cold).
+        eff_hash_col = func.coalesce(PrintArchive.source_content_hash, PrintArchive.content_hash)
+        total_groups = (
+            await db.execute(
+                select(func.count(func.distinct(eff_hash_col))).where(
+                    PrintArchive.file_path.is_not(None),
+                    PrintArchive.file_path != "",
+                )
+            )
+        ).scalar() or 0
+
+        # Newest activity per bucket. ``GREATEST`` would be cleaner but
+        # SQLite doesn't have it; emulate with nested COALESCE — same
+        # priority order as the docstring on ``CleanupRunResult``.
+        newest_ts = func.max(func.coalesce(PrintArchive.completed_at, PrintArchive.started_at, PrintArchive.created_at))
+        expired_keys_rows = (
+            await db.execute(
+                select(eff_hash_col)
+                .where(PrintArchive.file_path.is_not(None), PrintArchive.file_path != "")
+                .group_by(eff_hash_col)
+                .having(newest_ts < cutoff)
+            )
+        ).all()
+        expired_keys = [row[0] for row in expired_keys_rows if row[0] is not None]
+
+        if not expired_keys:
+            return {
+                "groups_count": total_groups,
+                "skipped_active": 0,
+                "skipped_queue": 0,
+                "skipped_library": 0,
+                "cleared_groups": 0,
+                "cleared_archives": 0,
+                "bytes": 0,
+                "errors": [],
+            }
+
+        # Now load only the rows in expired buckets — usually a tiny
+        # fraction of the table on a healthy install.
         rows = (
             (
                 await db.execute(
-                    select(PrintArchive).where(PrintArchive.file_path.is_not(None)).where(PrintArchive.file_path != "")
+                    select(PrintArchive)
+                    .where(PrintArchive.file_path.is_not(None), PrintArchive.file_path != "")
+                    .where(eff_hash_col.in_(expired_keys))
                 )
             )
             .scalars()
             .all()
         )
 
-        # Bucket by design hash — fall back to per-row id when both hash
-        # columns are NULL so the row still gets considered.
+        # Bucket by design hash — same key as the SQL-side filter.
         buckets: dict[str, list[PrintArchive]] = {}
         for row in rows:
             key = row.source_content_hash or row.content_hash or f"__nohash__:{row.id}"
@@ -395,7 +594,7 @@ class ArchiveCleanupService:
                 errors.append(f"bucket {bucket_key[:16]}: {type(e).__name__}: {e}")
 
         return {
-            "groups_count": len(buckets),
+            "groups_count": total_groups,
             "skipped_active": skipped_active,
             "skipped_queue": skipped_queue,
             "skipped_library": skipped_library,
@@ -457,19 +656,15 @@ class ArchiveCleanupService:
                 return "library"
 
         # Hash-based fallback: even without library_file_id we can match
-        # by content / source_content hash — covers archives created
-        # before the m014 backfill linked them.
-        hashes: set[str] = set()
-        for m in members:
-            if m.content_hash:
-                hashes.add(m.content_hash)
-            if m.source_content_hash:
-                hashes.add(m.source_content_hash)
-        if hashes:
+        # by source_content_hash — after always-fill (m039) this is the
+        # canonical chain root that pairs with ``LibraryFile.file_hash``.
+        # ``content_hash`` is intentionally excluded: a patched archive's
+        # content_hash never equals any library file's hash anyway, so
+        # adding it just slows the IN clause without finding new matches.
+        source_hashes = {m.source_content_hash for m in members if m.source_content_hash}
+        if source_hashes:
             lib_match = await db.execute(
-                select(LibraryFile.id)
-                .where(or_(LibraryFile.file_hash.in_(hashes), LibraryFile.file_hash.in_(hashes)))
-                .limit(1)
+                select(LibraryFile.id).where(LibraryFile.file_hash.in_(source_hashes)).limit(1)
             )
             if lib_match.scalar_one_or_none() is not None:
                 return "library"

@@ -228,17 +228,25 @@ async def list_archives(
         offset=offset,
     )
 
-    # Get sets of duplicate hashes and duplicate (name, hash) pairs (efficient single queries)
+    # Get sets of duplicate hashes and duplicate (name, hash) pairs (efficient single queries).
+    # The service returns *effective* hashes (COALESCE(source_content_hash, content_hash)) so
+    # patched archives group with their unpatched ancestors. Page-side matching below must
+    # therefore project each row to its effective hash too — `source_content_hash` first,
+    # `content_hash` as defence fallback for any (post-m039) row that still has NULL source.
     duplicate_hashes, duplicate_name_hash_pairs = await service.get_duplicate_hashes_and_names()
 
+    def _eff(archive: PrintArchive) -> str | None:
+        return archive.source_content_hash or archive.content_hash
+
+    # SQL-side equivalent for the secondary load query.
+    eff_hash_col = func.coalesce(PrintArchive.source_content_hash, PrintArchive.content_hash)
+
     # Batch-load duplicate groups once for the current page keys.
-    duplicate_hashes_in_page = {
-        a.content_hash for a in archives if a.content_hash and a.content_hash in duplicate_hashes
-    }
+    duplicate_hashes_in_page = {h for a in archives if (h := _eff(a)) and h in duplicate_hashes}
     duplicate_name_hash_keys_in_page = {
-        (a.print_name.lower(), a.content_hash)
+        (a.print_name.lower(), h)
         for a in archives
-        if a.print_name and a.content_hash and (a.print_name.lower(), a.content_hash) in duplicate_name_hash_pairs
+        if a.print_name and (h := _eff(a)) and (a.print_name.lower(), h) in duplicate_name_hash_pairs
     }
 
     duplicate_meta_by_archive_id: dict[int, tuple[int, int, int]] = {}
@@ -246,10 +254,10 @@ async def list_archives(
     if duplicate_hashes_in_page or duplicate_name_hash_keys_in_page:
         duplicate_group_conditions = []
         if duplicate_hashes_in_page:
-            duplicate_group_conditions.append(PrintArchive.content_hash.in_(duplicate_hashes_in_page))
+            duplicate_group_conditions.append(eff_hash_col.in_(duplicate_hashes_in_page))
         if duplicate_name_hash_keys_in_page:
             name_hash_conditions = [
-                and_(func.lower(PrintArchive.print_name) == name, PrintArchive.content_hash == hash_)
+                and_(func.lower(PrintArchive.print_name) == name, eff_hash_col == hash_)
                 for name, hash_ in duplicate_name_hash_keys_in_page
             ]
             duplicate_group_conditions.extend(name_hash_conditions)
@@ -258,7 +266,7 @@ async def list_archives(
             select(
                 PrintArchive.id,
                 PrintArchive.created_at,
-                PrintArchive.content_hash,
+                eff_hash_col.label("effective_hash"),
                 func.lower(PrintArchive.print_name).label("print_name_lower"),
             ).where(or_(*duplicate_group_conditions))
         )
@@ -266,15 +274,15 @@ async def list_archives(
         duplicate_groups_by_hash: dict[str, list[tuple[int, datetime]]] = defaultdict(list)
         duplicate_groups_by_name_hash: dict[tuple[str, str], list[tuple[int, datetime]]] = defaultdict(list)
 
-        for archive_id, created_at, content_hash, print_name_lower in duplicate_group_rows.all():
-            if content_hash and content_hash in duplicate_hashes_in_page:
-                duplicate_groups_by_hash[content_hash].append((archive_id, created_at))
+        for archive_id, created_at, effective_hash, print_name_lower in duplicate_group_rows.all():
+            if effective_hash and effective_hash in duplicate_hashes_in_page:
+                duplicate_groups_by_hash[effective_hash].append((archive_id, created_at))
             if (
                 print_name_lower
-                and content_hash
-                and (print_name_lower, content_hash) in duplicate_name_hash_keys_in_page
+                and effective_hash
+                and (print_name_lower, effective_hash) in duplicate_name_hash_keys_in_page
             ):
-                duplicate_groups_by_name_hash[(print_name_lower, content_hash)].append((archive_id, created_at))
+                duplicate_groups_by_name_hash[(print_name_lower, effective_hash)].append((archive_id, created_at))
 
         for group in duplicate_groups_by_hash.values():
             if len(group) < 2:
@@ -298,11 +306,9 @@ async def list_archives(
     # Build response with duplicate sequence and original archive ID pre-computed
     data = []
     for a in archives:
-        has_hash_dup = a.content_hash in duplicate_hashes if a.content_hash else False
-        has_name_dup = (
-            bool(a.print_name and a.content_hash)
-            and (a.print_name.lower(), a.content_hash) in duplicate_name_hash_pairs
-        )
+        a_eff = _eff(a)
+        has_hash_dup = a_eff in duplicate_hashes if a_eff else False
+        has_name_dup = bool(a.print_name and a_eff) and (a.print_name.lower(), a_eff) in duplicate_name_hash_pairs
         has_duplicate = has_hash_dup or has_name_dup
 
         # Pre-compute duplicate sequence and original archive ID
@@ -541,71 +547,54 @@ async def search_archives(
 async def archive_cleanup_status(
     _: User | None = RequirePermission(Permission.ARCHIVES_READ),
 ):
-    """Status of the daily 3MF auto-cleanup loop.
+    """Status of the 3MF auto-cleanup loop.
 
     Returns: enabled flag, retention window, last run summary, next
     scheduled run time. Drives the "Archive cleanup" panel on the
     settings page so the operator can see the loop is alive without
     digging in logs.
+
+    ``last_run.archives_cleared = -1`` is a restart-volatile sentinel —
+    the persistent timestamp survived a process restart but the in-memory
+    counts didn't. Frontend renders the timestamp without the count in
+    that case.
     """
-    from backend.app.core.database import async_session as _ses
     from backend.app.services.archive_cleanup_service import archive_cleanup_service
 
-    async with _ses() as db:
-        enabled_raw = (
-            await __import__("backend.app.api.routes.settings", fromlist=["get_setting"]).get_setting(
-                db, "archive_3mf_retention_enabled"
-            )
-            or "false"
-        ).lower()
-        days_raw = (
-            await __import__("backend.app.api.routes.settings", fromlist=["get_setting"]).get_setting(
-                db, "archive_3mf_retention_days"
-            )
-            or "30"
-        )
-    try:
-        days = max(1, int(days_raw))
-    except (TypeError, ValueError):
-        days = 30
-    last = archive_cleanup_service.last_result
-    next_at = archive_cleanup_service.next_run_at
-    return {
-        "enabled": enabled_raw == "true",
-        "days": days,
-        "last_run": last.as_dict() if last else None,
-        "next_run_at": next_at.isoformat() if next_at else None,
-    }
+    return await archive_cleanup_service.get_status()
 
 
 @router.get("/cleanup/preview")
 async def archive_cleanup_preview(
+    days: int | None = Query(default=None, ge=1, le=3650),
     _: User | None = RequirePermission(Permission.ARCHIVES_READ),
 ):
     """Dry-run: how many archives would lose their 3MF right now?
 
-    Reads the same settings + skip rules as the live sweep but does not
-    touch disk or DB. Used by the settings UI to render "X archives,
-    Y MB to free" before the operator hits "Run now".
+    Reads the same skip rules as the live sweep but does not touch disk
+    or DB. Without ``days`` uses the configured retention threshold; pass
+    ``days=N`` for an ad-hoc preview at a different threshold (Archive
+    page modal lets the operator override per-run).
     """
     from backend.app.services.archive_cleanup_service import archive_cleanup_service
 
-    return await archive_cleanup_service.preview()
+    return await archive_cleanup_service.preview(override_days=days)
 
 
 @router.post("/cleanup/run")
 async def archive_cleanup_run(
+    days: int | None = Query(default=None, ge=1, le=3650),
     _: User | None = RequirePermission(Permission.ARCHIVES_DELETE_ALL),
 ):
     """Trigger an immediate cleanup sweep, bypassing the daily cron.
 
     Returns the run summary (same shape as ``last_run`` in
-    ``/cleanup/status``). Honours the same enable + retention settings
-    as the cron path — disabled feature returns an empty no-op result.
+    ``/cleanup/status``). Without ``days`` uses the configured retention
+    threshold; ``days=N`` overrides for one ad-hoc run.
     """
     from backend.app.services.archive_cleanup_service import archive_cleanup_service
 
-    result = await archive_cleanup_service.run_now()
+    result = await archive_cleanup_service.run_now(override_days=days)
     return result.as_dict()
 
 
@@ -1229,9 +1218,11 @@ async def get_archive(
 
     # Find duplicates
     makerworld_id = archive.extra_data.get("makerworld_model_id") if archive.extra_data else None
+    # Pass effective hash (source_content_hash ?? content_hash) so chain
+    # siblings (patched variants of the same source) are matched as duplicates.
     duplicates = await service.find_duplicates(
         archive_id=archive.id,
-        content_hash=archive.content_hash,
+        content_hash=archive.source_content_hash or archive.content_hash,
         print_name=archive.print_name,
         makerworld_model_id=makerworld_id,
     )
@@ -1546,9 +1537,11 @@ async def get_archive_duplicates(
         raise HTTPException(404, "Archive not found")
 
     makerworld_id = archive.extra_data.get("makerworld_model_id") if archive.extra_data else None
+    # Pass effective hash (source_content_hash ?? content_hash) so chain
+    # siblings (patched variants of the same source) are matched as duplicates.
     duplicates = await service.find_duplicates(
         archive_id=archive.id,
-        content_hash=archive.content_hash,
+        content_hash=archive.source_content_hash or archive.content_hash,
         print_name=archive.print_name,
         makerworld_model_id=makerworld_id,
     )

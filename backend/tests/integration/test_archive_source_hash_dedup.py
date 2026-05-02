@@ -133,9 +133,11 @@ async def test_external_print_inherits_chain_from_prior_archive(db_session, prin
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_external_print_without_chain_stays_null(db_session, printer_factory, tmp_path):
-    """External print whose bytes don't match any prior chain keeps
-    source_content_hash NULL — it's a genuinely foreign file."""
+async def test_external_print_without_chain_self_seeds_source_hash(db_session, printer_factory, tmp_path):
+    """External print whose bytes don't match any prior chain self-seeds
+    ``source_content_hash = content_hash`` so it becomes the chain root for
+    any future patched variant. (Always-fill invariant introduced alongside
+    migration m039 in 0.4.2.)"""
     printer = await printer_factory()
     src = _make_tempfile(tmp_path, "foreign.3mf", b"never-seen-before-bytes")
 
@@ -146,9 +148,9 @@ async def test_external_print_without_chain_stays_null(db_session, printer_facto
     )
 
     assert archive is not None
-    assert archive.source_content_hash is None
+    # Self-seeded chain root: source equals content for a brand-new standalone row.
+    assert archive.source_content_hash == archive.content_hash
     assert archive.applied_patches is None
 
-    # Sanity: stored row matches what we inserted.
     row = (await db_session.execute(select(PrintArchive).where(PrintArchive.id == archive.id))).scalar_one()
-    assert row.source_content_hash is None
+    assert row.source_content_hash == row.content_hash

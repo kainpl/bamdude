@@ -55,6 +55,21 @@ class TrashSettings(BaseModel):
     auto_purge_include_never_printed: bool = True
 
 
+class LibraryAutoPurgeLastRun(BaseModel):
+    started_at: str
+    finished_at: str | None = None
+    # ``moved`` = -1 means "ran but the count was lost on process restart".
+    moved: int
+
+
+class LibraryAutoPurgeStatus(BaseModel):
+    enabled: bool
+    days: int
+    include_never_printed: bool
+    last_run: LibraryAutoPurgeLastRun | None = None
+    next_run_at: str | None = None
+
+
 class EmptyTrashResponse(BaseModel):
     deleted: int
     skipped_pinned: int = 0

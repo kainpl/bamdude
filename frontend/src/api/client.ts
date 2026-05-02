@@ -3678,15 +3678,15 @@ export const api = {
     } | null;
     next_run_at: string | null;
   }>('/archives/cleanup/status'),
-  getArchiveCleanupPreview: () => request<{
+  getArchiveCleanupPreview: (overrideDays?: number) => request<{
     enabled: boolean;
     days: number;
     cutoff?: string;
     groups: number;
     archives: number;
     bytes: number;
-  }>('/archives/cleanup/preview'),
-  runArchiveCleanup: () => request<{
+  }>(overrideDays ? `/archives/cleanup/preview?days=${overrideDays}` : '/archives/cleanup/preview'),
+  runArchiveCleanup: (overrideDays?: number) => request<{
     started_at: string;
     finished_at: string | null;
     groups_scanned: number;
@@ -3697,7 +3697,7 @@ export const api = {
     archives_cleared: number;
     bytes_freed: number;
     errors: string[];
-  }>('/archives/cleanup/run', { method: 'POST' }),
+  }>(overrideDays ? `/archives/cleanup/run?days=${overrideDays}` : '/archives/cleanup/run', { method: 'POST' }),
   getArchivesSlim: (dateFrom?: string, dateTo?: string) => {
     const params = new URLSearchParams();
     if (dateFrom) params.set('date_from', dateFrom);
@@ -5479,22 +5479,10 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(body),
     }),
+  getLibraryAutoPurgeStatus: () =>
+    request<LibraryAutoPurgeStatus>('/library/trash/auto-purge/status'),
 
-  // ========== Archive trash + auto-purge (#1008 follow-up) ==========
-  previewArchivePurge: (olderThanDays: number) =>
-    request<ArchivePurgePreview>(`/archives/purge/preview?older_than_days=${olderThanDays}`),
-  executeArchivePurge: (olderThanDays: number) =>
-    request<{ moved_to_trash: number }>('/archives/purge', {
-      method: 'POST',
-      body: JSON.stringify({ older_than_days: olderThanDays }),
-    }),
-  getArchivePurgeSettings: () =>
-    request<ArchivePurgeSettings>('/archives/purge/settings'),
-  updateArchivePurgeSettings: (body: ArchivePurgeSettings) =>
-    request<ArchivePurgeSettings>('/archives/purge/settings', {
-      method: 'PUT',
-      body: JSON.stringify(body),
-    }),
+  // ========== Archive trash (#1008 follow-up) ==========
   listArchiveTrash: (limit: number = 100, offset: number = 0) =>
     request<ArchiveTrashListResponse>(`/archives/trash?limit=${limit}&offset=${offset}`),
   restoreArchiveTrash: (archiveId: number) =>
@@ -6057,23 +6045,26 @@ export interface LibraryPurgePreview {
   include_never_printed: boolean;
 }
 
+export interface LibraryAutoPurgeLastRun {
+  started_at: string;
+  finished_at: string | null;
+  /** -1 means "ran but the count was lost on process restart". */
+  moved: number;
+}
+
+export interface LibraryAutoPurgeStatus {
+  enabled: boolean;
+  days: number;
+  include_never_printed: boolean;
+  last_run: LibraryAutoPurgeLastRun | null;
+  next_run_at: string | null;
+}
+
 export interface LibraryTrashSettings {
   retention_days: number;
   auto_purge_enabled: boolean;
   auto_purge_days: number;
   auto_purge_include_never_printed: boolean;
-}
-
-export interface ArchivePurgePreview {
-  count: number;
-  total_bytes: number;
-  sample_filenames: string[];
-  older_than_days: number;
-}
-
-export interface ArchivePurgeSettings {
-  enabled: boolean;
-  days: number;
 }
 
 export interface ArchiveTrashItem {

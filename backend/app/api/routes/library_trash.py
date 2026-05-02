@@ -27,6 +27,7 @@ from backend.app.models.library import LibraryFile, LibraryFolder
 from backend.app.models.user import User
 from backend.app.schemas.library_trash import (
     EmptyTrashResponse,
+    LibraryAutoPurgeStatus,
     PurgePreviewResponse,
     PurgeRequest,
     PurgeResponse,
@@ -279,6 +280,21 @@ async def get_trash_settings(
         auto_purge_days=auto["days"],
         auto_purge_include_never_printed=auto["include_never_printed"],
     )
+
+
+@router.get("/trash/auto-purge/status", response_model=LibraryAutoPurgeStatus)
+async def get_auto_purge_status(
+    db: AsyncSession = Depends(get_db),
+    _: User = RequirePermission(Permission.LIBRARY_PURGE),
+):
+    """Return current settings + last/next-run telemetry.
+
+    Mirrors ``/archives/cleanup/status``: drives the "Last run | Next run"
+    cards in Settings → File Manager. ``last_run.moved=-1`` signals
+    "ran but count was lost on process restart" — UI shows the timestamp
+    without a count.
+    """
+    return await library_trash_service.get_status(db)
 
 
 @router.put("/trash/settings", response_model=TrashSettings)

@@ -1146,14 +1146,21 @@ class BackgroundDispatchService:
             try:
                 archive_service = ArchiveService(db)
                 applied_patches = job.options.get("applied_patches") if isinstance(job.options, dict) else None
-                # Archive the file that will ACTUALLY be sent to the printer
-                # (patched or original). content_hash will match what lands on
-                # SD so on_print_complete chain-lookup works even if
-                # _expected_prints misses.  source_content_hash stays the
-                # library's original hash for design-level dedup.
+                # Archive the UNPATCHED original library file, NOT the patched
+                # upload. The reprint UI lets the user re-pick mesh-mode-fast-
+                # check / per-plate gcode-injection on every run; storing
+                # patched bytes here would compose new toggles on top of
+                # already-baked patches. ``applied_patches`` records what was
+                # applied to the bytes that actually went to the printer
+                # (``upload_file_path``, which IS patched). With unpatched
+                # bytes on disk both ``content_hash`` and ``source_content_hash``
+                # equal ``lib_file.file_hash``; chain-of-custody consumers use
+                # ``COALESCE(source, content)`` so this is a no-op for grouping
+                # while giving the cross-printer file dedup more chances to
+                # share an on-disk file.
                 archive = await archive_service.archive_print(
                     printer_id=job.printer_id,
-                    source_file=upload_file_path,
+                    source_file=file_path,
                     original_filename=lib_file.filename,
                     project_id=job.project_id,
                     source_content_hash=lib_file.file_hash,

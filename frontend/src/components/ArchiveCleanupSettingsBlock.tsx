@@ -5,35 +5,13 @@ import { useState } from 'react';
 import { api } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
 import { ConfirmModal } from './ConfirmModal';
+import { LastNextRunCards } from './LastNextRunCards';
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-}
-
-function formatRelativeFromNow(iso: string | null, t: (k: string) => string): string {
-  if (!iso) return t('settings.archiveCleanup.never');
-  const ts = new Date(iso).getTime();
-  if (!Number.isFinite(ts)) return t('settings.archiveCleanup.never');
-  const diffMin = Math.round((Date.now() - ts) / 60000);
-  if (diffMin < 1) return t('settings.archiveCleanup.justNow');
-  if (diffMin < 60) return `${diffMin} ${t('settings.archiveCleanup.minutesAgo')}`;
-  const diffH = Math.round(diffMin / 60);
-  if (diffH < 48) return `${diffH} ${t('settings.archiveCleanup.hoursAgo')}`;
-  const diffD = Math.round(diffH / 24);
-  return `${diffD} ${t('settings.archiveCleanup.daysAgo')}`;
-}
-
-function formatRelativeUntil(iso: string | null, t: (k: string) => string): string {
-  if (!iso) return '—';
-  const ts = new Date(iso).getTime();
-  if (!Number.isFinite(ts)) return '—';
-  const diffMin = Math.max(0, Math.round((ts - Date.now()) / 60000));
-  if (diffMin < 60) return `${t('settings.archiveCleanup.in')} ${diffMin} ${t('settings.archiveCleanup.minutes')}`;
-  const diffH = Math.round(diffMin / 60);
-  return `${t('settings.archiveCleanup.in')} ${diffH} ${t('settings.archiveCleanup.hours')}`;
 }
 
 interface Props {
@@ -57,13 +35,13 @@ export function ArchiveCleanupSettingsBlock({ enabled, days, onChangeEnabled, on
 
   const preview = useQuery({
     queryKey: ['archive-cleanup-preview', enabled, days],
-    queryFn: api.getArchiveCleanupPreview,
+    queryFn: () => api.getArchiveCleanupPreview(),
     enabled,
     refetchInterval: 120_000,
   });
 
   const runMutation = useMutation({
-    mutationFn: api.runArchiveCleanup,
+    mutationFn: () => api.runArchiveCleanup(),
     onSuccess: (data) => {
       showToast(
         t('settings.archiveCleanup.runDone', {
@@ -124,33 +102,22 @@ export function ArchiveCleanupSettingsBlock({ enabled, days, onChangeEnabled, on
             </p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
-            <div className="p-3 bg-bambu-dark rounded-lg">
-              <div className="text-bambu-gray text-xs mb-1">
-                {t('settings.archiveCleanup.lastRun')}
-              </div>
-              <div className="text-white">
-                {formatRelativeFromNow(status.data?.last_run?.finished_at ?? null, t)}
-              </div>
-              {status.data?.last_run && (
-                <div className="text-xs text-bambu-gray mt-1">
-                  {t('settings.archiveCleanup.lastRunSummary', {
-                    archives: status.data.last_run.archives_cleared,
-                    bytes: formatBytes(status.data.last_run.bytes_freed),
-                  }) || `cleared ${status.data.last_run.archives_cleared} archive(s), freed ${formatBytes(status.data.last_run.bytes_freed)}`}
-                </div>
-              )}
-            </div>
-            <div className="p-3 bg-bambu-dark rounded-lg">
-              <div className="text-bambu-gray text-xs mb-1">
-                {t('settings.archiveCleanup.nextRun')}
-              </div>
-              <div className="text-white">{formatRelativeUntil(status.data?.next_run_at ?? null, t)}</div>
-              <div className="text-xs text-bambu-gray mt-1">
-                {t('settings.archiveCleanup.nextRunHint')}
-              </div>
-            </div>
-          </div>
+          <LastNextRunCards
+            lastRunAt={status.data?.last_run?.finished_at ?? null}
+            lastRunSummary={
+              status.data?.last_run
+                ? status.data.last_run.archives_cleared >= 0
+                  ? t('settings.archiveCleanup.lastRunSummary', {
+                      archives: status.data.last_run.archives_cleared,
+                      bytes: formatBytes(status.data.last_run.bytes_freed),
+                    })
+                  : t('settings.archiveCleanup.lastRunCountUnknown')
+                : null
+            }
+            nextRunAt={status.data?.next_run_at ?? null}
+            nextRunHint={t('settings.archiveCleanup.nextRunHint')}
+            autoEnabled={enabled}
+          />
 
           {preview.data && preview.data.enabled && (
             <div className="p-3 bg-bambu-dark/60 border border-bambu-dark-tertiary rounded-lg text-sm">

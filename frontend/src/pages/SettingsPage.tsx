@@ -22,6 +22,7 @@ import CameraTokensPanel from '../components/settings/CameraTokensPanel';
 import { SpoolmanSettings } from '../components/SpoolmanSettings';
 import { SpoolDisplayNameSettings } from '../components/SpoolDisplayNameSettings';
 import { ArchiveCleanupSettingsBlock } from '../components/ArchiveCleanupSettingsBlock';
+import { LastNextRunCards } from '../components/LastNextRunCards';
 import { SpoolCatalogSettings } from '../components/SpoolCatalogSettings';
 import { ColorCatalogSettings } from '../components/ColorCatalogSettings';
 import { ExternalLinksSettings } from '../components/ExternalLinksSettings';
@@ -692,6 +693,13 @@ export function SettingsPage() {
     queryFn: () => api.getLibraryTrashSettings(),
     enabled: canPurge,
   });
+  // Last-run / next-run telemetry for the auto-purge cards.
+  const { data: libraryAutoPurgeStatus } = useQuery({
+    queryKey: ['library-auto-purge-status'],
+    queryFn: () => api.getLibraryAutoPurgeStatus(),
+    enabled: canPurge,
+    refetchInterval: 60_000,
+  });
 
   const updateTrashSettingsMutation = useMutation({
     mutationFn: (body: {
@@ -702,6 +710,9 @@ export function SettingsPage() {
     }) => api.updateLibraryTrashSettings(body),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['library-trash-settings'] });
+      // Toggling auto-mode flips the next_run_at calculation, so refresh
+      // the cards alongside the settings.
+      queryClient.invalidateQueries({ queryKey: ['library-auto-purge-status'] });
       showToast(t('settings.toast.settingsSaved'));
     },
     onError: (e: Error) => showToast(e.message || t('libraryAutoPurge.saveFailed'), 'error'),
@@ -723,33 +734,8 @@ export function SettingsPage() {
     });
   };
 
-  // Archive auto-purge (#1008 follow-up).
+  // Archive trash retention (#1008 follow-up).
   const canPurgeArchives = hasPermission('archives:purge');
-  const { data: archivePurgeSettings } = useQuery({
-    queryKey: ['archive-purge-settings'],
-    queryFn: () => api.getArchivePurgeSettings(),
-    enabled: canPurgeArchives,
-  });
-
-  const updateArchivePurgeSettingsMutation = useMutation({
-    mutationFn: (body: { enabled: boolean; days: number }) => api.updateArchivePurgeSettings(body),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['archive-purge-settings'] });
-      showToast(t('settings.toast.settingsSaved'));
-    },
-    onError: (e: Error) => showToast(e.message || t('archiveAutoPurge.saveFailed'), 'error'),
-  });
-
-  const saveArchivePurgeSettings = (patch: Partial<{ enabled: boolean; days: number }>) => {
-    if (!archivePurgeSettings) return;
-    updateArchivePurgeSettingsMutation.mutate({
-      enabled: archivePurgeSettings.enabled,
-      days: archivePurgeSettings.days,
-      ...patch,
-    });
-  };
-
-  // Archive trash retention. Separate from auto-purge trigger config.
   const { data: archiveTrashSettings } = useQuery({
     queryKey: ['archive-trash-settings'],
     queryFn: () => api.getArchiveTrashSettings(),
@@ -1049,6 +1035,13 @@ export function SettingsPage() {
       // re-compare the updated `settings` with current `localSettings` and
       // debounce-save any remaining differences.
       queryClient.invalidateQueries({ queryKey: ['archiveStats'] });
+      // Toggling archive_3mf_retention_enabled / changing days flips the
+      // server-side next_run_at calculation in /archives/cleanup/status, but
+      // that query polls on its own 60s interval — without this nudge the
+      // Last/Next run cards stay frozen on the pre-toggle snapshot for up to
+      // a minute after the user enables auto-mode.
+      queryClient.invalidateQueries({ queryKey: ['archive-cleanup-status'] });
+      queryClient.invalidateQueries({ queryKey: ['archive-cleanup-preview'] });
       showToast(t('settings.toast.settingsSaved'), 'success');
     },
     onError: (error: Error) => {
@@ -2911,83 +2904,39 @@ export function SettingsPage() {
                 onChangeDays={(v) => updateSetting('archive_3mf_retention_days', v)}
               />
 
-              {/* Archive trash + auto-purge (#1008 follow-up). Admin-only —
-                  gated on archives:purge. Soft-deletes archives older than
-                  the threshold to the archive trash; sweeper hard-deletes
-                  after the trash retention window. */}
-              {canPurgeArchives && archivePurgeSettings && (
+              {/* Archive trash retention (#1008 follow-up). Admin-only —
+                  gated on archives:purge. The trash sweeper hard-deletes
+                  manually-trashed archives after the retention window;
+                  bulk auto-purge by activity age was removed in 0.4.2 in
+                  favour of the per-design 3MF cleanup above. */}
+              {canPurgeArchives && archiveTrashSettings && (
                 <div className="border-t border-bambu-dark-tertiary pt-3 mt-3 space-y-3">
                   <div className="flex items-center gap-2">
                     <Trash2 className="w-4 h-4 text-bambu-green" />
                     <h3 className="text-sm font-semibold text-white">{t('archiveAutoPurge.sectionTitle')}</h3>
                   </div>
 
-                  {/* Trash retention — how long deleted archives stay
-                      restorable before the sweeper hard-deletes their files. */}
-                  {archiveTrashSettings && (
-                    <div>
-                      <label className="block text-sm text-bambu-gray mb-1">
-                        {t('archiveAutoPurge.retentionLabel')}
-                      </label>
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="number"
-                          min={1}
-                          max={365}
-                          value={archiveTrashSettings.retention_days}
-                          onChange={(e) =>
-                            updateArchiveTrashSettingsMutation.mutate({
-                              retention_days: Math.max(1, Math.min(365, parseInt(e.target.value || '0', 10) || 0)),
-                            })
-                          }
-                          className="w-24 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                        />
-                        <span className="text-bambu-gray">{t('archiveAutoPurge.days')}</span>
-                      </div>
-                      <p className="text-xs text-bambu-gray mt-1">
-                        {t('archiveAutoPurge.retentionDescription')}
-                      </p>
-                    </div>
-                  )}
-
-                  <div className="flex items-center justify-between pt-2 border-t border-bambu-dark-tertiary/50">
-                    <div>
-                      <p className="text-white">{t('archiveAutoPurge.enableLabel')}</p>
-                      <p className="text-sm text-bambu-gray">{t('archiveAutoPurge.enableDescription')}</p>
-                    </div>
-                    <label className="relative inline-flex items-center cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={archivePurgeSettings.enabled}
-                        onChange={(e) => saveArchivePurgeSettings({ enabled: e.target.checked })}
-                        className="sr-only peer"
-                      />
-                      <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
-                    </label>
-                  </div>
-
                   <div>
                     <label className="block text-sm text-bambu-gray mb-1">
-                      {t('archiveAutoPurge.ageLabel')}
+                      {t('archiveAutoPurge.retentionLabel')}
                     </label>
                     <div className="flex items-center gap-2">
                       <input
                         type="number"
-                        min={7}
-                        max={3650}
-                        disabled={!archivePurgeSettings.enabled}
-                        value={archivePurgeSettings.days}
+                        min={1}
+                        max={365}
+                        value={archiveTrashSettings.retention_days}
                         onChange={(e) =>
-                          saveArchivePurgeSettings({
-                            days: Math.max(7, Math.min(3650, parseInt(e.target.value || '0', 10) || 0)),
+                          updateArchiveTrashSettingsMutation.mutate({
+                            retention_days: Math.max(1, Math.min(365, parseInt(e.target.value || '0', 10) || 0)),
                           })
                         }
-                        className="w-24 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none disabled:opacity-50"
+                        className="w-24 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                       />
                       <span className="text-bambu-gray">{t('archiveAutoPurge.days')}</span>
                     </div>
                     <p className="text-xs text-bambu-gray mt-1">
-                      {t('archiveAutoPurge.ageDescription')}
+                      {t('archiveAutoPurge.retentionDescription')}
                     </p>
                   </div>
                 </div>
@@ -3025,93 +2974,118 @@ export function SettingsPage() {
                 </p>
               </div>
 
-              {/* Library trash + auto-purge (#1008). Admin-only — without
-                  library:purge there's no way to trigger a bulk purge anyway. */}
+              {/* Library auto-purge + trash (#1008). Admin-only — without
+                  library:purge there's no way to trigger a bulk purge anyway.
+                  Layout mirrors the archive cleanup card above:
+                    1. Auto-purge toggle with show/hide of its expanded
+                       controls (days + include-never-printed).
+                    2. Trash retention block at the bottom (always visible
+                       — used by both auto-purge and manual delete paths). */}
               {canPurge && trashSettings && (
-                <div className="border-t border-bambu-dark-tertiary pt-3 mt-3 space-y-3">
-                  <div className="flex items-center gap-2">
-                    <Trash2 className="w-4 h-4 text-bambu-green" />
-                    <h3 className="text-sm font-semibold text-white">{t('libraryAutoPurge.sectionTitle')}</h3>
-                  </div>
-
-                  {/* Trash retention — how long deleted files stay restorable
-                      before the sweeper hard-deletes their bytes. */}
-                  <div>
-                    <label className="block text-sm text-bambu-gray mb-1">
-                      {t('libraryAutoPurge.retentionLabel')}
-                    </label>
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="number"
-                        min={1}
-                        max={365}
-                        value={trashSettings.retention_days}
-                        onChange={(e) =>
-                          saveTrashSettings({
-                            retention_days: Math.max(1, Math.min(365, parseInt(e.target.value || '0', 10) || 0)),
-                          })
-                        }
-                        className="w-24 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                      />
-                      <span className="text-bambu-gray">{t('libraryAutoPurge.days')}</span>
+                <>
+                  <div className="border-t border-bambu-dark-tertiary pt-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <div>
+                        <p className="text-white">{t('libraryAutoPurge.enableLabel')}</p>
+                        <p className="text-sm text-bambu-gray">{t('libraryAutoPurge.enableDescription')}</p>
+                      </div>
+                      <label className="relative inline-flex items-center cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={trashSettings.auto_purge_enabled}
+                          onChange={(e) => saveTrashSettings({ auto_purge_enabled: e.target.checked })}
+                          className="sr-only peer"
+                        />
+                        <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                      </label>
                     </div>
-                    <p className="text-xs text-bambu-gray mt-1">
-                      {t('libraryAutoPurge.retentionDescription')}
-                    </p>
+
+                    {trashSettings.auto_purge_enabled && (
+                      <div className="space-y-3 pl-1">
+                        <div>
+                          <label className="block text-sm text-bambu-gray mb-1">
+                            {t('libraryAutoPurge.ageLabel')}
+                          </label>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="number"
+                              min={7}
+                              max={3650}
+                              value={trashSettings.auto_purge_days}
+                              onChange={(e) =>
+                                saveTrashSettings({
+                                  auto_purge_days: Math.max(7, Math.min(3650, parseInt(e.target.value || '0', 10) || 0)),
+                                })
+                              }
+                              className="w-24 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                            />
+                            <span className="text-bambu-gray">{t('libraryAutoPurge.days')}</span>
+                          </div>
+                          <p className="text-xs text-bambu-gray mt-1">
+                            {t('libraryAutoPurge.ageDescription')}
+                          </p>
+                        </div>
+
+                        <label className="flex items-center gap-2 text-sm text-white cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={trashSettings.auto_purge_include_never_printed}
+                            onChange={(e) => saveTrashSettings({ auto_purge_include_never_printed: e.target.checked })}
+                            className="rounded border-bambu-dark-tertiary"
+                          />
+                          {t('libraryAutoPurge.includeNeverPrinted')}
+                        </label>
+
+                        <LastNextRunCards
+                          lastRunAt={libraryAutoPurgeStatus?.last_run?.finished_at ?? null}
+                          lastRunSummary={
+                            libraryAutoPurgeStatus?.last_run
+                              ? libraryAutoPurgeStatus.last_run.moved >= 0
+                                ? t('libraryAutoPurge.lastRunSummary', {
+                                    moved: libraryAutoPurgeStatus.last_run.moved,
+                                  })
+                                : t('libraryAutoPurge.lastRunCountUnknown')
+                              : null
+                          }
+                          nextRunAt={libraryAutoPurgeStatus?.next_run_at ?? null}
+                          nextRunHint={t('libraryAutoPurge.nextRunHint')}
+                          autoEnabled={trashSettings.auto_purge_enabled}
+                        />
+                      </div>
+                    )}
                   </div>
 
-                  <div className="flex items-center justify-between pt-2 border-t border-bambu-dark-tertiary/50">
+                  <div className="border-t border-bambu-dark-tertiary pt-3 mt-3 space-y-3">
+                    <div className="flex items-center gap-2">
+                      <Trash2 className="w-4 h-4 text-bambu-green" />
+                      <h3 className="text-sm font-semibold text-white">{t('libraryAutoPurge.sectionTitle')}</h3>
+                    </div>
+
                     <div>
-                      <p className="text-white">{t('libraryAutoPurge.enableLabel')}</p>
-                      <p className="text-sm text-bambu-gray">{t('libraryAutoPurge.enableDescription')}</p>
+                      <label className="block text-sm text-bambu-gray mb-1">
+                        {t('libraryAutoPurge.retentionLabel')}
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          min={1}
+                          max={365}
+                          value={trashSettings.retention_days}
+                          onChange={(e) =>
+                            saveTrashSettings({
+                              retention_days: Math.max(1, Math.min(365, parseInt(e.target.value || '0', 10) || 0)),
+                            })
+                          }
+                          className="w-24 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                        />
+                        <span className="text-bambu-gray">{t('libraryAutoPurge.days')}</span>
+                      </div>
+                      <p className="text-xs text-bambu-gray mt-1">
+                        {t('libraryAutoPurge.retentionDescription')}
+                      </p>
                     </div>
-                    <label className="relative inline-flex items-center cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={trashSettings.auto_purge_enabled}
-                        onChange={(e) => saveTrashSettings({ auto_purge_enabled: e.target.checked })}
-                        className="sr-only peer"
-                      />
-                      <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
-                    </label>
                   </div>
-
-                  <div>
-                    <label className="block text-sm text-bambu-gray mb-1">
-                      {t('libraryAutoPurge.ageLabel')}
-                    </label>
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="number"
-                        min={7}
-                        max={3650}
-                        disabled={!trashSettings.auto_purge_enabled}
-                        value={trashSettings.auto_purge_days}
-                        onChange={(e) =>
-                          saveTrashSettings({
-                            auto_purge_days: Math.max(7, Math.min(3650, parseInt(e.target.value || '0', 10) || 0)),
-                          })
-                        }
-                        className="w-24 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none disabled:opacity-50"
-                      />
-                      <span className="text-bambu-gray">{t('libraryAutoPurge.days')}</span>
-                    </div>
-                    <p className="text-xs text-bambu-gray mt-1">
-                      {t('libraryAutoPurge.ageDescription')}
-                    </p>
-                  </div>
-
-                  <label className="flex items-center gap-2 text-sm text-white cursor-pointer">
-                    <input
-                      type="checkbox"
-                      disabled={!trashSettings.auto_purge_enabled}
-                      checked={trashSettings.auto_purge_include_never_printed}
-                      onChange={(e) => saveTrashSettings({ auto_purge_include_never_printed: e.target.checked })}
-                      className="rounded border-bambu-dark-tertiary disabled:opacity-50"
-                    />
-                    {t('libraryAutoPurge.includeNeverPrinted')}
-                  </label>
-                </div>
+                </>
               )}
             </CardContent>
           </Card>

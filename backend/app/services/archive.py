@@ -1369,9 +1369,14 @@ class ArchiveService:
             name_conditions = []
             if print_name:
                 if content_hash:
-                    # Match if print names are similar AND have the same hash (same file)
+                    # Match if print names are similar AND share the same effective hash
+                    # (chain-coalesced so a patched re-print of the same library file is
+                    # treated as the same file even though its raw content_hash differs).
                     name_conditions.append(
-                        and_(PrintArchive.print_name.ilike(print_name), PrintArchive.content_hash == content_hash)
+                        and_(
+                            PrintArchive.print_name.ilike(print_name),
+                            func.coalesce(PrintArchive.source_content_hash, PrintArchive.content_hash) == content_hash,
+                        )
                     )
                 else:
                     # Fallback for archives without hash data: match by print name only.
@@ -1478,11 +1483,18 @@ class ArchiveService:
                 .limit(1)
             )
             chain_hash = chain_lookup.scalar_one_or_none()
-            if chain_hash and chain_hash != content_hash:
-                # Only inherit the chain hash when it actually differs from the
-                # file we just hashed. Setting source == content is redundant
-                # (COALESCE resolves both to the same value anyway).
+            if chain_hash:
+                # Always inherit a chain hash when one exists, even when it
+                # equals our content_hash — keeps the always-fill invariant
+                # consistent regardless of whether a previous variant was
+                # patched or unpatched.
                 source_content_hash = chain_hash
+            else:
+                # Standalone-row case: no existing archive shares this hash.
+                # Set source = content so this row becomes the chain root for
+                # any future patched variant. Always-fill invariant: every
+                # row written by this code path has source_content_hash set.
+                source_content_hash = content_hash
 
         # File-on-disk dedup is on EXACT ``content_hash`` (the bytes we just
         # hashed from source_file) — not the chain-root ``effective_hash``.
@@ -1772,8 +1784,10 @@ class ArchiveService:
                     .limit(1)
                 )
                 chain_hash = chain_lookup.scalar_one_or_none()
-                if chain_hash and chain_hash != content_hash:
-                    archive.source_content_hash = chain_hash
+                # Always-fill invariant: source_content_hash is never NULL
+                # for rows written by this code path. Inherit chain root if
+                # any sibling exists, else seed with our own content_hash.
+                archive.source_content_hash = chain_hash or content_hash
 
             printer_folder = str(archive.printer_id) if archive.printer_id is not None else "unassigned"
             display_stem = Path(original_filename).stem if original_filename else source_file.stem

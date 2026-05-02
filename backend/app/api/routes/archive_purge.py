@@ -1,14 +1,18 @@
-"""Archive trash + auto-purge endpoints (#1008 follow-up).
+"""Archive trash endpoints (#1008 follow-up).
 
 Permission model:
 
-* **Admin purge** (``/archives/purge/*``) and **trash settings**
-  (``/archives/trash/settings``) require :attr:`Permission.ARCHIVES_PURGE` —
-  admin-only.
+* **Trash settings** (``/archives/trash/settings``) require
+  :attr:`Permission.ARCHIVES_PURGE` — admin-only.
 * **Per-user trash** (list / restore / hard-delete / empty) is gated by the
   existing :attr:`Permission.ARCHIVES_DELETE_ALL` /
   :attr:`Permission.ARCHIVES_DELETE_OWN` ownership pair, so a regular user
   sees their own trashed archives and an admin sees everyone's.
+
+The earlier per-row "auto-purge by activity age" feature was removed in
+0.4.2 — see ``services/archive_cleanup_service.py`` for the replacement
+disk-reclaim path that prunes 3MF bytes per design chain instead of
+destroying whole archive rows.
 """
 
 from __future__ import annotations
@@ -27,18 +31,12 @@ from backend.app.models.archive import PrintArchive
 from backend.app.models.user import User
 from backend.app.schemas.archive_purge import (
     ArchiveEmptyTrashResponse,
-    ArchivePurgePreviewResponse,
-    ArchivePurgeRequest,
-    ArchivePurgeResponse,
-    ArchivePurgeSettings,
     ArchiveTrashItem,
     ArchiveTrashListResponse,
     ArchiveTrashSettings,
 )
 from backend.app.services.archive_purge import (
-    MAX_AUTO_PURGE_DAYS,
     MAX_RETENTION_DAYS,
-    MIN_AUTO_PURGE_DAYS,
     MIN_RETENTION_DAYS,
     archive_purge_service,
 )
@@ -46,59 +44,6 @@ from backend.app.services.archive_purge import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/archives", tags=["archives-purge"])
-
-
-# ===================== Admin purge =====================
-
-
-@router.get("/purge/preview", response_model=ArchivePurgePreviewResponse)
-async def preview_archive_purge(
-    older_than_days: int = Query(ge=1, le=3650),
-    db: AsyncSession = Depends(get_db),
-    _: User = RequirePermission(Permission.ARCHIVES_PURGE),
-):
-    """Count + size of archives eligible for purge. Read-only."""
-    result = await archive_purge_service.preview_purge(db, older_than_days=older_than_days)
-    return ArchivePurgePreviewResponse(**result)
-
-
-@router.post("/purge", response_model=ArchivePurgeResponse)
-async def execute_archive_purge(
-    body: ArchivePurgeRequest,
-    db: AsyncSession = Depends(get_db),
-    _: User = RequirePermission(Permission.ARCHIVES_PURGE),
-):
-    """Move archives older than the threshold to the archive trash bin.
-
-    Sweeper hard-deletes after retention; users can restore from trash UI in
-    the meantime. Idempotent against already-trashed rows.
-    """
-    moved = await archive_purge_service.purge_older_than(db, older_than_days=body.older_than_days)
-    return ArchivePurgeResponse(moved_to_trash=moved)
-
-
-@router.get("/purge/settings", response_model=ArchivePurgeSettings)
-async def get_archive_purge_settings(
-    db: AsyncSession = Depends(get_db),
-    _: User = RequirePermission(Permission.ARCHIVES_PURGE),
-):
-    cfg = await archive_purge_service.get_settings(db)
-    return ArchivePurgeSettings(enabled=cfg["enabled"], days=cfg["days"])
-
-
-@router.put("/purge/settings", response_model=ArchivePurgeSettings)
-async def update_archive_purge_settings(
-    body: ArchivePurgeSettings,
-    db: AsyncSession = Depends(get_db),
-    _: User = RequirePermission(Permission.ARCHIVES_PURGE),
-):
-    if body.days < MIN_AUTO_PURGE_DAYS or body.days > MAX_AUTO_PURGE_DAYS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"days must be between {MIN_AUTO_PURGE_DAYS} and {MAX_AUTO_PURGE_DAYS}",
-        )
-    saved = await archive_purge_service.set_settings(db, enabled=body.enabled, days=body.days)
-    return ArchivePurgeSettings(enabled=saved["enabled"], days=saved["days"])
 
 
 # ===================== Trash list + per-item ops =====================

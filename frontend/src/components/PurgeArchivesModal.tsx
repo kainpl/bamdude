@@ -10,38 +10,57 @@ import { formatFileSize } from '../utils/file';
 
 interface PurgeArchivesModalProps {
   onClose: () => void;
-  initialDays?: number;
 }
 
-const DEFAULT_DAYS = 365;
-
-export function PurgeArchivesModal({ onClose, initialDays }: PurgeArchivesModalProps) {
+export function PurgeArchivesModal({ onClose }: PurgeArchivesModalProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
 
-  const [days, setDays] = useState(initialDays ?? DEFAULT_DAYS);
+  // Pull the configured threshold to seed the input. The status query is
+  // also used to surface the auto-mode hint when ``enabled=false``.
+  const statusQuery = useQuery({
+    queryKey: ['archive-cleanup-status'],
+    queryFn: api.getArchiveCleanupStatus,
+  });
 
-  const [debouncedDays, setDebouncedDays] = useState(days);
+  const settingsDays = statusQuery.data?.days;
+  const [days, setDays] = useState<number | null>(null);
+
+  // Lazy-init from settings as soon as we have it.
+  useEffect(() => {
+    if (days === null && typeof settingsDays === 'number') {
+      setDays(settingsDays);
+    }
+  }, [days, settingsDays]);
+
+  // Debounce the days input so dragging the spinner isn't a DoS on the preview.
+  const [debouncedDays, setDebouncedDays] = useState<number | null>(null);
   useEffect(() => {
     const handle = window.setTimeout(() => setDebouncedDays(days), 300);
     return () => window.clearTimeout(handle);
   }, [days]);
 
   const previewQuery = useQuery({
-    queryKey: ['archive-purge-preview', debouncedDays],
-    queryFn: () => api.previewArchivePurge(debouncedDays),
-    enabled: debouncedDays >= 1,
+    queryKey: ['archive-cleanup-preview', debouncedDays],
+    queryFn: () => api.getArchiveCleanupPreview(debouncedDays ?? undefined),
+    enabled: debouncedDays !== null && debouncedDays >= 1,
   });
 
-  const purgeMutation = useMutation({
-    mutationFn: () => api.executeArchivePurge(days),
+  const runMutation = useMutation({
+    mutationFn: () => api.runArchiveCleanup(days ?? undefined),
     onSuccess: (res) => {
-      showToast(t('archivePurge.toast.success', { count: res.moved_to_trash }), 'success');
+      showToast(
+        t('archivePurge.toast.success', {
+          count: res.archives_cleared,
+          size: formatFileSize(res.bytes_freed),
+        }),
+        'success',
+      );
       queryClient.invalidateQueries({ queryKey: ['archives'] });
       queryClient.invalidateQueries({ queryKey: ['archive-stats'] });
-      queryClient.invalidateQueries({ queryKey: ['archive-trash'] });
-      queryClient.invalidateQueries({ queryKey: ['archive-trash-count'] });
+      queryClient.invalidateQueries({ queryKey: ['archive-cleanup-status'] });
+      queryClient.invalidateQueries({ queryKey: ['archive-cleanup-preview'] });
       onClose();
     },
     onError: (e: Error) => showToast(e.message || t('archivePurge.toast.failed'), 'error'),
@@ -49,16 +68,19 @@ export function PurgeArchivesModal({ onClose, initialDays }: PurgeArchivesModalP
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !purgeMutation.isPending) onClose();
+      if (e.key === 'Escape' && !runMutation.isPending) onClose();
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, [onClose, purgeMutation.isPending]);
+  }, [onClose, runMutation.isPending]);
 
+  const status = statusQuery.data;
   const preview = previewQuery.data;
-  const count = preview?.count ?? 0;
-  const totalBytes = preview?.total_bytes ?? 0;
-  const canConfirm = count > 0 && !purgeMutation.isPending;
+  const autoEnabled = status?.enabled ?? preview?.enabled ?? false;
+  const archives = preview?.archives ?? 0;
+  const groups = preview?.groups ?? 0;
+  const bytes = preview?.bytes ?? 0;
+  const canConfirm = days !== null && days >= 1 && archives > 0 && !runMutation.isPending;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
@@ -72,7 +94,7 @@ export function PurgeArchivesModal({ onClose, initialDays }: PurgeArchivesModalP
             onClick={onClose}
             className="text-bambu-gray hover:text-white"
             aria-label={t('common.close')}
-            disabled={purgeMutation.isPending}
+            disabled={runMutation.isPending}
           >
             <X className="w-5 h-5" />
           </button>
@@ -82,21 +104,39 @@ export function PurgeArchivesModal({ onClose, initialDays }: PurgeArchivesModalP
           <p className="text-sm text-bambu-gray">{t('archivePurge.description')}</p>
 
           <div>
-            <label htmlFor="archive-purge-days" className="block text-sm font-medium text-white mb-1">
+            <label htmlFor="archive-cleanup-days" className="block text-sm font-medium text-white mb-1">
               {t('archivePurge.ageLabel')}
             </label>
             <div className="flex items-center gap-3">
               <input
-                id="archive-purge-days"
+                id="archive-cleanup-days"
                 type="number"
                 min={1}
                 max={3650}
-                value={days}
-                onChange={(e) => setDays(Math.max(1, Math.min(3650, parseInt(e.target.value || '0', 10) || 0)))}
+                value={days ?? ''}
+                onChange={(e) => {
+                  const v = parseInt(e.target.value || '0', 10);
+                  setDays(Number.isFinite(v) && v >= 1 ? Math.min(3650, v) : null);
+                }}
                 className="w-24 px-2 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-sm text-white focus:border-bambu-green focus:outline-none"
               />
               <span className="text-sm text-bambu-gray">{t('archivePurge.days')}</span>
+              {typeof settingsDays === 'number' && days !== settingsDays && (
+                <button
+                  type="button"
+                  onClick={() => setDays(settingsDays)}
+                  className="text-xs text-bambu-gray hover:text-white underline"
+                >
+                  {t('archivePurge.resetToSettings', { days: settingsDays })}
+                </button>
+              )}
             </div>
+            <p className="text-xs text-bambu-gray mt-1">
+              {t('archivePurge.ageHint')}
+            </p>
+            {!autoEnabled && (
+              <p className="text-xs text-amber-300 mt-1">{t('archivePurge.autoDisabledHint')}</p>
+            )}
           </div>
 
           <div className="rounded border border-bambu-dark-tertiary bg-bambu-dark/40 p-3">
@@ -123,19 +163,14 @@ export function PurgeArchivesModal({ onClose, initialDays }: PurgeArchivesModalP
             ) : (
               <div className="text-sm text-white">
                 <div className="font-medium">
-                  {t('archivePurge.previewSummary', { count, size: formatFileSize(totalBytes) })}
+                  {t('archivePurge.previewSummary', {
+                    archives,
+                    groups,
+                    size: formatFileSize(bytes),
+                  })}
                 </div>
-                {preview?.sample_filenames && preview.sample_filenames.length > 0 && (
-                  <ul className="mt-2 text-xs text-bambu-gray space-y-0.5 list-disc pl-4">
-                    {preview.sample_filenames.map((name) => (
-                      <li key={name} className="truncate">{name}</li>
-                    ))}
-                    {count > preview.sample_filenames.length && (
-                      <li className="list-none italic">
-                        {t('archivePurge.andMore', { count: count - preview.sample_filenames.length })}
-                      </li>
-                    )}
-                  </ul>
+                {archives === 0 && (
+                  <div className="text-xs text-bambu-gray mt-1">{t('archivePurge.previewEmpty')}</div>
                 )}
               </div>
             )}
@@ -148,21 +183,21 @@ export function PurgeArchivesModal({ onClose, initialDays }: PurgeArchivesModalP
         </div>
 
         <div className="flex justify-end gap-2 p-4 border-t border-bambu-dark-tertiary">
-          <Button variant="secondary" onClick={onClose} disabled={purgeMutation.isPending}>
+          <Button variant="secondary" onClick={onClose} disabled={runMutation.isPending}>
             {t('common.cancel')}
           </Button>
           <Button
             disabled={!canConfirm}
-            onClick={() => purgeMutation.mutate()}
+            onClick={() => runMutation.mutate()}
             className="bg-red-500 hover:bg-red-600"
           >
-            {purgeMutation.isPending ? (
+            {runMutation.isPending ? (
               <>
                 <Loader2 className="w-4 h-4 animate-spin mr-1" />
                 {t('archivePurge.purging')}
               </>
             ) : (
-              t('archivePurge.confirmCta', { count })
+              t('archivePurge.confirmCta', { count: archives })
             )}
           </Button>
         </div>

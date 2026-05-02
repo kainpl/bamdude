@@ -160,7 +160,7 @@ async def test_library_empty_trash_skips_pinned_and_reports_count(
 async def test_archive_trash_list_restore_hard_delete_roundtrip(
     async_client: AsyncClient, archive_factory, printer_factory, db_session
 ):
-    """End-to-end: purge → list trash → restore → trash again → hard-delete."""
+    """End-to-end: trash via DELETE → list trash → restore → re-trash."""
     from backend.app.models.archive import PrintArchive
 
     printer = await printer_factory()
@@ -169,10 +169,12 @@ async def test_archive_trash_list_restore_hard_delete_roundtrip(
     await db_session.commit()
     archive_id = archive.id
 
-    # Purge → goes to trash
-    resp = await async_client.post("/api/v1/archives/purge", json={"older_than_days": 365})
-    assert resp.status_code == 200
-    assert resp.json()["moved_to_trash"] == 1
+    # Trash via DELETE on /archives/{id} — the per-row admin auto-purge
+    # endpoint (/archives/purge) was removed in 0.4.2; manual delete is now
+    # the only path that lands a row in the archive trash.
+    resp = await async_client.delete(f"/api/v1/archives/{archive_id}")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["trashed"] is True
 
     # Trash list shows it
     resp = await async_client.get("/api/v1/archives/trash")

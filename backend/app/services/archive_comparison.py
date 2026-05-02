@@ -1,4 +1,4 @@
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -226,13 +226,15 @@ class ArchiveComparisonService:
                     }
                 )
 
-        # By content hash
-        if reference.content_hash and len(similar) < limit:
+        # By effective hash — match either patched variants (same content_hash)
+        # or chain-linked rows that share a source (same source_content_hash).
+        ref_eff_hash = reference.source_content_hash or reference.content_hash
+        if ref_eff_hash and len(similar) < limit:
             result = await self.db.execute(
                 select(PrintArchive)
                 .where(
                     PrintArchive.id != archive_id,
-                    PrintArchive.content_hash == reference.content_hash,
+                    func.coalesce(PrintArchive.source_content_hash, PrintArchive.content_hash) == ref_eff_hash,
                 )
                 .order_by(PrintArchive.created_at.desc())
                 .limit(limit - len(similar))
