@@ -59,7 +59,8 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 ### Print Archive
 - Automatic 3MF archiving with metadata
 - **3MF download recovery** — when the printer's FTP fails during archive, recovery triggers fire on startup / printer reconnect / print-complete / manual button; per-archive lock prevents duplicate FTP sessions
-- 3D model preview (Three.js)
+- **Per-plate awareness** — multi-plate prints record which plate of the source 3MF was actually printed; thumbnail, print info, G-code preview, and 3D model all reflect that plate (m038 backfills historical archives)
+- 3D model preview (Three.js) with build-volume wireframe matching the printer's bed
 - Duplicate detection & full-text search (source-hash chain-of-custody for patched files)
 - Photo attachments & failure analysis
 - Timelapse editor (trim, speed, music)
@@ -97,12 +98,14 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 
 ### File Manager (Library)
 - Upload and organize sliced files
+- **Composite file tags + chip-row filter** — `format` / `readiness` / `modifiers` / `provenance` chips drive both the badge row and a chip filter on the toolbar (sliced vs project vs raw geometry, single- vs multi-plate, MakerWorld provenance)
+- **Per-plate gallery + 3D / G-code preview with build-volume wireframe** — multi-plate 3MFs expose every plate; library viewer hides tabs that don't apply to the file (e.g. no 3D tab for sliced `.gcode.3mf`)
 - External folder mounting (NAS, USB)
 - STL thumbnail generation
 - Folder structure with drag-and-drop
 - Print directly or add to queue
 - Duplicate detection
-- **Trash bin with restore** — soft-delete with configurable retention (default 30 days), background sweeper hard-deletes past the window, opt-in scheduled auto-purge for old library files + archives
+- **Trash bin with restore** — soft-delete with configurable retention (default 30 days), background sweeper hard-deletes past the window, opt-in scheduled auto-purge for old library files + archives; trash UIs render thumbnails and a unified split-button (trash + caret dropdown for purge-old)
 
 ### Projects
 - Group related prints
@@ -150,6 +153,7 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 - Spoolman integration
 
 ### Integrations
+- **Server-side slicing** — OrcaSlicer + BambuStudio sidecar containers ship in the same Compose project (`--profile orca` / `--profile bambu` / `--profile all`); per-job slicer picker in the Slice modal with live reachability badges, bed-type override (Cool / Engineering / High-Temp / Textured PEI / SuperTack), inline multi-plate selection, owner-filter on preset dropdowns
 - Spoolman filament sync
 - MQTT publishing for Home Assistant
 - Prometheus metrics for Grafana

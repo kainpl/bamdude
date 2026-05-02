@@ -8,7 +8,11 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
-Post-`0.4.2b2` fixes accumulating on the `feature/0.4.2b2-fixes` branch. Will fold into the next dated release.
+## [0.4.2b3] - 2026-05-02
+
+Third beta of the 0.4.2 cycle. Image: `ghcr.io/kainpl/bamdude:0.4.2b3` / `kainpl/bamdude:0.4.2b3`. Pin the exact tag — `:latest` still tracks 0.4.1.
+
+Cumulative since 0.4.2b2: server-side slicing matures with per-job picker + reachability indicators + bed-type override + inline multi-plate selection; archives gain per-plate awareness so multi-plate prints show the actual printed plate's thumbnail/info/G-code/3D (m038); library viewer learns its capabilities from `file_tags` and the 3D preview now draws the correct build volume; trash UX gets thumbnails + a unified split-button; file-tag vocabulary refined (m037) with chip-row filter on the File Manager; tag tooltips + plate/bed terminology made consistent across en + uk; dead-code prune across the frontend.
 
 ### Added
 
