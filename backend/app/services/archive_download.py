@@ -81,6 +81,11 @@ async def try_download_3mf(
         return None
 
     _enabled, _count, _delay, ftp_timeout = await get_ftp_retry_settings()
+    # Per-printer subdir avoids the cross-printer race when two printers
+    # download a same-named file concurrently. Without this, both writers
+    # opened the same temp/<filename> with "wb", truncated each other's
+    # output, and the resulting bytes were a sparse / corrupt 3MF.
+    temp_dir = temp_dir / str(printer.id)
     temp_dir.mkdir(parents=True, exist_ok=True)
 
     # Stage 1: direct path probes via a single connection.  Root first,

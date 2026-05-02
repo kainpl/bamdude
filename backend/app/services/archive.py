@@ -1484,20 +1484,28 @@ class ArchiveService:
                 # (COALESCE resolves both to the same value anyway).
                 source_content_hash = chain_hash
 
-        effective_hash = source_content_hash or content_hash
-
-        # Check if we already have this file for this printer (dedup within printer).
-        # Uses COALESCE(source_content_hash, content_hash) so patched variants
-        # collapse against their original on the same printer.
+        # File-on-disk dedup is on EXACT ``content_hash`` (the bytes we just
+        # hashed from source_file) — not the chain-root ``effective_hash``.
+        # Different patched variants in the same chain (e.g. mesh-mode-disable
+        # gives bytes H2 from source H1) share ``effective_hash=H1`` but
+        # differ on disk; reusing across them would point a row at bytes that
+        # don't match its own ``content_hash``. Chain linkage is already
+        # preserved by ``chain_lookup`` above (sets ``source_content_hash``
+        # so the frontend still groups variants by ``effective_hash``).
+        # Cross-printer share is safe because identical patches are
+        # deterministic — same source + same patches → same content_hash.
+        # ``delete_archive`` ref-counts shared ``file_path``s; oldest match
+        # wins to keep the on-disk anchor stable.
         printer_folder = str(printer_id) if printer_id is not None else "unassigned"
         existing = await self.db.execute(
             select(PrintArchive)
             .where(
-                func.coalesce(PrintArchive.source_content_hash, PrintArchive.content_hash) == effective_hash,
-                PrintArchive.printer_id == printer_id,
+                PrintArchive.content_hash == content_hash,
                 PrintArchive.file_path.isnot(None),
+                PrintArchive.file_path != "",
                 PrintArchive.deleted_at.is_(None),
             )
+            .order_by(PrintArchive.created_at.asc())
             .limit(1)
         )
         existing_archive = existing.scalar_one_or_none()
@@ -1513,11 +1521,22 @@ class ArchiveService:
             archive_dir = dest_file.parent
             thumbnail_reuse = existing_archive.thumbnail_path
         else:
-            # Create new archive directory and copy file
+            # Create new archive directory and copy file. Belt-and-suspenders
+            # uniqueness: timestamp is per-second, so theoretically a same-name
+            # different-content print on the same printer in the same second
+            # could land in an existing dir and overwrite it. In practice the
+            # printer can't run two prints at once, but the suffix loop costs
+            # nothing and removes the silent-overwrite footgun.
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            archive_name = f"{timestamp}_{display_stem}"
+            base_archive_name = f"{timestamp}_{display_stem}"
+            archive_name = base_archive_name
             archive_dir = settings.archive_dir / printer_folder / archive_name
-            archive_dir.mkdir(parents=True, exist_ok=True)
+            suffix = 2
+            while archive_dir.exists():
+                archive_name = f"{base_archive_name}_{suffix}"
+                archive_dir = settings.archive_dir / printer_folder / archive_name
+                suffix += 1
+            archive_dir.mkdir(parents=True)
             dest_file = archive_dir / source_file.name
             # Explicit fsync'd loop avoids the shutil.copy2 → sendfile short-read
             # quirk that silently truncated 3MF archives on some platforms (#1032).
@@ -1546,9 +1565,10 @@ class ArchiveService:
                     dst_size,
                 )
                 # Narrow cleanup: remove only the truncated file and the archive
-                # directory if it's now empty. archive_dir was created with
-                # exist_ok=True so it could in theory pre-date this call (e.g.
-                # same-second same-filename collision); rmtree would be too broad.
+                # directory if it's now empty. The dir is freshly created (the
+                # suffix loop above guarantees no pre-existing collision), so
+                # rmdir is safe — but keep it gated on emptiness as defence in
+                # depth in case any future caller adds files before this point.
                 try:
                     dest_file.unlink()
                 except OSError:
@@ -1732,38 +1752,99 @@ class ArchiveService:
         try:
             content_hash = self.compute_file_hash(source_file)
 
-            printer_folder = str(archive.printer_id) if archive.printer_id is not None else "unassigned"
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            display_stem = Path(original_filename).stem if original_filename else source_file.stem
-            archive_dir = settings.archive_dir / printer_folder / f"{timestamp}_{display_stem}"
-            archive_dir.mkdir(parents=True, exist_ok=True)
-            # Prefer the clean original_filename (e.g. "Swapmod_STL.gcode.3mf")
-            # over the potentially-prefixed temp source_file name (e.g.
-            # "cover_1_Swapmod_STL.gcode.3mf" when it came from the cover
-            # endpoint's temp download).
-            dest_name = original_filename or source_file.name
-            dest_file = archive_dir / dest_name
-            # Same fsync'd loop as archive_print (#1032).
-            _copy_and_fsync(source_file, dest_file)
-
-            if (
-                source_file.suffix.lower() == ".3mf"
-                and zipfile.is_zipfile(source_file)
-                and not zipfile.is_zipfile(dest_file)
-            ):
-                logger.error(
-                    "attach_3mf_to_archive: copy corrupted 3MF for archive %s — refusing to attach",
-                    archive_id,
+            # Inherit chain root from any existing archive with matching
+            # content/source hash — mirrors archive_print's chain_lookup.
+            # Fallback archives are created with source_content_hash=NULL
+            # (no dispatch context), so without this they'd never link to
+            # the chain that already exists for the same source file.
+            if archive.source_content_hash is None:
+                chain_lookup = await self.db.execute(
+                    select(func.coalesce(PrintArchive.source_content_hash, PrintArchive.content_hash))
+                    .where(
+                        or_(
+                            PrintArchive.content_hash == content_hash,
+                            PrintArchive.source_content_hash == content_hash,
+                        ),
+                        PrintArchive.id != archive_id,
+                        PrintArchive.deleted_at.is_(None),
+                    )
+                    .order_by(PrintArchive.created_at.asc())
+                    .limit(1)
                 )
-                try:
-                    dest_file.unlink()
-                except OSError:
-                    pass
-                try:
-                    archive_dir.rmdir()
-                except OSError:
-                    pass
-                return False
+                chain_hash = chain_lookup.scalar_one_or_none()
+                if chain_hash and chain_hash != content_hash:
+                    archive.source_content_hash = chain_hash
+
+            printer_folder = str(archive.printer_id) if archive.printer_id is not None else "unassigned"
+            display_stem = Path(original_filename).stem if original_filename else source_file.stem
+            dest_name = original_filename or source_file.name
+
+            # Cross-printer file dedup: if any other archive with this exact
+            # content_hash already has a valid on-disk file, reuse its path
+            # instead of creating a fresh archive_dir + copying. Strict
+            # content_hash match (not chain-coalesce) so we never alias to
+            # bytes that don't match our own ``content_hash``.
+            existing_with_file = await self.db.execute(
+                select(PrintArchive)
+                .where(
+                    PrintArchive.content_hash == content_hash,
+                    PrintArchive.id != archive_id,
+                    PrintArchive.file_path.isnot(None),
+                    PrintArchive.file_path != "",
+                    PrintArchive.deleted_at.is_(None),
+                )
+                .order_by(PrintArchive.created_at.asc())
+                .limit(1)
+            )
+            existing_archive = existing_with_file.scalar_one_or_none()
+
+            if existing_archive and existing_archive.file_path:
+                # Reuse existing on-disk file. ``delete_archive`` ref-counts
+                # shared paths so the file stays as long as any row refs it.
+                dest_file = settings.base_dir / existing_archive.file_path
+                archive_dir = dest_file.parent
+                thumbnail_reuse = existing_archive.thumbnail_path
+            else:
+                # No existing copy — create a fresh archive_dir and copy
+                # from the temp source. Suffix loop guards the
+                # theoretical-only same-second collision.
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                base_archive_name = f"{timestamp}_{display_stem}"
+                archive_name = base_archive_name
+                archive_dir = settings.archive_dir / printer_folder / archive_name
+                suffix = 2
+                while archive_dir.exists():
+                    archive_name = f"{base_archive_name}_{suffix}"
+                    archive_dir = settings.archive_dir / printer_folder / archive_name
+                    suffix += 1
+                archive_dir.mkdir(parents=True)
+                # Prefer the clean original_filename (e.g. "Swapmod_STL.gcode.3mf")
+                # over the potentially-prefixed temp source_file name (e.g.
+                # "cover_1_Swapmod_STL.gcode.3mf" when it came from the cover
+                # endpoint's temp download).
+                dest_file = archive_dir / dest_name
+                # Same fsync'd loop as archive_print (#1032).
+                _copy_and_fsync(source_file, dest_file)
+
+                if (
+                    source_file.suffix.lower() == ".3mf"
+                    and zipfile.is_zipfile(source_file)
+                    and not zipfile.is_zipfile(dest_file)
+                ):
+                    logger.error(
+                        "attach_3mf_to_archive: copy corrupted 3MF for archive %s — refusing to attach",
+                        archive_id,
+                    )
+                    try:
+                        dest_file.unlink()
+                    except OSError:
+                        pass
+                    try:
+                        archive_dir.rmdir()
+                    except OSError:
+                        pass
+                    return False
+                thumbnail_reuse = None
 
             # Parse 3MF metadata (reuse the same parser as archive_print).
             # Pass the archive's recorded plate_index so per-plate
@@ -1786,7 +1867,16 @@ class ArchiveService:
                 logger.debug("attach_3mf_to_archive: per-plate parse failed (non-critical): %s", _pe)
 
             thumbnail_path = None
-            if "_thumbnail_data" in metadata:
+            if thumbnail_reuse:
+                # File-share branch: reuse the existing archive's thumbnail
+                # path. It lives in the same shared directory so it's
+                # already on disk and ref-counted via delete_archive's
+                # file_path share check (the dir as a whole is kept while
+                # any row points into it).
+                thumbnail_path = thumbnail_reuse
+                metadata.pop("_thumbnail_data", None)
+                metadata.pop("_thumbnail_ext", None)
+            elif "_thumbnail_data" in metadata:
                 thumb_file = archive_dir / f"thumbnail{metadata['_thumbnail_ext']}"
                 thumb_file.write_bytes(metadata["_thumbnail_data"])
                 thumbnail_path = str(thumb_file.relative_to(settings.base_dir))
