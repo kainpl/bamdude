@@ -336,6 +336,61 @@ describe('PrintModal', () => {
     });
   });
 
+  describe('dispatch-mode toggle (add-to-queue)', () => {
+    it('shows the Specific/Auto toggle by default', () => {
+      render(
+        <PrintModal
+          mode="add-to-queue"
+          libraryFileId={42}
+          archiveName="Test Print"
+          onClose={mockOnClose}
+        />
+      );
+
+      expect(screen.getByRole('radio', { name: /Specific printer/i })).toBeInTheDocument();
+      expect(screen.getByRole('radio', { name: /Auto-distribute/i })).toBeInTheDocument();
+    });
+
+    it('hides the toggle when lockDispatchMode is true', () => {
+      render(
+        <PrintModal
+          mode="add-to-queue"
+          libraryFileId={42}
+          archiveName="Test Print"
+          onClose={mockOnClose}
+          lockDispatchMode
+        />
+      );
+
+      expect(screen.queryByRole('radio', { name: /Specific printer/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole('radio', { name: /Auto-distribute/i })).not.toBeInTheDocument();
+    });
+
+    it('starts in auto mode when initialDispatchMode="auto" + lockDispatchMode', async () => {
+      // Drop-on-AutoQueuePanel flow uses both props together: forces auto +
+      // hides the toggle so the operator can't switch back to specific.
+      // In auto mode the AutoModeOptions panel renders (target model / location
+      // / force-color), so we look for one of its labels.
+      render(
+        <PrintModal
+          mode="add-to-queue"
+          libraryFileId={42}
+          archiveName="Test Print"
+          onClose={mockOnClose}
+          initialDispatchMode="auto"
+          lockDispatchMode
+        />
+      );
+
+      // Toggle absent.
+      expect(screen.queryByRole('radio', { name: /Specific printer/i })).not.toBeInTheDocument();
+      // AutoModeOptions panel rendered — look for the Target model field label.
+      await waitFor(() => {
+        expect(screen.getByText(/Target model/i)).toBeInTheDocument();
+      });
+    });
+  });
+
   describe('edit-queue-item mode', () => {
     it('renders the modal title', () => {
       const item = createMockQueueItem();

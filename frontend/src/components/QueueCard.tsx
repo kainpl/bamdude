@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState, type DragEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -20,14 +20,17 @@ import {
   Layers,
   Pencil,
   MoreVertical,
+  Upload,
 } from 'lucide-react';
 import { BatchActionDialog } from './Queue/BatchActionDialog';
+import { PrintModal } from './PrintModal';
 import { api, withStreamToken } from '../api/client';
 import type { PrinterQueue, PrintQueueItem, Permission } from '../api/client';
 import { Card, CardContent } from './Card';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { formatETA, formatDuration } from '../utils/date';
+import { mapModelCode } from '../utils/printer';
 
 interface QueueCardProps {
   queue: PrinterQueue;
@@ -86,6 +89,16 @@ export function QueueCard({ queue, compact = false, onEditItem }: QueueCardProps
   const { showToast } = useToast();
   const { hasPermission } = useAuth();
   const [expanded, setExpanded] = useState(false);
+
+  // Drag-drop: drop a sliced file on the queue card → upload to library +
+  // open PrintModal locked to this printer in 'specific' (add-to-queue)
+  // mode. Mirrors the printer-card direct-print flow but lands the job in
+  // the queue instead of starting it immediately, and ignores printer
+  // status (idle/printing/paused) — adding to a queue is always allowed.
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
+  const [isDropUploading, setIsDropUploading] = useState(false);
+  const [printAfterUpload, setPrintAfterUpload] = useState<{ id: number; filename: string } | null>(null);
+  const dragCounterRef = useRef(0);
 
   // Pull system time-format so ETA respects the user's 12h/24h choice.
   // Cached globally — shared with everywhere else that reads settings.
@@ -294,34 +307,147 @@ export function QueueCard({ queue, compact = false, onEditItem }: QueueCardProps
   const pending = pendingItems ?? [];
   const pendingCount = pending.length;
 
+  const canDrop = hasPermission('queue:create');
+
+  const handleCardDragEnter = (e: DragEvent<HTMLDivElement>) => {
+    if (!canDrop) return;
+    if (!e.dataTransfer.types.includes('Files')) return;
+    e.preventDefault();
+    dragCounterRef.current += 1;
+    if (dragCounterRef.current === 1) setIsDraggingFile(true);
+  };
+  const handleCardDragOver = (e: DragEvent<HTMLDivElement>) => {
+    if (!canDrop) return;
+    if (!e.dataTransfer.types.includes('Files')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  };
+  const handleCardDragLeave = (e: DragEvent<HTMLDivElement>) => {
+    if (!canDrop) return;
+    e.preventDefault();
+    dragCounterRef.current = Math.max(0, dragCounterRef.current - 1);
+    if (dragCounterRef.current === 0) setIsDraggingFile(false);
+  };
+  const handleCardDrop = async (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    dragCounterRef.current = 0;
+    setIsDraggingFile(false);
+    if (!canDrop) return;
+
+    const file = e.dataTransfer.files[0];
+    if (!file) return;
+
+    // Only sliced/printable formats — same gate as the printer-card direct-print drop.
+    const lower = file.name.toLowerCase();
+    if (!lower.endsWith('.gcode') && !lower.includes('.gcode.')) {
+      showToast(t('printers.dropNotPrintable'), 'error');
+      return;
+    }
+
+    setIsDropUploading(true);
+    try {
+      const result = await api.uploadLibraryFile(file, null);
+
+      // Compatibility check against printer model — abort + delete the
+      // transient upload if mismatched, same UX as the printer-card flow.
+      const slicedFor = (result.metadata as Record<string, unknown>)?.sliced_for_model as string | undefined;
+      const printerModel = mapModelCode(queue.printer_model);
+      if (slicedFor && printerModel && slicedFor.toLowerCase() !== printerModel.toLowerCase()) {
+        await api.deleteLibraryFile(result.id).catch(() => {});
+        showToast(
+          t('printers.incompatibleFile', { slicedFor, printerModel }),
+          'error',
+        );
+        return;
+      }
+
+      // Surface the new library file in File Manager immediately —
+      // without this the cached list would stay stale for up to the
+      // global 60s staleTime and the operator would think the upload
+      // never happened.
+      queryClient.invalidateQueries({ queryKey: ['library-files'] });
+      queryClient.invalidateQueries({ queryKey: ['library-stats'] });
+      setPrintAfterUpload({ id: result.id, filename: result.filename });
+    } catch {
+      showToast(t('common.uploadFailed'), 'error');
+    } finally {
+      setIsDropUploading(false);
+    }
+  };
+
+  const dropOverlay = (isDraggingFile || isDropUploading) ? (
+    <div className="absolute inset-0 z-30 pointer-events-none flex items-center justify-center rounded-xl border-2 border-dashed border-bambu-green bg-bambu-green/10 backdrop-blur-sm">
+      <div className="flex flex-col items-center gap-2 text-center px-4">
+        {isDropUploading ? (
+          <>
+            <Loader2 className="w-8 h-8 text-bambu-green animate-spin" />
+            <p className="text-sm font-medium text-white">{t('common.uploading')}</p>
+          </>
+        ) : (
+          <>
+            <Upload className="w-8 h-8 text-bambu-green" />
+            <p className="text-sm font-medium text-white">{t('queueCard.dropToQueue')}</p>
+            <p className="text-xs text-bambu-green">{t('queueCard.dropToQueueHint')}</p>
+          </>
+        )}
+      </div>
+    </div>
+  ) : null;
+
+  const dropPrintModal = printAfterUpload ? (
+    <PrintModal
+      mode="add-to-queue"
+      libraryFileId={printAfterUpload.id}
+      archiveName={printAfterUpload.filename}
+      initialSelectedPrinterIds={[queue.printer_id]}
+      lockDispatchMode
+      onClose={() => setPrintAfterUpload(null)}
+      onSuccess={() => {
+        setPrintAfterUpload(null);
+        queryClient.invalidateQueries({ queryKey: ['queue', queue.printer_id] });
+        queryClient.invalidateQueries({ queryKey: ['queues'] });
+      }}
+    />
+  ) : null;
+
   // --- Compact (S) mode ---
   if (compact) {
     return (
-      <Card className={`${borderClass} border`}>
-        <CardContent className="!p-3">
-          <div className="flex items-center justify-between gap-2">
-            <Link
-              to={`/#printer-${queue.printer_id}`}
-              className="text-sm font-bold text-white truncate hover:text-bambu-green transition-colors"
-              title={t('queueCard.goToPrinter')}
-            >
-              {queue.printer_name ?? `Printer #${queue.printer_id}`}
-            </Link>
-            <div className="flex items-center gap-2 flex-shrink-0">
-              <StatusBadge status={queue.status} t={t} />
-              {queue.status === 'printing' && status?.progress != null &&
-                (status.state === 'RUNNING' || status.state === 'PAUSE') && (
-                <span className="text-xs text-blue-400 font-medium">{status.progress}%</span>
-              )}
-              {pendingCount > 0 && (
-                <span className="text-xs px-1.5 py-0.5 bg-yellow-400/20 text-yellow-400 rounded">
-                  {pendingCount}
-                </span>
-              )}
+      <div
+        className="relative"
+        onDragEnter={handleCardDragEnter}
+        onDragOver={handleCardDragOver}
+        onDragLeave={handleCardDragLeave}
+        onDrop={handleCardDrop}
+      >
+        <Card className={`${borderClass} border`}>
+          <CardContent className="!p-3">
+            <div className="flex items-center justify-between gap-2">
+              <Link
+                to={`/#printer-${queue.printer_id}`}
+                className="text-sm font-bold text-white truncate hover:text-bambu-green transition-colors"
+                title={t('queueCard.goToPrinter')}
+              >
+                {queue.printer_name ?? `Printer #${queue.printer_id}`}
+              </Link>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <StatusBadge status={queue.status} t={t} />
+                {queue.status === 'printing' && status?.progress != null &&
+                  (status.state === 'RUNNING' || status.state === 'PAUSE') && (
+                  <span className="text-xs text-blue-400 font-medium">{status.progress}%</span>
+                )}
+                {pendingCount > 0 && (
+                  <span className="text-xs px-1.5 py-0.5 bg-yellow-400/20 text-yellow-400 rounded">
+                    {pendingCount}
+                  </span>
+                )}
+              </div>
             </div>
-          </div>
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+        {dropOverlay}
+        {dropPrintModal}
+      </div>
     );
   }
 
@@ -350,6 +476,13 @@ export function QueueCard({ queue, compact = false, onEditItem }: QueueCardProps
   const hiddenCount = pendingCount - 2;
 
   return (
+    <div
+      className="relative"
+      onDragEnter={handleCardDragEnter}
+      onDragOver={handleCardDragOver}
+      onDragLeave={handleCardDragLeave}
+      onDrop={handleCardDrop}
+    >
     <Card className={`${borderClass} border`}>
       <CardContent className="!p-4 space-y-3">
         {/* Header */}
@@ -678,6 +811,9 @@ export function QueueCard({ queue, compact = false, onEditItem }: QueueCardProps
         </Link>
       </CardContent>
     </Card>
+      {dropOverlay}
+      {dropPrintModal}
+    </div>
   );
 }
 

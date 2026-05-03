@@ -156,4 +156,19 @@ describe('QueuePage', () => {
       });
     });
   });
+
+  describe('auto-queue panel', () => {
+    it('always renders even when there are no auto-queue items (drop target stays available)', async () => {
+      // Dedicated /auto-queue/ endpoint returns empty — the panel should still
+      // mount so the drag-drop overlay has something to bind to. Pre-fix the
+      // panel returned `null` for empty state, hiding the drop zone whenever
+      // nothing was queued.
+      server.use(http.get('/api/v1/auto-queue/', () => HttpResponse.json([])));
+      render(<QueuePage />);
+      await waitFor(() => {
+        // The empty-state hint text is keyed in i18n as autoQueue.emptyHint.
+        expect(screen.getByText(/Drop a sliced file here/i)).toBeInTheDocument();
+      });
+    });
+  });
 });

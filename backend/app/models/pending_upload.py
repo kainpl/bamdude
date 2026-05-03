@@ -33,6 +33,13 @@ class PendingUpload(Base):
 
     # After archiving - link to created archive
     archived_id: Mapped[int | None] = mapped_column(ForeignKey("print_archives.id", ondelete="SET NULL"), nullable=True)
+    # m041 audit trail: when a pending row is "archived" via the 0.4.2
+    # drain migration the bytes land in the library, not in
+    # print_archives. Carries the resulting library_files.id so anyone
+    # tracing a pre-0.4.2 pending can find where its bytes went.
+    archived_to_library_id: Mapped[int | None] = mapped_column(
+        ForeignKey("library_files.id", ondelete="SET NULL"), nullable=True
+    )
 
     # Timestamps
     uploaded_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

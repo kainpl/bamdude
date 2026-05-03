@@ -769,13 +769,6 @@ export interface FailureAnalysis {
   }>;
 }
 
-export interface BulkUploadResult {
-  uploaded: number;
-  failed: number;
-  results: Array<{ filename: string; id: number; status: string }>;
-  errors: Array<{ filename: string; error: string }>;
-}
-
 // Archive Comparison types
 export interface ComparisonArchiveInfo {
   id: number;
@@ -4238,50 +4231,6 @@ export const api = {
         body: options ? JSON.stringify(options) : undefined,
       }
     ),
-  uploadArchive: async (file: File, printerId?: number): Promise<Archive> => {
-    const formData = new FormData();
-    formData.append('file', file);
-    const url = printerId
-      ? `${API_BASE}/archives/upload?printer_id=${printerId}`
-      : `${API_BASE}/archives/upload`;
-    const headers: Record<string, string> = {};
-    if (authToken) {
-      headers['Authorization'] = `Bearer ${authToken}`;
-    }
-    const response = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: formData,
-    });
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({}));
-      throw new Error(error.detail || `HTTP ${response.status}`);
-    }
-    return response.json();
-  },
-  uploadArchivesBulk: async (files: File[], printerId?: number): Promise<BulkUploadResult> => {
-    const formData = new FormData();
-    files.forEach((file) => formData.append('files', file));
-    const url = printerId
-      ? `${API_BASE}/archives/upload-bulk?printer_id=${printerId}`
-      : `${API_BASE}/archives/upload-bulk`;
-    const headers: Record<string, string> = {};
-    if (authToken) {
-      headers['Authorization'] = `Bearer ${authToken}`;
-    }
-    const response = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: formData,
-    });
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({}));
-      throw new Error(error.detail || `HTTP ${response.status}`);
-    }
-    return response.json();
-  },
-
-
   // Settings
   getSettings: () => request<AppSettings>('/settings/'),
   getDefaultSidebarOrder: () => request<{ default_sidebar_order: string }>('/settings/default-sidebar-order'),
@@ -6425,6 +6374,8 @@ export interface VirtualPrinterConfig {
   access_code_set: boolean;
   serial: string;
   target_printer_id: number | null;
+  /** Library folder where files arriving via FTP land (m040). null = library root. */
+  target_folder_id: number | null;
   auto_dispatch: boolean;
   bind_ip: string | null;
   remote_interface_ip: string | null;
@@ -6458,6 +6409,7 @@ export const multiVirtualPrinterApi = {
     model?: string;
     access_code?: string;
     target_printer_id?: number;
+    target_folder_id?: number;
     auto_dispatch?: boolean;
     bind_ip?: string;
     remote_interface_ip?: string;
@@ -6477,6 +6429,9 @@ export const multiVirtualPrinterApi = {
     target_printer_id?: number;
     /** Explicitly null out target_printer_id (Pydantic can't distinguish "absent" from "null"). */
     clear_target_printer?: boolean;
+    target_folder_id?: number;
+    /** Explicitly null out target_folder_id (m040). null = files land at library root. */
+    clear_target_folder?: boolean;
     auto_dispatch?: boolean;
     bind_ip?: string;
     remote_interface_ip?: string;

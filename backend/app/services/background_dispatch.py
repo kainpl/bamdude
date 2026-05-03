@@ -693,33 +693,9 @@ class BackgroundDispatchService:
 
         async with async_session() as db:
             service = ArchiveService(db)
-            archive = await service.get_archive(job.source_id)
-            if not archive:
+            source_archive = await service.get_archive(job.source_id)
+            if not source_archive:
                 raise RuntimeError("Archive not found")
-
-            # Pre-stamp swap_macro_events_pending while we have a writable
-            # session and BEFORE FTP upload / start_print / runtime-tracker
-            # writes start competing for SQLite's single writer. Reprint
-            # reuses the existing archive row, so this is the only chance
-            # to persist the intent without a standalone UPDATE that
-            # would race the runtime-tracker. Library-file dispatch
-            # handles this via archive_print()'s INSERT instead.
-            #
-            # Hold the startup-lock only while the DB write txn is open;
-            # releasing right after commit lets the next job begin its own
-            # setup while this one runs FTP / start_print in parallel.
-            await self._startup_lock.acquire()
-            try:
-                opts = job.options if isinstance(job.options, dict) else {}
-                if opts.get("execute_swap_macros"):
-                    _events = opts.get("swap_macro_events") or []
-                    if "swap_mode_change_table" in _events:
-                        _merged = dict(archive.extra_data or {})
-                        _merged["swap_macro_events_pending"] = list(_events)
-                        archive.extra_data = _merged
-                        await db.commit()
-            finally:
-                self._startup_lock.release()
 
             printer = await db.scalar(select(Printer).where(Printer.id == job.printer_id))
             if not printer:
@@ -729,7 +705,7 @@ class BackgroundDispatchService:
             printer_ip = printer.ip_address
             printer_access_code = printer.access_code
             printer_model = printer.model
-            archive_filename = archive.filename
+            archive_filename = source_archive.filename
 
             if not printer_manager.is_connected(job.printer_id):
                 raise RuntimeError("Printer is not connected")
@@ -738,7 +714,7 @@ class BackgroundDispatchService:
             if not await printer_manager.ensure_fresh_connection_for_printer(printer):
                 raise RuntimeError("Can`t re-connect printer MQTT")
 
-            file_path = settings.base_dir / archive.file_path
+            file_path = settings.base_dir / source_archive.file_path
             if not file_path.exists():
                 raise RuntimeError("Archive file not found")
 
@@ -754,7 +730,7 @@ class BackgroundDispatchService:
             inject_spec = await self._build_injection_spec(
                 job=job,
                 printer_model=printer_model,
-                plate_id=archive.plate_index or 1,
+                plate_id=source_archive.plate_index or 1,
             )
             if not job.options.get("mesh_mode_fast_check", True) or inject_spec is not None:
                 from backend.app.services.gcode_patcher import apply_3mf_transforms
@@ -772,7 +748,94 @@ class BackgroundDispatchService:
                     job.options["applied_patches"] = existing_patches + patches
                     logger.info("Dispatch job %s: 3MF transformed (%s)", job.id, patches)
 
-            base_name = archive.filename
+            # Reprint creates a NEW archive row inheriting chain identity from
+            # the source — never mutates the source row. Mirrors the library-
+            # file dispatch path (``_run_print_library_file``). Before this
+            # rework, ``_run_reprint_archive`` reused the source archive and
+            # ``on_print_start`` then unconditionally flipped its status to
+            # 'printing', destroying any prior terminal state ('failed',
+            # 'cancelled', or 'completed') — reprinting a failed run silently
+            # erased the failure record from the print history.
+            #
+            # ``source_content_hash`` is forced from the source so chain-of-
+            # custody groups source + reprint together (frontend dedup badge
+            # uses ``COALESCE(source_content_hash, content_hash)``).
+            # ``library_file_id`` carries through so the library row's
+            # ``print_count`` + ``last_printed_at`` advance when this reprint
+            # finishes successfully (``m014`` backfill flow). On-disk file
+            # dedup inside ``archive_print`` will reuse the source's
+            # ``file_path`` whenever ``content_hash`` matches (typical when
+            # the reprint applies the same patches), so the new row costs
+            # one DB row + zero extra disk.
+            #
+            # Hold the startup-lock for the DB-write critical section only
+            # (mirrors library-file path). Commit closes the txn before FTP
+            # starts so two parallel jobs don't race on SQLite's single
+            # writer through the entire upload window.
+            opts = job.options if isinstance(job.options, dict) else {}
+            applied_patches = opts.get("applied_patches") if isinstance(opts, dict) else None
+            swap_pending = (
+                opts.get("swap_macro_events")
+                if opts.get("execute_swap_macros") and "swap_mode_change_table" in (opts.get("swap_macro_events") or [])
+                else None
+            )
+
+            await self._startup_lock.acquire()
+            try:
+                # Same source/dispatched split as ``_run_print_library_file``:
+                # ``source_file=file_path`` carries the chain root for naming
+                # + ``source_content_hash`` inheritance from the source
+                # archive; ``dispatched_file=upload_file_path`` is what FTP
+                # is about to upload so ``content_hash`` matches the bytes
+                # the printer will read back on restart-recovery.
+                archive = await service.archive_print(
+                    printer_id=job.printer_id,
+                    source_file=file_path,
+                    dispatched_file=upload_file_path,
+                    original_filename=source_archive.filename,
+                    project_id=source_archive.project_id,
+                    source_content_hash=source_archive.source_content_hash or source_archive.content_hash,
+                    applied_patches=applied_patches or None,
+                    library_file_id=source_archive.library_file_id,
+                    created_by_id=job.requested_by_user_id,
+                    plate_index=source_archive.plate_index,
+                    print_data={"status": "printing"},
+                    swap_macro_events_pending=swap_pending,
+                )
+                if not archive:
+                    raise RuntimeError("Failed to create reprint archive")
+
+                # Queue-item dispatches: re-point the queue item at the new
+                # archive (the actual print this run will execute) and copy
+                # queue_id + batch_id onto the new archive so the archive-
+                # driven queue counters (post-m019) include it. The source
+                # archive keeps its original queue_id / batch_id from when
+                # IT was originally dispatched — they describe historical
+                # provenance, not the current queue state.
+                if job.queue_item_id:
+                    from backend.app.models.print_queue import PrintQueueItem
+
+                    q_item = await db.get(PrintQueueItem, job.queue_item_id)
+                    if q_item is not None:
+                        q_item.archive_id = archive.id
+                        archive.queue_id = q_item.queue_id
+                        archive.batch_id = q_item.batch_id
+
+                # Print Now (no queue item): attribute the new archive to the
+                # printer's default queue so GET /printer-queues/ counters
+                # include it (mirrors library-file path).
+                if archive.queue_id is None and job.printer_id is not None:
+                    from backend.app.models.printer_queue import PrinterQueue as _PQ
+
+                    archive.queue_id = (
+                        await db.execute(select(_PQ.id).where(_PQ.printer_id == job.printer_id))
+                    ).scalar_one_or_none()
+
+                await db.commit()
+            finally:
+                self._startup_lock.release()
+
+            base_name = source_archive.filename
             if base_name.endswith(".gcode.3mf"):
                 base_name = base_name[:-10]
             elif base_name.endswith(".3mf"):
@@ -892,7 +955,7 @@ class BackgroundDispatchService:
                 register_expected_print(
                     job.printer_id,
                     remote_filename,
-                    job.source_id,
+                    archive.id,
                     ams_mapping=job.options.get("ams_mapping"),
                 )
 
@@ -1146,21 +1209,32 @@ class BackgroundDispatchService:
             try:
                 archive_service = ArchiveService(db)
                 applied_patches = job.options.get("applied_patches") if isinstance(job.options, dict) else None
-                # Archive the UNPATCHED original library file, NOT the patched
-                # upload. The reprint UI lets the user re-pick mesh-mode-fast-
-                # check / per-plate gcode-injection on every run; storing
-                # patched bytes here would compose new toggles on top of
-                # already-baked patches. ``applied_patches`` records what was
-                # applied to the bytes that actually went to the printer
-                # (``upload_file_path``, which IS patched). With unpatched
-                # bytes on disk both ``content_hash`` and ``source_content_hash``
-                # equal ``lib_file.file_hash``; chain-of-custody consumers use
-                # ``COALESCE(source, content)`` so this is a no-op for grouping
-                # while giving the cross-printer file dedup more chances to
-                # share an on-disk file.
+                # Two distinct files in play after the patcher:
+                # - ``file_path`` is the unpatched library original, used as
+                #   ``source_file`` so the archive's display name / suffix
+                #   come from it and ``source_content_hash`` (set explicitly
+                #   below from ``lib_file.file_hash``) chains correctly to
+                #   the library row.
+                # - ``upload_file_path`` is the post-patch tempfile that the
+                #   FTP step is about to send to the printer. Pass it as
+                #   ``dispatched_file`` so ``content_hash`` reflects the
+                #   bytes that actually land on the SD card. When no patch
+                #   ran ``upload_file_path is file_path`` and the two
+                #   hashes coincide.
+                # Why this matters: ``on_print_start``'s restart-recovery
+                # path (post-download adoption block in main.py) hashes
+                # the printer's copy and looks for ``content_hash ==
+                # temp_hash``. With the pre-fix invariant (content_hash =
+                # unpatched) every BamDude restart mid-print on a patched
+                # job created a fallback archive instead of adopting the
+                # in-flight one. Cross-printer file dedup is on EXACT
+                # ``content_hash`` and patches are deterministic, so 6
+                # prints with the same patch set share a single on-disk
+                # archive copy of the patched bytes (no extra disk).
                 archive = await archive_service.archive_print(
                     printer_id=job.printer_id,
                     source_file=file_path,
+                    dispatched_file=upload_file_path,
                     original_filename=lib_file.filename,
                     project_id=job.project_id,
                     source_content_hash=lib_file.file_hash,

@@ -69,7 +69,6 @@ import { Button } from '../components/Button';
 import { ModelViewerModal } from '../components/ModelViewerModal';
 import { PrintModal } from '../components/PrintModal';
 import { SliceModal } from '../components/SliceModal';
-import { UploadModal } from '../components/UploadModal';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { PurgeArchivesModal } from '../components/PurgeArchivesModal';
 import { TrashSplitButton } from '../components/TrashSplitButton';
@@ -2482,18 +2481,19 @@ function ArchiveListRow({
 
 type SortOption = 'date-desc' | 'date-asc' | 'name-asc' | 'name-desc' | 'size-desc' | 'size-asc';
 type ViewMode = 'grid' | 'list' | 'calendar';
-type Collection = 'all' | 'recent' | 'this-week' | 'this-month' | 'favorites' | 'not-printed' | 'printed' | 'failed' | 'duplicates';
+type Collection = 'all' | 'recent' | 'this-week' | 'this-month' | 'favorites' | 'printed' | 'failed' | 'duplicates';
 
-// `not-printed` and `printed` are server-side filters in
-// backend/app/services/archive.py — see the audit B.3 entry for the
-// status-set rationale.
+// `printed` is a server-side filter in backend/app/services/archive.py.
+// The pre-0.4.2 `not-printed` chip showed `status='archived'` rows from
+// the now-removed manual-upload + VP-placeholder + pending-approval
+// writers (Audits 1+2+3 + the m041 drain). Those rows can no longer
+// exist, so the chip was dropped along with the writers.
 const collections: { id: Collection; labelKey: string; icon: React.ReactNode }[] = [
   { id: 'all', labelKey: 'archives.page.collection.all', icon: <FolderOpen className="w-4 h-4" /> },
   { id: 'recent', labelKey: 'archives.page.collection.recent', icon: <Clock className="w-4 h-4" /> },
   { id: 'this-week', labelKey: 'archives.page.collection.thisWeek', icon: <Calendar className="w-4 h-4" /> },
   { id: 'this-month', labelKey: 'archives.page.collection.thisMonth', icon: <Calendar className="w-4 h-4" /> },
   { id: 'favorites', labelKey: 'archives.page.collection.favorites', icon: <Star className="w-4 h-4" /> },
-  { id: 'not-printed', labelKey: 'archives.page.collection.notPrinted', icon: <Upload className="w-4 h-4" /> },
   { id: 'printed', labelKey: 'archives.page.collection.printed', icon: <Printer className="w-4 h-4" /> },
   { id: 'failed', labelKey: 'archives.page.collection.failed', icon: <AlertCircle className="w-4 h-4" /> },
   { id: 'duplicates', labelKey: 'archives.page.collection.duplicates', icon: <Copy className="w-4 h-4" /> },
@@ -2546,10 +2546,7 @@ export function ArchivesPage() {
   const [filterFileType, setFilterFileType] = useState<'all' | 'gcode' | 'source'>(() =>
     (localStorage.getItem('archiveFilterFileType') as 'all' | 'gcode' | 'source') || 'all'
   );
-  const [showUpload, setShowUpload] = useState(false);
   const [showPurgeModal, setShowPurgeModal] = useState(false);
-  const [uploadFiles, setUploadFiles] = useState<File[]>([]);
-  const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [showBulkDeleteConfirm, setShowBulkDeleteConfirm] = useState(false);
@@ -2862,36 +2859,11 @@ export function ArchivesPage() {
 
   const hasTopFilters = search || filterPrinter || filterMaterial || filterFavorites || hideFailed || hideDuplicates || filterTag || filterFileType !== 'all';
 
-  // Drag & drop handlers for page-wide upload
-  const handleDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    if (e.dataTransfer.types.includes('Files')) {
-      setIsDraggingOver(true);
-    }
-  }, []);
-
-  const handleDragLeave = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    // Only hide if leaving the page (not entering a child)
-    if (e.currentTarget === e.target) {
-      setIsDraggingOver(false);
-    }
-  }, []);
-
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDraggingOver(false);
-
-    const droppedFiles = Array.from(e.dataTransfer.files).filter(f => f.name.endsWith('.3mf'));
-    if (droppedFiles.length > 0) {
-      setUploadFiles(droppedFiles);
-      setShowUpload(true);
-    } else if (e.dataTransfer.files.length > 0) {
-      showToast(t('archives.page.only3mfSupported'), 'warning');
-    }
-  }, [showToast, t]);
-
-  // Keyboard shortcuts
+  // Keyboard shortcuts. Archive uploads were removed in 0.4.2 (Audit-1):
+  // archives are now strictly the print history of record — drag-drop +
+  // upload paths live on Printer (drop = upload + print), Library (file
+  // manager modal), and the slicer-facing Virtual Printer FTP. The `u`
+  // hotkey was dropped along with the page-wide drop zone + UploadModal.
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     const target = e.target as HTMLElement;
     // Ignore if typing in an input/textarea
@@ -2907,13 +2879,6 @@ export function ArchivesPage() {
         e.preventDefault();
         searchInputRef.current?.focus();
         break;
-      case 'u':
-      case 'U':
-        if (!e.metaKey && !e.ctrlKey) {
-          e.preventDefault();
-          setShowUpload(true);
-        }
-        break;
       case 'Escape':
         if (selectionMode) {
           clearSelection();
@@ -2928,23 +2893,7 @@ export function ArchivesPage() {
   }, [handleKeyDown]);
 
   return (
-    <div
-      className="p-4 md:p-6 relative"
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
-    >
-      {/* Drag & Drop Overlay */}
-      {isDraggingOver && (
-        <div className="fixed inset-0 z-50 bg-bambu-dark/90 flex items-center justify-center pointer-events-none">
-          <div className="border-4 border-dashed border-bambu-green rounded-xl p-12 text-center">
-            <Upload className="w-16 h-16 mx-auto mb-4 text-bambu-green" />
-            <p className="text-2xl font-semibold text-white mb-2">{t('archives.page.dropFilesHere')}</p>
-            <p className="text-bambu-gray">{t('archives.releaseToUpload')}</p>
-          </div>
-        </div>
-      )}
-
+    <div className="p-4 md:p-6 relative">
       {/* Selection Toolbar */}
       {selectionMode && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl px-4 py-3 flex items-center gap-4">
@@ -3513,17 +3462,6 @@ export function ArchivesPage() {
           </div>
         </Card>
       ) : null}
-
-      {/* Upload Modal */}
-      {showUpload && (
-        <UploadModal
-          onClose={() => {
-            setShowUpload(false);
-            setUploadFiles([]);
-          }}
-          initialFiles={uploadFiles}
-        />
-      )}
 
       {showPurgeModal && (
         <PurgeArchivesModal onClose={() => setShowPurgeModal(false)} />

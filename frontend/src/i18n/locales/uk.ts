@@ -580,7 +580,6 @@ export default {
     originalPrintNotVisible: 'Оригінальний друк не видно - спробуйте очистити фільтри',
     noArchivesYet: 'Архівів ще немає',
     loadingArchives: 'Завантаження архівів...',
-    releaseToUpload: 'Відпустіть для завантаження',
     showAll: 'Показати всі',
     showFavoritesOnly: 'Показати тільки обрані',
     gridView: 'Сітка',
@@ -756,14 +755,11 @@ export default {
         thisWeek: 'Цей тиждень',
         thisMonth: 'Цей місяць',
         favorites: 'Обрані',
-        notPrinted: 'Не друковані',
         printed: 'Друковані',
         failed: 'Невдалі друки',
         duplicates: 'Дублікати'
       },
       title: 'Архів',
-      dropFilesHere: 'Перетягніть файли .3mf сюди',
-      only3mfSupported: 'Підтримуються лише файли .3mf',
       selected: '{{count}} вибрано',
       selectAll: 'Вибрати все',
       tags: 'Теги',
@@ -950,6 +946,8 @@ export default {
       viewArchivesTitle: 'Відкрити архів для цього принтера'
     },
     goToPrinter: 'Відкрити сторінку принтера',
+    dropToQueue: 'Відпустіть, щоб додати в чергу',
+    dropToQueueHint: 'Налаштуй маппінг і час перед додаванням.',
     toast: {
       statusUpdated: 'Статус черги оновлено',
       itemStarted: 'Знято з очікування - почнеться, коли дійде черга',
@@ -1020,7 +1018,10 @@ export default {
     assignNow: 'Призначити зараз',
     cancelled: 'Елемент авто-черги скасовано',
     assigned: 'Елемент авто-черги призначено',
-    batchCancelled: 'Скасовано {{count}} елементів партії'
+    batchCancelled: 'Скасовано {{count}} елементів партії',
+    emptyHint: 'Перетягніть нарізаний файл сюди, щоб надіслати через авто-чергу.',
+    dropToAuto: 'Відпустіть, щоб додати в авто-чергу',
+    dropToAutoHint: 'Принтер вибирає роутер у момент диспатчу.'
   },
 
   // Statistics page
@@ -3010,6 +3011,8 @@ export default {
     link: 'Прив\'язати',
     dragDropFiles: 'Перетягніть файли сюди',
     dropFilesHere: 'Перетягніть файли сюди',
+    dropFilesToUpload: 'Відпустіть, щоб завантажити',
+    dropFilesToUploadHint: 'Файли потраплять у поточну теку. Опції ZIP залишаються доступними.',
     orClickToBrowse: 'або натисніть для вибору',
     allFileTypesSupported: 'Підтримуються всі типи файлів. ZIP файли будуть розпаковані.',
     zipFilesDetected: 'Виявлено ZIP файли',
@@ -3960,19 +3963,6 @@ export default {
   },
 
   // Tags
-  // Upload modal (archives)
-  uploadModal: {
-    title: 'Завантажити 3MF файли',
-    dragDrop: 'Перетягніть .3mf файли сюди',
-    or: 'або',
-    browseFiles: 'Вибрати файли',
-    extractionInfo: 'Модель принтера буде автоматично витягнута з метаданих 3MF файлу.',
-    uploaded: 'завантажено',
-    failed: 'помилка',
-    uploading: 'Завантаження...',
-    upload: 'Завантажити'
-  },
-
   // Edit Archive Modal
   editArchive: {
     title: 'Редагувати архів',
@@ -4165,6 +4155,11 @@ export default {
       clear: 'Очистити цільовий принтер',
       filteredBy: 'фільтр за {{model}}',
       noMatchForModel: 'Немає принтерів моделі {{model}}. Виберіть іншу VP-модель або додайте відповідний принтер.'
+    },
+    targetFolder: {
+      title: 'Папка призначення в бібліотеці',
+      description: 'Файли, що приходять на цей віртуальний принтер, потрапляють у вибрану папку бібліотеки. Зовнішні папки тільки для читання приховано.',
+      root: 'Корінь бібліотеки (за замовчуванням)'
     },
     remoteInterface: {
       title: 'Перевизначення мережевого інтерфейсу',

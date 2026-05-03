@@ -6,7 +6,7 @@ import {
   ChevronDown, ChevronRight, ArrowRightLeft, Trash2, X,
 } from 'lucide-react';
 import { api, multiVirtualPrinterApi } from '../api/client';
-import type { VirtualPrinterConfig } from '../api/client';
+import type { LibraryFolderTree, VirtualPrinterConfig } from '../api/client';
 import { Card, CardContent } from './Card';
 import { Button } from './Button';
 import { ConfirmModal } from './ConfirmModal';
@@ -24,6 +24,19 @@ const MODE_LABELS: Record<DisplayMode, string> = {
 };
 
 const DISPLAY_MODES: readonly DisplayMode[] = ['print_queue', 'file_manager', 'proxy'] as const;
+
+// Depth-first flatten of the library folder tree for a single <select>.
+// Each row carries depth for indented labels — same pattern used by
+// MakerworldPage's "Import to" picker. Inlined here to avoid widening the
+// shared API module for one consumer.
+type FlatFolder = { folder: LibraryFolderTree; depth: number };
+function flattenFolderTree(tree: LibraryFolderTree, depth = 0, out: FlatFolder[] = []): FlatFolder[] {
+  out.push({ folder: tree, depth });
+  for (const child of tree.children ?? []) {
+    flattenFolderTree(child, depth + 1, out);
+  }
+  return out;
+}
 
 interface VirtualPrinterCardProps {
   printer: VirtualPrinterConfig;
@@ -43,6 +56,7 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
     ((['print_queue', 'auto_queue', 'file_manager', 'proxy'] as readonly string[]).includes(printer.mode) ? printer.mode : 'file_manager') as LocalMode
   );
   const [localTargetPrinterId, setLocalTargetPrinterId] = useState<number | null>(printer.target_printer_id);
+  const [localTargetFolderId, setLocalTargetFolderId] = useState<number | null>(printer.target_folder_id);
   const [localBindIp, setLocalBindIp] = useState(printer.bind_ip || '');
   const [localRemoteInterfaceIp, setLocalRemoteInterfaceIp] = useState(printer.remote_interface_ip || '');
   const [localModel, setLocalModel] = useState(printer.model || '');
@@ -59,6 +73,7 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
       setLocalMode(((['print_queue', 'auto_queue', 'file_manager', 'proxy'] as readonly string[]).includes(printer.mode) ? printer.mode : 'file_manager') as LocalMode);
       setLocalName(printer.name);
       setLocalTargetPrinterId(printer.target_printer_id);
+      setLocalTargetFolderId(printer.target_folder_id);
       setLocalBindIp(printer.bind_ip || '');
       setLocalRemoteInterfaceIp(printer.remote_interface_ip || '');
       setLocalModel(printer.model || '');
@@ -77,6 +92,15 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
   const { data: networkInterfaces } = useQuery({
     queryKey: ['network-interfaces'],
     queryFn: () => api.getNetworkInterfaces().then(res => res.interfaces),
+  });
+
+  // Library folders for the per-VP destination picker (m040). Read-only
+  // external folders are filtered out before render — VP can't write there.
+  const { data: libraryFolders } = useQuery({
+    queryKey: ['library-folders'],
+    queryFn: () => api.getLibraryFolders(),
+    // Only meaningful for non-proxy VPs that actually receive files.
+    enabled: localMode !== 'proxy',
   });
 
   const updateMutation = useMutation({
@@ -211,6 +235,20 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
       }
     }
     updateMutation.mutate({ target_printer_id: printerId });
+  };
+
+  const handleTargetFolderChange = (raw: string) => {
+    setPendingAction('targetFolder');
+    if (raw === '') {
+      // Library root — explicit clear (Pydantic can't tell "absent" from "null").
+      setLocalTargetFolderId(null);
+      updateMutation.mutate({ clear_target_folder: true });
+      return;
+    }
+    const id = parseInt(raw, 10);
+    if (Number.isNaN(id)) return;
+    setLocalTargetFolderId(id);
+    updateMutation.mutate({ target_folder_id: id });
   };
 
   const handleRemoteInterfaceChange = (ip: string) => {
@@ -496,6 +534,40 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
                     </span>
                   </p>
                 )}
+              </div>
+            )}
+
+            {/* Target Library Folder (m040) — destination for files arriving
+                via FTP. Hidden in proxy mode (proxy bypasses VP file handling
+                entirely). Empty = library root. Read-only externals filtered
+                out — VP can't write there. */}
+            {localMode !== 'proxy' && (
+              <div className="pt-2 border-t border-bambu-dark-tertiary">
+                <div className="text-white text-sm font-medium mb-1">
+                  {t('virtualPrinter.targetFolder.title')}
+                </div>
+                <p className="text-xs text-bambu-gray mb-2">
+                  {t('virtualPrinter.targetFolder.description')}
+                </p>
+                <div className="relative">
+                  <select
+                    value={localTargetFolderId ?? ''}
+                    onChange={(e) => handleTargetFolderChange(e.target.value)}
+                    disabled={pendingAction === 'targetFolder'}
+                    className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-md px-3 py-1.5 text-white text-sm appearance-none cursor-pointer disabled:opacity-50 pr-10"
+                  >
+                    <option value="">{t('virtualPrinter.targetFolder.root')}</option>
+                    {(libraryFolders ?? [])
+                      .filter((f) => !(f.is_external && f.external_readonly))
+                      .flatMap((f) => flattenFolderTree(f))
+                      .map(({ folder, depth }) => (
+                        <option key={folder.id} value={folder.id}>
+                          {`${'— '.repeat(depth)}${folder.name}`}
+                        </option>
+                      ))}
+                  </select>
+                  <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
+                </div>
               </div>
             )}
 

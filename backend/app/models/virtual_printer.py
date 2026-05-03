@@ -21,6 +21,14 @@ class VirtualPrinter(Base):
     target_printer_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("printers.id", ondelete="SET NULL"), nullable=True
     )  # proxy mode
+    # Per-VP destination folder for files arriving via FTP. NULL = library root.
+    # Used by the post-Audit-2 redesign that saves incoming files to the
+    # library + queues them with library_file_id instead of pre-creating an
+    # archived-status placeholder row. SET NULL on folder delete so the VP
+    # keeps working (falls back to root).
+    target_folder_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("library_folders.id", ondelete="SET NULL"), nullable=True
+    )
     bind_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)  # dedicated IP (proxy mode)
     remote_interface_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)  # SSDP advertise IP
     serial_suffix: Mapped[str] = mapped_column(String(9), default="391800001")  # unique per printer

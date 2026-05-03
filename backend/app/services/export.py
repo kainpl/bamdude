@@ -97,8 +97,15 @@ class ExportService:
             Tuple of (file_bytes, filename, content_type)
         """
         # Build query
+        # Exclude "archived" status (uploaded but never printed) and trashed
+        # rows so the export matches what /stats reports — same baseline as
+        # the dashboard the operator is exporting from.
         query = (
-            select(PrintArchive).options(selectinload(PrintArchive.project)).order_by(PrintArchive.created_at.desc())
+            select(PrintArchive)
+            .options(selectinload(PrintArchive.project))
+            .where(PrintArchive.status != "archived")
+            .where(PrintArchive.deleted_at.is_(None))
+            .order_by(PrintArchive.created_at.desc())
         )
 
         # Apply filters

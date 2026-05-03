@@ -1424,12 +1424,23 @@ class ArchiveService:
         swap_macro_events_pending: list[str] | None = None,
         prefer_filename_for_name: bool = False,
         plate_index: int | None = None,
+        dispatched_file: Path | None = None,
     ) -> PrintArchive | None:
         """Archive a 3MF file with metadata.
 
         Args:
             printer_id: ID of the printer (optional)
-            source_file: Path to the 3MF file
+            source_file: Path to the original (unpatched) 3MF — chain root.
+                Used for ``source_content_hash`` (when not passed explicitly),
+                for filename / stem / suffix derivation, and for fallback when
+                ``dispatched_file`` is not provided.
+            dispatched_file: Path to the EXACT bytes that went to the printer
+                (post-patcher). When provided this controls what gets hashed
+                into ``content_hash`` and copied into the archive folder, so
+                restart-recovery in ``on_print_start`` can match the archive
+                by hashing the printer's copy. ``None`` means no patching
+                happened and ``content_hash == source_content_hash`` —
+                identical to the legacy single-file flow.
             print_data: Print data from MQTT (optional)
             created_by_id: User ID who created this archive (optional, for user tracking)
             original_filename: Original human-readable filename (optional, for library files
@@ -1458,8 +1469,14 @@ class ArchiveService:
             if not printer:
                 return None
 
-        # Compute content hash from source file (before copying)
-        content_hash = self.compute_file_hash(source_file)
+        # The "dispatched bytes" are what we hash into ``content_hash`` and
+        # copy into the archive folder. Falling back to ``source_file`` when
+        # the caller didn't pass ``dispatched_file`` keeps every legacy
+        # call-site (external prints, VP file_manager save, library upload
+        # without patching) on the original single-file path: same hash,
+        # same on-disk copy, no behavioural change.
+        bytes_for_disk: Path = dispatched_file if dispatched_file is not None else source_file
+        content_hash = self.compute_file_hash(bytes_for_disk)
 
         # External-print fallback: if the caller didn't provide source_content_hash
         # (i.e. print was initiated outside BamDude), try to link this archive to
@@ -1552,7 +1569,9 @@ class ArchiveService:
             dest_file = archive_dir / source_file.name
             # Explicit fsync'd loop avoids the shutil.copy2 → sendfile short-read
             # quirk that silently truncated 3MF archives on some platforms (#1032).
-            _copy_and_fsync(source_file, dest_file)
+            # ``bytes_for_disk`` is the post-patch file when the dispatcher
+            # passed ``dispatched_file``; otherwise it's ``source_file``.
+            _copy_and_fsync(bytes_for_disk, dest_file)
 
             # Verify the dest is a valid ZIP before going any further. Staying
             # quiet here is how #1032 escaped review — the archive row was
@@ -1560,18 +1579,18 @@ class ArchiveService:
             # with "File is not a zip file".
             if (
                 source_file.suffix.lower() == ".3mf"
-                and zipfile.is_zipfile(source_file)
+                and zipfile.is_zipfile(bytes_for_disk)
                 and not zipfile.is_zipfile(dest_file)
             ):
                 try:
-                    src_size = source_file.stat().st_size
+                    src_size = bytes_for_disk.stat().st_size
                     dst_size = dest_file.stat().st_size
                 except OSError:
                     src_size = dst_size = -1
                 logger.error(
                     "Archive copy corrupted 3MF: src=%s (%s bytes, valid ZIP) -> dst=%s "
                     "(%s bytes, NOT a ZIP). Refusing to create archive row.",
-                    source_file,
+                    bytes_for_disk,
                     src_size,
                     dest_file,
                     dst_size,
@@ -1661,8 +1680,17 @@ class ArchiveService:
         if swap_macro_events_pending and "swap_mode_change_table" in swap_macro_events_pending:
             metadata["swap_macro_events_pending"] = list(swap_macro_events_pending)
 
-        # Determine status and timestamps
-        status = print_data.get("status", "completed") if print_data else "archived"
+        # Determine status and timestamps. Default `'completed'` covers the
+        # path where on_print_complete archives a finished print without
+        # passing print_data (rare, but defensive). The pre-0.4.2 fallback
+        # was `'archived'` — used by the now-removed manual upload + VP
+        # placeholder + pending_uploads approval routes (Audits 1+2+3) to
+        # mark "uploaded but never printed" rows. After those writers are
+        # gone there is no caller that wants `'archived'` as a default;
+        # any caller that genuinely means "uploaded, never printed" must
+        # pass `print_data={'status': 'archived'}` explicitly so the
+        # intent is auditable at the call site.
+        status = print_data.get("status", "completed") if print_data else "completed"
         started_at = datetime.now(timezone.utc) if status == "printing" else None
         completed_at = datetime.now(timezone.utc) if status in ("completed", "failed", "archived") else None
 
@@ -2094,10 +2122,6 @@ class ArchiveService:
                 filters.append(PrintArchive.created_at >= first_of_month)
             elif collection == "favorites":
                 filters.append(PrintArchive.is_favorite == True)  # noqa: E712
-            elif collection == "not-printed":
-                # VP-uploaded archives land with status='archived' (uploaded
-                # but never sent to a printer). See B.3 in upstream audit MD.
-                filters.append(PrintArchive.status == "archived")
             elif collection == "printed":
                 # Any final-status archive — covers a print attempt regardless
                 # of outcome. The narrower Failed collection covers the

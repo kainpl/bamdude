@@ -155,7 +155,7 @@ export function SpoolDisplayNameSettings() {
             <div className="text-sm text-bambu-gray mb-2">
               {t('settings.spoolDisplayName.placeholdersLabel')}
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
               {SPOOL_PLACEHOLDERS.map((ph) => (
                 <button
                   key={ph.key}

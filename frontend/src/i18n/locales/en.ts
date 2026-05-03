@@ -570,7 +570,6 @@ export default {
     originalPrintNotVisible: 'Original print not visible - try clearing filters',
     noArchivesYet: 'No archives yet',
     loadingArchives: 'Loading archives...',
-    releaseToUpload: 'Release to upload',
     showAll: 'Show all',
     showFavoritesOnly: 'Show favorites only',
     gridView: 'Grid view',
@@ -746,14 +745,11 @@ export default {
         thisWeek: 'This Week',
         thisMonth: 'This Month',
         favorites: 'Favorites',
-        notPrinted: 'Not Printed',
         printed: 'Printed',
         failed: 'Failed Prints',
         duplicates: 'Duplicates'
       },
       title: 'Archives',
-      dropFilesHere: 'Drop .3mf files here',
-      only3mfSupported: 'Only .3mf files are supported',
       selected: '{{count}} selected',
       selectAll: 'Select All',
       tags: 'Tags',
@@ -944,6 +940,8 @@ export default {
       viewArchivesTitle: 'View archive for this printer'
     },
     goToPrinter: 'Open printer page',
+    dropToQueue: 'Drop to add to this queue',
+    dropToQueueHint: 'Configure mapping & schedule before queuing.',
     toast: {
       statusUpdated: 'Queue status updated',
       itemStarted: 'Released - will print when queue reaches it',
@@ -1012,7 +1010,10 @@ export default {
     assignNow: 'Assign now',
     cancelled: 'Auto-queue item cancelled',
     assigned: 'Auto-queue item assigned',
-    batchCancelled: '{{count}} batch items cancelled'
+    batchCancelled: '{{count}} batch items cancelled',
+    emptyHint: 'Drop a sliced file here to route it via auto-queue.',
+    dropToAuto: 'Drop to add to auto-queue',
+    dropToAutoHint: 'Router picks the printer at dispatch time.'
   },
 
   // Statistics page
@@ -3004,6 +3005,8 @@ export default {
     link: 'Link',
     dragDropFiles: 'Drag & drop files here',
     dropFilesHere: 'Drop files here',
+    dropFilesToUpload: 'Drop files to upload',
+    dropFilesToUploadHint: 'Release to add to this folder. ZIP options stay available.',
     orClickToBrowse: 'or click to browse',
     allFileTypesSupported: 'All file types supported. ZIP files will be extracted.',
     zipFilesDetected: 'ZIP files detected',
@@ -3962,19 +3965,6 @@ export default {
   },
 
   // Tags
-  // Upload modal (archives)
-  uploadModal: {
-    title: 'Upload 3MF Files',
-    dragDrop: 'Drag & drop .3mf files here',
-    or: 'or',
-    browseFiles: 'Browse Files',
-    extractionInfo: 'The printer model will be automatically extracted from the 3MF file metadata.',
-    uploaded: 'uploaded',
-    failed: 'failed',
-    uploading: 'Uploading...',
-    upload: 'Upload'
-  },
-
   // Edit archive modal
   // Edit Archive Modal
   editArchive: {
@@ -4168,6 +4158,11 @@ export default {
       clear: 'Clear target printer',
       filteredBy: 'filtered by {{model}}',
       noMatchForModel: 'No printers of model {{model}} are configured. Pick a different VP model or add a matching printer.'
+    },
+    targetFolder: {
+      title: 'Library Destination Folder',
+      description: 'Files arriving at this virtual printer land in this library folder. Read-only external folders are hidden.',
+      root: 'Library root (default)'
     },
     remoteInterface: {
       title: 'Network Interface Override',

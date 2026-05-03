@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
+import { useState, useRef, useCallback, useMemo, useEffect, type DragEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -1262,6 +1262,9 @@ export function FileManagerPage() {
   const [showExternalFolderModal, setShowExternalFolderModal] = useState(false);
   const [showMoveModal, setShowMoveModal] = useState(false);
   const [showUploadModal, setShowUploadModal] = useState(false);
+  const [droppedFiles, setDroppedFiles] = useState<File[]>([]);
+  const [isPageDragging, setIsPageDragging] = useState(false);
+  const dragCounterRef = useRef(0);
   const [showPurgeModal, setShowPurgeModal] = useState(false);
   const [linkFolder, setLinkFolder] = useState<LibraryFolderTree | null>(null);
   const [linkFile, setLinkFile] = useState<LibraryFileListItem | null>(null);
@@ -1748,6 +1751,40 @@ export function FileManagerPage() {
     queryClient.invalidateQueries({ queryKey: ['library-stats'] });
   };
 
+  // Page-level drag-drop: drop anywhere over the files area opens
+  // FileUploadModal with the files preloaded. dragenter/dragleave fire for
+  // every child element, so the counter avoids the overlay flickering as the
+  // pointer moves between nested nodes.
+  const handlePageDragEnter = (e: DragEvent<HTMLDivElement>) => {
+    if (!hasPermission('library:upload')) return;
+    if (!e.dataTransfer.types.includes('Files')) return;
+    e.preventDefault();
+    dragCounterRef.current += 1;
+    setIsPageDragging(true);
+  };
+  const handlePageDragOver = (e: DragEvent<HTMLDivElement>) => {
+    if (!hasPermission('library:upload')) return;
+    if (!e.dataTransfer.types.includes('Files')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  };
+  const handlePageDragLeave = (e: DragEvent<HTMLDivElement>) => {
+    if (!hasPermission('library:upload')) return;
+    e.preventDefault();
+    dragCounterRef.current = Math.max(0, dragCounterRef.current - 1);
+    if (dragCounterRef.current === 0) setIsPageDragging(false);
+  };
+  const handlePageDrop = (e: DragEvent<HTMLDivElement>) => {
+    if (!hasPermission('library:upload')) return;
+    e.preventDefault();
+    dragCounterRef.current = 0;
+    setIsPageDragging(false);
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length === 0) return;
+    setDroppedFiles(files);
+    setShowUploadModal(true);
+  };
+
   const handleDownload = (id: number) => {
     api.downloadLibraryFile(id).catch((err) => {
       console.error('Library file download failed:', err);
@@ -2056,7 +2093,22 @@ export function FileManagerPage() {
         </div>
 
         {/* Files area */}
-        <div className="flex-1 flex flex-col min-w-0 min-h-0">
+        <div
+          className="flex-1 flex flex-col min-w-0 min-h-0 relative"
+          onDragEnter={handlePageDragEnter}
+          onDragOver={handlePageDragOver}
+          onDragLeave={handlePageDragLeave}
+          onDrop={handlePageDrop}
+        >
+          {isPageDragging && (
+            <div className="absolute inset-0 z-30 pointer-events-none flex items-center justify-center rounded-lg border-2 border-dashed border-bambu-green bg-bambu-green/10 backdrop-blur-sm">
+              <div className="flex flex-col items-center gap-3 text-center px-6">
+                <Upload className="w-12 h-12 text-bambu-green" />
+                <p className="text-lg font-medium text-white">{t('fileManager.dropFilesToUpload')}</p>
+                <p className="text-sm text-bambu-green">{t('fileManager.dropFilesToUploadHint')}</p>
+              </div>
+            </div>
+          )}
           {/* External folder info bar */}
           {selectedFolder?.is_external && (
             <div className="flex items-center gap-3 mb-4 p-3 bg-purple-500/10 border border-purple-500/30 rounded-lg">
@@ -2680,8 +2732,12 @@ export function FileManagerPage() {
       {showUploadModal && (
         <FileUploadModal
           folderId={selectedFolderId}
-          onClose={() => setShowUploadModal(false)}
+          onClose={() => {
+            setShowUploadModal(false);
+            setDroppedFiles([]);
+          }}
           onUploadComplete={handleUploadComplete}
+          initialFiles={droppedFiles.length > 0 ? droppedFiles : undefined}
         />
       )}
 

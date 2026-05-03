@@ -3,6 +3,7 @@
  * Tests file upload, drag-and-drop, ZIP/3MF/STL detection, and autoUpload mode.
  */
 
+import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -568,6 +569,45 @@ describe('FileUploadModal', () => {
       const goodFile = new File(['content'], 'model.gcode', { type: 'application/octet-stream' });
       await user.upload(fileInput, goodFile);
       expect(screen.queryByText('Only .gcode files allowed')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('initialFiles prop', () => {
+    it('preloads files passed via initialFiles on mount', async () => {
+      const file = new File(['content'], 'preloaded.gcode.3mf', { type: 'application/octet-stream' });
+      render(<FileUploadModal {...defaultProps} initialFiles={[file]} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('preloaded.gcode.3mf')).toBeInTheDocument();
+      });
+      expect(screen.getByRole('button', { name: /Upload \(1\)/i })).not.toBeDisabled();
+    });
+
+    it('only consumes initialFiles once even under StrictMode double-mount', async () => {
+      // Regression: StrictMode fires mount effects twice in dev. Without the
+      // ref guard inside FileUploadModal, addFiles(initialFiles) ran twice and
+      // the file list ended up with two copies of every dropped file.
+      // Wrap explicitly in <StrictMode> so this assertion verifies the guard
+      // and not just the production single-mount behaviour.
+      const file = new File(['content'], 'once.gcode.3mf', { type: 'application/octet-stream' });
+      render(
+        <React.StrictMode>
+          <FileUploadModal {...defaultProps} initialFiles={[file]} />
+        </React.StrictMode>
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('once.gcode.3mf')).toBeInTheDocument();
+      });
+
+      // The Upload button caption shows the file count — must be exactly 1.
+      expect(screen.getByRole('button', { name: /Upload \(1\)/i })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Upload \(2\)/i })).not.toBeInTheDocument();
+    });
+
+    it('handles empty initialFiles without errors', () => {
+      render(<FileUploadModal {...defaultProps} initialFiles={[]} />);
+      expect(screen.getByRole('button', { name: /Upload/i })).toBeDisabled();
     });
   });
 

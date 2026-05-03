@@ -109,6 +109,7 @@ class VirtualPrinterInstance:
         target_printer_ip: str = "",
         target_printer_serial: str = "",
         target_printer_id: int | None = None,
+        target_folder_id: int | None = None,
         auto_dispatch: bool = True,
         bind_ip: str = "",
         remote_interface_ip: str = "",
@@ -125,6 +126,9 @@ class VirtualPrinterInstance:
         self.target_printer_ip = target_printer_ip
         self.target_printer_serial = target_printer_serial
         self.target_printer_id = target_printer_id
+        # Library folder where incoming files land. None = library root.
+        # Forwarded to ``_save_to_library`` for every file the VP receives.
+        self.target_folder_id = target_folder_id
         self.auto_dispatch = auto_dispatch
         self.bind_ip = bind_ip
         self.remote_interface_ip = remote_interface_ip
@@ -240,11 +244,22 @@ class VirtualPrinterInstance:
         """Handle print command from MQTT."""
         logger.info("[VP %s] Print command for: %s", self.name, filename)
 
-    async def _save_to_library(self, file_path: Path, source_ip: str) -> None:
-        """Save file directly to the File Manager library."""
+    async def _save_to_library(self, file_path: Path, source_ip: str):  # noqa: ARG002
+        """Save file to the File Manager library.
+
+        Returns the persisted ``LibraryFile`` row (or ``None`` on failure /
+        non-3MF input). The Audit-2 redesign in 0.4.2 made this the single
+        ingestion entry-point for **all** VP modes (not just file_manager) —
+        ``_add_to_print_queue`` and ``_add_to_auto_queue`` now call it first
+        and queue against the resulting ``library_file_id`` instead of
+        pre-creating a placeholder ``status='archived'`` archive row.
+
+        ``source_ip`` is currently informational only (preserved in the
+        argument list so callers don't have to know it became a no-op).
+        """
         if not self._session_factory:
             logger.error("Cannot save to library: no database session factory configured")
-            return
+            return None
 
         if file_path.suffix.lower() != ".3mf":
             logger.debug("Skipping non-3MF file: %s", file_path.name)
@@ -253,7 +268,7 @@ class VirtualPrinterInstance:
                 file_path.unlink()
             except OSError:
                 pass
-            return
+            return None
 
         try:
             import hashlib
@@ -268,7 +283,7 @@ class VirtualPrinterInstance:
             from backend.app.services.archive import ThreeMFParser
             from backend.app.services.library_helpers import compute_file_tags, detect_file_type
 
-            async with self._session_factory() as db:
+            async with self._session_factory() as db_session:
                 filename = file_path.name
                 ext = file_path.suffix.lower()
                 # Sliced 3MFs uploaded via the slicer's "Send to printer"
@@ -344,7 +359,7 @@ class VirtualPrinterInstance:
                     logger.warning("[VP %s] Failed to parse 3MF metadata: %s", self.name, e)
 
                 library_file = LibraryFile(
-                    folder_id=None,
+                    folder_id=self.target_folder_id,
                     filename=filename,
                     file_path=to_relative_path(dest_path),
                     file_type=file_type,
@@ -360,9 +375,16 @@ class VirtualPrinterInstance:
                     thumbnail_path=to_relative_path(thumbnail_path) if thumbnail_path else None,
                     file_metadata=metadata,
                 )
-                db.add(library_file)
-                await db.commit()
-                logger.info("[VP %s] Saved to library: %s (id=%s)", self.name, filename, library_file.id)
+                db_session.add(library_file)
+                await db_session.commit()
+                await db_session.refresh(library_file)
+                logger.info(
+                    "[VP %s] Saved to library: %s (id=%s, folder=%s)",
+                    self.name,
+                    filename,
+                    library_file.id,
+                    self.target_folder_id,
+                )
 
                 # Notify frontend to refresh File Manager
                 try:
@@ -377,11 +399,21 @@ class VirtualPrinterInstance:
                 except OSError:
                     pass
                 self._pending_files.pop(file_path.name, None)
+                return library_file
         except Exception as e:
             logger.error("Error saving to library: %s", e)
+            return None
 
     async def _add_to_print_queue(self, file_path: Path, source_ip: str) -> None:
-        """Archive file and add to print queue, assigned to target printer or model."""
+        """Save file to library and add to a per-printer queue.
+
+        Audit-2 redesign (0.4.2): the file lands in the library FIRST
+        (single source-of-truth for "files we have"), then the queue item
+        is created with ``library_file_id``. The dispatcher's
+        ``_run_print_library_file`` path creates the archive at print-start
+        with ``status='printing'`` — we no longer pre-create a synthetic
+        ``status='archived'`` placeholder.
+        """
         if not self._session_factory:
             logger.error("Cannot add to print queue: no database session factory configured")
             return
@@ -395,70 +427,66 @@ class VirtualPrinterInstance:
             return
 
         try:
-            from backend.app.api.routes.settings import get_setting
+            # Step 1: save to library (handles file copy + metadata extraction
+            # + cleanup of source temp + WS broadcast). Returns the persisted
+            # ``LibraryFile`` row or None on failure.
+            library_file = await self._save_to_library(file_path, source_ip)
+            if not library_file:
+                logger.error("[VP %s] Failed to save to library: %s", self.name, file_path.name)
+                return
+
+            # Step 2: pick a queue based on the library row's metadata and
+            # link a queue item to it.
             from backend.app.models.print_queue import PrintQueueItem
-            from backend.app.services.archive import ArchiveService
+
+            sliced_model = None
+            if isinstance(library_file.file_metadata, dict):
+                sliced_model = library_file.file_metadata.get("sliced_for_model")
 
             async with self._session_factory() as db:
-                # First check if we can find a queue before archiving
-                # We need sliced_for_model from 3MF metadata - parse it early
-                name_source = await get_setting(db, "virtual_printer_archive_name_source")
-                prefer_filename = name_source == "filename"
-                service = ArchiveService(db)
-                archive = await service.archive_print(
-                    printer_id=None,
-                    source_file=file_path,
-                    print_data={
-                        "status": "archived",
-                        "source": "virtual_printer",
-                        "source_ip": source_ip,
-                    },
-                    prefer_filename_for_name=prefer_filename,
-                )
-                if archive:
-                    queue = await self._find_best_queue(db, archive)
-                    if not queue:
-                        # No matching queue - delete archive and save to library instead
-                        logger.info(
-                            "[VP %s] No matching printer queue, saving to library: %s", self.name, archive.print_name
-                        )
-                        await db.delete(archive)
-                        await db.commit()
-                        await self._save_to_library(file_path, source_ip)
-                        return
-
-                    plate_id = self._extract_plate_id(file_path)
-                    queue_item = PrintQueueItem(
-                        queue_id=queue.id,
-                        archive_id=archive.id,
-                        plate_id=plate_id,
-                        position=1,
-                        status="pending",
-                        manual_start=not self.auto_dispatch,
-                    )
-                    db.add(queue_item)
-                    await db.commit()
+                queue = await self._find_best_queue(db, sliced_model)
+                if not queue:
+                    # File already in library; just no auto-queue placement.
+                    # Operator can pick it up from the File Manager and queue
+                    # manually. Same UX as ``mode='file_manager'`` from here on.
                     logger.info(
-                        "[VP %s] Added to queue %s (printer %s): %s",
+                        "[VP %s] No matching printer queue for %s — file stays in library only",
                         self.name,
-                        queue.id,
-                        queue.printer_id,
-                        queue_item.id,
+                        library_file.filename,
                     )
-                    try:
-                        file_path.unlink()
-                    except OSError:
-                        pass
-                    self._pending_files.pop(file_path.name, None)
-                else:
-                    logger.error("Failed to archive file: %s", file_path.name)
+                    return
+
+                plate_id = self._extract_plate_id_from_metadata(library_file.file_metadata)
+                queue_item = PrintQueueItem(
+                    queue_id=queue.id,
+                    library_file_id=library_file.id,
+                    archive_id=None,  # archive created at print-start by _run_print_library_file
+                    plate_id=plate_id,
+                    position=1,
+                    status="pending",
+                    manual_start=not self.auto_dispatch,
+                )
+                db.add(queue_item)
+                await db.commit()
+                logger.info(
+                    "[VP %s] Added to queue %s (printer %s): item %s, library_file=%s",
+                    self.name,
+                    queue.id,
+                    queue.printer_id,
+                    queue_item.id,
+                    library_file.id,
+                )
         except Exception as e:
-            logger.error("Error adding to print queue: %s", e)
+            logger.exception("[VP %s] Error adding to print queue: %s", self.name, e)
 
     async def _add_to_auto_queue(self, file_path: Path, source_ip: str) -> None:
-        """Archive file and drop it into the global auto-queue layer.
+        """Save file to library and drop it into the global auto-queue layer.
 
-        Unlike ``_add_to_print_queue`` this never picks a printer up-front:
+        Audit-2 redesign (0.4.2): mirrors ``_add_to_print_queue`` — file
+        lands in the library first, then the auto-queue row carries
+        ``library_file_id`` instead of pre-creating an
+        ``status='archived'`` placeholder archive. Unlike
+        ``_add_to_print_queue`` this never picks a printer up-front;
         the AutoQueueScheduler later assigns the item to whichever idle
         printer matches model + filaments + colors. ``target_printer_id``
         on the VP config is intentionally ignored in this mode (use
@@ -477,37 +505,32 @@ class VirtualPrinterInstance:
             return
 
         try:
+            # Step 1: save to library. Returns the persisted LibraryFile or
+            # None on failure (handles file copy + metadata + cleanup).
+            library_file = await self._save_to_library(file_path, source_ip)
+            if not library_file:
+                logger.error("[VP %s] Failed to save to library: %s", self.name, file_path.name)
+                return
+
             from sqlalchemy import func as sa_func, select as sa_select
 
-            from backend.app.api.routes.settings import get_setting
             from backend.app.models.auto_queue import AutoQueueItem
-            from backend.app.services.archive import ArchiveService
             from backend.app.services.auto_queue_threemf import extract_auto_queue_requirements
 
+            plate_id = self._extract_plate_id_from_metadata(library_file.file_metadata)
+
+            # Re-extract requirements from the saved library file so the
+            # auto-queue's per-slot filament info matches the bytes we'll
+            # actually upload to the printer (the original upload temp is
+            # gone after _save_to_library cleans it up).
+            on_disk = Path(app_settings.base_dir) / library_file.file_path
+            requirements = extract_auto_queue_requirements(on_disk, plate_id=plate_id)
+
+            sliced_model: str | None = None
+            if isinstance(library_file.file_metadata, dict):
+                sliced_model = library_file.file_metadata.get("sliced_for_model")
+
             async with self._session_factory() as db:
-                name_source = await get_setting(db, "virtual_printer_archive_name_source")
-                prefer_filename = name_source == "filename"
-                service = ArchiveService(db)
-                archive = await service.archive_print(
-                    printer_id=None,
-                    source_file=file_path,
-                    print_data={
-                        "status": "archived",
-                        "source": "virtual_printer",
-                        "source_ip": source_ip,
-                    },
-                    prefer_filename_for_name=prefer_filename,
-                )
-                if not archive:
-                    logger.error("[VP %s] Failed to archive file: %s", self.name, file_path.name)
-                    return
-
-                plate_id = self._extract_plate_id(file_path)
-                # Use the freshly-copied archive 3MF (or the original upload as a
-                # fallback) to extract target model + required filament types.
-                source_for_extract = Path(archive.file_path) if archive.file_path else file_path
-                requirements = extract_auto_queue_requirements(source_for_extract, plate_id=plate_id)
-
                 # Position at the end of pending items so VP-uploads don't
                 # jump ahead of UI submissions.
                 max_pos = await db.scalar(
@@ -518,8 +541,9 @@ class VirtualPrinterInstance:
                 next_pos = (max_pos or 0) + 1
 
                 item = AutoQueueItem(
-                    archive_id=archive.id,
-                    target_model=requirements.target_model or archive.sliced_for_model,
+                    library_file_id=library_file.id,
+                    archive_id=None,  # archive created at print-start by _run_print_library_file
+                    target_model=requirements.target_model or sliced_model,
                     required_filament_types=(
                         list(requirements.required_filament_types) if requirements.required_filament_types else None
                     ),
@@ -531,24 +555,25 @@ class VirtualPrinterInstance:
                 db.add(item)
                 await db.commit()
                 logger.info(
-                    "[VP %s] Added to auto-queue (item %s, target_model=%s, filaments=%s)",
+                    "[VP %s] Added to auto-queue (item %s, library_file=%s, target_model=%s, filaments=%s)",
                     self.name,
                     item.id,
+                    library_file.id,
                     item.target_model,
                     item.required_filament_types,
                 )
-
-                try:
-                    file_path.unlink()
-                except OSError:
-                    pass
-                self._pending_files.pop(file_path.name, None)
         except Exception as e:
             logger.exception("[VP %s] Error adding to auto-queue: %s", self.name, e)
 
     @staticmethod
     def _extract_plate_id(file_path: Path) -> int | None:
-        """Extract plate index from 3MF slice_info.config."""
+        """Extract plate index from 3MF slice_info.config (on-disk fallback).
+
+        Kept as a fallback for code paths that don't yet have a parsed
+        ``library_file.file_metadata`` to read from. The Audit-2 redesign
+        prefers ``_extract_plate_id_from_metadata`` so VP file ingestion
+        doesn't reopen the ZIP a second time.
+        """
         try:
             import xml.etree.ElementTree as ET
             import zipfile
@@ -566,19 +591,50 @@ class VirtualPrinterInstance:
             return None
         return None
 
-    async def _find_best_queue(self, db, archive):
+    @staticmethod
+    def _extract_plate_id_from_metadata(file_metadata: dict | None) -> int | None:
+        """Pick a plate index out of an already-parsed ``file_metadata`` dict.
+
+        Audit-2 redesign helper: ``_save_to_library`` already opens the
+        3MF and caches per-plate info under ``file_metadata['plates']``
+        (each entry has an ``index`` field). The slicer's "Send to
+        printer" workflow exports ONE plate per upload, so a sliced
+        ``.gcode.3mf`` arriving via VP should have a single-entry
+        plates list whose index is the user-picked plate.
+
+        Returns ``None`` when the metadata is missing / multi-plate /
+        malformed; the dispatcher then defaults plate_id to 1, which is
+        the existing behaviour for queue items uploaded without plate
+        context.
+        """
+        if not isinstance(file_metadata, dict):
+            return None
+        plates = file_metadata.get("plates")
+        if isinstance(plates, list) and len(plates) == 1:
+            idx = plates[0].get("index") if isinstance(plates[0], dict) else None
+            if isinstance(idx, int) and idx >= 1:
+                return idx
+        return None
+
+    async def _find_best_queue(self, db, sliced_model: str | None):
         """Find the best printer queue for this job.
 
         If target_printer_id is set and online → use it.
-        Otherwise, find the least busy online printer matching sliced_for_model.
-        Returns None if no matching printer is available (file should go to library instead).
+        Otherwise, find the least busy online printer matching ``sliced_model``.
+        Returns None if no matching printer is available (file should go
+        to library only).
 
-        "Least busy" = lowest total queue time (current print remaining + sum of pending print times).
+        "Least busy" = lowest total queue time (current print remaining +
+        sum of pending print times). Pending-time accounting walks both
+        archive- and library-file-backed queue items so the redesigned
+        ingestion path (Audit-2 0.4.2) doesn't make the queue look
+        artificially empty.
         """
         from sqlalchemy import select as sa_select
         from sqlalchemy.sql import func as sa_func
 
         from backend.app.models.archive import PrintArchive
+        from backend.app.models.library import LibraryFile
         from backend.app.models.print_queue import PrintQueueItem
         from backend.app.models.printer import Printer
         from backend.app.models.printer_queue import PrinterQueue
@@ -598,10 +654,8 @@ class VirtualPrinterInstance:
                 "[VP %s] Target printer %s not available, searching alternatives", self.name, self.target_printer_id
             )
 
-        # Must have sliced_for_model to auto-assign
-        sliced_model = archive.sliced_for_model if archive else None
         if not sliced_model:
-            logger.info("[VP %s] No sliced_for_model in archive, cannot auto-assign to queue", self.name)
+            logger.info("[VP %s] No sliced_for_model on library file, cannot auto-assign to queue", self.name)
             return None
 
         # Get online printers matching the model
@@ -622,14 +676,31 @@ class VirtualPrinterInstance:
             # Current print remaining (minutes → seconds)
             current_remaining = state.remaining_time * 60 if state.remaining_time > 0 else 0
 
-            # Sum of pending items' estimated print time
-            pending_result = await db.execute(
-                sa_select(sa_func.coalesce(sa_func.sum(PrintArchive.print_time_seconds), 0))
+            # Pending items: COALESCE(archive.print_time_seconds,
+            # library_file.file_metadata->>'print_time_seconds') so a
+            # queue full of library-file dispatches still contributes
+            # to the busy-score. JSON path syntax differs between
+            # SQLite and Postgres — fall back to summing in Python so
+            # the comparator stays portable.
+            pending_rows = await db.execute(
+                sa_select(
+                    sa_func.coalesce(PrintArchive.print_time_seconds, 0),
+                    LibraryFile.file_metadata,
+                )
                 .select_from(PrintQueueItem)
                 .join(PrintArchive, PrintArchive.id == PrintQueueItem.archive_id, isouter=True)
+                .join(LibraryFile, LibraryFile.id == PrintQueueItem.library_file_id, isouter=True)
                 .where(PrintQueueItem.queue_id == queue.id, PrintQueueItem.status == "pending")
             )
-            pending_time = pending_result.scalar() or 0
+            pending_time = 0
+            for archive_secs, lib_meta in pending_rows.all():
+                if archive_secs:
+                    pending_time += int(archive_secs)
+                    continue
+                if isinstance(lib_meta, dict):
+                    secs = lib_meta.get("print_time_seconds")
+                    if isinstance(secs, int) and secs > 0:
+                        pending_time += secs
             candidates.append((queue, current_remaining + pending_time))
 
         if not candidates:
@@ -1096,6 +1167,7 @@ class VirtualPrinterManager:
                 or instance.bind_ip != (vp.bind_ip or "")
                 or instance.remote_interface_ip != (vp.remote_interface_ip or "")
                 or instance.target_printer_id != vp.target_printer_id
+                or instance.target_folder_id != vp.target_folder_id
                 or instance.auto_dispatch != vp.auto_dispatch
                 or instance.tailscale_disabled != vp.tailscale_disabled
             )
@@ -1148,6 +1220,7 @@ class VirtualPrinterManager:
                     access_code=vp.access_code or "",
                     serial_suffix=vp.serial_suffix,
                     target_printer_id=vp.target_printer_id,
+                    target_folder_id=vp.target_folder_id,
                     auto_dispatch=vp.auto_dispatch,
                     bind_ip=vp.bind_ip or "",
                     remote_interface_ip=vp.remote_interface_ip or "",

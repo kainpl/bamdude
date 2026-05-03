@@ -23,6 +23,9 @@ class VirtualPrinterCreate(BaseModel):
     model: str | None = None
     access_code: str | None = None
     target_printer_id: int | None = None
+    # Per-VP destination folder in the library for incoming files (Audit-2).
+    # NULL = library root. Validated to exist if non-NULL.
+    target_folder_id: int | None = None
     auto_dispatch: bool = True
     bind_ip: str | None = None
     remote_interface_ip: str | None = None
@@ -40,6 +43,10 @@ class VirtualPrinterUpdate(BaseModel):
     # use this sentinel to explicitly clear target_printer_id (e.g. when the
     # operator switches a VP into auto-select mode).
     clear_target_printer: bool = False
+    target_folder_id: int | None = None
+    # Same sentinel pattern as ``clear_target_printer`` — lets the UI move
+    # a VP back to "library root" without ambiguity.
+    clear_target_folder: bool = False
     auto_dispatch: bool | None = None
     bind_ip: str | None = None
     remote_interface_ip: str | None = None
@@ -81,6 +88,7 @@ def _vp_to_dict(vp, status: dict | None = None) -> dict:
         "access_code_set": bool(vp.access_code),
         "serial": serial,
         "target_printer_id": vp.target_printer_id,
+        "target_folder_id": vp.target_folder_id,
         "auto_dispatch": vp.auto_dispatch,
         "bind_ip": vp.bind_ip,
         "remote_interface_ip": vp.remote_interface_ip,
@@ -179,6 +187,16 @@ async def create_virtual_printer(
                 status_code=400, content={"detail": f"Printer with ID {body.target_printer_id} not found"}
             )
 
+    # Validate target folder exists (NULL is fine — means library root).
+    if body.target_folder_id:
+        from backend.app.models.library import LibraryFolder
+
+        result = await db.execute(select(LibraryFolder).where(LibraryFolder.id == body.target_folder_id))
+        if not result.scalar_one_or_none():
+            return JSONResponse(
+                status_code=400, content={"detail": f"Library folder with ID {body.target_folder_id} not found"}
+            )
+
     # Validate bind_ip uniqueness (against all enabled VPs)
     if body.bind_ip:
         result = await db.execute(
@@ -216,6 +234,7 @@ async def create_virtual_printer(
         or DEFAULT_VIRTUAL_PRINTER_MODEL,
         access_code=body.access_code,
         target_printer_id=body.target_printer_id,
+        target_folder_id=body.target_folder_id,
         auto_dispatch=body.auto_dispatch,
         bind_ip=body.bind_ip,
         remote_interface_ip=body.remote_interface_ip,
@@ -320,6 +339,18 @@ async def update_virtual_printer(
         # Auto-inherit model from target printer in proxy mode (unless user explicitly set model)
         if body.model is None and vp.mode == "proxy" and target_printer.model:
             vp.model = _resolve_printer_model(target_printer.model) or target_printer.model
+    if body.clear_target_folder:
+        vp.target_folder_id = None
+    elif body.target_folder_id is not None:
+        from backend.app.models.library import LibraryFolder
+
+        result = await db.execute(select(LibraryFolder).where(LibraryFolder.id == body.target_folder_id))
+        if not result.scalar_one_or_none():
+            return JSONResponse(
+                status_code=400,
+                content={"detail": f"Library folder with ID {body.target_folder_id} not found"},
+            )
+        vp.target_folder_id = body.target_folder_id
     if body.auto_dispatch is not None:
         vp.auto_dispatch = body.auto_dispatch
     if body.bind_ip is not None:

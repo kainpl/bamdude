@@ -37,6 +37,15 @@ export interface PrintModalProps {
   /** Delete the LibraryFile after dispatch — used by the Printers-page Direct-Print flow
    *  so transient uploads don't linger in File Manager. Only applies to library-file prints. */
   cleanupLibraryAfterDispatch?: boolean;
+  /** Initial value for the dispatch-mode toggle ('specific' picks printers,
+   *  'auto' routes via auto-queue). Defaults to 'specific'. Only meaningful
+   *  for add-to-queue mode. */
+  initialDispatchMode?: 'specific' | 'auto';
+  /** When true, hide the dispatch-mode toggle so the operator can't switch
+   *  between 'specific' and 'auto'. Used by drop-to-queue flows where the
+   *  drop target itself implies the mode (queue card → specific, auto-queue
+   *  panel → auto). Only meaningful for add-to-queue mode. */
+  lockDispatchMode?: boolean;
 }
 
 /**

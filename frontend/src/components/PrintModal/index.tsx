@@ -63,6 +63,8 @@ export function PrintModal({
   onSuccess,
   projectId,
   cleanupLibraryAfterDispatch,
+  initialDispatchMode,
+  lockDispatchMode,
 }: PrintModalProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -184,7 +186,7 @@ export function PrintModal({
   // Dispatch mode: 'specific' = pick exact printer(s); 'auto' = route via auto-queue.
   // Only meaningful for add-to-queue mode (reprint is always specific, edit-queue-item
   // is already bound to a per-printer queue row).
-  const [dispatchMode, setDispatchMode] = useState<'specific' | 'auto'>('specific');
+  const [dispatchMode, setDispatchMode] = useState<'specific' | 'auto'>(initialDispatchMode ?? 'specific');
   const [autoModeOptions, setAutoModeOptions] = useState<AutoModeOptionsState>(DEFAULT_AUTO_MODE_OPTIONS);
   const isAutoMode = mode === 'add-to-queue' && dispatchMode === 'auto';
 
@@ -801,8 +803,11 @@ export function PrintModal({
 
           <form onSubmit={handleSubmit} className={mode === 'reprint' ? '' : 'p-4 space-y-4'}>
             {/* Dispatch mode toggle — only for add-to-queue.
-                Reprint is always specific; edit is bound to an existing per-printer row. */}
-            {mode === 'add-to-queue' && (
+                Reprint is always specific; edit is bound to an existing per-printer row.
+                Hidden via lockDispatchMode when the modal was opened from a drop
+                target that implies the mode (queue card → specific, auto-queue
+                panel → auto). */}
+            {mode === 'add-to-queue' && !lockDispatchMode && (
               <div className="flex gap-2 p-1 bg-bambu-dark rounded-lg" role="radiogroup">
                 <button
                   type="button"

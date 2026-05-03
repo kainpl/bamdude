@@ -817,8 +817,14 @@ async def get_archive_stats(
 
     # Build date filter conditions
     # Exclude "archived" status - these are files uploaded via virtual printer
-    # or manual upload that were never actually printed
-    base_conditions = [PrintArchive.status != "archived"]
+    # or manual upload that were never actually printed.
+    # Exclude trashed rows (deleted_at IS NOT NULL) — trash is a soft-delete
+    # awaiting the retention sweeper, the user has explicitly removed these
+    # from active history and they shouldn't pollute totals / filament / cost.
+    base_conditions = [
+        PrintArchive.status != "archived",
+        PrintArchive.deleted_at.is_(None),
+    ]
     _apply_user_filter(base_conditions, created_by_id)
     if date_from:
         dt_from = datetime.combine(date_from, time.min, tzinfo=timezone.utc)
@@ -2682,97 +2688,6 @@ async def get_plate_preview(
         raise
     except Exception as e:
         raise HTTPException(500, f"Error extracting plate preview: {str(e)}")
-
-
-@router.post("/upload")
-async def upload_archive(
-    file: UploadFile = File(...),
-    printer_id: int | None = None,
-    db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.ARCHIVES_CREATE),
-):
-    """Manually upload a 3MF file to archive."""
-    if not file.filename or not file.filename.endswith(".3mf"):
-        raise HTTPException(400, "File must be a .3mf file")
-
-    # Save uploaded file temporarily
-    temp_path = settings.archive_dir / "temp" / _safe_filename(file.filename)
-    temp_path.parent.mkdir(parents=True, exist_ok=True)
-
-    try:
-        content = await file.read()
-        temp_path.write_bytes(content)
-
-        service = ArchiveService(db)
-        archive = await service.archive_print(
-            printer_id=printer_id,
-            source_file=temp_path,
-            created_by_id=current_user.id if current_user else None,
-        )
-
-        if not archive:
-            raise HTTPException(400, "Failed to archive file")
-
-        return ArchiveResponse.model_validate(archive)
-    finally:
-        if temp_path.exists():
-            temp_path.unlink()
-
-
-@router.post("/upload-bulk")
-async def upload_archives_bulk(
-    files: list[UploadFile] = File(...),
-    printer_id: int | None = None,
-    db: AsyncSession = Depends(get_db),
-    current_user: User | None = RequirePermission(Permission.ARCHIVES_CREATE),
-):
-    """Bulk upload multiple 3MF files to archive."""
-    results = []
-    errors = []
-
-    for file in files:
-        if not file.filename or not file.filename.endswith(".3mf"):
-            errors.append({"filename": file.filename or "unknown", "error": "Not a .3mf file"})
-            continue
-
-        safe_name = _safe_filename(file.filename)
-        temp_path = settings.archive_dir / "temp" / safe_name
-        temp_path.parent.mkdir(parents=True, exist_ok=True)
-
-        try:
-            content = await file.read()
-            temp_path.write_bytes(content)
-
-            service = ArchiveService(db)
-            archive = await service.archive_print(
-                printer_id=printer_id,
-                source_file=temp_path,
-                created_by_id=current_user.id if current_user else None,
-            )
-
-            if archive:
-                results.append(
-                    {
-                        "filename": safe_name,
-                        "id": archive.id,
-                        "status": "success",
-                    }
-                )
-            else:
-                errors.append({"filename": safe_name, "error": "Failed to process"})
-        except Exception as e:
-            logger.exception("Failed to upload archive %s: %s", safe_name, e)
-            errors.append({"filename": safe_name, "error": "Failed to process file"})
-        finally:
-            if temp_path.exists():
-                temp_path.unlink()
-
-    return {
-        "uploaded": len(results),
-        "failed": len(errors),
-        "results": results,
-        "errors": errors,
-    }
 
 
 @router.get("/{archive_id}/plates")

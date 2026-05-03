@@ -1,4 +1,4 @@
-import { useState, useRef, type DragEvent } from 'react';
+import { useState, useRef, useEffect, type DragEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Upload,
@@ -36,9 +36,15 @@ interface FileUploadModalProps {
   validateFile?: (file: File) => string | undefined;
   /** Restrict file picker to specific file types (e.g. ".gcode,.gcode.3mf") */
   accept?: string;
+  /** Files to preload on mount (e.g. from a page-level drop zone). Each file
+   * is fed through the same validate-and-add pipeline as picker / in-modal
+   * drop, so ZIP options stay visible and the operator can still cancel
+   * before upload. The prop is consumed once on mount; subsequent changes
+   * don't re-trigger ingestion. */
+  initialFiles?: File[];
 }
 
-export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUploaded, autoUpload, validateFile, accept }: FileUploadModalProps) {
+export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUploaded, autoUpload, validateFile, accept, initialFiles }: FileUploadModalProps) {
   const { t } = useTranslation();
   const [files, setFiles] = useState<UploadFile[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -142,6 +148,18 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
   const removeFile = (index: number) => {
     setFiles((prev) => prev.filter((_, i) => i !== index));
   };
+
+  // Ref-guarded so React.StrictMode's intentional double-invocation of
+  // mount effects in dev doesn't add the dropped files twice.
+  const initialFilesConsumedRef = useRef(false);
+  useEffect(() => {
+    if (initialFilesConsumedRef.current) return;
+    if (initialFiles && initialFiles.length > 0) {
+      initialFilesConsumedRef.current = true;
+      addFiles(initialFiles);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const hasZipFiles = files.some((f) => f.isZip && f.status === 'pending');
   const hasStlFiles = files.some((f) => f.file.name.toLowerCase().endsWith('.stl') && f.status === 'pending');
