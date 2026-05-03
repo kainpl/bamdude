@@ -30,6 +30,13 @@ const remainingGrams = (s: InventorySpool): number =>
 
 export const SPOOL_PLACEHOLDERS: SpoolPlaceholder[] = [
   {
+    key: 'id',
+    label: 'DB ID',
+    description: 'Internal database row ID — stable across renames, useful as a search anchor',
+    example: '42',
+    format: (s) => String(s.id ?? ''),
+  },
+  {
     key: 'brand',
     label: 'Brand',
     description: 'Manufacturer name',

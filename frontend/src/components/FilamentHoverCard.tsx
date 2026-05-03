@@ -27,7 +27,22 @@ interface SpoolmanConfig {
 interface InventoryConfig {
   onAssignSpool?: () => void;
   onUnassignSpool?: () => void;
-  assignedSpool?: { id: number; material: string; brand: string | null; color_name: string | null; remainingWeightGrams?: number | null } | null;
+  assignedSpool?: {
+    id: number;
+    material: string;
+    brand: string | null;
+    color_name: string | null;
+    remainingWeightGrams?: number | null;
+    /**
+     * Pre-formatted display name from the user's spool-name template
+     * (`Settings → Inventory → Spool display name`). When present, the
+     * hover card shows it verbatim — same string the operator sees in the
+     * inventory list and the assign-spool picker, so they recognise the
+     * spool without mental translation. Falls back to a brand/material/colour
+     * concatenation when the caller hasn't supplied one (older callers, tests).
+     */
+    displayName?: string;
+  } | null;
 }
 
 interface ConfigureSlotConfig {
@@ -53,6 +68,7 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
   const { t } = useTranslation();
   const [isVisible, setIsVisible] = useState(false);
   const [position, setPosition] = useState<'top' | 'bottom'>('top');
+  const [horizontalShift, setHorizontalShift] = useState(0);
   const [copied, setCopied] = useState(false);
   const [showUnlinkConfirm, setShowUnlinkConfirm] = useState(false);
   const triggerRef = useRef<HTMLDivElement>(null);
@@ -99,6 +115,7 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
     if (isVisible && triggerRef.current && cardRef.current) {
       const triggerRect = triggerRef.current.getBoundingClientRect();
       const cardHeight = cardRef.current.offsetHeight;
+      const cardWidth = cardRef.current.offsetWidth;
       // Account for fixed header (56px) - space above should exclude header area
       const headerHeight = 56;
       const spaceAbove = triggerRect.top - headerHeight;
@@ -110,6 +127,22 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
       } else {
         setPosition('top');
       }
+
+      // Horizontal clamp — keep the card inside the visible content area so the
+      // top-left slot of the leftmost printer doesn't push it under the sidebar
+      // (sidebar is `position: fixed` with z-30; card is z-60 so it would draw
+      // *over* the sidebar, but `<main>` has `overflow-auto` which clips the
+      // out-of-bounds portion). We anchor the safe-left edge on the actual
+      // `<main>` element's bounding rect — that way the threshold tracks the
+      // sidebar's expanded/collapsed/hidden state automatically.
+      const triggerCenterX = triggerRect.left + triggerRect.width / 2;
+      const desiredCardLeft = triggerCenterX - cardWidth / 2;
+      const main = document.querySelector('main');
+      const safeMargin = 8;
+      const minLeft = (main ? main.getBoundingClientRect().left : 0) + safeMargin;
+      const maxLeft = window.innerWidth - cardWidth - safeMargin;
+      const clampedLeft = Math.max(minLeft, Math.min(desiredCardLeft, maxLeft));
+      setHorizontalShift(clampedLeft - desiredCardLeft);
     }
   }, [isVisible]);
 
@@ -164,6 +197,9 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
           style={{
             // Ensure card doesn't go off-screen horizontally
             maxWidth: 'calc(100vw - 24px)',
+            // Viewport-clamp offset (see useEffect). Applied via marginLeft so
+            // the existing -translate-x-1/2 + zoom-in-95 transforms stay intact.
+            marginLeft: `${horizontalShift}px`,
           }}
         >
           {/* Card container */}
@@ -360,10 +396,16 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
                           {t('inventory.assigned')}
                         </span>
                       </div>
-                      <p className="text-xs text-white truncate">
-                        {inventory.assignedSpool.brand ? `${inventory.assignedSpool.brand} ` : ''}
-                        {inventory.assignedSpool.material}
-                        {inventory.assignedSpool.color_name ? ` - ${inventory.assignedSpool.color_name}` : ''}
+                      <p className="text-xs text-white truncate" title={inventory.assignedSpool.displayName}>
+                        {inventory.assignedSpool.displayName ? (
+                          inventory.assignedSpool.displayName
+                        ) : (
+                          <>
+                            {inventory.assignedSpool.brand ? `${inventory.assignedSpool.brand} ` : ''}
+                            {inventory.assignedSpool.material}
+                            {inventory.assignedSpool.color_name ? ` - ${inventory.assignedSpool.color_name}` : ''}
+                          </>
+                        )}
                       </p>
                       {inventory.onUnassignSpool && (
                         <button
@@ -412,7 +454,8 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
             </div>
           </div>
 
-          {/* Arrow pointer */}
+          {/* Arrow pointer — kept centred on the trigger even when the card
+              itself was viewport-clamped sideways (compensate by `-shift`). */}
           <div
             className={`
               absolute left-1/2 -translate-x-1/2 w-0 h-0
@@ -422,6 +465,7 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
                 ? 'top-full border-t-[6px] border-t-bambu-dark-tertiary'
                 : 'bottom-full border-b-[6px] border-b-bambu-dark-tertiary'}
             `}
+            style={{ marginLeft: `${-horizontalShift}px` }}
           />
         </div>
       )}
@@ -486,6 +530,9 @@ interface EmptySlotHoverCardProps {
 export function EmptySlotHoverCard({ children, className = '', configureSlot }: EmptySlotHoverCardProps) {
   const { t } = useTranslation();
   const [isVisible, setIsVisible] = useState(false);
+  const [horizontalShift, setHorizontalShift] = useState(0);
+  const triggerRef = useRef<HTMLDivElement>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleMouseEnter = () => {
@@ -504,8 +551,26 @@ export function EmptySlotHoverCard({ children, className = '', configureSlot }: 
     };
   }, []);
 
+  // Same horizontal clamp as FilamentHoverCard so the empty-slot tooltip on
+  // the leftmost printer doesn't slide under the sidebar either.
+  useEffect(() => {
+    if (isVisible && triggerRef.current && cardRef.current) {
+      const triggerRect = triggerRef.current.getBoundingClientRect();
+      const cardWidth = cardRef.current.offsetWidth;
+      const triggerCenterX = triggerRect.left + triggerRect.width / 2;
+      const desiredCardLeft = triggerCenterX - cardWidth / 2;
+      const main = document.querySelector('main');
+      const safeMargin = 8;
+      const minLeft = (main ? main.getBoundingClientRect().left : 0) + safeMargin;
+      const maxLeft = window.innerWidth - cardWidth - safeMargin;
+      const clampedLeft = Math.max(minLeft, Math.min(desiredCardLeft, maxLeft));
+      setHorizontalShift(clampedLeft - desiredCardLeft);
+    }
+  }, [isVisible]);
+
   return (
     <div
+      ref={triggerRef}
       className={`relative ${className}`}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
@@ -513,10 +578,14 @@ export function EmptySlotHoverCard({ children, className = '', configureSlot }: 
       {children}
 
       {isVisible && (
-        <div className="
-          absolute left-1/2 -translate-x-1/2 bottom-full mb-2 z-[60]
-          animate-in fade-in-0 zoom-in-95 duration-150
-        ">
+        <div
+          ref={cardRef}
+          className="
+            absolute left-1/2 -translate-x-1/2 bottom-full mb-2 z-[60]
+            animate-in fade-in-0 zoom-in-95 duration-150
+          "
+          style={{ marginLeft: `${horizontalShift}px` }}
+        >
           <div className="
             bg-bambu-dark-secondary border border-bambu-dark-tertiary
             rounded-md shadow-lg overflow-hidden
@@ -541,12 +610,15 @@ export function EmptySlotHoverCard({ children, className = '', configureSlot }: 
               </div>
             )}
           </div>
-          <div className="
-            absolute left-1/2 -translate-x-1/2 top-full w-0 h-0
-            border-l-[5px] border-l-transparent
-            border-r-[5px] border-r-transparent
-            border-t-[5px] border-t-bambu-dark-tertiary
-          " />
+          <div
+            className="
+              absolute left-1/2 -translate-x-1/2 top-full w-0 h-0
+              border-l-[5px] border-l-transparent
+              border-r-[5px] border-r-transparent
+              border-t-[5px] border-t-bambu-dark-tertiary
+            "
+            style={{ marginLeft: `${-horizontalShift}px` }}
+          />
         </div>
       )}
     </div>

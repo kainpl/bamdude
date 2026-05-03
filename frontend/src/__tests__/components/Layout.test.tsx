@@ -44,9 +44,6 @@ describe('Layout', () => {
       http.get('/api/v1/queue/', () => {
         return HttpResponse.json([]);
       }),
-      http.get('/api/v1/pending-uploads/count', () => {
-        return HttpResponse.json({ count: 0 });
-      }),
       http.get('/api/v1/updates/check', () => {
         return HttpResponse.json({ update_available: false });
       }),

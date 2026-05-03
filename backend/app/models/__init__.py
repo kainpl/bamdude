@@ -14,7 +14,6 @@ from backend.app.models.maintenance import MaintenanceHistory, MaintenanceType, 
 from backend.app.models.notification import NotificationLog
 from backend.app.models.notification_template import NotificationTemplate
 from backend.app.models.orca_base_cache import OrcaBaseProfile
-from backend.app.models.pending_upload import PendingUpload
 from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.project import Project
@@ -49,7 +48,6 @@ __all__ = [
     "APIKey",
     "AMSSensorHistory",
     "AmsLabel",
-    "PendingUpload",
     "LibraryFolder",
     "LibraryFileNote",
     "LibraryFile",

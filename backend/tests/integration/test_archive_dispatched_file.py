@@ -1,21 +1,23 @@
-"""Regression test: archive_print with dispatched_file uses the patched bytes for content_hash.
+"""Regression test: archive_print splits hashes between dispatched + source.
 
-Before the fix the dispatcher passed only ``source_file=upload_file_path`` (or
-the unpatched path, depending on which version of the code) and ``content_hash``
-ended up reflecting whichever single file got passed. With patches applied
-that broke the on_print_start restart-recovery path: it downloads the bytes
-from the printer (= patched) and looks for ``content_hash == hash(printer_copy)``,
-which never matched archives that recorded the unpatched library hash.
+* ``content_hash`` = SHA256(``dispatched_file``) — what's on the printer.
+  Drives ``on_print_start``'s restart-recovery query (it pulls the printer's
+  copy back over FTP, hashes it, looks for ``content_hash == temp_hash``).
+* ``source_content_hash`` = SHA256(``source_file``) (or the explicit param) —
+  chain root. Drives chain-of-custody grouping + file-on-disk dedup.
+* On-disk file at ``file_path`` is the **unpatched original** (``source_file``).
+  Reprint reads this back and re-runs the patcher per-job, so toggling
+  ``mesh_mode_fast_check`` / gcode injection on a reprint actually takes
+  effect — the patcher's M970 regex only matches uncommented lines and
+  couldn't undo a previously-baked patch.
+* When ``dispatched_file`` is None the two hashes coincide (legacy
+  single-file path: external prints, VP file_manager save, library upload
+  without patching).
 
-Post-fix:
-
-* ``content_hash`` = SHA256(``dispatched_file``) — what's on the printer
-* ``source_content_hash`` = SHA256(``source_file``) (or the explicit param) — chain root
-* When ``dispatched_file`` is None the two coincide (legacy single-file path)
-
-The on-disk archive copy is the dispatched bytes (so later ZipFile reads see
-exactly the bytes the printer received), and cross-printer file dedup keys on
-``content_hash`` so 6 prints with the same patches share one on-disk file.
+Cross-printer file dedup keys on ``effective_hash =
+COALESCE(source_content_hash, content_hash)``: every row sharing an
+unpatched origin shares the same on-disk file, regardless of which patches
+each individual dispatch applied.
 """
 
 from __future__ import annotations
@@ -82,15 +84,19 @@ async def test_archive_print_with_dispatched_file_records_patched_hash_as_conten
     # And those two MUST differ — that's the whole point of the split.
     assert archive.content_hash != archive.source_content_hash
 
-    # The on-disk copy is the dispatched bytes (so later ZipFile reads see
-    # exactly what the printer got). Verify by hashing the file at file_path.
+    # The on-disk copy is the UNPATCHED source (so reprint can re-run the
+    # patcher against a clean source and toggle patches in either direction).
+    # ``content_hash`` stays as the FTP/restart-recovery key — those two
+    # roles intentionally don't share a file. Verify by hashing the file at
+    # file_path: it must equal the source hash, NOT the dispatched hash.
     on_disk = tmp_path / archive.file_path
     assert on_disk.exists()
     h = hashlib.sha256()
     with open(on_disk, "rb") as fh:
         for chunk in iter(lambda: fh.read(8192), b""):
             h.update(chunk)
-    assert h.hexdigest() == dispatched_hash
+    assert h.hexdigest() == src_hash, "on-disk copy must be the unpatched source, not the dispatched bytes"
+    assert h.hexdigest() != dispatched_hash, "patched dispatched bytes must NOT land on disk"
 
 
 @pytest.mark.asyncio

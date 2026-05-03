@@ -40,7 +40,6 @@ from backend.app.api.routes import (
     notification_templates,
     notifications,
     obico,
-    pending_uploads,
     print_queue,
     printer_queues,
     printers,
@@ -5513,7 +5512,6 @@ app.include_router(system.router, prefix=app_settings.api_prefix)
 app.include_router(support.router, prefix=app_settings.api_prefix)
 app.include_router(websocket.router, prefix=app_settings.api_prefix)
 app.include_router(discovery.router, prefix=app_settings.api_prefix)
-app.include_router(pending_uploads.router, prefix=app_settings.api_prefix)
 app.include_router(firmware.router, prefix=app_settings.api_prefix)
 app.include_router(git_backup.router, prefix=app_settings.api_prefix)
 app.include_router(local_backup.router, prefix=app_settings.api_prefix)

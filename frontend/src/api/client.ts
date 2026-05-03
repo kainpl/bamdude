@@ -6321,18 +6321,6 @@ export interface VirtualPrinterModels {
   default: string;
 }
 
-export interface PendingUpload {
-  id: number;
-  filename: string;
-  file_size: number;
-  source_ip: string | null;
-  status: string;
-  tags: string | null;
-  notes: string | null;
-  project_id: number | null;
-  uploaded_at: string;
-}
-
 // Virtual Printer API
 export const virtualPrinterApi = {
   getSettings: () => request<VirtualPrinterSettings>('/settings/virtual-printer'),
@@ -6446,30 +6434,6 @@ export const multiVirtualPrinterApi = {
     request<{ detail: string; id: number }>(`/virtual-printers/${id}`, {
       method: 'DELETE',
     }),
-};
-
-// Pending Uploads API
-export const pendingUploadsApi = {
-  list: () => request<PendingUpload[]>('/pending-uploads/'),
-
-  getCount: () => request<{ count: number }>('/pending-uploads/count'),
-
-  get: (id: number) => request<PendingUpload>(`/pending-uploads/${id}`),
-
-  archive: (id: number, data?: { tags?: string; notes?: string; project_id?: number }) =>
-    request<{ id: number; print_name: string; filename: string }>(`/pending-uploads/${id}/archive`, {
-      method: 'POST',
-      body: JSON.stringify(data || {}),
-    }),
-
-  discard: (id: number) =>
-    request<{ success: boolean }>(`/pending-uploads/${id}`, { method: 'DELETE' }),
-
-  archiveAll: () =>
-    request<{ archived: number; failed: number }>('/pending-uploads/archive-all', { method: 'POST' }),
-
-  discardAll: () =>
-    request<{ discarded: number }>('/pending-uploads/discard-all', { method: 'DELETE' }),
 };
 
 // Firmware API Types

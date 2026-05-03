@@ -89,6 +89,7 @@ import { formatPrintName } from '../utils/printName';
 import { compareFwVersions } from '../utils/firmwareVersion';
 import { FilamentSlotCircle } from '../components/FilamentSlotCircle';
 import { getColorName, parseFilamentColor, isLightColor } from '../utils/colors';
+import { formatSpoolDisplayName, DEFAULT_SPOOL_DISPLAY_TEMPLATE } from '../utils/spoolName';
 
 // Color names resolve via getColorName() which reads the backend color_catalog
 // (loaded once at app startup by ColorCatalogProvider). Hardcoded hex/code tables
@@ -1273,6 +1274,7 @@ function PrinterCard({
   dryingPresets = DRYING_PRESETS,
   isSelected = false,
   onToggleSelect,
+  spoolDisplayTemplate,
 }: {
   printer: Printer;
   hideIfDisconnected?: boolean;
@@ -1301,8 +1303,10 @@ function PrinterCard({
   dryingPresets?: Record<string, { n3f: number; n3s: number; n3f_hours: number; n3s_hours: number }>;
   isSelected?: boolean;
   onToggleSelect?: (id: number) => void;
+  spoolDisplayTemplate?: string;
 }) {
   const { t } = useTranslation();
+  const effectiveSpoolTemplate = spoolDisplayTemplate || DEFAULT_SPOOL_DISPLAY_TEMPLATE;
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { showToast } = useToast();
@@ -3505,6 +3509,7 @@ function PrinterCard({
                                               brand: assignment.spool.brand,
                                               color_name: assignment.spool.color_name,
                                               remainingWeightGrams: Math.max(0, Math.round(assignment.spool.label_weight - assignment.spool.weight_used)),
+                                              displayName: formatSpoolDisplayName(assignment.spool, effectiveSpoolTemplate),
                                             } : null,
                                             onAssignSpool: filamentData.vendor !== 'Bambu Lab' ? () => setAssignSpoolModal({
                                               printerId: printer.id,
@@ -3811,6 +3816,7 @@ function PrinterCard({
                                           brand: assignment.spool.brand,
                                           color_name: assignment.spool.color_name,
                                           remainingWeightGrams: Math.max(0, Math.round(assignment.spool.label_weight - assignment.spool.weight_used)),
+                                          displayName: formatSpoolDisplayName(assignment.spool, effectiveSpoolTemplate),
                                         } : null,
                                         onAssignSpool: filamentData.vendor !== 'Bambu Lab' ? () => setAssignSpoolModal({
                                           printerId: printer.id,
@@ -4013,6 +4019,7 @@ function PrinterCard({
                                             brand: assignment.spool.brand,
                                             color_name: assignment.spool.color_name,
                                             remainingWeightGrams: Math.max(0, Math.round(assignment.spool.label_weight - assignment.spool.weight_used)),
+                                            displayName: formatSpoolDisplayName(assignment.spool, effectiveSpoolTemplate),
                                           } : null,
                                           onAssignSpool: () => setAssignSpoolModal({
                                             printerId: printer.id,
@@ -7028,6 +7035,7 @@ export function PrintersPage() {
                     dryingPresets={effectiveDryingPresets}
                     isSelected={selectedPrinterIds.has(printer.id)}
                     onToggleSelect={selectionMode ? toggleSelect : undefined}
+                    spoolDisplayTemplate={settings?.spool_display_template || undefined}
                   />
                 ))}
               </div>
@@ -7065,6 +7073,7 @@ export function PrintersPage() {
               dryingPresets={effectiveDryingPresets}
               isSelected={selectedPrinterIds.has(printer.id)}
               onToggleSelect={selectionMode ? toggleSelect : undefined}
+              spoolDisplayTemplate={settings?.spool_display_template || undefined}
             />
           ))}
         </div>

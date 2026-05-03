@@ -150,7 +150,6 @@ async def init_db():
         notification_template,
         oidc_provider,
         orca_base_cache,
-        pending_upload,
         print_queue,
         printer,
         printer_queue,

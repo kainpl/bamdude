@@ -199,13 +199,16 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
     : availableSpools;
 
   // Stage 2: tokenised substring search over the synthesised display name
-  // (same template as the inventory table). Lets the operator type
-  // "SUN Bl" and match "SUNLU PETG Black" without knowing which individual
-  // field the substring lives in.
+  // (same template as the inventory table) plus the spool's DB id as a prefix
+  // token. Lets the operator type "SUN Bl" and match "SUNLU PETG Black"
+  // without knowing which individual field the substring lives in, and also
+  // type a bare "42" to jump straight to spool #42 even when the configured
+  // display template doesn't include {id}.
   const spoolDisplayTemplate = settings?.spool_display_template || DEFAULT_SPOOL_DISPLAY_TEMPLATE;
   const filteredSpools = profileFilteredSpools?.filter((spool: InventorySpool) => {
     if (!searchFilter) return true;
-    return spoolDisplayNameMatches(formatSpoolDisplayName(spool, spoolDisplayTemplate), searchFilter);
+    const haystack = `${spool.id} ${formatSpoolDisplayName(spool, spoolDisplayTemplate)}`;
+    return spoolDisplayNameMatches(haystack, searchFilter);
   });
 
   const handleAssign = () => {

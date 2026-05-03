@@ -416,8 +416,20 @@ class PrinterManager:
         self._models[printer_id] = printer.model  # Cache model for feature detection
         self._printer_info[printer_id] = PrinterInfo(printer.name, printer.serial_number)
 
-        # Wait a moment for connection
-        await asyncio.sleep(1)
+        # Active poll until paho's `_on_connect` flips `state.connected`, capped
+        # at 10s. Replaces the prior fixed `await asyncio.sleep(1)` which raced
+        # against parallel reconnects during bulk dispatch (4+ printers running
+        # `ensure_fresh_connection_for_printer` simultaneously made some TLS
+        # handshakes miss the 1-second budget and the dispatcher would error
+        # out with "Can`t re-connect printer MQTT" even though the connection
+        # arrived a moment later). Healthy network: returns within ~100-300 ms
+        # like before. Fully offline: still returns False, just after 10s
+        # instead of 1s — the slower failure path is the trade-off for not
+        # spuriously failing on a busy moment.
+        for _ in range(100):  # 100 × 100 ms = 10 s
+            if client.state.connected:
+                break
+            await asyncio.sleep(0.1)
 
         # Trigger a one-shot 3MF download retry for any fallback archives
         # on this printer — now that we're back online, the file may be
@@ -526,7 +538,19 @@ class PrinterManager:
             elapsed,
             timeout,
         )
-        return await self.connect_printer(printer)
+        ok = await self.connect_printer(printer)
+        if not ok:
+            # Background dispatch and most callers raise a generic "Can`t
+            # re-connect printer MQTT" without printer context — surface
+            # the printer name + IP here so the operator can match the
+            # failure to a specific machine in the logs.
+            logger.warning(
+                "MQTT reconnect failed for printer %s (id=%s, ip=%s) after the connect-timeout poll",
+                printer.name,
+                printer.id,
+                printer.ip_address,
+            )
+        return ok
 
     def mark_printer_offline(self, printer_id: int):
         """Mark a printer as offline and trigger status callback.

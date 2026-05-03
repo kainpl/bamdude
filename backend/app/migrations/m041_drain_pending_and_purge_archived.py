@@ -99,7 +99,7 @@ from pathlib import Path
 from sqlalchemy import text
 
 from backend.app.core.config import settings as app_settings
-from backend.app.migrations.helpers import add_column
+from backend.app.migrations.helpers import add_column, table_exists
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +112,16 @@ async def upgrade(conn):
     # DELETE actions without PRAGMA foreign_keys=ON (which BamDude
     # doesn't set globally), so the FK clause is documentation for
     # Postgres + future-proofing.
+    #
+    # Guard: a future release will drop the model + the import in
+    # ``core/database.py`` once m042 has dropped the table everywhere,
+    # at which point fresh installs reach this migration with no
+    # ``pending_uploads`` table at all. ``add_column`` would then
+    # ALTER a non-existent table and fail. Skip the audit column on
+    # those installs — there's nothing to audit since m042 will drop
+    # the table later in the same boot.
+    if not await table_exists(conn, "pending_uploads"):
+        return
     await add_column(
         conn,
         "pending_uploads",
@@ -137,7 +147,13 @@ async def _drain_pending_uploads(db) -> None:
     against existing ``library_files.file_hash``, save if new. Either
     way the pending row's ``archived_to_library_id`` points at the
     library row that now holds the bytes (or stays NULL on discard).
+
+    No-op when the ``pending_uploads`` table is absent (fresh installs
+    on releases that have removed the model + ``database.py`` import).
     """
+
+    if not await table_exists(await db.connection(), "pending_uploads"):
+        return
 
     rows = (
         await db.execute(

@@ -2575,8 +2575,9 @@ export function FileManagerPage() {
                     <div className="flex items-center gap-1 flex-wrap">
                       <FileTagBadges tags={file.file_tags} compact direction="ltr" />
                     </div>
-                    {/* Size */}
-                    <div className="text-sm text-bambu-gray">{formatFileSize(file.file_size)}</div>
+                    {/* Size — right-aligned, same convention as the
+                        Archives list. */}
+                    <div className="text-sm text-bambu-gray text-right">{formatFileSize(file.file_size)}</div>
                     {/* Date */}
                     <div className="text-sm text-bambu-gray truncate">{formatDateTime(file.created_at, timeFormat, dateFormat)}</div>
                     {/* Actions — right-aligned within the column. When more

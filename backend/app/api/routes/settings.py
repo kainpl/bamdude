@@ -387,12 +387,18 @@ async def create_backup_zip(output_path: Path | None = None) -> tuple[Path, str]
         await dump_to_sqlite(engine, Base.metadata, temp_path / "bamdude.db")
 
         # 2. Copy data directories (if they exist)
+        # `certs/` holds the per-VP Tailscale TLS material plus the shared CA
+        # — on a fresh box without it the operator has to re-provision every
+        # virtual printer's cert from scratch, so we ship it inside the
+        # backup. (Skipped runtime caches: `firmware/` re-downloads on demand,
+        # `timelapse_frames/` is session scratch, `uploads/` is VP staging.)
         dirs_to_backup = [
             ("archive", base_dir / "archive"),
             ("virtual_printer", base_dir / "virtual_printer"),
             ("plate_calibration", app_settings.plate_calibration_dir),
             ("icons", base_dir / "icons"),
             ("projects", base_dir / "projects"),
+            ("certs", base_dir / "certs"),
         ]
 
         for name, src_dir in dirs_to_backup:
@@ -532,12 +538,16 @@ async def restore_backup(
 
             # 6. Replace data directories
             # For Docker compatibility: clear contents then copy (don't delete mount points)
+            # Mirrors the `dirs_to_backup` set in `create_backup_zip` — keep
+            # them in sync so a backup ZIP that contains a directory always
+            # has a restore path that consumes it.
             dirs_to_restore = [
                 ("archive", base_dir / "archive"),
                 ("virtual_printer", base_dir / "virtual_printer"),
                 ("plate_calibration", app_settings.plate_calibration_dir),
                 ("icons", base_dir / "icons"),
                 ("projects", base_dir / "projects"),
+                ("certs", base_dir / "certs"),
             ]
 
             skipped_dirs = []

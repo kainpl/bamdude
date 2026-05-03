@@ -1469,14 +1469,24 @@ class ArchiveService:
             if not printer:
                 return None
 
-        # The "dispatched bytes" are what we hash into ``content_hash`` and
-        # copy into the archive folder. Falling back to ``source_file`` when
-        # the caller didn't pass ``dispatched_file`` keeps every legacy
-        # call-site (external prints, VP file_manager save, library upload
-        # without patching) on the original single-file path: same hash,
-        # same on-disk copy, no behavioural change.
-        bytes_for_disk: Path = dispatched_file if dispatched_file is not None else source_file
-        content_hash = self.compute_file_hash(bytes_for_disk)
+        # Two distinct hashes, two distinct purposes:
+        # - ``content_hash`` = SHA256 of the *dispatched* bytes (post-patch,
+        #   what FTP sent to the printer). Drives ``on_print_start``'s
+        #   restart-recovery query: it pulls the printer's copy back over
+        #   FTP, hashes it, and looks for ``content_hash == temp_hash``.
+        #   Must be the patched hash for that to match.
+        # - ``source_content_hash`` (set further down via ``chain_lookup``
+        #   or as ``content_hash`` when the row is its own chain root) =
+        #   SHA256 of the unpatched original. Drives chain-of-custody
+        #   grouping and file-on-disk dedup.
+        # On disk we keep the ORIGINAL (unpatched) bytes — that way reprint
+        # can re-run the patcher against a clean source and toggle
+        # mesh_mode_fast_check / gcode injection in either direction. The
+        # patcher's M970 regex only matches *uncommented* lines, so a
+        # patched-on-disk source could never have an earlier patch undone.
+        bytes_for_disk: Path = source_file
+        hashed_bytes: Path = dispatched_file if dispatched_file is not None else source_file
+        content_hash = self.compute_file_hash(hashed_bytes)
 
         # External-print fallback: if the caller didn't provide source_content_hash
         # (i.e. print was initiated outside BamDude), try to link this archive to
@@ -1513,23 +1523,21 @@ class ArchiveService:
                 # row written by this code path has source_content_hash set.
                 source_content_hash = content_hash
 
-        # File-on-disk dedup is on EXACT ``content_hash`` (the bytes we just
-        # hashed from source_file) — not the chain-root ``effective_hash``.
-        # Different patched variants in the same chain (e.g. mesh-mode-disable
-        # gives bytes H2 from source H1) share ``effective_hash=H1`` but
-        # differ on disk; reusing across them would point a row at bytes that
-        # don't match its own ``content_hash``. Chain linkage is already
-        # preserved by ``chain_lookup`` above (sets ``source_content_hash``
-        # so the frontend still groups variants by ``effective_hash``).
-        # Cross-printer share is safe because identical patches are
-        # deterministic — same source + same patches → same content_hash.
-        # ``delete_archive`` ref-counts shared ``file_path``s; oldest match
-        # wins to keep the on-disk anchor stable.
+        # File-on-disk dedup is on the chain-root hash (``effective_hash =
+        # COALESCE(source_content_hash, content_hash)``) — every row that
+        # shares the same unpatched origin shares the same on-disk file,
+        # because that's exactly what we now write to disk regardless of
+        # which patches the dispatcher applied. Two patched variants and
+        # the unpatched original of the same source all collapse to one
+        # disk copy. Cross-printer share works for free for the same
+        # reason. ``delete_archive`` ref-counts shared ``file_path``s;
+        # oldest match wins to keep the on-disk anchor stable.
         printer_folder = str(printer_id) if printer_id is not None else "unassigned"
+        effective_hash = func.coalesce(PrintArchive.source_content_hash, PrintArchive.content_hash)
         existing = await self.db.execute(
             select(PrintArchive)
             .where(
-                PrintArchive.content_hash == content_hash,
+                effective_hash == source_content_hash,
                 PrintArchive.file_path.isnot(None),
                 PrintArchive.file_path != "",
                 PrintArchive.deleted_at.is_(None),
@@ -1821,15 +1829,21 @@ class ArchiveService:
             display_stem = Path(original_filename).stem if original_filename else source_file.stem
             dest_name = original_filename or source_file.name
 
-            # Cross-printer file dedup: if any other archive with this exact
-            # content_hash already has a valid on-disk file, reuse its path
-            # instead of creating a fresh archive_dir + copying. Strict
-            # content_hash match (not chain-coalesce) so we never alias to
-            # bytes that don't match our own ``content_hash``.
+            # Reuse the chain's on-disk file when one exists. Match on the
+            # chain-root hash (``effective_hash = COALESCE(source_content_hash,
+            # content_hash)``) — every row that shares an unpatched origin
+            # also shares the same on-disk file because ``archive_print``
+            # writes the unpatched source there. The bytes we just hashed
+            # from the printer (``source_file``) are post-patch and would
+            # disagree with what's on disk, but that's exactly the point:
+            # ``content_hash`` stays as the FTP/restart-recovery key, while
+            # ``file_path`` always points at the unpatched copy reprint can
+            # safely re-feed to the patcher.
+            effective_hash = func.coalesce(PrintArchive.source_content_hash, PrintArchive.content_hash)
             existing_with_file = await self.db.execute(
                 select(PrintArchive)
                 .where(
-                    PrintArchive.content_hash == content_hash,
+                    effective_hash == archive.source_content_hash,
                     PrintArchive.id != archive_id,
                     PrintArchive.file_path.isnot(None),
                     PrintArchive.file_path != "",

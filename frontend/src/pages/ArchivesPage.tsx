@@ -82,7 +82,6 @@ import { PhotoGalleryModal } from '../components/PhotoGalleryModal';
 import { ProjectPageModal } from '../components/ProjectPageModal';
 import { TimelapseViewer } from '../components/TimelapseViewer';
 import { CompareArchivesModal } from '../components/CompareArchivesModal';
-import { PendingUploadsPanel } from '../components/PendingUploadsPanel';
 import { TagManagementModal } from '../components/TagManagementModal';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -1996,13 +1995,13 @@ function ArchiveListRow({
     <>
       <div
         data-archive-id={archive.id}
-        className={`grid grid-cols-12 gap-4 px-4 py-3 items-center hover:bg-bambu-dark-tertiary/30 ${
+        className={`col-span-full grid grid-cols-subgrid items-center px-4 py-3 hover:bg-bambu-dark-tertiary/30 ${
           isSelected ? 'bg-bambu-green/10' : ''
         }`}
         style={isHighlighted ? { outline: '4px solid #facc15', outlineOffset: '-4px' } : undefined}
         onContextMenu={handleContextMenu}
       >
-        <div className="col-span-1 flex items-center gap-2">
+        <div className="flex items-center gap-2">
           {selectionMode && (
             <button onClick={() => onSelect(archive.id)}>
               {isSelected ? (
@@ -2024,7 +2023,7 @@ function ArchiveListRow({
             </div>
           )}
         </div>
-        <div className="col-span-4">
+        <div className="min-w-0">
           <div className="flex items-center gap-2">
             <p className="text-white text-sm truncate">{archive.print_name || archive.filename}</p>
             {(() => {
@@ -2124,11 +2123,11 @@ function ArchiveListRow({
             </div>
           )}
         </div>
-        <div className="col-span-2 text-sm text-bambu-gray truncate">
+        <div className="text-sm text-bambu-gray whitespace-nowrap">
           {printerName}
         </div>
-        <div className="col-span-2 text-sm text-bambu-gray truncate">
-          <div className="truncate">{formatDateTime(archive.created_at, timeFormat, dateFormat)}</div>
+        <div className="text-sm text-bambu-gray whitespace-nowrap">
+          <div>{formatDateTime(archive.created_at, timeFormat, dateFormat)}</div>
           {archive.created_by_username && (
             <div className="flex items-center gap-1 text-xs opacity-75" title={t('archives.card.uploadedBy', { name: archive.created_by_username })}>
               <User className="w-3 h-3" />
@@ -2136,10 +2135,10 @@ function ArchiveListRow({
             </div>
           )}
         </div>
-        <div className="col-span-1 text-sm text-bambu-gray">
+        <div className="text-sm text-bambu-gray whitespace-nowrap text-right">
           {formatFileSize(archive.file_size)}
         </div>
-        <div className="col-span-2 flex justify-end gap-1">
+        <div className="flex justify-end gap-1">
           {isSlicedFile(archive) && (
             <Button
               variant="ghost"
@@ -3386,9 +3385,6 @@ export function ArchivesPage() {
         </div>
       )}
 
-      {/* Pending Uploads Panel (visible when in queue mode with pending files) */}
-      <PendingUploadsPanel />
-
       {/* Archives */}
       {isLoading ? (
         <div className="text-center py-12 text-bambu-gray">{t('archives.loadingArchives')}</div>
@@ -3433,15 +3429,25 @@ export function ArchivesPage() {
         </div>
       ) : viewMode === 'list' ? (
         <Card>
-          <div className="divide-y divide-bambu-dark-tertiary">
-            {/* List Header */}
-            <div className="grid grid-cols-12 gap-4 px-4 py-3 text-xs text-bambu-gray font-medium">
-              <div className="col-span-1"></div>
-              <div className="col-span-4">{t('archives.list.name')}</div>
-              <div className="col-span-2">{t('archives.list.printer')}</div>
-              <div className="col-span-2">{t('archives.list.date')}</div>
-              <div className="col-span-1">{t('archives.list.size')}</div>
-              <div className="col-span-2">{t('archives.list.actions')}</div>
+          {/* One outer grid owns the column tracks; the header and every
+              `ArchiveListRow` opt into them via `grid-cols-subgrid`. That's
+              what makes the column widths agree across all rows — each row
+              measuring its own `auto` columns independently is exactly the
+              bug this replaces. `minmax(0, 1fr)` on the name column lets
+              row-level `truncate` keep clipping when the print name is long
+              (plain `1fr` resolves to `minmax(auto, 1fr)` and refuses to
+              shrink below min-content). `divide-y` keeps the row separators
+              now that we're not stacking divs anymore. */}
+          <div className="grid grid-cols-[auto_minmax(0,1fr)_auto_auto_auto_auto] gap-x-4 divide-y divide-bambu-dark-tertiary">
+            {/* List Header — centred per column (rows keep their own
+                left/right alignment). */}
+            <div className="col-span-full grid grid-cols-subgrid px-4 py-3 text-xs text-bambu-gray font-medium text-center">
+              <div></div>
+              <div>{t('archives.list.name')}</div>
+              <div>{t('archives.list.printer')}</div>
+              <div>{t('archives.list.date')}</div>
+              <div>{t('archives.list.size')}</div>
+              <div>{t('archives.list.actions')}</div>
             </div>
             {/* List Items */}
             {archives?.map((archive) => (

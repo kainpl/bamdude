@@ -122,7 +122,6 @@ _SKIP_TABLES = {
     "notification_templates",
     "spool_catalog",
     "color_catalog",
-    "pending_uploads",
     "notification_digest_queue",
     "bug_reports",
 }
