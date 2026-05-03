@@ -78,6 +78,7 @@ from backend.app.services.notification_service import notification_service
 from backend.app.services.print_scheduler import scheduler as print_scheduler
 from backend.app.services.printer_manager import (
     init_printer_connections,
+    parse_plate_id,
     printer_manager,
     printer_state_to_dict,
 )
@@ -2188,6 +2189,39 @@ async def on_print_start(printer_id: int, data: dict):
 
         check_name = subtask_name or filename.split("/")[-1].replace(".gcode", "").replace(".3mf", "")
 
+        # Live plate-index from MQTT (``Metadata/plate_N.gcode``). For a
+        # multi-plate container the on-disk 3MF + its content_hash are
+        # identical across plates — only the plate the printer is actually
+        # running differs. Without this, the hash/name adoption blocks below
+        # rely solely on ``status='printing' AND printer_id`` to disambiguate,
+        # which assumes the cleanup pass left exactly one in-flight row per
+        # printer. Adding a plate-index narrowing makes adoption survive the
+        # rare case where two ``'printing'`` rows for the same container
+        # remain (e.g. a previous plate's row got stuck after a hard crash
+        # and the cleanup time-gate could not close it).
+        # Legacy archives (pre-m038) carry ``plate_index = NULL``; treat them
+        # as plate-agnostic so this filter never excludes a legitimate
+        # adoption candidate from an older install.
+        live_plate_id = parse_plate_id(data.get("filename")) or parse_plate_id(
+            (data.get("raw_data") or {}).get("gcode_file")
+        )
+        logger.info(
+            "[adopt] check_name=%r live_plate_id=%s (filename=%r gcode_file=%r)",
+            check_name,
+            live_plate_id,
+            data.get("filename"),
+            (data.get("raw_data") or {}).get("gcode_file"),
+        )
+
+        def _plate_filter():
+            """Adoption filter for ``plate_index``. None = no filter."""
+            if live_plate_id is None:
+                return None
+            return or_(
+                PrintArchive.plate_index == live_plate_id,
+                PrintArchive.plate_index.is_(None),
+            )
+
         # Pre-check: if the printer told us a subtask_id, look for an archive
         # with the same id on this printer first. The printer-assigned id is
         # unique per submission (see start_print submission_id), so a match is
@@ -2213,7 +2247,7 @@ async def on_print_start(printer_id: int, data: dict):
                 )
 
         if existing_archive is None:
-            existing = await db.execute(
+            name_query = (
                 select(PrintArchive)
                 .where(PrintArchive.printer_id == printer_id)
                 .where(PrintArchive.status == "printing")
@@ -2228,8 +2262,11 @@ async def on_print_start(printer_id: int, data: dict):
                         ),
                     )
                 )
-                .order_by(PrintArchive.created_at.desc())
             )
+            _pf = _plate_filter()
+            if _pf is not None:
+                name_query = name_query.where(_pf)
+            existing = await db.execute(name_query.order_by(PrintArchive.created_at.desc()))
             candidates = existing.scalars().all()
             # Time gate: only adopt rows where the slicer's predicted print end
             # is still in the future ("the print could plausibly still be
@@ -2338,7 +2375,7 @@ async def on_print_start(printer_id: int, data: dict):
             from backend.app.services.archive import ArchiveService as _ArchiveSvc
 
             temp_hash = _ArchiveSvc.compute_file_hash(temp_path)
-            hash_match_result = await db.execute(
+            hash_query = (
                 select(PrintArchive)
                 .where(PrintArchive.printer_id == printer_id)
                 .where(PrintArchive.status == "printing")
@@ -2350,9 +2387,15 @@ async def on_print_start(printer_id: int, data: dict):
                         PrintArchive.source_content_hash == temp_hash,
                     )
                 )
-                .order_by(PrintArchive.created_at.desc())
-                .limit(1)
             )
+            # Multi-plate disambiguation: ``temp_hash`` is identical across
+            # plates of the same container (whole 3MF on disk + on SD), so
+            # the live plate index is the only thing that distinguishes a
+            # plate-5 row from a stuck plate-1 sibling on the same printer.
+            _pf = _plate_filter()
+            if _pf is not None:
+                hash_query = hash_query.where(_pf)
+            hash_match_result = await db.execute(hash_query.order_by(PrintArchive.created_at.desc()).limit(1))
             hash_match = hash_match_result.scalar_one_or_none()
             if hash_match is not None:
                 logger.info(
