@@ -1607,6 +1607,178 @@ def _load_objects_from_archive(archive, printer_id: int, logger) -> None:
     load_objects_from_archive_into_state(archive, printer_id)
 
 
+def _archive_matches_check_name(row, check_name: str) -> bool:
+    """Whether a ``PrintArchive`` row should be considered "the same print" as
+    the on_print_start event identified by ``check_name``.
+
+    Mirrors the matching rule used by the name-match adoption block — print_name
+    OR filename in {check_name, check_name+".3mf", check_name+".gcode.3mf"} —
+    and also tolerates rows whose ``filename`` is a full path like
+    ``/data/Metadata/Plate_1.gcode.3mf`` (compares the basename too).
+
+    Strict equality on ``filename`` is **not** enough: legacy rows can have
+    been stored as ``Plate_1.3mf`` (from the fallback path's
+    ``f"{print_name}.3mf"``) while a fresh on_print_start reports
+    ``Plate_1.gcode.3mf`` — without this leniency cleanup would close the live
+    row as "different file", and the name-match block would then create a
+    duplicate fresh archive.
+    """
+    if not check_name:
+        return False
+    candidates = {
+        check_name,
+        f"{check_name}.3mf",
+        f"{check_name}.gcode.3mf",
+    }
+    if row.print_name and row.print_name == check_name:
+        return True
+    if row.filename:
+        if row.filename in candidates:
+            return True
+        if row.filename.split("/")[-1] in candidates:
+            return True
+    return False
+
+
+async def _close_stale_printing_rows(
+    printer_id: int,
+    check_name: str,
+    db,
+    logger: logging.Logger,
+) -> None:
+    """Close stale ``status='printing'`` archive rows on this printer.
+
+    Runs at the top of ``on_print_start`` (after the ``_active_prints`` /
+    ``_expected_prints`` early returns) so the downstream name-match adoption
+    block + FTP/hash flow only sees rows that could plausibly be the live
+    print.
+
+    Closure rule: any row with non-NULL ``started_at`` + ``print_time_seconds``
+    is closed when its name doesn't match ``check_name`` (printer has moved on
+    to a different file) or when there's a *newer* same-name sibling (older
+    same-name rows are leftovers from a prior aborted dispatch — they can't
+    be the live print since a printer runs one job at a time). The name match
+    follows ``_archive_matches_check_name`` — same lenient rule the downstream
+    name-match adoption block uses. Status:
+
+      * ``predicted_end < now`` → ``'completed'`` with
+        ``completed_at = started_at + print_time_seconds`` (slicer's predicted
+        natural end; treat the row as if the print finished cleanly when its
+        timer ran out — accuracy is approximate, slicer estimates can drift,
+        but the row was clearly orphaned and the alternative is leaving it
+        forever in ``'printing'``).
+      * ``predicted_end > now`` → ``'cancelled'`` (printer is now on a
+        different print — the old one never reached its predicted end).
+
+    Each closed row gets ``extra_data['recovered_by_cleanup']=True`` for audit.
+
+    The newest same-name row is **left alone** so the downstream name-match
+    adoption block can decide based on its own time gate:
+
+      * That block now also checks ``predicted_end > now``. If true → adopt
+        the row directly (mid-print recovery shortcut, skips FTP + hash on
+        a potentially big 3MF).
+      * If ``predicted_end < now`` → defer to the FTP/hash path which will
+        either confirm (slicer underestimated, hash matches) or fall through
+        to a fresh fallback archive (different bytes despite same filename).
+
+    Trade-off: a long BamDude downtime followed by the operator reprinting
+    the same file from the printer's screen could see the new live print
+    glued onto the old (still ``'printing'``) row downstream — the new
+    on_print_start adopts the old archive instead of creating a fresh one.
+    Documented as acceptable: the same risk exists in pre-cleanup-pass code
+    via the unconditional name-match adoption block this feeds.
+    """
+    from backend.app.models.archive import PrintArchive
+
+    now = datetime.now(timezone.utc)
+
+    rows = (
+        (
+            await db.execute(
+                select(PrintArchive)
+                .where(PrintArchive.printer_id == printer_id)
+                .where(PrintArchive.status == "printing")
+                .where(PrintArchive.completed_at.is_(None))
+                .order_by(PrintArchive.started_at.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    if not rows:
+        return
+
+    same_name = [r for r in rows if _archive_matches_check_name(r, check_name)]
+    other_name = [r for r in rows if not _archive_matches_check_name(r, check_name)]
+
+    logger.info(
+        "[cleanup] printer=%s check_name=%r → %d 'printing' rows: %d same-name, %d other-name",
+        printer_id,
+        check_name,
+        len(rows),
+        len(same_name),
+        len(other_name),
+    )
+    for r in rows:
+        match_kind = "same" if _archive_matches_check_name(r, check_name) else "other"
+        logger.info(
+            "[cleanup]   row #%s filename=%r print_name=%r started_at=%s print_time=%ss → %s-name",
+            r.id,
+            r.filename,
+            r.print_name,
+            r.started_at.isoformat() if r.started_at else None,
+            r.print_time_seconds,
+            match_kind,
+        )
+
+    rows_to_close: list = list(other_name)
+    if len(same_name) > 1:
+        rows_to_close.extend(same_name[:-1])  # keep newest, close older siblings
+        logger.info(
+            "[cleanup] keeping newest same-name row #%s, closing %d older sibling(s)",
+            same_name[-1].id,
+            len(same_name) - 1,
+        )
+    elif len(same_name) == 1:
+        logger.info(
+            "[cleanup] keeping single same-name row #%s for downstream name-match adoption",
+            same_name[0].id,
+        )
+
+    closed_count = 0
+    for row in rows_to_close:
+        if row.started_at is None or row.print_time_seconds is None:
+            continue
+        started = row.started_at if row.started_at.tzinfo else row.started_at.replace(tzinfo=timezone.utc)
+        predicted_end = started + timedelta(seconds=row.print_time_seconds)
+        if predicted_end < now:
+            row.status = "completed"
+            row.completed_at = predicted_end
+        else:
+            row.status = "cancelled"
+        extra = dict(row.extra_data or {})
+        extra["recovered_by_cleanup"] = True
+        row.extra_data = extra
+        logger.info(
+            "[cleanup] Closed stale archive #%s (filename=%r) as %s (predicted_end=%s)",
+            row.id,
+            row.filename,
+            row.status,
+            predicted_end.isoformat(),
+        )
+        closed_count += 1
+
+    if closed_count > 0:
+        await db.commit()
+        logger.info(
+            "[cleanup] Closed %d stale 'printing' archive row(s) on printer %s",
+            closed_count,
+            printer_id,
+        )
+
+
 async def on_print_start(printer_id: int, data: dict):
     """Handle print start - archive the 3MF file immediately."""
     logger = logging.getLogger(__name__)
@@ -1907,6 +2079,31 @@ async def on_print_start(printer_id: int, data: dict):
                     logger.debug("[CALLBACK] re-load printable_objects failed: %s", e)
                 return
 
+        # Cleanup pass: close stale 'printing' rows that can't be the live print.
+        # Runs before _expected_prints lookup so leftover rows from a previous
+        # session don't pollute the downstream name-match adoption block. The
+        # newest row that matches the same check_name as this event is preserved
+        # — the name-match block + FTP path decide what to do with it. The same
+        # lenient name-matching rule (print_name OR filename in {check_name,
+        # check_name+".3mf", check_name+".gcode.3mf"} with basename tolerance)
+        # is shared between cleanup and the adoption block, so legacy rows
+        # stored as "Plate_1.3mf" don't get cleaned up when the new event
+        # reports "Plate_1.gcode.3mf".
+        cleanup_check_name = subtask_name or (
+            filename.split("/")[-1].replace(".gcode", "").replace(".3mf", "") if filename else ""
+        )
+        logger.info(
+            "[cleanup] inputs: subtask_name=%r filename=%r → check_name=%r",
+            subtask_name,
+            filename,
+            cleanup_check_name,
+        )
+        if cleanup_check_name:
+            try:
+                await _close_stale_printing_rows(printer_id, cleanup_check_name, db, logger)
+            except Exception as e:
+                logger.warning("[cleanup] Stale-printing cleanup failed: %s", e)
+
         expected_archive_id = None
         for key in expected_keys:
             expected_archive_id = _expected_prints.pop(key, None)
@@ -2033,9 +2230,46 @@ async def on_print_start(printer_id: int, data: dict):
                     )
                 )
                 .order_by(PrintArchive.created_at.desc())
-                .limit(1)
             )
-            existing_archive = existing.scalar_one_or_none()
+            candidates = existing.scalars().all()
+            # Time gate: only adopt rows where the slicer's predicted print end
+            # is still in the future ("the print could plausibly still be
+            # running"). Rows with NULL started_at / print_time_seconds keep
+            # the legacy unconditional-adoption behaviour so this fix doesn't
+            # regress legacy archives without timing data. Rows with
+            # predicted_end < now are deliberately *not* adopted here — if
+            # they're the live print under a slicer-underestimate scenario,
+            # the FTP/hash path that follows will catch them; otherwise this
+            # is a stuck row that the cleanup pass should have already closed.
+            now_ts = datetime.now(timezone.utc)
+            existing_archive = None
+            for cand in candidates:
+                if cand.started_at is None or cand.print_time_seconds is None:
+                    logger.info(
+                        "[name-match] adopt #%s (NULL started_at or print_time — legacy fallback path)",
+                        cand.id,
+                    )
+                    existing_archive = cand
+                    break
+                started_ts = cand.started_at if cand.started_at.tzinfo else cand.started_at.replace(tzinfo=timezone.utc)
+                predicted_end = started_ts + timedelta(seconds=cand.print_time_seconds)
+                # Diagnostic: surface the exact comparison so a "this should
+                # have been adopted but wasn't" report can be triaged from
+                # logs without running a debugger.
+                decision = "adopt" if predicted_end > now_ts else "defer-to-ftp"
+                logger.info(
+                    "[name-match] cand #%s started_at=%s (tz=%s) print_time=%ss predicted_end=%s now=%s → %s",
+                    cand.id,
+                    cand.started_at.isoformat() if cand.started_at else None,
+                    cand.started_at.tzinfo if cand.started_at else None,
+                    cand.print_time_seconds,
+                    predicted_end.isoformat(),
+                    now_ts.isoformat(),
+                    decision,
+                )
+                if predicted_end > now_ts:
+                    existing_archive = cand
+                    break
             # Backfill subtask_id onto an archive that matched by name only —
             # next restart can then use the faster subtask_id pre-check path.
             if existing_archive and subtask_id and existing_archive.subtask_id is None:
