@@ -6,7 +6,32 @@ All notable changes to BamDude will be documented in this file.
 
 ---
 
-## [Unreleased]
+## [0.4.2] - 2026-05-03
+
+Stable 0.4.2 release — the cumulative result of betas `0.4.2b1` (2026-04-28), `0.4.2b2` (2026-04-30), `0.4.2b3` (2026-05-02), and the post-b3 fix wave below. Image: `ghcr.io/kainpl/bamdude:0.4.2` / `kainpl/bamdude:0.4.2` (`:latest` now tracks this).
+
+**Headline since 0.4.1:**
+
+- **Auto-Queue routing** — a second queue layer above per-printer queues. Drop a print in without naming a printer; the scheduler picks an eligible idle one (model + filament type + optional colour + location), copies the item into that printer's queue, and lets the existing dispatch run. SJF + starvation guard, per-VP `auto_queue` mode, REST endpoint, and (new in this final wave) **drag-and-drop on the Auto-Queue panel**. Always-rendered panel so the drop target is permanent.
+- **Server-side slicing** — OrcaSlicer + Bambu Studio sidecar containers ship in the same Compose project (forked to `kainpl/orca-slicer-api`). Per-job slicer picker with live reachability badges, bed-type override, owner-filter on preset dropdowns, inline multi-plate picker, pre-slice printer-mismatch warning. Disabled by default; opt-in via Settings → Profiles → Slicer API.
+- **MakerWorld import** — paste any MakerWorld URL, browse plates, save / save-and-slice the one(s) you want. Per-plate dedup against existing library rows; MakerWorld provenance badge follows the file across library + archives.
+- **Per-plate archive awareness (m038)** — multi-plate prints now record *which plate* of the source 3MF actually ran. Thumbnail, print info, G-code, and the 3D viewer all reflect the printed plate; historical archives backfilled in two phases.
+- **Library + archive trash bins** — soft-delete with configurable retention (defaults 30 / 365 days), reference-aware hard-delete (refuses to delete a library file still pinned by an active archive), admin "Purge old" modal with live preview, opt-in Auto-purge. Trash UIs render thumbnails and a unified split-button.
+- **Composite `file_tags`** (m036 / m037) — `format` × `readiness` × `modifiers` × `provenance` chips drive both the badge row and a chip-row filter on the File Manager toolbar. Single source of truth for `isSliced` / `isSliceable` / `isMultiPlate` across the whole frontend.
+- **Drag-and-drop wave (post-b3)** — page-level drop on the File Manager files area opens the upload modal preloaded; per-printer queue cards accept sliced files (auto-routes through `add-to-queue` modal locked to that printer); Auto-Queue panel accepts files for auto-routing. New `PrintModal` props: `initialDispatchMode` + `lockDispatchMode`.
+- **Archive cleanup overhaul** — drift-mode schedule (24 h since last run, not midnight cron) replaces the fixed daily tick; manual runs reset the auto-cycle; per-run days override; **Cleanup 3MFs** button on the Archives page (replaces the removed per-row auto-purge); cleanup result count survives a server restart.
+- **Archive table audit cycle** — manual `POST /archives/upload` + `/upload-bulk` removed (back door for "archives that were never printed"); VP redesign so files land in the library first, then queue references them by `library_file_id` (no synthetic placeholder rows); `m041` migration drains `pending_uploads` into the library and hard-deletes legacy `status='archived'` rows. Archives are now strictly the print history of record — one row per physical print started by a real printer + the dispatcher.
+- **Restart-recovery for patched library/reprint dispatches** — new `archive_print(dispatched_file=...)` parameter splits roles: `content_hash` reflects the bytes actually on the printer's SD card (post-patcher), `source_content_hash` carries the chain root (the unpatched library bytes). Six prints with the same patch set + a restart no longer create six orphan fallback rows.
+- **Reprint creates a new archive row** instead of mutating the source row's terminal state. Reprinting a `failed` archive on N printers produces N independent history rows with their own `started_at` / energy / creator attribution; the original failure record is preserved. Cross-printer file dedup keeps the on-disk cost flat.
+- **Cross-printer file dedup on disk** — six printers running the same file share one archive copy on disk + N rows in the DB (was N copies on disk). Ref-counted delete only `rmtree`s when the last referencing row is hard-deleted.
+- **Always-fill `source_content_hash`** (m039) — every archive row born after 0.4.2 has a non-NULL chain root; `m039` lifts legacy NULL rows. The duplicate-detection badge now correctly groups patched + unpatched runs of the same library file as duplicates of each other.
+- **Sliding-session refresh tokens** + **CSP / HSTS** + **password complexity** + **rate limiting** + **2FA + OIDC encryption-at-rest** all carried over from 0.4.0 / 0.4.1 — no behavioural change in 0.4.2; called out here only because anyone upgrading from `0.3.x` will see them for the first time.
+
+**Upgrade notes:**
+
+- Migrations m038 (per-plate awareness backfill), m039 (chain-root backfill), m040 (per-VP `target_folder_id`), and m041 (drain pending uploads + purge legacy archived rows) all run once at first boot. m038 phase A + B opens every archive 3MF on disk and m041 walks `pending_uploads` — installs with thousands of historical archives will see a longer first-boot than usual; cost is one-time.
+- Manual archive upload (`POST /api/v1/archives/upload` + `/upload-bulk`) is **gone**. Operators who fed 3MFs into the system that way have three intent-matching paths: drag-drop onto a printer card on the Printers page (uploads + immediately prints), upload via the File Manager (saves to library for later), or send via the slicer to a Virtual Printer (lands in library + queues per VP config).
+- Archive auto-purge (per-row daily soft-delete) is **removed** — replaced by the per-design 3MF cleanup that prunes 3MF bytes by chain age. Archive rows themselves are kept for analytics / history; only the 3MF bytes age out. The trash bin + retention sweeper for *manual* deletes is unchanged. See the §Removed entry below for the rationale.
 
 ### Added
 

@@ -14,6 +14,15 @@
   <em>Hard fork of <a href="https://github.com/maziggy/bambuddy">Bambuddy</a> by maziggy, with Telegram bot, multi-chat auth, Ukrainian locale and more</em>
 </p>
 
+<p align="center">
+  <a href="https://bamdude.top/"><img alt="Website" src="https://img.shields.io/badge/Website-bamdude.top-2dd4bf?style=flat-square&logoColor=white"></a>
+  <a href="https://bamdude.top/features/"><img alt="Features" src="https://img.shields.io/badge/Features-overview-10b981?style=flat-square&logoColor=white"></a>
+  <a href="https://docs.bamdude.top/"><img alt="Documentation" src="https://img.shields.io/badge/Docs-docs.bamdude.top-3b82f6?style=flat-square&logo=readthedocs&logoColor=white"></a>
+  <a href="https://t.me/+3KQl2uNtOwo3NTgy"><img alt="Telegram Community" src="https://img.shields.io/badge/Telegram-BamDude%20Friends-26A5E4?style=flat-square&logo=telegram&logoColor=white"></a>
+  <a href="https://hub.docker.com/r/kainpl/bamdude"><img alt="Docker Hub" src="https://img.shields.io/badge/Docker-Hub-2496ED?style=flat-square&logo=docker&logoColor=white"></a>
+  <a href="https://github.com/kainpl/bamdude/releases"><img alt="Latest Release" src="https://img.shields.io/github/v/release/kainpl/bamdude?style=flat-square&logo=github"></a>
+</p>
+
 ---
 
 ## What's different from Bambuddy?
