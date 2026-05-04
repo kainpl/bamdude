@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -6,6 +6,7 @@ import {
   Folder,
   File,
   ChevronLeft,
+  ChevronDown,
   Download,
   Trash2,
   Loader2,
@@ -15,6 +16,7 @@ import {
   FileBox,
   FileText,
   Image,
+  Library,
   Search,
   ArrowUpDown,
   CheckSquare,
@@ -22,7 +24,7 @@ import {
   MinusSquare,
   Box,
 } from 'lucide-react';
-import { api } from '../api/client';
+import { api, type LibraryFolderTree } from '../api/client';
 import { parseUTCDate } from '../utils/date';
 import { Button } from './Button';
 import { ConfirmModal } from './ConfirmModal';
@@ -31,6 +33,27 @@ import { GcodeViewer } from './GcodeViewer';
 import type { PlateMetadata } from '../types/plates';
 import { useToast } from '../contexts/ToastContext';
 import { formatFileSize } from '../utils/file';
+
+// Depth-first flatten of the library folder tree for a single <select>.
+// Mirror of the helper in VirtualPrinterCard / MakerworldPage — kept inline
+// rather than promoted to a shared module since each consumer has subtly
+// different filtering needs (read-only externals, project scope, etc.).
+type FlatFolder = { folder: LibraryFolderTree; depth: number };
+function flattenFolderTree(tree: LibraryFolderTree, depth = 0, out: FlatFolder[] = []): FlatFolder[] {
+  out.push({ folder: tree, depth });
+  for (const child of tree.children ?? []) {
+    flattenFolderTree(child, depth + 1, out);
+  }
+  return out;
+}
+
+const LIBRARY_IMPORT_EXTS = new Set(['3mf', 'gcode']);
+function isLibraryImportable(filename: string): boolean {
+  const lower = filename.toLowerCase();
+  if (lower.endsWith('.gcode.3mf')) return true;
+  const ext = lower.split('.').pop() ?? '';
+  return LIBRARY_IMPORT_EXTS.has(ext);
+}
 
 interface FileManagerModalProps {
   printerId: number;
@@ -290,6 +313,68 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
   const [sortBy, setSortBy] = useState<SortOption>('name-asc');
   const [downloadProgress, setDownloadProgress] = useState<{ current: number; total: number } | null>(null);
   const [viewerFile, setViewerFile] = useState<{ path: string; name: string } | null>(null);
+  const [importDialogOpen, setImportDialogOpen] = useState(false);
+  const [importFolderId, setImportFolderId] = useState<number | null>(null);
+
+  // Library folder tree — fetched lazily, only when the import dialog opens.
+  // Same shape the VP card / Makerworld page consume.
+  const { data: libraryFolders } = useQuery({
+    queryKey: ['library-folders'],
+    queryFn: () => api.getLibraryFolders(),
+    enabled: importDialogOpen,
+  });
+
+  const importableSelectedPaths = useMemo(() => {
+    return Array.from(selectedFiles).filter((p) => isLibraryImportable(p.split('/').pop() ?? ''));
+  }, [selectedFiles]);
+
+  const importMutation = useMutation({
+    mutationFn: (params: { paths: string[]; folderId: number | null }) =>
+      api.importPrinterFilesToLibrary(printerId, params.paths, params.folderId),
+    onSuccess: (result) => {
+      const total = result.imported.length + result.skipped.length;
+      const importedCount = result.imported.length;
+      const existing = result.imported.filter((r) => r.was_existing).length;
+      if (existing > 0) {
+        showToast(
+          t('printerFiles.toast.importDone', {
+            imported: importedCount,
+            total,
+            existing,
+          }),
+        );
+      } else {
+        showToast(
+          t('printerFiles.toast.importDoneSimple', { imported: importedCount, total }),
+        );
+      }
+      // Refresh library views in case the user opens the file manager next.
+      queryClient.invalidateQueries({ queryKey: ['library-files'] });
+      queryClient.invalidateQueries({ queryKey: ['library-folders'] });
+      setImportDialogOpen(false);
+      setSelectedFiles(new Set());
+    },
+    onError: (error: Error) => {
+      showToast(t('printerFiles.toast.importFailed', { error: error.message }), 'error');
+    },
+  });
+
+  const handleOpenImportDialog = () => {
+    if (importableSelectedPaths.length === 0) {
+      showToast(t('printerFiles.toast.importNothingEligible'), 'error');
+      return;
+    }
+    setImportFolderId(null);
+    setImportDialogOpen(true);
+  };
+
+  const handleConfirmImport = () => {
+    if (importableSelectedPaths.length === 0) return;
+    showToast(
+      t('printerFiles.toast.importStarted', { count: importableSelectedPaths.length }),
+    );
+    importMutation.mutate({ paths: importableSelectedPaths, folderId: importFolderId });
+  };
 
   // Close on Escape key
   useEffect(() => {
@@ -374,11 +459,24 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
     const paths = Array.from(selectedFiles);
 
     if (paths.length === 1) {
-      // Single file - direct download with auth
-      api.downloadPrinterFile(printerId, paths[0]).catch((err) => {
-        console.error('Printer file download failed:', err);
-      });
-      setSelectedFiles(new Set());
+      // Single file — drive ``downloadProgress`` so the button shows a
+      // spinner while the printer streams the file over FTP. Without
+      // awaiting here the click looked like a no-op for several seconds
+      // until the browser's save-as dialog popped, and the user could
+      // double-click and queue a second pull.
+      setDownloadProgress({ current: 0, total: 1 });
+      try {
+        await api.downloadPrinterFile(printerId, paths[0]);
+        setSelectedFiles(new Set());
+      } catch (error) {
+        console.error('Printer file download failed:', error);
+        showToast(
+          `Download failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          'error',
+        );
+      } finally {
+        setDownloadProgress(null);
+      }
       return;
     }
 
@@ -684,7 +782,8 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
               {downloadProgress ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  {downloadProgress.current}/{downloadProgress.total}
+                  {t('printerFiles.downloading')}
+                  {downloadProgress.total > 1 ? ` (${downloadProgress.total})` : ''}
                 </>
               ) : (
                 <>
@@ -692,6 +791,20 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
                   Download{selectedFiles.size > 1 ? ` (${selectedFiles.size})` : ''}
                 </>
               )}
+            </Button>
+            <Button
+              variant="secondary"
+              disabled={importableSelectedPaths.length === 0 || importMutation.isPending}
+              onClick={handleOpenImportDialog}
+              title={t('printerFiles.importToLibrary')}
+            >
+              {importMutation.isPending ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Library className="w-4 h-4" />
+              )}
+              {t('printerFiles.importToLibrary')}
+              {importableSelectedPaths.length > 1 ? ` (${importableSelectedPaths.length})` : ''}
             </Button>
             <Button
               variant="secondary"
@@ -735,6 +848,87 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
           filename={viewerFile.name}
           onClose={() => setViewerFile(null)}
         />
+      )}
+
+      {importDialogOpen && (
+        <div
+          className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60] p-4"
+          onClick={() => !importMutation.isPending && setImportDialogOpen(false)}
+        >
+          <div
+            className="w-full max-w-md bg-bambu-dark-secondary rounded-xl border border-bambu-dark-tertiary overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3 p-4 border-b border-bambu-dark-tertiary">
+              <Library className="w-5 h-5 text-bambu-green" />
+              <div className="min-w-0 flex-1">
+                <h3 className="text-base font-semibold text-white">
+                  {t('printerFiles.importDialog.title')}
+                </h3>
+                <p className="text-xs text-bambu-gray truncate">
+                  {t('printerFiles.importDialog.subtitle', {
+                    count: importableSelectedPaths.length,
+                    printer: printerName,
+                  })}
+                </p>
+              </div>
+            </div>
+            <div className="p-4 space-y-3">
+              <div>
+                <label
+                  htmlFor="import-folder-select"
+                  className="text-white text-sm font-medium block mb-1"
+                >
+                  {t('printerFiles.importDialog.folderLabel')}
+                </label>
+                <div className="relative">
+                  <select
+                    id="import-folder-select"
+                    value={importFolderId ?? ''}
+                    onChange={(e) =>
+                      setImportFolderId(e.target.value === '' ? null : Number(e.target.value))
+                    }
+                    disabled={importMutation.isPending}
+                    className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded-md px-3 py-1.5 text-white text-sm appearance-none cursor-pointer disabled:opacity-50 pr-10"
+                  >
+                    <option value="">{t('printerFiles.importDialog.rootFolder')}</option>
+                    {(libraryFolders ?? [])
+                      .filter((f) => !(f.is_external && f.external_readonly))
+                      .flatMap((f) => flattenFolderTree(f))
+                      .map(({ folder, depth }) => (
+                        <option key={folder.id} value={folder.id}>
+                          {`${'— '.repeat(depth)}${folder.name}`}
+                        </option>
+                      ))}
+                  </select>
+                  <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
+                </div>
+              </div>
+              <p className="text-xs text-bambu-gray">{t('printerFiles.importDialog.hint')}</p>
+            </div>
+            <div className="flex justify-end gap-2 px-4 py-3 border-t border-bambu-dark-tertiary bg-bambu-dark/50">
+              <Button
+                variant="secondary"
+                onClick={() => setImportDialogOpen(false)}
+                disabled={importMutation.isPending}
+              >
+                {t('printerFiles.importDialog.cancel')}
+              </Button>
+              <Button
+                variant="primary"
+                onClick={handleConfirmImport}
+                disabled={importMutation.isPending}
+              >
+                {importMutation.isPending ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Library className="w-4 h-4" />
+                )}
+                {t('printerFiles.importDialog.confirm')}
+              </Button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

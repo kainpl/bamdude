@@ -8,7 +8,7 @@ from fastapi.responses import Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequireCameraStreamToken, RequirePermission
+from backend.app.core.auth import RequireCameraStreamToken, RequirePermission, require_permission
 from backend.app.core.config import settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -1329,6 +1329,140 @@ async def download_printer_files_as_zip(
         media_type="application/zip",
         headers={"Content-Disposition": 'attachment; filename="printer-files.zip"'},
     )
+
+
+@router.post("/{printer_id}/files/import-to-library")
+async def import_printer_files_to_library(
+    printer_id: int,
+    request: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(require_permission(Permission.PRINTERS_FILES, Permission.LIBRARY_UPLOAD)),
+):
+    """Import one or more files from the printer's SD card into the library.
+
+    Body: ``{"paths": ["/cache/foo.3mf", ...], "folder_id": 12 | null}``.
+    For each path the file is FTP-pulled from the printer in-process and
+    persisted via :func:`save_3mf_bytes_to_library` — same code path as
+    MakerWorld import / sliced output, so dedupe + thumbnail extraction +
+    plate-cache population behave identically. Returns per-path outcome so
+    the caller can show "imported / already in library / skipped" in one
+    summary toast instead of N requests.
+
+    Only ``.3mf`` and ``.gcode`` (case-insensitive) are eligible — other
+    file types on the printer's SD (timelapse mp4s, calibration pngs,
+    etc.) are not library content and are reported as ``unsupported_format``.
+    """
+    import io
+
+    from backend.app.api.routes.library import save_3mf_bytes_to_library
+    from backend.app.models.library import LibraryFolder
+
+    paths = request.get("paths", [])
+    folder_id = request.get("folder_id")
+    if not isinstance(paths, list) or not paths:
+        raise HTTPException(400, "No files specified")
+
+    def _normalise_3mf_filename(name: str, content: bytes) -> tuple[str, str | None]:
+        """Promote bare ``.3mf`` to ``.gcode.3mf`` when the bytes are sliced.
+
+        Bambu Studio's "Send to printer" drops the file on the printer's SD
+        as e.g. ``MyPrint.3mf`` regardless of whether the container is a raw
+        project or a sliced gcode-3mf — the file extension does not carry
+        the slice state on the printer side. Our library uses the filename
+        suffix to drive ``detect_file_type`` + ``compute_file_tags``, so a
+        sliced container imported under its bare ``.3mf`` name would land
+        in the library tagged as ``project`` and miss the ``sliced`` tag.
+        Detect the sliced shape (``Metadata/plate_*.gcode`` entries inside
+        the zip) and rename to ``{stem}.gcode.3mf`` before handing off to
+        ``save_3mf_bytes_to_library``. Returns ``(new_name, source_type)``
+        — ``source_type='sliced'`` only when we're sure, otherwise None
+        so legacy / project-only ``.3mf`` files keep their existing
+        tag-derivation path.
+        """
+        lower = name.lower()
+        if not lower.endswith(".3mf") or lower.endswith(".gcode.3mf"):
+            return name, None
+        try:
+            with zipfile.ZipFile(io.BytesIO(content), "r") as zf:
+                has_plate_gcode = any(n.startswith("Metadata/plate_") and n.endswith(".gcode") for n in zf.namelist())
+        except (zipfile.BadZipFile, KeyError):
+            return name, None
+        if not has_plate_gcode:
+            return name, None
+        stem = name[:-4]  # drop ".3mf" — case preserved by slicing on length, not lower
+        return f"{stem}.gcode.3mf", "sliced"
+
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    folder: LibraryFolder | None = None
+    if folder_id is not None:
+        folder = await db.get(LibraryFolder, folder_id)
+        if not folder:
+            raise HTTPException(404, "Folder not found")
+        # Read-only externals (mounted SMB shares the operator can browse but
+        # not write to) would silently fail at write time — refuse upfront.
+        if folder.is_external and folder.external_readonly:
+            raise HTTPException(400, "Folder is read-only")
+
+    imported: list[dict] = []
+    skipped: list[dict] = []
+
+    for path in paths:
+        if not isinstance(path, str) or not path:
+            skipped.append({"path": path, "reason": "invalid_path"})
+            continue
+
+        filename = path.split("/")[-1]
+        ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+        if ext not in ("3mf", "gcode"):
+            skipped.append({"path": path, "reason": "unsupported_format"})
+            continue
+
+        try:
+            data = await download_file_bytes_async(
+                printer.ip_address,
+                printer.access_code,
+                path,
+                printer_model=printer.model,
+            )
+        except Exception as e:
+            logger.warning("Printer FTP read failed for %s: %s", path, e)
+            skipped.append({"path": path, "reason": "download_failed", "detail": str(e)})
+            continue
+
+        if not data:
+            skipped.append({"path": path, "reason": "download_failed"})
+            continue
+
+        # Promote bare ``.3mf`` to ``.gcode.3mf`` when the zip is actually
+        # sliced — see ``_normalise_3mf_filename`` for context.
+        normalised_filename, detected_source_type = _normalise_3mf_filename(filename, data)
+
+        try:
+            library_file, was_existing = await save_3mf_bytes_to_library(
+                db,
+                content=data,
+                filename=normalised_filename,
+                folder=folder,
+                created_by_id=current_user.id if current_user else None,
+                source_type=detected_source_type,
+            )
+            imported.append(
+                {
+                    "path": path,
+                    "library_file_id": library_file.id,
+                    "filename": library_file.filename,
+                    "was_existing": was_existing,
+                }
+            )
+        except Exception as e:
+            logger.warning("Library import failed for %s: %s", path, e, exc_info=True)
+            skipped.append({"path": path, "reason": "import_error", "detail": str(e)})
+
+    return {"imported": imported, "skipped": skipped}
 
 
 @router.delete("/{printer_id}/files")

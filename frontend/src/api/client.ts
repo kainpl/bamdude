@@ -3628,6 +3628,23 @@ export const api = {
     request<{ status: string; path: string }>(`/printers/${printerId}/files?path=${encodeURIComponent(path)}`, {
       method: 'DELETE',
     }),
+  importPrinterFilesToLibrary: (
+    printerId: number,
+    paths: string[],
+    folderId: number | null,
+  ) =>
+    request<{
+      imported: Array<{
+        path: string;
+        library_file_id: number;
+        filename: string;
+        was_existing: boolean;
+      }>;
+      skipped: Array<{ path: string; reason: string; detail?: string }>;
+    }>(`/printers/${printerId}/files/import-to-library`, {
+      method: 'POST',
+      body: JSON.stringify({ paths, folder_id: folderId }),
+    }),
   getPrinterStorage: (printerId: number) =>
     request<{ used_bytes: number | null; free_bytes: number | null }>(`/printers/${printerId}/storage`),
 

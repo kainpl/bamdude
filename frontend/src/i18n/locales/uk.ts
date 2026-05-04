@@ -2080,9 +2080,25 @@ export default {
     deleteFiles: 'Видалити {{count}} файлів',
     deleteFileConfirm: 'Видалити "{{name}}"? Це не можна скасувати.',
     deleteFilesConfirm: 'Видалити {{count}} вибраних файлів? Це не можна скасувати.',
+    downloading: 'Завантаження...',
+    importToLibrary: 'У бібліотеку',
+    importDialog: {
+      title: 'Зберегти у бібліотеку',
+      subtitle: 'Імпорт {{count}} файлів з {{printer}}',
+      folderLabel: 'Цільова папка',
+      rootFolder: 'Корінь бібліотеки',
+      hint: 'Імпортуються лише .3mf і .gcode; інші типи (timelapse, фото) пропускаються.',
+      confirm: 'Імпортувати',
+      cancel: 'Скасувати'
+    },
     toast: {
       filesDeleted: 'Видалено {{count}} файлів',
-      deleteFailed: 'Помилка видалення: {{error}}'
+      deleteFailed: 'Помилка видалення: {{error}}',
+      importStarted: 'Імпорт {{count}} файлів...',
+      importDone: 'Імпортовано {{imported}} з {{total}} ({{existing}} уже в бібліотеці)',
+      importDoneSimple: 'Імпортовано {{imported}} з {{total}}',
+      importFailed: 'Помилка імпорту: {{error}}',
+      importNothingEligible: 'Жоден з вибраних файлів не підходить (потрібно .3mf або .gcode)'
     }
   },
 

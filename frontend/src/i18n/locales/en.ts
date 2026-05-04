@@ -2070,9 +2070,25 @@ export default {
     deleteFiles: 'Delete {{count}} Files',
     deleteFileConfirm: 'Delete "{{name}}"? This cannot be undone.',
     deleteFilesConfirm: 'Delete {{count}} selected files? This cannot be undone.',
+    downloading: 'Downloading...',
+    importToLibrary: 'Save to Library',
+    importDialog: {
+      title: 'Save to Library',
+      subtitle: 'Importing {{count}} file(s) from {{printer}}',
+      folderLabel: 'Destination folder',
+      rootFolder: 'Library root',
+      hint: 'Only .3mf and .gcode files are imported; other selected files (timelapse, images) are skipped.',
+      confirm: 'Import',
+      cancel: 'Cancel'
+    },
     toast: {
       filesDeleted: 'Deleted {{count}} file(s)',
-      deleteFailed: 'Delete failed: {{error}}'
+      deleteFailed: 'Delete failed: {{error}}',
+      importStarted: 'Importing {{count}} file(s)...',
+      importDone: 'Imported {{imported}} of {{total}} ({{existing}} already in library)',
+      importDoneSimple: 'Imported {{imported}} of {{total}}',
+      importFailed: 'Import failed: {{error}}',
+      importNothingEligible: 'No selected file is eligible for library import (.3mf / .gcode only)'
     }
   },
 

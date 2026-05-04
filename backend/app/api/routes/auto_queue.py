@@ -135,12 +135,24 @@ def _to_response(item: AutoQueueItem) -> AutoQueueItemResponse:
         created_by_id=item.created_by_id,
     )
 
-    # UI-friendly nested data
+    # UI-friendly nested data. Both ``PrintArchive`` and ``LibraryFile`` store
+    # the bare on-disk filename in a column literally named ``filename`` —
+    # the ``original_filename`` accessor used by the original auto-queue feature
+    # commit (81ae73f) referred to a column that was never added, so every POST
+    # that reached this builder raised ``AttributeError`` and the route returned
+    # 500 to the client *after* ``db.commit()`` had already persisted the
+    # auto-queue rows. Operators saw rows show up but the dispatch toast read
+    # "Internal Server Error", and frontend retries duplicated the items
+    # (support bundle 2026-05-04). Mirror ``print_queue._to_response`` here:
+    # archives get ``print_name or filename`` (so multi-plate suffix surfaces),
+    # library files prefer the parsed ``file_metadata['print_name']`` and fall
+    # back to the bare filename.
     if item.archive is not None:
-        response.archive_name = item.archive.original_filename
+        response.archive_name = item.archive.print_name or item.archive.filename
         response.archive_thumbnail = item.archive.thumbnail_path
     if item.library_file is not None:
-        response.library_file_name = item.library_file.original_filename
+        meta = item.library_file.file_metadata if item.library_file.file_metadata else None
+        response.library_file_name = (meta.get("print_name") if meta else None) or item.library_file.filename
         response.library_file_thumbnail = item.library_file.thumbnail_path
     if item.created_by is not None:
         response.created_by_username = item.created_by.username

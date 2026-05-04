@@ -273,6 +273,7 @@ class VirtualPrinterInstance:
         try:
             import hashlib
             import uuid
+            import zipfile
 
             from backend.app.api.routes.library import (
                 get_library_files_dir,
@@ -285,11 +286,32 @@ class VirtualPrinterInstance:
 
             async with self._session_factory() as db_session:
                 filename = file_path.name
-                ext = file_path.suffix.lower()
-                # Sliced 3MFs uploaded via the slicer's "Send to printer"
-                # carry a ``.gcode.3mf`` suffix; the helper collapses both
-                # that and plain ``.3mf`` to canonical primary types so VP
-                # entries match the file_manager's badging.
+                # Bambu Studio's "Send to printer" lands files via VP FTP
+                # under their bare ``.3mf`` name even when the bytes are a
+                # sliced gcode-3mf container. Without promoting the suffix,
+                # ``detect_file_type`` returns ``"3mf"`` and the row is
+                # tagged as a project, missing the ``sliced`` badge — same
+                # mismatch that hit the printer-FTP import path. Probe the
+                # zip for ``Metadata/plate_*.gcode`` and rewrite the
+                # apparent filename when present, so both the library row
+                # and the on-disk copy end up in the canonical sliced
+                # shape (``{stem}.gcode.3mf``).
+                detected_source_type: str | None = None
+                lower = filename.lower()
+                if lower.endswith(".3mf") and not lower.endswith(".gcode.3mf"):
+                    try:
+                        with zipfile.ZipFile(str(file_path), "r") as _probe:
+                            if any(n.startswith("Metadata/plate_") and n.endswith(".gcode") for n in _probe.namelist()):
+                                filename = f"{filename[:-4]}.gcode.3mf"
+                                detected_source_type = "sliced"
+                    except (zipfile.BadZipFile, KeyError):
+                        pass
+
+                # On-disk extension follows the (possibly promoted) filename
+                # so a row with ``filename = "X.gcode.3mf"`` keeps a
+                # ``{uuid}.gcode.3mf`` copy on disk — matches the regular
+                # library upload path.
+                ext = ".gcode.3mf" if filename.lower().endswith(".gcode.3mf") else file_path.suffix.lower()
                 file_type = detect_file_type(filename)
 
                 library_files_dir = get_library_files_dir()
@@ -367,13 +389,14 @@ class VirtualPrinterInstance:
                         filename=filename,
                         file_type=file_type,
                         file_metadata=metadata,
-                        source_type=None,
+                        source_type=detected_source_type,
                         swap_compatible=False,
                     ),
                     file_size=file_path.stat().st_size,
                     file_hash=file_hash,
                     thumbnail_path=to_relative_path(thumbnail_path) if thumbnail_path else None,
                     file_metadata=metadata,
+                    source_type=detected_source_type,
                 )
                 db_session.add(library_file)
                 await db_session.commit()
