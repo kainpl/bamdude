@@ -6377,9 +6377,11 @@ export function PrintersPage() {
     queryFn: api.getPrinters,
   });
 
-  // Hash-scroll: links from other pages (queue card / project detail) hit
-  // /printers#printer-<id>. The target card only mounts once `printers` is
-  // loaded, so re-run this when the data arrives.
+  // Hash-scroll: links from other pages (queue card / project detail /
+  // archives "printing" badge) hit /#printer-<id> — the printers list lives
+  // at the index route, so the path stays "/" with a hash anchor pointing
+  // at the target card's id={`printer-${id}`}. The card only mounts once
+  // `printers` is loaded, so re-run this when the data arrives.
   useEffect(() => {
     if (!printers?.length) return;
     const hash = window.location.hash;

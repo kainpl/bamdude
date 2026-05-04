@@ -825,7 +825,7 @@ function ArchiveCard({
           if (isPrinting && archive.printer_id) {
             return (
               <Link
-                to={`/printers/${archive.printer_id}`}
+                to={`/#printer-${archive.printer_id}`}
                 onClick={(e) => e.stopPropagation()}
                 className={`${base} ${pulseCls} hover:brightness-125 transition`}
                 title={t('archives.card.printingClickHint')}
@@ -2035,7 +2035,7 @@ function ArchiveListRow({
               if (isPrinting && archive.printer_id) {
                 return (
                   <Link
-                    to={`/printers/${archive.printer_id}`}
+                    to={`/#printer-${archive.printer_id}`}
                     onClick={(e) => e.stopPropagation()}
                     className={`${base} ${pulseCls} hover:brightness-125 transition`}
                     title={t('archives.card.printingClickHint')}
