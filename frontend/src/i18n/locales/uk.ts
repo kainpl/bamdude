@@ -1449,6 +1449,21 @@ export default {
     testFailedCount: '{{count}} не пройшло',
     messageTemplates: 'Шаблони повідомлень',
     messageTemplatesDescription: 'Налаштуйте повідомлення сповіщень для кожної події.',
+    notificationChannels: {
+      all: 'Усі',
+      email: 'Email',
+      test: 'Тест',
+    },
+    notificationTemplateGroups: {
+      print: 'Події друку',
+      printer: 'Статус принтера',
+      ams: 'AMS',
+      queue: 'Черга друку',
+      userEmail: 'Листи власнику задачі',
+      system: 'Системні листи',
+      test: 'Тестова',
+      other: 'Інше',
+    },
     // API Keys section
     apiKeys: 'API ключі',
     apiKeysDescription: 'Створіть API ключі для зовнішніх інтеграцій та вебхуків.',

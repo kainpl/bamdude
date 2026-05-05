@@ -1441,6 +1441,21 @@ export default {
     testFailedCount: '{{count}} failed',
     messageTemplates: 'Message Templates',
     messageTemplatesDescription: 'Customize notification messages for each event.',
+    notificationChannels: {
+      all: 'All',
+      email: 'Email',
+      test: 'Test',
+    },
+    notificationTemplateGroups: {
+      print: 'Print events',
+      printer: 'Printer status',
+      ams: 'AMS environmental',
+      queue: 'Print queue',
+      userEmail: 'Job owner emails',
+      system: 'System emails',
+      test: 'Test',
+      other: 'Other',
+    },
     // API Keys section
     apiKeys: 'API Keys',
     apiKeysDescription: 'Create API keys for external integrations and webhooks.',

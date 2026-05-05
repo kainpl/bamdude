@@ -3987,30 +3987,150 @@ export function SettingsPage() {
                 <Loader2 className="w-6 h-6 text-bambu-green animate-spin" />
               </div>
             ) : notificationTemplates && notificationTemplates.length > 0 ? (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
-                {[...notificationTemplates].sort((a, b) => a.name.localeCompare(b.name)).map((template) => (
-                  <Card
-                    key={template.id}
-                    className="cursor-pointer hover:border-bambu-green/50 transition-colors"
-                    onClick={() => setEditingTemplate(template)}
-                  >
-                    <CardContent className="py-2.5 px-3">
-                      <div className="flex items-center justify-between">
-                        <div className="min-w-0 flex-1">
-                          <p className="text-white font-medium text-sm truncate">{template.name}</p>
-                          <p className="text-bambu-gray text-xs truncate mt-0.5">{template.title_template}</p>
+              (() => {
+                // Per-event metadata: which group it belongs to and which
+                // channels actually consume the template at dispatch time.
+                // Source of truth is static — the channel/group info doesn't
+                // change at runtime, it's purely for the operator's mental
+                // model. Anything not listed lands in 'other'.
+                type EventGroup =
+                  | 'print'
+                  | 'printer'
+                  | 'ams'
+                  | 'queue'
+                  | 'userEmail'
+                  | 'system'
+                  | 'test'
+                  | 'other';
+                type EventChannel = 'all' | 'email' | 'test';
+
+                const EVENT_META: Record<string, { group: EventGroup; channel: EventChannel }> = {
+                  // Print lifecycle — fan out to every provider that wants the event.
+                  print_start: { group: 'print', channel: 'all' },
+                  print_complete: { group: 'print', channel: 'all' },
+                  print_failed: { group: 'print', channel: 'all' },
+                  print_stopped: { group: 'print', channel: 'all' },
+                  print_progress: { group: 'print', channel: 'all' },
+                  print_missing_spool_assignment: { group: 'print', channel: 'all' },
+                  plate_not_empty: { group: 'print', channel: 'all' },
+                  bed_cooled: { group: 'print', channel: 'all' },
+                  first_layer_complete: { group: 'print', channel: 'all' },
+                  // Printer status
+                  printer_offline: { group: 'printer', channel: 'all' },
+                  printer_error: { group: 'printer', channel: 'all' },
+                  filament_low: { group: 'printer', channel: 'all' },
+                  maintenance_due: { group: 'printer', channel: 'all' },
+                  // AMS — ams_ht_* reuse these templates (see notification_service.py)
+                  ams_humidity_high: { group: 'ams', channel: 'all' },
+                  ams_temperature_high: { group: 'ams', channel: 'all' },
+                  // Queue
+                  queue_job_added: { group: 'queue', channel: 'all' },
+                  queue_job_started: { group: 'queue', channel: 'all' },
+                  queue_job_waiting: { group: 'queue', channel: 'all' },
+                  queue_job_skipped: { group: 'queue', channel: 'all' },
+                  queue_job_failed: { group: 'queue', channel: 'all' },
+                  queue_completed: { group: 'queue', channel: 'all' },
+                  // Per-user "owner emails" — sent only via SMTP to job owner.
+                  user_print_start: { group: 'userEmail', channel: 'email' },
+                  user_print_complete: { group: 'userEmail', channel: 'email' },
+                  user_print_failed: { group: 'userEmail', channel: 'email' },
+                  user_print_stopped: { group: 'userEmail', channel: 'email' },
+                  // System emails — welcome, password reset.
+                  user_created: { group: 'system', channel: 'email' },
+                  password_reset: { group: 'system', channel: 'email' },
+                  // Test helper used by the "Send test" buttons.
+                  test: { group: 'test', channel: 'test' },
+                };
+
+                const GROUP_ORDER: EventGroup[] = ['print', 'printer', 'ams', 'queue', 'userEmail', 'system', 'test', 'other'];
+
+                // Bucket templates by group, alphabetised within each bucket.
+                const buckets: Record<EventGroup, typeof notificationTemplates> = {
+                  print: [],
+                  printer: [],
+                  ams: [],
+                  queue: [],
+                  userEmail: [],
+                  system: [],
+                  test: [],
+                  other: [],
+                };
+                for (const tmpl of notificationTemplates) {
+                  const group = EVENT_META[tmpl.event_type]?.group ?? 'other';
+                  buckets[group].push(tmpl);
+                }
+                for (const g of GROUP_ORDER) {
+                  buckets[g].sort((a, b) => a.name.localeCompare(b.name));
+                }
+
+                const channelBadge = (channel: EventChannel) => {
+                  if (channel === 'email') {
+                    return (
+                      <span className="px-1.5 py-0.5 bg-blue-500/20 text-blue-300 text-[10px] rounded uppercase tracking-wide">
+                        {t('settings.notificationChannels.email')}
+                      </span>
+                    );
+                  }
+                  if (channel === 'test') {
+                    return (
+                      <span className="px-1.5 py-0.5 bg-amber-500/20 text-amber-300 text-[10px] rounded uppercase tracking-wide">
+                        {t('settings.notificationChannels.test')}
+                      </span>
+                    );
+                  }
+                  return (
+                    <span className="px-1.5 py-0.5 bg-bambu-green/20 text-bambu-green text-[10px] rounded uppercase tracking-wide">
+                      {t('settings.notificationChannels.all')}
+                    </span>
+                  );
+                };
+
+                return (
+                  <div className="space-y-5">
+                    {GROUP_ORDER.map((group) => {
+                      const items = buckets[group];
+                      if (items.length === 0) return null;
+                      return (
+                        <div key={group}>
+                          <h4 className="text-xs text-bambu-gray uppercase tracking-wide mb-2">
+                            {t(`settings.notificationTemplateGroups.${group}`)}
+                          </h4>
+                          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+                            {items.map((template) => {
+                              const meta = EVENT_META[template.event_type] ?? { channel: 'all' as EventChannel };
+                              return (
+                                <Card
+                                  key={template.id}
+                                  className="cursor-pointer hover:border-bambu-green/50 transition-colors"
+                                  onClick={() => setEditingTemplate(template)}
+                                >
+                                  <CardContent className="py-2.5 px-3">
+                                    <div className="flex items-center justify-between gap-2">
+                                      <div className="min-w-0 flex-1">
+                                        <div className="flex items-center gap-1.5">
+                                          <p className="text-white font-medium text-sm truncate">{template.name}</p>
+                                          {channelBadge(meta.channel)}
+                                        </div>
+                                        <p className="text-bambu-gray text-xs truncate mt-0.5">{template.title_template}</p>
+                                      </div>
+                                      <button
+                                        className="p-1.5 hover:bg-bambu-dark-tertiary rounded transition-colors shrink-0"
+                                        onClick={(e) => { e.stopPropagation(); setEditingTemplate(template); }}
+                                      >
+                                        <Edit2 className="w-4 h-4 text-bambu-gray" />
+                                      </button>
+                                    </div>
+                                  </CardContent>
+                                </Card>
+                              );
+                            })}
+                          </div>
                         </div>
-                        <button
-                          className="p-1.5 hover:bg-bambu-dark-tertiary rounded transition-colors shrink-0 ml-2"
-                          onClick={(e) => { e.stopPropagation(); setEditingTemplate(template); }}
-                        >
-                          <Edit2 className="w-4 h-4 text-bambu-gray" />
-                        </button>
-                      </div>
-                    </CardContent>
-                  </Card>
-                ))}
-              </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()
             ) : (
               <Card>
                 <CardContent className="py-8">
