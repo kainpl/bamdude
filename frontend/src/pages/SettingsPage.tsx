@@ -45,6 +45,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Palette, Search } from 'lucide-react';
 import { registerSettingsSearch, getSettingsSearchEntries } from '../lib/settingsSearch';
 import { SlicerHealthIndicator } from '../components/SlicerHealthIndicator';
+import { PrintOptionsPreferencesPanel } from '../components/settings/PrintOptionsPreferencesPanel';
 
 const validTabs = ['general', 'printing', 'filament', 'notifications', 'plugs', 'network', 'virtual-printer', 'apikeys', 'failure-detection', 'users', 'backup'] as const;
 type TabType = typeof validTabs[number];
@@ -55,6 +56,7 @@ type UsersSubTab = 'users' | 'email' | 'ldap' | 'twofa' | 'oidc';
 // target Card is the upgrade path when keyword searches miss something.
 registerSettingsSearch({ labelKey: 'settings.tabs.general', tab: 'general', keywords: 'general language date time format printer model cards appearance theme dark light archive auto save thumbnails camera external video stream currency cost kwh price file manager disk updates version firmware beta sidebar links navigation', anchor: 'tab-general' });
 registerSettingsSearch({ labelKey: 'settings.tabs.printing', tab: 'printing', keywords: 'printing bed leveling flow calibration vibration first layer timelapse staggered batch delay start group plate clear confirm auto queue gcode injection farmloop swapmod autoclear drying presets temperature humidity ams ftp retry upload', anchor: 'tab-printing' });
+registerSettingsSearch({ labelKey: 'printOptionsPrefs.cardTitle', labelFallback: 'Saved Print Profiles', tab: 'printing', keywords: 'print options profile preferences saved per user model toggles bed leveling flow timelapse mesh swap macros copy', anchor: 'card-print-options-prefs' });
 registerSettingsSearch({ labelKey: 'settings.tabs.filament', tab: 'filament', keywords: 'filament checks warning runout remaining print modal custom mapping ams thresholds humidity temperature history retention spoolman tracking inventory sync remote integration spool catalog color catalog brand material import export', anchor: 'tab-filament' });
 registerSettingsSearch({ labelKey: 'settings.tabs.notifications', tab: 'notifications', keywords: 'notifications providers telegram discord email webhook ntfy pushover home assistant message templates notification text edit digest log viewer', anchor: 'tab-notifications' });
 registerSettingsSearch({ labelKey: 'settings.tabs.smartPlugs', tab: 'plugs', keywords: 'smart plugs energy power automation tapo kasa tplink shelly tasmota discovery kwh monitoring', anchor: 'tab-plugs' });
@@ -3087,6 +3089,22 @@ export function SettingsPage() {
                   );
                 });
               })()}
+            </CardContent>
+          </Card>
+
+          {/* Saved Print Profiles — admin view of every per-(user, model)
+              PrintModal toggle preference. Add/edit/delete and copy across
+              users so onboarding a new operator can inherit the lead's
+              calibrated defaults. */}
+          <Card id="card-print-options-prefs">
+            <CardHeader>
+              <h3 className="text-base font-semibold text-white flex items-center gap-2">
+                <Save className="w-4 h-4 text-bambu-green" />
+                {t('printOptionsPrefs.cardTitle')}
+              </h3>
+            </CardHeader>
+            <CardContent>
+              <PrintOptionsPreferencesPanel />
             </CardContent>
           </Card>
 

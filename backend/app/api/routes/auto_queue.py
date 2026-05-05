@@ -199,7 +199,13 @@ async def add_to_auto_queue(
     library_file = None
     if data.library_file_id:
         # Trash bin (#1008): refuse to dispatch a soft-deleted source.
-        result = await db.execute(LibraryFile.active().where(LibraryFile.id == data.library_file_id))
+        # m044: eager-load M2M projects so the inherit-fallback below
+        # doesn't lazy-fetch.
+        result = await db.execute(
+            LibraryFile.active()
+            .options(selectinload(LibraryFile.projects))
+            .where(LibraryFile.id == data.library_file_id)
+        )
         library_file = result.scalar_one_or_none()
         if not library_file:
             raise HTTPException(400, "Library file not found")
@@ -209,10 +215,13 @@ async def add_to_auto_queue(
         if not result.scalar_one_or_none():
             raise HTTPException(404, "Project not found")
 
-    # Inherit project_id from library file if not set explicitly
+    # Inherit project from library file if not set explicitly. m044:
+    # multi-project file → first project as fallback (auto-queue items
+    # are single-project by design; operator passes ``project_id`` to
+    # disambiguate).
     effective_project_id = data.project_id
-    if effective_project_id is None and library_file is not None and library_file.project_id is not None:
-        effective_project_id = library_file.project_id
+    if effective_project_id is None and library_file is not None and library_file.projects:
+        effective_project_id = library_file.projects[0].id
 
     # Resolve plate IDs to fan out (one row per plate)
     plate_ids: list[int | None]

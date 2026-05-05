@@ -45,7 +45,30 @@ async def seed(session_factory):
     # Backfill plan rows for files already linked to a project via
     # library_files.project_id — only .3mf. Ordering: creation order
     # within each project (id ASC).
+    #
+    # Post-m044: library_files.project_id is gone. On fresh installs this
+    # seed has nothing to backfill anyway (empty table), and on upgrade
+    # installs that already passed m044 the column is also gone. Guard
+    # the SELECT so it doesn't crash with "no such column".
+    from backend.app.core.db_dialect import is_postgres
+
     async with session_factory() as db:
+        if is_postgres():
+            col_check = await db.execute(
+                text(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_schema='public' AND table_name='library_files' "
+                    "AND column_name='project_id'"
+                )
+            )
+            project_id_exists = col_check.scalar() is not None
+        else:
+            cols = (await db.execute(text("PRAGMA table_info(library_files)"))).fetchall()
+            project_id_exists = any(row[1] == "project_id" for row in cols)
+
+        if not project_id_exists:
+            return
+
         await db.execute(
             text(
                 """

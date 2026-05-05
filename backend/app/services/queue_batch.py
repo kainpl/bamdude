@@ -60,15 +60,23 @@ async def enqueue_batch_copies(
     swap_macro_events_json = json.dumps(swap_macro_events) if execute_swap_macros and swap_macro_events else None
 
     # Fallback: inherit project_id from the library file if caller didn't pass
-    # an explicit one — matches the cascade logic in the single-add endpoint so
-    # project stats stay correct for direct-dispatch-with-quantity>1 paths.
+    # an explicit one. m044: a file can belong to multiple projects — pick
+    # the first as a fallback so project stats still count direct-dispatch-
+    # with-quantity>1 batches. Operators wanting a specific project should
+    # pass ``project_id`` explicitly from the dispatch endpoint.
     effective_project_id = project_id
     if effective_project_id is None and library_file_id is not None:
+        from sqlalchemy.orm import selectinload
+
         from backend.app.models.library import LibraryFile
 
-        lib_row = await db.get(LibraryFile, library_file_id)
-        if lib_row is not None and lib_row.project_id is not None:
-            effective_project_id = lib_row.project_id
+        lib_row = (
+            await db.execute(
+                select(LibraryFile).options(selectinload(LibraryFile.projects)).where(LibraryFile.id == library_file_id)
+            )
+        ).scalar_one_or_none()
+        if lib_row is not None and lib_row.projects:
+            effective_project_id = lib_row.projects[0].id
 
     items: list[PrintQueueItem] = []
     for i in range(count):

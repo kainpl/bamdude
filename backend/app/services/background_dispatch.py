@@ -678,6 +678,14 @@ class BackgroundDispatchService:
         }
 
     async def _process_job(self, job: PrintDispatchJob):
+        # Stagger gate: applies to both direct prints (cold acquire — polls
+        # until a slot frees) and queue dispatch (slot was pre-registered
+        # synchronously by ``print_scheduler._start_print``, so this returns
+        # immediately). Lazy import — print_scheduler imports us back.
+        from backend.app.services.print_scheduler import scheduler as print_scheduler
+
+        await print_scheduler.acquire_stagger_slot(job.printer_id)
+
         if job.kind == "reprint_archive":
             await self._run_reprint_archive(job)
             return

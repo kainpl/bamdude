@@ -11,9 +11,10 @@ from backend.app.core.database import Base
 class ProjectPrintPlanItem(Base):
     """One row per (project, library_file) pair.
 
-    A file can only belong to one project (``library_files.project_id`` is
-    1:1), so ``library_file_id`` alone would be unique — but we still scope
-    the constraint to the project for readability and defensiveness.
+    Since m044 a library file can belong to multiple projects, so this
+    table now carries one row per (project, file) combination — a file
+    in N projects appears in N plans with independent ``copies`` /
+    ``order_index``. The unique constraint pivots accordingly.
 
     Totals (grams, time, objects, cost) are computed on-the-fly from the
     joined ``LibraryFile.file_metadata`` × ``copies`` rather than cached
@@ -21,7 +22,7 @@ class ProjectPrintPlanItem(Base):
     """
 
     __tablename__ = "project_print_plan_items"
-    __table_args__ = (UniqueConstraint("library_file_id", name="uq_plan_library_file"),)
+    __table_args__ = (UniqueConstraint("project_id", "library_file_id", name="uq_plan_project_file"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)

@@ -304,6 +304,14 @@ class PrintPlanItemResponse(BaseModel):
     total_objects: int | None = None
     total_cost: float | None = None
 
+    # Per-project print progress (read-only): count of completed
+    # ``print_archives`` rows with this ``(project_id, library_file_id)``
+    # pair, plus the derived ``copies - printed_count`` remainder
+    # (clamped at 0 so an operator-reduced ``copies`` value doesn't
+    # surface as a negative).
+    printed_count: int = 0
+    remaining_count: int = 0
+
     class Config:
         from_attributes = True
 

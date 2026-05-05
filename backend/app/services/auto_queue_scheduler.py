@@ -96,12 +96,34 @@ class AutoQueueScheduler:
             sjf = await _get_bool_setting(db, SJF_SETTING_KEY)
             prefer_lowest = await _get_bool_setting(db, PREFER_LOWEST_SETTING_KEY)
 
-            # 1. Build busy set from per-printer queues currently dispatching/printing.
-            #    PrinterQueue.status='printing' is the authoritative "this printer is
-            #    occupied" marker — flipped at dispatch time by the existing
-            #    per-printer flow. Reading it here avoids racing with PrintScheduler.
-            busy_result = await db.execute(select(PrinterQueue.printer_id).where(PrinterQueue.status == "printing"))
-            busy_printers: set[int] = {pid for (pid,) in busy_result.all()}
+            # 1. Build busy set: a printer is "off-limits for new auto-routing"
+            #    when EITHER its queue is currently printing OR its queue
+            #    already holds a pending item (regardless of how that item
+            #    got there — manual queue, scheduled, prior auto-route).
+            #
+            #    The status='printing' clause alone is not enough: between
+            #    auto-queue tick N (which assigns items 1..K to K printers as
+            #    pending PrintQueueItem rows) and PrintScheduler's next tick
+            #    (which actually flips PrinterQueue.status to 'printing' as
+            #    its synchronous prep walks the items in queue_id order),
+            #    there's a window where some printers have already flipped
+            #    and the lagging ones haven't. If auto-queue tick N+1 fires
+            #    inside that window it sees the lagging printers as "free"
+            #    and double-stacks the next pending items onto them — every
+            #    new auto item lands on the same lagging printer (highest id,
+            #    last in PrintScheduler's per-tick prep order). Including
+            #    "has any pending PrintQueueItem" in the busy set closes the
+            #    gap: each auto-queue tick can place at most one new item
+            #    per printer, and the next placement on that printer waits
+            #    until the queue actually drains.
+            busy_q1 = await db.execute(select(PrinterQueue.printer_id).where(PrinterQueue.status == "printing"))
+            busy_q2 = await db.execute(
+                select(PrinterQueue.printer_id)
+                .join(PrintQueueItem, PrintQueueItem.queue_id == PrinterQueue.id)
+                .where(PrintQueueItem.status == "pending")
+                .distinct()
+            )
+            busy_printers: set[int] = {pid for (pid,) in busy_q1.all()} | {pid for (pid,) in busy_q2.all()}
 
             # 2. Fetch pending auto items in scheduling order
             pending = await self._fetch_pending(db, sjf)

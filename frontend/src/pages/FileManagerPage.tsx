@@ -29,7 +29,6 @@ import {
   AlertTriangle,
   X,
   Link2,
-  Unlink,
   Archive as ArchiveIcon,
   Briefcase,
   Printer,
@@ -374,15 +373,16 @@ interface LinkFolderModalProps {
 }
 
 function LinkFolderModal({ folder, onClose, onLink, isLoading, t }: LinkFolderModalProps) {
-  const [linkType, setLinkType] = useState<'project' | 'archive'>('project');
-  const [selectedId, setSelectedId] = useState<number | null>(
-    folder.project_id || folder.archive_id || null
+  // m044: folder ↔ projects is M2M; archive stays single-link.
+  // Mode toggles which surface the operator wants to edit; the modal
+  // submits both halves of the state in one PUT.
+  const [linkType, setLinkType] = useState<'project' | 'archive'>(
+    folder.archive_id ? 'archive' : 'project',
   );
-
-  // Initialize linkType based on existing link
-  useState(() => {
-    if (folder.archive_id) setLinkType('archive');
-  });
+  const [selectedProjectIds, setSelectedProjectIds] = useState<Set<number>>(
+    () => new Set(folder.projects.map((p) => p.id)),
+  );
+  const [selectedArchiveId, setSelectedArchiveId] = useState<number | null>(folder.archive_id);
 
   const { data: projects } = useQuery({
     queryKey: ['projects'],
@@ -394,28 +394,27 @@ function LinkFolderModal({ folder, onClose, onLink, isLoading, t }: LinkFolderMo
     queryFn: () => api.getArchives({ per_page: 100 }),
   });
 
-  const handleSave = () => {
-    if (linkType === 'project') {
-      onLink({
-        project_id: selectedId,
-        archive_id: 0, // Unlink archive
-      });
-    } else {
-      onLink({
-        project_id: 0, // Unlink project
-        archive_id: selectedId,
-      });
-    }
-  };
-
-  const handleUnlink = () => {
-    onLink({
-      project_id: 0,
-      archive_id: 0,
+  const toggleProject = (projectId: number) => {
+    setSelectedProjectIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(projectId)) next.delete(projectId);
+      else next.add(projectId);
+      return next;
     });
   };
 
-  const isLinked = folder.project_id || folder.archive_id;
+  const handleSave = () => {
+    if (linkType === 'project') {
+      // Replace the project list; leave archive untouched. Per-project
+      // unlink happens by deselecting individual chips above; the
+      // legacy "wipe everything" red button is gone.
+      onLink({ project_ids: Array.from(selectedProjectIds) });
+    } else {
+      // Archive is single-link; clearing the selection (× button on the
+      // active-archive row) sends archive_id=0.
+      onLink({ archive_id: selectedArchiveId ?? 0 });
+    }
+  };
 
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
@@ -438,7 +437,7 @@ function LinkFolderModal({ folder, onClose, onLink, isLoading, t }: LinkFolderMo
           {/* Link type selector */}
           <div className="flex gap-2">
             <button
-              onClick={() => { setLinkType('project'); setSelectedId(null); }}
+              onClick={() => setLinkType('project')}
               className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg border transition-colors ${
                 linkType === 'project'
                   ? 'border-bambu-green bg-bambu-green/10 text-bambu-green'
@@ -449,7 +448,7 @@ function LinkFolderModal({ folder, onClose, onLink, isLoading, t }: LinkFolderMo
               {t('fileManager.project')}
             </button>
             <button
-              onClick={() => { setLinkType('archive'); setSelectedId(null); }}
+              onClick={() => setLinkType('archive')}
               className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg border transition-colors ${
                 linkType === 'archive'
                   ? 'border-bambu-green bg-bambu-green/10 text-bambu-green'
@@ -461,68 +460,116 @@ function LinkFolderModal({ folder, onClose, onLink, isLoading, t }: LinkFolderMo
             </button>
           </div>
 
-          {/* Selection list */}
-          <div className="max-h-64 overflow-y-auto space-y-1 bg-bambu-dark rounded-lg p-2">
-            {linkType === 'project' ? (
-              projects && projects.length > 0 ? (
-                projects.map((project) => (
-                  <button
-                    key={project.id}
-                    onClick={() => setSelectedId(project.id)}
-                    className={`w-full text-left px-3 py-2 rounded transition-colors flex items-center gap-2 ${
-                      selectedId === project.id
-                        ? 'bg-bambu-green/20 text-bambu-green'
-                        : 'hover:bg-bambu-dark-tertiary text-white'
-                    }`}
-                  >
-                    <div
-                      className="w-3 h-3 rounded-full flex-shrink-0"
-                      style={{ backgroundColor: project.color || '#00ae42' }}
-                    />
-                    <span className="truncate">{project.name}</span>
-                  </button>
-                ))
+          {linkType === 'project' ? (
+            // Chip multi-select. Each project is a clickable colored chip;
+            // selected = full color + check, unselected = outline only.
+            <div className="bg-bambu-dark rounded-lg p-3">
+              {projects && projects.length > 0 ? (
+                <div className="flex flex-wrap gap-1.5">
+                  {projects.map((project) => {
+                    const selected = selectedProjectIds.has(project.id);
+                    return (
+                      <button
+                        key={project.id}
+                        type="button"
+                        onClick={() => toggleProject(project.id)}
+                        // m044 (post-feedback): selected chips show an
+                        // inline × so the per-project unlink affordance
+                        // is visually obvious — replaces the legacy
+                        // "wipe all" red button.
+                        title={
+                          selected
+                            ? t('fileManager.removeFromProject', { name: project.name })
+                            : project.name
+                        }
+                        className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+                          selected
+                            ? 'border-transparent text-white'
+                            : 'border-bambu-dark-tertiary text-bambu-gray hover:text-white hover:border-bambu-gray'
+                        }`}
+                        style={
+                          selected
+                            ? { backgroundColor: project.color || '#00ae42' }
+                            : undefined
+                        }
+                      >
+                        <div
+                          className="w-2 h-2 rounded-full"
+                          style={{ backgroundColor: project.color || '#00ae42' }}
+                        />
+                        {project.name}
+                        {selected && <X className="w-3 h-3 ml-0.5 opacity-80" />}
+                      </button>
+                    );
+                  })}
+                </div>
               ) : (
-                <p className="text-sm text-bambu-gray text-center py-4">{t('fileManager.noProjectsFound')}</p>
-              )
-            ) : (
-              archives?.data && archives.data.length > 0 ? (
-                archives.data.map((archive: Archive) => (
-                  <button
-                    key={archive.id}
-                    onClick={() => setSelectedId(archive.id)}
-                    className={`w-full text-left px-3 py-2 rounded transition-colors flex items-center gap-2 ${
-                      selectedId === archive.id
-                        ? 'bg-bambu-green/20 text-bambu-green'
-                        : 'hover:bg-bambu-dark-tertiary text-white'
-                    }`}
-                  >
+                <p className="text-sm text-bambu-gray text-center py-4">
+                  {t('fileManager.noProjectsFound')}
+                </p>
+              )}
+              {selectedProjectIds.size === 0 && (
+                <p className="text-xs text-bambu-gray italic mt-2">
+                  {t('fileManager.noProjectsSelected')}
+                </p>
+              )}
+            </div>
+          ) : (
+            <>
+              {/* Currently linked archive — surfaced above the picker so the
+                  per-link unlink affordance (× clears the selection) is
+                  obvious without scrolling through the whole archive list. */}
+              {selectedArchiveId != null && (
+                <div className="flex items-center justify-between gap-2 bg-bambu-dark rounded-lg px-3 py-2">
+                  <div className="flex items-center gap-2 text-sm text-white truncate">
                     <FileBox className="w-4 h-4 text-bambu-gray flex-shrink-0" />
-                    <span className="truncate">{archive.print_name || archive.filename}</span>
+                    <span className="truncate">
+                      {archives?.data.find((a: Archive) => a.id === selectedArchiveId)?.print_name
+                        ?? archives?.data.find((a: Archive) => a.id === selectedArchiveId)?.filename
+                        ?? `#${selectedArchiveId}`}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedArchiveId(null)}
+                    className="p-1 rounded hover:bg-bambu-dark-tertiary text-bambu-gray hover:text-red-400"
+                    title={t('fileManager.unlink')}
+                  >
+                    <X className="w-4 h-4" />
                   </button>
-                ))
-              ) : (
-                <p className="text-sm text-bambu-gray text-center py-4">{t('fileManager.noArchivesFound')}</p>
-              )
-            )}
-          </div>
+                </div>
+              )}
+              <div className="max-h-64 overflow-y-auto space-y-1 bg-bambu-dark rounded-lg p-2">
+                {archives?.data && archives.data.length > 0 ? (
+                  archives.data.map((archive: Archive) => (
+                    <button
+                      key={archive.id}
+                      onClick={() => setSelectedArchiveId(archive.id)}
+                      className={`w-full text-left px-3 py-2 rounded transition-colors flex items-center gap-2 ${
+                        selectedArchiveId === archive.id
+                          ? 'bg-bambu-green/20 text-bambu-green'
+                          : 'hover:bg-bambu-dark-tertiary text-white'
+                      }`}
+                    >
+                      <FileBox className="w-4 h-4 text-bambu-gray flex-shrink-0" />
+                      <span className="truncate">{archive.print_name || archive.filename}</span>
+                    </button>
+                  ))
+                ) : (
+                  <p className="text-sm text-bambu-gray text-center py-4">{t('fileManager.noArchivesFound')}</p>
+                )}
+              </div>
+            </>
+          )}
         </div>
 
-        <div className="p-4 border-t border-bambu-dark-tertiary flex justify-between">
-          {isLinked && (
-            <Button variant="danger" onClick={handleUnlink} disabled={isLoading}>
-              <Unlink className="w-4 h-4 mr-2" />
-              {t('fileManager.unlink')}
-            </Button>
-          )}
-          <div className={`flex gap-2 ${!isLinked ? 'ml-auto' : ''}`}>
-            <Button variant="secondary" onClick={onClose}>
-              {t('common.cancel')}
-            </Button>
-            <Button onClick={handleSave} disabled={!selectedId || isLoading}>
-              {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : t('fileManager.link')}
-            </Button>
-          </div>
+        <div className="p-4 border-t border-bambu-dark-tertiary flex justify-end gap-2">
+          <Button variant="secondary" onClick={onClose}>
+            {t('common.cancel')}
+          </Button>
+          <Button onClick={handleSave} disabled={isLoading}>
+            {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : t('common.save')}
+          </Button>
         </div>
       </div>
     </div>
@@ -539,24 +586,31 @@ interface LinkFileModalProps {
 }
 
 function LinkFileModal({ file, onClose, onLink, isLoading, t }: LinkFileModalProps) {
-  const [selectedId, setSelectedId] = useState<number | null>(file.project_id ?? null);
+  // m044: file ↔ projects is M2M. Chip multi-select.
+  const [selectedProjectIds, setSelectedProjectIds] = useState<Set<number>>(
+    () => new Set(file.project_ids ?? []),
+  );
 
   const { data: projects } = useQuery({
     queryKey: ['projects'],
     queryFn: () => api.getProjects(),
   });
 
+  const toggleProject = (projectId: number) => {
+    setSelectedProjectIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(projectId)) next.delete(projectId);
+      else next.add(projectId);
+      return next;
+    });
+  };
+
   const handleSave = () => {
-    if (selectedId != null) {
-      onLink({ project_id: selectedId });
-    }
+    // Per-project unlink lives on the chips (deselect = remove from
+    // file's project list). Saving without any selected chip is the
+    // explicit "unlink from everything" path.
+    onLink({ project_ids: Array.from(selectedProjectIds) });
   };
-
-  const handleUnlink = () => {
-    onLink({ project_id: 0 });
-  };
-
-  const isLinked = file.project_id != null;
 
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
@@ -576,46 +630,60 @@ function LinkFileModal({ file, onClose, onLink, isLoading, t }: LinkFileModalPro
             {t('fileManager.linkFileDescription', { name: file.print_name || file.filename })}
           </p>
 
-          <div className="max-h-64 overflow-y-auto space-y-1 bg-bambu-dark rounded-lg p-2">
+          <div className="bg-bambu-dark rounded-lg p-3">
             {projects && projects.length > 0 ? (
-              projects.map((project) => (
-                <button
-                  key={project.id}
-                  onClick={() => setSelectedId(project.id)}
-                  className={`w-full text-left px-3 py-2 rounded transition-colors flex items-center gap-2 ${
-                    selectedId === project.id
-                      ? 'bg-bambu-green/20 text-bambu-green'
-                      : 'hover:bg-bambu-dark-tertiary text-white'
-                  }`}
-                >
-                  <div
-                    className="w-3 h-3 rounded-full flex-shrink-0"
-                    style={{ backgroundColor: project.color || '#00ae42' }}
-                  />
-                  <span className="truncate">{project.name}</span>
-                </button>
-              ))
+              <div className="flex flex-wrap gap-1.5">
+                {projects.map((project) => {
+                  const selected = selectedProjectIds.has(project.id);
+                  return (
+                    <button
+                      key={project.id}
+                      type="button"
+                      onClick={() => toggleProject(project.id)}
+                      title={
+                        selected
+                          ? t('fileManager.removeFromProject', { name: project.name })
+                          : project.name
+                      }
+                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+                        selected
+                          ? 'border-transparent text-white'
+                          : 'border-bambu-dark-tertiary text-bambu-gray hover:text-white hover:border-bambu-gray'
+                      }`}
+                      style={
+                        selected
+                          ? { backgroundColor: project.color || '#00ae42' }
+                          : undefined
+                      }
+                    >
+                      <div
+                        className="w-2 h-2 rounded-full"
+                        style={{ backgroundColor: project.color || '#00ae42' }}
+                      />
+                      {project.name}
+                      {selected && <X className="w-3 h-3 ml-0.5 opacity-80" />}
+                    </button>
+                  );
+                })}
+              </div>
             ) : (
               <p className="text-sm text-bambu-gray text-center py-4">{t('fileManager.noProjectsFound')}</p>
+            )}
+            {selectedProjectIds.size === 0 && (
+              <p className="text-xs text-bambu-gray italic mt-2">
+                {t('fileManager.noProjectsSelected')}
+              </p>
             )}
           </div>
         </div>
 
-        <div className="p-4 border-t border-bambu-dark-tertiary flex justify-between">
-          {isLinked && (
-            <Button variant="danger" onClick={handleUnlink} disabled={isLoading}>
-              <Unlink className="w-4 h-4 mr-2" />
-              {t('fileManager.unlink')}
-            </Button>
-          )}
-          <div className={`flex gap-2 ${!isLinked ? 'ml-auto' : ''}`}>
-            <Button variant="secondary" onClick={onClose}>
-              {t('common.cancel')}
-            </Button>
-            <Button onClick={handleSave} disabled={selectedId == null || selectedId === file.project_id || isLoading}>
-              {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : t('fileManager.link')}
-            </Button>
-          </div>
+        <div className="p-4 border-t border-bambu-dark-tertiary flex justify-end gap-2">
+          <Button variant="secondary" onClick={onClose}>
+            {t('common.cancel')}
+          </Button>
+          <Button onClick={handleSave} disabled={isLoading}>
+            {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : t('common.save')}
+          </Button>
         </div>
       </div>
     </div>
@@ -641,7 +709,8 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [showActions, setShowActions] = useState(false);
   const hasChildren = folder.children.length > 0;
-  const isLinked = folder.project_id || folder.archive_id;
+  // m044: M2M projects + optional single archive.
+  const isLinked = folder.projects.length > 0 || folder.archive_id != null;
   const isExternal = folder.is_external;
 
   return (
@@ -689,11 +758,22 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
           <button
             onClick={(e) => { e.stopPropagation(); onLink(folder); }}
             className="flex-shrink-0 flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 transition-colors"
-            title={`${folder.project_name ? `Project: ${folder.project_name}` : `Archive: ${folder.archive_name}`} (click to change)`}
+            title={
+              folder.projects.length > 0
+                ? folder.projects.map(p => p.name).join(', ')
+                : folder.archive_name
+                  ? `Archive: ${folder.archive_name}`
+                  : ''
+            }
           >
             <Link2 className="w-3 h-3" />
-            {folder.project_name ? (
-              <Briefcase className="w-3 h-3" />
+            {folder.projects.length > 0 ? (
+              <>
+                <Briefcase className="w-3 h-3" />
+                {folder.projects.length > 1 && (
+                  <span className="text-[10px] font-semibold">×{folder.projects.length}</span>
+                )}
+              </>
             ) : (
               <ArchiveIcon className="w-3 h-3" />
             )}
@@ -1033,14 +1113,17 @@ function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, 
         {/* Project link overlay - bottom-right, same height as notes */}
         {onLink && (
           <div className="absolute bottom-2 right-2" onClick={(e) => e.stopPropagation()}>
-            {file.project_id != null ? (
+            {(file.project_ids ?? []).length > 0 ? (
               <button
                 onClick={() => onLink(file)}
                 className="rounded-md bg-blue-500/85 backdrop-blur text-white hover:bg-blue-500 transition-colors flex items-center gap-1 px-1.5 py-1"
-                title={t('fileManager.linkedToProject')}
+                title={t('fileManager.linkedToNProjects', { count: file.project_ids.length })}
               >
                 <Link2 className="w-5 h-5" />
                 <Briefcase className="w-4 h-4" />
+                {file.project_ids.length > 1 && (
+                  <span className="text-[10px] font-semibold">×{file.project_ids.length}</span>
+                )}
               </button>
             ) : canModify('library', 'update', file.created_by_id) ? (
               <button
@@ -1619,7 +1702,12 @@ export function FileManagerPage() {
       queryClient.invalidateQueries({ queryKey: ['project-folders'] });
       queryClient.invalidateQueries({ queryKey: ['archive-folders'] });
       setLinkFolder(null);
-      const isUnlink = variables.data.project_id === 0 && variables.data.archive_id === 0;
+      // m044: project_ids is an array; treat empty list + cleared
+      // archive as a full unlink, otherwise as a link/update.
+      const projectsCleared =
+        Array.isArray(variables.data.project_ids) && variables.data.project_ids.length === 0;
+      const archiveCleared = variables.data.archive_id === 0;
+      const isUnlink = projectsCleared && archiveCleared;
       showToast(isUnlink ? t('fileManager.toast.folderUnlinked') : t('fileManager.toast.folderLinked'), 'success');
     },
     onError: (error: Error) => showToast(error.message, 'error'),
@@ -1629,14 +1717,14 @@ export function FileManagerPage() {
     mutationFn: ({ id, data }: { id: number; data: LibraryFileUpdate }) =>
       api.updateLibraryFile(id, data),
     onSuccess: (_, variables) => {
-      // File's project_id might change the plan row for the linked project —
-      // invalidate both library-files and project-print-plan queries so the
-      // UI reflects the new link status without a hard refresh.
+      // File's project list change rewires plan rows for every affected
+      // project, so invalidate both library-files and project-* queries.
       queryClient.invalidateQueries({ queryKey: ['library-files'] });
       queryClient.invalidateQueries({ queryKey: ['project-print-plan'] });
       queryClient.invalidateQueries({ queryKey: ['project-files'] });
       setLinkFile(null);
-      const isUnlink = variables.data.project_id === 0 || variables.data.project_id == null;
+      const isUnlink =
+        Array.isArray(variables.data.project_ids) && variables.data.project_ids.length === 0;
       showToast(isUnlink ? t('fileManager.toast.fileUnlinked') : t('fileManager.toast.fileLinked'), 'success');
     },
     onError: (error: Error) => showToast(error.message, 'error'),
@@ -2600,14 +2688,19 @@ export function FileManagerPage() {
                         </button>
                       )}
                       {/* Project link / unlink — sits with the other inline actions */}
-                      {file.project_id != null ? (
+                      {(file.project_ids ?? []).length > 0 ? (
                         <button
                           onClick={() => setLinkFile(file)}
                           className="p-1.5 rounded bg-blue-500/20 hover:bg-blue-500/30 flex items-center gap-1 transition-colors"
-                          title={t('fileManager.linkedToProject')}
+                          title={t('fileManager.linkedToNProjects', { count: file.project_ids.length })}
                         >
                           <Link2 className="w-4 h-4 text-blue-400" />
                           <Briefcase className="w-3.5 h-3.5 text-blue-400" />
+                          {file.project_ids.length > 1 && (
+                            <span className="text-[10px] font-semibold text-blue-400">
+                              ×{file.project_ids.length}
+                            </span>
+                          )}
                         </button>
                       ) : canModify('library', 'update', file.created_by_id) ? (
                         <button

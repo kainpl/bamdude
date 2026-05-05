@@ -40,6 +40,7 @@ from backend.app.api.routes import (
     notification_templates,
     notifications,
     obico,
+    print_options_preferences,
     print_queue,
     printer_queues,
     printers,
@@ -5531,6 +5532,7 @@ app.include_router(slice_jobs.router, prefix=app_settings.api_prefix)
 app.include_router(makerworld.router, prefix=app_settings.api_prefix)
 app.include_router(smart_plugs.router, prefix=app_settings.api_prefix)
 app.include_router(print_queue.router, prefix=app_settings.api_prefix)
+app.include_router(print_options_preferences.router, prefix=app_settings.api_prefix)
 app.include_router(auto_queue.router, prefix=app_settings.api_prefix)
 app.include_router(background_dispatch_routes.router, prefix=app_settings.api_prefix)
 app.include_router(kprofiles.router, prefix=app_settings.api_prefix)

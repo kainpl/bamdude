@@ -1581,11 +1581,16 @@ async def export_project(
         for item in bom_items
     ]
 
-    # Get linked folders and their files
+    # m044: linked folders are now in the M2M pivot.
+    from backend.app.models.library_project_links import library_folder_projects
+
     folders_result = await db.execute(
-        select(LibraryFolder).where(LibraryFolder.project_id == project_id).order_by(LibraryFolder.name)
+        select(LibraryFolder)
+        .join(library_folder_projects, library_folder_projects.c.folder_id == LibraryFolder.id)
+        .where(library_folder_projects.c.project_id == project_id)
+        .order_by(LibraryFolder.name)
     )
-    linked_folders = folders_result.scalars().all()
+    linked_folders = folders_result.scalars().unique().all()
 
     folders_export = []
     files_to_include = []  # (archive_path, zip_path)
@@ -1721,17 +1726,21 @@ async def import_project(
         existing_folder = existing_result.scalar_one_or_none()
 
         if existing_folder:
-            # Link existing folder to project
-            existing_folder.project_id = project.id
+            # m044: append to the existing folder's project list (don't
+            # replace — the folder may already be linked to other projects).
+            await db.refresh(existing_folder, attribute_names=["projects"])
+            if project not in existing_folder.projects:
+                existing_folder.projects.append(project)
         else:
-            # Create new folder linked to project
+            # Create new folder linked to this project (single-project at
+            # creation; user can add more via the editor).
             new_folder = LibraryFolder(
                 name=folder_data.name,
-                project_id=project.id,
                 is_external=False,
                 external_readonly=False,
                 external_show_hidden=False,
             )
+            new_folder.projects = [project]
             db.add(new_folder)
 
     await db.flush()
@@ -1851,18 +1860,20 @@ async def import_project_file(
         existing_folder = existing_result.scalar_one_or_none()
 
         if existing_folder:
-            # Link existing folder to project
-            existing_folder.project_id = project.id
+            # m044: append to the existing folder's project list.
+            await db.refresh(existing_folder, attribute_names=["projects"])
+            if project not in existing_folder.projects:
+                existing_folder.projects.append(project)
             folder = existing_folder
         else:
-            # Create new folder
+            # Create new folder linked to this project.
             folder = LibraryFolder(
                 name=folder_name,
-                project_id=project.id,
                 is_external=False,
                 external_readonly=False,
                 external_show_hidden=False,
             )
+            folder.projects = [project]
             db.add(folder)
             await db.flush()
 
@@ -1957,6 +1968,7 @@ def _build_plan_item_response(
     row: ProjectPrintPlanItem,
     file: LibraryFile,
     default_cost_per_kg: float,
+    printed_count: int,
 ) -> PrintPlanItemResponse:
     """Derive per-row totals from the joined library file's metadata."""
     meta = file.file_metadata or {}
@@ -1991,6 +2003,10 @@ def _build_plan_item_response(
         total_print_time_seconds=total_secs,
         total_objects=total_objs,
         total_cost=total_cost,
+        # Clamp remainder at 0 — an operator who lowers ``copies`` below
+        # the already-printed count shouldn't see a negative "remaining".
+        printed_count=printed_count,
+        remaining_count=max(0, row.copies - printed_count),
     )
 
 
@@ -2017,7 +2033,28 @@ async def _load_print_plan(db: AsyncSession, project_id: int) -> PrintPlanRespon
 
     default_cost_per_kg = await _get_default_filament_cost(db)
 
-    items = [_build_plan_item_response(row, file, default_cost_per_kg) for row, file in rows]
+    # Per-(project, library_file) printed-count: completed archives only.
+    # One bulk query rather than per-row to keep the endpoint flat.
+    file_ids = [row.library_file_id for row, _ in rows]
+    printed_counts: dict[int, int] = {}
+    if file_ids:
+        printed_rows = (
+            await db.execute(
+                select(PrintArchive.library_file_id, func.count(PrintArchive.id))
+                .where(
+                    PrintArchive.project_id == project_id,
+                    PrintArchive.library_file_id.in_(file_ids),
+                    PrintArchive.status == "completed",
+                )
+                .group_by(PrintArchive.library_file_id)
+            )
+        ).all()
+        printed_counts = dict(printed_rows)
+
+    items = [
+        _build_plan_item_response(row, file, default_cost_per_kg, printed_counts.get(row.library_file_id, 0))
+        for row, file in rows
+    ]
 
     return PrintPlanResponse(
         items=items,
@@ -2074,7 +2111,16 @@ async def update_project_print_plan_item(
     await db.refresh(row)
 
     default_cost_per_kg = await _get_default_filament_cost(db)
-    return _build_plan_item_response(row, file, default_cost_per_kg)
+    printed_count = (
+        await db.execute(
+            select(func.count(PrintArchive.id)).where(
+                PrintArchive.project_id == project_id,
+                PrintArchive.library_file_id == library_file_id,
+                PrintArchive.status == "completed",
+            )
+        )
+    ).scalar() or 0
+    return _build_plan_item_response(row, file, default_cost_per_kg, printed_count)
 
 
 @router.post("/{project_id}/print-plan/reorder", response_model=PrintPlanResponse)

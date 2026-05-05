@@ -550,8 +550,9 @@ class TestProjectExportImport:
 
         project = await project_factory(name="Project With Folder")
 
-        # Create a linked folder
-        folder = LibraryFolder(name="Project Files", project_id=project.id)
+        # Create a linked folder via the m044 M2M relationship.
+        folder = LibraryFolder(name="Project Files")
+        folder.projects = [project]
         db_session.add(folder)
         await db_session.commit()
 
@@ -651,11 +652,11 @@ class TestProjectExportImport:
         # Create a linked folder with is_external fields
         folder = LibraryFolder(
             name="TestExportFolder",
-            project_id=project.id,
             is_external=False,
             external_readonly=False,
             external_show_hidden=False,
         )
+        folder.projects = [project]
         db_session.add(folder)
         await db_session.flush()
 

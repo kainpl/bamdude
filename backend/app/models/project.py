@@ -75,8 +75,22 @@ class Project(Base):
         foreign_keys="Project.parent_id",
     )
     bom_items: Mapped[list["ProjectBOMItem"]] = relationship(back_populates="project", cascade="all, delete-orphan")
+    # m044: many-to-many. A project can carry any number of library
+    # files / folders. Pivot tables: library_file_projects /
+    # library_folder_projects, both ON DELETE CASCADE.
+    library_files: Mapped[list["LibraryFile"]] = relationship(
+        "LibraryFile",
+        secondary="library_file_projects",
+        back_populates="projects",
+    )
+    library_folders: Mapped[list["LibraryFolder"]] = relationship(
+        "LibraryFolder",
+        secondary="library_folder_projects",
+        back_populates="projects",
+    )
 
 
 from backend.app.models.archive import PrintArchive  # noqa: E402
+from backend.app.models.library import LibraryFile, LibraryFolder  # noqa: E402
 from backend.app.models.print_queue import PrintQueueItem  # noqa: E402
 from backend.app.models.project_bom import ProjectBOMItem  # noqa: E402

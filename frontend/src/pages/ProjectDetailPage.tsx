@@ -97,7 +97,7 @@ function StatCard({
   icon: React.ElementType;
   label: string;
   value: string | number;
-  subValue?: string;
+  subValue?: React.ReactNode;
   hint?: string;
   color?: string;
 }) {
@@ -111,7 +111,12 @@ function StatCard({
           <div>
             <p className="text-sm text-bambu-gray">{label}</p>
             <p className="text-xl font-semibold text-white">{value}</p>
-            {subValue && <p className="text-xs text-bambu-gray/70">{subValue}</p>}
+            {subValue &&
+              (typeof subValue === 'string' ? (
+                <p className="text-xs text-bambu-gray/70">{subValue}</p>
+              ) : (
+                subValue
+              ))}
           </div>
         </div>
       </CardContent>
@@ -295,10 +300,12 @@ export function ProjectDetailPage() {
     onError: (e: Error) => showToast(e.message, 'error'),
   });
 
-  // Unlink a file from this project — backend auto-removes the plan row
-  // via the project_id → print_plan sync hook.
+  // m044: Unlink a file from THIS project (file may stay in others).
+  // Single-pivot DELETE keeps the call lock-free vs. read-modify-write
+  // on the whole project list.
   const unlinkFileMutation = useMutation({
-    mutationFn: (libraryFileId: number) => api.updateLibraryFile(libraryFileId, { project_id: 0 }),
+    mutationFn: (libraryFileId: number) =>
+      api.removeLibraryFileFromProject(libraryFileId, projectId),
     onSuccess: () => {
       invalidatePlan();
       queryClient.invalidateQueries({ queryKey: ['project-files', projectId] });
@@ -699,43 +706,83 @@ export function ProjectDetailPage() {
         </Card>
       )}
 
-      {/* Stats grid */}
-      {stats && (
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-          <Card>
-            <CardContent className="p-4">
-              <div className="flex items-center gap-3">
-                <div className="p-2 rounded-lg bg-bambu-dark text-bambu-green">
-                  <Package className="w-5 h-5" />
+      {/* Stats grid — top three at-a-glance cards. Each pairs the
+          historical "done" figure (from completed archives) with a
+          "remaining" subtitle computed from the print plan
+          (copies × per-unit minus already-printed). The subtitle is
+          omitted when the project has no print plan yet, amber when
+          there's still work to do, and green ✓ when every plan row's
+          remaining_count is 0. */}
+      {stats && (() => {
+        const planItems = printPlan?.items ?? [];
+        const hasPlan = planItems.length > 0;
+        const remainingJobs = planItems.reduce((s, i) => s + i.remaining_count, 0);
+        const remainingTimeSec = planItems.reduce(
+          (s, i) => s + (i.print_time_seconds ?? 0) * i.remaining_count,
+          0,
+        );
+        const remainingFilamentG = planItems.reduce(
+          (s, i) => s + (i.filament_grams ?? 0) * i.remaining_count,
+          0,
+        );
+        const allDone = hasPlan && remainingJobs === 0;
+
+        const remainingLine = (text: string) => (
+          <p className={`text-sm ${allDone ? 'text-bambu-green' : 'text-amber-400'}`}>
+            {allDone ? `✓ ${t('projectDetail.files.allDone')}` : text}
+          </p>
+        );
+        // StatCard subValue accepts ReactNode — wrap so the remaining
+        // hint matches the same amber/green emphasis as the printJobs
+        // card's bottom line.
+        const remainingSub = (text: string) => (
+          <p className={`text-sm ${allDone ? 'text-bambu-green' : 'text-amber-400'}`}>
+            {allDone
+              ? `✓ ${t('projectDetail.files.allDone')}`
+              : t('projectDetail.files.remainingValue', { value: text })}
+          </p>
+        );
+
+        return (
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+            <Card>
+              <CardContent className="p-4">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-lg bg-bambu-dark text-bambu-green">
+                    <Package className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <p className="text-sm text-bambu-gray">{t('projectDetail.stats.printJobs')}</p>
+                    <p className="text-xl font-semibold text-white">{stats.total_archives} <span className="text-sm font-normal text-bambu-gray">{t('projectDetail.stats.total')}</span></p>
+                    {stats.in_progress_prints > 0 && (
+                      <p className="text-sm text-bambu-blue">{t('projectDetail.stats.inProgress', { count: stats.in_progress_prints })}</p>
+                    )}
+                    {stats.failed_prints > 0 && (
+                      <p className="text-sm text-status-error">{t('projectDetail.stats.failed', { count: stats.failed_prints })}</p>
+                    )}
+                    <p className="text-sm text-bambu-gray">{t('projectDetail.stats.partsPrinted', { count: stats.completed_prints })}</p>
+                    {hasPlan && remainingLine(t('projectDetail.files.remainingValue', { value: remainingJobs }))}
+                  </div>
                 </div>
-                <div>
-                  <p className="text-sm text-bambu-gray">{t('projectDetail.stats.printJobs')}</p>
-                  <p className="text-xl font-semibold text-white">{stats.total_archives} <span className="text-sm font-normal text-bambu-gray">{t('projectDetail.stats.total')}</span></p>
-                  {stats.in_progress_prints > 0 && (
-                    <p className="text-sm text-bambu-blue">{t('projectDetail.stats.inProgress', { count: stats.in_progress_prints })}</p>
-                  )}
-                  {stats.failed_prints > 0 && (
-                    <p className="text-sm text-status-error">{t('projectDetail.stats.failed', { count: stats.failed_prints })}</p>
-                  )}
-                  <p className="text-sm text-bambu-gray">{t('projectDetail.stats.partsPrinted', { count: stats.completed_prints })}</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-          <StatCard
-            icon={Clock}
-            label={t('projectDetail.stats.printTime')}
-            value={formatDurationFromHours(stats.total_print_time_hours)}
-            color="text-yellow-400"
-          />
-          <StatCard
-            icon={Printer}
-            label={t('projectDetail.stats.filamentUsed')}
-            value={formatFilament(stats.total_filament_grams)}
-            color="text-purple-400"
-          />
-        </div>
-      )}
+              </CardContent>
+            </Card>
+            <StatCard
+              icon={Clock}
+              label={t('projectDetail.stats.printTime')}
+              value={formatDurationFromHours(stats.total_print_time_hours)}
+              subValue={hasPlan ? remainingSub(formatDuration(remainingTimeSec)) : undefined}
+              color="text-yellow-400"
+            />
+            <StatCard
+              icon={Printer}
+              label={t('projectDetail.stats.filamentUsed')}
+              value={formatFilament(stats.total_filament_grams)}
+              subValue={hasPlan ? remainingSub(formatFilament(remainingFilamentG)) : undefined}
+              color="text-purple-400"
+            />
+          </div>
+        );
+      })()}
 
       {/* Cost tracking */}
       {stats && (() => {
@@ -1089,6 +1136,27 @@ export function ProjectDetailPage() {
                             </span>
                           )}
                         </div>
+                      </div>
+
+                      {/* Per-(project, file) progress — read-only.
+                          ``printed_count`` counts only completed archives
+                          attributed to this exact project, so a file in
+                          two projects keeps independent tallies. */}
+                      <div className="flex items-center gap-2 shrink-0 text-sm tabular-nums">
+                        <span
+                          className="flex items-center gap-1 text-bambu-green"
+                          title={t('projectDetail.files.printed')}
+                        >
+                          <CheckCircle className="w-4 h-4" />
+                          {item.printed_count}
+                        </span>
+                        <span
+                          className="flex items-center gap-1 text-bambu-gray"
+                          title={t('projectDetail.files.remaining')}
+                        >
+                          <ListTodo className="w-4 h-4" />
+                          {item.remaining_count}
+                        </span>
                       </div>
 
                       {/* Copies stepper */}

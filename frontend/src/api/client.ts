@@ -1058,6 +1058,10 @@ export interface PrintPlanItem {
   total_print_time_seconds: number | null;
   total_objects: number | null;
   total_cost: number | null;
+  // Per-(project, file) progress: count of completed archives + the
+  // derived ``copies - printed_count`` remainder (clamped at 0).
+  printed_count: number;
+  remaining_count: number;
 }
 
 export interface PrintPlanResponse {
@@ -2991,6 +2995,49 @@ export interface UserEmailPreferences {
   notify_print_complete: boolean;
   notify_print_failed: boolean;
   notify_print_stopped: boolean;
+}
+
+// Per-(user, printer-model) saved PrintModal toggles. Lives on the
+// `print_options_preferences` table. Read on modal open / model change,
+// PUT on submit (direct print, queue add, auto-queue add).
+export interface PrintOptionsPreferenceData {
+  print_options: {
+    bed_levelling: boolean;
+    flow_cali: boolean;
+    layer_inspect: boolean;
+    timelapse: boolean;
+    mesh_mode_fast_check: boolean;
+    gcode_injection: boolean;
+  };
+  swap_macros: {
+    execute: boolean;
+    events: string[];
+  };
+}
+
+export interface PrintOptionsPreferenceResponse {
+  printer_model: string;
+  options: PrintOptionsPreferenceData;
+  updated_at: string;
+}
+
+// Admin list entry — preference + the user it belongs to. Returned by
+// the cross-user list endpoint that powers the Settings → Print → Saved
+// Profiles widget.
+export interface PrintOptionsPreferenceAdminEntry {
+  user_id: number;
+  username: string;
+  printer_model: string;
+  options: PrintOptionsPreferenceData;
+  updated_at: string;
+}
+
+export interface PrintOptionsPreferenceCopyRequest {
+  src_user_id: number;
+  src_printer_model: string;
+  dst_user_id: number;
+  // Defaults to src_printer_model server-side when omitted.
+  dst_printer_model?: string;
 }
 
 // Auth types
@@ -5420,6 +5467,16 @@ export const api = {
   deleteLibraryFile: (id: number) =>
     request<{ status: string; message: string; trashed: boolean }>(`/library/files/${id}`, { method: 'DELETE' }),
 
+  // m044: drop a single (file, project) pivot row without read-modify-write
+  // on the whole list. Used by ProjectDetailPage's "remove from this project"
+  // affordance. Idempotent: missing pivot is a no-op (204).
+  removeLibraryFileFromProject: (fileId: number, projectId: number) =>
+    request<void>(`/library/files/${fileId}/projects/${projectId}`, { method: 'DELETE' }),
+
+  // m044: symmetric for folders.
+  removeLibraryFolderFromProject: (folderId: number, projectId: number) =>
+    request<void>(`/library/folders/${folderId}/projects/${projectId}`, { method: 'DELETE' }),
+
   // ========== Library Trash (#1008) ==========
   previewLibraryPurge: (olderThanDays: number, includeNeverPrinted: boolean = true) =>
     request<LibraryPurgePreview>(
@@ -5741,6 +5798,43 @@ export const api = {
   testTelegramChat: (id: number) =>
     request<{ status: string }>(`/telegram/chats/${id}/test`, { method: 'POST' }),
   getTelegramEvents: () => request<NotifyEventInfo[]>('/telegram/events'),
+
+  // Per-(user, printer-model) PrintModal toggle preferences. The model
+  // string is URI-encoded so models with characters like spaces or "/"
+  // round-trip correctly.
+  getPrintOptionsPreference: (printerModel: string) =>
+    request<PrintOptionsPreferenceResponse>(
+      `/print-option-preferences/${encodeURIComponent(printerModel)}`,
+    ),
+  upsertPrintOptionsPreference: (printerModel: string, data: PrintOptionsPreferenceData) =>
+    request<PrintOptionsPreferenceResponse>(
+      `/print-option-preferences/${encodeURIComponent(printerModel)}`,
+      { method: 'PUT', body: JSON.stringify(data) },
+    ),
+
+  // Admin preference ops — Settings → Print → Saved Profiles widget.
+  // All gated server-side on USERS_READ (list) / USERS_UPDATE (writes).
+  listAllPrintOptionsPreferences: () =>
+    request<PrintOptionsPreferenceAdminEntry[]>('/print-option-preferences/admin/list'),
+  adminUpsertPrintOptionsPreference: (
+    userId: number,
+    printerModel: string,
+    data: PrintOptionsPreferenceData,
+  ) =>
+    request<PrintOptionsPreferenceResponse>(
+      `/print-option-preferences/admin/${userId}/${encodeURIComponent(printerModel)}`,
+      { method: 'PUT', body: JSON.stringify(data) },
+    ),
+  adminDeletePrintOptionsPreference: (userId: number, printerModel: string) =>
+    request<void>(
+      `/print-option-preferences/admin/${userId}/${encodeURIComponent(printerModel)}`,
+      { method: 'DELETE' },
+    ),
+  adminCopyPrintOptionsPreference: (body: PrintOptionsPreferenceCopyRequest) =>
+    request<PrintOptionsPreferenceResponse>('/print-option-preferences/admin/copy', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
 };
 
 // Telegram Chat types
@@ -5921,13 +6015,23 @@ export interface StorageUsageResponse {
 }
 
 // Library (File Manager) types
+
+// m044: lightweight project reference embedded in folder/file responses.
+// Carries enough for the UI to render the colored project chip without a
+// follow-up fetch. Mirrors backend `ProjectRef` schema.
+export interface ProjectRef {
+  id: number;
+  name: string;
+  color: string | null;
+}
+
 export interface LibraryFolderTree {
   id: number;
   name: string;
   parent_id: number | null;
-  project_id: number | null;
+  // m044: M2M project links. Empty array = unattached.
+  projects: ProjectRef[];
   archive_id: number | null;
-  project_name: string | null;
   archive_name: string | null;
   is_external: boolean;
   external_path: string | null;
@@ -5940,9 +6044,8 @@ export interface LibraryFolder {
   id: number;
   name: string;
   parent_id: number | null;
-  project_id: number | null;
+  projects: ProjectRef[];
   archive_id: number | null;
-  project_name: string | null;
   archive_name: string | null;
   is_external: boolean;
   external_path: string | null;
@@ -5956,7 +6059,8 @@ export interface LibraryFolder {
 export interface LibraryFolderCreate {
   name: string;
   parent_id?: number | null;
-  project_id?: number | null;
+  // m044: list of project IDs to associate the folder with on creation.
+  project_ids?: number[];
   archive_id?: number | null;
 }
 
@@ -5971,7 +6075,9 @@ export interface ExternalFolderCreate {
 export interface LibraryFolderUpdate {
   name?: string;
   parent_id?: number | null;
-  project_id?: number | null;  // 0 to unlink
+  // m044: undefined = leave links untouched, [] = unlink from every
+  // project, otherwise replace the whole list.
+  project_ids?: number[];
   archive_id?: number | null;  // 0 to unlink
 }
 
@@ -6062,8 +6168,8 @@ export interface LibraryFile {
   id: number;
   folder_id: number | null;
   folder_name: string | null;
-  project_id: number | null;
-  project_name: string | null;
+  // m044: M2M project links. Empty array = unattached.
+  projects: ProjectRef[];
   is_external: boolean;
   filename: string;
   file_path: string;
@@ -6107,7 +6213,9 @@ export interface LibraryFile {
 export interface LibraryFileListItem {
   id: number;
   folder_id: number | null;
-  project_id: number | null;
+  // m044: M2M project IDs only (names omitted to keep list payload small —
+  // resolve names from a global ``projects`` query when rendering).
+  project_ids: number[];
   is_external: boolean;
   filename: string;
   file_type: string;
@@ -6153,7 +6261,9 @@ export const LIBRARY_FILE_NOTE_MAX_LENGTH = 1000;
 export interface LibraryFileUpdate {
   filename?: string;
   folder_id?: number | null;
-  project_id?: number | null;
+  // m044: undefined = leave untouched, [] = unlink from every project,
+  // otherwise replace the whole list.
+  project_ids?: number[];
   notes?: string | null;
 }
 

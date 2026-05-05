@@ -46,7 +46,18 @@ async def upgrade(conn):
 
     # ── Library files: add swap_compatible, drop print_count ──
     await add_column(conn, "library_files", "swap_compatible BOOLEAN NOT NULL DEFAULT 0")
-    if await column_exists(conn, "library_files", "print_count"):
+    # The recreate path below is purely about dropping a column that
+    # ``m013`` later re-added (``print_count``) and was never relevant for
+    # fresh installs that boot straight into the latest schema. The added
+    # ``column_exists("library_files", "project_id")`` guard handles the
+    # post-m044 fresh-install case where ``project_id`` is gone before
+    # this migration runs (Base.metadata.create_all materialises the
+    # table in its m044-final shape, then this migration would otherwise
+    # fail at INSERT-into-tmp because the keep-cols list mentions a
+    # column that no longer exists).
+    if await column_exists(conn, "library_files", "print_count") and await column_exists(
+        conn, "library_files", "project_id"
+    ):
         await recreate_table(
             conn,
             "library_files",

@@ -1,4 +1,5 @@
 import asyncio
+import concurrent.futures
 import logging
 import re
 import time
@@ -360,6 +361,10 @@ class PrinterManager:
                 try:
                     # This will re-raise any exception from the coroutine
                     f.result()
+                except (concurrent.futures.CancelledError, asyncio.CancelledError):
+                    # Loop is shutting down — coroutines get cancelled by design.
+                    # Silently swallow so we don't pollute the shutdown log.
+                    pass
                 except Exception as e:
                     import logging
 

@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertCircle, AlertTriangle, Calendar, Loader2, Pencil, Printer, X } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type {
   AutoQueueItemCreate,
@@ -214,6 +214,65 @@ export function PrintModal({
     queryKey: ['printers'],
     queryFn: api.getPrinters,
   });
+
+  // Per-(user, printer-model) saved PrintModal toggles. Preference is keyed
+  // by the model string; selecting any printer of the same model loads the
+  // same row. In auto mode the model comes from the AutoMode panel directly.
+  // Edit mode skips the whole flow — there the values come from queueItem.
+  const effectivePrinterModel = useMemo(() => {
+    if (mode === 'edit-queue-item') return null;
+    if (isAutoMode) return autoModeOptions.target_model || null;
+    if (selectedPrinters.length === 0) return null;
+    const first = printers?.find((p) => p.id === selectedPrinters[0]);
+    return first?.model || null;
+  }, [mode, isAutoMode, autoModeOptions.target_model, selectedPrinters, printers]);
+
+  const { data: preferenceData } = useQuery({
+    queryKey: ['print-options-preference', effectivePrinterModel],
+    queryFn: async () => {
+      try {
+        return await api.getPrintOptionsPreference(effectivePrinterModel!);
+      } catch {
+        // 404 — no preference saved yet, fall back to built-in defaults.
+        return null;
+      }
+    },
+    enabled: !!effectivePrinterModel,
+    staleTime: 60 * 1000,
+  });
+
+  // Apply the saved preference once per model so user toggles after the
+  // initial apply aren't clobbered by a re-render. The set lives in a ref
+  // because we don't want it to participate in render-triggered effect deps.
+  const appliedPreferenceModelsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!effectivePrinterModel || !preferenceData) return;
+    if (appliedPreferenceModelsRef.current.has(effectivePrinterModel)) return;
+    setPrintOptions(preferenceData.options.print_options);
+    setSwapMacros({
+      execute: preferenceData.options.swap_macros.execute,
+      events: preferenceData.options.swap_macros.events.filter(
+        (e): e is SwapMacroEvent => (SWAP_MACRO_EVENTS as readonly string[]).includes(e),
+      ),
+    });
+    appliedPreferenceModelsRef.current.add(effectivePrinterModel);
+  }, [effectivePrinterModel, preferenceData]);
+
+  // Best-effort persist on submit. Failure is silently swallowed — the
+  // print itself already succeeded; a failed preference write would only
+  // mean defaults next time. Called from each successful submit branch
+  // (auto-mode + queue + reprint).
+  const persistPreference = useCallback(() => {
+    if (!effectivePrinterModel) return;
+    void api
+      .upsertPrintOptionsPreference(effectivePrinterModel, {
+        print_options: printOptions,
+        swap_macros: { execute: swapMacros.execute, events: swapMacros.events },
+      })
+      .catch(() => {
+        // silent — preference is best-effort
+      });
+  }, [effectivePrinterModel, printOptions, swapMacros]);
 
   const { data: spoolAssignments } = useQuery({
     queryKey: ['spool-assignments'],
@@ -466,6 +525,7 @@ export function PrintModal({
           quantity,
         };
         await api.addToAutoQueue(payload);
+        persistPreference();
         showToast(quantity > 1 ? t('queue.itemsQueued', { count: quantity }) : t('queue.printQueued'));
         queryClient.invalidateQueries({ queryKey: ['auto-queue'] });
         queryClient.invalidateQueries({ queryKey: ['queue'] });
@@ -680,6 +740,11 @@ export function PrintModal({
 
     // Show result toast (skip for reprint mode - the dispatch toast handles it)
     if (results.failed === 0) {
+      // Persist saved-toggles preference once we know at least one submission
+      // landed. Skipped automatically in edit mode (effectivePrinterModel is
+      // null there). Fire-and-forget — failure to save the preference must
+      // not block the success UX.
+      persistPreference();
       if (mode !== 'reprint') {
         if (mode === 'edit-queue-item') {
           showToast(t('printModal.queueItemUpdated'));

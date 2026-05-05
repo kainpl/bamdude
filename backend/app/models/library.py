@@ -23,8 +23,8 @@ class LibraryFolder(Base):
     external_show_hidden: Mapped[bool] = mapped_column(Boolean, default=False)
     external_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
-    # Link to project or archive
-    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
+    # Link to archive (optional). Project links live in the
+    # ``library_folder_projects`` pivot — see ``projects`` below.
     archive_id: Mapped[int | None] = mapped_column(ForeignKey("print_archives.id", ondelete="SET NULL"), nullable=True)
 
     # Timestamps
@@ -48,7 +48,12 @@ class LibraryFolder(Base):
         back_populates="folder",
         cascade="all, delete-orphan",
     )
-    project: Mapped["Project | None"] = relationship()
+    # m044: many-to-many. A folder can belong to any number of projects.
+    projects: Mapped[list["Project"]] = relationship(
+        "Project",
+        secondary="library_folder_projects",
+        back_populates="library_folders",
+    )
     archive: Mapped["PrintArchive | None"] = relationship()
 
 
@@ -59,7 +64,9 @@ class LibraryFile(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     folder_id: Mapped[int | None] = mapped_column(ForeignKey("library_folders.id", ondelete="CASCADE"), nullable=True)
-    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
+    # m044: project links live in ``library_file_projects`` pivot — see
+    # ``projects`` relationship below. The legacy ``project_id`` column
+    # is gone after the migration runs.
 
     # External file flag
     is_external: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -132,7 +139,12 @@ class LibraryFile(Base):
 
     # Relationships
     folder: Mapped["LibraryFolder | None"] = relationship(back_populates="files")
-    project: Mapped["Project | None"] = relationship()
+    # m044: many-to-many. A file can belong to any number of projects.
+    projects: Mapped[list["Project"]] = relationship(
+        "Project",
+        secondary="library_file_projects",
+        back_populates="library_files",
+    )
     created_by: Mapped["User | None"] = relationship()
     # gh#3 - delete notes alongside the file at the ORM level; the DB FK also
     # has ON DELETE CASCADE for direct SQL deletes, but ORM cascade covers

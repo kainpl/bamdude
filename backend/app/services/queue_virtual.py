@@ -63,14 +63,36 @@ async def build_virtual_current_print(
     if queue_row is None:
         return None
 
-    real_printing = (
-        await db.execute(
-            select(PrintQueueItem.id)
-            .where(PrintQueueItem.queue_id == queue_row.id)
-            .where(PrintQueueItem.status == "printing")
+    # Use ``.first()`` rather than ``scalar_one_or_none()``: this is a
+    # read-only display helper and must not 500 the queue list when a
+    # data-integrity glitch leaves more than one ``status='printing'``
+    # row on the same per-printer queue (e.g. a half-failed dispatch
+    # path that flipped status before raising). The scheduler's stale-
+    # row cleanup + watchdog will reconcile in the background; we just
+    # need the UI to keep rendering meanwhile. Log the anomaly so
+    # operators see it without trawling logs.
+    real_printing_rows = (
+        (
+            await db.execute(
+                select(PrintQueueItem.id)
+                .where(PrintQueueItem.queue_id == queue_row.id)
+                .where(PrintQueueItem.status == "printing")
+                .order_by(PrintQueueItem.position)
+            )
         )
-    ).scalar_one_or_none()
-    if real_printing is not None:
+        .scalars()
+        .all()
+    )
+    if real_printing_rows:
+        if len(real_printing_rows) > 1:
+            logger.warning(
+                "Queue %s (printer %s) has %d 'printing' rows: %s — UI falls back to first; "
+                "stale rows should clear via watchdog or the next on_print_start cleanup pass",
+                queue_row.id,
+                printer_id,
+                len(real_printing_rows),
+                real_printing_rows,
+            )
         return None
 
     # Look up the active archive for this printer.

@@ -342,10 +342,15 @@ async def add_to_queue(
         if not archive:
             raise HTTPException(400, "Archive not found")
 
-    # Validate library file exists (if provided) and get it for filament extraction
+    # Validate library file exists (if provided) and get it for filament extraction.
+    # m044: eager-load M2M projects so the fallback below doesn't lazy-fetch.
     library_file = None
     if data.library_file_id:
-        result = await db.execute(select(LibraryFile).where(LibraryFile.id == data.library_file_id))
+        result = await db.execute(
+            select(LibraryFile)
+            .options(selectinload(LibraryFile.projects))
+            .where(LibraryFile.id == data.library_file_id)
+        )
         library_file = result.scalar_one_or_none()
         if not library_file:
             raise HTTPException(400, "Library file not found")
@@ -365,13 +370,15 @@ async def add_to_queue(
             raise HTTPException(status_code=404, detail="Project not found")
 
     # Fallback: if the caller didn't pass a project_id but the source is a
-    # library file that's already linked to a project, inherit it. Keeps
-    # project stats (archives-in-progress, queued prints) correct for items
-    # added without an explicit project context (e.g. File Manager bulk add
-    # of a file that was later linked to a project).
+    # library file that's already linked to one or more projects, inherit
+    # the first one. Queue items stay single-project by design — for a
+    # multi-project file the operator should pass ``project_id`` explicitly
+    # to disambiguate. m044: was previously a single FK, now a list, so we
+    # pick ``[0]`` for the fallback (deterministic — pivot rows are read in
+    # insertion order via the relationship).
     effective_project_id = data.project_id
-    if effective_project_id is None and library_file and library_file.project_id is not None:
-        effective_project_id = library_file.project_id
+    if effective_project_id is None and library_file and library_file.projects:
+        effective_project_id = library_file.projects[0].id
 
     # For quantity > 1, group copies under a shared batch_id
     batch_id = str(uuid.uuid4()) if data.quantity > 1 else None

@@ -88,6 +88,11 @@ class PrintScheduler:
         self._drying_in_progress: dict[int, float] = {}
         # Staggered start: rolling slots for electrical load management
         self._stagger_slots: list[_StaggerSlot] = []
+        # Serialises check+register in ``acquire_stagger_slot`` so multiple
+        # parallel direct-print tasks can't all see "slot free" and over-
+        # allocate. Queue path pre-registers under check_queue's serial loop
+        # so it doesn't depend on this lock.
+        self._stagger_acquire_lock = asyncio.Lock()
         # Defensive in-memory dispatch hold (#1157 ported from upstream v0.2.4b1):
         # a printer that just received a project_file command must not get a
         # second dispatch until either it transitions out of pre_state OR the
@@ -324,20 +329,13 @@ class PrintScheduler:
                         )
                         await db.commit()
 
-                # Start the print
+                # Start the print — _start_print spawns a parallel task for the
+                # FTP/dispatch pipeline and returns once the queue row is flipped
+                # to "printing" + the stagger slot is pre-registered. This lets
+                # the next loop iteration dispatch a different printer in
+                # parallel instead of serialising through one global await.
                 await self._start_print(db, item)
                 busy_printers.add(printer_id)
-
-                # Register stagger slot after successful start
-                if stagger_enabled:
-                    # Per-printer interval override (0 = use system default)
-                    printer_obj = await self._get_printer(db, printer_id)
-                    per_printer_iv = (
-                        (printer_obj.stagger_interval_minutes * 60)
-                        if printer_obj and printer_obj.stagger_interval_minutes
-                        else 0
-                    )
-                    self._register_stagger_start(printer_id, per_printer_iv or stagger_interval)
 
             # Log summary of skip reasons (helps diagnose why queue items aren't starting)
             if skip_reasons:
@@ -890,6 +888,43 @@ class PrintScheduler:
             interval_seconds,
             len(self._stagger_slots),
         )
+
+    async def acquire_stagger_slot(self, printer_id: int) -> None:
+        """Block until ``printer_id`` holds a stagger slot.
+
+        Idempotent: returns immediately when stagger is disabled, or when
+        the printer already holds a slot (queue path pre-registers in
+        ``_start_print``). Otherwise (direct print) this polls until a slot
+        frees and then registers one. Called from
+        ``background_dispatch._process_job`` so the gate applies to BOTH
+        dispatch paths when stagger is enabled.
+        """
+        async with async_session() as db:
+            stagger_enabled, stagger_concurrent, stagger_interval, stagger_wait_bed = await self._get_stagger_settings(
+                db
+            )
+            if not stagger_enabled:
+                return
+            printer_obj = await self._get_printer(db, printer_id)
+            per_printer_iv = (
+                (printer_obj.stagger_interval_minutes * 60)
+                if printer_obj and printer_obj.stagger_interval_minutes
+                else 0
+            )
+            interval_seconds = per_printer_iv or stagger_interval
+
+        while True:
+            async with self._stagger_acquire_lock:
+                # Re-check inside the lock so a parallel acquirer can't slip
+                # past us between the check and the register.
+                self._update_stagger_temps()
+                self._cleanup_stagger_slots(stagger_wait_bed)
+                if any(s.printer_id == printer_id for s in self._stagger_slots):
+                    return  # already registered (queue pre-register, or prior loop)
+                if self._can_start_staggered(stagger_concurrent):
+                    self._register_stagger_start(printer_id, interval_seconds)
+                    return
+            await asyncio.sleep(2.0)
 
     def _stagger_reason(self, wait_for_bed: bool) -> str:
         """Get waiting reason for stagger-blocked items."""
@@ -1537,116 +1572,172 @@ class PrintScheduler:
             await self._power_off_if_needed(db, item)
             return
 
-        # Delegate the full patch → archive → FTP → register_expected → MQTT
-        # start pipeline to the background-dispatch runner. It sets
-        # ``job.outcome`` before returning. Queue-item awareness wires
-        # ``item.archive_id`` inside the same txn as archive creation, so the
-        # row we already flipped to "printing" has a valid archive_id before
-        # the printer actually reports RUNNING.
+        job_name_short = dispatch_source_name.replace(".gcode.3mf", "").replace(".3mf", "")
+
+        # Pre-register the stagger slot synchronously so the next check_queue
+        # tick (and any racing direct-print) sees this slot occupied. Spawned
+        # task uses background_dispatch._process_job → acquire_stagger_slot,
+        # which is idempotent: returns immediately because the printer already
+        # holds a slot. Direct prints have no pre-register and acquire cold —
+        # they wait until a slot frees before doing any FTP work.
+        stagger_enabled, _stagger_concurrent, stagger_interval, _stagger_wait_bed = await self._get_stagger_settings(db)
+        if stagger_enabled:
+            per_printer_iv = (printer.stagger_interval_minutes * 60) if printer.stagger_interval_minutes else 0
+            self._register_stagger_start(item.queue_id, per_printer_iv or stagger_interval)
+
+        # Spawn the dispatch + post-dispatch bookkeeping in its own task so
+        # multiple queue items targeting different printers run in parallel
+        # (matches the direct-print path through ``_dispatcher_loop``). The
+        # caller's ``db`` is the check_queue tick session — the spawned task
+        # opens its own.
+        asyncio.create_task(
+            self._dispatch_and_finalize(
+                queue_item_id=item.id,
+                printer_id=printer.id,
+                printer_name=printer.name,
+                printer_serial=printer.serial_number,
+                dispatch_kind=dispatch_kind,
+                dispatch_source_id=dispatch_source_id,
+                dispatch_source_name=dispatch_source_name,
+                options=options,
+                requested_by_user_id=item.created_by_id,
+                project_id=item.project_id,
+                job_name_short=job_name_short,
+                swap_events=swap_events,
+            ),
+            name=f"queue-dispatch-{item.id}",
+        )
+
+    async def _dispatch_and_finalize(
+        self,
+        *,
+        queue_item_id: int,
+        printer_id: int,
+        printer_name: str,
+        printer_serial: str | None,
+        dispatch_kind: Literal["reprint_archive", "print_library_file"],
+        dispatch_source_id: int,
+        dispatch_source_name: str,
+        options: dict[str, Any],
+        requested_by_user_id: int | None,
+        project_id: int | None,
+        job_name_short: str,
+        swap_events: list[str],
+    ) -> None:
+        """Run the full dispatch pipeline for a queue item as a spawned task.
+
+        Caller (``_start_print``) returns as soon as it's stamped the queue
+        row to ``printing`` and pre-registered the stagger slot, so the next
+        check_queue tick can dispatch other printers in parallel. We open
+        our own session — the scheduler tick that spawned us is long gone.
+        """
         # Lazy import — background_dispatch + print_scheduler have a two-way
         # relationship (dispatcher calls back into scheduler's stagger helper).
         from backend.app.services.background_dispatch import background_dispatch
 
-        job_name_short = dispatch_source_name.replace(".gcode.3mf", "").replace(".3mf", "")
-
-        try:
-            outcome = await background_dispatch.run_from_queue_item(
-                kind=dispatch_kind,
-                source_id=dispatch_source_id,
-                source_name=dispatch_source_name,
-                printer_id=item.queue_id,
-                printer_name=printer.name,
-                options=options,
-                requested_by_user_id=item.created_by_id,
-                requested_by_username=None,
-                project_id=item.project_id,
-                queue_item_id=item.id,
-            )
-        except Exception as e:  # pragma: no cover — belt-and-braces
-            logger.exception("Queue item %s: run_from_queue_item raised: %s", item.id, e)
-            await self._fail_item(db, item, f"Dispatch error: {e}")
-            await self._power_off_if_needed(db, item)
-            return
-
-        if not outcome.get("success"):
-            err = outcome.get("error") or "Dispatch failed"
-            await self._fail_item(db, item, err)
-            await notification_service.on_queue_job_failed(
-                job_name=job_name_short,
-                printer_id=printer.id,
-                printer_name=printer.name,
-                reason=err,
-                db=db,
-            )
-            await self._power_off_if_needed(db, item)
-            return
-
-        # Refresh the item so scheduler sees the archive_id the dispatcher
-        # just assigned (for library_file dispatches).
-        await db.refresh(item)
-        logger.info("Queue item %s: Dispatch succeeded — archive_id=%s", item.id, item.archive_id)
-
-        # Watchdog for pre_state → transition, swap-aware. Upstream #1078 —
-        # see the big comment block that was here in the pre-refactor code.
-        _post_status = printer_manager.get_status(item.queue_id)
-        _pre_state = _post_status.state if _post_status else None
-        _pre_subtask_id = _post_status.subtask_id if _post_status else None
-        # Capture gcode_file at dispatch time so the watchdog can distinguish
-        # #1150 (slow parse — command landed, file changed on the printer) from
-        # #887/#936 (half-broken session — publish swallowed, file unchanged).
-        # Used only on the timeout path. Ported from upstream v0.2.4b1 (#1150).
-        _pre_gcode_file = _post_status.gcode_file if _post_status else None
-
-        # Hold the printer against further dispatches until the watchdog
-        # confirms the printer transitioned (or until the hard timeout).
-        # Prevents multi-plate batches from triple-dispatching onto the same
-        # H2D Pro while it digests the first project_file (#1157, ported from
-        # upstream v0.2.4b1). Marked even when pre_state is None so a
-        # disconnected-at-dispatch printer still gets a time-based hold.
-        self._mark_printer_dispatched(item.queue_id, _pre_state, _pre_subtask_id)
-
-        if _pre_state:
-            asyncio.create_task(
-                self._watchdog_print_start(
-                    item.id,
-                    item.queue_id,
-                    _pre_state,
-                    _pre_subtask_id,
-                    swap_start_fired="swap_mode_start" in swap_events,
-                    pre_gcode_file=_pre_gcode_file,
+        async with async_session() as db:
+            try:
+                outcome = await background_dispatch.run_from_queue_item(
+                    kind=dispatch_kind,
+                    source_id=dispatch_source_id,
+                    source_name=dispatch_source_name,
+                    printer_id=printer_id,
+                    printer_name=printer_name,
+                    options=options,
+                    requested_by_user_id=requested_by_user_id,
+                    requested_by_username=None,
+                    project_id=project_id,
+                    queue_item_id=queue_item_id,
                 )
+            except Exception as e:  # pragma: no cover — belt-and-braces
+                logger.exception("Queue item %s: run_from_queue_item raised: %s", queue_item_id, e)
+                item = await db.get(PrintQueueItem, queue_item_id)
+                if item:
+                    await self._fail_item(db, item, f"Dispatch error: {e}")
+                    await self._power_off_if_needed(db, item)
+                return
+
+            if not outcome.get("success"):
+                err = outcome.get("error") or "Dispatch failed"
+                item = await db.get(PrintQueueItem, queue_item_id)
+                if item:
+                    await self._fail_item(db, item, err)
+                await notification_service.on_queue_job_failed(
+                    job_name=job_name_short,
+                    printer_id=printer_id,
+                    printer_name=printer_name,
+                    reason=err,
+                    db=db,
+                )
+                if item:
+                    await self._power_off_if_needed(db, item)
+                return
+
+            item = await db.get(PrintQueueItem, queue_item_id)
+            if item is None:
+                logger.warning("Queue item %s vanished after successful dispatch", queue_item_id)
+                return
+            logger.info("Queue item %s: Dispatch succeeded — archive_id=%s", queue_item_id, item.archive_id)
+
+            # Watchdog for pre_state → transition, swap-aware. Upstream #1078 —
+            # see the big comment block in ``_watchdog_print_start``.
+            _post_status = printer_manager.get_status(printer_id)
+            _pre_state = _post_status.state if _post_status else None
+            _pre_subtask_id = _post_status.subtask_id if _post_status else None
+            # Capture gcode_file at dispatch time so the watchdog can distinguish
+            # #1150 (slow parse — command landed, file changed on the printer) from
+            # #887/#936 (half-broken session — publish swallowed, file unchanged).
+            # Used only on the timeout path. Ported from upstream v0.2.4b1 (#1150).
+            _pre_gcode_file = _post_status.gcode_file if _post_status else None
+
+            # Hold the printer against further dispatches until the watchdog
+            # confirms the printer transitioned (or until the hard timeout).
+            # Prevents multi-plate batches from triple-dispatching onto the same
+            # H2D Pro while it digests the first project_file (#1157, ported from
+            # upstream v0.2.4b1). Marked even when pre_state is None so a
+            # disconnected-at-dispatch printer still gets a time-based hold.
+            self._mark_printer_dispatched(printer_id, _pre_state, _pre_subtask_id)
+
+            if _pre_state:
+                asyncio.create_task(
+                    self._watchdog_print_start(
+                        queue_item_id,
+                        printer_id,
+                        _pre_state,
+                        _pre_subtask_id,
+                        swap_start_fired="swap_mode_start" in swap_events,
+                        pre_gcode_file=_pre_gcode_file,
+                    )
+                )
+
+            # Estimated time for the notification — read from the archive row
+            # the dispatcher created (3MF parser fills print_time_seconds).
+            estimated_time = None
+            if item.archive_id:
+                arch_row = await db.get(PrintArchive, item.archive_id)
+                if arch_row is not None and arch_row.print_time_seconds:
+                    estimated_time = arch_row.print_time_seconds
+
+            await notification_service.on_queue_job_started(
+                job_name=job_name_short,
+                printer_id=printer_id,
+                printer_name=printer_name,
+                db=db,
+                estimated_time=estimated_time,
             )
 
-        # Estimated time for the notification — prefer archive metadata,
-        # fall back to library_file.
-        estimated_time = None
-        if item.archive_id:
-            arch_row = await db.get(PrintArchive, item.archive_id)
-            if arch_row is not None and arch_row.print_time_seconds:
-                estimated_time = arch_row.print_time_seconds
-        if estimated_time is None and library_file and library_file.print_time_seconds:
-            estimated_time = library_file.print_time_seconds
+            try:
+                from backend.app.services.mqtt_relay import mqtt_relay
 
-        await notification_service.on_queue_job_started(
-            job_name=job_name_short,
-            printer_id=printer.id,
-            printer_name=printer.name,
-            db=db,
-            estimated_time=estimated_time,
-        )
-
-        try:
-            from backend.app.services.mqtt_relay import mqtt_relay
-
-            await mqtt_relay.on_queue_job_started(
-                job_id=item.id,
-                filename=dispatch_source_name,
-                printer_id=printer.id,
-                printer_name=printer.name,
-                printer_serial=printer.serial_number,
-            )
-        except Exception:
-            pass  # Don't fail the scheduler if the relay misbehaves.
+                await mqtt_relay.on_queue_job_started(
+                    job_id=queue_item_id,
+                    filename=dispatch_source_name,
+                    printer_id=printer_id,
+                    printer_name=printer_name,
+                    printer_serial=printer_serial,
+                )
+            except Exception:
+                pass  # Don't fail the scheduler if the relay misbehaves.
 
     @staticmethod
     async def _watchdog_print_start(
