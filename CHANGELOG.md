@@ -8,6 +8,10 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+### Removed
+
+- **Daily-snapshot release channel removed.** Never used in practice — `0.5.0b1-daily.YYYYMMDD` style tags + the `:…-daily.YYYYMMDD` Docker tag never produced a single image since they were introduced. The `.github/workflows/docker-publish-daily.yml` workflow, the daily-skip branch in `docker-publish-tag.yml`, and the daily channel handling in `docker-publish.sh` + `scripts/set_version.js` are gone. The three remaining channels (stable / beta / `:dev` rolling) cover the actual release cadence. Existing daily-shaped tags from previous experiments (if any are still on the remote) stay — tag immutability rule.
+
 ---
 
 ## [0.4.3] - 2026-05-05

@@ -8,14 +8,12 @@
 # Examples:
 #   ./docker-publish.sh 0.5.0 --parallel              # Stable  → :latest + :0.5.0
 #   ./docker-publish.sh 0.5.0b1 --parallel            # Beta    → :0.5.0b1
-#   ./docker-publish.sh 0.5.0b1-daily.20260423        # Daily   → :0.5.0b1-daily.20260423
 #   ./docker-publish.sh dev --parallel                # Rolling → :dev (overwrites)
 #   ./docker-publish.sh 0.5.0 --ghcr-only             # Only push to GHCR
 #
 # Channel → Docker-tag mapping (see temp/release_guide.md for full workflow):
 #   stable   → :latest + :X.Y.Z
 #   beta     → :X.Y.ZbN                          (no :latest)
-#   daily    → :X.Y.Z[bN]-daily.YYYYMMDD         (no :latest)
 #   rolling  → :dev                              (no :latest, no version tag)
 #
 # Prerequisites:
@@ -151,11 +149,10 @@ fi
 
 # Channel detection for tag logic. See temp/release_guide.md for the full
 # format table — `:latest` is reserved for stable versions on main so that
-# pinned deployments keep working when a beta or daily snapshot gets pushed.
+# pinned deployments keep working when a beta gets pushed.
 #
 #   X.Y.Z / X.Y.Z.W                      → stable  → tag :latest
 #   X.Y.ZbN / X.Y.Z.WbN                  → beta    → NO :latest
-#   X.Y.Z[bN]-daily.YYYYMMDD             → daily   → NO :latest
 #   'dev'  (from --dev flag)             → rolling → NO :latest, NO version tag
 TAG_LATEST=true
 CHANNEL="stable"
@@ -163,10 +160,6 @@ if [[ "$VERSION" == "dev" ]]; then
     CHANNEL="rolling"
     TAG_LATEST=false
     echo -e "${YELLOW}Rolling 'dev' tag — skipping 'latest' and version-specific tags${NC}"
-elif [[ "$VERSION" =~ -daily\.[0-9]{8}$ ]]; then
-    CHANNEL="daily"
-    TAG_LATEST=false
-    echo -e "${YELLOW}Daily snapshot detected — skipping 'latest' tag${NC}"
 elif [[ "$VERSION" =~ b[0-9]+$ ]]; then
     CHANNEL="beta"
     TAG_LATEST=false
