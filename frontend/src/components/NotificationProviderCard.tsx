@@ -196,73 +196,83 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                         </div>
                     )}
 
-                    {/* Event summary - show all event tags */}
+                    {/* Event summary - show all event tags. For Telegram the
+                        on_* flags are forced True after m045 (per-chat
+                        notify_events is the authority), so rendering them
+                        here as 16 always-on badges would just add visual
+                        noise — replace with a single hint chip. */}
                     <div className="mb-3 flex flex-wrap gap-1">
-                        {provider.on_print_start && (
+                        {isTelegram && (
+                            <span className="px-2 py-0.5 bg-blue-500/15 text-blue-300 text-xs rounded inline-flex items-center gap-1">
+                                <MessageCircle className="w-3 h-3" />
+                                {t('notifications.telegram.eventsPerChatChip')}
+                            </span>
+                        )}
+                        {!isTelegram && provider.on_print_start && (
                             <span
                                 className="px-2 py-0.5 bg-blue-500/20 text-blue-400 text-xs rounded">{t('notifications.start')}</span>
                         )}
-                        {provider.on_plate_not_empty && (
+                        {!isTelegram && provider.on_plate_not_empty && (
                             <span
                                 className="px-2 py-0.5 bg-rose-600/20 text-rose-300 text-xs rounded">{t('notifications.plateCheck')}</span>
                         )}
-                        {provider.on_print_complete && (
+                        {!isTelegram && provider.on_print_complete && (
                             <span
                                 className="px-2 py-0.5 bg-bambu-green/20 text-bambu-green text-xs rounded">{t('notifications.complete')}</span>
                         )}
-                        {provider.on_print_failed && (
+                        {!isTelegram && provider.on_print_failed && (
                             <span
                                 className="px-2 py-0.5 bg-red-500/20 text-red-400 text-xs rounded">{t('notifications.failed')}</span>
                         )}
-                        {provider.on_print_stopped && (
+                        {!isTelegram && provider.on_print_stopped && (
                             <span
                                 className="px-2 py-0.5 bg-orange-500/20 text-orange-400 text-xs rounded">{t('notifications.stopped')}</span>
                         )}
-                        {provider.on_print_progress && (
+                        {!isTelegram && provider.on_print_progress && (
                             <span
                                 className="px-2 py-0.5 bg-yellow-500/20 text-yellow-400 text-xs rounded">{t('notifications.progress')}</span>
                         )}
-                        {provider.on_printer_offline && (
+                        {!isTelegram && provider.on_printer_offline && (
                             <span
                                 className="px-2 py-0.5 bg-gray-500/20 text-gray-400 text-xs rounded">{t('notifications.offline')}</span>
                         )}
-                        {provider.on_printer_error && (
+                        {!isTelegram && provider.on_printer_error && (
                             <span
                                 className="px-2 py-0.5 bg-rose-500/20 text-rose-400 text-xs rounded">{t('notifications.error')}</span>
                         )}
-                        {provider.on_filament_low && (
+                        {!isTelegram && provider.on_filament_low && (
                             <span
                                 className="px-2 py-0.5 bg-cyan-500/20 text-cyan-400 text-xs rounded">{t('notifications.lowFilament')}</span>
                         )}
-                        {provider.on_maintenance_due && (
+                        {!isTelegram && provider.on_maintenance_due && (
                             <span
                                 className="px-2 py-0.5 bg-purple-500/20 text-purple-400 text-xs rounded">{t('notifications.maintenance')}</span>
                         )}
-                        {provider.on_ams_humidity_high && (
+                        {!isTelegram && provider.on_ams_humidity_high && (
                             <span
                                 className="px-2 py-0.5 bg-blue-600/20 text-blue-300 text-xs rounded">{t('notifications.amsHumidity')}</span>
                         )}
-                        {provider.on_ams_temperature_high && (
+                        {!isTelegram && provider.on_ams_temperature_high && (
                             <span
                                 className="px-2 py-0.5 bg-orange-600/20 text-orange-300 text-xs rounded">{t('notifications.amsTemp')}</span>
                         )}
-                        {provider.on_ams_ht_humidity_high && (
+                        {!isTelegram && provider.on_ams_ht_humidity_high && (
                             <span
                                 className="px-2 py-0.5 bg-cyan-600/20 text-cyan-300 text-xs rounded">{t('notifications.amsHtHumidity')}</span>
                         )}
-                        {provider.on_ams_ht_temperature_high && (
+                        {!isTelegram && provider.on_ams_ht_temperature_high && (
                             <span
                                 className="px-2 py-0.5 bg-amber-600/20 text-amber-300 text-xs rounded">{t('notifications.amsHtTemp')}</span>
                         )}
-                        {provider.on_bed_cooled && (
+                        {!isTelegram && provider.on_bed_cooled && (
                             <span
                                 className="px-2 py-0.5 bg-teal-500/20 text-teal-400 text-xs rounded">{t('notifications.bedCooled')}</span>
                         )}
-                        {provider.on_first_layer_complete && (
+                        {!isTelegram && provider.on_first_layer_complete && (
                             <span
                                 className="px-2 py-0.5 bg-emerald-600/20 text-emerald-300 text-xs rounded">{t('notifications.firstLayer')}</span>
                         )}
-                        {provider.on_print_missing_spool_assignment && (
+                        {!isTelegram && provider.on_print_missing_spool_assignment && (
                             <span
                                 className="px-2 py-0.5 bg-amber-500/20 text-amber-300 text-xs rounded">{t('notifications.missingSpoolAssignmentLabel')}</span>
                         )}
@@ -352,7 +362,24 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                                 />
                             </div>
 
-                            {/* Print Lifecycle Events */}
+                            {/* Telegram: per-event opt-ins + quiet hours live on
+                                each TelegramChat row after m045 — show a hint
+                                here so the operator knows where to look. */}
+                            {isTelegram && (
+                                <div className="p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg flex items-start gap-2">
+                                    <MessageCircle className="w-4 h-4 text-blue-400 flex-shrink-0 mt-0.5"/>
+                                    <div className="text-xs text-bambu-gray space-y-1">
+                                        <p className="text-white">{t('notifications.telegram.perChatHintTitle')}</p>
+                                        <p>{t('notifications.telegram.perChatHintBody')}</p>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Print Lifecycle Events — provider-level. Hidden
+                                for Telegram (per-chat is the authority).
+                                Fragment groups all 5 toggle sections under
+                                one !isTelegram guard. */}
+                            {!isTelegram && (<>
                             <div className="space-y-2">
                                 <p className="text-xs text-bambu-gray uppercase tracking-wide">{t('notifications.printEvents')}</p>
 
@@ -608,6 +635,8 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                                     />
                                 </div>
                             </div>
+                            </>)}
+                            {/* /isTelegram event-toggles wrapper */}
 
                             {/* Quiet Hours - hidden for Telegram (per-chat setting) */}
                             {!isTelegram && (

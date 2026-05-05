@@ -4558,6 +4558,7 @@ export default {
       perChatHintTitle: 'Telegram events are configured per chat.',
       perChatHintBody: 'Quiet hours and which events each chat receives live on each Telegram chat row — the bot itself only stores token, on/off, and daily digest schedule.',
       openChatsPage: 'Open Telegram chats',
+      eventsPerChatChip: 'events per chat',
     },
     cancel: 'Cancel',
     save: 'Save',

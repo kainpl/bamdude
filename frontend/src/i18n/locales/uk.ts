@@ -4557,6 +4557,7 @@ export default {
       perChatHintTitle: 'Telegram-події налаштовуються для кожного чату окремо.',
       perChatHintBody: 'Тихий час і список подій на чат тримаються в самих Telegram-чатах — на боті лишається лише токен, увімкнення/вимкнення та розклад щоденного дайджесту.',
       openChatsPage: 'Відкрити Telegram-чати',
+      eventsPerChatChip: 'події по чатах',
     },
     cancel: 'Скасувати',
     save: 'Зберегти',
