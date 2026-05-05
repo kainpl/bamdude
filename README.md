@@ -119,8 +119,10 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 ### Projects
 - Group related prints
 - Track plates and parts
-- **Print plan table**: per-file copies with live filament/time/cost totals
-- Link folders or individual files from the File Manager
+- **Print plan table**: per-file copies with live filament/time/cost totals + per-row printed/remaining counters
+- **Headline "remaining" totals** on Print Jobs / Print Time / Filament Used cards (green when done, amber when there's work left)
+- Link folders or individual files from the File Manager — **many-to-many** (a file or folder can belong to several projects at once)
+- Per-chip unlink (`×` on each project chip) for granular detach
 - Import/Export as ZIP or JSON
 
 </td>
