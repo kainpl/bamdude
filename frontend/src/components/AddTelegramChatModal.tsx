@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { X, Save, Loader2 } from 'lucide-react';
+import { X, Save, Loader2, AlertTriangle } from 'lucide-react';
 import { api } from '../api/client';
 import type { TelegramChat, TelegramChatCreate, TelegramChatUpdate, NotifyEventInfo } from '../api/client';
 import { Button } from './Button';
@@ -33,6 +33,16 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
   const { data: groups } = useQuery({ queryKey: ['groups'], queryFn: api.getGroups });
   const { data: users } = useQuery({ queryKey: ['users'], queryFn: api.getUsers });
   const { data: eventTypes } = useQuery({ queryKey: ['telegram-events'], queryFn: api.getTelegramEvents });
+
+  // Pull the telegram provider so we can warn the operator when the
+  // chat-side daily_digest opt-in won't take effect (provider digest off).
+  const { data: providers } = useQuery({
+    queryKey: ['notification-providers'],
+    queryFn: api.getNotificationProviders,
+  });
+  const telegramProvider = providers?.find((p) => p.provider_type === 'telegram') ?? null;
+  const providerDigestOn = telegramProvider?.daily_digest_enabled ?? false;
+  const showDigestProviderWarning = dailyDigest && telegramProvider != null && !providerDigestOn;
 
   // Close on Escape
   useEffect(() => {
@@ -280,13 +290,28 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
             )}
           </div>
 
-          {/* Daily Digest */}
-          <div className="flex items-center justify-between">
-            <label className="text-sm text-white">{t('telegram.dailyDigest')}</label>
-            <Toggle
-              checked={dailyDigest}
-              onChange={setDailyDigest}
-            />
+          {/* Daily Digest — opt-in only; the time itself is configured on
+              the bot/provider so all subscribed chats receive at the same
+              moment. */}
+          <div className="space-y-1">
+            <div className="flex items-center justify-between">
+              <label className="text-sm text-white">{t('telegram.dailyDigest')}</label>
+              <Toggle
+                checked={dailyDigest}
+                onChange={setDailyDigest}
+              />
+            </div>
+            {dailyDigest && telegramProvider && providerDigestOn && telegramProvider.daily_digest_time && (
+              <p className="text-xs text-bambu-gray">
+                {t('telegram.dailyDigestProviderTime', { time: telegramProvider.daily_digest_time })}
+              </p>
+            )}
+            {showDigestProviderWarning && (
+              <div className="flex items-start gap-1.5 text-xs text-amber-400">
+                <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                <span>{t('telegram.dailyDigestProviderOff')}</span>
+              </div>
+            )}
           </div>
 
           {/* Notification Events */}

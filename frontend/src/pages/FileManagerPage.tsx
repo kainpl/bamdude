@@ -1060,6 +1060,40 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
 
 function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, onAddToQueue, onPrint, onSlice, useSlicerApi, onPreview3d, onRename, onLink, onGenerateThumbnail, onPlateGallery, thumbnailVersion, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
   const [showActions, setShowActions] = useState(false);
+  // Portal-rendered dropdown — the card root has `overflow-hidden` for the
+  // thumbnail crop, which clips an absolute-positioned menu against the card
+  // edge on narrow viewports. Coords are computed from the trigger button
+  // and recalculated on scroll/resize to track the card's position.
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  // Anchor the menu's bottom edge to the trigger's top (default) so the gap
+  // stays a fixed 4 px regardless of menu height. Flip to top-anchor when
+  // there isn't enough room above (e.g. trigger near top of viewport).
+  const [coords, setCoords] = useState<{ top?: number; bottom?: number; right: number } | null>(null);
+
+  useEffect(() => {
+    if (!showActions) return;
+    const update = () => {
+      const btn = triggerRef.current;
+      if (!btn) return;
+      const rect = btn.getBoundingClientRect();
+      const right = Math.max(8, window.innerWidth - rect.right);
+      // Default: anchor menu's bottom 4 px above the trigger — flush layout,
+      // exact gap. Flip below when the trigger is near the top of the viewport.
+      const minOpenAboveHeight = 120;
+      if (rect.top > minOpenAboveHeight + 8) {
+        setCoords({ bottom: window.innerHeight - rect.top + 4, right });
+      } else {
+        setCoords({ top: rect.bottom + 4, right });
+      }
+    };
+    update();
+    window.addEventListener('resize', update);
+    window.addEventListener('scroll', update, true);
+    return () => {
+      window.removeEventListener('resize', update);
+      window.removeEventListener('scroll', update, true);
+    };
+  }, [showActions]);
 
   return (
     <div
@@ -1189,15 +1223,26 @@ function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, 
       {/* Actions - always visible on mobile, hover on desktop */}
       <div className={`absolute bottom-2 right-2 transition-opacity ${isMobile ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`} onClick={(e) => e.stopPropagation()}>
         <button
+          ref={triggerRef}
           onClick={() => setShowActions(!showActions)}
           className="p-1.5 rounded bg-bambu-dark-secondary/90 hover:bg-bambu-dark-tertiary"
         >
           <MoreVertical className="w-4 h-4 text-bambu-gray" />
         </button>
-        {showActions && (
+        {showActions && createPortal(
           <>
-            <div className="fixed inset-0 z-10" onClick={() => setShowActions(false)} />
-            <div className="absolute right-0 bottom-8 z-20 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl py-1 w-[240px] whitespace-nowrap">
+            <div className="fixed inset-0 z-[55]" onClick={() => setShowActions(false)} />
+            <div
+              style={{
+                position: 'fixed',
+                top: coords?.top,
+                bottom: coords?.bottom,
+                right: coords?.right ?? 0,
+                visibility: coords ? 'visible' : 'hidden',
+              }}
+              className="z-[60] bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl py-1 whitespace-nowrap w-max max-w-[calc(100vw-16px)]"
+              onClick={(e) => e.stopPropagation()}
+            >
               {onPrint && isSliced(file) && (
                 <button
                   className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
@@ -1311,7 +1356,8 @@ function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, 
                 {t('common.delete')}
               </button>
             </div>
-          </>
+          </>,
+          document.body
         )}
       </div>
 

@@ -29,6 +29,52 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/notifications", tags=["notifications"])
 
 
+# Telegram-specific coercion: per-event opt-in, quiet hours, and digest opt-in
+# all live on each TelegramChat row after the m045 refactor. The provider row
+# only carries enabled/digest/printer scope. We silently coerce the legacy
+# fields to dispatch-transparent values regardless of what the client sent —
+# the schema still accepts them (shared across all provider types) but for
+# telegram-row writes they no longer have authority.
+_TELEGRAM_FORCED_TRUE_FIELDS = (
+    "on_print_start",
+    "on_print_complete",
+    "on_print_failed",
+    "on_print_stopped",
+    "on_print_progress",
+    "on_print_missing_spool_assignment",
+    "on_printer_offline",
+    "on_printer_error",
+    "on_filament_low",
+    "on_maintenance_due",
+    "on_ams_humidity_high",
+    "on_ams_temperature_high",
+    "on_ams_ht_humidity_high",
+    "on_ams_ht_temperature_high",
+    "on_plate_not_empty",
+    "on_bed_cooled",
+    "on_first_layer_complete",
+    "on_queue_job_added",
+    "on_queue_job_started",
+    "on_queue_job_waiting",
+    "on_queue_job_skipped",
+    "on_queue_job_failed",
+    "on_queue_completed",
+)
+
+
+def _coerce_telegram_provider_fields(provider: NotificationProvider) -> None:
+    """For provider_type='telegram' force on_* True + quiet_hours off so the
+    legacy provider-level filters become transparent. Per-chat values on
+    ``telegram_chats`` are now the authority."""
+    if provider.provider_type != "telegram":
+        return
+    for field in _TELEGRAM_FORCED_TRUE_FIELDS:
+        setattr(provider, field, True)
+    provider.quiet_hours_enabled = False
+    provider.quiet_hours_start = None
+    provider.quiet_hours_end = None
+
+
 def _provider_to_dict(provider: NotificationProvider) -> dict:
     """Convert a NotificationProvider model to a response dictionary."""
     return {
@@ -158,6 +204,7 @@ async def create_notification_provider(
         printer_id=provider_data.printer_id,
     )
 
+    _coerce_telegram_provider_fields(provider)
     db.add(provider)
     await db.commit()
     await db.refresh(provider)
@@ -416,6 +463,8 @@ async def update_notification_provider(
             setattr(provider, key, value.value)
         else:
             setattr(provider, key, value)
+
+    _coerce_telegram_provider_fields(provider)
 
     await db.commit()
     await db.refresh(provider)

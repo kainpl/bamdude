@@ -376,6 +376,96 @@ class NotificationService:
         else:
             return False, f"Failed to send to all chats: {'; '.join(errors)}"
 
+    async def _send_telegram_digest_to_chats(
+        self,
+        config: dict,
+        title: str,
+        body: str,
+    ) -> tuple[bool, str]:
+        """Fan-out a daily digest body to every active TelegramChat that
+        opted into ``daily_digest=True``. Bypasses ``notify_events`` and
+        ``quiet_hours_*`` — the daily digest is its own opt-in channel,
+        not a per-event notification, so it shouldn't be filtered through
+        ``should_notify(event_type)``.
+
+        Pre-refactor ``send_digest`` routed telegram digests through
+        ``_send_to_provider`` with ``event_type='unknown'``, which the
+        per-event filter rejected for every chat — meaning the digest
+        queue filled up but no chat ever received the digest. This
+        method fixes that.
+        """
+        bot_token = config.get("bot_token", "").strip()
+        if not bot_token:
+            return False, "Bot token is required"
+
+        from sqlalchemy import select
+
+        from backend.app.core.database import async_session
+        from backend.app.models.telegram_chat import TelegramChat
+
+        try:
+            async with async_session() as session:
+                result = await session.execute(
+                    select(TelegramChat).where(
+                        TelegramChat.is_active.is_(True),
+                        TelegramChat.daily_digest.is_(True),
+                    )
+                )
+                chats = result.scalars().all()
+        except Exception as e:
+            return False, f"Failed to query Telegram chats: {e}"
+
+        if not chats:
+            return True, "No chats opted into daily digest"
+
+        full = f"*{title}*\n{body}"
+        sent = 0
+        errors: list[str] = []
+        for chat in chats:
+            ok, err = await self._send_telegram(config, full, chat_id=str(chat.chat_id))
+            if ok:
+                sent += 1
+            else:
+                errors.append(f"Chat {chat.chat_id}: {err}")
+
+        if sent == len(chats):
+            return True, f"Sent digest to {sent} chat(s)"
+        elif sent > 0:
+            return True, f"Sent digest to {sent}/{len(chats)} chats. Errors: {'; '.join(errors)}"
+        else:
+            return False, f"Failed to send digest to all chats: {'; '.join(errors)}"
+
+    @staticmethod
+    async def _has_telegram_digest_subscribers() -> bool:
+        """True iff at least one active TelegramChat has opted into daily digest.
+
+        Used by ``_send_to_providers`` to skip the digest queue write when
+        no chats subscribed — keeps ``notification_digest_queue`` from
+        accumulating rows that would never be delivered to anyone.
+        """
+        from sqlalchemy import select
+
+        from backend.app.core.database import async_session
+        from backend.app.models.telegram_chat import TelegramChat
+
+        try:
+            async with async_session() as session:
+                row = (
+                    await session.execute(
+                        select(TelegramChat.id)
+                        .where(
+                            TelegramChat.is_active.is_(True),
+                            TelegramChat.daily_digest.is_(True),
+                        )
+                        .limit(1)
+                    )
+                ).first()
+                return row is not None
+        except Exception:
+            # Conservative: if the lookup fails we still queue, so the
+            # digest mechanism behaves like before for non-telegram paths.
+            return True
+
     async def _send_telegram(
         self,
         config: dict,
@@ -869,20 +959,40 @@ class NotificationService:
         event_field: str,
         printer_id: int | None = None,
     ) -> list[NotificationProvider]:
-        """Get all enabled providers that want a specific event type."""
-        # Build the query dynamically based on event field
-        query = select(NotificationProvider).where(
-            NotificationProvider.enabled.is_(True),
-            getattr(NotificationProvider, event_field).is_(True),
-        )
+        """Get all enabled providers that want a specific event type.
 
+        For telegram providers the per-event filter lives on TelegramChat,
+        not on the provider — we always include enabled telegram providers
+        here and let ``_send_telegram_to_chats()`` filter per-chat
+        downstream. Other provider types (email / ntfy / pushover / discord
+        / webhook / homeassistant / callmebot) keep the legacy
+        provider-level event gate.
+        """
+        enabled_filter = NotificationProvider.enabled.is_(True)
+        printer_filter = None
         if printer_id is not None:
-            query = query.where(
-                (NotificationProvider.printer_id.is_(None)) | (NotificationProvider.printer_id == printer_id)
+            printer_filter = (NotificationProvider.printer_id.is_(None)) | (
+                NotificationProvider.printer_id == printer_id
             )
 
-        result = await db.execute(query)
-        return list(result.scalars().all())
+        # Telegram: ignore on_* — always include if enabled.
+        telegram_q = select(NotificationProvider).where(
+            enabled_filter,
+            NotificationProvider.provider_type == "telegram",
+        )
+        # Non-telegram: keep the legacy provider-level event gate.
+        other_q = select(NotificationProvider).where(
+            enabled_filter,
+            NotificationProvider.provider_type != "telegram",
+            getattr(NotificationProvider, event_field).is_(True),
+        )
+        if printer_filter is not None:
+            telegram_q = telegram_q.where(printer_filter)
+            other_q = other_q.where(printer_filter)
+
+        rows = list((await db.execute(telegram_q)).scalars().all())
+        rows.extend((await db.execute(other_q)).scalars().all())
+        return rows
 
     async def _log_notification(
         self,
@@ -948,17 +1058,24 @@ class NotificationService:
                     variables=variables,
                 )
 
-                # Also queue for digest if enabled (digest is a summary, not a queue)
+                # Also queue for digest if enabled (digest is a summary, not a queue).
+                # For telegram, skip the queue write when no active chat opted into
+                # daily_digest — otherwise notification_digest_queue accumulates
+                # rows that will never be delivered.
                 if provider.daily_digest_enabled and provider.daily_digest_time:
-                    await self._queue_for_digest(
-                        provider=provider,
-                        event_type=event_type,
-                        title=title,
-                        message=message,
-                        db=db,
-                        printer_id=printer_id,
-                        printer_name=printer_name,
-                    )
+                    should_queue = True
+                    if provider.provider_type == "telegram":
+                        should_queue = await self._has_telegram_digest_subscribers()
+                    if should_queue:
+                        await self._queue_for_digest(
+                            provider=provider,
+                            event_type=event_type,
+                            title=title,
+                            message=message,
+                            db=db,
+                            printer_id=printer_id,
+                            printer_name=printer_name,
+                        )
                 await self._update_provider_status(db, provider.id, success, error if not success else None)
                 await self._log_notification(
                     db=db,
@@ -1931,8 +2048,15 @@ class NotificationService:
 
             body = "\n".join(body_parts)
 
-            # Send the digest
-            success, error = await self._send_to_provider(provider, title, body, db)
+            # Send the digest. Telegram has its own dedicated path that fans
+            # out only to chats with daily_digest=True (see method docstring
+            # for context — the legacy path used should_notify("unknown")
+            # which rejected every chat).
+            if provider.provider_type == "telegram":
+                config = json.loads(provider.config) if isinstance(provider.config, str) else provider.config
+                success, error = await self._send_telegram_digest_to_chats(config, title, body)
+            else:
+                success, error = await self._send_to_provider(provider, title, body, db)
 
             # Log the digest
             await self._log_notification(

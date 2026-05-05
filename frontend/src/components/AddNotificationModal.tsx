@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { X, Save, Loader2, Send, CheckCircle, XCircle } from 'lucide-react';
+import { X, Save, Loader2, Send, CheckCircle, XCircle, MessageCircle, ExternalLink } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { api } from '../api/client';
 import type { NotificationProvider, NotificationProviderCreate, NotificationProviderUpdate, ProviderType } from '../api/client';
 import { Button } from './Button';
@@ -423,38 +424,57 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
             </p>
           </div>
 
-          {/* Quiet Hours */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <label className="text-sm text-white">{t('notifications.quietHoursDnd')}</label>
-              <Toggle
-                checked={quietHoursEnabled}
-                onChange={setQuietHoursEnabled}
-              />
-            </div>
-            {quietHoursEnabled && (
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs text-bambu-gray mb-1">{t('notifications.quietStart')}</label>
-                  <input
-                    type="time"
-                    value={quietHoursStart}
-                    onChange={(e) => setQuietHoursStart(e.target.value)}
-                    className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs text-bambu-gray mb-1">{t('notifications.quietEnd')}</label>
-                  <input
-                    type="time"
-                    value={quietHoursEnd}
-                    onChange={(e) => setQuietHoursEnd(e.target.value)}
-                    className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                  />
-                </div>
+          {/* Telegram-only hint: per-event opt-ins and quiet hours live on
+              each chat now (m045). Provider keeps only enabled + digest. */}
+          {providerType === 'telegram' && (
+            <div className="p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg flex items-start gap-2">
+              <MessageCircle className="w-4 h-4 text-blue-400 flex-shrink-0 mt-0.5" />
+              <div className="text-xs text-bambu-gray space-y-1">
+                <p className="text-white">{t('notifications.telegram.perChatHintTitle')}</p>
+                <p>{t('notifications.telegram.perChatHintBody')}</p>
+                <Link to="/telegram" className="inline-flex items-center gap-1 text-blue-400 hover:text-blue-300">
+                  {t('notifications.telegram.openChatsPage')}
+                  <ExternalLink className="w-3 h-3" />
+                </Link>
               </div>
-            )}
-          </div>
+            </div>
+          )}
+
+          {/* Quiet Hours — provider-level. Telegram skips this; per-chat
+              quiet hours are configured on each TelegramChat row. */}
+          {providerType !== 'telegram' && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-sm text-white">{t('notifications.quietHoursDnd')}</label>
+                <Toggle
+                  checked={quietHoursEnabled}
+                  onChange={setQuietHoursEnabled}
+                />
+              </div>
+              {quietHoursEnabled && (
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs text-bambu-gray mb-1">{t('notifications.quietStart')}</label>
+                    <input
+                      type="time"
+                      value={quietHoursStart}
+                      onChange={(e) => setQuietHoursStart(e.target.value)}
+                      className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-bambu-gray mb-1">{t('notifications.quietEnd')}</label>
+                    <input
+                      type="time"
+                      value={quietHoursEnd}
+                      onChange={(e) => setQuietHoursEnd(e.target.value)}
+                      className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Daily Digest */}
           <div className="space-y-2">
@@ -484,7 +504,8 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
             )}
           </div>
 
-          {/* Event Toggles */}
+          {/* Event Toggles — provider-level. Telegram lives per-chat instead. */}
+          {providerType !== 'telegram' && (
           <div className="space-y-3">
             <p className="text-sm text-bambu-gray">{t('notifications.notificationEvents')}</p>
 
@@ -603,6 +624,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
               );
             })()}
           </div>
+          )}
 
           {/* Actions */}
           <div className="flex gap-3 pt-2">

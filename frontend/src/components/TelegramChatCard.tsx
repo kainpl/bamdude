@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Trash2, Edit2, Send, Loader2, CheckCircle, XCircle } from 'lucide-react';
+import { Trash2, Edit2, Send, Loader2, CheckCircle, XCircle, CalendarClock, AlertTriangle } from 'lucide-react';
 import { api } from '../api/client';
 import type { TelegramChat, TelegramChatUpdate } from '../api/client';
 import { Card, CardContent } from './Card';
@@ -45,6 +45,17 @@ export function TelegramChatCard({ chat, onEdit }: TelegramChatCardProps) {
       setTimeout(() => setTestResult(null), 5000);
     },
   });
+
+  // Pull the telegram provider so the digest badge can show the bot's
+  // configured time, or warn when the bot's digest is off but this chat
+  // opted in (the chat-side toggle is then a no-op until the bot is on).
+  const { data: providers } = useQuery({
+    queryKey: ['notification-providers'],
+    queryFn: api.getNotificationProviders,
+  });
+  const telegramProvider = providers?.find((p) => p.provider_type === 'telegram') ?? null;
+  const providerDigestOn = telegramProvider?.daily_digest_enabled ?? false;
+  const providerDigestTime = telegramProvider?.daily_digest_time ?? null;
 
   const isPending = chat.group_id === null;
   const eventCount = chat.notify_events?.length ?? 7; // 7 = default count
@@ -100,7 +111,25 @@ export function TelegramChatCard({ chat, onEdit }: TelegramChatCardProps) {
               {t('telegram.events')}: <span className="text-white">
                 {chat.notify_events === null ? t('telegram.defaults') : `${eventCount}/${totalEvents}`}
               </span>
-              {chat.daily_digest && <span className="ml-1.5 text-emerald-400">+ {t('telegram.dailyDigest')}</span>}
+              {chat.daily_digest && (
+                providerDigestOn && providerDigestTime ? (
+                  <span
+                    className="ml-1.5 inline-flex items-center gap-1 text-emerald-400"
+                    title={t('telegram.dailyDigestProviderTime', { time: providerDigestTime })}
+                  >
+                    <CalendarClock className="w-3 h-3" />
+                    {providerDigestTime}
+                  </span>
+                ) : (
+                  <span
+                    className="ml-1.5 inline-flex items-center gap-1 text-amber-400"
+                    title={t('telegram.dailyDigestProviderOff')}
+                  >
+                    <AlertTriangle className="w-3 h-3" />
+                    {t('telegram.dailyDigestOff')}
+                  </span>
+                )
+              )}
               {chat.quiet_hours_enabled && (
                 <span className="ml-1.5 text-indigo-400">
                   {t('notifications.quiet')} {chat.quiet_hours_start}–{chat.quiet_hours_end}

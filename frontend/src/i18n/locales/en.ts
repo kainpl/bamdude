@@ -4554,6 +4554,11 @@ export default {
     notificationEvents: 'Notification Events',
     progressPercent: '(25%, 50%, 75%)',
     bedCooledAfterPrint: '(after print completes)',
+    telegram: {
+      perChatHintTitle: 'Telegram events are configured per chat.',
+      perChatHintBody: 'Quiet hours and which events each chat receives live on each Telegram chat row — the bot itself only stores token, on/off, and daily digest schedule.',
+      openChatsPage: 'Open Telegram chats',
+    },
     cancel: 'Cancel',
     save: 'Save',
     add: 'Add',
@@ -4877,6 +4882,9 @@ export default {
     deleteTitle: 'Delete Chat',
     deleteMessage: 'Remove Telegram chat "{{label}}"? This cannot be undone.',
     dailyDigest: 'Daily Digest',
+    dailyDigestOff: 'digest off',
+    dailyDigestProviderTime: 'Sent daily at {{time}} (configured on the bot)',
+    dailyDigestProviderOff: 'Daily digest is disabled on the bot — this opt-in won\'t take effect until the bot\'s digest is enabled.',
     cancel: 'Cancel',
     save: 'Save',
     add: 'Add'

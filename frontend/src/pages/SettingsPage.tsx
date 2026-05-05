@@ -2637,6 +2637,22 @@ export function SettingsPage() {
             </CardContent>
           </Card>
 
+          {/* Saved Print Profiles — admin view of every per-(user, model)
+              PrintModal toggle preference. Add/edit/delete and copy across
+              users so onboarding a new operator can inherit the lead's
+              calibrated defaults. */}
+          <Card id="card-print-options-prefs">
+            <CardHeader>
+              <h3 className="text-base font-semibold text-white flex items-center gap-2">
+                <Save className="w-4 h-4 text-bambu-green" />
+                {t('printOptionsPrefs.cardTitle')}
+              </h3>
+            </CardHeader>
+            <CardContent>
+              <PrintOptionsPreferencesPanel />
+            </CardContent>
+          </Card>
+
           {/* Cost Tracking */}
           <Card>
             <CardHeader>
@@ -3089,22 +3105,6 @@ export function SettingsPage() {
                   );
                 });
               })()}
-            </CardContent>
-          </Card>
-
-          {/* Saved Print Profiles — admin view of every per-(user, model)
-              PrintModal toggle preference. Add/edit/delete and copy across
-              users so onboarding a new operator can inherit the lead's
-              calibrated defaults. */}
-          <Card id="card-print-options-prefs">
-            <CardHeader>
-              <h3 className="text-base font-semibold text-white flex items-center gap-2">
-                <Save className="w-4 h-4 text-bambu-green" />
-                {t('printOptionsPrefs.cardTitle')}
-              </h3>
-            </CardHeader>
-            <CardContent>
-              <PrintOptionsPreferencesPanel />
             </CardContent>
           </Card>
 

@@ -4553,6 +4553,11 @@ export default {
     notificationEvents: 'Події сповіщень',
     progressPercent: '(25%, 50%, 75%)',
     bedCooledAfterPrint: '(після завершення друку)',
+    telegram: {
+      perChatHintTitle: 'Telegram-події налаштовуються для кожного чату окремо.',
+      perChatHintBody: 'Тихий час і список подій на чат тримаються в самих Telegram-чатах — на боті лишається лише токен, увімкнення/вимкнення та розклад щоденного дайджесту.',
+      openChatsPage: 'Відкрити Telegram-чати',
+    },
     cancel: 'Скасувати',
     save: 'Зберегти',
     add: 'Додати',
@@ -4876,6 +4881,9 @@ export default {
     deleteTitle: 'Видалити чат',
     deleteMessage: 'Видалити Telegram-чат "{{label}}"? Цю дію не можна скасувати.',
     dailyDigest: 'Щоденний дайджест',
+    dailyDigestOff: 'дайджест вимкнено',
+    dailyDigestProviderTime: 'Надсилається щоденно о {{time}} (час задано на боті)',
+    dailyDigestProviderOff: 'Щоденний дайджест вимкнено на боті — це налаштування чату не діє, доки на боті дайджест не ввімкнуть.',
     cancel: 'Скасувати',
     save: 'Зберегти',
     add: 'Додати'
