@@ -735,6 +735,17 @@ async def test_printer_connection(
 
 
 # Cache for cover images (printer_id -> {(subtask_name, plate_num, view) -> image_bytes})
+#
+# Stores **PNG bytes in RAM**, never on-disk paths. This is structurally immune
+# to the upstream bug class in Bambuddy #1212 — where caching live archive /
+# library 3MF *paths* meant the on-print-complete cache cleanup `unlink()`-ed
+# user data. Our cache holds image bytes in a dict; clearing it pops dict
+# entries and never touches the filesystem. If a future change ever switches
+# this cache to store file paths (e.g. memory-pressure refactor → "keep cover
+# on disk under archive_dir/temp/"), audit `clear_cover_cache` and any future
+# cleanup branches at the same time so they only `unlink()` paths under
+# `archive_dir/temp` — never under `archive/<printer_id>/...`,
+# `archive/unassigned/...`, or `library_files/...`.
 _cover_cache: dict[int, dict[tuple[str, str], bytes]] = {}
 
 
