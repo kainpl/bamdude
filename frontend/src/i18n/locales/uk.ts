@@ -645,6 +645,10 @@ export default {
       externalLink: 'Зовнішнє посилання',
       viewOnMakerWorld: 'Переглянути на MakerWorld',
       preview3d: '3D-перегляд',
+      // PrettyGCode viewer (B.8) — повноекранна розширена візуалізація
+      // G-коду (3D-сопло, теплокарта швидкість/температура, ретракти).
+      // Окремо від preview3d, який відкриває нашу in-modal модель + плейти.
+      gcodeViewer: 'G-код viewer',
       viewTimelapse: 'Переглянути таймлапс',
       scanForTimelapse: 'Знайти таймлапс',
       uploadTimelapse: 'Завантажити таймлапс',
@@ -676,10 +680,16 @@ export default {
       delete: 'Видалити'
     },
     platePicker: {
-      // title / hint / objectCount викинули разом зі standalone
-      // PlatePickerModal — лишається тільки лейбл плити (header SliceModal
-      // + плитки в SlicePlateSelector).
+      // Використовується і header SliceModal / тайлами SlicePlateSelector,
+      // і повернутою standalone-PlatePickerModal-кою для PrettyGCode (B.8).
+      title: 'Виберіть плиту',
+      hint: 'У цьому архіві кілька нарізаних плит. Виберіть, яку відкрити в G-код viewer.',
       plateLabel: 'Плита {{index}}',
+      objectCount_one: '{{count}} об\'єкт',
+      objectCount_few: '{{count}} об\'єкти',
+      objectCount_many: '{{count}} об\'єктів',
+      objectCount_other: '{{count}} об\'єктів',
+      noGcode: 'У цьому архіві немає нарізаного G-коду — збережено лише вихідний 3MF.',
     },
     permission: {
       noReprint: 'У вас немає дозволу на передрук цього архіву',
@@ -4506,6 +4516,19 @@ export default {
     connectionSuccess: 'З\'єднання успішне',
     noSwitchesInSwitchbar: 'Немає перемикачів у панелі',
     enableSwitchbarHint: 'Увімкніть "Показати в панелі" в Налаштування > Розумні розетки'
+  },
+
+  // PrettyGCode viewer page (B.8) — iframe-обгортка над vendor-нутою
+  // gcode_viewer/ статикою. iframe сам тримає власний (англомовний) UI
+  // chrome; outer wrapper додає back/close header — інакше з viewer-а
+  // нікуди вийти, окрім сайдбара.
+  gcodeViewer: {
+    title: 'G-код viewer',
+    back: 'Назад',
+    archiveLabel: 'Архів №{{id}}',
+    libraryFileLabel: 'Файл бібліотеки №{{id}}',
+    plate: 'плита {{index}}',
+    staticMissing: 'Статичні файли GCode-viewer не знайдені. Перевір, що тека gcode_viewer/ існує, та перезапусти бекенд.',
   },
 
   // Notifications

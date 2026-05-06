@@ -635,6 +635,10 @@ export default {
       externalLink: 'External Link',
       viewOnMakerWorld: 'View on MakerWorld',
       preview3d: '3D Preview',
+      // PrettyGCode viewer (B.8) — fullscreen advanced gcode visualisation
+      // (3D nozzle, speed/temp heat-map, retract viz). Distinct from
+      // preview3d which opens our in-modal model + plate gallery.
+      gcodeViewer: 'G-code Viewer',
       viewTimelapse: 'View Timelapse',
       scanForTimelapse: 'Scan for Timelapse',
       uploadTimelapse: 'Upload Timelapse',
@@ -666,10 +670,15 @@ export default {
       delete: 'Delete'
     },
     platePicker: {
-      // ``title`` / ``hint`` / ``objectCount`` were dropped with the
-      // standalone PlatePickerModal — only the per-plate label is still
-      // referenced (SliceModal header + SlicePlateSelector tile).
+      // Used by both the SliceModal header / SlicePlateSelector tile AND
+      // the dedicated PlatePickerModal that opens the PrettyGCode viewer
+      // for multi-plate archives (B.8).
+      title: 'Pick a plate',
+      hint: 'This archive has multiple sliced plates. Choose which one to open in the G-code viewer.',
       plateLabel: 'Plate {{index}}',
+      objectCount: '{{count}} object',
+      objectCount_other: '{{count}} objects',
+      noGcode: 'This archive has no sliced G-code — only the source 3MF was saved.',
     },
     permission: {
       noReprint: 'You do not have permission to reprint this archive',
@@ -4507,6 +4516,19 @@ export default {
     connectionSuccess: 'Connection successful',
     noSwitchesInSwitchbar: 'No switches in switchbar',
     enableSwitchbarHint: 'Enable "Show in Switchbar" in Settings > Smart Plugs'
+  },
+
+  // PrettyGCode viewer page (B.8) — iframe wrapper around the vendored
+  // gcode_viewer/ static SPA. The iframe itself owns its own
+  // (English-only) UI chrome; the outer wrapper adds a back/close
+  // header so the user has a way out without using the sidebar.
+  gcodeViewer: {
+    title: 'G-code Viewer',
+    back: 'Back',
+    archiveLabel: 'Archive #{{id}}',
+    libraryFileLabel: 'Library file #{{id}}',
+    plate: 'plate {{index}}',
+    staticMissing: 'GCode viewer static files not found. Check that the gcode_viewer/ directory exists and restart the backend.',
   },
 
   // Notifications

@@ -65,6 +65,13 @@ export default defineConfig({
                 target: backendUrl,
                 changeOrigin: true,
             },
+            // Vendored PrettyGCode viewer (B.8) — proxied to uvicorn so the
+            // same FastAPI static-serve route handles both dev + prod with
+            // no duplicate file-serving logic in this config.
+            '/gcode-viewer': {
+                target: backendUrl,
+                changeOrigin: true,
+            },
         },
     },
     resolve: {

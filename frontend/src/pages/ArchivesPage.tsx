@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -67,7 +67,9 @@ import type { Archive, ProjectListItem, ArchiveListParams } from '../api/client'
 import { Card, CardContent } from '../components/Card';
 import { Button } from '../components/Button';
 import { ModelViewerModal } from '../components/ModelViewerModal';
+import { PlatePickerModal } from '../components/PlatePickerModal';
 import { PrintModal } from '../components/PrintModal';
+import type { PlateMetadata } from '../types/plates';
 import { SliceModal } from '../components/SliceModal';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { PurgeArchivesModal } from '../components/PurgeArchivesModal';
@@ -195,6 +197,11 @@ function ArchiveCard({
   const [showTimelapse, setShowTimelapse] = useState(false);
   const [showTimelapseSelect, setShowTimelapseSelect] = useState(false);
   const [availableTimelapses, setAvailableTimelapses] = useState<Array<{ name: string; path: string; size: number; mtime: string | null }>>([]);
+  // PrettyGCode viewer (B.8). null = closed; otherwise the plates to pick from.
+  // Single-plate sliced archives skip the modal and navigate straight in;
+  // source-only (no sliced gcode) archives surface a noGcode toast instead.
+  const [platePickerPlates, setPlatePickerPlates] = useState<PlateMetadata[] | null>(null);
+  const navigate = useNavigate();
   const [showQRCode, setShowQRCode] = useState(false);
   const [showPhotos, setShowPhotos] = useState(false);
   const [showProjectPage, setShowProjectPage] = useState(false);
@@ -395,6 +402,29 @@ function ArchiveCard({
 
   const isGcodeFile = isSlicedFile(archive);
 
+  // PrettyGCode viewer (B.8) entry point. Multi-plate sliced archives go
+  // through a picker first; single-plate archives navigate straight in;
+  // source-only (no sliced gcode) archives surface a noGcode toast instead
+  // of opening an empty viewer iframe. The /plates fetch double-serves as
+  // both the multi-plate detector and the source-only short-circuit.
+  const openGcodeViewer = async () => {
+    try {
+      const resp = await api.getArchivePlates(archive.id);
+      if (resp.has_gcode === false) {
+        showToast(t('archives.platePicker.noGcode'), 'info');
+        return;
+      }
+      if (resp.is_multi_plate && resp.plates.length > 1) {
+        setPlatePickerPlates(resp.plates);
+        return;
+      }
+    } catch {
+      // Swallow — fall through to the no-plate navigate so the viewer
+      // still opens on the first plate (the backend's default).
+    }
+    navigate(`/gcode-viewer?archive=${archive.id}`);
+  };
+
   const contextMenuItems: ContextMenuItem[] = [
     // Retry download — only shown for fallback archives (file_path empty).
     // Hidden once the archive has a file.
@@ -469,6 +499,14 @@ function ArchiveCard({
       label: t('archives.menu.preview3d'),
       icon: <Box className="w-4 h-4" />,
       onClick: () => setShowViewer(true),
+    },
+    {
+      // PrettyGCode viewer (B.8). Multi-plate sliced archives go through
+      // a picker first; single-plate archives navigate straight in;
+      // source-only archives surface a noGcode toast.
+      label: t('archives.menu.gcodeViewer'),
+      icon: <Layers className="w-4 h-4" />,
+      onClick: () => { openGcodeViewer(); },
     },
     {
       label: t('archives.menu.viewTimelapse'),
@@ -1268,6 +1306,20 @@ function ArchiveCard({
         />
       )}
 
+      {/* Plate picker for the PrettyGCode viewer (B.8). Shown only for
+          multi-plate sliced archives; single-plate + source-only flows
+          short-circuit before this mounts. */}
+      {platePickerPlates && (
+        <PlatePickerModal
+          plates={platePickerPlates}
+          onSelect={(plateIndex) => {
+            setPlatePickerPlates(null);
+            navigate(`/gcode-viewer?archive=${archive.id}&plate=${plateIndex}`);
+          }}
+          onClose={() => setPlatePickerPlates(null)}
+        />
+      )}
+
       {/* Reprint Modal */}
       {showReprint && (
         <PrintModal
@@ -1561,6 +1613,9 @@ function ArchiveListRow({
   const [showQRCode, setShowQRCode] = useState(false);
   const [showPhotos, setShowPhotos] = useState(false);
   const [showProjectPage, setShowProjectPage] = useState(false);
+  // PrettyGCode viewer (B.8) — see ArchiveCard for the same pattern.
+  const [platePickerPlates, setPlatePickerPlates] = useState<PlateMetadata[] | null>(null);
+  const navigate = useNavigate();
   const [showDeleteSource3mfConfirm, setShowDeleteSource3mfConfirm] = useState(false);
   const [showDeleteF3dConfirm, setShowDeleteF3dConfirm] = useState(false);
   const [showDeleteTimelapseConfirm, setShowDeleteTimelapseConfirm] = useState(false);
@@ -1724,6 +1779,24 @@ function ArchiveListRow({
 
   const isGcodeFile = isSlicedFile(archive);
 
+  // PrettyGCode viewer (B.8) — see ArchiveCard for the same pattern.
+  const openGcodeViewer = async () => {
+    try {
+      const resp = await api.getArchivePlates(archive.id);
+      if (resp.has_gcode === false) {
+        showToast(t('archives.platePicker.noGcode'), 'info');
+        return;
+      }
+      if (resp.is_multi_plate && resp.plates.length > 1) {
+        setPlatePickerPlates(resp.plates);
+        return;
+      }
+    } catch {
+      // Swallow — fall through to navigate on the first-plate default.
+    }
+    navigate(`/gcode-viewer?archive=${archive.id}`);
+  };
+
   const contextMenuItems: ContextMenuItem[] = [
     ...(isGcodeFile ? [
       {
@@ -1786,6 +1859,14 @@ function ArchiveListRow({
       label: t('archives.menu.preview3d'),
       icon: <Box className="w-4 h-4" />,
       onClick: () => setShowViewer(true),
+    },
+    {
+      // PrettyGCode viewer (B.8). Multi-plate sliced archives go through
+      // a picker first; single-plate archives navigate straight in;
+      // source-only archives surface a noGcode toast.
+      label: t('archives.menu.gcodeViewer'),
+      icon: <Layers className="w-4 h-4" />,
+      onClick: () => { openGcodeViewer(); },
     },
     {
       label: t('archives.menu.viewTimelapse'),
@@ -2236,6 +2317,20 @@ function ArchiveListRow({
           fileType={getArchiveFileType(archive.filename)}
           archivePlateIndex={archive.plate_index}
           onClose={() => setShowViewer(false)}
+        />
+      )}
+
+      {/* Plate picker for the PrettyGCode viewer (B.8). Shown only for
+          multi-plate sliced archives; single-plate + source-only flows
+          short-circuit before this mounts. */}
+      {platePickerPlates && (
+        <PlatePickerModal
+          plates={platePickerPlates}
+          onSelect={(plateIndex) => {
+            setPlatePickerPlates(null);
+            navigate(`/gcode-viewer?archive=${archive.id}&plate=${plateIndex}`);
+          }}
+          onClose={() => setPlatePickerPlates(null)}
         />
       )}
 
