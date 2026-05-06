@@ -1747,6 +1747,16 @@ export function FileManagerPage() {
       // Invalidate project/archive folder queries so other pages see the update
       queryClient.invalidateQueries({ queryKey: ['project-folders'] });
       queryClient.invalidateQueries({ queryKey: ['archive-folders'] });
+      // Folder→project link rewires every child file's project list AND the
+      // affected projects' print plans (server-side `sync_plan_for_folder`
+      // plants/drops plan rows for every eligible file in the folder). The
+      // file browser pulls `library-files` to render the file column and
+      // each project view pulls `project-print-plan`; both must be refreshed
+      // so the linked files/projects show the new state without a manual
+      // reload. `library-stats` carries the per-project file count too.
+      queryClient.invalidateQueries({ queryKey: ['library-files'] });
+      queryClient.invalidateQueries({ queryKey: ['library-stats'] });
+      queryClient.invalidateQueries({ queryKey: ['project-print-plan'] });
       setLinkFolder(null);
       // m044: project_ids is an array; treat empty list + cleared
       // archive as a full unlink, otherwise as a link/update.
