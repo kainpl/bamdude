@@ -2,6 +2,8 @@ import { useState, useRef, useEffect, useMemo } from 'react';
 import { Scale } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useToast } from '../../contexts/ToastContext';
+import { FILAMENT_EFFECT_OPTIONS } from '../filamentSwatchHelpers';
+import { FilamentSwatch } from '../FilamentSwatch';
 import type { AdditionalSectionProps } from './types';
 
 function SpoolWeightPicker({
@@ -491,18 +493,29 @@ export function AdditionalSection({
             onChange={(e) => updateField('effect_type', e.target.value)}
             className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
           >
-            <option value="">{t('inventory.spoolForm.effectNone', 'None')}</option>
-            <option value="sparkle">{t('inventory.spoolForm.effects.sparkle', 'Sparkle')}</option>
-            <option value="silk">{t('inventory.spoolForm.effects.silk', 'Silk')}</option>
-            <option value="matte">{t('inventory.spoolForm.effects.matte', 'Matte')}</option>
-            <option value="glow">{t('inventory.spoolForm.effects.glow', 'Glow')}</option>
-            <option value="wood">{t('inventory.spoolForm.effects.wood', 'Wood')}</option>
-            <option value="marble">{t('inventory.spoolForm.effects.marble', 'Marble')}</option>
-            <option value="galaxy">{t('inventory.spoolForm.effects.galaxy', 'Galaxy')}</option>
-            <option value="rainbow">{t('inventory.spoolForm.effects.rainbow', 'Rainbow')}</option>
-            <option value="metal">{t('inventory.spoolForm.effects.metal', 'Metal')}</option>
-            <option value="translucent">{t('inventory.spoolForm.effects.translucent', 'Translucent')}</option>
+            {FILAMENT_EFFECT_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {t(opt.labelKey)}
+              </option>
+            ))}
           </select>
+        </div>
+        {/* Live swatch preview — pins what the chosen colour + stops + effect
+         * will actually look like on the inventory card. Dual/Tri-Color show
+         * hard-split bars; Multicolor shows a conic wheel; Sparkle / Glow /
+         * etc. layer their overlay on top of the colour layer. */}
+        <div>
+          <label className="block text-sm font-medium text-bambu-gray mb-1">
+            {t('inventory.spoolForm.swatchPreview', 'Preview')}
+          </label>
+          <FilamentSwatch
+            rgba={formData.rgba || null}
+            extraColors={formData.extra_colors || null}
+            effectType={formData.effect_type || null}
+            subtype={formData.subtype || null}
+            className="w-full h-12"
+            shape="square"
+          />
         </div>
       </div>
     </div>

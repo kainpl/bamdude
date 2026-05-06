@@ -2923,6 +2923,69 @@ async def refresh_ams_slot(
     return {"success": True, "message": message}
 
 
+@router.post("/{printer_id}/ams/load")
+async def ams_load_filament(
+    printer_id: int,
+    tray_id: int = Query(..., description="0..15 = AMS slot; 254 = ext spool / Ext-L; 255 = Ext-R (H2D)"),
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Load filament from a specific AMS tray (#891 — surface the existing
+    `ams_change_filament` MQTT primitive as a granular HTTP route).
+
+    `tray_id` semantics match `BambuMQTTClient.ams_load_filament`: 0..15 for
+    AMS slots, 254 for external spool / left extruder on H2D, 255 for the
+    right extruder on H2D dual-nozzle. The printer no-ops gracefully if the
+    target slot is empty (matches BambuStudio's UX).
+    """
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    if not await printer_manager.ensure_fresh_connection_for_printer(printer):
+        raise HTTPException(500, "Can`t re-connect printer MQTT")
+
+    client = printer_manager.get_client(printer_id)
+    if not client:
+        raise HTTPException(400, "Printer not connected")
+
+    if not client.ams_load_filament(tray_id):
+        raise HTTPException(400, "Failed to send load command")
+
+    return {"success": True, "tray_id": tray_id}
+
+
+@router.post("/{printer_id}/ams/unload")
+async def ams_unload_filament(
+    printer_id: int,
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Unload the currently loaded filament (#891).
+
+    Reads the current `tray_now` from printer state to populate the unload
+    command's source AMS id; nozzle temperature is derived from
+    `state.temperatures` with a PLA-safe fallback when the nozzle is cold.
+    """
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    if not await printer_manager.ensure_fresh_connection_for_printer(printer):
+        raise HTTPException(500, "Can`t re-connect printer MQTT")
+
+    client = printer_manager.get_client(printer_id)
+    if not client:
+        raise HTTPException(400, "Printer not connected")
+
+    if not client.ams_unload_filament():
+        raise HTTPException(400, "Failed to send unload command")
+
+    return {"success": True}
+
+
 async def _apply_pa_after_refresh(printer_id: int, ams_id: int, slot_id: int):
     """Apply PA profile after RFID re-read completes.
 

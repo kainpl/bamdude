@@ -340,6 +340,17 @@ export default {
     rfid: {
       reread: 'Re-read RFID'
     },
+    // AMS load/unload (#891)
+    ams: {
+      load: 'Load filament',
+      unload: 'Unload filament',
+      loading: 'Loading…',
+      unloading: 'Unloading…',
+      loadSuccess: 'Load command sent',
+      unloadSuccess: 'Unload command sent',
+      loadFailed: 'Failed to send load command',
+      unloadFailed: 'Failed to send unload command'
+    },
     bedJog: {
       title: 'Move build plate',
       bed: 'Bed',
@@ -3669,6 +3680,7 @@ export default {
       extraColorsHelp: 'Comma-separated 6/8-char hex tokens, up to 8. Empty = solid colour.',
       effectType: 'Visual effect',
       effectNone: 'None',
+      swatchPreview: 'Preview',
       effects: {
         sparkle: 'Sparkle',
         silk: 'Silk',
@@ -3679,7 +3691,11 @@ export default {
         galaxy: 'Galaxy',
         rainbow: 'Rainbow',
         metal: 'Metal',
-        translucent: 'Translucent'
+        translucent: 'Translucent',
+        gradient: 'Gradient',
+        dualColor: 'Dual Color',
+        triColor: 'Tri Color',
+        multicolor: 'Multicolor'
       }
     }
   },

@@ -350,6 +350,17 @@ export default {
     rfid: {
       reread: 'Перечитати RFID'
     },
+    // AMS load/unload (#891)
+    ams: {
+      load: 'Завантажити',
+      unload: 'Вивантажити',
+      loading: 'Завантажую…',
+      unloading: 'Вивантажую…',
+      loadSuccess: 'Команду завантаження відправлено',
+      unloadSuccess: 'Команду вивантаження відправлено',
+      loadFailed: 'Не вдалося відправити команду завантаження',
+      unloadFailed: 'Не вдалося відправити команду вивантаження'
+    },
     bedJog: {
       title: 'Перемістити стіл',
       bed: 'Стіл',
@@ -3667,6 +3678,7 @@ export default {
       extraColorsHelp: 'Список hex-токенів через кому (6 або 8 символів), до 8. Порожньо = суцільний колір.',
       effectType: 'Візуальний ефект',
       effectNone: 'Без ефекту',
+      swatchPreview: 'Попередній перегляд',
       effects: {
         sparkle: 'Іскристий',
         silk: 'Шовк',
@@ -3677,7 +3689,11 @@ export default {
         galaxy: 'Галактика',
         rainbow: 'Веселка',
         metal: 'Метал',
-        translucent: 'Напівпрозорий'
+        translucent: 'Напівпрозорий',
+        gradient: 'Градієнт',
+        dualColor: 'Двоколірний',
+        triColor: 'Триколірний',
+        multicolor: 'Мультиколор'
       }
     }
   },

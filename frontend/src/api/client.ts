@@ -3598,6 +3598,19 @@ export const api = {
       { method: 'POST' }
     ),
 
+  // AMS load/unload (#891) — granular ams_change_filament primitives.
+  // tray_id semantics: 0..15 = AMS slot, 254 = external spool / Ext-L, 255 = Ext-R (H2D).
+  amsLoadFilament: (printerId: number, trayId: number) =>
+    request<{ success: boolean; tray_id: number }>(
+      `/printers/${printerId}/ams/load?tray_id=${trayId}`,
+      { method: 'POST' }
+    ),
+  amsUnloadFilament: (printerId: number) =>
+    request<{ success: boolean }>(
+      `/printers/${printerId}/ams/unload`,
+      { method: 'POST' }
+    ),
+
   // MQTT Debug Logging
   enableMQTTLogging: (printerId: number) =>
     request<{ logging_enabled: boolean }>(`/printers/${printerId}/logging/enable`, {

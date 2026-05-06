@@ -53,6 +53,8 @@ import {
   Flame,
   Gauge,
   ArrowLeftRight,
+  ArrowDownToLine,
+  ArrowUpFromLine,
   Eye,
   EyeOff,
 } from 'lucide-react';
@@ -1910,6 +1912,20 @@ function PrinterCard({
     },
   });
 
+  // AMS load / unload mutations (#891). The printer no-ops gracefully if the
+  // target slot is empty, so the button stays enabled and the toast surfaces
+  // whatever the printer actually reports.
+  const amsLoadMutation = useMutation({
+    mutationFn: (trayId: number) => api.amsLoadFilament(printer.id, trayId),
+    onSuccess: () => showToast(t('printers.ams.loadSuccess')),
+    onError: (error: Error) => showToast(error.message || t('printers.ams.loadFailed'), 'error'),
+  });
+  const amsUnloadMutation = useMutation({
+    mutationFn: () => api.amsUnloadFilament(printer.id),
+    onSuccess: () => showToast(t('printers.ams.unloadSuccess')),
+    onError: (error: Error) => showToast(error.message || t('printers.ams.unloadFailed'), 'error'),
+  });
+
   // Plate references state
   const [plateReferences, setPlateReferences] = useState<{
     references: Array<{ index: number; label: string; timestamp: string; has_image: boolean; thumbnail_url: string }>;
@@ -3456,7 +3472,7 @@ function PrinterCard({
                                     )}
                                     {/* Dropdown menu */}
                                     {status?.state !== 'RUNNING' && amsSlotMenu?.amsId === ams.id && amsSlotMenu?.slotId === slotIdx && (
-                                      <div className="absolute top-full left-0 mt-1 z-50 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl py-1 min-w-[120px]">
+                                      <div className="absolute top-full left-0 mt-1 z-50 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl py-1 min-w-[140px]">
                                         <button
                                           className={`w-full px-3 py-1.5 text-left text-xs flex items-center gap-2 ${
                                             hasPermission('printers:ams_rfid')
@@ -3474,6 +3490,42 @@ function PrinterCard({
                                         >
                                           <RefreshCw className={`w-3 h-3 ${isRefreshing ? 'animate-spin' : ''}`} />
                                           {t('printers.rfid.reread')}
+                                        </button>
+                                        <button
+                                          className={`w-full px-3 py-1.5 text-left text-xs flex items-center gap-2 ${
+                                            hasPermission('printers:control')
+                                              ? 'text-white hover:bg-bambu-dark-tertiary'
+                                              : 'text-bambu-gray/50 cursor-not-allowed'
+                                          }`}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            if (!hasPermission('printers:control')) return;
+                                            amsLoadMutation.mutate(ams.id * 4 + slotIdx);
+                                            setAmsSlotMenu(null);
+                                          }}
+                                          disabled={amsLoadMutation.isPending || !hasPermission('printers:control')}
+                                          title={!hasPermission('printers:control') ? t('printers.permission.noControl') : undefined}
+                                        >
+                                          <ArrowDownToLine className="w-3 h-3" />
+                                          {amsLoadMutation.isPending ? t('printers.ams.loading') : t('printers.ams.load')}
+                                        </button>
+                                        <button
+                                          className={`w-full px-3 py-1.5 text-left text-xs flex items-center gap-2 ${
+                                            hasPermission('printers:control')
+                                              ? 'text-white hover:bg-bambu-dark-tertiary'
+                                              : 'text-bambu-gray/50 cursor-not-allowed'
+                                          }`}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            if (!hasPermission('printers:control')) return;
+                                            amsUnloadMutation.mutate();
+                                            setAmsSlotMenu(null);
+                                          }}
+                                          disabled={amsUnloadMutation.isPending || !hasPermission('printers:control')}
+                                          title={!hasPermission('printers:control') ? t('printers.permission.noControl') : undefined}
+                                        >
+                                          <ArrowUpFromLine className="w-3 h-3" />
+                                          {amsUnloadMutation.isPending ? t('printers.ams.unloading') : t('printers.ams.unload')}
                                         </button>
                                       </div>
                                     )}
@@ -3988,6 +4040,68 @@ function PrinterCard({
 
                               return (
                                 <div key={extTrayId} className="relative group">
+                                  {/* Slot-options menu (#891 — Load/Unload from the printer card).
+                                   * For external spools the global tray_id IS extTrayId (254=Ext-L
+                                   * single-extruder/H2D-left, 255=Ext-R H2D-right) — different from
+                                   * the inline AMS slots where the tray_id is computed from
+                                   * ams.id*4 + slotIdx. Hidden while RUNNING, mirroring the
+                                   * AMS-slot popover gating above. */}
+                                  {status?.state !== 'RUNNING' && (
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setAmsSlotMenu(
+                                          amsSlotMenu?.amsId === 255 && amsSlotMenu?.slotId === slotTrayId
+                                            ? null
+                                            : { amsId: 255, slotId: slotTrayId }
+                                        );
+                                      }}
+                                      className="absolute -top-1 -right-1 w-4 h-4 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10 hover:bg-bambu-dark-tertiary"
+                                      title={t('printers.slotOptions')}
+                                    >
+                                      <MoreVertical className="w-2.5 h-2.5 text-bambu-gray" />
+                                    </button>
+                                  )}
+                                  {status?.state !== 'RUNNING' && amsSlotMenu?.amsId === 255 && amsSlotMenu?.slotId === slotTrayId && (
+                                    <div className="absolute top-full left-0 mt-1 z-50 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl py-1 min-w-[140px]">
+                                      <button
+                                        className={`w-full px-3 py-1.5 text-left text-xs flex items-center gap-2 ${
+                                          hasPermission('printers:control')
+                                            ? 'text-white hover:bg-bambu-dark-tertiary'
+                                            : 'text-bambu-gray/50 cursor-not-allowed'
+                                        }`}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          if (!hasPermission('printers:control')) return;
+                                          amsLoadMutation.mutate(extTrayId);
+                                          setAmsSlotMenu(null);
+                                        }}
+                                        disabled={amsLoadMutation.isPending || !hasPermission('printers:control')}
+                                        title={!hasPermission('printers:control') ? t('printers.permission.noControl') : undefined}
+                                      >
+                                        <ArrowDownToLine className="w-3 h-3" />
+                                        {amsLoadMutation.isPending ? t('printers.ams.loading') : t('printers.ams.load')}
+                                      </button>
+                                      <button
+                                        className={`w-full px-3 py-1.5 text-left text-xs flex items-center gap-2 ${
+                                          hasPermission('printers:control')
+                                            ? 'text-white hover:bg-bambu-dark-tertiary'
+                                            : 'text-bambu-gray/50 cursor-not-allowed'
+                                        }`}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          if (!hasPermission('printers:control')) return;
+                                          amsUnloadMutation.mutate();
+                                          setAmsSlotMenu(null);
+                                        }}
+                                        disabled={amsUnloadMutation.isPending || !hasPermission('printers:control')}
+                                        title={!hasPermission('printers:control') ? t('printers.permission.noControl') : undefined}
+                                      >
+                                        <ArrowUpFromLine className="w-3 h-3" />
+                                        {amsUnloadMutation.isPending ? t('printers.ams.unloading') : t('printers.ams.unload')}
+                                      </button>
+                                    </div>
+                                  )}
                                   {!isEmpty ? (
                                     <FilamentHoverCard
                                       data={extFilamentData}

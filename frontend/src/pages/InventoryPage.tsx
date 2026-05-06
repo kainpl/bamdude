@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, type CSSProperties, type ReactNode } from 'react';
+import { buildFilamentBackground } from '../components/filamentSwatchHelpers';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -35,23 +36,21 @@ type DisplayItem =
   | { type: 'group'; key: string; spools: InventorySpool[]; representative: InventorySpool };
 
 /**
- * B.1 — render the swatch as either a flat colour, a linear-gradient over the
- * extra-colour stops, or a CSS effect overlay. Always falls back to the
- * existing flat-`rgba` swatch shape so the helper is safe to swap in.
+ * B.1 / A.17 — render the swatch as a layered CSS background composed by the
+ * shared `buildFilamentBackground` helper: effect-overlay (sparkle / glow /
+ * etc.) on top of the colour layer (solid / 135° gradient / hard-split bars
+ * for dual-color · tri-color / conic for multicolor), with a fixed-tile
+ * checkerboard underlayer so transparent spools render visibly. Same
+ * helper drives the form preview and the `<FilamentSwatch>` component, so
+ * the inventory list, group banner, and edit form can never disagree.
  */
 function spoolSwatchStyle(s: InventorySpool): CSSProperties {
-  const base = s.rgba ? `#${s.rgba.substring(0, 6)}` : '#808080';
-  const stops = (s.extra_colors || '')
-    .split(',')
-    .map((token) => token.trim())
-    .filter((token) => /^[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$/.test(token))
-    .slice(0, 8)
-    .map((token) => `#${token.substring(0, 6)}`);
-  if (stops.length > 0) {
-    const colors = [base, ...stops];
-    return { background: `linear-gradient(135deg, ${colors.join(', ')})` };
-  }
-  return { backgroundColor: base };
+  return buildFilamentBackground({
+    rgba: s.rgba,
+    extraColors: s.extra_colors,
+    effectType: s.effect_type,
+    subtype: s.subtype,
+  });
 }
 
 function spoolGroupKey(s: InventorySpool): string {
