@@ -2722,6 +2722,24 @@ export interface InventorySpool {
   k_profiles?: SpoolKProfile[];
 }
 
+// Spool label printing (B.1).
+export type SpoolLabelTemplate = 'ams_30x15' | 'box_62x29' | 'avery_5160' | 'avery_l7160';
+
+export interface SpoolLabelEntry {
+  id: number;
+  /** Optional override for the label's bold central line. The frontend forwards
+   *  the value composed by ``formatSpoolDisplayName`` against the user's
+   *  ``settings.spool_display_template`` so the printed label matches the
+   *  Inventory page. When omitted the backend composes a fallback as
+   *  ``color_name → slicer_filament_name → "{brand} {material}"``. */
+  display_name?: string | null;
+}
+
+export interface SpoolLabelRequest {
+  spools: SpoolLabelEntry[];
+  template: SpoolLabelTemplate;
+}
+
 export interface SpoolUsageRecord {
   id: number;
   spool_id: number;
@@ -4909,6 +4927,39 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(data),
     }),
+
+  // Spool labels (B.1) — PDF rendered server-side, returned as Blob.
+  // ``display_name`` is the per-spool override for the label's bold central
+  // line; the modal forwards what ``formatSpoolDisplayName`` produced from
+  // the user's spool_display_template setting so the label matches the UI.
+  printSpoolLabels: async (body: SpoolLabelRequest): Promise<Blob> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    const response = await fetch(`${API_BASE}/inventory/labels`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+    return response.blob();
+  },
+  printSpoolmanSpoolLabels: async (body: SpoolLabelRequest): Promise<Blob> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    const response = await fetch(`${API_BASE}/spoolman/labels`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+    return response.blob();
+  },
 
   // Inventory
   getSpools: (includeArchived = false) =>
