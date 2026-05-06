@@ -14,11 +14,13 @@ upload, so no plan row was ever planted for those files.
 
 This migration walks the live ``library_file_projects`` pivot and ensures
 every ``(project_id, library_file_id)`` pair has a matching
-``project_print_plan_items`` row. Plan-eligible only (``library_files
-.file_type = '3mf'``). Idempotent — ``WHERE NOT EXISTS`` guard skips
-already-planted rows. Order index uses the existing ``MAX(order_index)``
-per project as a base so new rows append after operator-curated entries
-rather than reshuffling them.
+``project_print_plan_items`` row. Plan-eligible files are printable
+formats — ``.gcode``-typed (which includes sliced ``.gcode.3mf``, the
+typical case) AND unsliced ``.3mf`` project packages. STL / OBJ / STEP
+are excluded (must be sliced first). Idempotent — ``WHERE NOT EXISTS``
+guard skips already-planted rows. Order index uses the existing
+``MAX(order_index)`` per project as a base so new rows append after
+operator-curated entries rather than reshuffling them.
 
 Trashed files (``deleted_at IS NOT NULL``) are skipped — they shouldn't
 appear in the live print plan.
@@ -47,7 +49,7 @@ SELECT
     ) + 1 AS order_index
 FROM library_file_projects lfp
 JOIN library_files lf ON lf.id = lfp.file_id
-WHERE LOWER(lf.file_type) = '3mf'
+WHERE LOWER(lf.file_type) IN ('3mf', 'gcode')
   AND lf.deleted_at IS NULL
   AND NOT EXISTS (
       SELECT 1 FROM project_print_plan_items p

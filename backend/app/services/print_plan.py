@@ -26,8 +26,23 @@ from backend.app.models.project_print_plan import ProjectPrintPlanItem
 
 
 def _is_plan_eligible(file_type: str | None) -> bool:
-    """Plan-eligible files are sliced 3MFs. Everything else is ignored."""
-    return bool(file_type) and file_type.lower() == "3mf"
+    """Plan-eligible files are anything printable: sliced ``.gcode.3mf``
+    (which ``library_helpers.detect_file_type`` collapses to ``"gcode"``),
+    raw ``.gcode``, AND unsliced ``.3mf`` project packages.
+
+    Pre-fix this only matched ``"3mf"``, so every sliced file in the
+    library — the typical case after a slice-and-save flow — was filtered
+    out of the plan. Re-attaching a folder to a project would correctly
+    set the M2M pivot but skip the plan-row plant for these files,
+    leaving operators with empty plans even after a clean re-link.
+
+    STL / OBJ / STEP / STP are not directly printable → still excluded;
+    those formats must be sliced first (which produces a ``.gcode``-typed
+    sibling that DOES enter the plan).
+    """
+    if not file_type:
+        return False
+    return file_type.lower() in ("3mf", "gcode")
 
 
 async def _next_order_index(db: AsyncSession, project_id: int) -> int:

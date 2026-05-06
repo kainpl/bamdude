@@ -70,6 +70,48 @@ async def test_m048_backfills_missing_plan_rows_from_pivots(db_session):
     assert rows[0].order_index == 0
 
 
+async def test_m048_backfills_sliced_gcode_3mf_files(db_session):
+    """Sliced ``.gcode.3mf`` files (file_type='gcode' per detect_file_type)
+    must be backfilled — the typical case after a slice-and-save flow that
+    the user actually has in their library."""
+    from backend.app.migrations import m048_backfill_print_plan_from_pivots
+    from backend.app.models.library import LibraryFile, LibraryFolder
+    from backend.app.models.project import Project
+    from backend.app.models.project_print_plan import ProjectPrintPlanItem
+
+    project = Project(name="Sliced Test", description="")
+    db_session.add(project)
+    await db_session.flush()
+    folder = LibraryFolder(name="Sliced Folder")
+    folder.projects = [project]
+    db_session.add(folder)
+    await db_session.flush()
+
+    f = LibraryFile(
+        folder_id=folder.id,
+        filename="benchy.gcode.3mf",
+        file_path="/tmp/benchy.gcode.3mf",
+        file_type="gcode",  # detect_file_type collapses .gcode.3mf to "gcode"
+        file_size=1,
+        file_hash=None,
+    )
+    f.projects = [project]
+    db_session.add(f)
+    await db_session.commit()
+
+    conn = await db_session.connection()
+    await m048_backfill_print_plan_from_pivots.upgrade(conn)
+    await db_session.commit()
+
+    rows = (
+        (await db_session.execute(select(ProjectPrintPlanItem).where(ProjectPrintPlanItem.library_file_id == f.id)))
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].project_id == project.id
+
+
 async def test_m048_skips_non_3mf_files(db_session):
     """STL / image / .gcode-without-3mf shouldn't get a plan row even if M2M
     links exist — only 3MFs are plan-eligible."""

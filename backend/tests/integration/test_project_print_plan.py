@@ -444,6 +444,59 @@ async def test_inherit_folder_projects_helper_creates_plan_row(db_session):
     assert rows[0].copies == 1
 
 
+async def test_inherit_folder_projects_includes_sliced_gcode_3mf(db_session):
+    """Sliced ``.gcode.3mf`` files (file_type='gcode' per detect_file_type)
+    must enter the plan — the typical case after a slice-and-save flow.
+
+    Pre-fix the eligibility check only matched ``"3mf"`` so sliced files
+    were silently dropped from the plan even after a clean re-link of
+    folder→project; user reported this exact symptom: detached folder,
+    re-attached, files still don't appear in project_print_plan_items."""
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    from backend.app.models.library import LibraryFile, LibraryFolder
+    from backend.app.models.project import Project
+    from backend.app.models.project_print_plan import ProjectPrintPlanItem
+    from backend.app.services.print_plan import inherit_folder_projects
+
+    project = Project(name="Sliced Test", description="")
+    db_session.add(project)
+    await db_session.flush()
+    folder = LibraryFolder(name="Sliced Folder")
+    folder.projects = [project]
+    db_session.add(folder)
+    await db_session.commit()
+
+    folder = (
+        await db_session.execute(
+            select(LibraryFolder).where(LibraryFolder.id == folder.id).options(selectinload(LibraryFolder.projects))
+        )
+    ).scalar_one()
+
+    f = LibraryFile(
+        folder_id=folder.id,
+        filename="benchy.gcode.3mf",
+        file_path="/tmp/benchy.gcode.3mf",
+        file_type="gcode",  # detect_file_type collapses .gcode.3mf to "gcode"
+        file_size=1,
+        file_hash=None,
+    )
+    db_session.add(f)
+    await db_session.flush()
+
+    await inherit_folder_projects(db_session, f, folder)
+    await db_session.commit()
+
+    rows = (
+        (await db_session.execute(select(ProjectPrintPlanItem).where(ProjectPrintPlanItem.library_file_id == f.id)))
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].project_id == project.id
+
+
 async def test_inherit_folder_projects_skips_non_plan_eligible(db_session):
     """An ``.stl`` (or any non-3mf) file dropped in a project folder must not
     plant a plan row — only 3MFs are plan-eligible. The M2M is also left
