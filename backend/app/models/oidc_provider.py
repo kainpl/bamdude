@@ -90,6 +90,15 @@ class OIDCProvider(Base):
     # != "email") is not preferred. Has no effect when email_claim is not
     # "email": the custom-claim path never performs an email_verified check.
     require_email_verified: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
+    # Operator-configurable default group for auto-created OIDC users
+    # (#1173). When NULL the callback path falls back to "Viewers" — the
+    # legacy hard-coded default. Postgres enforces ``ON DELETE SET NULL``;
+    # SQLite has FK enforcement off by default, so the callback path
+    # re-validates by id (a deleted-but-still-referenced group resolves
+    # to None at lookup time and triggers the Viewers fallback there).
+    default_group_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("groups.id", ondelete="SET NULL"), nullable=True, default=None
+    )
     # Optional icon URL (SVG/PNG) shown on the login button
     icon_url: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

@@ -509,6 +509,46 @@ async def _set_email_2fa_enabled(db: AsyncSession, user_id: int, enabled: bool) 
     await set_setting(db, f"user_{user_id}_email_2fa_enabled", "true" if enabled else "false")
 
 
+def _derive_oidc_username_seed(claims: dict, provider_email: str | None, provider_sub: str) -> str:
+    """Pick a human-readable username seed from OIDC ID-token claims (#1173).
+
+    Resolution order:
+      1. ``provider_email.split("@")[0]`` when an email was resolved (the
+         common case for a standard "email" claim or a custom claim that
+         happens to carry an email — best effort to keep usernames stable
+         across IdPs).
+      2. ``preferred_username`` claim — Bambu's recommended Azure config
+         and the OIDC standard claim for "what the user knows themselves
+         as".
+      3. ``name`` claim — fallback for IdPs that omit preferred_username.
+      4. ``provider_sub[:30]`` — last-resort opaque seed (the ``oidc_<sha256>``
+         shape was never user-friendly, but a sub-derived id is at least
+         stable across logins).
+
+    Each candidate is sanitised before it falls through, so a value that
+    strips to empty (``"!!!"`` → ``""``) skips to the next candidate
+    rather than locking in a useless name. ``isinstance(str)`` guards on
+    the claim lookups: misconfigured IdPs sometimes ship lists / numbers
+    where strings are expected, and ``.strip()`` would crash without them.
+    """
+    if provider_email:
+        return provider_email.split("@")[0]
+
+    pref = claims.get("preferred_username")
+    if isinstance(pref, str):
+        seed = re.sub(r"[^a-zA-Z0-9._-]", "", pref.strip())[:30]
+        if seed:
+            return seed
+
+    name = claims.get("name")
+    if isinstance(name, str):
+        seed = re.sub(r"[^a-zA-Z0-9._-]", "", name.strip())[:30]
+        if seed:
+            return seed
+
+    return provider_sub[:30]
+
+
 # ===========================================================================
 # 2FA Endpoints
 # ===========================================================================
@@ -1194,6 +1234,18 @@ async def create_oidc_provider(
     db: AsyncSession = Depends(get_db),
 ) -> OIDCProviderResponse:
     """Create a new OIDC provider (admin only)."""
+    # Validate default_group_id references an existing group. Pydantic only
+    # checks the shape (int | None); the cross-row sanity belongs in the
+    # route layer because it depends on DB state. Raises 422 on a stale or
+    # invalid id rather than silently storing a dangling reference (#1173).
+    if body.default_group_id is not None:
+        grp_chk = await db.execute(select(Group).where(Group.id == body.default_group_id))
+        if not grp_chk.scalar_one_or_none():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="default_group_id references a non-existent group",
+            )
+
     provider = OIDCProvider(
         name=body.name,
         issuer_url=body.issuer_url.rstrip("/"),
@@ -1206,6 +1258,7 @@ async def create_oidc_provider(
         email_claim=body.email_claim,
         require_email_verified=body.require_email_verified,
         icon_url=body.icon_url,
+        default_group_id=body.default_group_id,
     )
     # Defense-in-depth: re-checks the safety guard against the constructed
     # ORM object so any future code path that bypasses Pydantic validation
@@ -1229,6 +1282,18 @@ async def update_oidc_provider(
     provider = result2.scalar_one_or_none()
     if not provider:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Provider not found")
+
+    # Same DB-state cross-check as create — when the operator supplies a
+    # default_group_id, refuse the update if the referenced group doesn't
+    # exist (#1173). The setattr loop below would otherwise persist a
+    # dangling reference.
+    if body.default_group_id is not None:
+        grp_chk = await db.execute(select(Group).where(Group.id == body.default_group_id))
+        if not grp_chk.scalar_one_or_none():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="default_group_id references a non-existent group",
+            )
 
     for field, value in body.model_dump(exclude_none=True).items():
         if field == "issuer_url" and value:
@@ -1596,11 +1661,12 @@ async def oidc_callback(
                         provider_id,
                     )
                 elif provider.auto_create_users:
-                    # 3. No existing user — create one
-                    if provider_email:
-                        raw = provider_email.split("@")[0]
-                    else:
-                        raw = provider_sub[:30]
+                    # 3. No existing user — create one. Username synthesis is
+                    # extracted into ``_derive_oidc_username_seed`` so the
+                    # resolution order (email local-part →
+                    # preferred_username → name → provider_sub fallback) is
+                    # unit-testable in isolation (#1173).
+                    raw = _derive_oidc_username_seed(claims, provider_email, provider_sub)
                     candidate = re.sub(r"[^a-zA-Z0-9._-]", "", raw)[:30] or "oidcuser"
 
                     username = candidate
@@ -1612,13 +1678,23 @@ async def oidc_callback(
                         username = f"{candidate}{counter}"
                         counter += 1
 
-                    # I9: Assign new OIDC users to the default "Viewers" group so they
-                    # have read-only access rather than starting with no permissions.
-                    # Fetch the group BEFORE creating the user so we can set the
-                    # relationship before flush — accessing new_user.groups after a
-                    # flush triggers a lazy-load which fails in async context.
-                    viewers_result = await db.execute(select(Group).where(Group.name == "Viewers"))
-                    viewers_group = viewers_result.scalar_one_or_none()
+                    # I9 + #1173: Assign new OIDC users to a group before
+                    # flush. Accessing ``new_user.groups`` after the flush
+                    # triggers a lazy-load that fails in async context.
+                    # Resolution order:
+                    #   1. ``provider.default_group_id`` (operator-configured)
+                    #   2. ``"Viewers"`` (system fallback for read-only access)
+                    #   3. no group (last resort if Viewers was deleted)
+                    # SQLite has FK enforcement off by default, so a deleted
+                    # default group shows up as a dangling id; the lookup
+                    # below returns None and falls through to Viewers.
+                    default_group: Group | None = None
+                    if provider.default_group_id is not None:
+                        dg_result = await db.execute(select(Group).where(Group.id == provider.default_group_id))
+                        default_group = dg_result.scalar_one_or_none()
+                    if default_group is None:
+                        viewers_result = await db.execute(select(Group).where(Group.name == "Viewers"))
+                        default_group = viewers_result.scalar_one_or_none()
 
                     new_user = User(
                         username=username,
@@ -1629,7 +1705,7 @@ async def oidc_callback(
                         password_hash=None,  # OIDC users never use password auth
                         role="user",
                         is_active=True,
-                        groups=[viewers_group] if viewers_group else [],
+                        groups=[default_group] if default_group else [],
                     )
                     db.add(new_user)
                     await db.flush()

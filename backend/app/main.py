@@ -1,9 +1,11 @@
 import asyncio
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
+from urllib.parse import urlparse
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
@@ -66,7 +68,7 @@ from backend.app.core.config import APP_VERSION, settings as app_settings
 from backend.app.core.database import async_session, engine, init_db
 from backend.app.core.websocket import ws_manager
 from backend.app.models.smart_plug import SmartPlug
-from backend.app.services.archive import ArchiveService
+from backend.app.services.archive import ArchiveService, resolve_display_stem
 from backend.app.services.auto_queue_scheduler import auto_queue_scheduler
 from backend.app.services.background_dispatch import background_dispatch
 from backend.app.services.bambu_mqtt import PrinterState
@@ -2746,8 +2748,6 @@ async def _scan_for_timelapse_with_retries(archive_id: int, baseline_names: set[
     Falls back to name-matching (print name contained in MP4 filename) if no
     new file appears after all retries.
     """
-    from pathlib import Path
-
     logger = logging.getLogger(__name__)
 
     # --- Phase 1: Take baseline snapshot of existing timelapse files ---
@@ -2791,10 +2791,11 @@ async def _scan_for_timelapse_with_retries(archive_id: int, baseline_names: set[
                     archive_id,
                 )
 
-            # Derive base_name for name-matching fallback
-            base_name = Path(archive.filename).stem if archive.filename else ""
-            if base_name.endswith(".gcode"):
-                base_name = base_name[:-6]
+            # Derive base_name for name-matching fallback. `resolve_display_stem`
+            # (#1152) drops the full `.gcode.3mf` double-suffix Bambu Studio
+            # writes by default — replaces the previous two-step strip-stem-
+            # then-strip-`.gcode` sequence with one canonical helper.
+            base_name = resolve_display_stem(archive.filename) if archive.filename else ""
 
     except Exception as e:
         logger.warning("[TIMELAPSE] Failed to take baseline snapshot for archive %s: %s", archive_id, e)
@@ -3096,12 +3097,27 @@ async def on_print_complete(printer_id: int, data: dict):
     # awaiting_plate_clear gate (#961 inversion).
     _plate_auto_cleared_by_swap = False
 
+    # Both swap paths below are gated on a successful completion. A print
+    # that ended with status=failed / aborted / cancelled has left material
+    # on the bed (the operator cancelled at hour 11, the printer self-
+    # aborted on a clog, the touchscreen-stop fired mid-print, etc.) — the
+    # bed is fouled regardless of whether the 3MF was swap_compatible or
+    # the queue-job had swap_mode_change_table queued. In that state we
+    # MUST NOT (a) auto-clear the gate (the operator has to inspect and
+    # clear manually) and MUST NOT (b) physically swap the table via the
+    # change_table macro (it'll either jam on the still-attached part or
+    # rotate the fouled plate into the next print's path, depending on
+    # the swap rig). Falling into the regular arm-gate block at the end
+    # of this function — and skipping the change_table execution — is the
+    # safe outcome.
+    _swap_status_ok = data.get("status", "completed") == "completed"
+
     # Swap-compatible files (macros baked in by third-party tooling like
     # swaplist.app) handle table changes internally — the plate is already
     # swapped and clean by the time the print finishes. Skip arming the
     # plate-clear gate so the queue scheduler doesn't block on manual
     # confirmation.
-    if archive_id:
+    if archive_id and _swap_status_ok:
         try:
             async with async_session() as db:
                 from backend.app.models.archive import PrintArchive as _ScArchive
@@ -3115,6 +3131,14 @@ async def on_print_complete(printer_id: int, data: dict):
                     )
         except Exception as e:
             logger.debug("[SWAP] swap_compatible check failed (non-critical): %s", e)
+    elif archive_id and not _swap_status_ok:
+        logger.info(
+            "[SWAP] Skipping swap_compatible auto-clear for printer %s archive %s: status=%s "
+            "(failed/aborted/cancelled prints leave material on the bed; manual clear required)",
+            printer_id,
+            archive_id,
+            data.get("status"),
+        )
 
     # Last-chance 3MF download: if this print has a fallback archive
     # (file_path="") and the print just finished, the file is still on
@@ -3346,7 +3370,23 @@ async def on_print_complete(printer_id: int, data: dict):
         except Exception as e:
             logger.debug("[SWAP] extra_data fallback lookup failed (non-critical): %s", e)
 
-    if "swap_mode_change_table" in swap_events:
+    if "swap_mode_change_table" in swap_events and not _swap_status_ok:
+        # Print ended in a non-success state — the part is still attached
+        # to the plate (or its remains are). Running change_table now would
+        # either jam the swap rig on the stuck part or rotate the fouled
+        # plate into the next print's path. Skip + leave the pending event
+        # in place (so a manual operator-driven retry can still pick it up
+        # if they explicitly choose to). The arm-gate block below will see
+        # ``_plate_auto_cleared_by_swap=False`` and raise the manual-clear
+        # gate as it would for a non-swap printer.
+        logger.info(
+            "[SWAP] Skipping change_table macro for printer %s archive %s: status=%s "
+            "(operator must inspect + clear manually before next print)",
+            printer_id,
+            archive_id,
+            data.get("status"),
+        )
+    elif "swap_mode_change_table" in swap_events:
         try:
             async with async_session() as db:
                 from backend.app.models.printer import Printer as _SwapPrinter
@@ -3829,7 +3869,21 @@ async def on_print_complete(printer_id: int, data: dict):
             await service.update_archive_status(
                 archive_id,
                 status=status,
-                completed_at=datetime.now(timezone.utc) if status in ("completed", "failed", "aborted") else None,
+                # ``cancelled`` joins the terminal-status list (#1198) so
+                # queue-UI cancellations get a ``completed_at`` timestamp the
+                # notification path can use to compute actual elapsed. Audited
+                # every ``completed_at`` consumer first: the two
+                # ``completed_at IS NULL`` queries in this file (lines 1707 +
+                # 2388) are both paired with ``status == 'printing'`` so a
+                # cancelled row can't slip in regardless; ``archives.py``'s
+                # actual-elapsed read at :83 gates on ``status == 'completed'``
+                # so this only adds rows to the stats-totals aggregation —
+                # cancelled prints with their real elapsed are MORE accurate
+                # than excluding them, which was the side-effect upstream
+                # called out as a win.
+                completed_at=(
+                    datetime.now(timezone.utc) if status in ("completed", "failed", "aborted", "cancelled") else None
+                ),
                 failure_reason=failure_reason,
             )
             logger.info(
@@ -4108,8 +4162,21 @@ async def on_print_complete(printer_id: int, data: dict):
                     archive_result = await db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))
                     archive = archive_result.scalar_one_or_none()
                     if archive:
+                        # Actual elapsed from started_at/completed_at when both are
+                        # populated — every terminal status sets completed_at after
+                        # #1198 (cancelled joined completed/failed/aborted). When the
+                        # row is missing either timestamp (rare — partially-recovered
+                        # archive) we leave actual_time_seconds=None so the
+                        # notification template falls back to the slicer estimate.
+                        actual_time_seconds = None
+                        if archive.started_at and archive.completed_at:
+                            elapsed = (archive.completed_at - archive.started_at).total_seconds()
+                            if elapsed > 0:
+                                actual_time_seconds = int(elapsed)
+
                         archive_data = {
                             "print_time_seconds": archive.print_time_seconds,
+                            "actual_time_seconds": actual_time_seconds,
                             "actual_filament_grams": archive.filament_used_grams,
                             "failure_reason": archive.failure_reason,
                             "created_by_id": archive.created_by_id,
@@ -5012,6 +5079,7 @@ async def lifespan(app: FastAPI):
     from backend.app.services.virtual_printer import virtual_printer_manager
 
     virtual_printer_manager.set_session_factory(async_session)
+    virtual_printer_manager.set_printer_manager(printer_manager)
     try:
         await virtual_printer_manager.sync_from_db()
         logging.info("Virtual printer manager synced from database")
@@ -5401,6 +5469,77 @@ async def auth_middleware(request, call_next):
     return await call_next(request)
 
 
+_security_headers_logger = logging.getLogger("backend.app.main.security_headers")
+
+
+def _parse_trusted_frame_origins() -> tuple[str, ...]:
+    """Parse ``TRUSTED_FRAME_ORIGINS`` env var into a validated allowlist (#1191).
+
+    Format: comma-separated list of ``scheme://host[:port]`` origins.
+
+    Used by ``security_headers_middleware`` to relax ``frame-ancestors`` for
+    trusted same-LAN deployments (typically Home Assistant Webpage panel
+    embedding BamDude on a different port). Defaults to empty — strict
+    ``'none'``.
+
+    Validation is strict by design — only ``http(s)``, no paths, no query/
+    fragment, no wildcards. Invalid entries are dropped with a warning rather
+    than failing startup, so a typo in one origin doesn't take the whole
+    deployment down.
+    """
+    raw = os.environ.get("TRUSTED_FRAME_ORIGINS", "").strip()
+    if not raw:
+        return ()
+    valid: list[str] = []
+    for item in raw.split(","):
+        candidate = item.strip()
+        if not candidate:
+            continue
+        try:
+            parsed = urlparse(candidate)
+        except ValueError as e:
+            _security_headers_logger.warning("TRUSTED_FRAME_ORIGINS: dropping %r — %s", candidate, e)
+            continue
+        if parsed.scheme not in ("http", "https"):
+            _security_headers_logger.warning("TRUSTED_FRAME_ORIGINS: dropping %r — must be http(s)", candidate)
+            continue
+        if not parsed.netloc:
+            _security_headers_logger.warning("TRUSTED_FRAME_ORIGINS: dropping %r — missing host", candidate)
+            continue
+        if parsed.path and parsed.path != "/":
+            _security_headers_logger.warning("TRUSTED_FRAME_ORIGINS: dropping %r — paths not allowed", candidate)
+            continue
+        if parsed.query or parsed.fragment:
+            _security_headers_logger.warning(
+                "TRUSTED_FRAME_ORIGINS: dropping %r — query/fragment not allowed", candidate
+            )
+            continue
+        if "*" in parsed.netloc:
+            _security_headers_logger.warning("TRUSTED_FRAME_ORIGINS: dropping %r — wildcards not allowed", candidate)
+            continue
+        valid.append(f"{parsed.scheme}://{parsed.netloc}")
+    if valid:
+        _security_headers_logger.info("TRUSTED_FRAME_ORIGINS: %s", ", ".join(valid))
+    return tuple(valid)
+
+
+_TRUSTED_FRAME_ORIGINS: tuple[str, ...] = _parse_trusted_frame_origins()
+
+
+def _frame_ancestors(default_value: str) -> str:
+    """Compose the ``frame-ancestors`` CSP directive (#1191).
+
+    ``default_value`` is the strict directive used when the operator has not
+    configured ``TRUSTED_FRAME_ORIGINS`` — typically ``'none'``. When trusted
+    origins are configured, ``'self'`` is always included so same-origin
+    embedding never breaks even if an operator forgets to add their own
+    origin to the list.
+    """
+    if _TRUSTED_FRAME_ORIGINS:
+        return "frame-ancestors 'self' " + " ".join(_TRUSTED_FRAME_ORIGINS) + ";"
+    return f"frame-ancestors {default_value};"
+
+
 @app.middleware("http")
 async def security_headers_middleware(request, call_next):
     """Add HTTP security headers + Content-Security-Policy to every response.
@@ -5423,17 +5562,21 @@ async def security_headers_middleware(request, call_next):
     - ``frame-src 'self' http: https:``: BamDude embeds Spoolman via
       reverse-proxy (same origin) and arbitrary external links from the
       sidebar. ``http:`` is allowed because self-hosted Spoolman typically
-      runs on plain HTTP on a LAN address (upstream #1054). ``frame-ancestors
-      'none'`` below still blocks BamDude being framed cross-origin — that's
-      the clickjacking defense that actually matters.
-    - ``frame-ancestors 'none'``: nobody may embed BamDude. This is the
-      modern equivalent of ``X-Frame-Options: DENY``; the SAMEORIGIN value
-      we keep on ``X-Frame-Options`` is for legacy browsers only — modern
-      browsers use ``frame-ancestors`` which takes precedence.
+      runs on plain HTTP on a LAN address (upstream #1054). ``frame-ancestors``
+      below still blocks BamDude being framed cross-origin (default ``'none'``)
+      — that's the clickjacking defense that actually matters.
+    - ``frame-ancestors``: by default ``'none'`` — nobody may embed BamDude.
+      This is the modern equivalent of ``X-Frame-Options: DENY``. Operators
+      can opt into trusted-origin embedding (e.g. HA Webpage panel) via the
+      ``TRUSTED_FRAME_ORIGINS`` env var (#1191); when set, the directive
+      becomes ``'self' <list>`` and ``X-Frame-Options`` is dropped (legacy
+      ``ALLOW-FROM`` syntax is deprecated and inconsistent across vendors —
+      modern browsers honour ``frame-ancestors`` which takes precedence).
     """
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "SAMEORIGIN"
+    if not _TRUSTED_FRAME_ORIGINS:
+        response.headers["X-Frame-Options"] = "SAMEORIGIN"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     if request.url.path in ("/docs", "/redoc", "/docs/oauth2-redirect"):
         # FastAPI's built-in Swagger UI / ReDoc pages load assets from
@@ -5448,8 +5591,7 @@ async def security_headers_middleware(request, call_next):
             "font-src 'self' data: https://fonts.gstatic.com; "
             "worker-src 'self' blob:; "
             "object-src 'none'; "
-            "base-uri 'self'; "
-            "frame-ancestors 'none';"
+            "base-uri 'self'; " + _frame_ancestors("'none'")
         )
     else:
         response.headers["Content-Security-Policy"] = (
@@ -5462,8 +5604,7 @@ async def security_headers_middleware(request, call_next):
             "font-src 'self' data: https://fonts.gstatic.com; "
             "object-src 'none'; "
             "base-uri 'self'; "
-            "frame-src 'self' http: https:; "
-            "frame-ancestors 'none';"
+            "frame-src 'self' http: https:; " + _frame_ancestors("'none'")
         )
     if request.url.scheme == "https":
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"

@@ -22,6 +22,7 @@ const EMPTY_FORM: OIDCProviderCreate = {
   email_claim: 'email',
   require_email_verified: true,
   icon_url: undefined,
+  default_group_id: null,
 };
 
 // Common email-claim choices: PocketID/Authentik/Keycloak/Authelia/Google
@@ -49,6 +50,14 @@ function ProviderForm({
   const [secretChanged, setSecretChanged] = useState(false);
   const set = (key: keyof OIDCProviderCreate, value: unknown) =>
     setForm((prev) => ({ ...prev, [key]: value }));
+
+  // Group list for the default-group dropdown (#1173). Fetch on demand —
+  // operators rarely open this form so keeping the list out of the parent's
+  // hot path is fine.
+  const { data: groupsList } = useQuery({
+    queryKey: ['groups'],
+    queryFn: () => api.getGroups(),
+  });
 
   const inputCls =
     'w-full px-4 py-3 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:outline-none focus:ring-2 focus:ring-bambu-green/50 focus:border-bambu-green transition-colors text-sm';
@@ -115,6 +124,20 @@ function ProviderForm({
             {EMAIL_CLAIM_PRESETS.map((claim) => <option key={claim} value={claim} />)}
           </datalist>
           <p className="text-bambu-gray text-xs mt-1">{t('settings.oidc.form.emailClaimHelp')}</p>
+        </div>
+        <div>
+          <label className={labelCls}>{t('settings.oidc.form.defaultGroup')}</label>
+          <select
+            className={inputCls}
+            value={form.default_group_id ?? ''}
+            onChange={(e) => set('default_group_id', e.target.value ? Number(e.target.value) : null)}
+          >
+            <option value="">{t('settings.oidc.form.defaultGroupViewers')}</option>
+            {groupsList?.map((g) => (
+              <option key={g.id} value={g.id}>{g.name}</option>
+            ))}
+          </select>
+          <p className="text-bambu-gray text-xs mt-1">{t('settings.oidc.form.defaultGroupHelp')}</p>
         </div>
       </div>
 
@@ -347,6 +370,7 @@ export function OIDCProviderSettings() {
                     email_claim: provider.email_claim,
                     require_email_verified: provider.require_email_verified,
                     icon_url: provider.icon_url ?? undefined,
+                    default_group_id: provider.default_group_id ?? null,
                   }}
                   onSave={(data) => updateMutation.mutate({ id: provider.id, data })}
                   onCancel={() => setEditingId(null)}

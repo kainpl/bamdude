@@ -1239,8 +1239,16 @@ class NotificationService:
         }
 
         if archive_data:
-            if archive_data.get("print_time_seconds"):
-                variables["duration"] = self._format_duration(archive_data["print_time_seconds"])
+            # {{duration}} on completion / failure / stopped events is the
+            # *actual* elapsed time (#1198) — slicer's pre-print
+            # ``print_time_seconds`` estimate is only used as a last-resort
+            # fallback when the timestamps couldn't be derived (e.g. a row
+            # missing ``started_at`` from a partially-recovered archive).
+            # Without this preference, a print cancelled 2 minutes into a
+            # 3-hour estimate notified "duration: 3h" — the slicer estimate.
+            duration_seconds = archive_data.get("actual_time_seconds") or archive_data.get("print_time_seconds")
+            if duration_seconds:
+                variables["duration"] = self._format_duration(duration_seconds)
             if archive_data.get("actual_filament_grams"):
                 variables["filament_grams"] = f"{archive_data['actual_filament_grams']:.1f}"
             if status == "failed" and archive_data.get("failure_reason"):

@@ -3129,6 +3129,9 @@ export interface OIDCProvider {
   /** Only consulted when email_claim === "email". Set false for legacy IdPs that never send email_verified. */
   require_email_verified: boolean;
   icon_url?: string | null;
+  /** Operator-configurable default group for auto-created OIDC users (#1173).
+   *  null → callback falls back to "Viewers". */
+  default_group_id?: number | null;
 }
 
 export interface OIDCProviderCreate {
@@ -3143,6 +3146,7 @@ export interface OIDCProviderCreate {
   email_claim?: string;
   require_email_verified?: boolean;
   icon_url?: string | null;
+  default_group_id?: number | null;
 }
 
 export interface OIDCLink {

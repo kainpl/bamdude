@@ -32,7 +32,7 @@ from backend.app.schemas.archive import (
     PaginationMeta,
     ReprintRequest,
 )
-from backend.app.services.archive import ArchiveService
+from backend.app.services.archive import ArchiveService, resolve_display_stem
 from backend.app.services.threemf_capabilities import extract_3mf_capabilities
 from backend.app.utils.threemf_tools import (
     extract_nozzle_mapping_from_3mf,
@@ -1859,8 +1859,11 @@ async def scan_timelapse(
     if not printer:
         raise HTTPException(404, "Printer not found")
 
-    # Get base name from archive filename (without .3mf extension)
-    base_name = Path(archive.filename).stem
+    # Get base name from archive filename. `resolve_display_stem` (#1152) strips
+    # the full `.gcode.3mf` double-suffix Bambu Studio uses by default — without
+    # it `Path(...).stem` leaves `Plate_1.gcode` which fails the substring
+    # match below against `Plate_1.mp4`-shaped timelapse names on the SD card.
+    base_name = resolve_display_stem(archive.filename or "")
 
     # Scan timelapse directory on printer
     # Different printer models use different paths

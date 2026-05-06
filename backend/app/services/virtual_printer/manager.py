@@ -8,14 +8,19 @@ import asyncio
 import logging
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from backend.app.core.config import settings as app_settings
 from backend.app.services.virtual_printer.bind_server import BindServer
 from backend.app.services.virtual_printer.certificate import CertificateService
 from backend.app.services.virtual_printer.ftp_server import VirtualPrinterFTPServer
+from backend.app.services.virtual_printer.mqtt_bridge import MQTTBridge
 from backend.app.services.virtual_printer.mqtt_server import SimpleMQTTServer
 from backend.app.services.virtual_printer.ssdp_server import SSDPProxy, VirtualPrinterSSDPServer
-from backend.app.services.virtual_printer.tcp_proxy import SlicerProxyManager
+from backend.app.services.virtual_printer.tcp_proxy import SlicerProxyManager, TCPProxy
+
+if TYPE_CHECKING:
+    from backend.app.services.printer_manager import PrinterManager
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +121,7 @@ class VirtualPrinterInstance:
         tailscale_disabled: bool = True,
         base_dir: Path,
         session_factory: Callable | None = None,
+        printer_manager: "PrinterManager | None" = None,
     ):
         self.id = vp_id
         self.name = name
@@ -135,6 +141,7 @@ class VirtualPrinterInstance:
         self.remote_interface_ip = remote_interface_ip
         self.tailscale_disabled = tailscale_disabled
         self._session_factory = session_factory
+        self._printer_manager = printer_manager
 
         # Directories
         self.upload_dir = base_dir / "uploads" / str(vp_id)
@@ -160,6 +167,8 @@ class VirtualPrinterInstance:
         self._proxy: SlicerProxyManager | None = None
         self._ftp: VirtualPrinterFTPServer | None = None
         self._mqtt: SimpleMQTTServer | None = None
+        self._mqtt_bridge: MQTTBridge | None = None
+        self._rtsp_proxy: TCPProxy | None = None
         self._bind: BindServer | None = None
         self._ssdp: VirtualPrinterSSDPServer | None = None
         self._ssdp_proxy: SSDPProxy | None = None
@@ -831,6 +840,46 @@ class VirtualPrinterInstance:
             )
         )
 
+        # MQTT bridge — fans out the target printer's pushes to slicers
+        # connected to this VP and forwards their commands back to the
+        # printer. Only meaningful when a target printer is configured AND
+        # printer_manager was injected (it always is at runtime; tests may
+        # omit it).
+        if self.target_printer_id is not None and self._printer_manager is not None:
+            self._mqtt_bridge = MQTTBridge(
+                vp_id=self.id,
+                vp_name=self.name,
+                vp_serial=self.serial,
+                target_printer_id=self.target_printer_id,
+                mqtt_server=self._mqtt,
+                printer_manager=self._printer_manager,
+            )
+            self._mqtt.set_bridge(self._mqtt_bridge)
+            await self._mqtt_bridge.start()
+
+            # RTSPS camera passthrough on port 322. BambuStudio's camera
+            # button connects to the device IP it bound on (the VP), not the
+            # IP in ``ipcam.rtsp_url``. Without a listener on
+            # ``<bind_ip>:322`` the slicer gets connection refused → "LAN
+            # connection failed". Same raw TCP pass-through used by
+            # SlicerProxyManager in proxy mode.
+            target_client = self._printer_manager.get_client(self.target_printer_id)
+            target_ip = getattr(target_client, "ip_address", None) if target_client else None
+            if target_ip:
+                self._rtsp_proxy = TCPProxy(
+                    name="RTSP",
+                    listen_port=322,
+                    target_host=target_ip,
+                    target_port=322,
+                    bind_address=bind_addr,
+                )
+                self._tasks.append(
+                    asyncio.create_task(
+                        run_with_logging(self._rtsp_proxy.start(), "RTSP"),
+                        name=f"vp_{self.id}_rtsp",
+                    )
+                )
+
         # Bind server
         self._bind = BindServer(
             serial=self.serial,
@@ -868,6 +917,20 @@ class VirtualPrinterInstance:
 
     async def stop_server(self) -> None:
         """Stop server-mode services."""
+        if self._mqtt_bridge:
+            try:
+                await self._mqtt_bridge.stop()
+            except Exception:
+                logger.exception("[VP %s] MQTT bridge stop failed", self.name)
+            if self._mqtt:
+                self._mqtt.set_bridge(None)
+            self._mqtt_bridge = None
+        if self._rtsp_proxy:
+            try:
+                await self._rtsp_proxy.stop()
+            except Exception:
+                logger.exception("[VP %s] RTSP proxy stop failed", self.name)
+            self._rtsp_proxy = None
         if self._ftp:
             await self._ftp.stop()
             self._ftp = None
@@ -1003,6 +1066,7 @@ class VirtualPrinterManager:
 
     def __init__(self):
         self._session_factory: Callable | None = None
+        self._printer_manager: PrinterManager | None = None
         self._instances: dict[int, VirtualPrinterInstance] = {}
 
         # Directories
@@ -1026,6 +1090,10 @@ class VirtualPrinterManager:
     def set_session_factory(self, session_factory: Callable) -> None:
         """Set the database session factory."""
         self._session_factory = session_factory
+
+    def set_printer_manager(self, printer_manager: "PrinterManager") -> None:
+        """Inject the global ``printer_manager`` so non-proxy VPs can mirror their target's MQTT stream."""
+        self._printer_manager = printer_manager
 
     @property
     def is_enabled(self) -> bool:
@@ -1127,6 +1195,7 @@ class VirtualPrinterManager:
                     tailscale_disabled=vp.tailscale_disabled,
                     base_dir=self._base_dir,
                     session_factory=self._session_factory,
+                    printer_manager=self._printer_manager,
                 )
                 self._instances[vp.id] = instance
                 await instance.start_proxy()
@@ -1148,6 +1217,7 @@ class VirtualPrinterManager:
                     tailscale_disabled=vp.tailscale_disabled,
                     base_dir=self._base_dir,
                     session_factory=self._session_factory,
+                    printer_manager=self._printer_manager,
                 )
                 self._instances[vp.id] = instance
                 await instance.start_server()

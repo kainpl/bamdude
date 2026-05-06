@@ -40,6 +40,32 @@ def _copy_and_fsync(src: Path, dst: Path, chunk_size: int = 1024 * 1024) -> None
     shutil.copystat(src, dst)
 
 
+def resolve_display_stem(filename: str) -> str:
+    """Return a clean human-readable stem from a 3MF/gcode filename (#1152).
+
+    Bambu Studio's "Send to printer" dialog typically writes files like
+    ``Plate_1.gcode.3mf`` (a sliced gcode payload wrapped in a 3MF container).
+    The naive ``Path(filename).stem`` only drops the last suffix, leaving
+    ``Plate_1.gcode`` — which then surfaces in the archive UI / timelapse
+    name-match path as a confusing ``Plate_1.gcode`` rather than ``Plate_1``.
+
+    Strip the recognised print-format suffixes in order (case-insensitive):
+
+    - ``.gcode.3mf`` → bare stem (Bambu Studio FTP send)
+    - ``.3mf``       → bare stem
+    - ``.gcode``     → bare stem (rare standalone gcode upload)
+
+    Anything else passes through ``Path(...).stem`` unchanged. Path components
+    are stripped first so callers can pass either a basename or a full path.
+    """
+    name = Path(filename).name
+    lower = name.lower()
+    for suffix in (".gcode.3mf", ".3mf", ".gcode"):
+        if lower.endswith(suffix):
+            return name[: -len(suffix)]
+    return Path(name).stem
+
+
 class ThreeMFParser:
     """Parser for Bambu Lab 3MF files."""
 
@@ -1550,7 +1576,7 @@ class ArchiveService:
         # `display_stem` is used below as a fallback for `print_name` when the
         # 3MF has no name metadata. Hoist it out of the if/else so the reuse
         # path (existing_archive) also has a valid value.
-        display_stem = Path(original_filename).stem if original_filename else source_file.stem
+        display_stem = resolve_display_stem(original_filename if original_filename else source_file.name)
 
         if existing_archive and existing_archive.file_path:
             # Reuse existing file on disk
@@ -1826,7 +1852,7 @@ class ArchiveService:
                 archive.source_content_hash = chain_hash or content_hash
 
             printer_folder = str(archive.printer_id) if archive.printer_id is not None else "unassigned"
-            display_stem = Path(original_filename).stem if original_filename else source_file.stem
+            display_stem = resolve_display_stem(original_filename if original_filename else source_file.name)
             dest_name = original_filename or source_file.name
 
             # Reuse the chain's on-disk file when one exists. Match on the
