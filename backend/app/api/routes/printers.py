@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from backend.app.core.auth import RequireCameraStreamToken, RequirePermission, require_permission
 from backend.app.core.config import settings
@@ -1422,7 +1423,13 @@ async def import_printer_files_to_library(
 
     folder: LibraryFolder | None = None
     if folder_id is not None:
-        folder = await db.get(LibraryFolder, folder_id)
+        # Eager-load .projects so save_3mf_bytes_to_library's
+        # inherit_folder_projects() doesn't trip async lazy-load.
+        folder = (
+            await db.execute(
+                select(LibraryFolder).where(LibraryFolder.id == folder_id).options(selectinload(LibraryFolder.projects))
+            )
+        ).scalar_one_or_none()
         if not folder:
             raise HTTPException(404, "Folder not found")
         # Read-only externals (mounted SMB shares the operator can browse but

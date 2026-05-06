@@ -368,3 +368,219 @@ async def test_plan_progress_counts_completed_archives(async_client: AsyncClient
     item = plan["items"][0]
     assert item["printed_count"] == 3
     assert item["remaining_count"] == 0
+
+
+async def test_inherit_folder_projects_helper_creates_plan_row(db_session):
+    """Pin the helper contract: ``inherit_folder_projects`` assigns the M2M
+    AND plants matching plan rows in one call.
+
+    Pre-fix every upload / extract-zip / sliced-output / MakerWorld-import
+    path bypassed this — the file row was created with empty M2M and
+    ``project_print_plan_items`` stayed empty no matter how many 3MFs the
+    user dropped into the project's folder.
+    """
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    from backend.app.models.library import LibraryFile, LibraryFolder
+    from backend.app.models.project import Project
+    from backend.app.models.project_print_plan import ProjectPrintPlanItem
+    from backend.app.services.print_plan import inherit_folder_projects
+
+    # Seed: project + folder linked to it.
+    project = Project(name="Inherit Test", description="")
+    db_session.add(project)
+    await db_session.flush()
+    folder = LibraryFolder(name="Inherit Folder")
+    folder.projects = [project]  # set before add so SQLAlchemy doesn't lazy-load
+    db_session.add(folder)
+    await db_session.commit()
+
+    # Re-fetch with .projects eager-loaded — the helper's contract requires
+    # this, and the production paths call it from selectinload-loaded folder
+    # rows.
+    folder = (
+        await db_session.execute(
+            select(LibraryFolder).where(LibraryFolder.id == folder.id).options(selectinload(LibraryFolder.projects))
+        )
+    ).scalar_one()
+
+    # Create a fresh file row in the folder — empty projects M2M, no plan
+    # row, just like the upload path produced pre-fix.
+    f = LibraryFile(
+        folder_id=folder.id,
+        filename="auto-inherit.gcode.3mf",
+        file_path="/tmp/auto-inherit.gcode.3mf",
+        file_type="3mf",
+        file_size=1,
+        file_hash=None,
+    )
+    db_session.add(f)
+    await db_session.flush()
+
+    # Pre-helper assertion: zero plan rows for this file.
+    pre = (
+        (await db_session.execute(select(ProjectPrintPlanItem).where(ProjectPrintPlanItem.library_file_id == f.id)))
+        .scalars()
+        .all()
+    )
+    assert pre == []
+
+    # Run the helper.
+    await inherit_folder_projects(db_session, f, folder)
+    await db_session.commit()
+
+    # Post: file is in the project's M2M, and a plan row exists.
+    await db_session.refresh(f, ["projects"])
+    assert [p.id for p in f.projects] == [project.id]
+
+    rows = (
+        (await db_session.execute(select(ProjectPrintPlanItem).where(ProjectPrintPlanItem.library_file_id == f.id)))
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].project_id == project.id
+    assert rows[0].copies == 1
+
+
+async def test_inherit_folder_projects_skips_non_plan_eligible(db_session):
+    """An ``.stl`` (or any non-3mf) file dropped in a project folder must not
+    plant a plan row — only 3MFs are plan-eligible. The M2M is also left
+    untouched (folder→file project inherit is plan-driven; STLs aren't part
+    of the print plan)."""
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    from backend.app.models.library import LibraryFile, LibraryFolder
+    from backend.app.models.project import Project
+    from backend.app.models.project_print_plan import ProjectPrintPlanItem
+    from backend.app.services.print_plan import inherit_folder_projects
+
+    project = Project(name="STL Test", description="")
+    db_session.add(project)
+    await db_session.flush()
+    folder = LibraryFolder(name="STL Folder")
+    folder.projects = [project]
+    db_session.add(folder)
+    await db_session.commit()
+
+    folder = (
+        await db_session.execute(
+            select(LibraryFolder).where(LibraryFolder.id == folder.id).options(selectinload(LibraryFolder.projects))
+        )
+    ).scalar_one()
+
+    f = LibraryFile(
+        folder_id=folder.id,
+        filename="model.stl",
+        file_path="/tmp/model.stl",
+        file_type="stl",
+        file_size=1,
+        file_hash=None,
+    )
+    db_session.add(f)
+    await db_session.flush()
+
+    await inherit_folder_projects(db_session, f, folder)
+    await db_session.commit()
+
+    rows = (
+        (await db_session.execute(select(ProjectPrintPlanItem).where(ProjectPrintPlanItem.library_file_id == f.id)))
+        .scalars()
+        .all()
+    )
+    assert rows == []
+
+
+async def test_inherit_folder_projects_no_op_when_folder_has_no_projects(db_session):
+    """Folder with empty .projects list → helper is a clean no-op (no M2M
+    write, no plan row, no error)."""
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    from backend.app.models.library import LibraryFile, LibraryFolder
+    from backend.app.models.project_print_plan import ProjectPrintPlanItem
+    from backend.app.services.print_plan import inherit_folder_projects
+
+    folder = LibraryFolder(name="Plain Folder")
+    db_session.add(folder)
+    await db_session.commit()
+    folder = (
+        await db_session.execute(
+            select(LibraryFolder).where(LibraryFolder.id == folder.id).options(selectinload(LibraryFolder.projects))
+        )
+    ).scalar_one()
+    assert list(folder.projects) == []
+
+    f = LibraryFile(
+        folder_id=folder.id,
+        filename="orphan.gcode.3mf",
+        file_path="/tmp/orphan.gcode.3mf",
+        file_type="3mf",
+        file_size=1,
+        file_hash=None,
+    )
+    db_session.add(f)
+    await db_session.flush()
+
+    await inherit_folder_projects(db_session, f, folder)
+    await db_session.commit()
+
+    rows = (
+        (await db_session.execute(select(ProjectPrintPlanItem).where(ProjectPrintPlanItem.library_file_id == f.id)))
+        .scalars()
+        .all()
+    )
+    assert rows == []
+
+
+async def test_inherit_folder_projects_idempotent_on_second_call(db_session):
+    """Calling the helper twice on the same (file, folder) pair must not
+    create duplicate plan rows — covers the case where a route accidentally
+    fires the inherit twice (e.g. on retry)."""
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    from backend.app.models.library import LibraryFile, LibraryFolder
+    from backend.app.models.project import Project
+    from backend.app.models.project_print_plan import ProjectPrintPlanItem
+    from backend.app.services.print_plan import inherit_folder_projects
+
+    project = Project(name="Idempotent Test", description="")
+    db_session.add(project)
+    await db_session.flush()
+    folder = LibraryFolder(name="Idempotent Folder")
+    folder.projects = [project]
+    db_session.add(folder)
+    await db_session.commit()
+    folder = (
+        await db_session.execute(
+            select(LibraryFolder).where(LibraryFolder.id == folder.id).options(selectinload(LibraryFolder.projects))
+        )
+    ).scalar_one()
+
+    f = LibraryFile(
+        folder_id=folder.id,
+        filename="idempotent.gcode.3mf",
+        file_path="/tmp/idempotent.gcode.3mf",
+        file_type="3mf",
+        file_size=1,
+        file_hash=None,
+    )
+    db_session.add(f)
+    await db_session.flush()
+
+    await inherit_folder_projects(db_session, f, folder)
+    await db_session.commit()
+
+    # Second call — sync should detect the existing row and not duplicate.
+    await inherit_folder_projects(db_session, f, folder)
+    await db_session.commit()
+
+    rows = (
+        (await db_session.execute(select(ProjectPrintPlanItem).where(ProjectPrintPlanItem.library_file_id == f.id)))
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1

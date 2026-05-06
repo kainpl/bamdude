@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from backend.app.api.routes.cloud import get_stored_token
 from backend.app.api.routes.library import save_3mf_bytes_to_library
@@ -251,7 +252,13 @@ async def import_instance(
     download happens.
     """
     if body.folder_id is not None:
-        folder_q = await db.execute(select(LibraryFolder).where(LibraryFolder.id == body.folder_id))
+        # Eager-load .projects so save_3mf_bytes_to_library's
+        # inherit_folder_projects() doesn't trip async lazy-load.
+        folder_q = await db.execute(
+            select(LibraryFolder)
+            .where(LibraryFolder.id == body.folder_id)
+            .options(selectinload(LibraryFolder.projects))
+        )
         target_folder = folder_q.scalar_one_or_none()
         if target_folder is None:
             raise HTTPException(status_code=404, detail="Folder not found")

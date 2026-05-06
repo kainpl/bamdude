@@ -143,6 +143,57 @@ async def sync_plan_for_file(
         )
 
 
+async def inherit_folder_projects(
+    db: AsyncSession,
+    library_file: LibraryFile,
+    folder,
+) -> None:
+    """On file creation in a project-tagged folder, inherit the folder's
+    projects into the file's M2M and plant matching plan rows.
+
+    Symmetrical with the move / patch flows: a freshly-uploaded ``.3mf``
+    that lands in a folder linked to N projects must show up in those
+    projects' print plans without an extra UI step. ``folder`` must have
+    ``.projects`` already loaded (callers should ``selectinload`` it).
+
+    Pre-fix, every upload / zip-extract / sliced-output / MakerWorld import
+    bypassed this path entirely — the file row was created with empty
+    M2M and ``project_print_plan_items`` stayed empty no matter how many
+    files the user dropped into the project's folder. Bug class lurked
+    since the m044 single-FK → M2M conversion (the old ``library_files
+    .project_id`` column inheritance was lost in that refactor; m048
+    backfills retroactive plan rows).
+
+    Caller is responsible for committing.
+    """
+    if folder is None:
+        return
+    folder_projects = list(folder.projects or [])
+    if not folder_projects:
+        return
+
+    if library_file.id is None:
+        # Creation paths usually call us after ``db.flush`` so the PK
+        # exists; if not, flush now so the next refresh works.
+        await db.flush()
+
+    # Eager-load the file's ``.projects`` collection before assignment.
+    # On a freshly-flushed persistent row the relation is unloaded, and
+    # assigning to an unloaded collection forces a lazy-load comparison —
+    # which raises ``MissingGreenlet`` outside an async-engine session
+    # boundary. Refreshing with the relation loaded short-circuits that.
+    await db.refresh(library_file, ["projects"])
+
+    # Mirror the move path: set the M2M, then sync plan rows in-step.
+    library_file.projects = list(folder_projects)
+    await sync_plan_for_file(
+        db,
+        library_file_id=library_file.id,
+        project_ids=[p.id for p in folder_projects],
+        file_type=library_file.file_type or "",
+    )
+
+
 async def sync_plan_for_folder(db: AsyncSession, *, folder_id: int, project_ids: list[int]) -> None:
     """Reconcile plan rows for every file in a folder after the folder's
     project list changed.

@@ -61,7 +61,7 @@ from backend.app.schemas.library import (
 )
 from backend.app.services.archive import ThreeMFParser
 from backend.app.services.library_helpers import compute_file_tags, detect_file_type
-from backend.app.services.print_plan import sync_plan_for_file, sync_plan_for_folder
+from backend.app.services.print_plan import inherit_folder_projects, sync_plan_for_file, sync_plan_for_folder
 from backend.app.services.stl_thumbnail import generate_stl_thumbnail
 from backend.app.services.threemf_capabilities import extract_3mf_capabilities
 from backend.app.utils.threemf_tools import (
@@ -352,11 +352,14 @@ async def save_3mf_bytes_to_library(
         source_url=source_url,
     )
     db.add(library_file)
+    await db.flush()
+    # Inherit folder projects + plant matching plan rows. Caller is
+    # responsible for ``selectinload(LibraryFolder.projects)`` on the
+    # passed folder so this doesn't trip async lazy-load.
+    await inherit_folder_projects(db, library_file, folder)
     if commit:
         await db.commit()
         await db.refresh(library_file)
-    else:
-        await db.flush()
 
     return library_file, was_existing
 
@@ -1882,6 +1885,19 @@ async def slice_and_persist(
         created_by_id=current_user_id,
     )
     db.add(new_file)
+    await db.flush()
+    # Inherit target folder's projects + plant matching plan rows so a
+    # sliced ``.gcode.3mf`` lands in the project's plan automatically.
+    # ``slice_and_persist`` doesn't load the folder itself — fetch with
+    # selectinload so the inherit helper doesn't trip async lazy-load.
+    if folder_id is not None:
+        target_folder_for_inherit = (
+            await db.execute(
+                select(LibraryFolder).where(LibraryFolder.id == folder_id).options(selectinload(LibraryFolder.projects))
+            )
+        ).scalar_one_or_none()
+        if target_folder_for_inherit is not None:
+            await inherit_folder_projects(db, new_file, target_folder_for_inherit)
     await db.commit()
     await db.refresh(new_file)
 
@@ -2120,10 +2136,15 @@ async def upload_file(
         ext = os.path.splitext(filename)[1].lower()
         file_type = detect_file_type(filename)
 
-        # Verify folder exists if specified
+        # Verify folder exists if specified. Eager-load .projects so a
+        # subsequent ``inherit_folder_projects`` call doesn't trip the
+        # async lazy-load — the file inherits the folder's projects so the
+        # print plan auto-fills (#m048 + post-m044 fix).
         target_folder: LibraryFolder | None = None
         if folder_id is not None:
-            folder_result = await db.execute(select(LibraryFolder).where(LibraryFolder.id == folder_id))
+            folder_result = await db.execute(
+                select(LibraryFolder).where(LibraryFolder.id == folder_id).options(selectinload(LibraryFolder.projects))
+            )
             target_folder = folder_result.scalar_one_or_none()
             if not target_folder:
                 raise HTTPException(status_code=404, detail="Folder not found")
@@ -2247,6 +2268,11 @@ async def upload_file(
             swap_compatible=swap_compatible,
         )
         db.add(library_file)
+        await db.flush()
+        # Inherit the target folder's projects + plant matching print-plan
+        # rows so a 3MF dropped into a project-tagged folder shows up in
+        # the project's plan automatically.
+        await inherit_folder_projects(db, library_file, target_folder)
         await db.commit()
         await db.refresh(library_file)
 
@@ -2291,9 +2317,12 @@ async def extract_zip_file(
     if not file.filename or not file.filename.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="Only ZIP files are supported")
 
-    # Verify target folder exists if specified
+    # Verify target folder exists if specified. Eager-load .projects so the
+    # inherit-on-create path below doesn't trip the async lazy-load.
     if folder_id is not None:
-        folder_result = await db.execute(select(LibraryFolder).where(LibraryFolder.id == folder_id))
+        folder_result = await db.execute(
+            select(LibraryFolder).where(LibraryFolder.id == folder_id).options(selectinload(LibraryFolder.projects))
+        )
         target_folder = folder_result.scalar_one_or_none()
         if not target_folder:
             raise HTTPException(status_code=404, detail="Target folder not found")
@@ -2496,6 +2525,26 @@ async def extract_zip_file(
                     )
                     db.add(library_file)
                     await db.flush()
+                    # Inherit target folder's projects → matching plan rows
+                    # so a 3MF unzipped into a project-tagged folder lands
+                    # in the project's plan automatically. Re-fetch the
+                    # folder with .projects eager-loaded for *this*
+                    # iteration's target_folder_id (may differ from the
+                    # outer one when ``preserve_structure`` created a
+                    # subfolder; subfolders inherit their parent's
+                    # projects only when explicitly assigned, so this is
+                    # a no-op for sub-folders that have no projects of
+                    # their own).
+                    if target_folder_id is not None:
+                        per_file_folder = (
+                            await db.execute(
+                                select(LibraryFolder)
+                                .where(LibraryFolder.id == target_folder_id)
+                                .options(selectinload(LibraryFolder.projects))
+                            )
+                        ).scalar_one_or_none()
+                        if per_file_folder is not None:
+                            await inherit_folder_projects(db, library_file, per_file_folder)
                     await db.refresh(library_file)
 
                     extracted_files.append(
