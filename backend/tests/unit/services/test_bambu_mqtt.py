@@ -4265,3 +4265,72 @@ class TestFilamentTrackSwitchDetection:
         assert fs.installed is True
         assert fs.in_slots == []
         assert fs.out_extruders == []
+
+
+class TestStartPrintRecordsDispatchedPlate:
+    """Tests for the dispatched-plate record set by start_print() — used by
+    the /cover route to pick the right thumbnail when the printer's
+    gcode_file echo doesn't include the plate path (#1166).
+
+    Some firmware versions (P1S 01.10.00.00) only put the .3mf filename in
+    print.gcode_file, so the regex falls back to plate 1 and the printer
+    card shows the wrong plate's thumbnail. Recording what we dispatched at
+    the publish site lets resolve_plate_id() return the right plate without
+    needing to introspect the 3MF.
+    """
+
+    @pytest.fixture
+    def mqtt_client(self):
+        from unittest.mock import MagicMock
+
+        from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+        client = BambuMQTTClient(
+            ip_address="192.168.1.100",
+            serial_number="TEST123",
+            access_code="12345678",
+        )
+        client._client = MagicMock()
+        client.state.connected = True
+        return client
+
+    def test_dispatched_plate_recorded_after_start_print(self, mqtt_client):
+        # Default state has no dispatched plate.
+        assert mqtt_client.state.dispatched_plate_id is None
+        assert mqtt_client.state.dispatched_subtask is None
+
+        mqtt_client.start_print("Luigi.3mf", plate_id=2)
+
+        # The subtask_name we record matches the one we send (and the
+        # printer reflects back via MQTT), so resolve_plate_id() can
+        # validate the match downstream.
+        assert mqtt_client.state.dispatched_plate_id == 2
+        assert mqtt_client.state.dispatched_subtask == "Luigi"
+
+    def test_dispatched_plate_default_is_one(self, mqtt_client):
+        # When start_print is called without plate_id (legacy/single-plate
+        # flow), we still record plate=1 — the contract is that
+        # dispatched_* describes the active dispatch.
+        mqtt_client.start_print("Single.3mf")
+        assert mqtt_client.state.dispatched_plate_id == 1
+        assert mqtt_client.state.dispatched_subtask == "Single"
+
+    def test_dispatched_plate_overwritten_by_subsequent_dispatch(self, mqtt_client):
+        # Each dispatch replaces the prior record so we can never serve a
+        # stale plate from an older print.
+        mqtt_client.start_print("First.3mf", plate_id=4)
+        mqtt_client.start_print("Second.3mf", plate_id=2)
+
+        assert mqtt_client.state.dispatched_plate_id == 2
+        assert mqtt_client.state.dispatched_subtask == "Second"
+
+    def test_dispatched_plate_not_recorded_when_publish_skipped(self, mqtt_client):
+        # If start_print early-returns because we're not connected, no
+        # record should land — otherwise the next print's /cover call
+        # would believe a phantom dispatch happened.
+        mqtt_client.state.connected = False
+        result = mqtt_client.start_print("Phantom.3mf", plate_id=3)
+
+        assert result is False
+        assert mqtt_client.state.dispatched_plate_id is None
+        assert mqtt_client.state.dispatched_subtask is None

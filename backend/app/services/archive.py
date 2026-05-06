@@ -66,6 +66,59 @@ def resolve_display_stem(filename: str) -> str:
     return Path(name).stem
 
 
+def peek_plate_index_in_3mf(file_path: Path) -> int | None:
+    """Return the plate index recorded inside a Bambu 3MF, or None (#1204).
+
+    Reads only ``Metadata/slice_info.config`` to keep this cheap — used by
+    the print-start callback to verify that the 3MF we just downloaded over
+    FTP actually matches the plate the printer is running. The full
+    ``ThreeMFParser`` does much more work and runs later inside
+    ``ArchiveService``; this is a one-shot peek for the validation gate.
+    """
+    try:
+        with zipfile.ZipFile(file_path, "r") as zf:
+            if "Metadata/slice_info.config" not in zf.namelist():
+                return None
+            content = zf.read("Metadata/slice_info.config").decode()
+            root = ET.fromstring(content)
+            plate = root.find(".//plate")
+            if plate is None:
+                return None
+            for meta in plate.findall("metadata"):
+                if meta.get("key") == "index":
+                    value = meta.get("value")
+                    if value:
+                        try:
+                            return int(value)
+                        except ValueError:
+                            return None
+    except Exception:
+        return None
+    return None
+
+
+_PLATE_SUFFIX_RE = re.compile(r"^(.*?)(\s*-\s*Plate\s+|_plate_)(\d+)$", re.IGNORECASE)
+
+
+def swap_plate_suffix(name: str | None, target_plate: int) -> str | None:
+    """Return ``name`` with its trailing plate number replaced, or None (#1204).
+
+    Bambu Studio names multi-plate uploads ``"<Project> - Plate <N>"`` (and
+    a lowercase ``"_plate_<N>"`` variant exists too). When MQTT
+    ``subtask_name`` lags across consecutive plates of the same model the
+    suffix points at the previous plate; swapping it gives us the correct
+    upload to re-fetch from FTP. Returns ``None`` if no recognised suffix
+    is present so the caller can fall through to the no-3MF archive path.
+    """
+    if not name:
+        return None
+    m = _PLATE_SUFFIX_RE.match(name)
+    if not m:
+        return None
+    base, separator, _ = m.groups()
+    return f"{base}{separator}{target_plate}"
+
+
 class ThreeMFParser:
     """Parser for Bambu Lab 3MF files."""
 

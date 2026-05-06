@@ -194,6 +194,18 @@ class PrinterState:
     # Filament Track Switch (FTS) accessory — when installed, AMS info reports
     # bits 8-11 = 0xE (uninitialized) because routing is dynamic. Upstream #1162.
     fila_switch: "FilaSwitchState" = field(default_factory=lambda: FilaSwitchState())
+    # Plate dispatched by BamDude for the current print (#1166). Some firmware
+    # versions (P1S 01.10.00.00) only put the .3mf filename in
+    # ``print.gcode_file``, so the regex used to derive the plate number from
+    # the path always falls back to plate 1 — and the printer card shows the
+    # wrong thumbnail. When BamDude dispatches the print itself we know the
+    # plate authoritatively; we record it here and prefer it over the
+    # ``gcode_file`` regex. The subtask field guards against staleness: if the
+    # printer is currently running a different subtask (e.g. a Studio-direct
+    # dispatch on the same machine), these values are ignored. Cleared on
+    # disconnect.
+    dispatched_plate_id: int | None = None
+    dispatched_subtask: str | None = None
     # H2D per-extruder tray_now from snow field: {extruder_id: normalized_global_tray_id}
     # snow encodes AMS ID in high byte: ams_id = snow >> 8, slot = snow & 0xFF
     h2d_extruder_snow: dict = field(default_factory=dict)
@@ -3334,6 +3346,13 @@ class BambuMQTTClient:
 
             logger.info("[%s] Sending print command: %s", self.serial_number, json.dumps(command))
             self._client.publish(self.topic_publish, json.dumps(command), qos=1)
+            # Record what we dispatched so /cover can pick the right plate
+            # thumbnail even when the printer's gcode_file echo is just the
+            # 3MF filename without a plate path (#1166). Match the same
+            # subtask_name shape we send so the comparison in resolve_plate_id
+            # works against state.subtask_name reflected back via MQTT.
+            self.state.dispatched_plate_id = plate_id
+            self.state.dispatched_subtask = command["print"]["subtask_name"]
             return True
         else:
             # Log why we couldn't send the command

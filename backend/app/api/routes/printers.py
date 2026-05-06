@@ -40,8 +40,8 @@ from backend.app.services.printer_manager import (
     find_ams_unit,
     first_drying_blocking_reason,
     get_derived_status_name,
-    parse_plate_id,
     printer_manager,
+    resolve_plate_id,
     supports_chamber_temp,
     supports_drying,
 )
@@ -577,7 +577,7 @@ async def get_printer_status(
     current_archive_id: int | None = None
     current_plate_id: int | None = None
     if state.state in ("RUNNING", "PAUSE"):
-        current_plate_id = parse_plate_id(state.gcode_file)
+        current_plate_id = resolve_plate_id(state)
         if state.subtask_id:
             from backend.app.models.archive import PrintArchive
 
@@ -810,20 +810,31 @@ async def get_printer_cover(
     if not subtask_name:
         raise HTTPException(404, f"No subtask_name in printer state (state={state.state})")
 
-    # Extract plate number from gcode_file (e.g., "/data/Metadata/plate_12.gcode" -> 12)
-    plate_num = 1
-    gcode_file = state.gcode_file
-    if gcode_file:
-        match = re.search(r"plate_(\d+)\.gcode", gcode_file)
-        if match:
-            plate_num = int(match.group(1))
+    # Resolve the active plate. Tri-tier scheme (#1166):
+    #   1. resolve_plate_id(state) — prefers the plate BamDude dispatched
+    #      (when subtask matches) over the gcode_file regex.
+    #   2. If still None: scan the downloaded 3MF for a unique
+    #      Metadata/plate_N.gcode below — covers per-plate archives sliced
+    #      separately in Bambu Studio (operator did "Send selected plate"
+    #      on a multi-plate project), where the printer's gcode_file echo
+    #      is just the .3mf filename and we never dispatched.
+    #   3. Default to plate 1 if nothing else resolved.
+    # The 3MF-scan step runs LATER, after the file is on disk — this is
+    # why plate_num can be None here and we leave it that way.
+    plate_num = resolve_plate_id(state)
+    if plate_num is not None:
+        logger.info("Cover: resolved plate %s before download (subtask=%s)", plate_num, subtask_name)
 
     view_key = view or "default"
 
-    # In-memory cache for PNG bytes — key includes (subtask, plate, view)
-    # so multi-plate prints don't poison across plates.
+    # In-memory cache for PNG bytes — key is (subtask_name, view_key) only.
+    # clear_cover_cache() runs on every print start (main.py:_on_print_start),
+    # so a re-dispatch with a different plate gets a fresh image regardless.
+    # Pre-#1166 the key included plate_num, but with late plate resolution
+    # the cache check would always miss when plate_num is None at lookup
+    # time but resolved later from the scan fallback.
     if printer_id in _cover_cache:
-        cache_key = (subtask_name, plate_num, view_key)
+        cache_key = (subtask_name, view_key)
         if cache_key in _cover_cache[printer_id]:
             return Response(content=_cover_cache[printer_id][cache_key], media_type="image/png")
 
@@ -857,14 +868,17 @@ async def get_printer_cover(
     if archive is None:
         raise HTTPException(404, f"No archive with a local 3MF yet for '{subtask_base}' on printer {printer_id}")
 
-    # 1. If the archive already has an extracted thumbnail PNG — serve it directly.
+    # 1. If the archive already has an extracted thumbnail PNG — serve it
+    #    directly. This path is plate-agnostic (the extracted PNG is for the
+    #    plate the archive was created for, which is exactly what the user
+    #    wants to see), so we can short-circuit before the scan-fallback.
     if archive.thumbnail_path and view != "top":
         thumb_path = settings.base_dir / archive.thumbnail_path
         if thumb_path.exists():
             image_data = thumb_path.read_bytes()
             if printer_id not in _cover_cache:
                 _cover_cache[printer_id] = {}
-            _cover_cache[printer_id][(subtask_name, plate_num, view_key)] = image_data
+            _cover_cache[printer_id][(subtask_name, view_key)] = image_data
             return Response(content=image_data, media_type="image/png")
 
     # 2. Otherwise open the 3MF from archive_dir and extract the thumbnail
@@ -875,6 +889,30 @@ async def get_printer_cover(
 
     try:
         with zipfile.ZipFile(local_3mf, "r") as zf:
+            # 3MF-scan plate-detection fallback (#1166 tier 3). Per-plate
+            # archives sliced separately in Bambu Studio contain a single
+            # ``Metadata/plate_N.gcode`` for the active plate, even though
+            # the thumbnails for all plates are bundled. When we get here
+            # without a resolved plate (firmware echo didn't include the
+            # path AND BamDude didn't dispatch the print — Studio-direct
+            # "Send selected plate" on a quirky-firmware printer), reading
+            # that gcode's plate number prevents falling back to plate-1's
+            # thumbnail. ``len == 1`` guard keeps full multi-plate bundles
+            # falling through cleanly — those carry plate_1.gcode through
+            # plate_N.gcode and we genuinely don't know which is active.
+            if plate_num is None:
+                plate_gcodes = [name for name in zf.namelist() if re.match(r"^Metadata/plate_\d+\.gcode$", name)]
+                if len(plate_gcodes) == 1:
+                    match = re.search(r"plate_(\d+)\.gcode", plate_gcodes[0])
+                    if match:
+                        plate_num = int(match.group(1))
+                        logger.info("Cover: detected plate %s from 3MF contents (scan fallback)", plate_num)
+            # Tier 4: still nothing → default to plate 1 and let the layered
+            # thumbnail_paths array walk its plate-1 / generic-thumbnail
+            # fallbacks.
+            if plate_num is None:
+                plate_num = 1
+
             if view == "top":
                 thumbnail_paths = [
                     f"Metadata/top_{plate_num}.png",
@@ -899,7 +937,7 @@ async def get_printer_cover(
                     image_data = zf.read(thumb_path)
                     if printer_id not in _cover_cache:
                         _cover_cache[printer_id] = {}
-                    _cover_cache[printer_id][(subtask_name, plate_num, view_key)] = image_data
+                    _cover_cache[printer_id][(subtask_name, view_key)] = image_data
                     return Response(content=image_data, media_type="image/png")
                 except KeyError:
                     continue
@@ -910,7 +948,7 @@ async def get_printer_cover(
                     image_data = zf.read(name)
                     if printer_id not in _cover_cache:
                         _cover_cache[printer_id] = {}
-                    _cover_cache[printer_id][(subtask_name, plate_num, view_key)] = image_data
+                    _cover_cache[printer_id][(subtask_name, view_key)] = image_data
                     return Response(content=image_data, media_type="image/png")
 
     except zipfile.BadZipFile:
