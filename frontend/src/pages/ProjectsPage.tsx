@@ -1,4 +1,5 @@
 import { useState, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -392,6 +393,55 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
   );
 }
 
+/**
+ * Portal-mounted hover preview for project covers (#1155 follow-up). The card
+ * itself carries ``overflow-hidden`` (rounded corners + color accent bar), so
+ * an in-tree popover gets clipped the moment it extends past the card. Render
+ * via ``createPortal`` to ``document.body`` to escape every ancestor clipping
+ * context; ``position: fixed`` with measurements from the trigger's
+ * ``getBoundingClientRect()`` keeps the popover pinned next to the cover
+ * regardless of grid position.
+ *
+ * Edge handling: if the trigger is near the viewport's right edge the popover
+ * flips to the LEFT side; vertical position is clamped so the popover never
+ * overflows the window top or bottom. ``pointer-events-none`` on the popover
+ * so it can't intercept hover and create a flicker loop; ``z-[100]`` so it
+ * stacks above sibling cards.
+ */
+function ProjectCoverHoverPreview({
+  src,
+  triggerRect,
+}: {
+  src: string;
+  triggerRect: DOMRect;
+}) {
+  const POPOVER_SIZE = 384;
+  const GAP = 8;
+  const flipsLeft = triggerRect.right + GAP + POPOVER_SIZE > window.innerWidth;
+  const left = flipsLeft
+    ? Math.max(GAP, triggerRect.left - GAP - POPOVER_SIZE)
+    : triggerRect.right + GAP;
+  const idealTop = triggerRect.top + triggerRect.height / 2 - POPOVER_SIZE / 2;
+  const top = Math.min(
+    Math.max(GAP, idealTop),
+    Math.max(GAP, window.innerHeight - POPOVER_SIZE - GAP),
+  );
+  return createPortal(
+    <div
+      className="fixed z-[100] pointer-events-none rounded-xl border border-bambu-dark-tertiary bg-bambu-card shadow-2xl shadow-black/60 overflow-hidden"
+      style={{ left, top, width: POPOVER_SIZE, height: POPOVER_SIZE }}
+    >
+      <img
+        src={src}
+        alt=""
+        className="w-full h-full object-contain bg-bambu-dark"
+        loading="lazy"
+      />
+    </div>,
+    document.body,
+  );
+}
+
 interface ProjectCardProps {
   project: ProjectListItem;
   onClick: () => void;
@@ -413,6 +463,12 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
   const isCompleted = project.status === 'completed';
   const isArchived = project.status === 'archived';
   const [showActions, setShowActions] = useState(false);
+
+  // Hover preview state for the cover image (#1155 follow-up). Stored as the
+  // trigger's bounding rect rather than a boolean so the portal-mounted
+  // popover can position itself precisely without re-querying the DOM.
+  const coverHeroRef = useRef<HTMLDivElement | null>(null);
+  const [coverHoverRect, setCoverHoverRect] = useState<DOMRect | null>(null);
 
   // Status icon and color
   const getStatusConfig = () => {
@@ -440,7 +496,15 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
       {/* Cover image hero (#1155). Renders only when the project has a cover
           uploaded; otherwise the card keeps its existing all-color header. */}
       {project.cover_image_filename && (
-        <div className="relative w-full aspect-[3/1] overflow-hidden">
+        <div
+          ref={coverHeroRef}
+          className="relative w-full aspect-[3/1] overflow-hidden"
+          onMouseEnter={() => {
+            const rect = coverHeroRef.current?.getBoundingClientRect();
+            if (rect) setCoverHoverRect(rect);
+          }}
+          onMouseLeave={() => setCoverHoverRect(null)}
+        >
           <img
             src={api.getProjectCoverImageUrl(project.id)}
             alt=""
@@ -454,6 +518,12 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
           />
           {/* Subtle gradient so card text below stays readable */}
           <div className="absolute inset-0 bg-gradient-to-t from-bambu-card via-transparent to-transparent" />
+          {coverHoverRect && (
+            <ProjectCoverHoverPreview
+              src={api.getProjectCoverImageUrl(project.id)}
+              triggerRect={coverHoverRect}
+            />
+          )}
         </div>
       )}
 
