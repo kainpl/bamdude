@@ -42,10 +42,12 @@ export function getPermissionLabel(dbLabel: string, t: TFn): string {
 }
 
 const CATEGORY_KEYS: Record<string, string> = {
+  // Section-header forms (PERMISSION_CATEGORIES keys in `core/permissions.py`).
   'Printers': 'printers',
   'Archives': 'archives',
   'Queue': 'queue',
   'Library': 'library',
+  'MakerWorld': 'makerworld',
   'Projects': 'projects',
   'Filaments': 'filaments',
   'Inventory': 'inventory',
@@ -65,6 +67,31 @@ const CATEGORY_KEYS: Record<string, string> = {
   'API Keys': 'apiKeys',
   'User Management': 'userManagement',
   'Notification Templates': 'notificationTemplates',
+  'WebSocket': 'websocket',
+
+  // Per-permission resource forms — backend `_permission_label` runs
+  // `resource.replace("_", " ").title()` on the snake_case half of
+  // `permission.value`. Python's `str.title()` only capitalises the first
+  // letter of each word, so "api_keys" → "Api Keys" (lowercase 'pi'),
+  // "kprofiles" → "Kprofiles" (lowercase 'p'), "makerworld" → "Makerworld",
+  // "websocket" → "Websocket". These aliases route those forms to the
+  // existing locale keys above so individual permission labels render
+  // localised next to their (already-localised) section headers.
+  'Api Keys': 'apiKeys',
+  'Kprofiles': 'kProfiles',
+  'Makerworld': 'makerworld',
+  'Websocket': 'websocket',
+
+  // Resources that don't have their own section header (the section bucket
+  // groups multiple resources together — e.g. "User Management" buckets
+  // both `users:*` and `groups:*`; "Stats & History" buckets `stats:*` and
+  // `ams_history:*`; "Backup" buckets `git:*`). The per-permission label
+  // surfaces the underlying resource, which needs its own locale entry.
+  'Users': 'users',
+  'Groups': 'groups',
+  'Git': 'git',
+  'Stats': 'stats',
+  'Ams History': 'amsHistory',
 };
 
 const ACTION_KEYS: Record<string, string> = {
@@ -81,6 +108,9 @@ const ACTION_KEYS: Record<string, string> = {
   'Backup': 'backup',
   'Restore': 'restore',
   'Auth': 'auth',
+  'Purge': 'purge',
+  'Import': 'import',
+  'Connect': 'connect',
 };
 
 // Labels that don't follow the simple "Action Resource" pattern
@@ -102,6 +132,10 @@ const LABEL_OVERRIDES: Record<string, string> = {
   'Update All Library': 'updateAllLibrary',
   'Delete Own Library': 'deleteOwnLibrary',
   'Delete All Library': 'deleteAllLibrary',
+  // library:notes_write → "Notes Write Library" (multi-word action)
+  'Notes Write Library': 'libraryNotesWrite',
   'View Assignments Inventory': 'viewAssignments',
   'User Email Notifications': 'userEmailNotifications',
+  // stats:filter_by_user → "Filter By User Stats" (multi-word action)
+  'Filter By User Stats': 'statsFilterByUser',
 };

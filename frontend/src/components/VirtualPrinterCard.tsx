@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
 import {
   Loader2, Check, AlertTriangle, Eye, EyeOff, Info,
-  ChevronDown, ChevronRight, ArrowRightLeft, Trash2, X,
+  ChevronDown, ChevronRight, ArrowRightLeft, Trash2, X, Copy,
 } from 'lucide-react';
 import { api, multiVirtualPrinterApi } from '../api/client';
 import type { LibraryFolderTree, VirtualPrinterConfig } from '../api/client';
@@ -61,6 +61,7 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
   const [localRemoteInterfaceIp, setLocalRemoteInterfaceIp] = useState(printer.remote_interface_ip || '');
   const [localModel, setLocalModel] = useState(printer.model || '');
   const [localAutoDispatch, setLocalAutoDispatch] = useState(printer.auto_dispatch ?? true);
+  const [localQueueForceColorMatch, setLocalQueueForceColorMatch] = useState(printer.queue_force_color_match ?? false);
   const [localTailscaleDisabled, setLocalTailscaleDisabled] = useState(printer.tailscale_disabled ?? true);
   const [showAccessCode, setShowAccessCode] = useState(false);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
@@ -78,6 +79,7 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
       setLocalRemoteInterfaceIp(printer.remote_interface_ip || '');
       setLocalModel(printer.model || '');
       setLocalAutoDispatch(printer.auto_dispatch ?? true);
+      setLocalQueueForceColorMatch(printer.queue_force_color_match ?? false);
       setLocalTailscaleDisabled(printer.tailscale_disabled ?? true);
     }
   }, [printer, pendingAction]);
@@ -101,6 +103,18 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
     queryFn: () => api.getLibraryFolders(),
     // Only meaningful for non-proxy VPs that actually receive files.
     enabled: localMode !== 'proxy',
+  });
+
+  // Host-level Tailscale identity (#1070 post-rip-out). Surfaces the IP +
+  // MagicDNS hostname when the per-VP toggle is ON, so users know what to
+  // paste into the slicer's Add Printer dialog. Cert-trust is unaffected
+  // (always self-signed). Only fetched when the toggle is on so installs
+  // without Tailscale don't spam the binary lookup.
+  const { data: tailscaleStatus } = useQuery({
+    queryKey: ['vp-tailscale-status'],
+    queryFn: multiVirtualPrinterApi.getTailscaleStatus,
+    enabled: !localTailscaleDisabled,
+    refetchInterval: 30_000,
   });
 
   const updateMutation = useMutation({
@@ -423,6 +437,40 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
               );
             })()}
 
+            {/* Force colour match — auto_queue only (#1188). When on, the VP intake
+                lifts per-slot type+color from each 3MF and pins them as
+                force_color_match overrides on the queue row, so the eligibility
+                scheduler refuses printers loaded with the right material in the
+                wrong colour. Default off preserves legacy types-only routing. */}
+            {localMode === 'auto_queue' && (
+              <div className="pt-2 border-t border-bambu-dark-tertiary">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-white text-sm font-medium">{t('virtualPrinter.queueForceColorMatch.title')}</div>
+                    <div className="text-[10px] text-bambu-gray">{t('virtualPrinter.queueForceColorMatch.description')}</div>
+                  </div>
+                  <button
+                    onClick={() => {
+                      const newVal = !localQueueForceColorMatch;
+                      setLocalQueueForceColorMatch(newVal);
+                      setPendingAction('queueForceColorMatch');
+                      updateMutation.mutate({ queue_force_color_match: newVal });
+                    }}
+                    disabled={pendingAction === 'queueForceColorMatch'}
+                    className={`relative w-10 h-5 rounded-full transition-colors flex-shrink-0 ${
+                      localQueueForceColorMatch ? 'bg-bambu-green' : 'bg-bambu-dark-tertiary'
+                    } ${pendingAction === 'queueForceColorMatch' ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  >
+                    <span
+                      className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform ${
+                        localQueueForceColorMatch ? 'translate-x-5' : ''
+                      }`}
+                    />
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Auto-select printer toggle — only when Queue mode is picked.
                 Splits print_queue (specific / least busy) vs auto_queue (router). */}
             {(localMode === 'print_queue' || localMode === 'auto_queue') && (
@@ -692,19 +740,54 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
                   />
                 </button>
               </div>
-              {!localTailscaleDisabled && printer.status?.tailscale_fqdn && (
-                <div className="mt-2 flex items-start gap-2 p-2 rounded bg-green-500/10 border border-green-500/30">
-                  <Check className="w-4 h-4 text-green-400 flex-shrink-0 mt-0.5" />
-                  <p className="text-xs text-bambu-gray">
-                    {t('virtualPrinter.tailscale.activeFor', { fqdn: printer.status.tailscale_fqdn })}
-                  </p>
+              {!localTailscaleDisabled && tailscaleStatus?.available && (
+                <div className="mt-2 space-y-1.5 p-2 rounded bg-green-500/10 border border-green-500/30">
+                  <p className="text-[11px] text-bambu-gray">{t('virtualPrinter.tailscale.pasteHint')}</p>
+                  {tailscaleStatus.tailscale_ips.map((ip) => (
+                    <div key={ip} className="flex items-center gap-2">
+                      <code className="text-xs text-white font-mono flex-1 truncate">{ip}</code>
+                      <button
+                        onClick={async () => {
+                          try {
+                            await navigator.clipboard.writeText(ip);
+                            showToast(t('virtualPrinter.tailscale.copied'), 'success');
+                          } catch {
+                            showToast(t('virtualPrinter.tailscale.copyFailed'), 'error');
+                          }
+                        }}
+                        title={t('virtualPrinter.tailscale.copyIp')}
+                        className="p-1 rounded hover:bg-bambu-dark-tertiary text-bambu-gray hover:text-white transition-colors"
+                      >
+                        <Copy className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                  {tailscaleStatus.fqdn && (
+                    <div className="flex items-center gap-2 pt-1 border-t border-green-500/20">
+                      <code className="text-xs text-white font-mono flex-1 truncate">{tailscaleStatus.fqdn}</code>
+                      <button
+                        onClick={async () => {
+                          try {
+                            await navigator.clipboard.writeText(tailscaleStatus.fqdn);
+                            showToast(t('virtualPrinter.tailscale.copied'), 'success');
+                          } catch {
+                            showToast(t('virtualPrinter.tailscale.copyFailed'), 'error');
+                          }
+                        }}
+                        title={t('virtualPrinter.tailscale.copyHostname')}
+                        className="p-1 rounded hover:bg-bambu-dark-tertiary text-bambu-gray hover:text-white transition-colors"
+                      >
+                        <Copy className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
-              {!localTailscaleDisabled && !printer.status?.tailscale_fqdn && isRunning && (
+              {!localTailscaleDisabled && tailscaleStatus && !tailscaleStatus.available && (
                 <div className="mt-2 flex items-start gap-2 p-2 rounded bg-yellow-500/10 border border-yellow-500/30">
                   <AlertTriangle className="w-4 h-4 text-yellow-400 flex-shrink-0 mt-0.5" />
                   <p className="text-xs text-yellow-400">
-                    {t('virtualPrinter.tailscale.unavailable')}
+                    {tailscaleStatus.error || t('virtualPrinter.tailscale.unavailable')}
                   </p>
                 </div>
               )}

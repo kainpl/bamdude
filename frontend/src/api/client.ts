@@ -1104,9 +1104,11 @@ export interface APIKey {
   id: number;
   name: string;
   key_prefix: string;
+  user_id: number | null;
   can_queue: boolean;
   can_control_printer: boolean;
   can_read_status: boolean;
+  can_access_cloud: boolean;
   printer_ids: number[] | null;
   enabled: boolean;
   last_used: string | null;
@@ -1119,6 +1121,7 @@ export interface APIKeyCreate {
   can_queue?: boolean;
   can_control_printer?: boolean;
   can_read_status?: boolean;
+  can_access_cloud?: boolean;
   printer_ids?: number[] | null;
   expires_at?: string | null;
 }
@@ -1132,6 +1135,7 @@ export interface APIKeyUpdate {
   can_queue?: boolean;
   can_control_printer?: boolean;
   can_read_status?: boolean;
+  can_access_cloud?: boolean;
   printer_ids?: number[] | null;
   enabled?: boolean;
   expires_at?: string | null;
@@ -6509,6 +6513,10 @@ export interface VirtualPrinterConfig {
   /** Library folder where files arriving via FTP land (m040). null = library root. */
   target_folder_id: number | null;
   auto_dispatch: boolean;
+  /** When true (auto_queue mode), VP intake auto-pins per-slot type+color from each 3MF
+   *  as `force_color_match` overrides so the eligibility scheduler refuses printers
+   *  loaded with the right material in the wrong colour (#1188). */
+  queue_force_color_match: boolean;
   bind_ip: string | null;
   remote_interface_ip: string | null;
   /** Tailscale per-VP cert provisioning (#1070) — defaults to true (off). */
@@ -6517,11 +6525,21 @@ export interface VirtualPrinterConfig {
   status: {
     running: boolean;
     pending_files: number;
-    /** Tailnet FQDN currently advertised over SSDP (only present when LE cert is in use). */
-    tailscale_fqdn?: string;
     tailscale_disabled?: boolean;
     proxy?: VirtualPrinterProxyStatus;
   };
+}
+
+/** Host-level Tailscale identity returned by `GET /virtual-printers/tailscale-status`
+ *  (#1070 post-rip-out). Surfaces the IP + MagicDNS hostname users paste into the
+ *  slicer when reaching the VP over Tailscale; cert-trust is unaffected. */
+export interface TailscaleStatusResponse {
+  available: boolean;
+  hostname: string;
+  tailnet_name: string;
+  fqdn: string;
+  tailscale_ips: string[];
+  error: string | null;
 }
 
 export interface VirtualPrinterListResponse {
@@ -6534,6 +6552,9 @@ export const multiVirtualPrinterApi = {
 
   get: (id: number) => request<VirtualPrinterConfig>(`/virtual-printers/${id}`),
 
+  getTailscaleStatus: () =>
+    request<TailscaleStatusResponse>('/virtual-printers/tailscale-status'),
+
   create: (data: {
     name?: string;
     enabled?: boolean;
@@ -6543,6 +6564,7 @@ export const multiVirtualPrinterApi = {
     target_printer_id?: number;
     target_folder_id?: number;
     auto_dispatch?: boolean;
+    queue_force_color_match?: boolean;
     bind_ip?: string;
     remote_interface_ip?: string;
     tailscale_disabled?: boolean;
@@ -6565,6 +6587,7 @@ export const multiVirtualPrinterApi = {
     /** Explicitly null out target_folder_id (m040). null = files land at library root. */
     clear_target_folder?: boolean;
     auto_dispatch?: boolean;
+    queue_force_color_match?: boolean;
     bind_ip?: string;
     remote_interface_ip?: string;
     tailscale_disabled?: boolean;

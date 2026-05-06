@@ -27,6 +27,7 @@ class VirtualPrinterCreate(BaseModel):
     # NULL = library root. Validated to exist if non-NULL.
     target_folder_id: int | None = None
     auto_dispatch: bool = True
+    queue_force_color_match: bool = False
     bind_ip: str | None = None
     remote_interface_ip: str | None = None
     tailscale_disabled: bool = True
@@ -48,6 +49,7 @@ class VirtualPrinterUpdate(BaseModel):
     # a VP back to "library root" without ambiguity.
     clear_target_folder: bool = False
     auto_dispatch: bool | None = None
+    queue_force_color_match: bool | None = None
     bind_ip: str | None = None
     remote_interface_ip: str | None = None
     tailscale_disabled: bool | None = None
@@ -90,11 +92,39 @@ def _vp_to_dict(vp, status: dict | None = None) -> dict:
         "target_printer_id": vp.target_printer_id,
         "target_folder_id": vp.target_folder_id,
         "auto_dispatch": vp.auto_dispatch,
+        "queue_force_color_match": vp.queue_force_color_match,
         "bind_ip": vp.bind_ip,
         "remote_interface_ip": vp.remote_interface_ip,
         "tailscale_disabled": vp.tailscale_disabled,
         "position": vp.position,
         "status": status or {"running": False, "pending_files": 0},
+    }
+
+
+@router.get("/tailscale-status")
+async def get_tailscale_status(
+    _: User | None = RequirePermission(Permission.SETTINGS_READ),
+):
+    """Return the host's Tailscale identity for the VP card display.
+
+    Surface-only — never blocks the UI on absence. Drives the VP card's
+    "Tailscale IP / MagicDNS hostname / copy" pane when the per-VP toggle
+    is on. Cert provisioning was removed (#1070 post-rip-out) because
+    BambuStudio / OrcaSlicer's printer-MQTT trust path validates only
+    against its bundled BBL CA, so an LE-signed cert is rejected
+    regardless of hostname. The toggle is now informational; this route
+    exposes the network identity users need to paste into the slicer.
+    """
+    from backend.app.services.virtual_printer.tailscale import tailscale_service
+
+    status = await tailscale_service.get_status()
+    return {
+        "available": status.available,
+        "hostname": status.hostname,
+        "tailnet_name": status.tailnet_name,
+        "fqdn": status.fqdn,
+        "tailscale_ips": status.tailscale_ips,
+        "error": status.error,
     }
 
 
@@ -236,6 +266,7 @@ async def create_virtual_printer(
         target_printer_id=body.target_printer_id,
         target_folder_id=body.target_folder_id,
         auto_dispatch=body.auto_dispatch,
+        queue_force_color_match=body.queue_force_color_match,
         bind_ip=body.bind_ip,
         remote_interface_ip=body.remote_interface_ip,
         tailscale_disabled=body.tailscale_disabled,
@@ -353,6 +384,8 @@ async def update_virtual_printer(
         vp.target_folder_id = body.target_folder_id
     if body.auto_dispatch is not None:
         vp.auto_dispatch = body.auto_dispatch
+    if body.queue_force_color_match is not None:
+        vp.queue_force_color_match = body.queue_force_color_match
     if body.bind_ip is not None:
         vp.bind_ip = body.bind_ip
     if body.remote_interface_ip is not None:

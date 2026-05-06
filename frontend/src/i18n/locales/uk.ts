@@ -1480,6 +1480,10 @@ export default {
     manageQueueDescription: 'Додавання та видалення елементів черги друку',
     controlPrinter: 'Керування принтером',
     controlPrinterDescription: 'Пауза, продовження та зупинка друків',
+    allowCloudAccess: 'Bambu Cloud для слайсингу',
+    allowCloudAccessDescription: 'Дозволити цьому ключу витрачати ваш токен Bambu Cloud для слайсингу з хмарними пресетами',
+    cloudBadge: 'Cloud',
+    legacyBadge: 'Legacy',
     unnamedKey: 'Безіменний ключ',
     lastUsed: 'Останнє використання',
     read: 'Читання',
@@ -4150,10 +4154,14 @@ export default {
       hint: 'Перевизначте IP адресу, що оголошується через SSDP та використовується в TLS сертифікаті. Корисно коли BamDude має кілька мережевих інтерфейсів.'
     },
     tailscale: {
-      title: 'Сертифікат Let\'s Encrypt через Tailscale',
-      description: 'Якщо ввімкнено - запросить у локального tailscale CLI сертифікат LE та оголошуватиме FQDN tailnet через SSDP. Слайсер підключатиметься за іменем хоста, що відповідає довіреному сертифікату (без ручного встановлення CA).',
-      activeFor: 'Активно - оголошується FQDN {{fqdn}}',
-      unavailable: 'Tailscale недоступний або LE сертифікат не вдалося отримати. Повертаємось до самопідписаного CA.'
+      title: 'Показати Tailscale адресу',
+      description: 'Якщо ввімкнено — показує IP та MagicDNS-ім’я хоста, щоб ви могли вставити їх у діалог Add Printer слайсера. Довіра сертифіката не змінюється (слайсер усе ще перевіряє BBL CA — імпортуйте bbl_ca.crt один раз).',
+      pasteHint: 'Вставте у діалог Add Printer слайсера:',
+      copyIp: 'Скопіювати IP',
+      copyHostname: 'Скопіювати ім’я',
+      copied: 'Скопійовано',
+      copyFailed: 'Не вдалось скопіювати',
+      unavailable: 'Демон Tailscale недоступний. Запустіть Tailscale на хості (і змонтуйте /var/run/tailscale/tailscaled.sock у Docker).'
     },
     mode: {
       title: 'Режим',
@@ -4185,6 +4193,10 @@ export default {
     autoSelectPrinter: {
       title: 'Автовибір принтера',
       description: 'Якщо увімкнено, завантаження потрапляє у роутер авто-черги, який підбирає будь-який вільний принтер за моделлю + філаментами. Якщо вимкнено - завантаження йде в чергу конкретного принтера.'
+    },
+    queueForceColorMatch: {
+      title: 'Збігання кольорів',
+      description: 'Закріпити тип+колір по слотах із кожного 3MF, щоб авто-черга відмовляла принтерам із правильним матеріалом, але неправильним кольором.'
     },
     setupRequired: {
       title: 'Потрібне налаштування',
@@ -4816,6 +4828,7 @@ export default {
       archives: 'Архіви',
       queue: 'Черга',
       library: 'Бібліотека',
+      makerworld: 'MakerWorld',
       projects: 'Проєкти',
       filaments: 'Філаменти',
       inventory: 'Інвентар',
@@ -4834,7 +4847,13 @@ export default {
       backup: 'Резервне копіювання',
       cloud: 'Хмара',
       apiKeys: 'API-ключі',
-      userManagement: 'Керування користувачами'
+      userManagement: 'Керування користувачами',
+      websocket: 'WebSocket',
+      users: 'Користувачі',
+      groups: 'Групи',
+      git: 'Git',
+      stats: 'Статистика',
+      amsHistory: 'Історія AMS'
     },
     actions: {
       read: 'Перегляд',
@@ -4849,7 +4868,10 @@ export default {
       scan: 'Сканування',
       backup: 'Резервне копіювання',
       restore: 'Відновлення',
-      auth: 'Автентифікація'
+      auth: 'Автентифікація',
+      purge: 'Очищення',
+      import: 'Імпорт',
+      connect: 'Підключення'
     },
     labels: {
       printerFiles: 'Файли принтера',
@@ -4869,8 +4891,10 @@ export default {
       updateAllLibrary: 'Оновлення всіх файлів',
       deleteOwnLibrary: 'Видалення власних файлів',
       deleteAllLibrary: 'Видалення всіх файлів',
+      libraryNotesWrite: 'Додавання нотаток до файлів',
       viewAssignments: 'Перегляд призначень котушок',
-      userEmailNotifications: 'Email-сповіщення користувача'
+      userEmailNotifications: 'Email-сповіщення користувача',
+      statsFilterByUser: 'Фільтр статистики за користувачем'
     }
   },
   telegram: {

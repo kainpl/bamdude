@@ -7,6 +7,14 @@ const backendPort = process.env.BACKEND_PORT || '8000'
 const backendUrl = `http://localhost:${backendPort}`
 
 export default defineConfig({
+    // Empty base emits relative asset URLs (./assets/..., ./manifest.json,
+    // ./img/..., ./sw-register.js) instead of host-rooted ones, so the built
+    // SPA loads correctly when served at any subpath — Traefik / nginx path
+    // prefix / Cloudflare Tunnel path routing / HA Webpage panel iframes
+    // (#1195). Backend /assets and /img mounts in main.py keep working because
+    // the proxy strips the prefix before forwarding, so the backend always
+    // sees unprefixed paths.
+    base: '',
     plugins: [react()],
     build: {
         outDir: '../static',

@@ -4,6 +4,7 @@ import base64
 import binascii
 import contextlib
 import hashlib
+import json
 import logging
 import os
 import re
@@ -19,6 +20,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from backend.app.api.routes.cloud import resolve_api_key_cloud_owner
 from backend.app.core.auth import (
     require_ownership_permission,
     require_permission,
@@ -1630,6 +1632,86 @@ async def list_files(
 # archive route both call into them.
 
 
+# Keys in ``Metadata/project_settings.config`` that BambuStudio writes ``"-1"``
+# to when the user wants the value inherited from the parent process preset.
+# The CLI's ``StaticPrintConfig`` validator runs against the embedded settings
+# *before* ``--load-settings`` overrides apply, so a sentinel ``"-1"`` trips
+# the field's lower-bound range check and the CLI exits non-zero before our
+# profile triplet is ever consulted (upstream Bambuddy #1201 — MakerWorld P2S
+# models).
+#
+# Allowlisted (rather than "strip every '-1' value") because some fields
+# legitimately accept negative numbers (z_offset, translation values, etc.)
+# and a blanket strip would silently corrupt those.
+#
+# Add new entries here as more reports surface — the slicer's error message
+# names the offending field directly (``<field>: -1 not in range [...]``).
+_PROJECT_SETTINGS_SENTINEL_KEYS = frozenset(
+    {
+        # Reported in upstream #1201 (MakerWorld P2S 3MFs).
+        "raft_first_layer_expansion",
+        "tree_support_wall_count",
+        # Cited in the strip-experiment comment block inside
+        # ``_run_slicer_with_fallback`` as a known sentinel case from earlier
+        # reports.
+        "prime_tower_brim_width",
+    }
+)
+
+
+def _sanitize_project_settings_sentinels(zip_bytes: bytes) -> bytes:
+    """Strip ``"-1"`` inherit-from-parent sentinels from the 3MF's
+    ``Metadata/project_settings.config`` so the slicer CLI's range validator
+    accepts the file (upstream #1201).
+
+    Removes only allowlisted keys (see ``_PROJECT_SETTINGS_SENTINEL_KEYS``)
+    when their value is exactly ``"-1"``. The rest of the config — and every
+    other entry in the zip — is preserved byte-for-byte. Unlike a
+    full-strip-every-config approach (cautioned against in the comment block
+    inside ``_run_slicer_with_fallback``) this leaves ``StaticPrintConfig``
+    initialisation intact: the file is still present, still parses, and the
+    slicer falls back to the supplied ``--load-settings`` value for the
+    removed key.
+
+    Returns the original bytes unchanged when no sanitisation is needed
+    (input isn't a valid zip, no ``project_settings.config``, no allowlisted
+    sentinels present, malformed JSON, non-dict root, or any other parse
+    failure) so the caller can pass the result on without further checks.
+    """
+    from io import BytesIO
+
+    try:
+        with zipfile.ZipFile(BytesIO(zip_bytes), "r") as zin:
+            if "Metadata/project_settings.config" not in zin.namelist():
+                return zip_bytes
+            try:
+                config = json.loads(zin.read("Metadata/project_settings.config").decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                return zip_bytes
+            if not isinstance(config, dict):
+                return zip_bytes
+            removed = [key for key in _PROJECT_SETTINGS_SENTINEL_KEYS if config.get(key) == "-1"]
+            if not removed:
+                return zip_bytes
+            for key in removed:
+                config.pop(key, None)
+            patched = json.dumps(config)
+            logger.info(
+                "3MF sanitiser: removed sentinel '-1' for keys %s — slicer will use --load-settings defaults",
+                sorted(removed),
+            )
+            dst = BytesIO()
+            with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zout:
+                for item in zin.infolist():
+                    if item.filename == "Metadata/project_settings.config":
+                        zout.writestr(item, patched)
+                    else:
+                        zout.writestr(item, zin.read(item.filename))
+            return dst.getvalue()
+    except (zipfile.BadZipFile, OSError):
+        return zip_bytes
+
+
 async def _run_slicer_with_fallback(
     db: AsyncSession,
     *,
@@ -1719,6 +1801,15 @@ async def _run_slicer_with_fallback(
     # user changed (printer/process/filament) while the embedded plate /
     # model definitions remain intact.
     is_3mf = model_filename.lower().endswith(".3mf")
+    primary_bytes = model_bytes
+    if is_3mf:
+        # Strip "-1" inherit-from-parent sentinels from
+        # Metadata/project_settings.config so the CLI's StaticPrintConfig
+        # range validator accepts the file (upstream #1201). Surgical —
+        # keeps the config present, just removes the offending keys; the
+        # supplied --load-settings (and the fallback's embedded values for
+        # keys we didn't touch) still drive the slice.
+        primary_bytes = _sanitize_project_settings_sentinels(primary_bytes)
 
     used_embedded_settings = False
     service = SlicerApiService(api_url)
@@ -1738,7 +1829,7 @@ async def _run_slicer_with_fallback(
     try:
         try:
             result = await service.slice_with_profiles(
-                model_bytes=model_bytes,
+                model_bytes=primary_bytes,
                 model_filename=model_filename,
                 printer_profile_json=presets["printer"],
                 process_profile_json=presets["process"],
@@ -1759,9 +1850,13 @@ async def _run_slicer_with_fallback(
             )
             # Forward the same request_id + callback so the toast's live
             # progress keeps updating across the fallback retry instead of
-            # going blank for the rest of the slice.
+            # going blank for the rest of the slice. Use the sanitised
+            # bytes — the embedded-settings path also reads the same
+            # project_settings.config and the same range validator runs
+            # there too, so without sanitisation the fallback would die
+            # on the same sentinel error (#1201).
             result = await service.slice_without_profiles(
-                model_bytes=model_bytes,
+                model_bytes=primary_bytes,
                 model_filename=model_filename,
                 plate=request.plate,
                 export_3mf=request.export_3mf,
@@ -2030,9 +2125,19 @@ async def slice_library_file(
     request_body: dict,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD)),
+    api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
 ):
     """Enqueue a slice job for a library file. Returns 202 + job_id; the
     slice runs in the background, the caller polls ``GET /slice-jobs/{id}``.
+
+    When the caller authenticates via API key, ``current_user`` is None.
+    ``api_key_cloud_owner`` resolves to the key's owner *only* when
+    ``can_access_cloud=True`` is set on that key — that lets cloud presets
+    referenced by the slice request (printer/process/filament IDs in the
+    ``cloud:...`` form) bind to the owner's per-user Bambu Cloud token.
+    Without an owner, the slicer falls through to local + bundled presets;
+    cloud-only presets fail upstream with the existing "preset not found"
+    error (#1182).
     """
     from backend.app.core.database import async_session
     from backend.app.schemas.slicer import SliceRequest
@@ -2072,7 +2177,11 @@ async def slice_library_file(
     model_bytes = src_path.read_bytes()
     folder_id = lib_file.folder_id
     source_lib_file_id = lib_file.id
-    user_id = current_user.id if current_user else None
+    # JWT user wins; fall back to the API key's owner so a cloud-scoped key
+    # spends *that* user's token (#1182). The id is what the bg task needs —
+    # it re-loads the User in its own session to look up cloud creds.
+    cloud_token_user = current_user or api_key_cloud_owner
+    user_id = cloud_token_user.id if cloud_token_user else None
 
     # If the source has a ``print_name`` in its metadata (BambuStudio always
     # sets this; OrcaSlicer often leaves it blank), derive the sliced

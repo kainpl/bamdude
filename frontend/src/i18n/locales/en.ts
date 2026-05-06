@@ -1472,6 +1472,10 @@ export default {
     manageQueueDescription: 'Add and remove items from print queue',
     controlPrinter: 'Control Printer',
     controlPrinterDescription: 'Pause, resume, and stop prints',
+    allowCloudAccess: 'Use Bambu Cloud',
+    allowCloudAccessDescription: 'Let this key spend your Bambu Cloud token for slicing with cloud presets',
+    cloudBadge: 'Cloud',
+    legacyBadge: 'Legacy',
     unnamedKey: 'Unnamed Key',
     lastUsed: 'Last used',
     read: 'Read',
@@ -4153,10 +4157,14 @@ export default {
       hint: 'Override the IP address advertised via SSDP and used in the TLS certificate. Useful when BamDude has multiple network interfaces.'
     },
     tailscale: {
-      title: 'Use Tailscale Let\'s Encrypt cert',
-      description: 'When on, asks the local tailscale CLI for an LE cert and advertises the tailnet FQDN over SSDP. Slicers connect via a hostname that matches the trusted cert (no manual CA install).',
-      activeFor: 'Active - broadcasting tailnet FQDN {{fqdn}}',
-      unavailable: 'Tailscale is not available or LE cert provisioning failed. Falling back to the self-signed CA.'
+      title: 'Show Tailscale endpoint',
+      description: 'When on, surfaces the host\'s Tailscale IP and MagicDNS hostname so you can paste them into the slicer\'s Add Printer dialog. Cert trust is unchanged (slicer still validates against BBL CA — import bbl_ca.crt once).',
+      pasteHint: 'Paste into the slicer\'s Add Printer dialog:',
+      copyIp: 'Copy IP',
+      copyHostname: 'Copy hostname',
+      copied: 'Copied to clipboard',
+      copyFailed: 'Copy failed',
+      unavailable: 'Tailscale daemon is not reachable. Run Tailscale on the host (and mount /var/run/tailscale/tailscaled.sock in Docker).'
     },
     mode: {
       title: 'Mode',
@@ -4188,6 +4196,10 @@ export default {
     autoSelectPrinter: {
       title: 'Auto-select printer',
       description: 'When on, uploads go to the auto-queue router that picks any idle printer matching model + filaments. When off, the upload lands in a specific printer queue.'
+    },
+    queueForceColorMatch: {
+      title: 'Force colour match',
+      description: 'Pin per-slot type+colour from each 3MF so the auto-queue router refuses printers loaded with the right material in the wrong colour.'
     },
     setupRequired: {
       title: 'Setup Required',
@@ -4817,6 +4829,7 @@ export default {
       archives: 'Archives',
       queue: 'Queue',
       library: 'Library',
+      makerworld: 'MakerWorld',
       projects: 'Projects',
       filaments: 'Filaments',
       inventory: 'Inventory',
@@ -4835,7 +4848,13 @@ export default {
       backup: 'Backup',
       cloud: 'Cloud',
       apiKeys: 'API Keys',
-      userManagement: 'User Management'
+      userManagement: 'User Management',
+      websocket: 'WebSocket',
+      users: 'Users',
+      groups: 'Groups',
+      git: 'Git',
+      stats: 'Stats',
+      amsHistory: 'AMS History'
     },
     actions: {
       read: 'Read',
@@ -4850,7 +4869,10 @@ export default {
       scan: 'Scan',
       backup: 'Backup',
       restore: 'Restore',
-      auth: 'Auth'
+      auth: 'Auth',
+      purge: 'Purge',
+      import: 'Import',
+      connect: 'Connect'
     },
     labels: {
       printerFiles: 'Printer Files',
@@ -4870,8 +4892,10 @@ export default {
       updateAllLibrary: 'Update All Library',
       deleteOwnLibrary: 'Delete Own Library',
       deleteAllLibrary: 'Delete All Library',
+      libraryNotesWrite: 'Write Library Notes',
       viewAssignments: 'View Spool Assignments',
-      userEmailNotifications: 'User Email Notifications'
+      userEmailNotifications: 'User Email Notifications',
+      statsFilterByUser: 'Filter Stats By User'
     }
   },
   telegram: {

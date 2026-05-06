@@ -7,13 +7,15 @@ Handles authentication and profile management with Bambu Cloud.
 import json
 import logging
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, Header, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from backend.app.core.auth import RequirePermission
+from backend.app.core.auth import RequirePermission, _validate_api_key, security
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.settings import Settings
@@ -145,6 +147,57 @@ async def build_authenticated_cloud(db: AsyncSession, user: User | None) -> Bamb
     cloud = BambuCloudService(region=region)
     cloud.set_token(token)
     return cloud
+
+
+async def resolve_api_key_cloud_owner(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)] = None,
+    x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
+    db: AsyncSession = Depends(get_db),
+) -> User | None:
+    """Permissive dep: resolve "the user behind this API key" for cloud routes.
+
+    Returns the owning ``User`` when:
+
+    1. The request carries a valid, enabled API key (X-API-Key header or
+       Bearer bb_xxx).
+    2. The key has ``can_access_cloud=True`` AND a non-NULL ``user_id``.
+    3. That user exists and is active.
+
+    Returns ``None`` for every other case (no auth header, JWT, key without
+    cloud access, key without owner, missing/inactive owner). Designed to
+    be combined with the route's existing ``current_user`` dependency:
+
+        cloud_token_user = current_user or api_key_cloud_owner
+
+    This way a JWT-authenticated request keeps using its own token (the old
+    behaviour), an API-key request gets routed to the key's owner's token
+    (the new #1182 behaviour), and an ownerless / cloud-denied API key
+    silently falls through so the route can 401 like before.
+
+    Permissive on purpose — never raises. ``RequirePermission`` already
+    guards the actual route, so a bad key surfaces there with the correct
+    403/401, not from inside this resolver.
+    """
+    api_key_value: str | None = None
+    if x_api_key:
+        api_key_value = x_api_key
+    elif credentials is not None and credentials.credentials.startswith("bb_"):
+        api_key_value = credentials.credentials
+
+    if not api_key_value:
+        return None
+
+    api_key = await _validate_api_key(db, api_key_value)
+    if api_key is None or not api_key.can_access_cloud or api_key.user_id is None:
+        return None
+
+    # Load the user with groups so downstream permission checks (if the
+    # caller composes this with anything that inspects permissions) work
+    # without lazy-loading.
+    result = await db.execute(
+        select(User).where(User.id == api_key.user_id, User.is_active.is_(True)).options(selectinload(User.groups))
+    )
+    return result.scalar_one_or_none()
 
 
 @router.get("/status", response_model=CloudAuthStatus)

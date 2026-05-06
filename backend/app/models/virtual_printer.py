@@ -16,6 +16,14 @@ class VirtualPrinter(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     mode: Mapped[str] = mapped_column(String(20), default="file_manager")  # print_queue|auto_queue|file_manager|proxy
     auto_dispatch: Mapped[bool] = mapped_column(Boolean, default=True)  # print_queue + auto_queue: auto-start or manual
+    # Per-VP toggle (#1188): when True, the auto-queue intake auto-extracts
+    # per-slot type+color from every incoming 3MF and writes them as
+    # force_color_match=True overrides on the new auto_queue_items row, so
+    # the eligibility scheduler refuses to route a job onto a printer with
+    # the right material but wrong colour. Default False for upgrader
+    # compatibility — existing AutoQueue installs keep the legacy
+    # types-only matching unless the operator flips this on per-VP.
+    queue_force_color_match: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     model: Mapped[str | None] = mapped_column(String(50), nullable=True)  # SSDP model code (server mode)
     access_code: Mapped[str | None] = mapped_column(String(8), nullable=True)  # 8 chars (server mode)
     target_printer_id: Mapped[int | None] = mapped_column(

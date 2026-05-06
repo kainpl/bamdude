@@ -20,7 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.api.routes.cloud import get_stored_token
+from backend.app.api.routes.cloud import get_stored_token, resolve_api_key_cloud_owner
 from backend.app.core.auth import require_permission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -316,6 +316,7 @@ def _dedupe_by_name(
 async def list_unified_presets(
     db: AsyncSession = Depends(get_db),
     current_user: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD)),
+    api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
 ) -> UnifiedPresetsResponse:
     """List slicer presets across cloud / local / standard tiers, deduped by name.
 
@@ -325,8 +326,15 @@ async def list_unified_presets(
     gated on ``CLOUD_AUTH`` inside :func:`_fetch_cloud_presets` so a user
     with only ``LIBRARY_UPLOAD`` doesn't see cloud presets they shouldn't
     have access to.
+
+    For API-key callers (no JWT user) with ``can_access_cloud=True`` set on
+    the key, ``api_key_cloud_owner`` resolves to the key's owner so cloud
+    presets surface against that user's stored Bambu Cloud token (#1182).
+    Without an API-key cloud-owner, the cloud tier remains empty (the same
+    behaviour as a JWT request from a user with no cloud token).
     """
-    cloud, cloud_status = await _fetch_cloud_presets(db, current_user)
+    cloud_token_user = current_user or api_key_cloud_owner
+    cloud, cloud_status = await _fetch_cloud_presets(db, cloud_token_user)
     local = await _fetch_local_presets(db)
     standard = await _fetch_bundled_presets(db)
 
