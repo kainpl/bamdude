@@ -2577,11 +2577,10 @@ async def get_gcode(
     """Extract and return G-code from the 3MF file.
 
     Resolution order for which plate's gcode to serve:
-    1. ``?plate=N`` query param — explicit caller-supplied plate (B.8 —
-       PrettyGCode adapter passes this). Must be ≥ 1; resolved by parsing
-       the trailing integer in each ``Metadata/plate_<N>.gcode`` filename
-       so zero-padded names (``plate_01.gcode``) match the canonical
-       ``plate=1`` request.
+    1. ``?plate=N`` query param — explicit caller-supplied plate. Must be
+       ≥ 1; resolved by parsing the trailing integer in each
+       ``Metadata/plate_<N>.gcode`` filename so zero-padded names
+       (``plate_01.gcode``) match the canonical ``plate=1`` request.
     2. ``archive.plate_index`` (set at ``archive_print`` time, m038
        backfill for legacy rows) — what was actually printed.
     3. First ``Metadata/*.gcode`` entry — legacy single-plate fallback.
@@ -2781,9 +2780,8 @@ async def get_archive_plates(
         # sliced gcode (not just plate PNG/JSON metadata). Source-only 3MFs
         # — pure project files exported from Bambu Studio without a slice —
         # have plates with thumbnails + filament info but no gcode payload,
-        # so the gcode viewer (B.8) can't render anything for them. Frontend
-        # uses this flag to short-circuit into a noGcode toast instead of
-        # opening an empty viewer iframe.
+        # so a viewer can't render anything for them. Frontend keys on this
+        # flag to suppress the gcode tab / show a "no gcode" state instead.
         has_gcode = _archive_has_gcode(file_path)
         return {
             "archive_id": archive_id,

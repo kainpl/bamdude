@@ -1,18 +1,17 @@
-"""Integration tests for the /gcode-viewer static-file routes (B.8).
+"""Integration tests for /archives/{id}/gcode + /archives/{id}/plates.
 
-Port of upstream Bambuddy's `test_gcode_viewer.py` (#963 + c44b6219
-refactor). Covers:
+Covers the two archive-side endpoints that the in-modal G-code viewer +
+ModelViewerModal rely on:
 
-1. Route ordering — /gcode-viewer/* is served by explicit @app.get routes
-   that must register BEFORE the /{full_path:path} SPA catch-all, so the
-   GCode viewer is never accidentally served the React app HTML.
-2. Path-traversal guard — requests for paths that escape gcode_viewer/
-   (e.g. URL-encoded `..`) must return 403.
-3. /archives/{id}/gcode?plate=N resolution including zero-padded
-   plate_NN.gcode filenames.
-4. /archives/{id}/plates `has_gcode` flag — gates the frontend plate
-   picker so source-only 3MFs surface a noGcode toast instead of being
-   sent into a dead viewer.
+1. ``/archives/{id}/gcode?plate=N`` — extracts the requested plate's
+   ``Metadata/plate_<N>.gcode`` from the archive zip. Zero-padded names
+   (``plate_01.gcode``) must resolve as plate 1 to match what the
+   ``/plates`` endpoint reports. Negative or zero ``?plate=`` values
+   must 400, and a missing plate index must 404.
+2. ``/archives/{id}/plates`` ``has_gcode`` flag — gates the modal's
+   "G-code" tab so source-only 3MFs (PNG/JSON only, no actual gcode)
+   surface a "no gcode" state instead of opening a tab that 404s on
+   every plate select.
 """
 
 import zipfile
@@ -22,105 +21,13 @@ import pytest
 from httpx import AsyncClient
 
 
-class TestGCodeViewerRouteOrdering:
-    """Verify the /gcode-viewer routes are reachable and distinct from the SPA."""
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_gcode_viewer_index_does_not_fall_through_to_spa(self, async_client: AsyncClient):
-        """GET /gcode-viewer/ must not return the React SPA index.html.
-
-        If route ordering is broken the SPA catch-all returns 200 with
-        Content-Type: text/html and a <div id="root"> body. The correct
-        response is either 200 (gcode_viewer/index.html present) or 404
-        (directory absent in CI) — never the SPA shell.
-        """
-        response = await async_client.get("/gcode-viewer/")
-        # 200 or 404 are both acceptable depending on whether gcode_viewer/
-        # exists in the test environment; the SPA catch-all always returns 200.
-        assert response.status_code in (200, 404)
-        # If a body came back it must NOT be the React SPA shell.
-        assert b'<div id="root">' not in response.content
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_gcode_viewer_no_trailing_slash_falls_through_to_spa(self, async_client: AsyncClient):
-        """GET /gcode-viewer (no trailing slash) must fall through to the SPA.
-
-        Only /gcode-viewer/ (trailing slash) should serve the raw viewer — that
-        form is what the iframe in GCodeViewerPage requests. The bare path is
-        the SPA route the user navigates to; reloading it must re-enter the
-        React layout rather than serve the iframe contents standalone.
-        """
-        response = await async_client.get("/gcode-viewer", follow_redirects=False)
-        # SPA catch-all serves 200 with the React index.html (which contains
-        # <div id="root">). If the build output isn't present the catch-all
-        # may 404 — both outcomes are acceptable here; the key invariant is
-        # that we do NOT serve the standalone PrettyGCode index.html (which
-        # starts with <!doctype html> and contains "PrettyGCode").
-        assert response.status_code in (200, 404)
-        if response.status_code == 200:
-            assert b"PrettyGCode" not in response.content
-
-
-class TestGCodeViewerPathTraversal:
-    """Verify the path-traversal guard on /gcode-viewer/{file_path:path}.
-
-    HTTP clients (and servers) normalise plain `..` segments before the
-    request reaches a route handler, so `/gcode-viewer/../x` becomes `/x`
-    and hits the SPA catch-all rather than our guard — that normalisation is
-    itself a defence layer. The actual at-risk form is URL-encoded dots
-    (`%2E%2E`) which survive normalisation and land in {file_path:path} as
-    the literal string `../x`. We test that form here.
-    """
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_encoded_dotdot_traversal_is_forbidden(self, async_client: AsyncClient):
-        """GET /gcode-viewer/%2E%2E/main.py must return 403.
-
-        %2E%2E URL-decodes to .. which is not normalised away by httpx/
-        Starlette, so it reaches _gcode_viewer_response as '../main.py'.
-        Path.is_relative_to(gcode_viewer_dir) then blocks it with 403.
-        """
-        response = await async_client.get("/gcode-viewer/%2E%2E/main.py")
-        assert response.status_code == 403
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_encoded_nested_dotdot_traversal_is_forbidden(self, async_client: AsyncClient):
-        """GET /gcode-viewer/js/%2E%2E/%2E%2E/main.py must return 403."""
-        response = await async_client.get("/gcode-viewer/js/%2E%2E/%2E%2E/main.py")
-        assert response.status_code == 403
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_nonexistent_safe_path_returns_404(self, async_client: AsyncClient):
-        """A safe but nonexistent path returns 404, not 403."""
-        response = await async_client.get("/gcode-viewer/does-not-exist.js")
-        assert response.status_code == 404
-
-
 def _write_3mf(
     path: Path,
     plate_gcode: dict[int, str] | None = None,
     plate_filenames: dict[int, str] | None = None,
     include_png_for: list[int] | None = None,
 ) -> None:
-    """Write a synthetic Bambu-style 3MF zip at *path*.
-
-    Parameters let a single test pin one specific shape:
-
-    - ``plate_gcode`` — {plate_index: gcode_text} written at
-      ``Metadata/plate_{index}.gcode``. Use for the normal (sliced) case.
-    - ``plate_filenames`` — {plate_index: custom_filename} written with the
-      raw filename verbatim. Use for zero-padded names (plate_01.gcode) etc.
-    - ``include_png_for`` — plate indices to add PNG stubs for. Use to
-      simulate source-only archives (PNG/JSON present, no .gcode).
-
-    Leaving all three empty produces an archive that the plates endpoint
-    will parse as empty (no plates).
-    """
+    """Write a synthetic Bambu-style 3MF zip at *path*."""
     plate_gcode = plate_gcode or {}
     plate_filenames = plate_filenames or {}
     include_png_for = include_png_for or []
@@ -181,9 +88,9 @@ class TestArchiveGcodePlateParam:
     ):
         """plate_01.gcode reports as plate 1 from /plates — /gcode?plate=1 must find it.
 
-        Regression: the original exact-string match on ``Metadata/plate_1.gcode``
-        missed zero-padded filenames exported by some slicers, so the picker
-        showed plate 1 as selectable but the viewer 404'd on selection.
+        Regression: an exact-string match on ``Metadata/plate_1.gcode`` missed
+        zero-padded filenames exported by some slicers, so the picker showed
+        plate 1 as selectable but the viewer 404'd on selection.
         """
         tmp = _patch_archive_base_dir
         threemf = tmp / "padded.3mf"
@@ -226,11 +133,7 @@ class TestArchiveGcodePlateParam:
         printer_factory,
         _patch_archive_base_dir,
     ):
-        """Omitting ?plate falls back to the first gcode in the archive.
-
-        Preserves the pre-plate-param behaviour — existing callers that don't
-        know about plates still get something sensible back.
-        """
+        """Omitting ?plate falls back to the first gcode in the archive."""
         tmp = _patch_archive_base_dir
         threemf = tmp / "single.3mf"
         _write_3mf(threemf, plate_gcode={1: "G0 ; only plate\n"})
@@ -264,7 +167,7 @@ class TestArchiveGcodePlateParam:
 
 
 class TestArchivePlatesHasGcode:
-    """The ``has_gcode`` flag on /plates gates the frontend plate picker."""
+    """The ``has_gcode`` flag on /plates gates the modal's G-code tab."""
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -299,11 +202,9 @@ class TestArchivePlatesHasGcode:
     ):
         """Source-only 3MF (PNG/JSON only, no gcode) → has_gcode=false.
 
-        Regression for the upstream archive-69 bug: the PNG/JSON fallback
-        path made the plates endpoint report plate indices that the gcode
-        endpoint couldn't actually serve, so every viewer preview 404'd.
-        The frontend now uses has_gcode to suppress the picker + show a
-        toast instead.
+        The PNG/JSON fallback path on /plates reports plate indices that the
+        gcode endpoint can't actually serve, so without ``has_gcode`` the
+        modal would surface "G-code" tabs that 404 on every plate select.
         """
         tmp = _patch_archive_base_dir
         threemf = tmp / "project.3mf"

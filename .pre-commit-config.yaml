@@ -19,11 +19,9 @@ repos:
     rev: v5.0.0
     hooks:
       - id: trailing-whitespace
-        # gcode_viewer/ is vendored third-party JS / fonts (B.8) — leave it
-        # alone so it doesn't drift from upstream PrettyGCode.
-        exclude: ^(static/|gcode_viewer/)
+        exclude: ^static/
       - id: end-of-file-fixer
-        exclude: ^(static/|gcode_viewer/)
+        exclude: ^static/
       - id: check-yaml
         # ``--unsafe`` allows custom YAML tags through. Kept on so any
         # future YAML using non-standard tags doesn't fail this hook.

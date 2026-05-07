@@ -645,10 +645,6 @@ export default {
       externalLink: 'Зовнішнє посилання',
       viewOnMakerWorld: 'Переглянути на MakerWorld',
       preview3d: '3D-перегляд',
-      // PrettyGCode viewer (B.8) — повноекранна розширена візуалізація
-      // G-коду (3D-сопло, теплокарта швидкість/температура, ретракти).
-      // Окремо від preview3d, який відкриває нашу in-modal модель + плейти.
-      gcodeViewer: 'G-код viewer',
       viewTimelapse: 'Переглянути таймлапс',
       scanForTimelapse: 'Знайти таймлапс',
       uploadTimelapse: 'Завантажити таймлапс',
@@ -680,16 +676,8 @@ export default {
       delete: 'Видалити'
     },
     platePicker: {
-      // Використовується і header SliceModal / тайлами SlicePlateSelector,
-      // і повернутою standalone-PlatePickerModal-кою для PrettyGCode (B.8).
-      title: 'Виберіть плиту',
-      hint: 'У цьому архіві кілька нарізаних плит. Виберіть, яку відкрити в G-код viewer.',
+      // Використовується header SliceModal + тайлами SlicePlateSelector.
       plateLabel: 'Плита {{index}}',
-      objectCount_one: '{{count}} об\'єкт',
-      objectCount_few: '{{count}} об\'єкти',
-      objectCount_many: '{{count}} об\'єктів',
-      objectCount_other: '{{count}} об\'єктів',
-      noGcode: 'У цьому архіві немає нарізаного G-коду — збережено лише вихідний 3MF.',
     },
     permission: {
       noReprint: 'У вас немає дозволу на передрук цього архіву',
@@ -4337,6 +4325,7 @@ export default {
     buildVolumeLabel: 'Стіл',
     buildVolumeUnit: 'мм',
     buildVolumeTooltip: 'Розмір стола, зображеного під переглядом — береться з 3MF (printable_area + printable_height) якщо є, інакше дефолт X1/P1/A1: 256×256×256.',
+    wireframeTitle: 'Перемкнути wireframe / X-ray режим',
     plates: 'Плити',
     allPlates: 'Усі плити',
     pickPlate: 'Виберіть плиту',
@@ -4362,6 +4351,24 @@ export default {
       noMeshes: 'Меші не знайдено у 3MF файлі',
       unsupportedFormat: 'Непідтримуваний формат файлу'
     }
+  },
+
+  // GCode viewer toolbar — кнопки + слайдер + текст про завантаження.
+  // Дефолти на компоненті теж є (defaultValue), тож пропуск тут не
+  // ламає UI — просто впадає на англомовний дефолт.
+  gcodeViewer: {
+    loading: 'Завантаження G-коду…',
+    downloading: 'Завантаження…',
+    parsing: 'Парсинг G-коду…',
+    travels: 'Травели',
+    travelsTitle: 'Показати travel-moves (G0)',
+    play: 'Програти',
+    pause: 'Пауза',
+    speed: 'Швидкість',
+    exportPng: 'Зберегти PNG',
+    exportPngTitle: 'Зберегти поточний вигляд як PNG',
+    start: 'Старт',
+    end: 'Кінець',
   },
 
   // Maintenance type descriptions (built-in)
@@ -4516,19 +4523,6 @@ export default {
     connectionSuccess: 'З\'єднання успішне',
     noSwitchesInSwitchbar: 'Немає перемикачів у панелі',
     enableSwitchbarHint: 'Увімкніть "Показати в панелі" в Налаштування > Розумні розетки'
-  },
-
-  // PrettyGCode viewer page (B.8) — iframe-обгортка над vendor-нутою
-  // gcode_viewer/ статикою. iframe сам тримає власний (англомовний) UI
-  // chrome; outer wrapper додає back/close header — інакше з viewer-а
-  // нікуди вийти, окрім сайдбара.
-  gcodeViewer: {
-    title: 'G-код viewer',
-    back: 'Назад',
-    archiveLabel: 'Архів №{{id}}',
-    libraryFileLabel: 'Файл бібліотеки №{{id}}',
-    plate: 'плита {{index}}',
-    staticMissing: 'Статичні файли GCode-viewer не знайдені. Перевір, що тека gcode_viewer/ існує, та перезапусти бекенд.',
   },
 
   // Notifications

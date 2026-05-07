@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import delete, or_, select, text
@@ -5720,26 +5720,6 @@ async def security_headers_middleware(request, call_next):
             "object-src 'none'; "
             "base-uri 'self'; " + _frame_ancestors("'none'")
         )
-    elif request.url.path.startswith("/gcode-viewer"):
-        # The vendored PrettyGCode viewer (B.8) is served from
-        # /gcode-viewer/ and embedded in an iframe by the SPA, so
-        # frame-ancestors must allow 'self'. prettygcode.js also uses
-        # eval() internally for runtime shader compilation, so
-        # script-src needs 'unsafe-eval' here only — the rest of the
-        # app keeps the strict no-eval CSP.
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; "
-            "script-src 'self' 'unsafe-eval'; "
-            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-            "img-src 'self' data: blob:; "
-            "media-src 'self' blob:; "
-            "connect-src 'self' ws: wss:; "
-            "font-src 'self' data: https://fonts.gstatic.com; "
-            "object-src 'none'; "
-            "base-uri 'self'; "
-            "frame-src 'self' http: https:; "
-            "frame-ancestors 'self';"
-        )
     else:
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
@@ -5951,39 +5931,6 @@ async def serve_sw_register():
     if reg_file.exists():
         return FileResponse(reg_file, media_type="application/javascript")
     return {"error": "sw-register.js not found"}
-
-
-# ── GCode viewer static files (B.8 — vendored PrettyGCode) ───────────────────
-# Served via explicit routes so ordering is guaranteed (app.mount() loses to
-# the /{full_path:path} catch-all in some Starlette versions). The /gcode-
-# viewer/ trailing-slash form serves the iframe's index.html; the bare
-# /gcode-viewer (no trailing slash) is intentionally NOT served here — it
-# falls through to serve_spa() below so a full-page reload of the SPA URL
-# /gcode-viewer keeps the BamDude layout shell instead of dropping the user
-# into the bare iframe page.
-import mimetypes as _mimetypes  # noqa: E402
-
-_gcode_viewer_dir = (app_settings.static_dir.parent / "gcode_viewer").resolve()
-
-
-def _gcode_viewer_response(rel: str) -> FileResponse:
-    safe = (_gcode_viewer_dir / rel).resolve()
-    if not safe.is_relative_to(_gcode_viewer_dir):
-        raise HTTPException(status_code=403)
-    if safe.is_file():
-        mt, _ = _mimetypes.guess_type(str(safe))
-        return FileResponse(str(safe), media_type=mt or "application/octet-stream")
-    raise HTTPException(status_code=404)
-
-
-@app.get("/gcode-viewer/")
-async def serve_gcode_viewer_index() -> FileResponse:
-    return _gcode_viewer_response("index.html")
-
-
-@app.get("/gcode-viewer/{file_path:path}")
-async def serve_gcode_viewer_file(file_path: str) -> FileResponse:
-    return _gcode_viewer_response(file_path)
 
 
 # Catch-all route for React Router (must be last)

@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useMemo, useEffect, type DragEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { useSearchParams, useNavigate } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -57,9 +57,7 @@ import type {
   Archive,
   Permission,
 } from '../api/client';
-import type { PlateMetadata } from '../types/plates';
 import { Button } from '../components/Button';
-import { PlatePickerModal } from '../components/PlatePickerModal';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { LibraryPlateGalleryModal } from '../components/LibraryPlateGallery';
 import { PrintModal } from '../components/PrintModal';
@@ -886,9 +884,6 @@ interface FileCardProps {
   onSlice?: (file: LibraryFileListItem) => void;
   useSlicerApi?: boolean;
   onPreview3d?: (file: LibraryFileListItem) => void;
-  // PrettyGCode viewer (B.8). Optional — undefined hides the menu item.
-  // Caller is expected to gate sliced-only files.
-  onGcodeViewer?: (file: LibraryFileListItem) => void;
   onRename?: (file: LibraryFileListItem) => void;
   onLink?: (file: LibraryFileListItem) => void;
   onGenerateThumbnail?: (file: LibraryFileListItem) => void;
@@ -902,7 +897,7 @@ interface FileCardProps {
   t: TFunction;
 }
 
-function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedule, onSlice, useSlicerApi, onPreview3d, onGcodeViewer, onDownload, onRename, onGenerateThumbnail, onDelete }: {
+function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedule, onSlice, useSlicerApi, onPreview3d, onDownload, onRename, onGenerateThumbnail, onDelete }: {
   file: LibraryFileListItem;
   t: TFunction;
   hasPermission: (permission: Permission) => boolean;
@@ -912,9 +907,6 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   onSlice?: (f: LibraryFileListItem) => void;
   useSlicerApi?: boolean;
   onPreview3d: (f: LibraryFileListItem) => void;
-  // PrettyGCode viewer (B.8). Optional — undefined hides the menu item.
-  // Caller is expected to gate on file type (sliced .gcode / .gcode.3mf).
-  onGcodeViewer?: (f: LibraryFileListItem) => void;
   onDownload: (id: number) => void;
   onRename: (f: LibraryFileListItem) => void;
   onGenerateThumbnail: (f: LibraryFileListItem) => void;
@@ -1012,24 +1004,6 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
                 {t('fileManagerModal.threeView')}
               </button>
             )}
-            {/* G-code Viewer (B.8) — fullscreen PrettyGCode. Mirrors the
-                ArchivesPage pattern: separate from the existing 3D Preview
-                action above. Shown only for sliced files (.gcode /
-                .gcode.3mf) since PrettyGCode has no gcode to render for
-                STL or source 3MF. The handler-presence check skips this
-                menu item entirely when the parent didn't wire one. */}
-            {onGcodeViewer
-              && (file.filename || '').toLowerCase().match(/\.gcode($|\.)/)
-              && (file.file_type === '3mf' || file.file_type === 'gcode') && (
-              <button
-                className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${hasPermission('library:read') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'}`}
-                onClick={() => { if (hasPermission('library:read')) { onGcodeViewer(file); setOpen(false); } }}
-                disabled={!hasPermission('library:read')}
-              >
-                <Layers className="w-3.5 h-3.5" />
-                {t('archives.menu.gcodeViewer')}
-              </button>
-            )}
             {file.source_type === 'makerworld' && file.source_url && (
               <a
                 href={file.source_url}
@@ -1084,7 +1058,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   );
 }
 
-function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, onAddToQueue, onPrint, onSlice, useSlicerApi, onPreview3d, onGcodeViewer, onRename, onLink, onGenerateThumbnail, onPlateGallery, thumbnailVersion, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
+function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, onAddToQueue, onPrint, onSlice, useSlicerApi, onPreview3d, onRename, onLink, onGenerateThumbnail, onPlateGallery, thumbnailVersion, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
   const [showActions, setShowActions] = useState(false);
   // Portal-rendered dropdown — the card root has `overflow-hidden` for the
   // thumbnail crop, which clips an absolute-positioned menu against the card
@@ -1321,23 +1295,6 @@ function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, 
                   {t('fileManagerModal.threeView')}
                 </button>
               )}
-              {/* G-code Viewer (B.8) — fullscreen PrettyGCode. Same gating
-                  as FileListActions: handler must be wired AND filename
-                  must be sliced (.gcode / .gcode.3mf). */}
-              {onGcodeViewer
-                && (file.filename || '').toLowerCase().match(/\.gcode($|\.)/)
-                && (file.file_type === '3mf' || file.file_type === 'gcode') && (
-                <button
-                  className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
-                    hasPermission('library:read') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
-                  }`}
-                  onClick={() => { if (hasPermission('library:read')) { onGcodeViewer(file); setShowActions(false); } }}
-                  disabled={!hasPermission('library:read')}
-                >
-                  <Layers className="w-3.5 h-3.5" />
-                  {t('archives.menu.gcodeViewer')}
-                </button>
-              )}
               {file.source_type === 'makerworld' && file.source_url && (
                 <a
                   href={file.source_url}
@@ -1450,39 +1407,7 @@ export function FileManagerPage() {
   const [viewerFile, setViewerFile] = useState<LibraryFileListItem | null>(null);
   // Per-plate gallery modal — opened from list-mode "plates" button. Null when closed.
   const [galleryFile, setGalleryFile] = useState<LibraryFileListItem | null>(null);
-  // PrettyGCode viewer (B.8). null = closed; otherwise the plates to pick
-  // from. Multi-plate sliced library files go through the picker before
-  // navigating; single-plate files navigate straight in. Mirrors the
-  // ArchivesPage pattern — same component reused.
-  const [platePickerPlates, setPlatePickerPlates] = useState<{ plates: PlateMetadata[]; fileId: number } | null>(null);
-  const navigate = useNavigate();
 
-  // PrettyGCode viewer entry point for library files (B.8). Sliced files
-  // (.gcode / .gcode.3mf) open the fullscreen viewer; STL / source .3mf
-  // simply have no gcode for it to render — the action is hidden for
-  // those file types upstream of this handler. Multi-plate sliced files
-  // go through PlatePickerModal first; the rest navigate straight in.
-  // Filename detection mirrors ArchivesPage::isSlicedFile.
-  const openGcodeViewer = async (f: LibraryFileListItem) => {
-    const lower = (f.filename || '').toLowerCase();
-    const isSliced = lower.endsWith('.gcode') || lower.includes('.gcode.');
-    if (!isSliced) {
-      // Defensive — the menu item is hidden for non-sliced files, but
-      // belt-and-braces in case a future caller forgets to gate it.
-      return;
-    }
-    try {
-      const resp = await api.getLibraryFilePlates(f.id);
-      if (resp.is_multi_plate && resp.plates.length > 1) {
-        setPlatePickerPlates({ plates: resp.plates, fileId: f.id });
-        return;
-      }
-    } catch {
-      // Swallow — fall through to the no-plate navigate so the viewer
-      // still opens on the first plate (the backend's default).
-    }
-    navigate(`/gcode-viewer?library_file=${f.id}`);
-  };
   const [viewMode, setViewMode] = useState<'grid' | 'list'>(() => {
     return (localStorage.getItem('library-view-mode') as 'grid' | 'list') || 'grid';
   });
@@ -2681,7 +2606,6 @@ export function FileManagerPage() {
                     onSlice={setSliceFile}
                     useSlicerApi={settings?.use_slicer_api ?? false}
                     onPreview3d={setViewerFile}
-                    onGcodeViewer={openGcodeViewer}
                     onRename={(f) => setRenameItem({ type: 'file', id: f.id, name: f.filename })}
                     onLink={setLinkFile}
                     onGenerateThumbnail={(f) => singleThumbnailMutation.mutate(f.id)}
@@ -2903,8 +2827,7 @@ export function FileManagerPage() {
                         onSlice={setSliceFile}
                         useSlicerApi={settings?.use_slicer_api ?? false}
                         onPreview3d={setViewerFile}
-                        onGcodeViewer={openGcodeViewer}
-                        onDownload={handleDownload}
+                            onDownload={handleDownload}
                         onRename={(f) => setRenameItem({ type: 'file', id: f.id, name: f.filename })}
                         onGenerateThumbnail={(f) => singleThumbnailMutation.mutate(f.id)}
                         onDelete={(id) => setDeleteConfirm({ type: 'file', id })}
@@ -3076,21 +2999,6 @@ export function FileManagerPage() {
           title={viewerFile.print_name || viewerFile.filename}
           fileType={viewerFile.file_type}
           onClose={() => setViewerFile(null)}
-        />
-      )}
-
-      {/* Plate picker for the PrettyGCode viewer (B.8). Same component
-          as ArchivesPage uses; navigates to /gcode-viewer?library_file=<id>
-          on selection. */}
-      {platePickerPlates && (
-        <PlatePickerModal
-          plates={platePickerPlates.plates}
-          onSelect={(plateIndex) => {
-            const id = platePickerPlates.fileId;
-            setPlatePickerPlates(null);
-            navigate(`/gcode-viewer?library_file=${id}&plate=${plateIndex}`);
-          }}
-          onClose={() => setPlatePickerPlates(null)}
         />
       )}
 
