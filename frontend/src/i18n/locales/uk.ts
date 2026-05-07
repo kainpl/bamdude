@@ -1530,6 +1530,8 @@ export default {
     historyRetention: 'Зберігання історії',
     keepSensorHistory: 'Зберігати історію сенсорів протягом',
     historyRetentionDescription: 'Старіші дані вологості та температури будуть автоматично видалені',
+    logRetention: 'Зберігання логів',
+    logRetentionDescription: 'Скільки добових файлів логів (bamdude-YYYY-MM-DD.log) тримати на диску. Старіші архіви авто-видаляються при кожній опівнічній ротації. Поточний bamdude.log не зачіпається.',
     autoQueueRouting: 'Маршрутизація авто-черги',
     autoQueueRoutingDescription: 'Керує тим, як планувальник авто-черги обирає наступне завдання для призначення.',
     queueShortestFirst: 'Спершу коротші друки',
@@ -3088,6 +3090,7 @@ export default {
     generateThumbnail: 'Згенерувати мініатюру',
     generateThumbnails: 'Згенерувати мініатюри',
     generateThumbnailsForMissing: 'Згенерувати мініатюри для STL файлів без них',
+    regeneratingThumbnail: 'Регенерація…',
     gridView: 'Режим сітки',
     listView: 'Режим списку',
     lowDiskSpaceWarning: 'Попередження про мало місця',
@@ -3211,6 +3214,8 @@ export default {
     targetParts: 'Цільова кількість деталей',
     targetPartsPlaceholder: 'напр., 150',
     targetPartsHelp: 'Загальна кількість об\'єктів',
+    fromPlan: 'З плану: {{count}}',
+    usePlanValueTitle: 'Застосувати значення з плану друку',
     tagsLabel: 'Теги (через кому)',
     tagsPlaceholder: 'напр., voron, функціональний, подарунок',
     dueDate: 'Термін',
@@ -3350,7 +3355,9 @@ export default {
       totalFilament: 'Філамент',
       totalTime: 'Час',
       totalCost: 'Вартість',
-      costHint: '@ {{currency}}{{rate}}/кг'
+      costHint: '@ {{currency}}{{rate}}/кг',
+      applyTotals: 'Застосувати до проекту',
+      applyTotalsTitle: 'Застосувати до проекту: {{plates}} плит / {{parts}} деталей / бюджет {{budget}}',
     },
     bom: {
       title: 'Специфікація матеріалів',
@@ -3391,6 +3398,7 @@ export default {
     },
     toast: {
       projectUpdated: 'Проєкт оновлено',
+      totalsApplied: 'Цільові показники проекту оновлено з плану друку',
       partAdded: 'Деталь додано',
       partRemoved: 'Деталь видалено',
       projectExported: 'Проєкт експортовано',
@@ -4326,6 +4334,7 @@ export default {
     buildVolumeUnit: 'мм',
     buildVolumeTooltip: 'Розмір стола, зображеного під переглядом — береться з 3MF (printable_area + printable_height) якщо є, інакше дефолт X1/P1/A1: 256×256×256.',
     wireframeTitle: 'Перемкнути wireframe / X-ray режим',
+    exportPngTitle: 'Зберегти поточний вигляд як PNG',
     plates: 'Плити',
     allPlates: 'Усі плити',
     pickPlate: 'Виберіть плиту',
@@ -4523,6 +4532,19 @@ export default {
     connectionSuccess: 'З\'єднання успішне',
     noSwitchesInSwitchbar: 'Немає перемикачів у панелі',
     enableSwitchbarHint: 'Увімкніть "Показати в панелі" в Налаштування > Розумні розетки'
+  },
+
+  // Панель історичних архівів логів — на сторінці /system під LogViewer.
+  // LogViewer стрімить поточний bamdude.log; ця панель керує добовими
+  // архівами що генеряться TimedRotatingFileHandler.
+  logArchives: {
+    title: 'Історичні логи',
+    subtitle: 'Добові ротовані архіви. Поточний bamdude.log показано вище.',
+    empty: 'Архівів ще немає — добова ротація відбувається опівночі.',
+    filename: 'Файл',
+    size: 'Розмір',
+    modified: 'Змінено',
+    deleted: 'Видалено {{filename}}',
   },
 
   // Notifications

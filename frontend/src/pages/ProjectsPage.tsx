@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
@@ -62,6 +62,51 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
   const [color, setColor] = useState(project?.color || PROJECT_COLORS[0]);
   const [targetCount, setTargetCount] = useState(project?.target_count?.toString() || '');
   const [targetPartsCount, setTargetPartsCount] = useState(project?.target_parts_count?.toString() || '');
+
+  // Print-plan totals — derived from the per-(project, file) plan rows
+  // (``ProjectPrintPlanItem.copies`` × file metadata). Used to:
+  //   - Pre-fill empty target inputs so opening the modal on a project
+  //     that has files in its plan gives the operator a sensible default
+  //     instead of asking them to reach the same number manually.
+  //   - Render a "From plan" hint + Use button under each input so
+  //     operators with a manually-set target can re-sync after adding /
+  //     removing files or changing copies.
+  // Only fetched when editing an EXISTING project — new projects have
+  // no plan rows yet.
+  //
+  // Query-key MUST match ProjectDetailPage's ``['project-print-plan', id]``
+  // so plan-edit mutations there (which call ``invalidatePlan()``) also
+  // evict this modal's cache. ``refetchOnMount: 'always'`` is the second
+  // belt — when operator hops from plan editor → list → re-opens modal,
+  // they get freshly-fetched totals even if the cache lookup somehow
+  // returned stale data.
+  const { data: planData } = useQuery({
+    queryKey: ['project-print-plan', project?.id],
+    queryFn: () => api.getProjectPrintPlan(project!.id),
+    enabled: project?.id != null,
+    staleTime: 0,
+    refetchOnMount: 'always',
+  });
+  const planPlates = useMemo(
+    () => (planData?.items ?? []).reduce((sum, item) => sum + (item.copies || 0), 0),
+    [planData],
+  );
+  const planParts = planData?.totals_objects ?? 0;
+  const hasPlanData = (planData?.items?.length ?? 0) > 0;
+  // One-shot pre-fill: when opening the modal on a project whose
+  // target inputs are still empty AND the plan has rows, drop the
+  // computed numbers in. Operator can immediately edit / clear before
+  // saving. We don't keep "linked" state — once they save, the value
+  // becomes a manual override; future plan edits don't auto-update.
+  const prefilledRef = useRef(false);
+  useEffect(() => {
+    if (prefilledRef.current) return;
+    if (!hasPlanData) return;
+    prefilledRef.current = true;
+    if (!targetCount && planPlates > 0) setTargetCount(planPlates.toString());
+    if (!targetPartsCount && planParts > 0) setTargetPartsCount(planParts.toString());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasPlanData, planPlates, planParts]);
   const [status, setStatus] = useState(project?.status || 'active');
   const [tags, setTags] = useState((project as ProjectListItem & { tags?: string })?.tags || '');
   const [dueDate, setDueDate] = useState((project as ProjectListItem & { due_date?: string })?.due_date?.split('T')[0] || '');
@@ -271,10 +316,22 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
                 value={targetCount}
                 onChange={(e) => setTargetCount(e.target.value)}
                 className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-3 py-2 text-white placeholder-bambu-gray focus:outline-none focus:border-bambu-green"
-                placeholder={t('projects.targetPlatesPlaceholder')}
+                placeholder={hasPlanData && planPlates > 0 ? planPlates.toString() : t('projects.targetPlatesPlaceholder')}
                 min="1"
               />
-              <p className="text-xs text-bambu-gray mt-1">{t('projects.targetPlatesHelp')}</p>
+              <p className="text-xs text-bambu-gray mt-1 flex items-center gap-2 flex-wrap">
+                <span>{t('projects.targetPlatesHelp')}</span>
+                {hasPlanData && planPlates > 0 && targetCount !== planPlates.toString() && (
+                  <button
+                    type="button"
+                    onClick={() => setTargetCount(planPlates.toString())}
+                    className="inline-flex items-center gap-1 text-bambu-green hover:underline"
+                    title={t('projects.usePlanValueTitle', { defaultValue: 'Apply the count derived from the print plan' })}
+                  >
+                    {t('projects.fromPlan', { count: planPlates, defaultValue: 'From plan: {{count}}' })}
+                  </button>
+                )}
+              </p>
             </div>
             <div>
               <label className="block text-sm font-medium text-white mb-1">
@@ -285,10 +342,22 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
                 value={targetPartsCount}
                 onChange={(e) => setTargetPartsCount(e.target.value)}
                 className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-3 py-2 text-white placeholder-bambu-gray focus:outline-none focus:border-bambu-green"
-                placeholder={t('projects.targetPartsPlaceholder')}
+                placeholder={hasPlanData && planParts > 0 ? planParts.toString() : t('projects.targetPartsPlaceholder')}
                 min="1"
               />
-              <p className="text-xs text-bambu-gray mt-1">{t('projects.targetPartsHelp')}</p>
+              <p className="text-xs text-bambu-gray mt-1 flex items-center gap-2 flex-wrap">
+                <span>{t('projects.targetPartsHelp')}</span>
+                {hasPlanData && planParts > 0 && targetPartsCount !== planParts.toString() && (
+                  <button
+                    type="button"
+                    onClick={() => setTargetPartsCount(planParts.toString())}
+                    className="inline-flex items-center gap-1 text-bambu-green hover:underline"
+                    title={t('projects.usePlanValueTitle', { defaultValue: 'Apply the count derived from the print plan' })}
+                  >
+                    {t('projects.fromPlan', { count: planParts, defaultValue: 'From plan: {{count}}' })}
+                  </button>
+                )}
+              </p>
             </div>
           </div>
 
@@ -773,7 +842,7 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
                     <img
                       src={api.getArchiveThumbnail(archive.id)}
                       alt={archive.print_name || ''}
-                      className="w-full h-full object-cover"
+                      className="w-full h-full object-contain"
                     />
                   ) : (
                     <div className="w-full h-full flex items-center justify-center text-bambu-gray/50">

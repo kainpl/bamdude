@@ -188,7 +188,7 @@ export function CalendarView({ archives, printerMap }: CalendarViewProps) {
                       <img
                         src={api.getArchiveThumbnail(archive.id)}
                         alt=""
-                        className="w-12 h-12 rounded object-cover flex-shrink-0"
+                        className="w-12 h-12 rounded object-contain flex-shrink-0"
                       />
                     ) : (
                       <div className="w-12 h-12 rounded bg-bambu-dark-tertiary flex items-center justify-center flex-shrink-0">

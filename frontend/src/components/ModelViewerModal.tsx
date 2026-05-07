@@ -664,6 +664,11 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
                     filamentColors={capabilities.filament_colors}
                     selectedPlateId={selectedPlateId}
                     theme={themeMode}
+                    exportFilename={selectedPlate?.name
+                      ? `${title}_${selectedPlate.name}`
+                      : selectedPlateId != null
+                        ? `${title}_plate_${selectedPlateId}`
+                        : title}
                     className="w-full h-full"
                   />
                 )}

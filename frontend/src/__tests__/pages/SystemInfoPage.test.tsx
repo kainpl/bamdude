@@ -257,7 +257,7 @@ describe('SystemInfoPage', () => {
     render(<SystemInfoPage />);
 
     await waitFor(() => {
-      expect(screen.getByText('Refresh')).toBeInTheDocument();
+      expect(screen.getAllByText('Refresh').length).toBeGreaterThan(0);
     });
   });
 

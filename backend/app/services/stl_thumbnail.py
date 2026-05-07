@@ -11,7 +11,6 @@ logger = logging.getLogger(__name__)
 
 # Bambu green color for rendering
 BAMBU_GREEN = "#00AE42"
-BACKGROUND_COLOR = "#1a1a1a"
 
 # Maximum vertices before simplification
 MAX_VERTICES = 100000
@@ -39,6 +38,7 @@ def generate_stl_thumbnail(
         # Use Agg backend for headless rendering
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
+        from matplotlib.colors import LightSource
         from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
         from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
@@ -79,33 +79,78 @@ def generate_stl_thumbnail(
         else:
             vertices_scaled = vertices_centered
 
-        # Create figure with dark background
-        fig = plt.figure(figsize=(size / 100, size / 100), dpi=100)
-        fig.patch.set_facecolor(BACKGROUND_COLOR)
+        # Render at 3× target resolution so the post-render alpha-bbox crop
+        # + Lanczos downscale produces clean antialiased edges. Internal
+        # render is ``size * RENDER_SCALE`` pixels per side; after cropping
+        # transparent margins around the model and resizing to fit ``size``
+        # on the longest dim, edges are smooth and the model fills the
+        # output PNG instead of leaving matplotlib's reserved-but-empty
+        # 3D-axes margins around it.
+        RENDER_SCALE = 3
+        render_dpi = 100 * RENDER_SCALE
+        fig = plt.figure(figsize=(size / 100, size / 100), dpi=render_dpi)
+        fig.patch.set_alpha(0)
 
         ax = fig.add_subplot(111, projection="3d")
-        ax.set_facecolor(BACKGROUND_COLOR)
+        ax.set_facecolor("none")
+        # Hide the 3D pane backgrounds (the gray "walls" matplotlib draws
+        # behind axes) so the transparent fig background shows through —
+        # set_axis_off() below stops the tick labels from drawing but the
+        # panes themselves are separate artists.
+        for pane in (ax.xaxis.pane, ax.yaxis.pane, ax.zaxis.pane):
+            pane.set_visible(False)
 
-        # Create polygon collection from mesh faces
+        # Create polygon collection from mesh faces. ``shade=True`` makes
+        # matplotlib compute per-face normals and apply Lambertian shading
+        # against the configured ``LightSource`` — without it Poly3DCollection
+        # ships every face the flat ``facecolors`` value and the model looks
+        # like a 2D silhouette regardless of geometry. LightSource azimuth
+        # 315° + altitude 45° is the standard "sun from upper-left" rendering
+        # convention — matches how Bambu Studio + most 3D CAD tools light
+        # their default scene, so the visual cue lines up with what operators
+        # see in slicer previews.
+        #
+        # Note on edge handling: when ``shade=True`` matplotlib runs the
+        # shading pipeline on edgecolors too — passing ``'none'`` raises
+        # ``ValueError: operands could not be broadcast (4,1) (0,4)`` from
+        # the empty-color-array path, and the special ``'face'`` keyword
+        # isn't recognised by ``_shade_colors``. Workaround: pass an
+        # explicit colour matching ``facecolors`` and rely on
+        # ``linewidths=0`` to keep the wireframe invisible.
         faces = mesh.faces
         poly3d = [[vertices_scaled[vertex] for vertex in face] for face in faces]
 
+        ls = LightSource(azdeg=315, altdeg=45)
         collection = Poly3DCollection(
             poly3d,
             facecolors=BAMBU_GREEN,
             edgecolors=BAMBU_GREEN,
-            linewidths=0.1,
-            alpha=0.9,
+            linewidths=0,
+            alpha=1.0,
+            shade=True,
+            lightsource=ls,
         )
         ax.add_collection3d(collection)
+        # Without this matplotlib uses its automatic z-order computation
+        # which sometimes draws far faces over near ones at certain camera
+        # angles. Explicit ``False`` falls back to insertion order, which
+        # for shaded models reads correctly.
+        ax.computed_zorder = False
 
-        # Set axis limits
-        ax.set_xlim(-0.6, 0.6)
-        ax.set_ylim(-0.6, 0.6)
-        ax.set_zlim(-0.6, 0.6)
+        # Tight axis limits — vertices are scaled to fit in [-0.5, 0.5]
+        # along the longest dimension above, so matching the view box to
+        # that range maxes the model size on screen. The 5% slack
+        # (±0.525) prevents corner clipping when the model is rotated
+        # and its bounding-box diagonal pokes slightly past axis-aligned
+        # bounds on certain camera angles.
+        ax.set_xlim(-0.525, 0.525)
+        ax.set_ylim(-0.525, 0.525)
+        ax.set_zlim(-0.525, 0.525)
 
-        # Set view angle (isometric-ish)
-        ax.view_init(elev=25, azim=45)
+        # Isometric front-quarter — shows the front face, right side, and
+        # top simultaneously. Standard CAD-preview pose; better than the
+        # previous (elev=25, azim=45) which buried the front face.
+        ax.view_init(elev=30, azim=-60)
 
         # Remove axes and grid
         ax.set_axis_off()
@@ -121,13 +166,58 @@ def generate_stl_thumbnail(
         fig.savefig(
             thumb_path,
             format="png",
-            facecolor=BACKGROUND_COLOR,
+            transparent=True,
             edgecolor="none",
             bbox_inches="tight",
-            pad_inches=0.05,
-            dpi=100,
+            pad_inches=0,
+            dpi=render_dpi,
         )
         plt.close(fig)
+
+        # Post-process: matplotlib's 3D ``Axes3D`` reserves layout space
+        # for axis labels even when ``set_axis_off()`` is called, so
+        # ``bbox_inches='tight'`` alone leaves transparent margins around
+        # the model. Pipeline:
+        #   1. Open the supersampled render.
+        #   2. ``Image.getbbox()`` returns the bbox of non-zero alpha
+        #      pixels — i.e. the actual model silhouette.
+        #   3. Crop with a small antialias-edge slack.
+        #   4. Lanczos-downscale to fit ``size`` on the longest side
+        #      (preserving aspect ratio — a tall narrow model lands as
+        #      e.g. 256×320 instead of forcing a square).
+        # The supersample → crop → Lanczos chain produces noticeably
+        # smoother edges than rendering at the final resolution directly.
+        try:
+            from PIL import Image
+
+            with Image.open(thumb_path) as img:
+                if img.mode != "RGBA":
+                    img = img.convert("RGBA")
+                bbox = img.getbbox()
+                if bbox is not None:
+                    # Padding scales with render resolution so the relative
+                    # margin stays the same after downscale.
+                    pad = 4 * RENDER_SCALE
+                    left = max(bbox[0] - pad, 0)
+                    top = max(bbox[1] - pad, 0)
+                    right = min(bbox[2] + pad, img.width)
+                    bottom = min(bbox[3] + pad, img.height)
+                    cropped = img.crop((left, top, right, bottom))
+
+                    # Downscale to target size, longest-side-fit, preserving
+                    # aspect ratio. Lanczos for high-quality reduction.
+                    max_dim = max(cropped.width, cropped.height)
+                    if max_dim > size:
+                        scale = size / max_dim
+                        new_w = max(1, round(cropped.width * scale))
+                        new_h = max(1, round(cropped.height * scale))
+                        cropped = cropped.resize((new_w, new_h), Image.Resampling.LANCZOS)
+                    cropped.save(thumb_path, format="PNG", optimize=True)
+        except Exception as e:
+            # Best-effort — if PIL crop fails, the un-cropped image still
+            # works fine, just with slightly more transparent margin and
+            # at the supersampled resolution.
+            logger.debug("PIL post-process failed for %s: %s", thumb_path, e)
 
         logger.info("Generated STL thumbnail: %s", thumb_path)
         return str(thumb_path)

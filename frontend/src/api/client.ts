@@ -1183,6 +1183,7 @@ export interface AppSettings {
   ams_temp_good: number;      // <= this is green/blue
   ams_temp_fair: number;      // <= this is orange, > is red
   ams_history_retention_days: number;  // days to keep AMS sensor history
+  log_retention_days: number;  // days to keep historical bamdude-YYYY-MM-DD.log archives
   // Queue auto-drying settings
   queue_drying_enabled: boolean;  // Auto-dry AMS between queued prints
   queue_drying_block: boolean;  // Block queue until drying completes
@@ -6806,6 +6807,42 @@ export const supportApi = {
 
   clearLogs: () =>
     request<{ message: string }>('/support/logs', { method: 'DELETE' }),
+
+  // Historical log archive management — populated by daily rotation.
+  // Files matching ``bamdude-YYYY-MM-DD.log`` only; backend enforces
+  // path-traversal guard.
+  listLogArchives: () =>
+    request<{ archives: { filename: string; size_bytes: number; mtime: string }[] }>(
+      '/support/log-archives',
+    ),
+
+  downloadLogArchive: async (filename: string) => {
+    const headers: Record<string, string> = {};
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    const response = await fetch(
+      `${API_BASE}/support/log-archives/${encodeURIComponent(filename)}/download`,
+      { headers },
+    );
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+  },
+
+  deleteLogArchive: (filename: string) =>
+    request<{ message: string }>(
+      `/support/log-archives/${encodeURIComponent(filename)}`,
+      { method: 'DELETE' },
+    ),
 };
 
 // Macros

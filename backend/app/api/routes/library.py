@@ -1368,15 +1368,16 @@ async def scan_external_folder(
                 except Exception as e:
                     logger.debug("Failed to extract metadata from external 3mf %s: %s", filepath, e)
 
-            # Generate thumbnail for STL files
-            if file_type == "stl" and thumbnail_path is None:
+            # Generate thumbnail for mesh files (STL + OBJ — trimesh handles
+            # both via extension dispatch, the renderer is format-agnostic).
+            if file_type in ("stl", "obj") and thumbnail_path is None:
                 try:
                     thumb_dir = get_library_thumbnails_dir()
                     thumb_result = generate_stl_thumbnail(str(filepath), str(thumb_dir))
                     if thumb_result:
                         thumbnail_path = to_relative_path(Path(thumb_result))
                 except Exception as e:
-                    logger.debug("Failed to generate STL thumbnail for external %s: %s", filepath, e)
+                    logger.debug("Failed to generate mesh thumbnail for external %s: %s", filepath, e)
 
             # Extract gcode thumbnail — only for raw .gcode files; sliced
             # .gcode.3mf already went through the 3MF parser branch above.
@@ -2340,8 +2341,8 @@ async def upload_file(
             # For image files, create a thumbnail from the image itself
             thumbnail_path = create_image_thumbnail(file_path, thumbnails_dir)
 
-        elif ext == ".stl":
-            # Generate STL thumbnail if enabled
+        elif ext in (".stl", ".obj"):
+            # Generate mesh thumbnail (STL + OBJ both go through trimesh).
             if generate_stl_thumbnails:
                 thumbnail_path = generate_stl_thumbnail(file_path, thumbnails_dir)
 
@@ -2608,8 +2609,8 @@ async def extract_zip_file(
                     elif ext.lower() in IMAGE_EXTENSIONS:
                         thumbnail_path = create_image_thumbnail(file_path, thumbnails_dir)
 
-                    elif ext == ".stl":
-                        # Generate STL thumbnail if enabled
+                    elif ext in (".stl", ".obj"):
+                        # Generate mesh thumbnail (STL + OBJ both go through trimesh).
                         if generate_stl_thumbnails:
                             thumbnail_path = generate_stl_thumbnail(file_path, thumbnails_dir)
 
@@ -2716,8 +2717,10 @@ async def batch_generate_stl_thumbnails(
     thumbnails_dir = get_library_thumbnails_dir()
     results: list[BatchThumbnailResult] = []
 
-    # Build query based on request (trash-aware: skip soft-deleted rows)
-    query = LibraryFile.active().where(LibraryFile.file_type == "stl")
+    # Build query based on request (trash-aware: skip soft-deleted rows).
+    # Both STL and OBJ go through the same trimesh renderer — pick up
+    # both file types in the batch sweep.
+    query = LibraryFile.active().where(LibraryFile.file_type.in_(("stl", "obj")))
 
     if request.file_ids:
         # Specific files

@@ -889,6 +889,11 @@ interface FileCardProps {
   onGenerateThumbnail?: (file: LibraryFileListItem) => void;
   onPlateGallery?: (file: LibraryFileListItem) => void;
   thumbnailVersion?: number;
+  /** True while a thumbnail-regeneration mutation is in flight for THIS
+   *  file. Drives the loading overlay on the card thumbnail so the
+   *  operator sees the action took effect (otherwise it ran fully in
+   *  the background with no visual feedback). */
+  isRegeneratingThumbnail?: boolean;
   hasPermission: (permission: Permission) => boolean;
   canModify: (resource: 'queue' | 'archives' | 'library', action: 'update' | 'delete' | 'reprint', createdById: number | null | undefined) => boolean;
   authEnabled: boolean;
@@ -994,7 +999,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
                 {t('slice.action', { defaultValue: 'Slice' })}
               </button>
             )}
-            {(file.file_type === '3mf' || file.file_type === 'gcode' || file.file_type === 'stl') && (
+            {(file.file_type === '3mf' || file.file_type === 'gcode' || file.file_type === 'stl' || file.file_type === 'obj') && (
               <button
                 className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${hasPermission('library:read') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'}`}
                 onClick={() => { if (hasPermission('library:read')) { onPreview3d(file); setOpen(false); } }}
@@ -1032,7 +1037,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
               <Pencil className="w-3.5 h-3.5" />
               {t('common.rename')}
             </button>
-            {file.file_type === 'stl' && (
+            {(file.file_type === 'stl' || file.file_type === 'obj') && (
               <button
                 className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${canModify('library', 'update', file.created_by_id) ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'}`}
                 onClick={() => { if (canModify('library', 'update', file.created_by_id)) { onGenerateThumbnail(file); setOpen(false); } }}
@@ -1058,7 +1063,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   );
 }
 
-function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, onAddToQueue, onPrint, onSlice, useSlicerApi, onPreview3d, onRename, onLink, onGenerateThumbnail, onPlateGallery, thumbnailVersion, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
+function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, onAddToQueue, onPrint, onSlice, useSlicerApi, onPreview3d, onRename, onLink, onGenerateThumbnail, onPlateGallery, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
   const [showActions, setShowActions] = useState(false);
   // Portal-rendered dropdown — the card root has `overflow-hidden` for the
   // thumbnail crop, which clips an absolute-positioned menu against the card
@@ -1110,10 +1115,23 @@ function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, 
           <img
             src={`${api.getLibraryFileThumbnailUrl(file.id)}${thumbnailVersion ? `?v=${thumbnailVersion}` : ''}`}
             alt={file.filename}
-            className="w-full h-full object-cover"
+            className="w-full h-full object-contain"
           />
         ) : (
           <FileBox className="w-12 h-12 text-bambu-gray/30" />
+        )}
+        {/* Regen overlay — covers the thumbnail with a translucent backdrop
+            + spinner so the operator gets visible feedback that the menu
+            action took effect (without it the regen ran silently in the
+            background). Render takes precedence over badges/buttons via
+            z-30 so they're not click-target-able mid-regen. */}
+        {isRegeneratingThumbnail && (
+          <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-2 bg-bambu-dark/70 backdrop-blur-sm pointer-events-none">
+            <Loader2 className="w-6 h-6 text-bambu-green animate-spin" />
+            <span className="text-xs text-white font-medium">
+              {t('fileManager.regeneratingThumbnail', { defaultValue: 'Regenerating…' })}
+            </span>
+          </div>
         )}
         {/* Composite badge row — driven by ``file_tags`` (m036). The
             backend computes the list at every write site so this just
@@ -1282,7 +1300,7 @@ function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, 
                   {t('slice.action', { defaultValue: 'Slice' })}
                 </button>
               )}
-              {onPreview3d && (file.file_type === '3mf' || file.file_type === 'gcode' || file.file_type === 'stl') && (
+              {onPreview3d && (file.file_type === '3mf' || file.file_type === 'gcode' || file.file_type === 'stl' || file.file_type === 'obj') && (
                 <button
                   className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
                     hasPermission('library:read') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
@@ -1331,7 +1349,7 @@ function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, 
                   {t('common.rename')}
                 </button>
               )}
-              {onGenerateThumbnail && file.file_type === 'stl' && (
+              {onGenerateThumbnail && (file.file_type === 'stl' || file.file_type === 'obj') && (
                 <button
                   className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
                     canModify('library', 'update', file.created_by_id) ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
@@ -1847,6 +1865,10 @@ export function FileManagerPage() {
 
   const singleThumbnailMutation = useMutation({
     mutationFn: (fileId: number) => api.batchGenerateStlThumbnails({ file_ids: [fileId] }),
+    // Track which file is mid-regen so the cards can show an overlay
+    // spinner. ``mutation.variables`` IS the file id while pending, but
+    // mirroring it into a state keeps the prop-drilling shape simple
+    // (one number/null instead of poking at the mutation object).
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ['library-files'] });
       // Update thumbnail version for cache busting
@@ -1862,6 +1884,13 @@ export function FileManagerPage() {
     },
     onError: (error: Error) => showToast(error.message, 'error'),
   });
+
+  // Derive the in-flight file id from the mutation directly. While
+  // pending, ``variables`` is the file id passed to ``mutate(id)``;
+  // when settled it falls back to null and the overlay clears.
+  const regeneratingFileId = singleThumbnailMutation.isPending
+    ? (singleThumbnailMutation.variables ?? null)
+    : null;
 
   // Get sliced files from selection — predicate now reads from
   // ``file_tags`` via the shared ``isSliced`` helper instead of a
@@ -2611,6 +2640,7 @@ export function FileManagerPage() {
                     onGenerateThumbnail={(f) => singleThumbnailMutation.mutate(f.id)}
                     onPlateGallery={setGalleryFile}
                     thumbnailVersion={thumbnailVersions[file.id]}
+                    isRegeneratingThumbnail={regeneratingFileId === file.id}
                     hasPermission={hasPermission}
                     canModify={canModify}
                     authEnabled={authEnabled}
@@ -2665,16 +2695,23 @@ export function FileManagerPage() {
                     {/* Name with thumbnail */}
                     <div className="flex items-center gap-3 min-w-0">
                       <div className="relative group/thumb">
-                        <div className="w-10 h-10 rounded bg-bambu-dark flex-shrink-0 overflow-hidden">
+                        <div className="relative w-10 h-10 rounded bg-bambu-dark flex-shrink-0 overflow-hidden">
                           {file.thumbnail_path ? (
                             <img
                               src={`${api.getLibraryFileThumbnailUrl(file.id)}${thumbnailVersions[file.id] ? `?v=${thumbnailVersions[file.id]}` : ''}`}
                               alt=""
-                              className="w-full h-full object-cover"
+                              className="w-full h-full object-contain"
                             />
                           ) : (
                             <div className="w-full h-full flex items-center justify-center">
                               <FileBox className="w-5 h-5 text-bambu-gray/50" />
+                            </div>
+                          )}
+                          {/* Regen overlay — list-mode variant; smaller
+                              spinner (w-4 h-4) to fit the 40px thumb. */}
+                          {regeneratingFileId === file.id && (
+                            <div className="absolute inset-0 flex items-center justify-center bg-bambu-dark/70 backdrop-blur-sm pointer-events-none">
+                              <Loader2 className="w-4 h-4 text-bambu-green animate-spin" />
                             </div>
                           )}
                         </div>
@@ -2803,7 +2840,7 @@ export function FileManagerPage() {
                           </button>
                         </>
                       )}
-                      {(file.file_type === '3mf' || file.file_type === 'gcode' || file.file_type === 'stl') && (
+                      {(file.file_type === '3mf' || file.file_type === 'gcode' || file.file_type === 'stl' || file.file_type === 'obj') && (
                         <button
                           onClick={() => hasPermission('library:read') && setViewerFile(file)}
                           className={`p-1.5 rounded transition-colors ${

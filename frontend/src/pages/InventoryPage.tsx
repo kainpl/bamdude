@@ -742,12 +742,15 @@ function InventoryPage() {
     return map;
   }, [catalogEntries]);
 
-  // Top materials by weight for stat card pills
+  // Materials by weight for the "By Material" stat card. Sorted heaviest
+  // first so the dominant material lands at the top of the chip list.
+  // No slice cap — operators with many materials (PLA / PETG / ABS / ASA /
+  // TPU / PC / PA / Wood / etc.) need to see them all on the dashboard;
+  // the card flex-wraps chips so it just grows in height when the list is
+  // long, and the other 4 stat cards in the row stretch to match.
   const topMaterials = useMemo(() => {
     if (!stats) return [];
-    return Object.entries(stats.byMaterial)
-      .sort((a, b) => b[1].weight - a[1].weight)
-      .slice(0, 4);
+    return Object.entries(stats.byMaterial).sort((a, b) => b[1].weight - a[1].weight);
   }, [stats]);
 
   // Filtering pipeline
@@ -1052,16 +1055,6 @@ function InventoryPage() {
             <div className="text-xs text-bambu-gray mt-1">{stats.totalSpools} {stats.totalSpools !== 1 ? t('inventory.spools') : t('inventory.spool')}</div>
           </div>
 
-          {/* Total Consumed */}
-          <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg p-4">
-            <div className="flex items-center gap-2 mb-1">
-              <TrendingDown className="w-4 h-4 text-blue-400" />
-              <span className="text-xs text-bambu-gray font-medium uppercase tracking-wide">{t('inventory.totalConsumed')}</span>
-            </div>
-            <div className="text-xl font-bold text-white">{formatWeight(stats.totalConsumed, true)}</div>
-            <div className="text-xs text-bambu-gray mt-1">{t('inventory.sinceTracking')}</div>
-          </div>
-
           {/* By Material */}
           <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg p-4">
             <div className="flex items-center gap-2 mb-1">
@@ -1078,6 +1071,16 @@ function InventoryPage() {
                 </span>
               ))}
             </div>
+          </div>
+
+          {/* Total Consumed */}
+          <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg p-4">
+            <div className="flex items-center gap-2 mb-1">
+              <TrendingDown className="w-4 h-4 text-blue-400" />
+              <span className="text-xs text-bambu-gray font-medium uppercase tracking-wide">{t('inventory.totalConsumed')}</span>
+            </div>
+            <div className="text-xl font-bold text-white">{formatWeight(stats.totalConsumed, true)}</div>
+            <div className="text-xs text-bambu-gray mt-1">{t('inventory.sinceTracking')}</div>
           </div>
 
           {/* In Printer */}

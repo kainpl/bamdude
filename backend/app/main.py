@@ -4,7 +4,7 @@ import os
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from logging.handlers import RotatingFileHandler
+from logging.handlers import TimedRotatingFileHandler
 from urllib.parse import urlparse
 
 from fastapi import FastAPI
@@ -258,20 +258,44 @@ console_handler.setFormatter(logging.Formatter(log_format))
 console_handler.addFilter(_trace_id_filter)
 root_logger.addHandler(console_handler)
 
-# File handler - only in production or if explicitly enabled
+# File handler - only in production or if explicitly enabled.
+# Daily rotation at midnight (operator local time). Live file is
+# ``logs/bamdude.log``; rotated archives land as
+# ``bamdude-YYYY-MM-DD.log`` (date-in-stem via custom namer, see
+# ``logging_state.app_log_filename_namer``). The bootstrap retention
+# of 7 days is overridden at lifespan startup from the DB-backed
+# ``log_retention_days`` setting (Settings page → Data Management),
+# so the operator-facing knob lives where they'd expect it.
 if app_settings.log_to_file:
-    log_file = app_settings.log_dir / "bamdude.log"
-    file_handler = RotatingFileHandler(
-        log_file,
-        maxBytes=5 * 1024 * 1024,  # 5MB
-        backupCount=3,
-        encoding="utf-8",
+    from backend.app.core.logging_state import (  # noqa: E402
+        app_log_filename_namer,
+        set_app_log_handler,
     )
+
+    log_file = app_settings.log_dir / "bamdude.log"
+    file_handler = TimedRotatingFileHandler(
+        log_file,
+        when="midnight",
+        interval=1,
+        # Bootstrap value — actual retention is read from DB at lifespan
+        # startup. Hard-coded fallback covers the boot window before the
+        # DB is ready, plus fresh installs that never set the value.
+        backupCount=7,
+        encoding="utf-8",
+        utc=False,
+    )
+    # Suffix override — stdlib defaults to ``%Y-%m-%d_%H-%M-%S`` which is
+    # noisier than midnight-only rotations need. Date-only suffix +
+    # custom namer produce ``bamdude-YYYY-MM-DD.log`` (date-in-stem,
+    # ``.log`` extension preserved).
+    file_handler.suffix = "%Y-%m-%d"
+    file_handler.namer = app_log_filename_namer
     file_handler.setLevel(log_level)
     file_handler.setFormatter(logging.Formatter(log_format))
     file_handler.addFilter(_trace_id_filter)
     root_logger.addHandler(file_handler)
-    logging.info("Logging to file: %s", log_file)
+    set_app_log_handler(file_handler)
+    logging.info("Logging to file: %s (rotated daily at midnight)", log_file)
 
     # Pipe uvicorn's HTTP access log to bamdude.log too. Uvicorn ships its
     # access logger with propagate=False by default, so without this attach
@@ -4943,6 +4967,24 @@ async def lifespan(app: FastAPI):
     install_proactor_reset_filter()
 
     await init_db()
+
+    # Apply DB-backed log retention to the live rotating handler. The
+    # handler was created at module-import time with a hardcoded 7-day
+    # bootstrap; now that the DB is up, override with whatever the
+    # operator configured under Settings -> Data Management. Best-effort
+    # — silent fallback to the bootstrap default if the lookup fails.
+    if app_settings.log_to_file:
+        try:
+            from backend.app.api.routes.settings import get_setting as _get_setting
+            from backend.app.core.database import async_session
+            from backend.app.core.logging_state import update_log_retention
+
+            async with async_session() as _ls_db:
+                _ret_str = await _get_setting(_ls_db, "log_retention_days")
+            if _ret_str:
+                update_log_retention(int(_ret_str))
+        except Exception as _ret_exc:
+            logging.getLogger(__name__).debug("Could not apply DB log_retention_days at startup: %s", _ret_exc)
 
     # Register an app-scoped httpx client for Bambu Cloud services so
     # per-request BambuCloudService instances reuse the same connection pool

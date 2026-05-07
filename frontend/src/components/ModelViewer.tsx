@@ -6,7 +6,7 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import JSZip from 'jszip';
-import { Loader2, RotateCcw, ZoomIn, ZoomOut, Box, Grid3x3 } from 'lucide-react';
+import { Loader2, RotateCcw, ZoomIn, ZoomOut, Box, Grid3x3, Download } from 'lucide-react';
 import { Button } from './Button';
 import { getAuthToken } from '../api/client';
 
@@ -25,6 +25,9 @@ interface ModelViewerProps {
   /** SPA theme — drives scene background + grid contrast so the bed
    *  doesn't look misplaced inside a light-mode modal. */
   theme?: 'light' | 'dark';
+  /** Optional filename stem used by the Export PNG button. Falls back
+   *  to "model-preview" when caller didn't pass anything meaningful. */
+  exportFilename?: string;
   className?: string;
 }
 
@@ -602,6 +605,7 @@ export function ModelViewer({
   filamentColors,
   selectedPlateId = null,
   theme = 'dark',
+  exportFilename,
   className = '',
 }: ModelViewerProps) {
   const { t } = useTranslation();
@@ -646,8 +650,12 @@ export function ModelViewer({
     camera.position.set(150, 150, 150);
     cameraRef.current = camera;
 
-    // Renderer
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    // Renderer. ``preserveDrawingBuffer: true`` keeps the WebGL framebuffer
+    // populated between frames so the Export PNG button can read it via
+    // ``canvas.toDataURL()`` reliably — without it the buffer is cleared
+    // post-swap and the export comes back blank on most GPUs. The perf
+    // cost is negligible for a viewer that's not doing heavy animation.
+    const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
     renderer.setSize(width, height);
     renderer.setPixelRatio(window.devicePixelRatio);
     container.appendChild(renderer.domElement);
@@ -1022,6 +1030,28 @@ export function ModelViewer({
     }
   };
 
+  const handleExportPng = () => {
+    const renderer = rendererRef.current;
+    const scene = sceneRef.current;
+    const camera = cameraRef.current;
+    if (!renderer || !scene || !camera) return;
+    // Force a sync render right before the read so the PNG matches what
+    // the operator currently sees on screen — orbit position, wireframe
+    // toggle, plate selection, theme background, all settled. The
+    // animate loop renders every frame anyway, but ``toDataURL`` is
+    // sync so reading inside the same JS task as the explicit render
+    // guarantees the buffer hasn't been swapped between them.
+    renderer.render(scene, camera);
+    const dataUrl = renderer.domElement.toDataURL('image/png');
+    const stem = (exportFilename || 'model-preview').replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 80);
+    const a = document.createElement('a');
+    a.href = dataUrl;
+    a.download = `${stem}.png`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
   return (
     <div className={`relative ${className}`}>
       <div ref={containerRef} className="w-full h-full min-h-[400px]" />
@@ -1048,6 +1078,14 @@ export function ModelViewer({
             className={wireframe ? 'text-bambu-green' : undefined}
           >
             {wireframe ? <Grid3x3 className="w-4 h-4" /> : <Box className="w-4 h-4" />}
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={handleExportPng}
+            title={t('modelViewer.exportPngTitle', { defaultValue: 'Save current view as PNG' })}
+          >
+            <Download className="w-4 h-4" />
           </Button>
           <Button variant="secondary" size="sm" onClick={() => zoom(0.8)}>
             <ZoomIn className="w-4 h-4" />

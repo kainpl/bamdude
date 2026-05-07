@@ -1107,6 +1107,11 @@ export function SettingsPage() {
       settings.ams_temp_good !== localSettings.ams_temp_good ||
       settings.ams_temp_fair !== localSettings.ams_temp_fair ||
       settings.ams_history_retention_days !== localSettings.ams_history_retention_days ||
+      // Nullish-fallback so a transient ``undefined`` on either side
+      // (stale settings query mid-fetch, fresh install before any
+      // user write) doesn't trigger an infinite save loop. Mirrors the
+      // ``archive_3mf_retention_days`` pattern above.
+      (settings.log_retention_days ?? 7) !== (localSettings.log_retention_days ?? 7) ||
       settings.disable_filament_warnings !== localSettings.disable_filament_warnings ||
       (settings.queue_drying_enabled ?? false) !== (localSettings.queue_drying_enabled ?? false) ||
       (settings.queue_shortest_first ?? false) !== (localSettings.queue_shortest_first ?? false) ||
@@ -1187,6 +1192,7 @@ export function SettingsPage() {
         ams_temp_good: localSettings.ams_temp_good,
         ams_temp_fair: localSettings.ams_temp_fair,
         ams_history_retention_days: localSettings.ams_history_retention_days,
+        log_retention_days: localSettings.log_retention_days,
         disable_filament_warnings: localSettings.disable_filament_warnings,
         queue_drying_enabled: localSettings.queue_drying_enabled,
         queue_shortest_first: localSettings.queue_shortest_first,
@@ -2415,6 +2421,28 @@ export function SettingsPage() {
                   </Button>
                 </div>
               )}
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-white">{t('settings.logRetention', 'Log retention')}</p>
+                  <p className="text-sm text-bambu-gray">
+                    {t(
+                      'settings.logRetentionDescription',
+                      'How many daily log files (bamdude-YYYY-MM-DD.log) to keep on disk. Older archives are auto-deleted on each midnight rotation. Live bamdude.log is unaffected.',
+                    )}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <input
+                    type="number"
+                    min={1}
+                    max={365}
+                    value={localSettings.log_retention_days ?? 7}
+                    onChange={(e) => updateSetting('log_retention_days', parseInt(e.target.value) || 7)}
+                    className="w-20 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                  />
+                  <span className="text-bambu-gray text-sm">{t('common.days')}</span>
+                </div>
+              </div>
               <div className="pt-4 border-t border-bambu-dark-tertiary">
                 <div className="flex items-center justify-between">
                   <div>

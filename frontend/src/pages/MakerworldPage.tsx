@@ -847,7 +847,7 @@ export function MakerworldPage() {
                         <img
                           src={api.getLibraryFileThumbnailUrl(item.library_file_id)}
                           alt=""
-                          className="w-12 h-12 shrink-0 object-cover rounded bg-gray-100 dark:bg-gray-800"
+                          className="w-12 h-12 shrink-0 object-contain rounded bg-gray-100 dark:bg-gray-800"
                           loading="lazy"
                         />
                       ) : (

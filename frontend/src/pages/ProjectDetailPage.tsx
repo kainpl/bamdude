@@ -146,7 +146,7 @@ function ArchiveGrid({ archives, t }: { archives: Archive[]; t: TFunction }) {
             <img
               src={api.getArchiveThumbnail(archive.id)}
               alt={archive.print_name || 'Print'}
-              className="w-full h-full object-cover"
+              className="w-full h-full object-contain"
             />
           ) : (
             <div className="w-full h-full flex items-center justify-center text-bambu-gray">
@@ -359,6 +359,27 @@ export function ProjectDetailPage() {
     },
   });
 
+  // Dedicated mutation for "Apply computed totals" — same backend route
+  // as updateMutation but no modal-close side-effect + its own toast so
+  // the operator sees the apply confirmation instead of the generic
+  // edit-saved one. Two buttons (print-plan totals + BOM totals) share
+  // this mutation; they all PATCH the same three fields with the same
+  // computed values, so there's no source-of-truth ambiguity.
+  const applyTotalsMutation = useMutation({
+    mutationFn: (data: ProjectUpdate) => api.updateProject(projectId, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['project', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      showToast(
+        t('projectDetail.toast.totalsApplied', { defaultValue: 'Project totals updated from the print plan' }),
+        'success',
+      );
+    },
+    onError: (error: Error) => {
+      showToast(error.message, 'error');
+    },
+  });
+
   const handleStartEditNotes = () => {
     setNotesContent(project?.notes || '');
     setEditingNotes(true);
@@ -553,6 +574,41 @@ export function ProjectDetailPage() {
   const platesProgressPercent = stats?.progress_percent ?? 0;
   // Parts progress: completed_prints / target_parts_count
   const partsProgressPercent = stats?.parts_progress_percent ?? 0;
+
+  // Computed-totals helper for the "Apply to project" buttons that sit
+  // in the Print Plan totals row + the BOM totals row. Both buttons
+  // write the SAME values:
+  //   target_count        ← sum of plate copies across plan items
+  //   target_parts_count  ← printPlan.totals_objects
+  //   budget              ← printPlan.totals_cost + stats.bom_cost
+  // The button is hidden when the project already matches all three —
+  // saves a no-op write + reduces visual noise.
+  const proposedTotals = (() => {
+    if (!printPlan) return null;
+    const plates = printPlan.items.reduce((sum, i) => sum + (i.copies || 0), 0);
+    const parts = printPlan.totals_objects ?? 0;
+    const bomCost = stats?.bom_cost ?? 0;
+    const filamentCost = printPlan.totals_cost ?? 0;
+    const budget = Math.round((filamentCost + bomCost) * 100) / 100;
+    return { plates, parts, budget };
+  })();
+  const totalsDiffer = !!proposedTotals && (
+    (project.target_count ?? null) !== proposedTotals.plates
+    || (project.target_parts_count ?? null) !== proposedTotals.parts
+    || (project.budget ?? null) !== proposedTotals.budget
+  );
+  const canApplyTotals = totalsDiffer
+    && hasPermission('projects:update')
+    && !applyTotalsMutation.isPending
+    && (proposedTotals?.plates ?? 0) > 0;
+  const handleApplyTotals = () => {
+    if (!canApplyTotals || !proposedTotals) return;
+    applyTotalsMutation.mutate({
+      target_count: proposedTotals.plates,
+      target_parts_count: proposedTotals.parts,
+      budget: proposedTotals.budget,
+    });
+  };
 
   return (
     <div className="p-4 md:p-6 space-y-4">
@@ -1095,7 +1151,7 @@ export function ProjectDetailPage() {
                           <img
                             src={api.getLibraryFileThumbnailUrl(item.library_file_id)}
                             alt={item.print_name || item.filename}
-                            className="w-full h-full object-cover"
+                            className="w-full h-full object-contain"
                           />
                         ) : (
                           <FileBox className="w-5 h-5 text-bambu-gray/40" />
@@ -1281,6 +1337,30 @@ export function ProjectDetailPage() {
                   </div>
                 </div>
               </div>
+
+              {/* Apply totals to project — propagates plates + parts +
+                  budget into the project's target fields. Button hidden
+                  when already in sync (totalsDiffer=false). Same
+                  handler shared with the matching button in BOM totals. */}
+              {canApplyTotals && proposedTotals && (
+                <div className="mt-2 flex justify-end">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleApplyTotals}
+                    disabled={applyTotalsMutation.isPending}
+                    title={t('projectDetail.files.applyTotalsTitle', {
+                      plates: proposedTotals.plates,
+                      parts: proposedTotals.parts,
+                      budget: `${currency}${proposedTotals.budget.toFixed(2)}`,
+                      defaultValue: 'Apply to project: {{plates}} plates / {{parts}} parts / budget {{budget}}',
+                    })}
+                  >
+                    <Save className="w-3.5 h-3.5" />
+                    {t('projectDetail.files.applyTotals', { defaultValue: 'Apply to project' })}
+                  </Button>
+                </div>
+              )}
             </>
           )}
         </CardContent>
@@ -1554,11 +1634,30 @@ export function ProjectDetailPage() {
               ))}
               {/* BOM Total */}
               {stats && stats.bom_cost > 0 && (
-                <div className="pt-2 mt-2 border-t border-bambu-dark-tertiary flex justify-between text-sm">
+                <div className="pt-2 mt-2 border-t border-bambu-dark-tertiary flex items-center justify-between text-sm gap-3 flex-wrap">
                   <span className="text-bambu-gray">{t('projectDetail.bom.totalCost')}</span>
-                  <span className="text-white font-medium">
-                    {currency}{stats.bom_cost.toFixed(2)}
-                  </span>
+                  <div className="flex items-center gap-3">
+                    <span className="text-white font-medium">
+                      {currency}{stats.bom_cost.toFixed(2)}
+                    </span>
+                    {canApplyTotals && proposedTotals && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={handleApplyTotals}
+                        disabled={applyTotalsMutation.isPending}
+                        title={t('projectDetail.files.applyTotalsTitle', {
+                          plates: proposedTotals.plates,
+                          parts: proposedTotals.parts,
+                          budget: `${currency}${proposedTotals.budget.toFixed(2)}`,
+                          defaultValue: 'Apply to project: {{plates}} plates / {{parts}} parts / budget {{budget}}',
+                        })}
+                      >
+                        <Save className="w-3.5 h-3.5" />
+                        {t('projectDetail.files.applyTotals', { defaultValue: 'Apply to project' })}
+                      </Button>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
@@ -1784,7 +1883,7 @@ function CurrentPrintInfoCard({ item, accentColor, timeFormat, t }: CurrentPrint
           <img
             src={withStreamToken(thumbnail)}
             alt=""
-            className="w-20 h-20 rounded-lg object-cover flex-shrink-0 bg-bambu-dark-tertiary"
+            className="w-20 h-20 rounded-lg object-contain flex-shrink-0 bg-bambu-dark-tertiary"
           />
         ) : (
           <div className="w-20 h-20 rounded-lg bg-bambu-dark-tertiary flex-shrink-0" />

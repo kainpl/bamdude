@@ -122,6 +122,7 @@ async def get_settings(
                 "ams_humidity_fair",
                 "ams_history_retention_days",
                 "archive_3mf_retention_days",
+                "log_retention_days",
                 "ftp_retry_count",
                 "ftp_retry_delay",
                 "ftp_timeout",
@@ -180,6 +181,16 @@ async def update_settings(
     await db.commit()
     # Expire all objects to ensure fresh reads after commit
     db.expire_all()
+
+    # If log retention changed, push the new value into the live
+    # rotating-file handler so the next midnight rotation honours it
+    # without a backend restart. Old archives beyond the new limit are
+    # purged on the next rotation, not immediately — operators wanting
+    # an instant cleanup can delete files from the System page UI.
+    if "log_retention_days" in update_data and update_data["log_retention_days"] is not None:
+        from backend.app.core.logging_state import update_log_retention
+
+        update_log_retention(int(update_data["log_retention_days"]))
 
     # Update DB templates when system language changes
     locale_lang = update_data.get("language")

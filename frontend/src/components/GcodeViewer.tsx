@@ -146,7 +146,6 @@ export function GcodeViewer({
         // Reading in a loop so React state updates can re-render the
         // progress bar mid-download. The full body is reassembled into
         // a single string at the end (gcode-preview wants a string).
-        // eslint-disable-next-line no-constant-condition
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;

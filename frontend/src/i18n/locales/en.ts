@@ -1522,6 +1522,8 @@ export default {
     historyRetention: 'History Retention',
     keepSensorHistory: 'Keep sensor history for',
     historyRetentionDescription: 'Older humidity and temperature data will be automatically deleted',
+    logRetention: 'Log retention',
+    logRetentionDescription: 'How many daily log files (bamdude-YYYY-MM-DD.log) to keep on disk. Older archives are auto-deleted on each midnight rotation. Live bamdude.log is unaffected.',
     autoQueueRouting: 'Auto-Queue Routing',
     autoQueueRoutingDescription: 'Controls how the auto-queue scheduler picks the next pending job to assign.',
     queueShortestFirst: 'Shortest job first',
@@ -3082,6 +3084,7 @@ export default {
     generateThumbnail: 'Generate Thumbnail',
     generateThumbnails: 'Generate Thumbnails',
     generateThumbnailsForMissing: 'Generate thumbnails for STL files missing them',
+    regeneratingThumbnail: 'Regenerating…',
     gridView: 'Grid view',
     listView: 'List view',
     lowDiskSpaceWarning: 'Low disk space warning',
@@ -3205,6 +3208,8 @@ export default {
     targetParts: 'Target Parts',
     targetPartsPlaceholder: 'e.g., 150',
     targetPartsHelp: 'Total objects needed',
+    fromPlan: 'From plan: {{count}}',
+    usePlanValueTitle: 'Apply the count derived from the print plan',
     tagsLabel: 'Tags (comma-separated)',
     tagsPlaceholder: 'e.g., voron, functional, gift',
     dueDate: 'Due Date',
@@ -3344,7 +3349,9 @@ export default {
       totalFilament: 'Filament',
       totalTime: 'Time',
       totalCost: 'Cost',
-      costHint: 'At {{currency}}{{rate}}/kg'
+      costHint: 'At {{currency}}{{rate}}/kg',
+      applyTotals: 'Apply to project',
+      applyTotalsTitle: 'Apply to project: {{plates}} plates / {{parts}} parts / budget {{budget}}',
     },
     bom: {
       title: 'Bill of Materials',
@@ -3385,6 +3392,7 @@ export default {
     },
     toast: {
       projectUpdated: 'Project updated',
+      totalsApplied: 'Project totals updated from the print plan',
       partAdded: 'Part added',
       partRemoved: 'Part removed',
       projectExported: 'Project exported',
@@ -4329,6 +4337,7 @@ export default {
     buildVolumeUnit: 'mm',
     buildVolumeTooltip: 'Build volume drawn under the preview — parsed from the 3MF (printable_area + printable_height) when present, otherwise the X1/P1/A1 default 256×256×256.',
     wireframeTitle: 'Toggle wireframe / X-ray view',
+    exportPngTitle: 'Save current view as PNG',
     plates: 'Plates',
     allPlates: 'All Plates',
     pickPlate: 'Pick a plate',
@@ -4526,6 +4535,19 @@ export default {
     connectionSuccess: 'Connection successful',
     noSwitchesInSwitchbar: 'No switches in switchbar',
     enableSwitchbarHint: 'Enable "Show in Switchbar" in Settings > Smart Plugs'
+  },
+
+  // Historical log archive panel — sits below LogViewer on /system page.
+  // Live bamdude.log streams via LogViewer; this panel manages the
+  // rotated daily archives produced by TimedRotatingFileHandler.
+  logArchives: {
+    title: 'Historical Logs',
+    subtitle: 'Daily-rotated archives. Live bamdude.log is shown above.',
+    empty: 'No rotated log archives yet — daily rotation runs at midnight.',
+    filename: 'Filename',
+    size: 'Size',
+    modified: 'Modified',
+    deleted: 'Deleted {{filename}}',
   },
 
   // Notifications

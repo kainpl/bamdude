@@ -26,6 +26,7 @@ import {
 import { api, supportApi } from '../api/client';
 import { Card } from '../components/Card';
 import { LogViewer } from '../components/LogViewer';
+import { LogArchivesPanel } from '../components/LogArchivesPanel';
 import { SlicerHealthIndicator } from '../components/SlicerHealthIndicator';
 import { formatDateTime, type TimeFormat } from '../utils/date';
 
@@ -381,8 +382,11 @@ export function SystemInfoPage() {
             </p>
           </div>
 
-          {/* Log Viewer */}
+          {/* Log Viewer — live tail of bamdude.log */}
           <LogViewer />
+
+          {/* Historical archives — daily-rotated bamdude-YYYY-MM-DD.log files */}
+          <LogArchivesPanel />
         </div>
       </Section>
 

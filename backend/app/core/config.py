@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     # Logging
     log_level: str = "INFO"  # Override with LOG_LEVEL env var (DEBUG, INFO, WARNING, ERROR)
     log_to_file: bool = True  # Set to false to disable file logging
+    # log_retention_days lives in the DB-backed Settings (UI: Settings ->
+    # Data Management). Module-load uses a hardcoded 7-day bootstrap;
+    # lifespan startup reads the DB value and applies it via
+    # ``logging_state.update_log_retention``.
 
     # API
     api_prefix: str = "/api/v1"
