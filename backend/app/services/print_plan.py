@@ -17,7 +17,7 @@ another sync pass.
 
 from __future__ import annotations
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, inspect as sqla_inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -168,8 +168,14 @@ async def inherit_folder_projects(
 
     Symmetrical with the move / patch flows: a freshly-uploaded ``.3mf``
     that lands in a folder linked to N projects must show up in those
-    projects' print plans without an extra UI step. ``folder`` must have
-    ``.projects`` already loaded (callers should ``selectinload`` it).
+    projects' print plans without an extra UI step. Callers SHOULD
+    ``selectinload(LibraryFolder.projects)`` to avoid a roundtrip, but
+    this helper is defensive — when ``.projects`` is unloaded (e.g. a
+    just-created folder via ``db.add()`` + ``db.flush()`` with no
+    refresh) we refresh it ourselves so the lazy-load doesn't trip
+    ``MissingGreenlet`` outside an async-engine session boundary. The
+    refresh costs one extra ``SELECT … library_folder_projects`` only
+    when the caller didn't pre-load the relation.
 
     Pre-fix, every upload / zip-extract / sliced-output / MakerWorld import
     bypassed this path entirely — the file row was created with empty
@@ -183,6 +189,12 @@ async def inherit_folder_projects(
     """
     if folder is None:
         return
+    # Defensive load: if the caller forgot to selectinload .projects,
+    # refresh the relation here instead of triggering a sync lazy-load
+    # that would raise MissingGreenlet under aiosqlite/asyncpg.
+    folder_state = sqla_inspect(folder)
+    if "projects" in folder_state.unloaded:
+        await db.refresh(folder, ["projects"])
     folder_projects = list(folder.projects or [])
     if not folder_projects:
         return

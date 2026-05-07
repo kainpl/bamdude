@@ -401,7 +401,10 @@ describe('SettingsPage', () => {
         screen.getByPlaceholderText(/api\/frame\.jpeg\?src=printer/),
       );
 
-      const user = userEvent.setup();
+      // delay:null makes user.type() instant instead of 50ms-per-char —
+      // 51 chars × 50ms ≈ 2.5s of pure typing on top of the debounced
+      // PATCH wait, which tipped the default 5s test timeout under load.
+      const user = userEvent.setup({ delay: null });
       await user.type(input, 'http://192.168.1.61:1984/api/frame.jpeg?src=printer');
 
       // Save is debounced by 800ms; assert the PATCH eventually fires with
