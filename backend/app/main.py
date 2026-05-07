@@ -783,6 +783,136 @@ _last_status_broadcast: dict[int, str] = {}
 # Track printers where we've updated nozzle_count
 _nozzle_count_updated: set[int] = set()
 
+# Pause/resume edge tracking — last observed gcode_state per printer, the
+# wall-clock at which the current pause started, and a one-shot reason hint
+# planted by internal pause-trigger paths (plate-detect today; future: any
+# server-initiated pause that wants its own reason instead of the generic
+# HMS classification). The reason hint is consumed + cleared by the next
+# pause edge so a subsequent unrelated user-pause doesn't inherit it.
+_last_printer_state: dict[int, str] = {}
+_pause_started_at: dict[int, float] = {}
+_expected_pause_reasons: dict[int, str] = {}
+
+
+def set_expected_pause_reason(printer_id: int, reason_code: str) -> None:
+    """Plant a reason hint for the next observed RUNNING→PAUSE edge.
+
+    Called by internal pause-trigger paths (currently
+    ``plate_detection_loop`` in the same file) immediately before issuing
+    ``client.pause_print()``, so the edge handler can label the pause with
+    the actual cause instead of falling through to "Paused by user" — Bambu
+    firmware fires HMS code ``0300_8001`` (paused by user) for any
+    pause-command we send, regardless of motivation. Hints are one-shot:
+    consumed + cleared by the next ``RUNNING→PAUSE`` transition or any
+    ``PAUSE→RUNNING`` (whichever comes first), so a stale hint never bleeds
+    into an unrelated pause.
+    """
+    _expected_pause_reasons[printer_id] = reason_code
+
+
+async def _handle_pause_edge(printer_id: int, state: PrinterState):
+    """Fire on_print_pause notification + WS push on RUNNING→PAUSE.
+
+    Reason resolution:
+      1. Internal hint planted by ``set_expected_pause_reason`` wins (e.g.
+         plate-detect sets ``"plate_objects"`` before issuing the pause
+         command — Bambu firmware responds with HMS ``0300_8001`` "paused
+         by user" for any pause-command we send, which would otherwise
+         label every internal pause as user-initiated).
+      2. Otherwise classify from active HMS codes via
+         ``hms_errors.classify_pause_reason``.
+      3. Fallback "unknown" only when neither path produced a code.
+    """
+    from backend.app.services.hms_errors import classify_pause_reason
+
+    try:
+        printer_info = printer_manager.get_printer(printer_id)
+        printer_name = printer_info.name if printer_info else f"Printer {printer_id}"
+
+        hms_codes = [e.get("code") for e in (state.hms_errors or []) if isinstance(e, dict) and e.get("code")]
+        expected = _expected_pause_reasons.pop(printer_id, None)
+        reason_code, reason_label, hms_code = classify_pause_reason(hms_codes, expected)
+
+        # Stash on state so frontend snapshot consumers can render the cause
+        # inline without re-querying the HMS table.
+        state.pause_reason = reason_code
+        state.pause_reason_label = reason_label
+
+        # Track pause start for resume duration calc + frontend live counter.
+        # Stored both on the per-printer ``state`` (snapshot-visible — survives
+        # F5 on the frontend) and in the module-level dict (read by
+        # ``_handle_resume_edge`` even when the snapshot has already been
+        # mutated by a subsequent state change).
+        now = time.time()
+        state.pause_started_at = now
+        _pause_started_at[printer_id] = now
+
+        filename = state.subtask_name or state.gcode_file
+        ws_data = {
+            "filename": filename,
+            "reason": reason_label,
+            "reason_code": reason_code,
+            "hms_code": hms_code,
+        }
+        await ws_manager.send_print_paused(printer_id, ws_data)
+
+        async with async_session() as db:
+            await notification_service.on_print_pause(
+                printer_id=printer_id,
+                printer_name=printer_name,
+                filename=filename,
+                reason_code=reason_code,
+                reason_label=reason_label,
+                hms_code=hms_code,
+                db=db,
+            )
+    except Exception as e:
+        logging.getLogger(__name__).warning("pause edge handler failed for printer %s: %s", printer_id, e)
+
+
+async def _handle_resume_edge(printer_id: int, state: PrinterState):
+    """Fire on_print_resume notification + WS push on PAUSE→RUNNING.
+
+    Computes paused duration from ``_pause_started_at`` (planted by
+    ``_handle_pause_edge``); falls back to ``None`` when the resume hits
+    without a recorded start (e.g. BamDude restarted while the printer
+    was paused).
+    """
+    try:
+        printer_info = printer_manager.get_printer(printer_id)
+        printer_name = printer_info.name if printer_info else f"Printer {printer_id}"
+
+        started_at = _pause_started_at.pop(printer_id, None)
+        paused_for_seconds = int(time.time() - started_at) if started_at is not None else None
+
+        # Clear pause-reason + pause-start from state so the snapshot stops
+        # carrying stale data after the resume edge.
+        state.pause_reason = None
+        state.pause_reason_label = None
+        state.pause_started_at = None
+        # Drop any one-shot reason hint that might have been planted but
+        # never consumed (e.g. plate-detect issued the pause + the printer
+        # resumed before the MQTT pause edge made it through).
+        _expected_pause_reasons.pop(printer_id, None)
+
+        filename = state.subtask_name or state.gcode_file
+        ws_data = {
+            "filename": filename,
+            "paused_for_seconds": paused_for_seconds,
+        }
+        await ws_manager.send_print_resumed(printer_id, ws_data)
+
+        async with async_session() as db:
+            await notification_service.on_print_resume(
+                printer_id=printer_id,
+                printer_name=printer_name,
+                filename=filename,
+                paused_for_seconds=paused_for_seconds,
+                db=db,
+            )
+    except Exception as e:
+        logging.getLogger(__name__).warning("resume edge handler failed for printer %s: %s", printer_id, e)
+
 
 async def on_printer_status_change(printer_id: int, state: PrinterState):
     """Handle printer status changes - broadcast via WebSocket."""
@@ -844,6 +974,21 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
             await mqtt_relay.on_printer_status(printer_id, state, printer_info.name, printer_info.serial_number)
     except Exception:
         pass  # Don't fail status callback if MQTT fails
+
+    # Pause / resume edge detection — runs BEFORE the dedup early-return so
+    # a state-only change (e.g. RUNNING→PAUSE with same temps + progress)
+    # still fires the event when the dedup key would otherwise skip it. Edge
+    # is computed against ``_last_printer_state`` rather than the snapshot
+    # broadcast key because we care about gcode_state transitions, not
+    # arbitrary status churn.
+    prev_state = _last_printer_state.get(printer_id)
+    current_state = state.state
+    if prev_state is not None and prev_state != current_state:
+        if prev_state == "RUNNING" and current_state == "PAUSE":
+            await _handle_pause_edge(printer_id, state)
+        elif prev_state == "PAUSE" and current_state == "RUNNING":
+            await _handle_resume_edge(printer_id, state)
+    _last_printer_state[printer_id] = current_state
 
     if _last_status_broadcast.get(printer_id) == status_key:
         return  # No change, skip WebSocket broadcast
@@ -1958,6 +2103,12 @@ async def on_print_start(printer_id: int, data: dict):
                     )
                     client = printer_manager.get_client(printer_id)
                     if client:
+                        # Plant the reason hint BEFORE issuing the pause
+                        # command — Bambu firmware fires HMS 0300_8001
+                        # ("paused by user") for any pause-command we send,
+                        # so without this hint the resulting RUNNING→PAUSE
+                        # edge would label this auto-pause as user-initiated.
+                        set_expected_pause_reason(printer_id, "plate_objects")
                         client.pause_print()
                         logger.info("[PLATE CHECK] Print paused for printer %s", printer_id)
 

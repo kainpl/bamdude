@@ -1301,6 +1301,114 @@ class NotificationService:
             variables=variables,
         )
 
+    async def on_print_pause(
+        self,
+        printer_id: int,
+        printer_name: str,
+        filename: str | None,
+        reason_code: str,
+        reason_label: str,
+        db: AsyncSession,
+        hms_code: str | None = None,
+        image_data: bytes | None = None,
+    ):
+        """Handle RUNNING→PAUSE edge — fanout to providers that opted in.
+
+        ``reason_code`` is the normalised key from
+        ``hms_errors.classify_pause_reason`` (user / filament_runout /
+        door_open / presence_check / file_pause_command / plate_objects /
+        ai_spaghetti / ai_first_layer_defect / foreign_object / hms_other /
+        unknown). ``reason_label`` is the operator-facing description that
+        substitutes into the ``{reason}`` template variable; precise HMS
+        descriptions win over generic labels when available.
+        ``hms_code`` is the matched HMS code for downstream forensics; not
+        rendered in the default template but available as ``{hms_code}``
+        for operators who want to override the body.
+        """
+        logger.info(
+            "on_print_pause called for printer %s (%s) reason=%s hms=%s",
+            printer_id,
+            printer_name,
+            reason_code,
+            hms_code,
+        )
+        providers = await self._get_providers_for_event(db, "on_print_paused", printer_id)
+        if not providers:
+            logger.info("No notification providers configured for print_paused on printer %s", printer_id)
+            return
+
+        clean_filename = self._clean_filename(filename) if filename else "Unknown"
+
+        variables = {
+            "printer": printer_name,
+            "filename": clean_filename,
+            "reason": reason_label or "Unknown",
+            "reason_code": reason_code,
+            "hms_code": hms_code or "",
+        }
+
+        title, message = await self._build_message_from_template(db, "print_paused", variables)
+        await self._send_to_providers(
+            providers,
+            title,
+            message,
+            db,
+            "print_paused",
+            printer_id,
+            printer_name,
+            image_data=image_data,
+            variables=variables,
+        )
+
+    async def on_print_resume(
+        self,
+        printer_id: int,
+        printer_name: str,
+        filename: str | None,
+        paused_for_seconds: int | None,
+        db: AsyncSession,
+        image_data: bytes | None = None,
+    ):
+        """Handle PAUSE→RUNNING edge — fanout to providers that opted in.
+
+        ``paused_for_seconds`` is the elapsed time since the matching pause
+        edge (tracked in ``main._pause_started_at``); falls back to
+        ``"Unknown"`` in the body when the resume hits without a recorded
+        start (e.g. BamDude restarted while the printer was paused).
+        """
+        logger.info(
+            "on_print_resume called for printer %s (%s) paused_for=%s",
+            printer_id,
+            printer_name,
+            paused_for_seconds,
+        )
+        providers = await self._get_providers_for_event(db, "on_print_resumed", printer_id)
+        if not providers:
+            logger.info("No notification providers configured for print_resumed on printer %s", printer_id)
+            return
+
+        clean_filename = self._clean_filename(filename) if filename else "Unknown"
+        paused_for_str = self._format_duration(paused_for_seconds) if paused_for_seconds else "Unknown"
+
+        variables = {
+            "printer": printer_name,
+            "filename": clean_filename,
+            "paused_for": paused_for_str,
+        }
+
+        title, message = await self._build_message_from_template(db, "print_resumed", variables)
+        await self._send_to_providers(
+            providers,
+            title,
+            message,
+            db,
+            "print_resumed",
+            printer_id,
+            printer_name,
+            image_data=image_data,
+            variables=variables,
+        )
+
     async def on_print_progress(
         self,
         printer_id: int,

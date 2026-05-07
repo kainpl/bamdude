@@ -462,6 +462,17 @@ export interface PrinterStatus {
   } | null;
   cover_url: string | null;
   hms_errors: HMSError[];
+  // Pause classification (RUNNING→PAUSE edge, see hms_errors.classify_pause_reason).
+  // pause_reason: normalised key for routing — 'user' | 'filament_runout' |
+  //   'door_open' | 'presence_check' | 'file_pause_command' |
+  //   'ai_first_layer_defect' | 'ai_spaghetti' | 'foreign_object' |
+  //   'plate_objects' | 'hms_other' | 'unknown'. Null when not paused or pre-edge.
+  // pause_reason_label: operator-facing copy (precise HMS description or generic label).
+  // pause_started_at: epoch seconds at which the pause began — drives the live
+  //   "Paused N min" counter and survives F5.
+  pause_reason: string | null;
+  pause_reason_label: string | null;
+  pause_started_at: number | null;
   ams: AMSUnit[];
   ams_exists: boolean;
   vt_tray: AMSTray[];  // Virtual tray / external spool(s)
@@ -2272,6 +2283,8 @@ export interface NotificationProvider {
   on_print_stopped: boolean;
   on_print_progress: boolean;
   on_print_missing_spool_assignment: boolean;
+  on_print_paused: boolean;
+  on_print_resumed: boolean;
   // Printer status events
   on_printer_offline: boolean;
   on_printer_error: boolean;
@@ -2326,6 +2339,8 @@ export interface NotificationProviderCreate {
   on_print_stopped?: boolean;
   on_print_progress?: boolean;
   on_print_missing_spool_assignment?: boolean;
+  on_print_paused?: boolean;
+  on_print_resumed?: boolean;
   // Printer status events
   on_printer_offline?: boolean;
   on_printer_error?: boolean;
@@ -2374,6 +2389,8 @@ export interface NotificationProviderUpdate {
   on_print_stopped?: boolean;
   on_print_progress?: boolean;
   on_print_missing_spool_assignment?: boolean;
+  on_print_paused?: boolean;
+  on_print_resumed?: boolean;
   // Printer status events
   on_printer_offline?: boolean;
   on_printer_error?: boolean;

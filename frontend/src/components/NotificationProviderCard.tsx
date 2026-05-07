@@ -228,6 +228,14 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                             <span
                                 className="px-2 py-0.5 bg-orange-500/20 text-orange-400 text-xs rounded">{t('notifications.stopped')}</span>
                         )}
+                        {!isTelegram && provider.on_print_paused && (
+                            <span
+                                className="px-2 py-0.5 bg-amber-500/20 text-amber-300 text-xs rounded">{t('notifications.paused')}</span>
+                        )}
+                        {!isTelegram && provider.on_print_resumed && (
+                            <span
+                                className="px-2 py-0.5 bg-lime-500/20 text-lime-300 text-xs rounded">{t('notifications.resumed')}</span>
+                        )}
                         {!isTelegram && provider.on_print_progress && (
                             <span
                                 className="px-2 py-0.5 bg-yellow-500/20 text-yellow-400 text-xs rounded">{t('notifications.progress')}</span>
@@ -456,6 +464,28 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                                     <Toggle
                                         checked={provider.on_print_stopped}
                                         onChange={(checked) => updateMutation.mutate({on_print_stopped: checked})}
+                                    />
+                                </div>
+
+                                <div className="flex items-center justify-between">
+                                    <div>
+                                        <p className="text-sm text-white">{t('notifications.printPausedLabel')}</p>
+                                        <p className="text-xs text-bambu-gray">{t('notifications.printPausedDescription')}</p>
+                                    </div>
+                                    <Toggle
+                                        checked={provider.on_print_paused ?? true}
+                                        onChange={(checked) => updateMutation.mutate({on_print_paused: checked})}
+                                    />
+                                </div>
+
+                                <div className="flex items-center justify-between">
+                                    <div>
+                                        <p className="text-sm text-white">{t('notifications.printResumedLabel')}</p>
+                                        <p className="text-xs text-bambu-gray">{t('notifications.printResumedDescription')}</p>
+                                    </div>
+                                    <Toggle
+                                        checked={provider.on_print_resumed ?? true}
+                                        onChange={(checked) => updateMutation.mutate({on_print_resumed: checked})}
                                     />
                                 </div>
 

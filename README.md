@@ -85,6 +85,7 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 - External camera support (MJPEG, RTSP, USB)
 - Build plate empty detection
 - Printer control (stop, pause, resume, light, speed)
+- **Pause-state visualisation** — yellow status pip in compact mode, inline `Paused • {reason} · 14m` chip with live elapsed counter in card header (compact + expanded), instant WebSocket toast on RUNNING↔PAUSE edges with classified reason (door / filament runout / AI defect / plate-detect / etc.)
 - AMS management (RFID re-read, slot config, drying)
 - HMS error monitoring with history
 - Print success rates, filament usage, cost analytics
@@ -154,6 +155,7 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 - Actionable buttons: clear plate, mark maintenance done, pause/stop on progress
 - Print finish photo, filament usage details
 - HMS error alerts, bed cooled alerts
+- **Pause / resume events with classified reason** — `print_paused` carries normalised `{reason}` (door / filament runout / presence-check / file-pause-command / AI defect / plate-objects / user) + matched `{hms_code}`; `print_resumed` carries `{paused_for}` (mm:ss). Default ON for new providers, included in default Telegram-chat event set
 - Queue events (waiting, skipped, failed)
 
 ### Spool Inventory

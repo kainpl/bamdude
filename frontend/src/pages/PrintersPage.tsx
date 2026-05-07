@@ -62,6 +62,7 @@ import {
 import { Link as RouterLink, useNavigate } from 'react-router-dom';
 import { api, discoveryApi, firmwareApi, macrosApi, withStreamToken } from '../api/client';
 import { BulkPrinterToolbar } from '../components/BulkPrinterToolbar';
+import { PauseChip } from '../components/PauseChip';
 import { formatDateOnly, formatETA, formatDuration } from '../utils/date';
 import type { Printer, PrinterCreate, PrinterStatus, AMSUnit, DiscoveredPrinter, FirmwareUpdateInfo, FirmwareUploadStatus, LinkedSpoolInfo, SpoolAssignment, HMSError, Macro } from '../api/client';
 import { Card, CardContent } from '../components/Card';
@@ -2279,25 +2280,41 @@ function PrinterCard({
                 />
               )}
               <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <h3 className={`font-semibold text-white ${getTitleSize()}`}>{printer.name}</h3>
+                  {/* Pause chip — visible whenever state === 'PAUSE'; renders the
+                      classified reason + a live-ticking elapsed counter. Sits next
+                      to the printer name in both compact (xs) and expanded (sm)
+                      modes so the cause is immediately scannable across a grid. */}
+                  <PauseChip
+                    state={status?.state}
+                    pauseReasonLabel={status?.pause_reason_label}
+                    pauseStartedAt={status?.pause_started_at}
+                    size={viewMode === 'compact' ? 'xs' : 'sm'}
+                  />
                   {/* Connection indicator dot for compact mode */}
                   {viewMode === 'compact' && (() => {
                     const hmsErrors = status?.connected && status.hms_errors ? filterKnownHMSErrors(status.hms_errors) : [];
                     const hasSevere = hmsErrors.some(e => e.severity <= 2);
                     const hasWarning = hmsErrors.length > 0;
+                    // PAUSE state without HMS used to render as a green "ok" pip — easy to
+                    // miss in a 20-printer compact grid. Treat any PAUSE as warning-yellow
+                    // unless severe HMS bumps it to red.
+                    const isPaused = status?.connected && status?.state === 'PAUSE';
                     const pipColor = !status?.connected
                       ? 'bg-status-error'
                       : hasSevere
                         ? 'bg-status-error'
-                        : hasWarning
+                        : (hasWarning || isPaused)
                           ? 'bg-status-warning'
                           : 'bg-status-ok';
                     const pipTitle = !status?.connected
                       ? t('printers.connection.offline')
                       : hasWarning
                         ? `${hmsErrors.length} HMS ${hmsErrors.length === 1 ? 'error' : 'errors'}`
-                        : t('printers.connection.connected');
+                        : isPaused
+                          ? (status?.pause_reason_label || t('printers.status.paused'))
+                          : t('printers.connection.connected');
                     return (
                       <div
                         className={`w-2 h-2 rounded-full flex-shrink-0 ${pipColor}`}

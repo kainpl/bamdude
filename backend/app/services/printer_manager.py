@@ -1088,6 +1088,19 @@ def printer_state_to_dict(state: PrinterState, printer_id: int | None = None, mo
             {"code": e.code, "attr": e.attr, "module": e.module, "severity": e.severity}
             for e in (state.hms_errors or [])
         ],
+        # Pause classification — populated by main._handle_pause_edge, cleared
+        # by _handle_resume_edge. ``pause_reason`` is the normalised key
+        # (user / filament_runout / door_open / presence_check /
+        # file_pause_command / ai_first_layer_defect / ai_spaghetti /
+        # foreign_object / plate_objects / hms_other / unknown) for routing /
+        # filtering on the frontend; ``pause_reason_label`` is the
+        # operator-facing copy (precise HMS description when available, else
+        # generic PAUSE_REASON_LABELS entry); ``pause_started_at`` is the
+        # epoch-seconds wall-clock at which the pause began so the live
+        # counter ("Paused 14 min") survives an F5.
+        "pause_reason": state.pause_reason,
+        "pause_reason_label": state.pause_reason_label,
+        "pause_started_at": state.pause_started_at,
         # AMS data for filament colors
         "ams": ams_units if ams_units else None,
         "vt_tray": vt_tray,

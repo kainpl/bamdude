@@ -15,6 +15,7 @@ DEFAULT_NOTIFY_EVENTS = [
     "print_complete",
     "print_failed",
     "print_stopped",
+    "print_paused",
     "plate_not_empty",
     "queue_job_waiting",
     "queue_job_skipped",
@@ -29,6 +30,8 @@ ALL_NOTIFY_EVENTS = [
     "print_failed",
     "print_stopped",
     "print_progress",
+    "print_paused",
+    "print_resumed",
     "print_missing_spool_assignment",
     # Printer status
     "printer_offline",

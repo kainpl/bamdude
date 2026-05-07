@@ -157,6 +157,22 @@ class PrinterState:
     wifi_signal: int | None = None  # WiFi signal strength in dBm
     wired_network: bool = False  # Ethernet connection detected (home_flag bit 18)
     door_open: bool = False  # Enclosure door open (home_flag bit 23 on X1*, stat bit 23 elsewhere)
+    # Last classified pause reason — populated by main.on_printer_status_change
+    # on the RUNNING→PAUSE edge using ``hms_errors.classify_pause_reason``,
+    # cleared back to ``None`` on the PAUSE→RUNNING edge. Surfaces in the
+    # status snapshot so frontend can render the cause inline without
+    # re-running the HMS table lookup. ``str | None`` not enum since the set
+    # of keys is owned by ``hms_errors.PAUSE_REASON_LABELS``.
+    pause_reason: str | None = None
+    pause_reason_label: str | None = None  # Human-readable text matching the key
+    # Wall-clock (epoch seconds, ``time.time()``) at which the current pause
+    # started. Populated by ``main._handle_pause_edge`` on the RUNNING→PAUSE
+    # transition, cleared back to ``None`` on PAUSE→RUNNING. Surfaces in the
+    # status snapshot so the frontend live-counter ("Paused 14 min") survives
+    # an F5 / page navigation — without it, the counter would reset to zero
+    # on every snapshot poll because there's no other authoritative source
+    # for "when did this pause start".
+    pause_started_at: float | None = None
     # Nozzle hardware info (for dual nozzle printers, index 0 = left, 1 = right)
     nozzles: list = field(default_factory=lambda: [NozzleInfo(), NozzleInfo()])
     # AI detection and print options

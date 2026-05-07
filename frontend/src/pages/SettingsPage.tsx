@@ -4100,6 +4100,8 @@ export function SettingsPage() {
                   print_complete: { group: 'print', channel: 'all' },
                   print_failed: { group: 'print', channel: 'all' },
                   print_stopped: { group: 'print', channel: 'all' },
+                  print_paused: { group: 'print', channel: 'all' },
+                  print_resumed: { group: 'print', channel: 'all' },
                   print_progress: { group: 'print', channel: 'all' },
                   print_missing_spool_assignment: { group: 'print', channel: 'all' },
                   plate_not_empty: { group: 'print', channel: 'all' },

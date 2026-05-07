@@ -19,6 +19,16 @@
     "title_template": "Друк зупинено",
     "body_template": "{printer}: {filename}\nЧас: {duration}"
   },
+  "print_paused": {
+    "name": "Друк на паузі",
+    "title_template": "Друк на паузі",
+    "body_template": "{printer}: {filename}\nПричина: {reason}"
+  },
+  "print_resumed": {
+    "name": "Друк відновлено",
+    "title_template": "Друк відновлено",
+    "body_template": "{printer}: {filename}\nТривалість паузи: {paused_for}"
+  },
   "print_progress": {
     "name": "Прогрес друку",
     "title_template": "Друк {progress}% завершено",
