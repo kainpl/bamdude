@@ -1739,6 +1739,7 @@ async def _run_slicer_with_fallback(
     """
     from backend.app.services.preset_resolver import resolve_preset_ref
     from backend.app.services.slicer_api import (
+        BundleNotFoundError,
         SlicerApiServerError,
         SlicerApiService,
         SlicerApiUnavailableError,
@@ -1750,21 +1751,24 @@ async def _run_slicer_with_fallback(
     if current_user_id is not None:
         user = await db.get(User, current_user_id)
 
+    bundle_spec = request.bundle  # may be None — bundle path is opt-in.
+
     presets: dict[str, str] = {}
-    refs = {
-        "printer": request.printer_preset,
-        "process": request.process_preset,
-    }
-    for slot, ref in refs.items():
-        assert ref is not None, "schema validator guarantees PresetRef is set"
-        presets[slot] = await resolve_preset_ref(db, user, ref, slot)
-    # Multi-color: resolve each filament slot in plate order. The schema
-    # validator backfills ``filament_presets`` from the legacy singular
-    # field for older single-color callers, so this list is non-empty.
     filament_jsons: list[str] = []
-    for ref in request.filament_presets:
-        assert ref is not None, "schema validator guarantees filament list is non-None"
-        filament_jsons.append(await resolve_preset_ref(db, user, ref, "filament"))
+    if bundle_spec is None:
+        refs = {
+            "printer": request.printer_preset,
+            "process": request.process_preset,
+        }
+        for slot, ref in refs.items():
+            assert ref is not None, "schema validator guarantees PresetRef is set"
+            presets[slot] = await resolve_preset_ref(db, user, ref, slot)
+        # Multi-color: resolve each filament slot in plate order. The schema
+        # validator backfills ``filament_presets`` from the legacy singular
+        # field for older single-color callers, so this list is non-empty.
+        for ref in request.filament_presets:
+            assert ref is not None, "schema validator guarantees filament list is non-None"
+            filament_jsons.append(await resolve_preset_ref(db, user, ref, "filament"))
 
     # Slicer routing — per-request override on the SliceRequest wins over
     # the global preferred_slicer setting; per-install URL setting wins
@@ -1829,18 +1833,37 @@ async def _run_slicer_with_fallback(
         progress_callback = _on_progress
     try:
         try:
-            result = await service.slice_with_profiles(
-                model_bytes=primary_bytes,
-                model_filename=model_filename,
-                printer_profile_json=presets["printer"],
-                process_profile_json=presets["process"],
-                filament_profile_jsons=filament_jsons,
-                plate=request.plate,
-                export_3mf=request.export_3mf,
-                bed_type=request.bed_type,
-                request_id=progress_request_id,
-                on_progress=progress_callback,
-            )
+            if bundle_spec is not None:
+                # Bundle path: sidecar materialises printer/process/filament
+                # JSONs from the stored .bbscfg by name. Skips PresetRef
+                # resolution entirely — closes the cloud-preset-behind-login,
+                # "from User" sentinel, "# "-prefix clone, dangling-inherits
+                # corner cases the resolver had to chase per slice.
+                result = await service.slice_with_bundle(
+                    model_bytes=primary_bytes,
+                    model_filename=model_filename,
+                    bundle_id=bundle_spec.bundle_id,
+                    printer_name=bundle_spec.printer_name,
+                    process_name=bundle_spec.process_name,
+                    filament_names=bundle_spec.filament_names,
+                    plate=request.plate,
+                    export_3mf=request.export_3mf,
+                    request_id=progress_request_id,
+                    on_progress=progress_callback,
+                )
+            else:
+                result = await service.slice_with_profiles(
+                    model_bytes=primary_bytes,
+                    model_filename=model_filename,
+                    printer_profile_json=presets["printer"],
+                    process_profile_json=presets["process"],
+                    filament_profile_jsons=filament_jsons,
+                    plate=request.plate,
+                    export_3mf=request.export_3mf,
+                    bed_type=request.bed_type,
+                    request_id=progress_request_id,
+                    on_progress=progress_callback,
+                )
         except SlicerApiServerError as exc:
             if not is_3mf:
                 raise
@@ -1855,7 +1878,10 @@ async def _run_slicer_with_fallback(
             # bytes — the embedded-settings path also reads the same
             # project_settings.config and the same range validator runs
             # there too, so without sanitisation the fallback would die
-            # on the same sentinel error (#1201).
+            # on the same sentinel error (#1201). Bundle requests fall
+            # back through the same path — used_embedded_settings=True
+            # surfaces in the response so callers know the bundle didn't
+            # apply on this slice.
             result = await service.slice_without_profiles(
                 model_bytes=primary_bytes,
                 model_filename=model_filename,
@@ -1866,6 +1892,12 @@ async def _run_slicer_with_fallback(
                 on_progress=progress_callback,
             )
             used_embedded_settings = True
+    except BundleNotFoundError as exc:
+        # Sidecar 404 on the bundle / preset name resolution → caller
+        # supplied bad input, not a server fault. 400 keeps the SliceModal's
+        # "fix the bundle pick and retry" UX without flagging a sidecar
+        # outage.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except SlicerInputError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except SlicerApiServerError as exc:

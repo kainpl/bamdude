@@ -1517,6 +1517,22 @@ export type BedType =
   | 'Textured PEI Plate'
   | 'Supertack Plate';
 
+export interface SliceBundleSpec {
+  bundle_id: string;
+  printer_name: string;
+  process_name: string;
+  filament_names: string[];
+}
+
+export interface SlicerBundle {
+  id: string;
+  printer_preset_name: string;
+  printer: string[];
+  process: string[];
+  filament: string[];
+  version: string | null;
+}
+
 export interface SliceRequest {
   printer_preset_id?: number;
   process_preset_id?: number;
@@ -1542,6 +1558,11 @@ export interface SliceRequest {
   // "Cool Plate" (the upstream default — wrong for X1/A1 users who actually
   // use Textured PEI / SuperTack).
   bed_type?: BedType;
+  // Optional Printer Preset Bundle reference. When set, the dispatcher
+  // skips PresetRef resolution and asks the sidecar to materialise the
+  // printer / process / filament JSONs from the stored bundle by name.
+  // Mutually exclusive with the *_preset / *_preset_id fields.
+  bundle?: SliceBundleSpec;
 }
 
 export interface SlicerHealth {
@@ -5876,6 +5897,32 @@ export const api = {
   // the wire on every dropdown open.
   getSlicerHealth: (slicer: 'orcaslicer' | 'bambu_studio') =>
     request<SlicerHealth>(`/slicer/health/${slicer}`),
+
+  // Slicer Preset Bundles (.bbscfg) — pick presets from a stored bundle
+  // sidecar-side instead of resolving cloud/local/standard PresetRefs every
+  // slice. SliceModal renders the bundle picker only when this list is
+  // non-empty; falls back to PresetRef triplet path when empty.
+  listSlicerBundles: () =>
+    request<SlicerBundle[]>('/slicer/bundles'),
+  getSlicerBundle: (id: string) =>
+    request<SlicerBundle>(`/slicer/bundles/${encodeURIComponent(id)}`),
+  importSlicerBundle: (file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return fetch(`${API_BASE}/slicer/bundles`, {
+      method: 'POST',
+      headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+      body: formData,
+    }).then(async (response) => {
+      if (!response.ok) {
+        const detail = await response.text().catch(() => `${response.status}`);
+        throw new Error(detail || `Failed to import slicer bundle: ${response.status}`);
+      }
+      return response.json() as Promise<SlicerBundle>;
+    });
+  },
+  deleteSlicerBundle: (id: string) =>
+    request<void>(`/slicer/bundles/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   // Local Presets (OrcaSlicer imports)
   getLocalPresets: () =>

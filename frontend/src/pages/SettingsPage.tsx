@@ -33,6 +33,7 @@ import { LDAPSettings } from '../components/LDAPSettings';
 import { TwoFactorSettings } from '../components/TwoFactorSettings';
 import { OIDCProviderSettings } from '../components/OIDCProviderSettings';
 import { SecurityStatusCard } from '../components/SecurityStatusCard';
+import { SlicerBundlesPanel } from '../components/SlicerBundlesPanel';
 import { FailureDetectionSettings } from '../components/FailureDetectionSettings';
 import { APIBrowser } from '../components/APIBrowser';
 import { Toggle } from '../components/Toggle';
@@ -1773,6 +1774,12 @@ export function SettingsPage() {
               </div>
             </CardContent>
           </Card>
+
+          {/* Slicer Preset Bundles — only meaningful when the sidecar is in use,
+              since uploads / lists round-trip through it. Hide it entirely when
+              use_slicer_api is off so the Settings page doesn't show a panel that
+              can't do anything. */}
+          {(localSettings.use_slicer_api ?? false) && <SlicerBundlesPanel />}
 
           <Card>
             <CardHeader>
