@@ -27,7 +27,7 @@ export type SettingsSearchTab =
   | 'users'
   | 'backup';
 
-export type SettingsSearchSubTab = 'users' | 'email' | 'ldap' | 'twofa' | 'oidc';
+export type SettingsSearchSubTab = 'users' | 'email' | 'ldap' | 'twofa' | 'oidc' | 'security';
 
 export interface SettingsSearchEntry {
   /** i18n key for the label. Resolved with t() at render time. */

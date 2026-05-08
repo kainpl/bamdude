@@ -1235,7 +1235,29 @@ export default {
       users: 'Authentication',
       backup: 'Backup',
       emailAuth: 'Email Authentication',
-      ldap: 'LDAP'
+      ldap: 'LDAP',
+      security: 'Security'
+    },
+    encryption: {
+      title: 'MFA Encryption Status',
+      enabledFromEnv: 'Encryption enabled (key from environment)',
+      enabledFromFile: 'Encryption enabled (key file)',
+      enabledGenerated: 'Encryption enabled (auto-generated key)',
+      backupHint: 'BamDude generated a key on first start. Back up DATA_DIR/.mfa_encryption_key — without it, encrypted secrets cannot be decrypted on a new host.',
+      allEncrypted: 'All MFA secrets are encrypted at rest.',
+      legacyRowsWarning_one: '{{count}} secret is still stored as plaintext. It will be re-encrypted on next write.',
+      legacyRowsWarning_other: '{{count}} secrets are still stored as plaintext. They will be re-encrypted on next write.',
+      migrationErrorWarning_one: '{{count}} row was skipped during the last re-encryption migration. Check server logs.',
+      migrationErrorWarning_other: '{{count}} rows were skipped during the last re-encryption migration. Check server logs.',
+      decryptionBrokenTitle: 'Decryption broken — recovery required',
+      decryptionBrokenError_one: '{{count}} encrypted secret cannot be decrypted with the current key. Restore the original key file or re-enroll affected users.',
+      decryptionBrokenError_other: '{{count}} encrypted secrets cannot be decrypted with the current key. Restore the original key file or re-enroll affected users.',
+      notConfigured: 'Encryption not configured',
+      notConfiguredDesc: 'Set MFA_ENCRYPTION_KEY in the environment or let BamDude auto-generate a key on next restart.',
+      encryptedRowsLabel: 'Encrypted rows',
+      legacyRowsLabel: 'Plaintext rows',
+      errorLoading: 'Failed to load encryption status',
+      retry: 'Retry'
     },
     // LDAP settings
     ldap: {

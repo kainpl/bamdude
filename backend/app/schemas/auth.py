@@ -500,3 +500,22 @@ class OIDCLinkResponse(BaseModel):
     provider_name: str
     provider_email: str | None = None
     created_at: str
+
+
+class EncryptionRowCounts(BaseModel):
+    oidc_providers: int
+    user_totp: int
+
+
+class EncryptionStatusResponse(BaseModel):
+    key_configured: bool
+    key_source: Literal["env", "file", "generated", "none"]
+    legacy_plaintext_rows: EncryptionRowCounts
+    encrypted_rows: EncryptionRowCounts
+    # Filled by the endpoint after a sample-decrypt of one encrypted row, so
+    # a wrong-key state (key_configured=True but rows decrypt to junk) is
+    # detected, not just the no-key case.
+    decryption_broken: bool = False
+    # Number of rows skipped during the last legacy re-encryption migration.
+    # Filled from backend.app.core.database.get_migration_error_count().
+    migration_error_count: int = 0

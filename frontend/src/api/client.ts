@@ -3296,10 +3296,25 @@ export interface AuthStatus {
   requires_setup: boolean;
 }
 
+export interface EncryptionRowCounts {
+  oidc_providers: number;
+  user_totp: number;
+}
+
+export interface EncryptionStatus {
+  key_configured: boolean;
+  key_source: 'env' | 'file' | 'generated' | 'none';
+  legacy_plaintext_rows: EncryptionRowCounts;
+  encrypted_rows: EncryptionRowCounts;
+  decryption_broken: boolean;
+  migration_error_count: number;
+}
+
 // API functions
 export const api = {
   // Authentication
   getAuthStatus: () => request<AuthStatus>('/auth/status'),
+  getEncryptionStatus: () => request<EncryptionStatus>('/auth/encryption-status'),
   setupAuth: (data: SetupRequest) =>
     request<SetupResponse>('/auth/setup', {
       method: 'POST',

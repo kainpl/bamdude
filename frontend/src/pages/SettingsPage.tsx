@@ -32,6 +32,7 @@ import { EmailSettings } from '../components/EmailSettings';
 import { LDAPSettings } from '../components/LDAPSettings';
 import { TwoFactorSettings } from '../components/TwoFactorSettings';
 import { OIDCProviderSettings } from '../components/OIDCProviderSettings';
+import { SecurityStatusCard } from '../components/SecurityStatusCard';
 import { FailureDetectionSettings } from '../components/FailureDetectionSettings';
 import { APIBrowser } from '../components/APIBrowser';
 import { Toggle } from '../components/Toggle';
@@ -49,7 +50,7 @@ import { PrintOptionsPreferencesPanel } from '../components/settings/PrintOption
 
 const validTabs = ['general', 'printing', 'filament', 'notifications', 'plugs', 'network', 'virtual-printer', 'apikeys', 'failure-detection', 'users', 'backup'] as const;
 type TabType = typeof validTabs[number];
-type UsersSubTab = 'users' | 'email' | 'ldap' | 'twofa' | 'oidc';
+type UsersSubTab = 'users' | 'email' | 'ldap' | 'twofa' | 'oidc' | 'security';
 
 // Module-level search registry. Tab-level entries only — see lib/settingsSearch.ts
 // for the design note. Adding a narrower `anchor="card-xyz"` entry + id on the
@@ -5174,6 +5175,19 @@ export function SettingsPage() {
                 SSO / OIDC
               </button>
             )}
+            {isAdmin && (
+              <button
+                onClick={() => setUsersSubTab('security')}
+                className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+                  usersSubTab === 'security'
+                    ? 'text-bambu-green border-bambu-green'
+                    : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+                }`}
+              >
+                <Shield className="w-4 h-4" />
+                {t('settings.tabs.security')}
+              </button>
+            )}
           </div>
 
           {/* Users Sub-tab */}
@@ -5459,6 +5473,12 @@ export function SettingsPage() {
           {usersSubTab === 'oidc' && isAdmin && (
             <div className="max-w-3xl">
               <OIDCProviderSettings />
+            </div>
+          )}
+
+          {usersSubTab === 'security' && isAdmin && (
+            <div className="max-w-2xl">
+              <SecurityStatusCard />
             </div>
           )}
         </div>

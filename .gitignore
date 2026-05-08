@@ -76,6 +76,8 @@ node_modules/
 
 # JWT secret file (should be in data dir, but protect project root too)
 .jwt_secret
+# MFA encryption key file (auto-generated on first startup if not set via env)
+.mfa_encryption_key
 
 # Security scan output
 *.sarif
