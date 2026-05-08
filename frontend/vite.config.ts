@@ -7,14 +7,21 @@ const backendPort = process.env.BACKEND_PORT || '8000'
 const backendUrl = `http://localhost:${backendPort}`
 
 export default defineConfig({
-    // Empty base emits relative asset URLs (./assets/..., ./manifest.json,
-    // ./img/..., ./sw-register.js) instead of host-rooted ones, so the built
-    // SPA loads correctly when served at any subpath — Traefik / nginx path
-    // prefix / Cloudflare Tunnel path routing / HA Webpage panel iframes
-    // (#1195). Backend /assets and /img mounts in main.py keep working because
-    // the proxy strips the prefix before forwarding, so the backend always
-    // sees unprefixed paths.
-    base: '',
+    // Default base ('/') emits absolute asset URLs (/assets/..., /manifest.json,
+    // /sw-register.js). Reverted from the previous `base: ''` (relative URLs)
+    // because relative asset paths broke deep-route initial-load on every
+    // browser: opening /camera/<id> popped a popup whose document URL had no
+    // trailing slash, so `./assets/index-XXX.js` resolved against /camera/ as
+    // the directory and /camera/ → SPA catch-all returned index.html
+    // (text/html). Modern browsers refuse to execute HTML as a JS module
+    // under nosniff, so the popup loaded but the bundle never did. Same
+    // break hit any deep route on direct URL paste / refresh (/projects/:id,
+    // /groups/:id/edit, /files/trash, /external/:id). Path-prefixed reverse
+    // proxy users (Traefik / nginx subpath / Cloudflare Tunnel path routing)
+    // who motivated `base: ''` have a working alternative: NPM addon +
+    // Cloudflare Tunnel at a real domain + HA Webpage panel embedding via
+    // TRUSTED_FRAME_ORIGINS — that path doesn't depend on `base` at all.
+    // (Upstream Bambuddy #1221 reverts PR #1195.)
     plugins: [react()],
     build: {
         outDir: '../static',
