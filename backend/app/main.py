@@ -53,6 +53,7 @@ from backend.app.api.routes import (
     slicer_presets,
     smart_plugs,
     spoolman,
+    spoolman_inventory,
     support,
     system,
     telegram,
@@ -1398,6 +1399,94 @@ async def on_ams_change(printer_id: int, ams_data: list):
                                         )
                                         existing_assignment.spool.weight_used = new_used
                                         await db.commit()
+
+                            # Re-apply stored K-profile when the live tray's
+                            # cali_idx drifted from the spool's stored profile.
+                            # Catches "reset slot → re-read" + any other path
+                            # where the firmware loses the user's K-profile
+                            # selection while the SpoolAssignment row persists.
+                            # Per upstream maintainer's rule (b30a2831): any time
+                            # a spool tag is identified and matches inventory,
+                            # the slot must be configured with the spool's
+                            # stored settings. Without this block the existing-
+                            # assignment branch only ran weight-sync and let the
+                            # firmware-default cali_idx win.
+                            try:
+                                spool = existing_assignment.spool
+                                if (
+                                    spool is not None
+                                    and is_bambu_tag(tag_uid, tray_uuid, tray_info_idx)
+                                    and spool.k_profiles
+                                ):
+                                    state = printer_manager.get_status(printer_id)
+                                    nozzle_diameter = "0.4"
+                                    if state and state.nozzles:
+                                        nd = state.nozzles[0].nozzle_diameter
+                                        if nd:
+                                            nozzle_diameter = nd
+                                    slot_extruder: int | None = None
+                                    if state and state.ams_extruder_map:
+                                        if ams_id == 255:
+                                            slot_extruder = 1 - tray_id
+                                        else:
+                                            slot_extruder = state.ams_extruder_map.get(str(ams_id))
+                                    # Prefer exact extruder match, fall back to
+                                    # extruder-agnostic kp for the same printer +
+                                    # nozzle. Avoids hard-skipping when the AMS is
+                                    # mapped differently than at calibration time.
+                                    matching_kp = None
+                                    fallback_kp = None
+                                    for kp in spool.k_profiles:
+                                        if (
+                                            kp.printer_id != printer_id
+                                            or kp.nozzle_diameter != nozzle_diameter
+                                            or kp.cali_idx is None
+                                        ):
+                                            continue
+                                        if (
+                                            slot_extruder is not None
+                                            and kp.extruder is not None
+                                            and kp.extruder == slot_extruder
+                                        ):
+                                            matching_kp = kp
+                                            break
+                                        if fallback_kp is None:
+                                            fallback_kp = kp
+                                    chosen_kp = matching_kp or fallback_kp
+                                    if chosen_kp is not None:
+                                        live_cali_idx = tray.get("cali_idx")
+                                        # Only fire MQTT when the printer's live
+                                        # cali_idx differs from the stored value.
+                                        # Avoids spamming the broker on every
+                                        # MQTT push during steady-state operation.
+                                        if live_cali_idx != chosen_kp.cali_idx:
+                                            client = printer_manager.get_client(printer_id)
+                                            if client:
+                                                cali_filament_id = spool.slicer_filament or tray_info_idx or ""
+                                                client.extrusion_cali_sel(
+                                                    ams_id=ams_id,
+                                                    tray_id=tray_id,
+                                                    cali_idx=chosen_kp.cali_idx,
+                                                    filament_id=cali_filament_id,
+                                                    nozzle_diameter=nozzle_diameter,
+                                                )
+                                                logger.info(
+                                                    "Re-applied K-profile cali_idx=%d for spool %d "
+                                                    "on printer %d AMS%d-T%d (live=%s drift detected)",
+                                                    chosen_kp.cali_idx,
+                                                    spool.id,
+                                                    printer_id,
+                                                    ams_id,
+                                                    tray_id,
+                                                    live_cali_idx,
+                                                )
+                            except Exception:
+                                logger.exception(
+                                    "K-profile re-apply failed for printer %d AMS%d-T%d",
+                                    printer_id,
+                                    ams_id,
+                                    tray_id,
+                                )
                             continue
 
                         if is_bambu_tag(tag_uid, tray_uuid, tray_info_idx):
@@ -6011,6 +6100,7 @@ app.include_router(notifications.router, prefix=app_settings.api_prefix)
 app.include_router(notification_templates.router, prefix=app_settings.api_prefix)
 app.include_router(user_notifications.router, prefix=app_settings.api_prefix)
 app.include_router(spoolman.router, prefix=app_settings.api_prefix)
+app.include_router(spoolman_inventory.router, prefix=app_settings.api_prefix)
 app.include_router(updates.router, prefix=app_settings.api_prefix)
 app.include_router(macros.router, prefix=app_settings.api_prefix)
 app.include_router(maintenance.router, prefix=app_settings.api_prefix)

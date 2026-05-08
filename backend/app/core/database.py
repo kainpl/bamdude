@@ -170,6 +170,8 @@ async def init_db():
         spool_catalog,
         spool_k_profile,
         spool_usage_history,
+        spoolman_k_profile,
+        spoolman_slot_assignment,
         telegram_chat,
         user,
         user_email_pref,
