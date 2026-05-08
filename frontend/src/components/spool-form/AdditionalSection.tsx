@@ -178,6 +178,7 @@ export function AdditionalSection({
   quickAdd = false,
   categories = [],
   errors = {},
+  spoolmanMode = false,
 }: AdditionalSectionProps) {
   const { t } = useTranslation();
   const { showToast } = useToast();
@@ -203,14 +204,18 @@ export function AdditionalSection({
 
   return (
     <div className="space-y-4">
-      {/* Empty Spool Weight */}
-      <SpoolWeightPicker
-        catalog={spoolCatalog}
-        value={formData.core_weight}
-        onChange={(weight) => updateField('core_weight', weight)}
-        catalogId={formData.core_weight_catalog_id}
-        onCatalogIdChange={(id) => updateField('core_weight_catalog_id', id)}
-      />
+      {/* Empty Spool Weight — hidden in Spoolman mode (managed per filament type in Spoolman) */}
+      {spoolmanMode ? (
+        <p className="text-xs text-bambu-gray px-1">{t('inventory.spoolWeightManagedBySpoolman')}</p>
+      ) : (
+        <SpoolWeightPicker
+          catalog={spoolCatalog}
+          value={formData.core_weight}
+          onChange={(weight) => updateField('core_weight', weight)}
+          catalogId={formData.core_weight_catalog_id}
+          onCatalogIdChange={(id) => updateField('core_weight_catalog_id', id)}
+        />
+      )}
 
       {/* Current Weight (remaining filament) */}
       <div>
@@ -517,6 +522,19 @@ export function AdditionalSection({
             shape="square"
           />
         </div>
+      </div>
+
+      {/* Storage Location (Spoolman inventory UI — upstream PR #1241) */}
+      <div>
+        <label className="block text-sm font-medium text-bambu-gray mb-1">{t('inventory.storageLocation')}</label>
+        <input
+          type="text"
+          maxLength={255}
+          className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm placeholder:text-bambu-gray/50 focus:outline-none focus:border-bambu-green"
+          placeholder={t('inventory.storageLocationPlaceholder')}
+          value={formData.storage_location ?? ''}
+          onChange={(e) => updateField('storage_location', e.target.value)}
+        />
       </div>
     </div>
   );

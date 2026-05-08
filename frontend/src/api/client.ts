@@ -1,5 +1,14 @@
 import type { ArchivePlatesResponse, LibraryFilePlatesResponse } from '../types/plates';
 
+export class ApiError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
 const API_BASE = '/api/v1';
 
 // Auth token storage
@@ -2746,6 +2755,14 @@ export interface SpoolmanFilamentPatch {
   keep_existing_spools?: boolean;
 }
 
+export interface SpoolmanBulkCreateResult {
+  created: InventorySpool[];
+  failed: number;
+  failed_count: number;
+  requested_count: number;
+  first_error?: string;
+}
+
 // Inventory types
 export interface InventorySpool {
   id: number;
@@ -5087,7 +5104,7 @@ export const api = {
   // Spoolman Inventory proxy (unified UI when Spoolman is enabled — port of upstream PR #1241).
   getSpoolmanInventoryFilaments: () =>
     request<SpoolmanFilamentEntry[]>('/spoolman/inventory/filaments'),
-  patchSpoolmanInventoryFilament: (filamentId: number, data: SpoolmanFilamentPatch) =>
+  patchSpoolmanFilament: (filamentId: number, data: SpoolmanFilamentPatch) =>
     request<SpoolmanFilamentEntry>(`/spoolman/inventory/filaments/${filamentId}`, {
       method: 'PATCH',
       body: JSON.stringify(data),
@@ -5107,7 +5124,7 @@ export const api = {
     data: Omit<InventorySpool, 'id' | 'archived_at' | 'created_at' | 'updated_at' | 'k_profiles'>,
     quantity: number,
   ) =>
-    request<{ created: InventorySpool[]; failed: number; first_error?: string } | InventorySpool[]>(
+    request<SpoolmanBulkCreateResult | InventorySpool[]>(
       '/spoolman/inventory/spools/bulk',
       {
         method: 'POST',
@@ -5128,7 +5145,7 @@ export const api = {
     request<InventorySpool>(`/spoolman/inventory/spools/${id}/archive`, { method: 'POST' }),
   restoreSpoolmanInventorySpool: (id: number) =>
     request<InventorySpool>(`/spoolman/inventory/spools/${id}/restore`, { method: 'POST' }),
-  linkTagToSpoolmanInventorySpool: (
+  linkTagToSpoolmanSpool: (
     spoolId: number,
     data: { tag_uid?: string; tray_uuid?: string },
   ) =>
@@ -5136,7 +5153,7 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(data),
     }),
-  syncSpoolmanInventorySpoolWeight: (spoolId: number, weightGrams: number) =>
+  syncSpoolmanSpoolWeight: (spoolId: number, weightGrams: number) =>
     request<{ status: string; weight_used: number }>(
       `/spoolman/inventory/spools/${spoolId}/weight`,
       {
@@ -5144,7 +5161,7 @@ export const api = {
         body: JSON.stringify({ weight_grams: weightGrams }),
       },
     ),
-  assignSpoolmanInventorySlot: (data: {
+  assignSpoolmanSlot: (data: {
     spoolman_spool_id: number;
     printer_id: number;
     ams_id: number;
@@ -5154,27 +5171,27 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
-  unassignSpoolmanInventorySlot: (spoolmanSpoolId: number) =>
+  unassignSpoolmanSlot: (spoolmanSpoolId: number) =>
     request<InventorySpool>(`/spoolman/inventory/slot-assignments/${spoolmanSpoolId}`, {
       method: 'DELETE',
     }),
-  getSpoolmanInventorySlotAssignment: (printerId: number, amsId: number, trayId: number) =>
+  getSpoolmanSlotAssignment: (printerId: number, amsId: number, trayId: number) =>
     request<InventorySpool | null>(
       `/spoolman/inventory/slot-assignments?printer_id=${printerId}&ams_id=${amsId}&tray_id=${trayId}`,
     ),
-  getSpoolmanInventorySlotAssignments: (printerId?: number) =>
+  getSpoolmanSlotAssignments: (printerId?: number) =>
     request<SpoolmanSlotAssignmentEnriched[]>(
       printerId !== undefined
         ? `/spoolman/inventory/slot-assignments/all?printer_id=${printerId}`
         : '/spoolman/inventory/slot-assignments/all',
     ),
-  syncSpoolmanInventoryAmsWeights: () =>
+  syncSpoolmanAmsWeights: () =>
     request<{ synced: number; skipped: number }>('/spoolman/inventory/sync-ams-weights', {
       method: 'POST',
     }),
-  getSpoolmanInventoryKProfiles: (spoolId: number) =>
+  getSpoolmanKProfiles: (spoolId: number) =>
     request<SpoolKProfile[]>(`/spoolman/inventory/spools/${spoolId}/k-profiles`),
-  saveSpoolmanInventoryKProfiles: (spoolId: number, profiles: SpoolKProfileInput[]) =>
+  saveSpoolmanKProfiles: (spoolId: number, profiles: SpoolKProfileInput[]) =>
     request<SpoolKProfile[]>(`/spoolman/inventory/spools/${spoolId}/k-profiles`, {
       method: 'PUT',
       body: JSON.stringify(profiles),
