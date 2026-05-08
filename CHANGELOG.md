@@ -117,6 +117,10 @@ All notable changes to BamDude will be documented in this file.
 
 - **Daily-snapshot release channel removed.** Never used in practice — `0.5.0b1-daily.YYYYMMDD` style tags + the `:…-daily.YYYYMMDD` Docker tag never produced a single image since they were introduced. The `.github/workflows/docker-publish-daily.yml` workflow, the daily-skip branch in `docker-publish-tag.yml`, and the daily channel handling in `docker-publish.sh` + `scripts/set_version.js` are gone. The three remaining channels (stable / beta / `:dev` rolling) cover the actual release cadence. Existing daily-shaped tags from previous experiments (if any are still on the remote) stay — tag immutability rule.
 
+### Security
+
+- **`python-multipart` floor raised `>=0.0.26 → >=0.0.27` for CVE-2026-42561** (upstream Bambuddy `a7b3e01b`) — Parser-side advisory against malformed multipart input; supersedes the existing CVE-2026-40347 floor on 0.0.26. python-multipart sits on every BamDude upload path through FastAPI's `UploadFile` (3MF / STEP / STL / OBJ upload, label-template imports, OIDC certificate upload, backup restore). Blast radius is bounded to authenticated callers — every multipart route is gated on `Permission.LIBRARY_UPLOAD` / `SETTINGS_UPDATE` / `INVENTORY_UPDATE` — but the bump is mechanical and the floor was already loose, so no reason to wait. `requirements.txt` line 35 updated; the existing CVE-2026-40347 reference is collapsed into the new comment.
+
 ---
 
 ## [0.4.3] - 2026-05-05
