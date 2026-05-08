@@ -414,6 +414,63 @@ class TestStatusReportCachedAsBase:
         assert payload["print"]["gcode_state"] == "PREPARE"
         assert payload["print"]["gcode_file"] == "foo.3mf"
 
+    @pytest.mark.asyncio
+    async def test_storage_indicators_overlaid_for_send_preflight(self):
+        """When the cached push lacks SD/storage indicators (P1S/A1 with no SD card,
+        older field shapes), the cached-as-base path must overlay them so
+        BambuStudio's Send pre-flight reads them as "storage available" — slicer
+        FTPs to BamDude, not the printer's SD card. Pin upstream #1228 fix.
+        """
+        server = _make_server()
+        bridge = MagicMock()
+        # Real-printer-shaped push that doesn't report SD/storage (P1S/A1
+        # firmware that hit #1228 — partial home_flag, no sdcard field, no
+        # storage block).
+        bridge.get_latest_print_state.return_value = {
+            "command": "push_status",
+            "msg": 0,
+            "home_flag": 0x10,  # partial bits, NO 0x100 (HAS_SDCARD_NORMAL)
+            "sdcard": False,
+        }
+        server.set_bridge(bridge)
+        published = self._capture_published(server)
+
+        await server._send_status_report(MagicMock())
+        _serial, payload = published[0]
+        # Bit 0x100 OR'd onto partial home_flag (preserves the 0x10 bits).
+        assert payload["print"]["home_flag"] == 0x10 | 0x100
+        # sdcard forced True even when real reported False.
+        assert payload["print"]["sdcard"] is True
+        # storage block injected when cache lacks one; non-zero free/total.
+        assert "storage" in payload["print"]
+        assert payload["print"]["storage"]["free"] > 0
+        assert payload["print"]["storage"]["total"] > 0
+
+    @pytest.mark.asyncio
+    async def test_storage_indicators_preserve_real_storage_when_present(self):
+        """When the real printer DOES report SD/storage (H2D, X1C), the overlay
+        must not clobber it — setdefault preserves the real storage block, and
+        OR with 0x100 on home_flag is idempotent when the bit is already set.
+        """
+        server = _make_server()
+        bridge = MagicMock()
+        bridge.get_latest_print_state.return_value = {
+            "command": "push_status",
+            "home_flag": 0x100 | 0x42,  # bit already set + other bits
+            "sdcard": True,
+            "storage": {"free": 12345, "total": 99999},
+        }
+        server.set_bridge(bridge)
+        published = self._capture_published(server)
+
+        await server._send_status_report(MagicMock())
+        _serial, payload = published[0]
+        # Real home_flag bits all preserved (0x100 | 0x42 idempotent under | 0x100).
+        assert payload["print"]["home_flag"] == 0x100 | 0x42
+        # Real storage block passed through unchanged — overlay never overrides
+        # what the printer actually reported.
+        assert payload["print"]["storage"] == {"free": 12345, "total": 99999}
+
 
 # ---------------------------------------------------------------------------
 # Wire format

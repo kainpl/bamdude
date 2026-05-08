@@ -653,6 +653,23 @@ class SimpleMQTTServer:
                 else:
                     # Don't override real subtask_name with empty if no upload pending.
                     print_block.setdefault("subtask_name", "")
+                # Storage indicators overlay — the synthetic stub below always
+                # bakes these three fields because BambuStudio's Send pre-flight
+                # reads them; the cached-as-base path used to pass the real
+                # printer's push through with only an IP rewrite, and P1S/A1
+                # firmware that doesn't report them tripped the pre-flight with
+                # a generic "storage needs to be inserted before send to
+                # printer" error before any FTP attempt (#1228, upstream
+                # ceffcfae). For VP usage the slicer FTPs to BamDude, so the
+                # printer's actual SD card is irrelevant on the queue/immediate/
+                # review/auto-queue cached-as-base paths — forcing "storage
+                # available" is correct. setdefault preserves real values when
+                # present (real home_flag bits stay on; real storage block
+                # passes through unchanged), so the overlay never overrides
+                # what the printer actually reported.
+                print_block["home_flag"] = (print_block.get("home_flag") or 0) | 0x100
+                print_block["sdcard"] = True
+                print_block.setdefault("storage", {"free": 1_000_000_000, "total": 32_000_000_000})
                 status = {"print": print_block}
                 await self._publish_to_report(writer, status, serial or self.serial)
                 return
