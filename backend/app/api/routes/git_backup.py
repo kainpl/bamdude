@@ -196,7 +196,7 @@ async def delete_config(
 async def test_connection(
     repo_url: str = Query(..., description="Repository URL"),
     token: str = Query(..., description="Personal Access Token"),
-    provider: str = Query(default="github", description="Git provider: github or gitlab"),
+    provider: str = Query(default="github", description="Git provider: github, gitlab, gitea, or forgejo"),
     api_base_url: str | None = Query(default=None, description="API base URL for self-hosted GitLab"),
     _: User | None = RequirePermission(Permission.GIT_BACKUP),
 ):

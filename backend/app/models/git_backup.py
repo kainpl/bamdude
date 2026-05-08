@@ -1,6 +1,6 @@
 """Git backup configuration and log models.
 
-Supports GitHub and GitLab as backup providers.
+Supports GitHub, GitLab, Gitea, and Forgejo as backup providers.
 """
 
 from datetime import datetime
@@ -12,12 +12,12 @@ from backend.app.core.database import Base
 
 
 class GitBackupConfig(Base):
-    """Configuration for Git profile backup (GitHub or GitLab)."""
+    """Configuration for Git profile backup (GitHub, GitLab, Gitea, or Forgejo)."""
 
     __tablename__ = "git_backup_config"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    provider: Mapped[str] = mapped_column(String(20), default="github")  # "github" or "gitlab"
+    provider: Mapped[str] = mapped_column(String(20), default="github")  # "github" / "gitlab" / "gitea" / "forgejo"
     repository_url: Mapped[str] = mapped_column(String(500))  # Full repository URL
     access_token: Mapped[str] = mapped_column(Text)  # Personal Access Token
     branch: Mapped[str] = mapped_column(String(100), default="main")

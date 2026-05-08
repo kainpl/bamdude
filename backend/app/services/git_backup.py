@@ -106,21 +106,34 @@ class GitBackupService:
     async def test_connection(
         self, repo_url: str, token: str, provider: str = "github", api_base_url: str | None = None
     ) -> dict:
-        """Test Git provider connection and permissions.
+        """Test Git provider connection and permissions via the factory-resolved backend.
 
         Args:
             repo_url: Repository URL
             token: Personal Access Token
-            provider: "github" or "gitlab"
-            api_base_url: API base URL for self-hosted GitLab
+            provider: "github", "gitlab", "gitea", or "forgejo"
+            api_base_url: legacy parameter — preserved for callers that still
+                pass it; the backend derives its own API base from the URL
+                shape (per-instance host).
 
         Returns:
             dict with success, message, repo_name, permissions
         """
+        from backend.app.services.git_providers import get_provider_backend
+
         try:
-            if provider == "gitlab":
-                return await self._test_connection_gitlab(repo_url, token, api_base_url)
-            return await self._test_connection_github(repo_url, token)
+            backend = get_provider_backend(provider)
+        except ValueError as e:
+            return {
+                "success": False,
+                "message": f"Unknown Git provider: {provider!r}",
+                "repo_name": None,
+                "permissions": None,
+            } | {"detail": str(e)}
+
+        client = await self._get_client()
+        try:
+            return await backend.test_connection(repo_url, token, client)
         except Exception as e:
             logger.error("Git connection test failed: %s", e)
             error_type = type(e).__name__
@@ -130,6 +143,12 @@ class GitBackupService:
                 "repo_name": None,
                 "permissions": None,
             }
+
+    async def _test_connection_legacy_github(self, repo_url: str, token: str) -> dict:  # pragma: no cover
+        # Kept as a private no-op shim for any test that still references the
+        # pre-refactor name; new callers MUST go through ``test_connection``
+        # which dispatches via the factory.
+        return await self.test_connection(repo_url, token, provider="github")
 
     async def _test_connection_github(self, repo_url: str, token: str) -> dict:
         """Test GitHub connection and permissions."""
@@ -710,17 +729,34 @@ class GitBackupService:
         logger.info("Collected %d print archive entries", len(archives_data))
 
     async def _push_to_provider(self, config: GitBackupConfig, files: dict) -> dict:
-        """Push files to the configured Git provider.
+        """Push files to the configured Git provider via the factory-resolved backend.
 
-        Dispatches to GitHub or GitLab implementation.
+        Dispatches to GitHub / GitLab / Gitea / Forgejo backend through
+        ``services/git_providers/factory.py``. The legacy in-class
+        ``_push_github`` / ``_push_gitlab`` methods are kept for backwards
+        compatibility with any test that called them directly, but new
+        callers should always go through this method.
 
         Returns:
             dict with status, message, commit_sha, files_changed
         """
+        from backend.app.services.git_providers import get_provider_backend
+
         provider = config.provider or "github"
-        if provider == "gitlab":
-            return await self._push_gitlab(config, files)
-        return await self._push_github(config, files)
+        try:
+            backend = get_provider_backend(provider)
+        except ValueError as e:
+            logger.error("Unknown Git provider %r: %s", provider, e)
+            return {"status": "failed", "message": f"Unknown Git provider: {provider!r}"}
+
+        client = await self._get_client()
+        return await backend.push_files(
+            config.repository_url,
+            config.access_token,
+            config.branch,
+            files,
+            client,
+        )
 
     async def _push_github(self, config: GitBackupConfig, files: dict) -> dict:
         """Push files to GitHub using the GitHub API.

@@ -39,7 +39,7 @@ import { ConfirmModal } from './ConfirmModal';
 import { useToast } from '../contexts/ToastContext';
 import { formatDateTime as fmtDateTime, formatRelativeTime, type DateFormat, type TimeFormat } from '../utils/date';
 
-type GitProvider = 'github' | 'gitlab';
+type GitProvider = 'github' | 'gitlab' | 'gitea' | 'forgejo';
 
 /**
  * Wrapper that returns ``-`` for null and threads the user's date/time
@@ -164,8 +164,23 @@ export function GitBackupSettings() {
   const isInitializedRef = useRef(false);
 
   // Provider display name
-  const providerName = provider === 'github' ? 'GitHub' : 'GitLab';
-  const ProviderIcon = provider === 'github' ? GitHubIcon : GitLabIcon;
+  const providerName =
+    provider === 'github'
+      ? 'GitHub'
+      : provider === 'gitlab'
+        ? 'GitLab'
+        : provider === 'gitea'
+          ? 'Gitea'
+          : 'Forgejo';
+  // Gitea + Forgejo render with the GitHub icon as a placeholder until we ship
+  // dedicated brand icons — both projects use a Git Data API derived from
+  // GitHub's, so the visual cue is closer to GitHub than to GitLab.
+  const ProviderIcon =
+    provider === 'github'
+      ? GitHubIcon
+      : provider === 'gitlab'
+        ? GitLabIcon
+        : GitHubIcon;
 
   // Queries
   const { data: config, isLoading: configLoading } = useQuery<GitBackupConfig | null>({
@@ -491,6 +506,30 @@ export function GitBackupSettings() {
                       <GitLabIcon className="w-4 h-4 text-white" />
                       <span className="text-sm text-white">{t('backup.providerGitLab')}</span>
                     </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="provider"
+                        value="gitea"
+                        checked={provider === 'gitea'}
+                        onChange={() => { setProvider('gitea'); setTestResult(null); }}
+                        className="w-4 h-4 text-bambu-green focus:ring-bambu-green bg-bambu-dark border-bambu-dark-tertiary"
+                      />
+                      <GitHubIcon className="w-4 h-4 text-white" />
+                      <span className="text-sm text-white">{t('backup.providerGitea')}</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="provider"
+                        value="forgejo"
+                        checked={provider === 'forgejo'}
+                        onChange={() => { setProvider('forgejo'); setTestResult(null); }}
+                        className="w-4 h-4 text-bambu-green focus:ring-bambu-green bg-bambu-dark border-bambu-dark-tertiary"
+                      />
+                      <GitHubIcon className="w-4 h-4 text-white" />
+                      <span className="text-sm text-white">{t('backup.providerForgejo')}</span>
+                    </label>
                   </div>
                 </div>
 
@@ -522,7 +561,13 @@ export function GitBackupSettings() {
                     type="text"
                     value={repoUrl}
                     onChange={(e) => { setRepoUrl(e.target.value); setTestResult(null); }}
-                    placeholder={provider === 'github' ? 'https://github.com/username/repo' : 'https://gitlab.com/group/project'}
+                    placeholder={
+                      provider === 'github'
+                        ? 'https://github.com/username/repo'
+                        : provider === 'gitlab'
+                          ? 'https://gitlab.com/group/project'
+                          : 'https://your-host/owner/repo'
+                    }
                     className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                   />
                 </div>
@@ -536,11 +581,23 @@ export function GitBackupSettings() {
                     type="password"
                     value={accessToken}
                     onChange={(e) => { setAccessToken(e.target.value); setTestResult(null); }}
-                    placeholder={config?.has_token ? t('backup.enterNewToken') : (provider === 'github' ? 'ghp_xxxxxxxxxxxx' : 'glpat-xxxxxxxxxxxx')}
+                    placeholder={
+                      config?.has_token
+                        ? t('backup.enterNewToken')
+                        : provider === 'github'
+                          ? 'ghp_xxxxxxxxxxxx'
+                          : provider === 'gitlab'
+                            ? 'glpat-xxxxxxxxxxxx'
+                            : 'token (Gitea / Forgejo personal access token)'
+                    }
                     className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                   />
                   <p className="text-xs text-bambu-gray mt-1">
-                    {provider === 'github' ? t('backup.tokenHintGitHub') : t('backup.tokenHintGitLab')}
+                    {provider === 'github'
+                      ? t('backup.tokenHintGitHub')
+                      : provider === 'gitlab'
+                        ? t('backup.tokenHintGitLab')
+                        : t('backup.tokenHintGitea')}
                   </p>
                 </div>
 
