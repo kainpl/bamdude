@@ -1152,6 +1152,81 @@ class TestTrayChangeSplit:
         assert results[0]["tray_id"] == 2
 
     @pytest.mark.asyncio
+    async def test_tray_switch_overrides_print_cmd_mapping(self):
+        """tray_change_log evidence overrides slot_to_tray captured at print start.
+
+        Regression for #957: when AMS auto-falls-back from an empty spool to a
+        same-material sibling, the print_cmd's mapping (slot_to_tray, named the
+        original tray) is stale by the time the print finishes. Before this
+        fix, the splitting branch was gated on ``not slot_to_tray`` so the
+        slicer mapping was preferred even when the printer actually fed from a
+        different tray — Path 1 credited the original tray with the full 3MF
+        estimate and Path 2 layered the AMS-fallback delta on top, so spool
+        consumption double-counted.
+        """
+        spool_a = _make_spool(spool_id=10, label_weight=1000)
+        spool_b = _make_spool(spool_id=20, label_weight=1000)
+        assign_a = _make_assignment(spool_id=10, ams_id=0, tray_id=0)
+        assign_b = _make_assignment(spool_id=20, ams_id=0, tray_id=1)
+        archive = _make_archive(archive_id=200)
+
+        db = _mock_db_sequential([archive, None, assign_a, spool_a, assign_b, spool_b])
+
+        # Tray change log has two entries — printer started on T0, switched to
+        # T1 at layer 30. Below we ALSO pass ams_mapping=[0] (slicer captured
+        # T0 at print start), and the splitter must take precedence.
+        printer_manager = MagicMock()
+        printer_manager.get_status.return_value = SimpleNamespace(
+            progress=100,
+            layer_num=100,
+            tray_now=1,
+            last_loaded_tray=1,
+            total_layers=100,
+            tray_change_log=[(0, 0), (1, 30)],
+        )
+
+        filament_usage = [{"slot_id": 1, "used_g": 30.0, "type": "PLA", "color": ""}]
+        handled_trays: set[tuple[int, int]] = set()
+
+        with (
+            patch("backend.app.core.config.settings") as mock_settings,
+            patch(
+                "backend.app.utils.threemf_tools.extract_filament_usage_from_3mf",
+                return_value=filament_usage,
+            ),
+            patch(
+                "backend.app.utils.threemf_tools.extract_layer_filament_usage_from_3mf",
+                return_value=None,  # Linear-fallback split path keeps the test simple
+            ),
+        ):
+            mock_settings.base_dir = MagicMock()
+            mock_path = MagicMock()
+            mock_path.exists.return_value = True
+            mock_settings.base_dir.__truediv__ = MagicMock(return_value=mock_path)
+
+            results = await _track_from_3mf(
+                printer_id=1,
+                archive_id=200,
+                status="completed",
+                print_name="AMS Auto-Fallback Override",
+                handled_trays=handled_trays,
+                printer_manager=printer_manager,
+                db=db,
+                ams_mapping=[0],  # slot_to_tray populated by print_cmd — splitter must override
+            )
+
+        # Splitter wins over slot_to_tray: two segments summing to 30g, no
+        # double-credit.
+        assert len(results) == 2
+        assert results[0]["ams_id"] == 0 and results[0]["tray_id"] == 0
+        assert results[1]["ams_id"] == 0 and results[1]["tray_id"] == 1
+        assert results[0]["weight_used"] + results[1]["weight_used"] == pytest.approx(30.0)
+        # Both trays in handled_trays so Path 2 (AMS remain%-delta) skips them
+        # later in the dispatch flow — eliminates the double-credit at source.
+        assert (0, 0) in handled_trays
+        assert (0, 1) in handled_trays
+
+    @pytest.mark.asyncio
     async def test_empty_tray_change_log_uses_normal_path(self):
         """Empty tray_change_log (e.g. server restart) falls through to existing logic."""
         spool = _make_spool(spool_id=1, label_weight=1000)
