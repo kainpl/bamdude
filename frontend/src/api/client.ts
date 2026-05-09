@@ -5255,9 +5255,10 @@ export const api = {
   // Updates
   getVersion: () => request<VersionInfo>('/updates/version'),
   checkForUpdates: () => request<UpdateCheckResult>('/updates/check'),
-  applyUpdate: () =>
-    request<{ success: boolean; message: string; status?: UpdateStatus; is_docker?: boolean }>('/updates/apply', {
+  applyUpdate: (tagName?: string) =>
+    request<{ success: boolean; message: string; target_ref?: string; status?: UpdateStatus; is_docker?: boolean }>('/updates/apply', {
       method: 'POST',
+      body: JSON.stringify(tagName ? { tag_name: tagName } : {}),
     }),
   getUpdateStatus: () => request<UpdateStatus>('/updates/status'),
 

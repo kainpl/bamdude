@@ -940,7 +940,10 @@ export function SettingsPage() {
   };
 
   const applyUpdateMutation = useMutation({
-    mutationFn: api.applyUpdate,
+    // Pass the tag from the latest /check so apply hits exactly the release
+    // the user just saw (handles beta vs stable channel correctly — pre-fix
+    // the backend hardcoded origin/main and silently no-op'd beta installs).
+    mutationFn: (tagName?: string) => api.applyUpdate(tagName),
     onSuccess: (data) => {
       if (data.is_docker) {
         showToast(data.message, 'error');
@@ -2338,7 +2341,7 @@ export function SettingsPage() {
                     ) : (
                       <Button
                         className="mt-3"
-                        onClick={() => applyUpdateMutation.mutate()}
+                        onClick={() => applyUpdateMutation.mutate(updateCheck?.latest_version ?? undefined)}
                         disabled={applyUpdateMutation.isPending}
                       >
                         {applyUpdateMutation.isPending ? (
