@@ -2890,6 +2890,7 @@ export interface UpdateCheckResult {
   update_available: boolean;
   current_version: string;
   latest_version: string | null;
+  is_prerelease?: boolean;
   release_name?: string;
   release_notes?: string;
   release_url?: string;

@@ -2330,13 +2330,42 @@ export function SettingsPage() {
                         {updateStatus.error || updateStatus.message}
                       </div>
                     ) : updateCheck?.is_docker ? (
-                      <div className="mt-3 p-3 bg-bambu-dark-tertiary rounded-lg">
-                        <p className="text-sm text-bambu-gray mb-2">
-                          {t('settings.updateViaDocker')}
-                        </p>
-                        <code className="block text-xs bg-bambu-dark p-2 rounded text-bambu-green font-mono">
-                          docker compose pull && docker compose up -d
-                        </code>
+                      // Docker installs aren't updated in-app — instead show the
+                      // operator the exact commands they need for both common
+                      // shapes (image-pull from Docker Hub / GHCR, and source-
+                      // build with `compose build`). Pre-fix this was a single
+                      // `docker compose pull && up -d` snippet which silently
+                      // didn't work for any beta tag (`:latest` doesn't track
+                      // betas) or any pinned image tag (pull would re-fetch the
+                      // pinned version, no-op'ing the upgrade).
+                      <div className="mt-3 space-y-3">
+                        {/* Image-based path — most common */}
+                        <div className="p-3 bg-bambu-dark-tertiary rounded-lg">
+                          <p className="text-sm font-medium text-white mb-1">
+                            {t('settings.dockerImagePullTitle')}
+                          </p>
+                          <p className="text-xs text-bambu-gray mb-2">
+                            {updateCheck.is_prerelease
+                              ? t('settings.dockerImagePullBeta')
+                              : t('settings.dockerImagePullStable')}
+                          </p>
+                          <code className="block text-xs bg-bambu-dark p-2 rounded text-bambu-green font-mono whitespace-pre-wrap break-all">
+                            {`# docker-compose.yml\nimage: kainpl/bamdude:${updateCheck.is_prerelease ? updateCheck.latest_version : (updateCheck.latest_version ?? 'latest')}\n\n# then\ndocker compose pull && docker compose up -d`}
+                          </code>
+                        </div>
+
+                        {/* Source-build path — less common but supported */}
+                        <div className="p-3 bg-bambu-dark-tertiary rounded-lg">
+                          <p className="text-sm font-medium text-white mb-1">
+                            {t('settings.dockerSourceBuildTitle')}
+                          </p>
+                          <p className="text-xs text-bambu-gray mb-2">
+                            {t('settings.dockerSourceBuildHint')}
+                          </p>
+                          <code className="block text-xs bg-bambu-dark p-2 rounded text-bambu-green font-mono whitespace-pre-wrap break-all">
+                            {`git fetch origin --tags --prune --force\ngit checkout v${updateCheck.latest_version ?? '<tag>'}\ndocker compose build --pull\ndocker compose up -d`}
+                          </code>
+                        </div>
                       </div>
                     ) : (
                       <Button
