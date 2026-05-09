@@ -1399,6 +1399,10 @@ export default {
     amsSyncing: 'Syncing...',
     amsSyncSuccess: '{{synced}} spool(s) synced, {{skipped}} skipped',
     amsSyncError: 'Failed to sync weights from AMS',
+    spoolmanAmsSyncButton: 'Sync AMS Weights to Spoolman',
+    spoolmanAmsSyncTitle: 'Sync AMS Weights to Spoolman',
+    spoolmanAmsSyncMessage: 'This will push current AMS remain% weights from connected printers to the matching Spoolman spools (matched by RFID tag). Existing Spoolman weights are overwritten. Printers must be online.',
+    spoolmanAmsSyncing: 'Syncing...',
     // Spoolman settings
     spoolmanUrl: 'Spoolman URL',
     spoolmanUrlHint: 'URL of your Spoolman server (e.g., http://localhost:7912)',

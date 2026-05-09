@@ -1413,6 +1413,10 @@ export default {
     amsSyncing: 'Синхронізація...',
     amsSyncSuccess: '{{synced}} котушок синхронізовано, {{skipped}} пропущено',
     amsSyncError: 'Не вдалося синхронізувати вагу з AMS',
+    spoolmanAmsSyncButton: 'Синхронізувати ваги AMS у Spoolman',
+    spoolmanAmsSyncTitle: 'Синхронізація ваг AMS у Spoolman',
+    spoolmanAmsSyncMessage: 'Це надішле поточні залишки ваги AMS з підключених принтерів у відповідні котушки Spoolman (звіряння за RFID-міткою). Наявні ваги в Spoolman будуть перезаписані. Принтери повинні бути онлайн.',
+    spoolmanAmsSyncing: 'Синхронізація...',
     // Spoolman settings
     spoolmanUrl: 'URL Spoolman',
     spoolmanUrlHint: 'URL вашого сервера Spoolman (напр., http://localhost:7912)',
