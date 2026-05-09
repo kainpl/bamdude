@@ -192,17 +192,17 @@ export function BugReportBubble() {
         >
           <div
             ref={modalRef}
-            className="bg-white dark:bg-gray-800 rounded-lg shadow-2xl border border-gray-200 dark:border-gray-700 max-h-[80vh] overflow-y-auto"
+            className="bg-bambu-dark-secondary rounded-xl shadow-2xl border border-bambu-dark-tertiary max-h-[80vh] overflow-y-auto"
           >
             {/* Header */}
-            <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700 sticky top-0 bg-white dark:bg-gray-800 z-10">
-              <h2 className="text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+            <div className="flex items-center justify-between p-4 border-b border-bambu-dark-tertiary sticky top-0 bg-bambu-dark-secondary z-10">
+              <h2 className="text-lg font-semibold text-white flex items-center gap-2">
                 <Bug className="w-5 h-5 text-red-500" />
                 {t('bugReport.title')}
               </h2>
               <button
                 onClick={handleClose}
-                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                className="text-bambu-gray hover:text-white transition-colors"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -213,7 +213,7 @@ export function BugReportBubble() {
                 <>
                   {/* Description */}
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    <label className="block text-sm text-bambu-gray mb-1">
                       {t('bugReport.description')} *
                     </label>
                     <textarea
@@ -221,13 +221,13 @@ export function BugReportBubble() {
                       onChange={(e) => setDescription(e.target.value)}
                       placeholder={t('bugReport.descriptionPlaceholder')}
                       rows={3}
-                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-vertical"
+                      className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray-dark focus:border-bambu-green focus:outline-none resize-vertical"
                     />
                   </div>
 
                   {/* Email (optional) */}
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    <label className="block text-sm text-bambu-gray mb-1">
                       {t('bugReport.email')}
                     </label>
                     <input
@@ -235,16 +235,16 @@ export function BugReportBubble() {
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
                       placeholder={t('bugReport.emailPlaceholder')}
-                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray-dark focus:border-bambu-green focus:outline-none"
                     />
-                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    <p className="mt-1 text-xs text-bambu-gray-dark">
                       {t('bugReport.emailPrivacy')}
                     </p>
                   </div>
 
                   {/* Screenshot — upload, paste, or drag */}
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    <label className="block text-sm text-bambu-gray mb-1">
                       {t('bugReport.screenshot')}
                     </label>
                     {screenshot ? (
@@ -252,7 +252,7 @@ export function BugReportBubble() {
                         <img
                           src={`data:image/jpeg;base64,${screenshot}`}
                           alt={t('bugReport.screenshot')}
-                          className="w-full max-h-40 object-contain rounded-lg border border-gray-200 dark:border-gray-600"
+                          className="w-full max-h-40 object-contain rounded-lg border border-bambu-dark-tertiary"
                         />
                         <button
                           onClick={() => setScreenshot(null)}
@@ -271,8 +271,8 @@ export function BugReportBubble() {
                         onDrop={handleDrop}
                         className={`w-full flex flex-col items-center gap-2 px-4 py-4 border-2 border-dashed rounded-lg transition-colors cursor-pointer ${
                           isDragging
-                            ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-500'
-                            : 'border-gray-300 dark:border-gray-600 text-gray-500 dark:text-gray-400 hover:border-gray-400 dark:hover:border-gray-500 hover:text-gray-600 dark:hover:text-gray-300'
+                            ? 'border-bambu-green bg-bambu-green/10 text-bambu-green'
+                            : 'border-bambu-dark-tertiary text-bambu-gray hover:border-bambu-green hover:text-white bg-bambu-dark'
                         }`}
                       >
                         <Upload className="w-5 h-5" />
@@ -293,14 +293,14 @@ export function BugReportBubble() {
                   </div>
 
                   {/* Data collection notice */}
-                  <details className="text-xs bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-3">
-                    <summary className="cursor-pointer font-medium text-amber-700 dark:text-amber-300 hover:text-amber-800 dark:hover:text-amber-200">
+                  <details className="text-xs bg-bambu-dark border border-bambu-dark-tertiary rounded-lg p-3">
+                    <summary className="cursor-pointer font-medium text-status-warning hover:text-yellow-300">
                       {t('bugReport.dataCollectedSummary')}
                     </summary>
-                    <div className="mt-2 space-y-2 pl-2 border-l-2 border-amber-300 dark:border-amber-700 text-amber-800 dark:text-amber-200">
-                      <p className="font-medium">{t('bugReport.dataIncluded')}</p>
+                    <div className="mt-2 space-y-2 pl-2 border-l-2 border-status-warning/40 text-bambu-gray-light">
+                      <p className="font-medium text-bambu-gray">{t('bugReport.dataIncluded')}</p>
                       <p>{t('bugReport.dataIncludedList')}</p>
-                      <p className="font-medium">{t('bugReport.dataNeverIncluded')}</p>
+                      <p className="font-medium text-bambu-gray">{t('bugReport.dataNeverIncluded')}</p>
                       <p>{t('bugReport.dataNeverIncludedList')}</p>
                     </div>
                   </details>
@@ -309,7 +309,7 @@ export function BugReportBubble() {
                   <div className="flex justify-end gap-2 pt-2">
                     <button
                       onClick={handleClose}
-                      className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg transition-colors"
+                      className="px-4 py-2 text-sm font-medium text-bambu-gray hover:text-white bg-bambu-dark-tertiary hover:bg-bambu-dark rounded-lg transition-colors"
                     >
                       {t('common.cancel')}
                     </button>
@@ -330,28 +330,28 @@ export function BugReportBubble() {
                   <div className="space-y-3 px-2">
                     {/* Step 1: Completed */}
                     <div className="flex items-center gap-3">
-                      <CheckCircle2 className="w-5 h-5 text-green-500 flex-shrink-0" />
-                      <span className="text-sm text-green-700 dark:text-green-400">{t('bugReport.stepEnableLogging')}</span>
+                      <CheckCircle2 className="w-5 h-5 text-status-ok flex-shrink-0" />
+                      <span className="text-sm text-status-ok">{t('bugReport.stepEnableLogging')}</span>
                     </div>
                     {/* Step 2: Active */}
                     <div className="flex items-center gap-3">
                       <span className="relative flex h-5 w-5 flex-shrink-0 items-center justify-center">
-                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-                        <span className="relative inline-flex rounded-full h-3 w-3 bg-blue-500"></span>
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-bambu-green opacity-50"></span>
+                        <span className="relative inline-flex rounded-full h-3 w-3 bg-bambu-green"></span>
                       </span>
-                      <span className="text-sm font-medium text-blue-700 dark:text-blue-300">{t('bugReport.stepReproduce')}</span>
+                      <span className="text-sm font-medium text-bambu-green">{t('bugReport.stepReproduce')}</span>
                     </div>
                     {/* Step 3: Upcoming */}
                     <div className="flex items-center gap-3">
-                      <Circle className="w-5 h-5 text-gray-300 dark:text-gray-600 flex-shrink-0" />
-                      <span className="text-sm text-gray-400 dark:text-gray-500">{t('bugReport.stepStopLogging')}</span>
+                      <Circle className="w-5 h-5 text-bambu-gray-dark flex-shrink-0" />
+                      <span className="text-sm text-bambu-gray-dark">{t('bugReport.stepStopLogging')}</span>
                     </div>
                   </div>
 
                   {/* Elapsed timer */}
                   <div className="text-center">
-                    <p className="text-3xl font-mono text-blue-500">{formatElapsed(elapsedSeconds)}</p>
-                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">{t('bugReport.maxDuration', { minutes: 5 })}</p>
+                    <p className="text-3xl font-mono text-bambu-green">{formatElapsed(elapsedSeconds)}</p>
+                    <p className="text-xs text-bambu-gray-dark mt-1">{t('bugReport.maxDuration', { minutes: 5 })}</p>
                   </div>
 
                   {/* Stop & Submit button */}
@@ -368,8 +368,8 @@ export function BugReportBubble() {
 
               {(viewState === 'stopping' || viewState === 'submitting') && (
                 <div className="flex flex-col items-center justify-center py-8 gap-3">
-                  <Loader2 className="w-8 h-8 animate-spin text-blue-500" />
-                  <p className="text-sm text-gray-600 dark:text-gray-400">
+                  <Loader2 className="w-8 h-8 animate-spin text-bambu-green" />
+                  <p className="text-sm text-bambu-gray">
                     {viewState === 'stopping' ? t('bugReport.stoppingLogs') : t('bugReport.submitting')}
                   </p>
                 </div>
@@ -377,22 +377,22 @@ export function BugReportBubble() {
 
               {viewState === 'success' && (
                 <div className="flex flex-col items-center justify-center py-8 gap-3">
-                  <CheckCircle className="w-12 h-12 text-green-500" />
-                  <p className="text-lg font-semibold text-gray-900 dark:text-white">{t('bugReport.thankYou')}</p>
-                  <p className="text-sm text-gray-600 dark:text-gray-400">{t('bugReport.submitted')}</p>
+                  <CheckCircle className="w-12 h-12 text-status-ok" />
+                  <p className="text-lg font-semibold text-white">{t('bugReport.thankYou')}</p>
+                  <p className="text-sm text-bambu-gray">{t('bugReport.submitted')}</p>
                   {issueUrl && (
                     <a
                       href={issueUrl}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="text-sm text-blue-500 hover:text-blue-600 underline"
+                      className="text-sm text-bambu-green hover:text-bambu-green-light underline"
                     >
                       {t('bugReport.viewIssue')} #{issueNumber}
                     </a>
                   )}
                   <button
                     onClick={handleClose}
-                    className="mt-4 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg transition-colors"
+                    className="mt-4 px-4 py-2 text-sm font-medium text-bambu-gray hover:text-white bg-bambu-dark-tertiary hover:bg-bambu-dark rounded-lg transition-colors"
                   >
                     {t('common.close')}
                   </button>
@@ -401,9 +401,9 @@ export function BugReportBubble() {
 
               {viewState === 'error' && (
                 <div className="flex flex-col items-center justify-center py-8 gap-3">
-                  <AlertCircle className="w-12 h-12 text-red-500" />
-                  <p className="text-lg font-semibold text-gray-900 dark:text-white">{t('bugReport.submitFailed')}</p>
-                  <p className="text-sm text-gray-600 dark:text-gray-400 text-center">{errorMessage}</p>
+                  <AlertCircle className="w-12 h-12 text-status-error" />
+                  <p className="text-lg font-semibold text-white">{t('bugReport.submitFailed')}</p>
+                  <p className="text-sm text-bambu-gray text-center">{errorMessage}</p>
                   <div className="flex gap-2 mt-4">
                     <button
                       onClick={() => setViewState('form')}
@@ -413,7 +413,7 @@ export function BugReportBubble() {
                     </button>
                     <button
                       onClick={handleClose}
-                      className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg transition-colors"
+                      className="px-4 py-2 text-sm font-medium text-bambu-gray hover:text-white bg-bambu-dark-tertiary hover:bg-bambu-dark rounded-lg transition-colors"
                     >
                       {t('common.close')}
                     </button>
