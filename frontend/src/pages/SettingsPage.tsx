@@ -2604,7 +2604,6 @@ export function SettingsPage() {
 
       {/* ══════ PRINTING TAB ══════ */}
       {activeTab === 'printing' && localSettings && (
-      <>
       <div className="flex flex-col lg:flex-row gap-4">
         {/* ── Left Column ── */}
         <div className="space-y-4 lg:w-1/2">
@@ -2777,6 +2776,13 @@ export function SettingsPage() {
               <PrintOptionsPreferencesPanel />
             </CardContent>
           </Card>
+
+          {/* Slicer Preset Bundles — print-time pick that pairs with the
+              Saved Print Profiles above (both are pre-print profile state
+              the operator manages outside the slice-modal flow). Hidden
+              when use_slicer_api is off so Docker setups without the
+              sidecar don't see an empty card. */}
+          {(localSettings.use_slicer_api ?? false) && <SlicerBundlesPanel />}
 
           {/* Cost Tracking */}
           <Card>
@@ -3236,15 +3242,6 @@ export function SettingsPage() {
         </div>
         {/* ── /Right Column ── */}
       </div>
-
-      {/* Slicer Preset Bundles — printing-related slicer config. Sidecar +
-          its URL fields live on the General tab (cross-cutting integrations
-          live there alongside cloud / Spoolman / etc.); the bundle list is
-          here on Printing because it's a print-time pick. Hidden when
-          use_slicer_api is off — without a sidecar the upload/list paths
-          round-trip to nothing. */}
-      {(localSettings.use_slicer_api ?? false) && <SlicerBundlesPanel />}
-      </>
       )}
       {/* ══════ /PRINTING TAB ══════ */}
 

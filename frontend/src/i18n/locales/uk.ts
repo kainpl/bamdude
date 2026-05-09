@@ -1853,7 +1853,7 @@ export default {
     bambuStudioApiUrlDescription: 'Порожнє значення повертає до значення BAMBU_STUDIO_API_URL з оточення.',
     bothSlicersHint: 'Коли обидва URL задані та доступні, модальне вікно «Нарізати» дозволяє вибрати потрібний слайсер для кожного файлу.',
     slicerBundles: {
-      title: 'Slicer Bundles',
+      title: 'Бандли слайсера',
       description: 'Імпортуй Printer Preset Bundle (.bbscfg), експортований з BambuStudio (File → Export → Export Preset Bundle → "Printer preset bundle"). Після імпорту slice-запити можуть обирати пресети з бандла за іменем без повторного завантаження JSON-триплета профайлів.',
       uploadButton: 'Завантажити бандл',
       uploading: 'Завантаження…',
