@@ -6063,8 +6063,20 @@ export const api = {
       body: formData,
     }).then(async (response) => {
       if (!response.ok) {
-        const detail = await response.text().catch(() => `${response.status}`);
-        throw new Error(detail || `Failed to import slicer bundle: ${response.status}`);
+        // Pull `detail` out of the FastAPI JSON envelope so the toast
+        // shows "Invalid file type. ..." instead of the raw
+        // `{"detail":"..."}` body. We read text() once (body is a
+        // one-shot stream — calling json() then text() would throw
+        // "body already used") and try JSON.parse ourselves.
+        const text = await response.text().catch(() => '');
+        let detail: string | null = null;
+        try {
+          const parsed = JSON.parse(text);
+          if (parsed && typeof parsed.detail === 'string') detail = parsed.detail;
+        } catch {
+          // not JSON — keep raw text
+        }
+        throw new Error(detail || text || `HTTP ${response.status}`);
       }
       return response.json() as Promise<SlicerBundle>;
     });

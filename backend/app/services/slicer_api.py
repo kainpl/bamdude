@@ -106,27 +106,68 @@ def set_shared_http_client(client: httpx.AsyncClient | None) -> None:
 
 
 def _format_sidecar_error(response: httpx.Response) -> str:
-    """Build a human-readable error string from a sidecar 4xx/5xx response.
+    """Build a human-readable error string from a slicer-API 4xx/5xx response.
 
-    The sidecar's ``AppError`` middleware emits a JSON body of the shape
-    ``{"message": "...", "details": "..."}``. Earlier versions of this
-    client only read ``message``, which left every CLI failure surfaced
-    as the generic ``Failed to slice the model`` because the *actual*
-    CLI stderr / ``error_string`` lives in ``details``. Including both
-    means BamDude logs the real reason a slice rejected the supplied
-    profiles instead of an unhelpful generic line.
+    Tries known JSON shapes in order, then falls back to a stripped
+    text/HTML body. Limits to 500 chars so a CLI stderr dump can't blow up
+    a notification toast.
+
+    JSON shapes handled:
+
+    - ``AppError`` middleware (our own): ``{"message": "...", "details": "..."}``.
+      ``details`` carries the CLI stderr / ``error_string`` for slice
+      failures and is the actual cause; ``message`` is the user-facing
+      headline. Both are joined with " — " when present.
+    - Express default 404 / generic: ``{"error": "..."}`` or ``{"detail": "..."}``.
+    - Validator errors: ``{"errors": [...]}`` joined with "; ".
+
+    Non-JSON shapes:
+
+    - HTML (Express default ``Cannot POST /...`` page): tags stripped,
+      whitespace collapsed.
+    - Plain text: passed through.
     """
     try:
         payload = response.json()
     except Exception:
-        return response.text[:500]
-    if not isinstance(payload, dict):
-        return str(payload)[:500]
-    message = payload.get("message") or ""
-    details = payload.get("details") or ""
-    if message and details:
-        return f"{message}: {details}"[:500]
-    return (message or details or response.text)[:500]
+        return _strip_html(response.text)[:500] or f"HTTP {response.status_code}"
+
+    if isinstance(payload, dict):
+        message = (payload.get("message") or "").strip()
+        details = (payload.get("details") or "").strip()
+        if message and details:
+            return f"{message} — {details}"[:500]
+        if message or details:
+            return (message or details)[:500]
+        for key in ("error", "detail"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()[:500]
+        errors = payload.get("errors")
+        if isinstance(errors, list) and errors:
+            parts = [str(e).strip() for e in errors if str(e).strip()]
+            if parts:
+                return "; ".join(parts)[:500]
+        return f"HTTP {response.status_code}"
+    if isinstance(payload, list) and payload:
+        return "; ".join(str(p) for p in payload)[:500]
+    return str(payload)[:500] or f"HTTP {response.status_code}"
+
+
+def _strip_html(text: str) -> str:
+    """Crude HTML-to-text for the few Express default pages the sidecar emits.
+
+    Express's missing-route handler returns an HTML page; passing that raw
+    string into a UI toast looks broken. The pages are simple enough that
+    a tag-strip + whitespace-collapse is sufficient — we don't pull in a
+    real parser for an unhappy-path one-liner.
+    """
+    import re
+
+    if not text:
+        return ""
+    no_tags = re.sub(r"<[^>]+>", " ", text)
+    return re.sub(r"\s+", " ", no_tags).strip()
 
 
 def _guess_model_content_type(filename: str) -> str:
@@ -234,11 +275,11 @@ class SlicerApiService:
             raise SlicerApiUnavailableError(f"Slicer sidecar unreachable: {exc}") from exc
         if response.status_code >= 500:
             raise SlicerApiServerError(
-                f"Slicer sidecar /profiles/bundle failed ({response.status_code}): {_format_sidecar_error(response)}",
+                f"Slicer API /profiles/bundle failed ({response.status_code}): {_format_sidecar_error(response)}",
             )
         if response.status_code >= 400:
             raise SlicerInputError(
-                f"Slicer sidecar rejected bundle ({response.status_code}): {_format_sidecar_error(response)}",
+                f"Slicer API rejected bundle ({response.status_code}): {_format_sidecar_error(response)}",
             )
         return _parse_bundle_summary(response.json())
 

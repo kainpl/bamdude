@@ -276,6 +276,12 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // bundle-scoped pickers (process + per-slot filament from the chosen
   // bundle's contents). Submit routes through the backend's bundle dispatch
   // (`SliceRequest.bundle`) which skips PresetRef resolution.
+  //
+  // We do NOT restore the bundle id from localStorage on mount — a stale
+  // id would put the modal in "bundle mode with empty dropdowns" if the
+  // bundle was deleted between sessions. Instead, the unified preset-source
+  // toggle reads ``last-bundle-id`` only when the user explicitly clicks
+  // "Bundle", and validates against the current ``bundlesQuery.data`` first.
   const [selectedBundleId, setSelectedBundleId] = useState<string | null>(null);
   const [bundleProcessName, setBundleProcessName] = useState<string | null>(null);
   const [bundleFilamentNames, setBundleFilamentNames] = useState<(string | null)[]>([]);
@@ -303,6 +309,20 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
       /* private mode / quota — silently skip */
     }
   }, [filterOwner]);
+
+  // Remember the last-picked bundle id so reopening the modal in bundle
+  // mode doesn't make the user re-pick from the dropdown every time.
+  // Only writes — restoration happens on explicit "Bundle" click via
+  // ``handlePresetSourceChange`` (with a freshness check against the
+  // current ``bundlesQuery.data``).
+  useEffect(() => {
+    if (typeof localStorage === 'undefined' || selectedBundleId == null) return;
+    try {
+      localStorage.setItem('bamdude:slice-modal:last-bundle-id', selectedBundleId);
+    } catch {
+      /* private mode / quota — silently skip */
+    }
+  }, [selectedBundleId]);
 
   // Bed plate override sent to the slicer as ``--curr-bed-type``. Default
   // ``Textured PEI Plate`` matches the factory plate shipped with X1C / P1S
@@ -534,6 +554,30 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
     return bundlesQuery.data.find((b) => b.id === selectedBundleId) ?? null;
   }, [selectedBundleId, bundlesQuery.data]);
   const isBundleMode = selectedBundle != null;
+
+  // Unified mode toggle for the preset-source row. Switching to "manual"
+  // clears the selected bundle (so all the cloud/local/standard machinery
+  // re-renders); switching to "bundle" picks the last-used bundle id from
+  // localStorage if it's still present in the current list, otherwise
+  // falls back to the first available bundle. We never set a stale id.
+  const handlePresetSourceChange = (next: 'manual' | 'bundle') => {
+    if (next === 'manual') {
+      setSelectedBundleId(null);
+      return;
+    }
+    const bundles = bundlesQuery.data ?? [];
+    if (bundles.length === 0) return;
+    let candidate: string | null = null;
+    if (typeof localStorage !== 'undefined') {
+      try {
+        const stored = localStorage.getItem('bamdude:slice-modal:last-bundle-id');
+        if (stored && bundles.some((b) => b.id === stored)) candidate = stored;
+      } catch {
+        /* private mode / quota — fall through to first */
+      }
+    }
+    setSelectedBundleId(candidate ?? bundles[0].id);
+  };
 
   // Printer / process pre-pick: see SLICE_MODAL_TIER_ORDER. Runs once when
   // presets first arrive; subsequent re-renders preserve any manual choice.
@@ -835,24 +879,25 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                   matches the factory plate on X1C / P1S / H2D; A1 owners
                   flip to SuperTack once and localStorage persists. */}
               <BedTypePicker value={bedType} onChange={setBedType} disabled={isEnqueuing} />
-              {/* Owner filter — same 3-state model as the ProfilesPage
-                  filter ("All" / "My presets" / "Built-in"). Applies to
-                  every dropdown below in one shot, so the user sees
-                  consistent ownership across printer / process / filament
-                  picks. Persisted in localStorage. */}
-              <PresetOwnerFilter value={filterOwner} onChange={setFilterOwner} disabled={isEnqueuing} />
-              {/* Bundle picker — only renders when at least one .bbscfg has
-                  been imported via Settings → Slicer Bundles. Lets the user
-                  trade the cloud/local/standard tier for a single curated
-                  triplet from a previously-uploaded BambuStudio bundle. */}
-              {bundlesQuery.data && bundlesQuery.data.length > 0 && (
-                <BundlePicker
-                  bundles={bundlesQuery.data}
-                  selectedId={selectedBundleId}
-                  onChange={setSelectedBundleId}
-                  disabled={isEnqueuing}
-                />
-              )}
+              {/* Unified preset-source control: top-level Manual/Bundle
+                  toggle (only when at least one .bbscfg is imported), plus
+                  a sub-control that swaps between the 3-state owner
+                  filter (Manual mode) and the bundle picker (Bundle mode).
+                  Replaces the previous two side-by-side widgets that left
+                  the owner filter visibly active in bundle mode where it
+                  had no effect. */}
+              <PresetSourceControl
+                mode={isBundleMode ? 'bundle' : 'manual'}
+                onModeChange={handlePresetSourceChange}
+                ownerFilter={filterOwner}
+                onOwnerFilterChange={setFilterOwner}
+                bundles={bundlesQuery.data ?? []}
+                selectedBundleId={selectedBundleId}
+                onBundleChange={setSelectedBundleId}
+                disabled={isEnqueuing}
+              />
+              {/* removed inline `bundlesQuery.data && length > 0` BundlePicker —
+                  PresetSourceControl renders the picker only when bundles exist */}
               {/* Preset triplet — hidden when a bundle is selected so the
                   user only sees one tier at a time. The bundle's process +
                   filament dropdowns render below in their stead. */}
@@ -1322,88 +1367,135 @@ function BedTypePicker({
   );
 }
 
-// Compact 3-button segmented control for the owner filter — same semantic
-// model as the Profiles page filter ("All" / "My presets" / "Built-in"),
-// but rendered inline as a segmented row to keep the modal vertically
-// dense (the Profiles page can afford a full-width dropdown). Reuses the
-// existing ``profiles.cloudView.filters.*`` translation keys so we don't
-// fork copy.
-function PresetOwnerFilter({
-  value,
-  onChange,
+// Unified preset-source control. Replaces the previously-separate
+// ``PresetOwnerFilter`` (3-state owner segmented) + ``BundlePicker``
+// (bundle dropdown) so the modal exposes a single conceptual switch:
+//
+//   Preset source ─────────────────────────
+//   [ Manual | Bundle ]            ← shown only when bundles exist
+//   ────────────────────────────────────────
+//   Manual mode → [ All | My Presets | Built-in ]   (owner segmented)
+//   Bundle mode → ▾ < bundle dropdown >
+//
+// Why this shape:
+// - The owner filter is meaningless in bundle mode (bundle dropdowns
+//   read directly from ``selectedBundle.process|filament``, ignoring the
+//   owner filter), and used to leave a 3-state widget visibly active
+//   that did nothing. Mode-gating the sub-control fixes that.
+// - The "Manual / Bundle" toggle is itself hidden when no bundles are
+//   imported, so installs without a sidecar / fresh installs see exactly
+//   the original owner segmented row — no extra UI noise.
+function PresetSourceControl({
+  mode,
+  onModeChange,
+  ownerFilter,
+  onOwnerFilterChange,
+  bundles,
+  selectedBundleId,
+  onBundleChange,
   disabled,
 }: {
-  value: OwnerFilter;
-  onChange: (next: OwnerFilter) => void;
+  mode: 'manual' | 'bundle';
+  onModeChange: (next: 'manual' | 'bundle') => void;
+  ownerFilter: OwnerFilter;
+  onOwnerFilterChange: (next: OwnerFilter) => void;
+  bundles: SlicerBundle[];
+  selectedBundleId: string | null;
+  onBundleChange: (id: string | null) => void;
   disabled?: boolean;
 }) {
   const { t } = useTranslation();
-  const options: { key: OwnerFilter; label: string }[] = [
+  const hasBundles = bundles.length > 0;
+  const modeOptions: { key: 'manual' | 'bundle'; label: string; hint: string }[] = [
+    {
+      key: 'manual',
+      label: t('slice.presetSourceManual', 'Manual'),
+      hint: t(
+        'slice.presetSourceManualHint',
+        'Pick printer / process / filament from cloud, local imports, or built-in presets.',
+      ),
+    },
+    {
+      key: 'bundle',
+      label: t('slice.presetSourceBundle', 'Bundle'),
+      hint: t(
+        'slice.presetSourceBundleHint',
+        'Slice using a previously imported BambuStudio Printer Preset Bundle (.bbscfg).',
+      ),
+    },
+  ];
+  const ownerOptions: { key: OwnerFilter; label: string }[] = [
     { key: 'all', label: t('profiles.cloudView.filters.all', 'All') },
     { key: 'custom', label: t('profiles.cloudView.filters.myPresets', 'My Presets') },
     { key: 'builtin', label: t('profiles.cloudView.filters.builtIn', 'Built-in') },
   ];
+  const segmentedClass = (selected: boolean) =>
+    selected ? 'bg-bambu-green/20 text-white' : 'bg-bambu-dark text-bambu-gray hover:text-white';
   return (
-    <fieldset>
+    <fieldset className="space-y-2">
       <legend className="text-xs text-bambu-gray mb-1">
-        {t('profiles.cloudView.filters.owner', 'Owner')}
+        {t('slice.presetSource', 'Preset source')}
       </legend>
-      <div className="inline-flex rounded-md border border-bambu-dark-tertiary overflow-hidden">
-        {options.map((opt) => {
-          const selected = value === opt.key;
-          const cls = selected
-            ? 'bg-bambu-green/20 text-white'
-            : 'bg-bambu-dark text-bambu-gray hover:text-white';
-          return (
-            <button
-              key={opt.key}
-              type="button"
-              onClick={() => onChange(opt.key)}
-              disabled={disabled}
-              className={`px-3 py-1.5 text-xs transition-colors disabled:opacity-50 ${cls}`}
-              aria-pressed={selected}
-            >
-              {opt.label}
-            </button>
-          );
-        })}
-      </div>
+      {hasBundles && (
+        <div className="inline-flex rounded-md border border-bambu-dark-tertiary overflow-hidden">
+          {modeOptions.map((opt) => {
+            const selected = mode === opt.key;
+            return (
+              <button
+                key={opt.key}
+                type="button"
+                onClick={() => onModeChange(opt.key)}
+                disabled={disabled}
+                title={opt.hint}
+                className={`px-3 py-1.5 text-xs transition-colors disabled:opacity-50 ${segmentedClass(selected)}`}
+                aria-pressed={selected}
+              >
+                {opt.key === 'bundle' ? (
+                  <span className="inline-flex items-center gap-1.5">
+                    <Package className="w-3.5 h-3.5" />
+                    {opt.label}
+                  </span>
+                ) : (
+                  opt.label
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {mode === 'manual' || !hasBundles ? (
+        <div className="inline-flex rounded-md border border-bambu-dark-tertiary overflow-hidden">
+          {ownerOptions.map((opt) => {
+            const selected = ownerFilter === opt.key;
+            return (
+              <button
+                key={opt.key}
+                type="button"
+                onClick={() => onOwnerFilterChange(opt.key)}
+                disabled={disabled}
+                className={`px-3 py-1.5 text-xs transition-colors disabled:opacity-50 ${segmentedClass(selected)}`}
+                aria-pressed={selected}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+        <select
+          value={selectedBundleId ?? ''}
+          onChange={(e) => onBundleChange(e.target.value || null)}
+          disabled={disabled || !hasBundles}
+          className="w-full px-3 py-2 rounded-md bg-bambu-dark border border-bambu-dark-tertiary text-white text-sm focus:outline-none focus:border-bambu-gray disabled:opacity-50"
+        >
+          {bundles.map((b) => (
+            <option key={b.id} value={b.id}>
+              {b.printer_preset_name}
+            </option>
+          ))}
+        </select>
+      )}
     </fieldset>
-  );
-}
-
-// Top-of-modal bundle picker. The "None" option leaves the user on the
-// cloud/local/standard tier path; selecting a bundle id flips the modal
-// into bundle dispatch mode (see SliceModal state above).
-interface BundlePickerProps {
-  bundles: SlicerBundle[];
-  selectedId: string | null;
-  onChange: (id: string | null) => void;
-  disabled?: boolean;
-}
-
-function BundlePicker({ bundles, selectedId, onChange, disabled }: BundlePickerProps) {
-  const { t } = useTranslation();
-  return (
-    <label className="block">
-      <span className="block text-sm text-bambu-gray mb-1 inline-flex items-center gap-1.5">
-        <Package className="w-3.5 h-3.5" />
-        {t('slice.bundle', 'Slicer bundle')}
-      </span>
-      <select
-        value={selectedId ?? ''}
-        onChange={(e) => onChange(e.target.value || null)}
-        disabled={disabled}
-        className="w-full px-3 py-2 rounded-md bg-bambu-dark border border-bambu-dark-tertiary text-white text-sm focus:outline-none focus:border-bambu-gray disabled:opacity-50"
-      >
-        <option value="">{t('slice.bundleNone', '— None (pick presets individually) —')}</option>
-        {bundles.map((b) => (
-          <option key={b.id} value={b.id}>
-            {b.printer_preset_name}
-          </option>
-        ))}
-      </select>
-    </label>
   );
 }
 
