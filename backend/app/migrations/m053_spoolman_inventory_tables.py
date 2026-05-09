@@ -134,18 +134,21 @@ async def upgrade(conn):
                 )
             )
 
-    # Spools.storage_location (mirrors Spoolman's own location field)
-    await add_column(conn, "spools", "storage_location VARCHAR(255)")
+    # spool.storage_location (mirrors Spoolman's own ``location`` field).
+    # NOTE: BamDude's table is ``spool`` (singular) — upstream Bambuddy
+    # uses ``spools`` (plural) per its model. Keep this in sync with
+    # ``backend/app/models/spool.py::Spool.__tablename__``.
+    await add_column(conn, "spool", "storage_location VARCHAR(255)")
 
-    # Widen spools.tag_uid to 32 chars (Postgres only — SQLite ignores VARCHAR length).
+    # Widen spool.tag_uid to 32 chars (Postgres only — SQLite ignores VARCHAR length).
     # Idempotent: skips if the target type is already VARCHAR(32) or wider.
     if is_postgres():
         result = await conn.execute(
             text(
                 "SELECT character_maximum_length FROM information_schema.columns "
-                "WHERE table_schema='public' AND table_name='spools' AND column_name='tag_uid'"
+                "WHERE table_schema='public' AND table_name='spool' AND column_name='tag_uid'"
             )
         )
         current_len = result.scalar()
         if current_len is not None and current_len < 32:
-            await conn.execute(text("ALTER TABLE spools ALTER COLUMN tag_uid TYPE VARCHAR(32)"))
+            await conn.execute(text("ALTER TABLE spool ALTER COLUMN tag_uid TYPE VARCHAR(32)"))
