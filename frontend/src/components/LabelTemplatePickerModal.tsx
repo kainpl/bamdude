@@ -301,8 +301,10 @@ export function LabelTemplatePickerModal({
           </div>
         </div>
 
-        {/* Spool list */}
-        <div className="flex-1 overflow-y-auto px-2 pb-2 min-h-[160px]">
+        {/* Spool list — ``min-h-0`` overrides the implicit min-height: auto on
+            flex items so the list can yield height to keep all 4 templates +
+            Cancel visible on tight viewports (upstream #1230 / 61314cf2). */}
+        <div className="flex-1 overflow-y-auto px-2 pb-2 min-h-0">
           {visibleSpools.length === 0 ? (
             <div className="text-center text-sm text-bambu-gray py-6">
               {sortedSpools.length === 0
@@ -346,32 +348,33 @@ export function LabelTemplatePickerModal({
           )}
         </div>
 
-        {/* Templates */}
-        <div className="px-3 pb-3 pt-3 space-y-2 border-t border-bambu-dark-tertiary">
+        {/* Templates — 2x2 grid on >= sm so all 4 plus the Cancel footer fit
+            inside max-h-[90vh] even when browser chrome eats into the viewport
+            (upstream #1230 / 4c0a12b9). Stacked single column on mobile widths. */}
+        <div className="px-3 pt-2 pb-2 grid grid-cols-1 sm:grid-cols-2 gap-2 border-t border-bambu-dark-tertiary">
           {TEMPLATE_OPTIONS.map((opt) => {
             const isPending = pending === opt.value;
+            const label = t(`inventory.labels.templates.${opt.i18nKey}.label`);
+            const hint = t(`inventory.labels.templates.${opt.i18nKey}.hint`);
             return (
               <button
                 key={opt.value}
                 disabled={noSelection || pending !== null}
                 onClick={() => handlePick(opt.value)}
-                className="w-full text-left p-3 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark hover:border-bambu-green hover:bg-bambu-green/10 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:border-bambu-dark-tertiary disabled:hover:bg-bambu-dark transition flex items-center gap-3"
+                title={`${label} — ${hint}`}
+                className="w-full text-left p-2.5 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark hover:border-bambu-green hover:bg-bambu-green/10 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:border-bambu-dark-tertiary disabled:hover:bg-bambu-dark transition flex items-center gap-3"
               >
                 <div className="flex-1 min-w-0">
-                  <div className="font-medium text-white">
-                    {t(`inventory.labels.templates.${opt.i18nKey}.label`)}
-                  </div>
-                  <div className="text-xs text-bambu-gray mt-0.5">
-                    {t(`inventory.labels.templates.${opt.i18nKey}.hint`)}
-                  </div>
+                  <div className="font-medium text-white text-sm truncate">{label}</div>
+                  <div className="text-xs text-bambu-gray mt-0.5 truncate">{hint}</div>
                 </div>
-                {isPending && <Loader2 className="w-4 h-4 animate-spin text-bambu-green" />}
+                {isPending && <Loader2 className="w-4 h-4 animate-spin text-bambu-green shrink-0" />}
               </button>
             );
           })}
         </div>
 
-        <div className="flex justify-end gap-2 px-5 py-3 border-t border-bambu-dark-tertiary">
+        <div className="flex justify-end gap-2 px-5 py-2 border-t border-bambu-dark-tertiary">
           <Button variant="secondary" onClick={onClose} disabled={pending !== null}>
             {t('common.cancel')}
           </Button>

@@ -718,6 +718,11 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // cloud preset whose name we can't parse). Multi-plate sources also need
   // an explicit plate pick so the slicer (and the filament-reqs query
   // that feeds the dropdowns) target the right plate.
+  // Tier mode also gates on the preview-slice / embedded-metadata read
+  // having succeeded (``filamentReqsQuery.isSuccess``) — until then, the
+  // synthetic single-slot fallback would have auto-enabled the button on
+  // opaque defaults before the slicer returned the real slot map.
+  // Upstream Bambuddy commit a64cfbbd.
   const isReady = isBundleMode
     ? selectedBundle != null &&
       bundleProcessName != null &&
@@ -727,6 +732,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
       (!isMultiPlate || selectedPlate != null)
     : printerPreset != null &&
       processPreset != null &&
+      filamentReqsQuery.isSuccess &&
       filamentPresets.length > 0 &&
       filamentPresets.every((r) => r != null) &&
       !printerMismatch &&
