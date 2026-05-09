@@ -1778,12 +1778,6 @@ export function SettingsPage() {
             </CardContent>
           </Card>
 
-          {/* Slicer Preset Bundles — only meaningful when the sidecar is in use,
-              since uploads / lists round-trip through it. Hide it entirely when
-              use_slicer_api is off so the Settings page doesn't show a panel that
-              can't do anything. */}
-          {(localSettings.use_slicer_api ?? false) && <SlicerBundlesPanel />}
-
           <Card>
             <CardHeader>
               <h2 className="text-lg font-semibold text-white flex items-center gap-2">
@@ -2610,6 +2604,7 @@ export function SettingsPage() {
 
       {/* ══════ PRINTING TAB ══════ */}
       {activeTab === 'printing' && localSettings && (
+      <>
       <div className="flex flex-col lg:flex-row gap-4">
         {/* ── Left Column ── */}
         <div className="space-y-4 lg:w-1/2">
@@ -3241,6 +3236,15 @@ export function SettingsPage() {
         </div>
         {/* ── /Right Column ── */}
       </div>
+
+      {/* Slicer Preset Bundles — printing-related slicer config. Sidecar +
+          its URL fields live on the General tab (cross-cutting integrations
+          live there alongside cloud / Spoolman / etc.); the bundle list is
+          here on Printing because it's a print-time pick. Hidden when
+          use_slicer_api is off — without a sidecar the upload/list paths
+          round-trip to nothing. */}
+      {(localSettings.use_slicer_api ?? false) && <SlicerBundlesPanel />}
+      </>
       )}
       {/* ══════ /PRINTING TAB ══════ */}
 
