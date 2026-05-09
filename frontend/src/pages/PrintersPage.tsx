@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '../contexts/ThemeContext';
@@ -24,6 +24,9 @@ import {
   Zap,
   Wrench,
   ChevronDown,
+  Filter,
+  MoreHorizontal,
+  SlidersHorizontal,
   Pencil,
   ArrowUpNarrowWide,
   ArrowDownWideNarrow,
@@ -1003,6 +1006,105 @@ function StatusSummaryBar({ printers }: { printers: Printer[] | undefined }) {
 
 type SortOption = 'name' | 'status' | 'model' | 'location';
 type ViewMode = 'expanded' | 'compact';
+
+// Toolbar building blocks (upstream PR #1203). The Printers page header
+// renders the same control set inline on wide viewports and grouped under
+// 3 overflow menus (Filters / View / Actions) on narrow viewports — a
+// ResizeObserver below decides which layout fits.
+
+type ToolbarDropdownOption<T extends string> = {
+  value: T;
+  label: string;
+};
+
+function ToolbarDropdown<T extends string>({
+  value,
+  options,
+  onChange,
+  fullWidth = false,
+}: {
+  value: T;
+  options: ToolbarDropdownOption<T>[];
+  onChange: (value: T) => void;
+  fullWidth?: boolean;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const selectedOption = options.find((option) => option.value === value) ?? options[0];
+
+  return (
+    <div className={`relative ${fullWidth ? 'w-full min-w-0' : ''}`}>
+      <button
+        type="button"
+        onClick={() => setIsOpen((open) => !open)}
+        className={`h-8 px-2 rounded-lg border bg-bambu-dark border-bambu-dark-tertiary text-white text-sm font-medium transition-colors hover:bg-bambu-dark-tertiary focus:outline-none focus:border-bambu-green flex items-center justify-between gap-2 ${fullWidth ? 'w-full' : 'min-w-28'}`}
+      >
+        <span className="truncate">{selectedOption?.label}</span>
+        <ChevronDown className={`w-4 h-4 text-bambu-gray transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+      </button>
+
+      {isOpen && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setIsOpen(false)} />
+          <div className="absolute left-0 top-full z-20 mt-1 min-w-full rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary py-1 shadow-xl">
+            {options.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => {
+                  onChange(option.value);
+                  setIsOpen(false);
+                }}
+                className={`w-full px-3 py-2 text-left text-sm transition-colors hover:bg-bambu-dark-tertiary ${
+                  option.value === value ? 'text-bambu-green' : 'text-white'
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function ToolbarMenu({
+  label,
+  icon,
+  children,
+}: {
+  label: string;
+  icon: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setIsOpen((open) => !open)}
+        className="h-8 w-8 rounded-lg border bg-bambu-dark border-bambu-dark-tertiary text-white hover:bg-bambu-dark-tertiary transition-colors flex items-center justify-center"
+        aria-label={label}
+        title={label}
+      >
+        {icon}
+      </button>
+
+      {isOpen && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setIsOpen(false)} />
+          <div
+            className="absolute right-0 top-full z-20 mt-1 min-w-40 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary p-2 shadow-xl"
+            onClick={() => setIsOpen(false)}
+          >
+            {children}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
 
 /**
  * Get human-readable status display text for a printer.
@@ -6882,6 +6984,27 @@ export function PrintersPage() {
 
   const cardSizeLabels = ['S', 'M', 'L', 'XL'];
 
+  // Responsive toolbar state (upstream PR #1203). When the inline expanded
+  // controls overflow the available width, collapse them under three
+  // overflow menus (Filters / View / Actions). The decision is reactive
+  // via ResizeObserver on the toolbar wrapper + a hidden mirror of the
+  // expanded control row that we measure off-screen so we always know its
+  // natural width regardless of the active layout.
+  const toolbarRef = useRef<HTMLDivElement | null>(null);
+  const expandedToolbarControlsRef = useRef<HTMLDivElement | null>(null);
+  const [compactToolbar, setCompactToolbar] = useState(false);
+
+  const measureToolbar = useCallback(() => {
+    const toolbar = toolbarRef.current;
+    const expanded = expandedToolbarControlsRef.current;
+    if (!toolbar || !expanded) return;
+    // Reserve some room for the search input on the same row (min 240 px)
+    // before deciding whether the inline controls fit.
+    const available = toolbar.clientWidth - 240;
+    const needed = expanded.scrollWidth;
+    setCompactToolbar(needed > available);
+  }, []);
+
   // Sort printers based on selected option
   // Bulk selection helpers
   const toggleSelect = useCallback((id: number) => {
@@ -7075,222 +7198,324 @@ export function PrintersPage() {
     return groups;
   }, [sortBy, sortedPrinters]);
 
+  // ResizeObserver for the responsive toolbar: re-measure on layout changes
+  // (window resize, printer list grows/shrinks, smart-plug power dropdown
+  // appears/disappears, an extra location filter shows up).
+  useLayoutEffect(() => {
+    measureToolbar();
+  });
+
+  useEffect(() => {
+    const toolbar = toolbarRef.current;
+    if (!toolbar) return;
+
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', measureToolbar);
+      return () => window.removeEventListener('resize', measureToolbar);
+    }
+
+    const resizeObserver = new ResizeObserver(() => measureToolbar());
+    resizeObserver.observe(toolbar);
+    window.addEventListener('resize', measureToolbar);
+
+    return () => {
+      resizeObserver.disconnect();
+      window.removeEventListener('resize', measureToolbar);
+    };
+  }, [
+    measureToolbar,
+    printers?.length,
+    availableLocations.length,
+    hideDisconnected,
+    Object.keys(smartPlugByPrinter).length,
+  ]);
+
+  // Toolbar control sections — render the same control set inline on wide
+  // viewports and grouped under 3 overflow menus on narrow viewports. The
+  // ``inMenu`` flag flips per-control styling so dropdowns and buttons go
+  // full-width inside the menu but stay compact in the inline ribbon.
+  const renderFilterControls = (inMenu = false) => (
+    <>
+      {/* Status filter */}
+      {printers && printers.length > 0 && (
+        <ToolbarDropdown
+          value={statusFilter}
+          onChange={setStatusFilter}
+          fullWidth={inMenu}
+          options={[
+            { value: 'all', label: t('printers.filter.allStatuses') },
+            { value: 'printing', label: t('printers.status.printing') },
+            { value: 'paused', label: t('printers.status.paused') },
+            { value: 'idle', label: t('printers.status.idle') },
+            { value: 'finished', label: t('printers.status.finished') },
+            { value: 'error', label: t('printers.status.error') },
+            { value: 'offline', label: t('printers.status.offline') },
+          ]}
+        />
+      )}
+
+      {/* Location filter — only shown when at least one printer has a location */}
+      {printers && printers.length > 0 && availableLocations.length > 0 && (
+        <ToolbarDropdown
+          value={locationFilter}
+          onChange={setLocationFilter}
+          fullWidth={inMenu}
+          options={[
+            { value: 'all', label: t('printers.filter.allLocations') },
+            ...availableLocations.map((loc) => ({ value: loc, label: loc })),
+          ]}
+        />
+      )}
+
+      <button
+        type="button"
+        onClick={toggleHideDisconnected}
+        aria-pressed={hideDisconnected}
+        className={`h-8 px-2 rounded-lg border text-sm font-medium transition-colors ${inMenu ? 'w-full' : ''} ${
+          hideDisconnected
+            ? 'bg-bambu-green border-bambu-green text-white'
+            : 'bg-bambu-dark border-bambu-dark-tertiary text-white hover:bg-bambu-dark-tertiary'
+        }`}
+      >
+        {t('printers.hideOffline')}
+      </button>
+    </>
+  );
+
+  const renderViewControls = (inMenu = false) => (
+    <>
+      {/* Sort dropdown + direction */}
+      <div className={`flex items-center gap-1 ${inMenu ? 'w-full' : ''}`}>
+        <ToolbarDropdown<SortOption>
+          value={sortBy}
+          onChange={handleSortChange}
+          fullWidth={inMenu}
+          options={[
+            { value: 'name', label: t('printers.sort.name') },
+            { value: 'status', label: t('printers.sort.status') },
+            { value: 'model', label: t('printers.sort.model') },
+            { value: 'location', label: t('printers.sort.location') },
+          ]}
+        />
+        <button
+          type="button"
+          onClick={toggleSortDirection}
+          className="h-8 shrink-0 px-2 rounded-lg border bg-bambu-dark border-bambu-dark-tertiary text-white hover:bg-bambu-dark-tertiary transition-colors flex items-center justify-center"
+          title={sortAsc ? t('printers.sort.descending') : t('printers.sort.ascending')}
+        >
+          {sortAsc ? (
+            <ArrowUpNarrowWide className="w-4 h-4 text-white" />
+          ) : (
+            <ArrowDownWideNarrow className="w-4 h-4 text-white" />
+          )}
+        </button>
+      </div>
+
+      {/* Card size selector */}
+      <div className={`flex h-8 items-center bg-bambu-dark rounded-lg border border-bambu-dark-tertiary ${inMenu ? 'w-full' : ''}`}>
+        {cardSizeLabels.map((label, index) => {
+          const size = index + 1;
+          const isSelected = cardSize === size;
+          return (
+            <button
+              key={label}
+              type="button"
+              onClick={() => {
+                setCardSize(size);
+                localStorage.setItem('printerCardSize', String(size));
+              }}
+              className={`h-full px-2 text-xs font-medium transition-colors ${inMenu ? 'flex-1' : ''} ${
+                index === 0 ? 'rounded-l-lg' : ''
+              } ${
+                index === cardSizeLabels.length - 1 ? 'rounded-r-lg' : ''
+              } ${
+                isSelected
+                  ? 'bg-bambu-green text-white'
+                  : 'text-white hover:bg-bambu-dark-tertiary'
+              }`}
+              title={
+                label === 'S'
+                  ? t('printers.cardSize.small')
+                  : label === 'M'
+                    ? t('printers.cardSize.medium')
+                    : label === 'L'
+                      ? t('printers.cardSize.large')
+                      : t('printers.cardSize.extraLarge')
+              }
+            >
+              {label}
+            </button>
+          );
+        })}
+      </div>
+    </>
+  );
+
+  const renderActionControls = (inMenu = false) => (
+    <>
+      {/* Bulk select — BamDude 2-stage flow: "Select all" → "N selected" + clearSelection.
+          Only shown when more than one printer exists (single-printer farms have no use for bulk). */}
+      {printers && printers.length > 1 && (
+        selectionMode ? (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={clearSelection}
+            className={`!h-8 !min-h-8 !bg-bambu-green/20 !border-bambu-green/50 !text-bambu-green ${inMenu ? 'w-full' : ''}`}
+          >
+            {t('printers.bulk.selected', { count: selectedPrinterIds.size })}
+          </Button>
+        ) : (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => { if (printers) setSelectedPrinterIds(new Set(printers.map((p) => p.id))); }}
+            disabled={!hasPermission('printers:control')}
+            className={`!h-8 !min-h-8 ${inMenu ? 'w-full' : ''}`}
+          >
+            {t('printers.bulk.selectAll')}
+          </Button>
+        )
+      )}
+
+      {/* Power dropdown — only shown when offline printers with smart plugs are filtered out */}
+      {hideDisconnected && Object.keys(smartPlugByPrinter).length > 0 && (
+        <div className={`relative ${inMenu ? 'w-full' : ''}`}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowPowerDropdown(!showPowerDropdown)}
+            className={`!h-8 !min-h-8 ${inMenu ? 'w-full justify-between' : ''}`}
+          >
+            <Power className="w-4 h-4" />
+            {t('printers.powerOn')}
+            <ChevronDown className={`w-3 h-3 transition-transform ${showPowerDropdown ? 'rotate-180' : ''}`} />
+          </Button>
+          {showPowerDropdown && (
+            <>
+              <div className="fixed inset-0 z-10" onClick={() => setShowPowerDropdown(false)} />
+              <div className="absolute right-0 mt-2 w-56 bg-white dark:bg-bambu-dark-secondary border border-gray-200 dark:border-bambu-dark-tertiary rounded-lg shadow-lg z-20 py-1">
+                <div className="px-3 py-2 text-xs text-gray-500 dark:text-bambu-gray border-b border-gray-200 dark:border-bambu-dark-tertiary">
+                  {t('printers.offlinePrintersWithPlugs')}
+                </div>
+                {printers?.filter((p) => smartPlugByPrinter[p.id]).map((printer) => (
+                  <PowerDropdownItem
+                    key={printer.id}
+                    printer={printer}
+                    plug={smartPlugByPrinter[printer.id]}
+                    onPowerOn={(plugId) => {
+                      setPoweringOn(plugId);
+                      powerOnMutation.mutate(plugId);
+                    }}
+                    isPowering={poweringOn === smartPlugByPrinter[printer.id]?.id}
+                  />
+                ))}
+                {printers?.filter((p) => smartPlugByPrinter[p.id]).length === 0 && (
+                  <div className="px-3 py-2 text-sm text-bambu-gray">
+                    No printers with smart plugs
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      <Button
+        onClick={() => setShowAddModal(true)}
+        disabled={!hasPermission('printers:create')}
+        title={!hasPermission('printers:create') ? t('printers.permission.noAdd') : undefined}
+        className={`!h-8 !min-h-8 px-2 py-0 ${inMenu ? 'w-full' : ''}`}
+      >
+        <Plus className="w-4 h-4" />
+        {t('printers.addPrinter')}
+      </Button>
+    </>
+  );
+
   return (
     <div className="p-4 md:p-6">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
-        <div className="flex items-center gap-3">
-          {/*<PrinterIcon className="w-6 h-6 text-bambu-green" />*/}
-          <div>
-            <h1 className="text-2xl font-bold text-white">{t('printers.title')}</h1>
-            <StatusSummaryBar printers={printers} />
-          </div>
+      {/* Header section: title with PrinterIcon + StatusSummaryBar (upstream PR #1203). */}
+      <div className="space-y-3 mb-6">
+        <div>
+          <h1 className="text-2xl font-bold text-white flex items-center gap-3">
+            <PrinterIcon className="w-7 h-7 text-bambu-green" />
+            {t('printers.title')}
+          </h1>
+          <StatusSummaryBar printers={printers} />
         </div>
-        <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
-          {/* Card size selector */}
-          <div className="flex items-center bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
-            {cardSizeLabels.map((label, index) => {
-              const size = index + 1;
-              const isSelected = cardSize === size;
-              return (
+
+        {/* Responsive toolbar: search input + filter/view/action controls
+            inline on wide viewports, grouped under 3 overflow menus on narrow.
+            ResizeObserver decides which layout fits at any given width. */}
+        <div ref={toolbarRef} className="relative flex items-center gap-2">
+          {/* Search bar (always inline; takes remaining space) */}
+          {printers && printers.length > 0 && (
+            <div className="relative min-w-0 flex-1">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray/50" />
+              <input
+                type="search"
+                name="printer-search"
+                autoComplete="off"
+                data-1p-ignore
+                data-lpignore="true"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder={t('printers.search')}
+                aria-label={t('printers.search')}
+                className="w-full h-8 pl-9 pr-8 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm placeholder:text-bambu-gray/50 focus:outline-none focus:border-bambu-green"
+              />
+              {search && (
                 <button
-                  key={label}
-                  onClick={() => {
-                    setCardSize(size);
-                    localStorage.setItem('printerCardSize', String(size));
-                  }}
-                  className={`px-2 py-1.5 text-xs font-medium transition-colors ${
-                    index === 0 ? 'rounded-l-lg' : ''
-                  } ${
-                    index === cardSizeLabels.length - 1 ? 'rounded-r-lg' : ''
-                  } ${
-                    isSelected
-                      ? 'bg-bambu-green text-white'
-                      : 'text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-white'
-                  }`}
-                  title={label === 'S' ? t('printers.cardSize.small') : label === 'M' ? t('printers.cardSize.medium') : label === 'L' ? t('printers.cardSize.large') : t('printers.cardSize.extraLarge')}
+                  type="button"
+                  aria-label={t('common.clear')}
+                  onClick={() => setSearch('')}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-bambu-gray hover:text-white"
                 >
-                  {label}
+                  <X className="w-4 h-4" />
                 </button>
-              );
-            })}
-          </div>
-
-          <div className="w-px h-6 bg-bambu-dark-tertiary" />
-
-          {/* Bulk select toggle - outline Button, with an active-state override when selection is engaged */}
-          {printers && printers.length > 1 && (
-            selectionMode ? (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={clearSelection}
-                className="!bg-bambu-green/20 !border-bambu-green/50 !text-bambu-green"
-              >
-                {t('printers.bulk.selected', { count: selectedPrinterIds.size })}
-              </Button>
-            ) : (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => { if (printers) setSelectedPrinterIds(new Set(printers.map(p => p.id))); }}
-              >
-                {t('printers.bulk.selectAll')}
-              </Button>
-            )
-          )}
-
-          {/* Power dropdown for offline printers with smart plugs */}
-          {hideDisconnected && Object.keys(smartPlugByPrinter).length > 0 && (
-            <div className="relative">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setShowPowerDropdown(!showPowerDropdown)}
-              >
-                <Power className="w-4 h-4" />
-                {t('printers.powerOn')}
-                <ChevronDown className={`w-3 h-3 transition-transform ${showPowerDropdown ? 'rotate-180' : ''}`} />
-              </Button>
-              {showPowerDropdown && (
-                <>
-                  {/* Backdrop to close dropdown */}
-                  <div
-                    className="fixed inset-0 z-10"
-                    onClick={() => setShowPowerDropdown(false)}
-                  />
-                  <div className="absolute right-0 mt-2 w-56 bg-white dark:bg-bambu-dark-secondary border border-gray-200 dark:border-bambu-dark-tertiary rounded-lg shadow-lg z-20 py-1">
-                    <div className="px-3 py-2 text-xs text-gray-500 dark:text-bambu-gray border-b border-gray-200 dark:border-bambu-dark-tertiary">
-                      {t('printers.offlinePrintersWithPlugs')}
-                    </div>
-                    {printers?.filter(p => smartPlugByPrinter[p.id]).map(printer => (
-                      <PowerDropdownItem
-                        key={printer.id}
-                        printer={printer}
-                        plug={smartPlugByPrinter[printer.id]}
-                        onPowerOn={(plugId) => {
-                          setPoweringOn(plugId);
-                          powerOnMutation.mutate(plugId);
-                        }}
-                        isPowering={poweringOn === smartPlugByPrinter[printer.id]?.id}
-                      />
-                    ))}
-                    {printers?.filter(p => smartPlugByPrinter[p.id]).length === 0 && (
-                      <div className="px-3 py-2 text-sm text-bambu-gray">
-                        No printers with smart plugs
-                      </div>
-                    )}
-                  </div>
-                </>
               )}
             </div>
           )}
-          <Button
-            onClick={() => setShowAddModal(true)}
-            disabled={!hasPermission('printers:create')}
-            title={!hasPermission('printers:create') ? t('printers.permission.noAdd') : undefined}
+
+          {/* Expanded inline controls (visible when wide enough) — also kept
+              mounted off-screen when ``compactToolbar`` is true so we can
+              measure its scrollWidth on every layout pass without race
+              conditions. ``inert`` keeps it out of the focus/AT tree. */}
+          <div
+            ref={expandedToolbarControlsRef}
+            aria-hidden={compactToolbar}
+            inert={compactToolbar}
+            className={`${compactToolbar ? 'absolute -left-[9999px] top-0 flex w-max pointer-events-none opacity-0' : 'flex'} ml-auto items-center justify-end gap-2 flex-nowrap [&>*]:shrink-0`}
           >
-            <Plus className="w-4 h-4" />
-            {t('printers.addPrinter')}
-          </Button>
+            <div className="h-6 w-px bg-bambu-dark-tertiary" />
+            <div className="flex items-center gap-2">{renderFilterControls()}</div>
+            <div className="h-6 w-px bg-bambu-dark-tertiary" />
+            <div className="flex items-center gap-2">{renderViewControls()}</div>
+            <div className="h-6 w-px bg-bambu-dark-tertiary" />
+            <div className="flex items-center gap-2">{renderActionControls()}</div>
+          </div>
+
+          {/* Compact overflow menus (visible only when measureToolbar decides
+              the inline ribbon overflows). 3 grouped icons: Filters / View /
+              Actions, each opening a panel with the same controls re-rendered
+              with ``inMenu=true`` so they go full-width inside the panel. */}
+          {compactToolbar && (
+            <div className="ml-auto flex items-center justify-end gap-1">
+              <ToolbarMenu label={t('printers.toolbar.filters')} icon={<Filter className="w-4 h-4" />}>
+                <div className="flex w-48 flex-col gap-2">{renderFilterControls(true)}</div>
+              </ToolbarMenu>
+              <ToolbarMenu label={t('printers.toolbar.view')} icon={<SlidersHorizontal className="w-4 h-4" />}>
+                <div className="flex w-48 flex-col gap-2">{renderViewControls(true)}</div>
+              </ToolbarMenu>
+              <ToolbarMenu label={t('printers.toolbar.actions')} icon={<MoreHorizontal className="w-4 h-4" />}>
+                <div className="flex w-48 flex-col gap-2">{renderActionControls(true)}</div>
+              </ToolbarMenu>
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Search + filters + sort panel (#852) - standalone row below header */}
-      {printers && printers.length > 0 && (
-        <div className="flex flex-wrap items-stretch gap-2 mb-4 p-3 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg">
-          {/* Search bar */}
-          <div className="relative w-full sm:w-[28rem] h-9">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray/50" />
-            <input
-              type="search"
-              name="printer-search"
-              autoComplete="off"
-              data-1p-ignore
-              data-lpignore="true"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder={t('printers.search')}
-              aria-label={t('printers.search')}
-              className="w-full h-9 pl-10 pr-8 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm placeholder:text-bambu-gray/50 focus:outline-none focus:border-bambu-green"
-            />
-            {search && (
-              <button
-                type="button"
-                aria-label={t('common.clear')}
-                onClick={() => setSearch('')}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-bambu-gray hover:text-white"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            )}
-          </div>
-
-          {/* Status filter */}
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            className="h-9 min-w-[9rem] text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg px-3 text-white focus:border-bambu-green focus:outline-none"
-          >
-            <option value="all">{t('printers.filter.allStatuses')}</option>
-            <option value="printing">{t('printers.status.printing')}</option>
-            <option value="paused">{t('printers.status.paused')}</option>
-            <option value="idle">{t('printers.status.idle')}</option>
-            <option value="finished">{t('printers.status.finished')}</option>
-            <option value="error">{t('printers.status.error')}</option>
-            <option value="offline">{t('printers.status.offline')}</option>
-          </select>
-
-          {/* Location filter - only when at least one printer has a location */}
-          {availableLocations.length > 0 && (
-            <select
-              value={locationFilter}
-              onChange={(e) => setLocationFilter(e.target.value)}
-              className="h-9 min-w-[9rem] text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg px-3 text-white focus:border-bambu-green focus:outline-none"
-            >
-              <option value="all">{t('printers.filter.allLocations')}</option>
-              {availableLocations.map(loc => (
-                <option key={loc} value={loc}>{loc}</option>
-              ))}
-            </select>
-          )}
-
-          {/* Hide offline toggle - moved from the header actions row */}
-          <label className="h-9 flex items-center gap-2 px-3 rounded-lg bg-bambu-dark border border-bambu-dark-tertiary text-sm text-bambu-gray cursor-pointer hover:text-white transition-colors">
-            <input
-              type="checkbox"
-              checked={hideDisconnected}
-              onChange={toggleHideDisconnected}
-              className="rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
-            />
-            {t('printers.hideOffline')}
-          </label>
-
-          {/* Sort dropdown - pushed to far right via ml-auto */}
-          <div className="flex items-center gap-1 ml-auto">
-            <select
-              value={sortBy}
-              onChange={(e) => handleSortChange(e.target.value as SortOption)}
-              className="h-9 min-w-[9rem] text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg px-3 text-white focus:border-bambu-green focus:outline-none"
-            >
-              <option value="name">{t('printers.sort.name')}</option>
-              <option value="status">{t('printers.sort.status')}</option>
-              <option value="model">{t('printers.sort.model')}</option>
-              <option value="location">{t('printers.sort.location')}</option>
-            </select>
-            <button
-              onClick={toggleSortDirection}
-              className="h-9 w-9 flex items-center justify-center bg-bambu-dark border border-bambu-dark-tertiary rounded-lg hover:border-bambu-green transition-colors"
-              title={sortAsc ? t('printers.sort.descending') : t('printers.sort.ascending')}
-            >
-              {sortAsc ? (
-                <ArrowUpNarrowWide className="w-4 h-4 text-bambu-gray" />
-              ) : (
-                <ArrowDownWideNarrow className="w-4 h-4 text-bambu-gray" />
-              )}
-            </button>
-          </div>
-        </div>
-      )}
 
       {isLoading ? (
         <div className="text-center py-12 text-bambu-gray">{t('common.loading')}</div>

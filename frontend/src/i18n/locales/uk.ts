@@ -188,6 +188,11 @@ export default {
       allStatuses: 'Усі статуси',
       allLocations: 'Усі локації'
     },
+    toolbar: {
+      filters: 'Фільтри',
+      view: 'Вигляд',
+      actions: 'Дії',
+    },
     // Printer card
     readyToPrint: 'Готовий до друку',
     external: 'Ext',
