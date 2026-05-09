@@ -40,10 +40,12 @@ class TestSpoolmanAPI:
         mock_client.base_url = "http://localhost:7912"
         mock_client.health_check = AsyncMock(return_value=True)
         mock_client.ensure_tag_extra_field = AsyncMock(return_value=True)
+        mock_client.ensure_extra_field = AsyncMock(return_value=True)
         mock_client.get_spools = AsyncMock(return_value=[])
         mock_client.get_filaments = AsyncMock(return_value=[])
         mock_client.create_spool = AsyncMock(return_value={"id": 1})
         mock_client.update_spool = AsyncMock(return_value={"id": 1})
+        mock_client.merge_spool_extra = AsyncMock(return_value={"id": 1, "extra": {}})
         mock_client.close = AsyncMock()
 
         with (
@@ -448,8 +450,12 @@ class TestSpoolmanAPI:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_link_spool_success(self, async_client: AsyncClient, spoolman_settings, mock_spoolman_client):
-        """Verify successfully linking a spool to AMS tray."""
-        mock_spoolman_client.update_spool = AsyncMock(
+        """Verify successfully linking a spool to AMS tray.
+
+        The route writes ``extra.tag`` via ``merge_spool_extra`` (not
+        ``update_spool``) so other extra keys are preserved.
+        """
+        mock_spoolman_client.merge_spool_extra = AsyncMock(
             return_value={"id": 1, "extra": {"tag": '"A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4"'}}
         )
 
@@ -462,14 +468,22 @@ class TestSpoolmanAPI:
         assert data["success"] is True
         assert "linked" in data["message"].lower()
 
-        # Verify update_spool was called
-        mock_spoolman_client.update_spool.assert_called_once()
+        mock_spoolman_client.merge_spool_extra.assert_called_once()
+        # Tag value is stored as a JSON-encoded uppercase string.
+        call_args = mock_spoolman_client.merge_spool_extra.call_args
+        assert call_args.args[0] == 1  # spool_id
+        assert call_args.args[1] == {"tag": '"A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4"'}
 
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_unlink_spool_success(self, async_client: AsyncClient, spoolman_settings, mock_spoolman_client):
-        """Verify successfully unlinking a spool clears extra.tag."""
-        mock_spoolman_client.update_spool = AsyncMock(return_value={"id": 1, "extra": {"tag": '""'}})
+        """Verify successfully unlinking a spool clears extra.tag.
+
+        Unlink writes ``extra.tag = '""'`` (JSON-encoded empty string) via
+        ``merge_spool_extra`` so Spoolman's PATCH-merge behaviour actually
+        clears the key instead of leaving the old value in place.
+        """
+        mock_spoolman_client.merge_spool_extra = AsyncMock(return_value={"id": 1, "extra": {"tag": '""'}})
 
         response = await async_client.post("/api/v1/spoolman/spools/1/unlink")
         assert response.status_code == 200
@@ -477,11 +491,7 @@ class TestSpoolmanAPI:
         assert data["success"] is True
         assert "unlinked" in data["message"].lower()
 
-        mock_spoolman_client.update_spool.assert_called_once_with(
-            spool_id=1,
-            clear_location=True,
-            extra={"tag": '""'},
-        )
+        mock_spoolman_client.merge_spool_extra.assert_called_once_with(1, {"tag": '""'})
 
     # =========================================================================
     # Sync Tests

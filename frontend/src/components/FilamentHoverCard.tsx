@@ -272,6 +272,9 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
                   </span>
                   <span className="text-xs text-white font-semibold flex items-center gap-1">
                     <span>{data.fillLevel !== null ? `${data.fillLevel}%` : '-'}</span>
+                    {data.fillSource === 'spoolman' && data.fillLevel !== null && (
+                      <span className="text-[9px] text-bambu-gray font-normal">{t('spoolman.fillSourceLabel')}</span>
+                    )}
                     {assignedRemainingWeight !== null && data.fillLevel !== null && (
                       <span className="text-[9px] text-bambu-gray font-normal">• {assignedRemainingWeight}g</span>
                     )}

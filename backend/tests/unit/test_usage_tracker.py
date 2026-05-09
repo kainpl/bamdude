@@ -1170,7 +1170,12 @@ class TestTrayChangeSplit:
         assign_b = _make_assignment(spool_id=20, ams_id=0, tray_id=1)
         archive = _make_archive(archive_id=200)
 
-        db = _mock_db_sequential([archive, None, assign_a, spool_a, assign_b, spool_b])
+        # Mock sequence — ``ams_mapping=[0]`` is supplied below, so the queue
+        # PrintQueueItem lookup at routes/services/usage_tracker.py is gated
+        # off (``if not slot_to_tray``) and the placeholder ``None`` other
+        # tests use is NOT consumed here. Per-segment resolution then is:
+        #   archive → assign_a → spool_a → assign_b → spool_b.
+        db = _mock_db_sequential([archive, assign_a, spool_a, assign_b, spool_b])
 
         # Tray change log has two entries — printer started on T0, switched to
         # T1 at layer 30. Below we ALSO pass ams_mapping=[0] (slicer captured

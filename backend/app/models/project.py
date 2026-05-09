@@ -90,6 +90,13 @@ class Project(Base):
     )
 
 
+# Pivot tables for the M2M ``library_files`` / ``library_folders`` relationships
+# above. Imported for side-effect: registers ``library_file_projects`` /
+# ``library_folder_projects`` Table objects in ``Base.metadata`` so the
+# ``secondary="..."`` string lookups resolve when SQLAlchemy configures
+# mappers — otherwise tests that import only Project (transitively) hit
+# ``NameError: name 'library_file_projects' is not defined`` at mapper init.
+from backend.app.models import library_project_links  # noqa: E402, F401
 from backend.app.models.archive import PrintArchive  # noqa: E402
 from backend.app.models.library import LibraryFile, LibraryFolder  # noqa: E402
 from backend.app.models.print_queue import PrintQueueItem  # noqa: E402

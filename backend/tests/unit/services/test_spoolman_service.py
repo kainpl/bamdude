@@ -122,7 +122,12 @@ class TestSpoolmanClient:
 
     @pytest.mark.asyncio
     async def test_sync_ams_tray_updates_weight_by_default(self, client, sample_tray, existing_spool):
-        """Verify sync_ams_tray updates remaining_weight by default."""
+        """Verify sync_ams_tray updates remaining_weight by default.
+
+        ``spool.location`` is user-managed in Spoolman now (inventory UI port),
+        so sync no longer writes it — local slot assignments live in
+        ``spoolman_slot_assignments``.
+        """
         with (
             patch.object(client, "find_spool_by_tag", AsyncMock(return_value=existing_spool)),
             patch.object(client, "update_spool", AsyncMock(return_value={"id": 42})) as mock_update,
@@ -133,7 +138,7 @@ class TestSpoolmanClient:
             call_kwargs = mock_update.call_args.kwargs
             assert "remaining_weight" in call_kwargs
             assert call_kwargs["remaining_weight"] == 500.0  # 50% of 1000g
-            assert "location" in call_kwargs
+            assert "location" not in call_kwargs
 
     @pytest.mark.asyncio
     async def test_sync_ams_tray_skips_weight_when_disabled(self, client, sample_tray, existing_spool):
@@ -148,9 +153,8 @@ class TestSpoolmanClient:
             call_kwargs = mock_update.call_args.kwargs
             # remaining_weight should be None (not updated)
             assert call_kwargs.get("remaining_weight") is None
-            # location should still be updated
-            assert "location" in call_kwargs
-            assert "TestPrinter" in call_kwargs["location"]
+            # location is no longer pushed to Spoolman by sync (user-managed field).
+            assert "location" not in call_kwargs
 
     @pytest.mark.asyncio
     async def test_sync_ams_tray_new_spool_always_includes_weight(self, client, sample_tray, mock_filament):
@@ -169,8 +173,15 @@ class TestSpoolmanClient:
             assert call_kwargs["remaining_weight"] == 500.0  # 50% of 1000g
 
     @pytest.mark.asyncio
-    async def test_sync_ams_tray_location_format(self, client, sample_tray, existing_spool):
-        """Verify location format is correct when updating spool."""
+    async def test_sync_ams_tray_does_not_push_location(self, client, sample_tray, existing_spool):
+        """Verify sync_ams_tray no longer writes spool.location.
+
+        Inventory UI port (PR #1241) made ``spool.location`` a user-managed
+        field in Spoolman; physical slot mapping lives in
+        ``spoolman_slot_assignments`` locally. Regression guard: a future
+        refactor must not silently restart pushing location strings to
+        Spoolman because that would clobber user-edited values on every sync.
+        """
         with (
             patch.object(client, "find_spool_by_tag", AsyncMock(return_value=existing_spool)),
             patch.object(client, "update_spool", AsyncMock(return_value={"id": 42})) as mock_update,
@@ -178,10 +189,7 @@ class TestSpoolmanClient:
             await client.sync_ams_tray(sample_tray, "My Printer", disable_weight_sync=True)
 
             call_kwargs = mock_update.call_args.kwargs
-            # Location should follow pattern: "PrinterName - AMS A1"
-            assert "location" in call_kwargs
-            assert "My Printer" in call_kwargs["location"]
-            assert "AMS" in call_kwargs["location"]
+            assert "location" not in call_kwargs
 
     @pytest.mark.asyncio
     async def test_sync_ams_tray_skips_non_bambu_spool(self, client):
@@ -385,8 +393,16 @@ class TestSpoolmanClient:
 
     @pytest.mark.asyncio
     async def test_get_spools_raises_after_3_failed_attempts(self, client):
-        """Verify get_spools raises exception after 3 failed attempts."""
+        """Verify get_spools wraps connection errors in SpoolmanUnavailableError after 3 failed attempts.
+
+        Inventory UI port (PR #1241) introduced typed Spoolman exceptions —
+        bare ``httpx.ReadError`` is no longer surfaced; callers see
+        ``SpoolmanUnavailableError`` so route layers can map to a clean 503
+        without sniffing httpx specifics.
+        """
         import httpx
+
+        from backend.app.services.spoolman import SpoolmanUnavailableError
 
         with (
             patch.object(client, "_get_client", AsyncMock()) as mock_get_client,
@@ -399,8 +415,10 @@ class TestSpoolmanClient:
             # All 3 attempts fail
             mock_http_client.get.side_effect = httpx.ReadError("Connection closed")
 
-            with pytest.raises(httpx.ReadError):
+            with pytest.raises(SpoolmanUnavailableError) as exc_info:
                 await client.get_spools()
+            # Original httpx error preserved as the cause for diagnostics.
+            assert isinstance(exc_info.value.__cause__, httpx.ReadError)
 
             assert mock_get_client.call_count == 3
             assert mock_http_client.get.call_count == 3

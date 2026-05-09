@@ -384,40 +384,49 @@ describe('SettingsPage', () => {
       expect(screen.queryByPlaceholderText(/api\/frame\.jpeg\?src=printer/)).not.toBeInTheDocument();
     });
 
-    it('PATCHes the printer with external_camera_snapshot_url when the user types into the input', async () => {
-      let receivedBody: Record<string, unknown> | null = null;
-      server.use(
-        http.get('/api/v1/printers/', () => HttpResponse.json([mjpegPrinter])),
-        http.patch('/api/v1/printers/7', async ({ request }) => {
-          receivedBody = (await request.json()) as Record<string, unknown>;
-          return HttpResponse.json({ ...mjpegPrinter, ...receivedBody });
-        }),
-      );
+    it(
+      'PATCHes the printer with external_camera_snapshot_url when the user types into the input',
+      async () => {
+        let receivedBody: Record<string, unknown> | null = null;
+        server.use(
+          http.get('/api/v1/printers/', () => HttpResponse.json([mjpegPrinter])),
+          http.patch('/api/v1/printers/7', async ({ request }) => {
+            receivedBody = (await request.json()) as Record<string, unknown>;
+            return HttpResponse.json({ ...mjpegPrinter, ...receivedBody });
+          }),
+        );
 
-      render(<SettingsPage />);
-      await switchToPrintingTab();
+        render(<SettingsPage />);
+        await switchToPrintingTab();
 
-      const input = await waitFor(() =>
-        screen.getByPlaceholderText(/api\/frame\.jpeg\?src=printer/),
-      );
+        const input = await waitFor(() =>
+          screen.getByPlaceholderText(/api\/frame\.jpeg\?src=printer/),
+        );
 
-      // delay:null makes user.type() instant instead of 50ms-per-char —
-      // 51 chars × 50ms ≈ 2.5s of pure typing on top of the debounced
-      // PATCH wait, which tipped the default 5s test timeout under load.
-      const user = userEvent.setup({ delay: null });
-      await user.type(input, 'http://192.168.1.61:1984/api/frame.jpeg?src=printer');
+        // delay:null makes user.type() instant instead of 50ms-per-char —
+        // 51 chars × 50ms ≈ 2.5s of pure typing on top of the debounced
+        // PATCH wait, which tipped the default 5s test timeout under load.
+        const user = userEvent.setup({ delay: null });
+        await user.type(input, 'http://192.168.1.61:1984/api/frame.jpeg?src=printer');
 
-      // Save is debounced by 800ms; assert the PATCH eventually fires with
-      // the typed snapshot URL.
-      await waitFor(
-        () => {
-          expect(receivedBody).not.toBeNull();
-          expect(receivedBody!.external_camera_snapshot_url).toBe(
-            'http://192.168.1.61:1984/api/frame.jpeg?src=printer',
-          );
-        },
-        { timeout: 3000 },
-      );
-    });
+        // Save is debounced by 800ms; assert the PATCH eventually fires with
+        // the typed snapshot URL.
+        await waitFor(
+          () => {
+            expect(receivedBody).not.toBeNull();
+            expect(receivedBody!.external_camera_snapshot_url).toBe(
+              'http://192.168.1.61:1984/api/frame.jpeg?src=printer',
+            );
+          },
+          { timeout: 5000 },
+        );
+      },
+      // Solo run is ~2.6s, but in the full suite this test routinely lands
+      // last and the cold-start render + 800ms debounce + waitFor compete
+      // for the default 5s window. 15s test-level timeout absorbs the
+      // suite-load jitter without masking real regressions (the inner
+      // waitFor still caps PATCH-wait at 5s).
+      15000,
+    );
   });
 });
