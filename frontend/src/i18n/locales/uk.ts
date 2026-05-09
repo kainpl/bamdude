@@ -3639,6 +3639,7 @@ export default {
     noSpoolmanFilaments: 'У каталозі Spoolman ще немає філаментів.',
     spoolmanFilamentColorSwatch: 'Колір філамента',
     linkedSpool: 'Призначена котушка',
+    openInInventory: 'Відкрити в інвентарі',
     unlinkConfirmTitle: 'Зняти призначення котушки зі слоту?',
     unlinkConfirmBody: 'Призначення слоту буде знято. Котушка залишиться в інвентарі Spoolman.',
     noUnlinkedSpools: 'Усі котушки Spoolman уже привʼязані до слотів.',

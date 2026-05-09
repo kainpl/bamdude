@@ -3635,6 +3635,7 @@ export default {
     noSpoolmanFilaments: 'No filaments in your Spoolman catalog yet.',
     spoolmanFilamentColorSwatch: 'Filament colour',
     linkedSpool: 'Assigned spool',
+    openInInventory: 'Open in inventory',
     unlinkConfirmTitle: 'Unassign spool from slot?',
     unlinkConfirmBody: 'The slot assignment will be removed. The spool stays in your Spoolman inventory.',
     noUnlinkedSpools: 'All Spoolman spools are already linked to a slot.',

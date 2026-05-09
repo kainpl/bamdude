@@ -5229,6 +5229,7 @@ function PrinterCard({
           amsId={assignSpoolModal.amsId}
           trayId={assignSpoolModal.trayId}
           trayInfo={assignSpoolModal.trayInfo}
+          spoolmanEnabled={!!spoolmanEnabled}
         />
       )}
 
@@ -6864,23 +6865,27 @@ export function PrintersPage() {
 
   // Spoolman inventory feed (upstream PR #1241): the bulk Spoolman spool list +
   // slot-assignment table drive the per-slot fill bar / linked-spool name /
-  // Assign/Unassign buttons on the printer card. Both queries gate on
-  // ``spoolmanSyncMode === 'inventory'`` so the iframe-mode deployment doesn't
-  // hammer the proxy endpoints with calls it never reads from.
-  const spoolmanInventoryActive = spoolmanEnabled && spoolmanSyncMode === 'inventory';
+  // Assign/Unassign buttons on the printer card. Gated only on
+  // ``spoolmanEnabled`` (matches upstream Bambuddy applied/PrintersPage.tsx).
+  // An earlier port iteration introduced an extra ``=== 'inventory'`` check
+  // describing an "iframe-mode deployment" — that mode does not exist in
+  // BamDude (and didn't exist upstream either), and ``spoolman_sync_mode``
+  // only ever takes ``'auto' | 'manual'`` from SpoolmanSettings.tsx, so the
+  // gate was permanently closed for every install — the inventory queries
+  // never fired and the printer-card Spoolman controls never rendered.
   const { data: spoolmanSpoolsData, isLoading: spoolmanSpoolsLoading } = useQuery({
     queryKey: ['spoolman-inventory-spools'],
     queryFn: () => api.getSpoolmanInventorySpools(false),
-    enabled: !!spoolmanInventoryActive,
+    enabled: !!spoolmanEnabled,
     staleTime: 30 * 1000,
   });
   const { data: spoolmanSlotAssignmentsData, isLoading: spoolmanSlotsLoading } = useQuery({
     queryKey: ['spoolman-slot-assignments'],
     queryFn: () => api.getSpoolmanSlotAssignments(),
-    enabled: !!spoolmanInventoryActive,
+    enabled: !!spoolmanEnabled,
     staleTime: 30 * 1000,
   });
-  const spoolmanLoading = spoolmanInventoryActive && (spoolmanSpoolsLoading || spoolmanSlotsLoading);
+  const spoolmanLoading = !!spoolmanEnabled && (spoolmanSpoolsLoading || spoolmanSlotsLoading);
   const spoolmanSlotAssignments: SpoolmanSlotAssignmentRow[] | undefined = useMemo(
     () => spoolmanSlotAssignmentsData?.map((row) => ({
       printer_id: row.printer_id,
@@ -6922,16 +6927,23 @@ export function PrintersPage() {
     {} as Record<number, PrinterMaintenanceInfo>
   ) || {};
 
-  // Create a map of printer_id -> smart plug
-  const smartPlugByPrinter = smartPlugs?.reduce(
-    (acc, plug) => {
-      if (plug.printer_id) {
-        acc[plug.printer_id] = plug;
-      }
-      return acc;
-    },
-    {} as Record<number, typeof smartPlugs[0]>
-  ) || {};
+  // Create a map of printer_id -> smart plug. Memoised so the reference is
+  // stable across renders when ``smartPlugs`` doesn't change — without this,
+  // the fallback ``|| {}`` allocates a fresh object every render and would
+  // trigger downstream effects/memos that depend on the map identity.
+  const smartPlugByPrinter = useMemo(
+    () =>
+      smartPlugs?.reduce(
+        (acc, plug) => {
+          if (plug.printer_id) {
+            acc[plug.printer_id] = plug;
+          }
+          return acc;
+        },
+        {} as Record<number, typeof smartPlugs[0]>,
+      ) || {},
+    [smartPlugs],
+  );
 
   const addMutation = useMutation({
     mutationFn: api.createPrinter,
@@ -7205,6 +7217,10 @@ export function PrintersPage() {
     measureToolbar();
   });
 
+  // ESLint react-hooks/exhaustive-deps cannot statically check expressions in
+  // the deps array, so we hoist the smart-plug count into a memo before the
+  // useEffect — same trigger semantics, no warning.
+  const smartPlugCount = useMemo(() => Object.keys(smartPlugByPrinter).length, [smartPlugByPrinter]);
   useEffect(() => {
     const toolbar = toolbarRef.current;
     if (!toolbar) return;
@@ -7227,7 +7243,7 @@ export function PrintersPage() {
     printers?.length,
     availableLocations.length,
     hideDisconnected,
-    Object.keys(smartPlugByPrinter).length,
+    smartPlugCount,
   ]);
 
   // Toolbar control sections — render the same control set inline on wide
@@ -7606,6 +7622,10 @@ export function PrintersPage() {
               linkedSpools={linkedSpools}
               spoolmanUrl={spoolmanStatus?.url}
               spoolmanSyncMode={spoolmanSyncMode}
+              spoolmanSpools={spoolmanSpoolsData}
+              spoolmanSlotAssignments={spoolmanSlotAssignments}
+              spoolmanLoading={spoolmanLoading}
+              onUnassignSpoolmanSpool={(spoolId) => unassignSpoolmanMutation.mutate(spoolId)}
               onGetAssignment={getAssignment}
               onUnassignSpool={(pid, aid, tid) => unassignMutation.mutate({ printerId: pid, amsId: aid, trayId: tid })}
               amsThresholds={settings ? {
