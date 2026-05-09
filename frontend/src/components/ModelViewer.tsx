@@ -4,8 +4,9 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
+import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import JSZip from 'jszip';
-import { Loader2, RotateCcw, ZoomIn, ZoomOut } from 'lucide-react';
+import { Loader2, RotateCcw, ZoomIn, ZoomOut, Box, Grid3x3, Download } from 'lucide-react';
 import { Button } from './Button';
 import { getAuthToken } from '../api/client';
 
@@ -21,6 +22,12 @@ interface ModelViewerProps {
   buildVolume?: BuildVolume;
   filamentColors?: string[];
   selectedPlateId?: number | null;
+  /** SPA theme — drives scene background + grid contrast so the bed
+   *  doesn't look misplaced inside a light-mode modal. */
+  theme?: 'light' | 'dark';
+  /** Optional filename stem used by the Export PNG button. Falls back
+   *  to "model-preview" when caller didn't pass anything meaningful. */
+  exportFilename?: string;
   className?: string;
 }
 
@@ -579,12 +586,26 @@ function buildModelGroup(
   return group;
 }
 
+const WIREFRAME_KEY = 'bd-model-wireframe';
+
+function bgColorForTheme(theme: 'light' | 'dark'): number {
+  return theme === 'light' ? 0xf5f5f5 : 0x1a1a1a;
+}
+
+function gridColorsForTheme(theme: 'light' | 'dark'): { major: number; minor: number } {
+  return theme === 'light'
+    ? { major: 0xb0b0b0, minor: 0xd5d5d5 }
+    : { major: 0x444444, minor: 0x333333 };
+}
+
 export function ModelViewer({
   url,
   fileType,
   buildVolume = { x: 256, y: 256, z: 256 },
   filamentColors,
   selectedPlateId = null,
+  theme = 'dark',
+  exportFilename,
   className = '',
 }: ModelViewerProps) {
   const { t } = useTranslation();
@@ -601,6 +622,16 @@ export function ModelViewer({
   const [error, setError] = useState<string | null>(null);
   const [parsedData, setParsedData] = useState<Parsed3MFData | null>(null);
   const [stlGeometry, setStlGeometry] = useState<THREE.BufferGeometry | null>(null);
+  // OBJ uses its own loader path that returns a fully-built Group (with
+  // its own materials), so we keep it separate from the geometry-only
+  // shape the STL + 3MF paths produce.
+  const [objGroup, setObjGroup] = useState<THREE.Group | null>(null);
+  // Wireframe toggle — flips ``material.wireframe`` on every mesh in
+  // the scene. Persists across modal opens so the operator's pick
+  // sticks.
+  const [wireframe, setWireframe] = useState(() => {
+    try { return localStorage.getItem(WIREFRAME_KEY) === 'true'; } catch { return false; }
+  });
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -611,7 +642,7 @@ export function ModelViewer({
 
     // Scene
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x1a1a1a);
+    scene.background = new THREE.Color(bgColorForTheme(theme));
     sceneRef.current = scene;
 
     // Camera
@@ -619,8 +650,12 @@ export function ModelViewer({
     camera.position.set(150, 150, 150);
     cameraRef.current = camera;
 
-    // Renderer
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    // Renderer. ``preserveDrawingBuffer: true`` keeps the WebGL framebuffer
+    // populated between frames so the Export PNG button can read it via
+    // ``canvas.toDataURL()`` reliably — without it the buffer is cleared
+    // post-swap and the export comes back blank on most GPUs. The perf
+    // cost is negligible for a viewer that's not doing heavy animation.
+    const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
     renderer.setSize(width, height);
     renderer.setPixelRatio(window.devicePixelRatio);
     container.appendChild(renderer.domElement);
@@ -647,7 +682,8 @@ export function ModelViewer({
     // Grid - use the larger dimension for the grid size
     const gridSize = Math.max(buildVolume.x, buildVolume.y);
     const gridDivisions = Math.ceil(gridSize / 16);
-    const gridHelper = new THREE.GridHelper(gridSize, gridDivisions, 0x444444, 0x333333);
+    const gridColors = gridColorsForTheme(theme);
+    const gridHelper = new THREE.GridHelper(gridSize, gridDivisions, gridColors.major, gridColors.minor);
     scene.add(gridHelper);
     gridRef.current = gridHelper;
 
@@ -697,6 +733,7 @@ export function ModelViewer({
     setError(null);
     setParsedData(null);
     setStlGeometry(null);
+    setObjGroup(null);
 
     const normalizedType = (fileType || url.split('?')[0].split('.').pop() || '').toLowerCase();
 
@@ -741,6 +778,27 @@ export function ModelViewer({
           setError(err.message);
           setLoading(false);
         });
+    } else if (normalizedType === 'obj') {
+      // OBJ goes through Three's stock loader — it parses + builds a
+      // ready-to-mount Group. We re-orient X/Z like the STL path
+      // (90° around X) so the model lands on the bed instead of
+      // standing on its side.
+      fetch(url, { headers })
+        .then((res) => {
+          if (!res.ok) throw new Error(t('modelViewer.errors.failedToLoad'));
+          return res.text();
+        })
+        .then((text) => {
+          const loader = new OBJLoader();
+          const group = loader.parse(text);
+          group.rotation.x = -Math.PI / 2;
+          group.updateMatrixWorld(true);
+          setObjGroup(group);
+        })
+        .catch((err) => {
+          setError(err.message);
+          setLoading(false);
+        });
     } else {
       setError(t('modelViewer.errors.unsupportedFormat'));
       setLoading(false);
@@ -777,7 +835,7 @@ export function ModelViewer({
 
   useEffect(() => {
     if (!sceneRef.current || !cameraRef.current || !controlsRef.current) return;
-    if (!parsedData && !stlGeometry) return;
+    if (!parsedData && !stlGeometry && !objGroup) return;
 
     if (modelGroupRef.current) {
       sceneRef.current.remove(modelGroupRef.current);
@@ -785,18 +843,51 @@ export function ModelViewer({
     }
 
     const isStlModel = !!stlGeometry;
-    const group = isStlModel
-      ? (() => {
-          const materialColor = filamentColors?.[0] || '#00ae42';
-          const material = new THREE.MeshPhongMaterial({ color: new THREE.Color(materialColor), shininess: 30 });
-          const mesh = new THREE.Mesh(stlGeometry!, material);
-          const stlGroup = new THREE.Group();
-          stlGroup.add(mesh);
-          return stlGroup;
-        })()
-      : buildModelGroup(parsedData!, selectedPlateId ?? null, filamentColors);
+    const isObjModel = !!objGroup;
+    let group: THREE.Group;
+    if (isStlModel) {
+      const materialColor = filamentColors?.[0] || '#00ae42';
+      const material = new THREE.MeshPhongMaterial({ color: new THREE.Color(materialColor), shininess: 30, wireframe });
+      const mesh = new THREE.Mesh(stlGeometry!, material);
+      group = new THREE.Group();
+      group.add(mesh);
+    } else if (isObjModel) {
+      // OBJLoader returns a Group with default Phong materials. Tint
+      // every mesh with the primary filament colour so the OBJ blends
+      // in with how STL + 3MF look. Apply wireframe at material-build
+      // time so the first frame already reflects the toggle state.
+      group = objGroup!;
+      const materialColor = filamentColors?.[0] || '#00ae42';
+      group.traverse((child) => {
+        if (child instanceof THREE.Mesh) {
+          child.material = new THREE.MeshPhongMaterial({
+            color: new THREE.Color(materialColor),
+            shininess: 30,
+            wireframe,
+          });
+        }
+      });
+    } else {
+      group = buildModelGroup(parsedData!, selectedPlateId ?? null, filamentColors);
+    }
     modelGroupRef.current = group;
     sceneRef.current.add(group);
+
+    // Apply wireframe state to whatever just got mounted — STL + OBJ
+    // already set it at material-build time; 3MF's buildModelGroup
+    // builds fresh MeshPhongMaterial instances per extruder without
+    // knowing about the toggle, so we sweep the group here for it.
+    if (!isStlModel && !isObjModel) {
+      group.traverse((child) => {
+        if (child instanceof THREE.Mesh) {
+          if (Array.isArray(child.material)) {
+            for (const m of child.material) (m as THREE.MeshPhongMaterial).wireframe = wireframe;
+          } else {
+            (child.material as THREE.MeshPhongMaterial).wireframe = wireframe;
+          }
+        }
+      });
+    }
 
     // Get bounding box to position model
     const box = new THREE.Box3().setFromObject(group);
@@ -805,21 +896,25 @@ export function ModelViewer({
     // Always place models on the build plate (Y=0)
     group.position.y = -box.min.y;
 
-    const selectedPlateBounds = (!isStlModel && selectedPlateId != null && parsedData!.buildItems.length > 0)
+    // Plate-bound positioning only applies when we have a parsed 3MF
+    // with build items + offsets. STL and OBJ don't carry plate info so
+    // they just centre on the bed.
+    const isMeshOnly = isStlModel || isObjModel;
+    const selectedPlateBounds = (!isMeshOnly && selectedPlateId != null && parsedData!.buildItems.length > 0)
       ? parsedData!.plateBounds.get(selectedPlateId)
       : undefined;
-    const selectedPlateOffset = (!isStlModel && selectedPlateId != null)
+    const selectedPlateOffset = (!isMeshOnly && selectedPlateId != null)
       ? parsedData!.plateOffsets.get(selectedPlateId)
       : undefined;
-    const shouldCenterOnPlate = isStlModel
-      || parsedData!.buildItems.length === 0
+    const shouldCenterOnPlate = isMeshOnly
+      || (parsedData ? parsedData.buildItems.length === 0 : true)
       || (selectedPlateId != null && !selectedPlateBounds && !selectedPlateOffset);
     const centerOffsetX = shouldCenterOnPlate ? -center.x : 0;
     const centerOffsetZ = shouldCenterOnPlate ? -center.z : 0;
 
     let plateOffsetX = 0;
     let plateOffsetZ = 0;
-    if (!isStlModel && selectedPlateId != null && parsedData!.buildItems.length > 0 && selectedPlateBounds) {
+    if (!isMeshOnly && selectedPlateId != null && parsedData!.buildItems.length > 0 && selectedPlateBounds) {
       const plateBox = new THREE.Box3().setFromObject(group);
       plateOffsetX = plateBox.min.x - selectedPlateBounds.minX;
       plateOffsetZ = plateBox.min.z - selectedPlateBounds.minY;
@@ -828,10 +923,10 @@ export function ModelViewer({
     const plateCenterX = buildVolume.x / 2;
     const plateCenterZ = buildVolume.y / 2;
 
-    if (!isStlModel && selectedPlateId != null && parsedData!.buildItems.length > 0 && selectedPlateBounds) {
+    if (!isMeshOnly && selectedPlateId != null && parsedData!.buildItems.length > 0 && selectedPlateBounds) {
       group.position.x = centerOffsetX - plateOffsetX;
       group.position.z = centerOffsetZ - plateOffsetZ;
-    } else if (!isStlModel && selectedPlateId != null && selectedPlateOffset) {
+    } else if (!isMeshOnly && selectedPlateId != null && selectedPlateOffset) {
       group.position.x = centerOffsetX + (plateCenterX - selectedPlateOffset.offsetX);
       group.position.z = centerOffsetZ + (plateCenterZ - selectedPlateOffset.offsetY);
     } else if (shouldCenterOnPlate) {
@@ -875,7 +970,51 @@ export function ModelViewer({
     controlsRef.current.update();
 
     setLoading(false);
-  }, [parsedData, stlGeometry, selectedPlateId, filamentColors, buildVolume]);
+    // ``wireframe`` is intentionally NOT a dep — flipping it rebuilds the
+    // group + resets the camera (jolts the user's orbit view). The live
+    // wireframe-sync effect below sweeps materials instead. Mount-time
+    // materials still pick up the current ``wireframe`` value via closure
+    // so the first render is already correct.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [parsedData, stlGeometry, objGroup, selectedPlateId, filamentColors, buildVolume]);
+
+  // Live theme sync — flip scene background + grid colours without
+  // recreating the renderer so the user's camera position is preserved.
+  useEffect(() => {
+    if (!sceneRef.current) return;
+    sceneRef.current.background = new THREE.Color(bgColorForTheme(theme));
+    if (gridRef.current) {
+      const colors = gridColorsForTheme(theme);
+      const material = gridRef.current.material;
+      const apply = (m: THREE.Material) => {
+        // GridHelper uses LineBasicMaterial; setting both child line
+        // colours to the major shade keeps the bed legible without
+        // having to dispose + rebuild the helper.
+        if ((m as THREE.LineBasicMaterial).color) {
+          (m as THREE.LineBasicMaterial).color = new THREE.Color(colors.major);
+        }
+      };
+      if (Array.isArray(material)) material.forEach(apply); else apply(material);
+    }
+  }, [theme]);
+
+  // Live wireframe sync — sweeps every mounted mesh and flips the
+  // material's wireframe flag. Avoids a full model rebuild on toggle.
+  useEffect(() => {
+    if (!modelGroupRef.current) return;
+    modelGroupRef.current.traverse((child) => {
+      if (child instanceof THREE.Mesh) {
+        if (Array.isArray(child.material)) {
+          for (const m of child.material) {
+            if ('wireframe' in m) (m as THREE.MeshPhongMaterial).wireframe = wireframe;
+          }
+        } else if ('wireframe' in child.material) {
+          (child.material as THREE.MeshPhongMaterial).wireframe = wireframe;
+        }
+      }
+    });
+    try { localStorage.setItem(WIREFRAME_KEY, wireframe.toString()); } catch { /* storage unavailable */ }
+  }, [wireframe]);
 
   const resetView = () => {
     if (cameraRef.current && controlsRef.current) {
@@ -889,6 +1028,28 @@ export function ModelViewer({
     if (cameraRef.current) {
       cameraRef.current.position.multiplyScalar(factor);
     }
+  };
+
+  const handleExportPng = () => {
+    const renderer = rendererRef.current;
+    const scene = sceneRef.current;
+    const camera = cameraRef.current;
+    if (!renderer || !scene || !camera) return;
+    // Force a sync render right before the read so the PNG matches what
+    // the operator currently sees on screen — orbit position, wireframe
+    // toggle, plate selection, theme background, all settled. The
+    // animate loop renders every frame anyway, but ``toDataURL`` is
+    // sync so reading inside the same JS task as the explicit render
+    // guarantees the buffer hasn't been swapped between them.
+    renderer.render(scene, camera);
+    const dataUrl = renderer.domElement.toDataURL('image/png');
+    const stem = (exportFilename || 'model-preview').replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 80);
+    const a = document.createElement('a');
+    a.href = dataUrl;
+    a.download = `${stem}.png`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
   };
 
   return (
@@ -909,6 +1070,23 @@ export function ModelViewer({
 
       {!loading && !error && (
         <div className="absolute bottom-4 right-4 flex gap-2">
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => setWireframe((v) => !v)}
+            title={t('modelViewer.wireframeTitle', { defaultValue: 'Toggle wireframe / X-ray view' })}
+            className={wireframe ? 'text-bambu-green' : undefined}
+          >
+            {wireframe ? <Grid3x3 className="w-4 h-4" /> : <Box className="w-4 h-4" />}
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={handleExportPng}
+            title={t('modelViewer.exportPngTitle', { defaultValue: 'Save current view as PNG' })}
+          >
+            <Download className="w-4 h-4" />
+          </Button>
           <Button variant="secondary" size="sm" onClick={() => zoom(0.8)}>
             <ZoomIn className="w-4 h-4" />
           </Button>

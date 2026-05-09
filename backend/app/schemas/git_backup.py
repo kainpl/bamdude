@@ -1,4 +1,4 @@
-"""Pydantic schemas for Git backup configuration (GitHub and GitLab)."""
+"""Pydantic schemas for Git backup configuration (GitHub, GitLab, Gitea, Forgejo)."""
 
 import re
 from datetime import datetime
@@ -21,12 +21,17 @@ class ProviderType(StrEnum):
 
     GITHUB = "github"
     GITLAB = "gitlab"
+    GITEA = "gitea"
+    FORGEJO = "forgejo"
 
 
 # URL patterns per provider
 _GITHUB_PATTERNS = [
     r"^https://github\.com/[\w.-]+/[\w.-]+(?:\.git)?$",
     r"^git@github\.com:[\w.-]+/[\w.-]+(?:\.git)?$",
+    # GitHub Enterprise / self-hosted: any https host with /<owner>/<repo>
+    r"^https://[\w.-]+(:\d+)?/[\w.-]+/[\w.-]+(?:\.git)?$",
+    r"^git@[\w.-]+:[\w.-]+/[\w.-]+(?:\.git)?$",
 ]
 
 _GITLAB_PATTERNS = [
@@ -34,6 +39,14 @@ _GITLAB_PATTERNS = [
     r"^git@gitlab\.com:[\w.-]+/[\w.-]+(?:\.git)?$",
     # Self-hosted GitLab: any HTTPS URL with at least 2 path segments
     r"^https://[\w.-]+/[\w.-]+/[\w.-]+(?:\.git)?$",
+    r"^git@[\w.-]+:[\w.-]+/[\w.-]+(?:\.git)?$",
+]
+
+# Gitea/Forgejo are always self-hosted — no canonical public host. Accept any
+# https://<host>[:<port>]/<owner>/<repo>[.git] (matches the parser shape in
+# services/git_providers/gitea.py::parse_repo_url) plus the SSH form.
+_GITEA_PATTERNS = [
+    r"^https?://[\w.-]+(:\d+)?/[\w.-]+/[\w.-]+(?:\.git)?$",
     r"^git@[\w.-]+:[\w.-]+/[\w.-]+(?:\.git)?$",
 ]
 
@@ -50,13 +63,22 @@ def _validate_repo_url(url: str, provider: str) -> str:
                 "Invalid GitLab repository URL. Expected format: https://gitlab.com/group/project "
                 "or https://your-host/group/project"
             )
+    elif provider in (ProviderType.GITEA, ProviderType.FORGEJO):
+        if not any(re.match(p, url) for p in _GITEA_PATTERNS):
+            raise ValueError(
+                f"Invalid {provider.value.title()} repository URL. "
+                f"Expected format: https://your-host/owner/repo (self-hosted instance)."
+            )
     return url
 
 
 class GitBackupConfigCreate(BaseModel):
     """Schema for creating Git backup config."""
 
-    provider: ProviderType = Field(default=ProviderType.GITHUB, description="Git provider: github or gitlab")
+    provider: ProviderType = Field(
+        default=ProviderType.GITHUB,
+        description="Git provider: github, gitlab, gitea, or forgejo",
+    )
     repository_url: str = Field(..., min_length=1, max_length=500, description="Repository URL")
     access_token: str = Field(..., min_length=1, description="Personal Access Token")
     branch: str = Field(default="main", max_length=100, description="Branch to push to")

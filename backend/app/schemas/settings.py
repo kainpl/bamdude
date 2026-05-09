@@ -86,6 +86,12 @@ class AppSettings(BaseModel):
         default=35.0, description="Temperature threshold for fair (orange): <= this value, > is red"
     )
     ams_history_retention_days: int = Field(default=30, description="Number of days to keep AMS sensor history data")
+    log_retention_days: int = Field(
+        default=7,
+        ge=1,
+        le=365,
+        description="Number of days to keep historical daily log archives (bamdude-YYYY-MM-DD.log).",
+    )
 
     # Queue auto-drying settings
     queue_drying_enabled: bool = Field(
@@ -335,6 +341,7 @@ class AppSettingsUpdate(BaseModel):
     capture_finish_photo: bool | None = None
     archive_3mf_retention_enabled: bool | None = None
     archive_3mf_retention_days: int | None = Field(default=None, ge=1)
+    log_retention_days: int | None = Field(default=None, ge=1, le=365)
     default_filament_cost: float | None = None
     currency: str | None = None
     energy_cost_per_kwh: float | None = None

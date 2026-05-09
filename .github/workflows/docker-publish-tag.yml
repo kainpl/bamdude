@@ -3,15 +3,12 @@ name: Docker Publish (tag)
 # Publishes a multi-arch Docker image whenever a v* tag is pushed.
 # Tag shape determines the channel and whether :latest moves:
 #
-#   v0.5.0                        → stable → :0.5.0 + :latest
-#   v0.5.0.1                      → stable → :0.5.0.1 + :latest
-#   v0.5.0b1                      → beta   → :0.5.0b1               (no :latest)
-#   v0.5.0b1-daily.YYYYMMDD       → daily → handled by
-#                                           docker-publish-daily.yml
-#                                           (this workflow SKIPS dailies)
+#   v0.5.0     → stable → :0.5.0 + :latest
+#   v0.5.0.1   → stable → :0.5.0.1 + :latest
+#   v0.5.0b1   → beta   → :0.5.0b1               (no :latest)
 #
-# Daily tags are ignored here so the dedicated daily workflow can own the
-# full tag-plus-release flow in one atomic transaction.
+# Anything else fails the classification step so the operator notices
+# rather than getting a mis-channeled image.
 #
 # See temp/release_guide.md for the full release cadence and channel
 # convention.
@@ -42,17 +39,11 @@ jobs:
           VERSION="${TAG#v}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
-          if [[ "$VERSION" =~ -daily\.[0-9]{8}$ ]]; then
-            echo "channel=daily" >> "$GITHUB_OUTPUT"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::Daily tag — owned by docker-publish-daily.yml, skipping."
-          elif [[ "$VERSION" =~ b[0-9]+$ ]]; then
+          if [[ "$VERSION" =~ b[0-9]+$ ]]; then
             echo "channel=beta" >> "$GITHUB_OUTPUT"
-            echo "skip=false" >> "$GITHUB_OUTPUT"
             echo "tag_latest=false" >> "$GITHUB_OUTPUT"
           elif [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
             echo "channel=stable" >> "$GITHUB_OUTPUT"
-            echo "skip=false" >> "$GITHUB_OUTPUT"
             echo "tag_latest=true" >> "$GITHUB_OUTPUT"
           else
             # Unknown shape — don't guess, fail visibly so the operator can
@@ -62,15 +53,12 @@ jobs:
           fi
 
       - name: Set up QEMU
-        if: steps.classify.outputs.skip == 'false'
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
-        if: steps.classify.outputs.skip == 'false'
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
-        if: steps.classify.outputs.skip == 'false'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -78,14 +66,13 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Log in to Docker Hub
-        if: steps.classify.outputs.skip == 'false'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push (stable)
-        if: steps.classify.outputs.skip == 'false' && steps.classify.outputs.tag_latest == 'true'
+        if: steps.classify.outputs.tag_latest == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -102,7 +89,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=tag
 
       - name: Build and push (beta)
-        if: steps.classify.outputs.skip == 'false' && steps.classify.outputs.tag_latest == 'false'
+        if: steps.classify.outputs.tag_latest == 'false'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -117,7 +104,6 @@ jobs:
           cache-to: type=gha,mode=max,scope=tag
 
       - name: Summary
-        if: steps.classify.outputs.skip == 'false'
         run: |
           echo "### Published ${GITHUB_REF_NAME} (${{ steps.classify.outputs.channel }})" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"

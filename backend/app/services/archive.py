@@ -40,6 +40,85 @@ def _copy_and_fsync(src: Path, dst: Path, chunk_size: int = 1024 * 1024) -> None
     shutil.copystat(src, dst)
 
 
+def resolve_display_stem(filename: str) -> str:
+    """Return a clean human-readable stem from a 3MF/gcode filename (#1152).
+
+    Bambu Studio's "Send to printer" dialog typically writes files like
+    ``Plate_1.gcode.3mf`` (a sliced gcode payload wrapped in a 3MF container).
+    The naive ``Path(filename).stem`` only drops the last suffix, leaving
+    ``Plate_1.gcode`` — which then surfaces in the archive UI / timelapse
+    name-match path as a confusing ``Plate_1.gcode`` rather than ``Plate_1``.
+
+    Strip the recognised print-format suffixes in order (case-insensitive):
+
+    - ``.gcode.3mf`` → bare stem (Bambu Studio FTP send)
+    - ``.3mf``       → bare stem
+    - ``.gcode``     → bare stem (rare standalone gcode upload)
+
+    Anything else passes through ``Path(...).stem`` unchanged. Path components
+    are stripped first so callers can pass either a basename or a full path.
+    """
+    name = Path(filename).name
+    lower = name.lower()
+    for suffix in (".gcode.3mf", ".3mf", ".gcode"):
+        if lower.endswith(suffix):
+            return name[: -len(suffix)]
+    return Path(name).stem
+
+
+def peek_plate_index_in_3mf(file_path: Path) -> int | None:
+    """Return the plate index recorded inside a Bambu 3MF, or None (#1204).
+
+    Reads only ``Metadata/slice_info.config`` to keep this cheap — used by
+    the print-start callback to verify that the 3MF we just downloaded over
+    FTP actually matches the plate the printer is running. The full
+    ``ThreeMFParser`` does much more work and runs later inside
+    ``ArchiveService``; this is a one-shot peek for the validation gate.
+    """
+    try:
+        with zipfile.ZipFile(file_path, "r") as zf:
+            if "Metadata/slice_info.config" not in zf.namelist():
+                return None
+            content = zf.read("Metadata/slice_info.config").decode()
+            root = ET.fromstring(content)
+            plate = root.find(".//plate")
+            if plate is None:
+                return None
+            for meta in plate.findall("metadata"):
+                if meta.get("key") == "index":
+                    value = meta.get("value")
+                    if value:
+                        try:
+                            return int(value)
+                        except ValueError:
+                            return None
+    except Exception:
+        return None
+    return None
+
+
+_PLATE_SUFFIX_RE = re.compile(r"^(.*?)(\s*-\s*Plate\s+|_plate_)(\d+)$", re.IGNORECASE)
+
+
+def swap_plate_suffix(name: str | None, target_plate: int) -> str | None:
+    """Return ``name`` with its trailing plate number replaced, or None (#1204).
+
+    Bambu Studio names multi-plate uploads ``"<Project> - Plate <N>"`` (and
+    a lowercase ``"_plate_<N>"`` variant exists too). When MQTT
+    ``subtask_name`` lags across consecutive plates of the same model the
+    suffix points at the previous plate; swapping it gives us the correct
+    upload to re-fetch from FTP. Returns ``None`` if no recognised suffix
+    is present so the caller can fall through to the no-3MF archive path.
+    """
+    if not name:
+        return None
+    m = _PLATE_SUFFIX_RE.match(name)
+    if not m:
+        return None
+    base, separator, _ = m.groups()
+    return f"{base}{separator}{target_plate}"
+
+
 class ThreeMFParser:
     """Parser for Bambu Lab 3MF files."""
 
@@ -1550,7 +1629,7 @@ class ArchiveService:
         # `display_stem` is used below as a fallback for `print_name` when the
         # 3MF has no name metadata. Hoist it out of the if/else so the reuse
         # path (existing_archive) also has a valid value.
-        display_stem = Path(original_filename).stem if original_filename else source_file.stem
+        display_stem = resolve_display_stem(original_filename if original_filename else source_file.name)
 
         if existing_archive and existing_archive.file_path:
             # Reuse existing file on disk
@@ -1826,7 +1905,7 @@ class ArchiveService:
                 archive.source_content_hash = chain_hash or content_hash
 
             printer_folder = str(archive.printer_id) if archive.printer_id is not None else "unassigned"
-            display_stem = Path(original_filename).stem if original_filename else source_file.stem
+            display_stem = resolve_display_stem(original_filename if original_filename else source_file.name)
             dest_name = original_filename or source_file.name
 
             # Reuse the chain's on-disk file when one exists. Match on the

@@ -896,6 +896,30 @@ def parse_plate_id(gcode_file: str | None) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def resolve_plate_id(state: PrinterState) -> int | None:
+    """Resolve the active plate number from a PrinterState (#1166).
+
+    Some firmware versions (e.g. P1S 01.10.00.00) put only the .3mf filename
+    in ``print.gcode_file``, so :func:`parse_plate_id` returns None and the
+    printer card / cover endpoint falls back to plate 1 — wrong thumbnail
+    on multi-plate prints. When BamDude dispatched the print itself we
+    already know the right plate, so we prefer that over the gcode_file
+    echo. The subtask check prevents stale values from a previous
+    BamDude-dispatched print bleeding into a Studio-direct print on the
+    same printer.
+    """
+    dispatched_plate = getattr(state, "dispatched_plate_id", None)
+    dispatched_subtask = getattr(state, "dispatched_subtask", None)
+    if (
+        dispatched_plate is not None
+        and dispatched_subtask is not None
+        and state.subtask_name
+        and dispatched_subtask == state.subtask_name
+    ):
+        return dispatched_plate
+    return parse_plate_id(state.gcode_file)
+
+
 def printer_state_to_dict(state: PrinterState, printer_id: int | None = None, model: str | None = None) -> dict:
     """Convert PrinterState to a JSON-serializable dict.
 
@@ -1064,6 +1088,19 @@ def printer_state_to_dict(state: PrinterState, printer_id: int | None = None, mo
             {"code": e.code, "attr": e.attr, "module": e.module, "severity": e.severity}
             for e in (state.hms_errors or [])
         ],
+        # Pause classification — populated by main._handle_pause_edge, cleared
+        # by _handle_resume_edge. ``pause_reason`` is the normalised key
+        # (user / filament_runout / door_open / presence_check /
+        # file_pause_command / ai_first_layer_defect / ai_spaghetti /
+        # foreign_object / plate_objects / hms_other / unknown) for routing /
+        # filtering on the frontend; ``pause_reason_label`` is the
+        # operator-facing copy (precise HMS description when available, else
+        # generic PAUSE_REASON_LABELS entry); ``pause_started_at`` is the
+        # epoch-seconds wall-clock at which the pause began so the live
+        # counter ("Paused 14 min") survives an F5.
+        "pause_reason": state.pause_reason,
+        "pause_reason_label": state.pause_reason_label,
+        "pause_started_at": state.pause_started_at,
         # AMS data for filament colors
         "ams": ams_units if ams_units else None,
         "vt_tray": vt_tray,
@@ -1109,12 +1146,18 @@ def printer_state_to_dict(state: PrinterState, printer_id: int | None = None, mo
         ],
         # AMS drying support
         "supports_drying": supports_drying(model, state.firmware_version),
-        # 1-indexed plate number parsed from gcode_file (e.g. /Metadata/plate_2.gcode).
-        # Pushed via WebSocket so the printer card picks up plate transitions in a
-        # multi-plate 3MF without waiting for the 30 s REST poll (upstream #881
-        # follow-up). current_archive_id is intentionally REST-only — it's stable
-        # for the life of a print and needs a DB lookup the WS path shouldn't pay for.
-        "current_plate_id": parse_plate_id(state.gcode_file),
+        # 1-indexed plate number from the active print. Resolution order
+        # (see resolve_plate_id docstring for the rationale): BamDude-dispatched
+        # plate (when the subtask matches) → ``plate_N.gcode`` regex on
+        # ``state.gcode_file``. The fallback covers firmware revisions
+        # (P1S 01.10.00.00 etc.) that only echo the .3mf filename without the
+        # plate path — without resolve_plate_id those installs always reported
+        # plate 1 (#1166). Pushed via WebSocket so the printer card picks up
+        # plate transitions in a multi-plate 3MF without waiting for the 30 s
+        # REST poll (upstream #881 follow-up). current_archive_id is
+        # intentionally REST-only — stable for the life of a print and needs
+        # a DB lookup the WS path shouldn't pay for.
+        "current_plate_id": resolve_plate_id(state),
         # Queue plate-clear gate (#961): surfaces the same value the REST /status
         # route returns so frontend WS merge reflects transitions within ~100 ms
         # instead of waiting for the 30 s REST poll — without this the "Mark plate

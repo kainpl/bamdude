@@ -190,12 +190,6 @@ class TestStlThumbnailConstants:
 
         assert BAMBU_GREEN == "#00AE42"
 
-    def test_background_color(self):
-        """Test that background color is defined."""
-        from backend.app.services.stl_thumbnail import BACKGROUND_COLOR
-
-        assert BACKGROUND_COLOR == "#1a1a1a"
-
     def test_max_vertices_threshold(self):
         """Test that max vertices threshold is defined."""
         from backend.app.services.stl_thumbnail import MAX_VERTICES

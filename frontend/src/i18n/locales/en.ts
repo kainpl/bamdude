@@ -180,6 +180,11 @@ export default {
       allStatuses: 'All statuses',
       allLocations: 'All locations'
     },
+    toolbar: {
+      filters: 'Filters',
+      view: 'View',
+      actions: 'Actions',
+    },
     // Printer card
     readyToPrint: 'Ready to print',
     external: 'Ext',
@@ -289,6 +294,9 @@ export default {
     // Toast messages
     toast: {
       missingSpoolAssignment: 'Print started on {{printer}}. Missing spool assignment for: {{slots}}',
+      printPausedEvent: '{{printer}} paused: {{reason}}',
+      printResumedEvent: '{{printer}} resumed (paused for {{duration}})',
+      pauseReasonUnknown: 'Unknown reason',
       failedToDelete: 'Failed to delete printer',
       failedToAdd: 'Failed to add printer',
       failedToUpdate: 'Failed to update printer',
@@ -339,6 +347,17 @@ export default {
     // RFID
     rfid: {
       reread: 'Re-read RFID'
+    },
+    // AMS load/unload (#891)
+    ams: {
+      load: 'Load filament',
+      unload: 'Unload filament',
+      loading: 'Loading…',
+      unloading: 'Unloading…',
+      loadSuccess: 'Load command sent',
+      unloadSuccess: 'Unload command sent',
+      loadFailed: 'Failed to send load command',
+      unloadFailed: 'Failed to send unload command'
     },
     bedJog: {
       title: 'Move build plate',
@@ -655,9 +674,7 @@ export default {
       delete: 'Delete'
     },
     platePicker: {
-      // ``title`` / ``hint`` / ``objectCount`` were dropped with the
-      // standalone PlatePickerModal — only the per-plate label is still
-      // referenced (SliceModal header + SlicePlateSelector tile).
+      // Used by SliceModal header + SlicePlateSelector tile.
       plateLabel: 'Plate {{index}}',
     },
     permission: {
@@ -1223,7 +1240,29 @@ export default {
       users: 'Authentication',
       backup: 'Backup',
       emailAuth: 'Email Authentication',
-      ldap: 'LDAP'
+      ldap: 'LDAP',
+      security: 'Security'
+    },
+    encryption: {
+      title: 'MFA Encryption Status',
+      enabledFromEnv: 'Encryption enabled (key from environment)',
+      enabledFromFile: 'Encryption enabled (key file)',
+      enabledGenerated: 'Encryption enabled (auto-generated key)',
+      backupHint: 'BamDude generated a key on first start. Back up DATA_DIR/.mfa_encryption_key — without it, encrypted secrets cannot be decrypted on a new host.',
+      allEncrypted: 'All MFA secrets are encrypted at rest.',
+      legacyRowsWarning_one: '{{count}} secret is still stored as plaintext. It will be re-encrypted on next write.',
+      legacyRowsWarning_other: '{{count}} secrets are still stored as plaintext. They will be re-encrypted on next write.',
+      migrationErrorWarning_one: '{{count}} row was skipped during the last re-encryption migration. Check server logs.',
+      migrationErrorWarning_other: '{{count}} rows were skipped during the last re-encryption migration. Check server logs.',
+      decryptionBrokenTitle: 'Decryption broken — recovery required',
+      decryptionBrokenError_one: '{{count}} encrypted secret cannot be decrypted with the current key. Restore the original key file or re-enroll affected users.',
+      decryptionBrokenError_other: '{{count}} encrypted secrets cannot be decrypted with the current key. Restore the original key file or re-enroll affected users.',
+      notConfigured: 'Encryption not configured',
+      notConfiguredDesc: 'Set MFA_ENCRYPTION_KEY in the environment or let BamDude auto-generate a key on next restart.',
+      encryptedRowsLabel: 'Encrypted rows',
+      legacyRowsLabel: 'Plaintext rows',
+      errorLoading: 'Failed to load encryption status',
+      retry: 'Retry'
     },
     // LDAP settings
     ldap: {
@@ -1472,6 +1511,10 @@ export default {
     manageQueueDescription: 'Add and remove items from print queue',
     controlPrinter: 'Control Printer',
     controlPrinterDescription: 'Pause, resume, and stop prints',
+    allowCloudAccess: 'Use Bambu Cloud',
+    allowCloudAccessDescription: 'Let this key spend your Bambu Cloud token for slicing with cloud presets',
+    cloudBadge: 'Cloud',
+    legacyBadge: 'Legacy',
     unnamedKey: 'Unnamed Key',
     lastUsed: 'Last used',
     read: 'Read',
@@ -1509,6 +1552,8 @@ export default {
     historyRetention: 'History Retention',
     keepSensorHistory: 'Keep sensor history for',
     historyRetentionDescription: 'Older humidity and temperature data will be automatically deleted',
+    logRetention: 'Log retention',
+    logRetentionDescription: 'How many daily log files (bamdude-YYYY-MM-DD.log) to keep on disk. Older archives are auto-deleted on each midnight rotation. Live bamdude.log is unaffected.',
     autoQueueRouting: 'Auto-Queue Routing',
     autoQueueRoutingDescription: 'Controls how the auto-queue scheduler picks the next pending job to assign.',
     queueShortestFirst: 'Shortest job first',
@@ -1793,6 +1838,22 @@ export default {
     bambuStudioApiUrl: 'BambuStudio API URL',
     bambuStudioApiUrlDescription: 'Empty falls back to the BAMBU_STUDIO_API_URL env default.',
     bothSlicersHint: 'When both URLs are set and reachable, the Slice modal lets you pick which slicer to use per file.',
+    slicerBundles: {
+      title: 'Slicer Bundles',
+      description: 'Import a Printer Preset Bundle (.bbscfg) exported from BambuStudio (File → Export → Export Preset Bundle → "Printer preset bundle"). Once imported, slice requests can pick presets from the bundle by name without re-uploading the JSON profile triplet.',
+      uploadButton: 'Upload bundle',
+      uploading: 'Uploading…',
+      loading: 'Loading bundles…',
+      empty: 'No bundles imported yet.',
+      summary: '{{processCount}} process · {{filamentCount}} filament presets',
+      delete: 'Delete',
+      uploadSuccess: 'Imported {{name}}',
+      uploadError: 'Bundle upload failed: {{message}}',
+      deleteSuccess: 'Bundle removed',
+      deleteError: 'Bundle delete failed: {{message}}',
+      confirmDeleteTitle: 'Remove this bundle?',
+      confirmDeleteMessage: 'Slice requests that reference "{{name}}" will fail until the bundle is re-imported.',
+    },
     sidebarOrderDescription: 'Drag items in the sidebar to reorder. Reset to default order here.',
     setDefault: 'Set Default',
     sidebarOrderSetDefaultHint: 'Set default applies the current menu order to users who haven\'t customized theirs.',
@@ -1872,6 +1933,9 @@ export default {
     cameraTypeRtsp: 'RTSP Stream',
     cameraTypeSnapshot: 'HTTP Snapshot',
     cameraTypeUsb: 'USB Camera (V4L2)',
+    cameraSnapshotUrl: 'Snapshot URL (optional)',
+    cameraSnapshotUrlPlaceholder: 'http://192.168.1.61:1984/api/frame.jpeg?src=printer',
+    cameraSnapshotUrlHelp: 'Single-frame URL used for notification thumbnails, finish photos, timelapse and plate detection. Leave blank to capture from the live stream above. Useful for go2rtc (/api/frame.jpeg) and IP cameras with a dedicated snapshot endpoint.',
     cameraRotation: 'Rotation',
     test: 'Test',
     connected: 'Connected',
@@ -1895,6 +1959,11 @@ export default {
     checkNow: 'Check now',
     releaseNotes: 'Release Notes',
     updateViaDocker: 'Update via Docker Compose:',
+    dockerImagePullTitle: 'Image-based install (typical)',
+    dockerImagePullStable: 'Edit your docker-compose.yml image tag if pinned, then pull + recreate:',
+    dockerImagePullBeta: 'Beta tags are not pulled by `:latest`. Edit your docker-compose.yml to pin the beta image tag, then pull + recreate:',
+    dockerSourceBuildTitle: 'Source-build install (you cloned the repo)',
+    dockerSourceBuildHint: 'Checkout the target tag, rebuild from source, recreate:',
     installUpdate: 'Install Update',
     latestVersionRunning: "You're running the latest version",
     failedToCheckUpdates: 'Failed to check for updates: {{error}}',
@@ -2035,6 +2104,9 @@ export default {
         autoLinkDesc: 'Link existing local accounts by matching email on first login.',
         emailClaim: 'Email claim',
         emailClaimHelp: 'JWT claim used as the email identity. Default "email". For Azure Entra ID set "preferred_username" or "upn" - Azure does not send email_verified, and a custom claim skips that gate entirely.',
+        defaultGroup: 'Default group',
+        defaultGroupViewers: 'Viewers (default)',
+        defaultGroupHelp: 'Group assigned to auto-created OIDC users. Leave on "Viewers" for read-only access; pick another group when this IdP is internal-only and a different policy fits better.',
         requireEmailVerified: 'Require email_verified',
         requireEmailVerifiedDesc: 'Only trust the standard "email" claim when the provider explicitly sets email_verified=true. Disable for legacy IdPs that never send the claim. Required ON when auto-link is on with the "email" claim.',
         requireEmailVerifiedNAForCustomClaim: 'Not used - custom claims never consult email_verified.',
@@ -2719,6 +2791,9 @@ export default {
     selectPreset: '- Select a preset -',
     noPresetsForSlot: 'No presets available',
     allPresetsRequired: 'All presets must be selected',
+    bundle: 'Slicer bundle',
+    bundleNone: '— None (pick presets individually) —',
+    bundleAllRequired: 'Bundle process and every filament slot must be picked',
     analyzingPlateFilaments: 'Analyzing plate filaments…',
     analyzingPlateFilamentsHint: 'Running a preview slice to discover which AMS slots this plate uses. Cached after - re-opening is instant.',
     previewToast: 'Analyzing {{name}} - {{elapsed}}',
@@ -3063,6 +3138,7 @@ export default {
     generateThumbnail: 'Generate Thumbnail',
     generateThumbnails: 'Generate Thumbnails',
     generateThumbnailsForMissing: 'Generate thumbnails for STL files missing them',
+    regeneratingThumbnail: 'Regenerating…',
     gridView: 'Grid view',
     listView: 'List view',
     lowDiskSpaceWarning: 'Low disk space warning',
@@ -3186,6 +3262,8 @@ export default {
     targetParts: 'Target Parts',
     targetPartsPlaceholder: 'e.g., 150',
     targetPartsHelp: 'Total objects needed',
+    fromPlan: 'From plan: {{count}}',
+    usePlanValueTitle: 'Apply the count derived from the print plan',
     tagsLabel: 'Tags (comma-separated)',
     tagsPlaceholder: 'e.g., voron, functional, gift',
     dueDate: 'Due Date',
@@ -3325,7 +3403,9 @@ export default {
       totalFilament: 'Filament',
       totalTime: 'Time',
       totalCost: 'Cost',
-      costHint: 'At {{currency}}{{rate}}/kg'
+      costHint: 'At {{currency}}{{rate}}/kg',
+      applyTotals: 'Apply to project',
+      applyTotalsTitle: 'Apply to project: {{plates}} plates / {{parts}} parts / budget {{budget}}',
     },
     bom: {
       title: 'Bill of Materials',
@@ -3366,6 +3446,7 @@ export default {
     },
     toast: {
       projectUpdated: 'Project updated',
+      totalsApplied: 'Project totals updated from the print plan',
       partAdded: 'Part added',
       partRemoved: 'Part removed',
       projectExported: 'Project exported',
@@ -3446,6 +3527,38 @@ export default {
     reportPartialUsageDesc: 'When a print fails or is cancelled, report the estimated filament used up to that point based on layer progress.'
   },
 
+  // In-app bug report (floating red bubble)
+  bugReport: {
+    title: 'Report a Bug',
+    description: 'Description',
+    descriptionPlaceholder: 'What went wrong? Please describe the issue...',
+    email: 'Email (optional)',
+    emailPlaceholder: 'your@email.com',
+    emailPrivacy: 'If provided, your email will be included in a collapsed section of the GitHub issue so the maintainer can follow up.',
+    screenshot: 'Screenshot',
+    uploadOrPaste: 'Upload, paste, or drag an image',
+    dataCollectedSummary: 'What data is included in the report?',
+    dataIncluded: 'Included:',
+    dataIncludedList: 'App version, OS, architecture, Python version, database stats (counts only), printer models, nozzle counts, firmware versions, connectivity status, integration status (Spoolman, MQTT, Home Assistant), non-sensitive settings, network interface count, Docker details, dependency versions.',
+    dataNeverIncluded: 'Never included:',
+    dataNeverIncludedList: 'Printer names, serial numbers, access codes, passwords, IP addresses, email addresses, API keys, tokens, webhook URLs, hostnames, or usernames.',
+    submit: 'Submit',
+    startLogging: 'Start Debug Logging',
+    stepEnableLogging: 'Debug logging enabled',
+    stepReproduce: 'Reproduce the issue now',
+    stepStopLogging: 'Stop & submit report',
+    stopAndSubmit: 'Stop & Submit',
+    maxDuration: 'Auto-stops after {{minutes}} min',
+    stoppingLogs: 'Collecting logs & submitting...',
+    submitting: 'Submitting bug report...',
+    submitSuccess: 'Bug report submitted successfully!',
+    submitFailed: 'Failed to submit bug report',
+    thankYou: 'Thank you!',
+    submitted: 'Your bug report has been submitted.',
+    viewIssue: 'View Issue',
+    unexpectedError: 'An unexpected error occurred',
+  },
+
   // Inventory
   inventory: {
     title: 'Spool Inventory',
@@ -3504,6 +3617,19 @@ export default {
     unassignSpool: 'Unassign',
     assignSuccess: 'Spool assigned and AMS slot configured',
     assignFailed: 'Failed to assign spool',
+    storageLocation: 'Storage location',
+    storageLocationPlaceholder: 'Drybox 3, Shelf A4, etc.',
+    spoolmanFilamentCatalog: 'Spoolman filament catalog',
+    pickFromSpoolmanCatalog: 'Pick a Spoolman filament...',
+    spoolmanFilamentSelected: 'Linked to Spoolman filament',
+    spoolmanFilamentUnlinked: 'Spoolman link cleared',
+    noSpoolmanFilaments: 'No filaments in your Spoolman catalog yet.',
+    spoolmanFilamentColorSwatch: 'Filament colour',
+    linkedSpool: 'Assigned spool',
+    unlinkConfirmTitle: 'Unassign spool from slot?',
+    unlinkConfirmBody: 'The slot assignment will be removed. The spool stays in your Spoolman inventory.',
+    noUnlinkedSpools: 'All Spoolman spools are already linked to a slot.',
+    spoolsPartiallyCreated: 'Created {{created}} of {{total}} spools — see logs for the rest.',
     selectSpool: 'Select a spool to assign to this slot',
     assigned: 'Assigned',
     assigning: 'Assigning...',
@@ -3659,6 +3785,7 @@ export default {
       extraColorsHelp: 'Comma-separated 6/8-char hex tokens, up to 8. Empty = solid colour.',
       effectType: 'Visual effect',
       effectNone: 'None',
+      swatchPreview: 'Preview',
       effects: {
         sparkle: 'Sparkle',
         silk: 'Silk',
@@ -3669,7 +3796,48 @@ export default {
         galaxy: 'Galaxy',
         rainbow: 'Rainbow',
         metal: 'Metal',
-        translucent: 'Translucent'
+        translucent: 'Translucent',
+        gradient: 'Gradient',
+        dualColor: 'Dual Color',
+        triColor: 'Tri Color',
+        multicolor: 'Multicolor'
+      }
+    },
+    // Spool label printing (B.1 / upstream #809).
+    labels: {
+      printLabels: 'Print labels…',
+      printOne: 'Print label for this spool',
+      title: 'Print spool labels',
+      bulkTitle: 'Pick spools to print labels for from the {{count}} currently shown',
+      noSpoolsTitle: 'No spools to label',
+      selectedCount: '{{count}} selected',
+      searchPlaceholder: 'Search name, brand, or #ID',
+      filterByMaterial: 'Material:',
+      allMaterials: 'All',
+      pickSpools: 'Pick which spools to print labels for:',
+      selectVisible: 'Select all visible ({{count}})',
+      deselectVisible: 'Deselect visible',
+      clearAll: 'Clear all',
+      noSpoolsToShow: 'No spools to show. Adjust your filter and try again.',
+      noMatches: 'No spools match the current search or filter.',
+      error: 'Could not generate labels: {{msg}}',
+      templates: {
+        ams: {
+          label: 'AMS holder (30 × 15 mm)',
+          hint: 'Single label per page; fits the popular AMS filament label holder.'
+        },
+        box: {
+          label: 'Box label (62 × 29 mm)',
+          hint: 'Single label per page; sized for Brother PT/QL and Dymo small labels.'
+        },
+        averyL7160: {
+          label: 'Avery L7160 — A4 sheet (38.1 × 63.5 mm × 21)',
+          hint: 'EU sheet stock; 21 labels per A4 page.'
+        },
+        avery5160: {
+          label: 'Avery 5160 — US Letter sheet (25.4 × 66.7 mm × 30)',
+          hint: 'US sheet stock; 30 labels per Letter page.'
+        }
       }
     }
   },
@@ -3833,6 +4001,8 @@ export default {
     providerLabel: 'Provider',
     providerGitHub: 'GitHub',
     providerGitLab: 'GitLab',
+    providerGitea: 'Gitea',
+    providerForgejo: 'Forgejo',
     apiBaseUrlLabel: 'API Base URL',
     apiBaseUrlPlaceholder: 'https://gitlab.com',
     apiBaseUrlHint: 'Leave empty for gitlab.com, or enter self-hosted GitLab URL',
@@ -3842,6 +4012,7 @@ export default {
     enterNewToken: 'Enter new token to update',
     tokenHintGitHub: 'Fine-grained token with Contents read/write permission',
     tokenHintGitLab: 'Personal Access Token with api or write_repository scope',
+    tokenHintGitea: 'Personal Access Token with repo read/write scope (works for Gitea + Forgejo)',
     branch: 'Branch',
     manualOnly: 'Manual only',
     hourly: 'Hourly',
@@ -4150,10 +4321,14 @@ export default {
       hint: 'Override the IP address advertised via SSDP and used in the TLS certificate. Useful when BamDude has multiple network interfaces.'
     },
     tailscale: {
-      title: 'Use Tailscale Let\'s Encrypt cert',
-      description: 'When on, asks the local tailscale CLI for an LE cert and advertises the tailnet FQDN over SSDP. Slicers connect via a hostname that matches the trusted cert (no manual CA install).',
-      activeFor: 'Active - broadcasting tailnet FQDN {{fqdn}}',
-      unavailable: 'Tailscale is not available or LE cert provisioning failed. Falling back to the self-signed CA.'
+      title: 'Show Tailscale endpoint',
+      description: 'When on, surfaces the host\'s Tailscale IP and MagicDNS hostname so you can paste them into the slicer\'s Add Printer dialog. Cert trust is unchanged (slicer still validates against BBL CA — import bbl_ca.crt once).',
+      pasteHint: 'Paste into the slicer\'s Add Printer dialog:',
+      copyIp: 'Copy IP',
+      copyHostname: 'Copy hostname',
+      copied: 'Copied to clipboard',
+      copyFailed: 'Copy failed',
+      unavailable: 'Tailscale daemon is not reachable. Run Tailscale on the host (and mount /var/run/tailscale/tailscaled.sock in Docker).'
     },
     mode: {
       title: 'Mode',
@@ -4185,6 +4360,10 @@ export default {
     autoSelectPrinter: {
       title: 'Auto-select printer',
       description: 'When on, uploads go to the auto-queue router that picks any idle printer matching model + filaments. When off, the upload lands in a specific printer queue.'
+    },
+    queueForceColorMatch: {
+      title: 'Force colour match',
+      description: 'Pin per-slot type+colour from each 3MF so the auto-queue router refuses printers loaded with the right material in the wrong colour.'
     },
     setupRequired: {
       title: 'Setup Required',
@@ -4259,6 +4438,8 @@ export default {
     buildVolumeLabel: 'Bed',
     buildVolumeUnit: 'mm',
     buildVolumeTooltip: 'Build volume drawn under the preview — parsed from the 3MF (printable_area + printable_height) when present, otherwise the X1/P1/A1 default 256×256×256.',
+    wireframeTitle: 'Toggle wireframe / X-ray view',
+    exportPngTitle: 'Save current view as PNG',
     plates: 'Plates',
     allPlates: 'All Plates',
     pickPlate: 'Pick a plate',
@@ -4282,6 +4463,26 @@ export default {
       noMeshes: 'No meshes found in 3MF file',
       unsupportedFormat: 'Unsupported file format'
     }
+  },
+
+  // GCode viewer toolbar — buttons + slider labels + loading-state
+  // copy. Lives next to the GcodeViewer component (in-modal, embedded
+  // in ModelViewerModal). Defaults are duplicated as ``defaultValue``
+  // inside the component so a missing locale entry doesn't blank the
+  // UI; keep these keys as canonical strings.
+  gcodeViewer: {
+    loading: 'Loading G-code…',
+    downloading: 'Downloading…',
+    parsing: 'Parsing G-code…',
+    travels: 'Travels',
+    travelsTitle: 'Show travel moves (G0)',
+    play: 'Play',
+    pause: 'Pause',
+    speed: 'Speed',
+    exportPng: 'Export PNG',
+    exportPngTitle: 'Save current view as PNG',
+    start: 'Start',
+    end: 'End',
   },
 
   // Maintenance type descriptions (built-in)
@@ -4438,6 +4639,19 @@ export default {
     enableSwitchbarHint: 'Enable "Show in Switchbar" in Settings > Smart Plugs'
   },
 
+  // Historical log archive panel — sits below LogViewer on /system page.
+  // Live bamdude.log streams via LogViewer; this panel manages the
+  // rotated daily archives produced by TimedRotatingFileHandler.
+  logArchives: {
+    title: 'Historical Logs',
+    subtitle: 'Daily-rotated archives. Live bamdude.log is shown above.',
+    empty: 'No rotated log archives yet — daily rotation runs at midnight.',
+    filename: 'Filename',
+    size: 'Size',
+    modified: 'Modified',
+    deleted: 'Deleted {{filename}}',
+  },
+
   // Notifications
   notifications: {
     // Provider types
@@ -4483,6 +4697,8 @@ export default {
     complete: 'Complete',
     failed: 'Failed',
     stopped: 'Stopped',
+    paused: 'Paused',
+    resumed: 'Resumed',
     progress: 'Progress',
     offline: 'Offline',
     lowFilament: 'Low Filament',
@@ -4508,6 +4724,10 @@ export default {
     missingSpoolAssignmentDescription: 'Notify when print starts and required trays have no assigned spool',
     printFailed: 'Print Failed',
     printStopped: 'Print Stopped',
+    printPausedLabel: 'Print Paused',
+    printPausedDescription: 'Notify when print transitions RUNNING→PAUSE (door, filament runout, plate-detect, manual)',
+    printResumedLabel: 'Print Resumed',
+    printResumedDescription: 'Notify when print transitions PAUSE→RUNNING (includes pause duration)',
     progressMilestones: 'Progress Milestones',
     progressMilestonesDescription: 'Notify at 25%, 50%, 75%',
     printerOffline: 'Printer Offline',
@@ -4814,6 +5034,7 @@ export default {
       archives: 'Archives',
       queue: 'Queue',
       library: 'Library',
+      makerworld: 'MakerWorld',
       projects: 'Projects',
       filaments: 'Filaments',
       inventory: 'Inventory',
@@ -4832,7 +5053,13 @@ export default {
       backup: 'Backup',
       cloud: 'Cloud',
       apiKeys: 'API Keys',
-      userManagement: 'User Management'
+      userManagement: 'User Management',
+      websocket: 'WebSocket',
+      users: 'Users',
+      groups: 'Groups',
+      git: 'Git',
+      stats: 'Stats',
+      amsHistory: 'AMS History'
     },
     actions: {
       read: 'Read',
@@ -4847,7 +5074,10 @@ export default {
       scan: 'Scan',
       backup: 'Backup',
       restore: 'Restore',
-      auth: 'Auth'
+      auth: 'Auth',
+      purge: 'Purge',
+      import: 'Import',
+      connect: 'Connect'
     },
     labels: {
       printerFiles: 'Printer Files',
@@ -4867,8 +5097,10 @@ export default {
       updateAllLibrary: 'Update All Library',
       deleteOwnLibrary: 'Delete Own Library',
       deleteAllLibrary: 'Delete All Library',
+      libraryNotesWrite: 'Write Library Notes',
       viewAssignments: 'View Spool Assignments',
-      userEmailNotifications: 'User Email Notifications'
+      userEmailNotifications: 'User Email Notifications',
+      statsFilterByUser: 'Filter Stats By User'
     }
   },
   telegram: {

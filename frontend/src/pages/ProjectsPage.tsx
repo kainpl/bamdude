@@ -1,4 +1,5 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -61,6 +62,51 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
   const [color, setColor] = useState(project?.color || PROJECT_COLORS[0]);
   const [targetCount, setTargetCount] = useState(project?.target_count?.toString() || '');
   const [targetPartsCount, setTargetPartsCount] = useState(project?.target_parts_count?.toString() || '');
+
+  // Print-plan totals — derived from the per-(project, file) plan rows
+  // (``ProjectPrintPlanItem.copies`` × file metadata). Used to:
+  //   - Pre-fill empty target inputs so opening the modal on a project
+  //     that has files in its plan gives the operator a sensible default
+  //     instead of asking them to reach the same number manually.
+  //   - Render a "From plan" hint + Use button under each input so
+  //     operators with a manually-set target can re-sync after adding /
+  //     removing files or changing copies.
+  // Only fetched when editing an EXISTING project — new projects have
+  // no plan rows yet.
+  //
+  // Query-key MUST match ProjectDetailPage's ``['project-print-plan', id]``
+  // so plan-edit mutations there (which call ``invalidatePlan()``) also
+  // evict this modal's cache. ``refetchOnMount: 'always'`` is the second
+  // belt — when operator hops from plan editor → list → re-opens modal,
+  // they get freshly-fetched totals even if the cache lookup somehow
+  // returned stale data.
+  const { data: planData } = useQuery({
+    queryKey: ['project-print-plan', project?.id],
+    queryFn: () => api.getProjectPrintPlan(project!.id),
+    enabled: project?.id != null,
+    staleTime: 0,
+    refetchOnMount: 'always',
+  });
+  const planPlates = useMemo(
+    () => (planData?.items ?? []).reduce((sum, item) => sum + (item.copies || 0), 0),
+    [planData],
+  );
+  const planParts = planData?.totals_objects ?? 0;
+  const hasPlanData = (planData?.items?.length ?? 0) > 0;
+  // One-shot pre-fill: when opening the modal on a project whose
+  // target inputs are still empty AND the plan has rows, drop the
+  // computed numbers in. Operator can immediately edit / clear before
+  // saving. We don't keep "linked" state — once they save, the value
+  // becomes a manual override; future plan edits don't auto-update.
+  const prefilledRef = useRef(false);
+  useEffect(() => {
+    if (prefilledRef.current) return;
+    if (!hasPlanData) return;
+    prefilledRef.current = true;
+    if (!targetCount && planPlates > 0) setTargetCount(planPlates.toString());
+    if (!targetPartsCount && planParts > 0) setTargetPartsCount(planParts.toString());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasPlanData, planPlates, planParts]);
   const [status, setStatus] = useState(project?.status || 'active');
   const [tags, setTags] = useState((project as ProjectListItem & { tags?: string })?.tags || '');
   const [dueDate, setDueDate] = useState((project as ProjectListItem & { due_date?: string })?.due_date?.split('T')[0] || '');
@@ -270,10 +316,22 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
                 value={targetCount}
                 onChange={(e) => setTargetCount(e.target.value)}
                 className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-3 py-2 text-white placeholder-bambu-gray focus:outline-none focus:border-bambu-green"
-                placeholder={t('projects.targetPlatesPlaceholder')}
+                placeholder={hasPlanData && planPlates > 0 ? planPlates.toString() : t('projects.targetPlatesPlaceholder')}
                 min="1"
               />
-              <p className="text-xs text-bambu-gray mt-1">{t('projects.targetPlatesHelp')}</p>
+              <p className="text-xs text-bambu-gray mt-1 flex items-center gap-2 flex-wrap">
+                <span>{t('projects.targetPlatesHelp')}</span>
+                {hasPlanData && planPlates > 0 && targetCount !== planPlates.toString() && (
+                  <button
+                    type="button"
+                    onClick={() => setTargetCount(planPlates.toString())}
+                    className="inline-flex items-center gap-1 text-bambu-green hover:underline"
+                    title={t('projects.usePlanValueTitle', { defaultValue: 'Apply the count derived from the print plan' })}
+                  >
+                    {t('projects.fromPlan', { count: planPlates, defaultValue: 'From plan: {{count}}' })}
+                  </button>
+                )}
+              </p>
             </div>
             <div>
               <label className="block text-sm font-medium text-white mb-1">
@@ -284,10 +342,22 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
                 value={targetPartsCount}
                 onChange={(e) => setTargetPartsCount(e.target.value)}
                 className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-3 py-2 text-white placeholder-bambu-gray focus:outline-none focus:border-bambu-green"
-                placeholder={t('projects.targetPartsPlaceholder')}
+                placeholder={hasPlanData && planParts > 0 ? planParts.toString() : t('projects.targetPartsPlaceholder')}
                 min="1"
               />
-              <p className="text-xs text-bambu-gray mt-1">{t('projects.targetPartsHelp')}</p>
+              <p className="text-xs text-bambu-gray mt-1 flex items-center gap-2 flex-wrap">
+                <span>{t('projects.targetPartsHelp')}</span>
+                {hasPlanData && planParts > 0 && targetPartsCount !== planParts.toString() && (
+                  <button
+                    type="button"
+                    onClick={() => setTargetPartsCount(planParts.toString())}
+                    className="inline-flex items-center gap-1 text-bambu-green hover:underline"
+                    title={t('projects.usePlanValueTitle', { defaultValue: 'Apply the count derived from the print plan' })}
+                  >
+                    {t('projects.fromPlan', { count: planParts, defaultValue: 'From plan: {{count}}' })}
+                  </button>
+                )}
+              </p>
             </div>
           </div>
 
@@ -392,6 +462,55 @@ export function ProjectModal({ project, onClose, onSave, isLoading, currencySymb
   );
 }
 
+/**
+ * Portal-mounted hover preview for project covers (#1155 follow-up). The card
+ * itself carries ``overflow-hidden`` (rounded corners + color accent bar), so
+ * an in-tree popover gets clipped the moment it extends past the card. Render
+ * via ``createPortal`` to ``document.body`` to escape every ancestor clipping
+ * context; ``position: fixed`` with measurements from the trigger's
+ * ``getBoundingClientRect()`` keeps the popover pinned next to the cover
+ * regardless of grid position.
+ *
+ * Edge handling: if the trigger is near the viewport's right edge the popover
+ * flips to the LEFT side; vertical position is clamped so the popover never
+ * overflows the window top or bottom. ``pointer-events-none`` on the popover
+ * so it can't intercept hover and create a flicker loop; ``z-[100]`` so it
+ * stacks above sibling cards.
+ */
+function ProjectCoverHoverPreview({
+  src,
+  triggerRect,
+}: {
+  src: string;
+  triggerRect: DOMRect;
+}) {
+  const POPOVER_SIZE = 384;
+  const GAP = 8;
+  const flipsLeft = triggerRect.right + GAP + POPOVER_SIZE > window.innerWidth;
+  const left = flipsLeft
+    ? Math.max(GAP, triggerRect.left - GAP - POPOVER_SIZE)
+    : triggerRect.right + GAP;
+  const idealTop = triggerRect.top + triggerRect.height / 2 - POPOVER_SIZE / 2;
+  const top = Math.min(
+    Math.max(GAP, idealTop),
+    Math.max(GAP, window.innerHeight - POPOVER_SIZE - GAP),
+  );
+  return createPortal(
+    <div
+      className="fixed z-[100] pointer-events-none rounded-xl border border-bambu-dark-tertiary bg-bambu-card shadow-2xl shadow-black/60 overflow-hidden"
+      style={{ left, top, width: POPOVER_SIZE, height: POPOVER_SIZE }}
+    >
+      <img
+        src={src}
+        alt=""
+        className="w-full h-full object-contain bg-bambu-dark"
+        loading="lazy"
+      />
+    </div>,
+    document.body,
+  );
+}
+
 interface ProjectCardProps {
   project: ProjectListItem;
   onClick: () => void;
@@ -413,6 +532,12 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
   const isCompleted = project.status === 'completed';
   const isArchived = project.status === 'archived';
   const [showActions, setShowActions] = useState(false);
+
+  // Hover preview state for the cover image (#1155 follow-up). Stored as the
+  // trigger's bounding rect rather than a boolean so the portal-mounted
+  // popover can position itself precisely without re-querying the DOM.
+  const coverHeroRef = useRef<HTMLDivElement | null>(null);
+  const [coverHoverRect, setCoverHoverRect] = useState<DOMRect | null>(null);
 
   // Status icon and color
   const getStatusConfig = () => {
@@ -440,7 +565,15 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
       {/* Cover image hero (#1155). Renders only when the project has a cover
           uploaded; otherwise the card keeps its existing all-color header. */}
       {project.cover_image_filename && (
-        <div className="relative w-full aspect-[3/1] overflow-hidden">
+        <div
+          ref={coverHeroRef}
+          className="relative w-full aspect-[3/1] overflow-hidden"
+          onMouseEnter={() => {
+            const rect = coverHeroRef.current?.getBoundingClientRect();
+            if (rect) setCoverHoverRect(rect);
+          }}
+          onMouseLeave={() => setCoverHoverRect(null)}
+        >
           <img
             src={api.getProjectCoverImageUrl(project.id)}
             alt=""
@@ -454,6 +587,12 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
           />
           {/* Subtle gradient so card text below stays readable */}
           <div className="absolute inset-0 bg-gradient-to-t from-bambu-card via-transparent to-transparent" />
+          {coverHoverRect && (
+            <ProjectCoverHoverPreview
+              src={api.getProjectCoverImageUrl(project.id)}
+              triggerRect={coverHoverRect}
+            />
+          )}
         </div>
       )}
 
@@ -703,7 +842,7 @@ function ProjectCard({ project, onClick, onEdit, onDelete, hasPermission, t }: P
                     <img
                       src={api.getArchiveThumbnail(archive.id)}
                       alt={archive.print_name || ''}
-                      className="w-full h-full object-cover"
+                      className="w-full h-full object-contain"
                     />
                   ) : (
                     <div className="w-full h-full flex items-center justify-center text-bambu-gray/50">

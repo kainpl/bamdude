@@ -32,7 +32,7 @@ from backend.app.schemas.archive import (
     PaginationMeta,
     ReprintRequest,
 )
-from backend.app.services.archive import ArchiveService
+from backend.app.services.archive import ArchiveService, resolve_display_stem
 from backend.app.services.threemf_capabilities import extract_3mf_capabilities
 from backend.app.utils.threemf_tools import (
     extract_nozzle_mapping_from_3mf,
@@ -1859,8 +1859,11 @@ async def scan_timelapse(
     if not printer:
         raise HTTPException(404, "Printer not found")
 
-    # Get base name from archive filename (without .3mf extension)
-    base_name = Path(archive.filename).stem
+    # Get base name from archive filename. `resolve_display_stem` (#1152) strips
+    # the full `.gcode.3mf` double-suffix Bambu Studio uses by default — without
+    # it `Path(...).stem` leaves `Plate_1.gcode` which fails the substring
+    # match below against `Plate_1.mp4`-shaped timelapse names on the SD card.
+    base_name = resolve_display_stem(archive.filename or "")
 
     # Scan timelapse directory on printer
     # Different printer models use different paths
@@ -2567,17 +2570,30 @@ async def get_archive_capabilities(
 @router.get("/{archive_id}/gcode")
 async def get_gcode(
     archive_id: int,
+    plate: int | None = None,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.ARCHIVES_READ),
 ):
     """Extract and return G-code from the 3MF file.
 
-    For archives where ``plate_index`` is known (set at archive_print
-    time, m038 backfill for legacy rows) we serve that specific plate's
-    gcode — matches what was actually printed. Without it we fall back
-    to the first gcode entry, preserving the legacy single-plate
-    behaviour.
+    Resolution order for which plate's gcode to serve:
+    1. ``?plate=N`` query param — explicit caller-supplied plate. Must be
+       ≥ 1; resolved by parsing the trailing integer in each
+       ``Metadata/plate_<N>.gcode`` filename so zero-padded names
+       (``plate_01.gcode``) match the canonical ``plate=1`` request.
+    2. ``archive.plate_index`` (set at ``archive_print`` time, m038
+       backfill for legacy rows) — what was actually printed.
+    3. First ``Metadata/*.gcode`` entry — legacy single-plate fallback.
+
+    A non-matching ``?plate=N`` returns 404 instead of falling through —
+    the caller asked for a specific plate; surfacing the mismatch keeps
+    the URL ↔ content contract honest. The ``archive.plate_index``
+    fallback DOES forgive a missing match (legacy backfill rows had no
+    way to know whether the container actually held that plate).
     """
+    if plate is not None and plate < 1:
+        raise HTTPException(400, "plate must be ≥ 1 (1-indexed)")
+
     service = ArchiveService(db)
     archive = await service.get_archive(archive_id)
     if not archive:
@@ -2598,7 +2614,16 @@ async def get_gcode(
                 )
 
             target_name: str | None = None
-            if archive.plate_index is not None:
+            if plate is not None:
+                # Parse the trailing integer from each plate_N.gcode name so
+                # zero-padded filenames (plate_01.gcode) still match plate=1.
+                target_name = next(
+                    (n for n in gcode_files if _plate_index_from_gcode_name(n) == plate),
+                    None,
+                )
+                if target_name is None:
+                    raise HTTPException(404, f"Plate {plate} not found in this archive")
+            elif archive.plate_index is not None:
                 expected_suffix = f"plate_{archive.plate_index}.gcode"
                 target_name = next(
                     (n for n in gcode_files if n.lower().endswith(expected_suffix)),
@@ -2620,6 +2645,22 @@ async def get_gcode(
         raise
     except Exception as e:
         raise HTTPException(500, f"Error extracting G-code: {str(e)}")
+
+
+def _plate_index_from_gcode_name(name: str) -> int | None:
+    """Parse the integer plate index out of a ``Metadata/plate_<N>.gcode``
+    name. Tolerates zero-padding and any case. Returns None for any name
+    that doesn't match the expected shape.
+    """
+    import re as _re
+
+    m = _re.search(r"plate_(\d+)\.gcode$", name, _re.IGNORECASE)
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except ValueError:
+        return None
 
 
 @router.get("/{archive_id}/plate-preview")
@@ -2735,21 +2776,34 @@ async def get_archive_plates(
             }
             for p in cached_plates
         ]
+        # has_gcode tracks whether the on-disk container actually carries
+        # sliced gcode (not just plate PNG/JSON metadata). Source-only 3MFs
+        # — pure project files exported from Bambu Studio without a slice —
+        # have plates with thumbnails + filament info but no gcode payload,
+        # so a viewer can't render anything for them. Frontend keys on this
+        # flag to suppress the gcode tab / show a "no gcode" state instead.
+        has_gcode = _archive_has_gcode(file_path)
         return {
             "archive_id": archive_id,
             "filename": archive.filename,
             "plates": plates,
             "is_multi_plate": len(plates) > 1,
+            "has_gcode": has_gcode,
             "source_printer_model": source_printer_model,
         }
 
     # Slow path: open ZIP + parse. Used for archives created before m023 ran.
     plates: list[dict] = []
+    has_gcode = False
     try:
         from backend.app.services.archive import parse_plates_from_3mf
 
         with zipfile.ZipFile(file_path, "r") as zf:
             raw_plates = parse_plates_from_3mf(zf)
+            # Same semantic as the fast path — surface whether sliced gcode
+            # is actually inside the container so the frontend can skip the
+            # picker for source-only archives.
+            has_gcode = any(n.startswith("Metadata/") and n.endswith(".gcode") for n in zf.namelist())
         for p in raw_plates:
             plates.append(
                 {
@@ -2767,8 +2821,23 @@ async def get_archive_plates(
         "filename": archive.filename,
         "plates": plates,
         "is_multi_plate": len(plates) > 1,
+        "has_gcode": has_gcode,
         "source_printer_model": source_printer_model,
     }
+
+
+def _archive_has_gcode(file_path: Path) -> bool:
+    """Quick boolean check — does the 3MF actually contain sliced gcode?
+
+    The /plates fast path reads pre-computed plate JSON from extra_data
+    without opening the ZIP, so we need a separate cheap probe to expose
+    has_gcode without forcing the slow path to open the file twice.
+    """
+    try:
+        with zipfile.ZipFile(file_path, "r") as zf:
+            return any(n.startswith("Metadata/") and n.endswith(".gcode") for n in zf.namelist())
+    except (zipfile.BadZipFile, OSError):
+        return False
 
 
 @router.get("/{archive_id}/plate-thumbnail/{plate_index}")

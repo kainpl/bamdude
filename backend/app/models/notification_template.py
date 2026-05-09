@@ -50,6 +50,18 @@ DEFAULT_TEMPLATES = [
         "body_template": "{printer}: {filename}\nTime: {duration}",
     },
     {
+        "event_type": "print_paused",
+        "name": "Print Paused",
+        "title_template": "Print Paused",
+        "body_template": "{printer}: {filename}\nReason: {reason}",
+    },
+    {
+        "event_type": "print_resumed",
+        "name": "Print Resumed",
+        "title_template": "Print Resumed",
+        "body_template": "{printer}: {filename}\nPaused for: {paused_for}",
+    },
+    {
         "event_type": "print_progress",
         "name": "Print Progress",
         "title_template": "Print {progress}% Complete",

@@ -299,6 +299,42 @@ export function useWebSocket() {
         }
         break;
 
+      case 'print_paused': {
+        // Backend fires this on RUNNING→PAUSE edges (see main._handle_pause_edge).
+        // Show a single warning toast with the resolved reason — printer card
+        // pip / chip / live counter are driven separately via the printer_status
+        // snapshot fields (pause_reason / pause_reason_label / pause_started_at).
+        const data = message.data as { filename?: string | null; reason?: string | null } | undefined;
+        const printerName = message.printer_name || (message.printer_id !== undefined ? `Printer ${message.printer_id}` : 'Printer');
+        const reasonText = data?.reason || t('printers.toast.pauseReasonUnknown', { defaultValue: 'Unknown reason' });
+        showToast(t('printers.toast.printPausedEvent', { printer: printerName, reason: reasonText }), 'warning');
+        // Refresh printer status so the new pause_* fields land in the UI
+        // without waiting for the next polling tick.
+        if (message.printer_id !== undefined) {
+          queryClient.invalidateQueries({ queryKey: ['printerStatus', message.printer_id] });
+        }
+        break;
+      }
+
+      case 'print_resumed': {
+        // PAUSE→RUNNING edge — informational toast, brief and non-warning.
+        const data = message.data as { filename?: string | null; paused_for_seconds?: number | null } | undefined;
+        const printerName = message.printer_name || (message.printer_id !== undefined ? `Printer ${message.printer_id}` : 'Printer');
+        const seconds = data?.paused_for_seconds ?? 0;
+        // Format paused_for_seconds → "Nm Ms" / "Mm" / "Ns" client-side rather
+        // than reusing the backend's mm:ss to keep the toast short.
+        const minutes = Math.floor(seconds / 60);
+        const remSec = seconds % 60;
+        const pausedFor = minutes > 0
+          ? (remSec > 0 ? `${minutes}m ${remSec}s` : `${minutes}m`)
+          : `${remSec}s`;
+        showToast(t('printers.toast.printResumedEvent', { printer: printerName, duration: pausedFor }), 'success');
+        if (message.printer_id !== undefined) {
+          queryClient.invalidateQueries({ queryKey: ['printerStatus', message.printer_id] });
+        }
+        break;
+      }
+
       case 'archive_created':
         debouncedInvalidate('archives');
         debouncedInvalidate('archiveStats');

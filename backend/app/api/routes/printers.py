@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from backend.app.core.auth import RequireCameraStreamToken, RequirePermission, require_permission
 from backend.app.core.config import settings
@@ -19,6 +20,7 @@ from backend.app.schemas.printer import (
     AmsLabelBody,
     AMSTray,
     AMSUnit,
+    FilaSwitchResponse,
     HMSErrorResponse,
     NozzleInfoResponse,
     NozzleRackSlot,
@@ -38,8 +40,8 @@ from backend.app.services.printer_manager import (
     find_ams_unit,
     first_drying_blocking_reason,
     get_derived_status_name,
-    parse_plate_id,
     printer_manager,
+    resolve_plate_id,
     supports_chamber_temp,
     supports_drying,
 )
@@ -575,7 +577,7 @@ async def get_printer_status(
     current_archive_id: int | None = None
     current_plate_id: int | None = None
     if state.state in ("RUNNING", "PAUSE"):
-        current_plate_id = parse_plate_id(state.gcode_file)
+        current_plate_id = resolve_plate_id(state)
         if state.subtask_id:
             from backend.app.models.archive import PrintArchive
 
@@ -643,6 +645,17 @@ async def get_printer_status(
         supports_drying=supports_drying(printer.model, state.firmware_version),
         current_archive_id=current_archive_id,
         current_plate_id=current_plate_id,
+        fila_switch=(
+            FilaSwitchResponse(
+                installed=state.fila_switch.installed,
+                in_slots=list(state.fila_switch.in_slots),
+                out_extruders=list(state.fila_switch.out_extruders),
+                stat=state.fila_switch.stat,
+                info=state.fila_switch.info,
+            )
+            if state.fila_switch and state.fila_switch.installed
+            else None
+        ),
     )
 
 
@@ -735,6 +748,17 @@ async def test_printer_connection(
 
 
 # Cache for cover images (printer_id -> {(subtask_name, plate_num, view) -> image_bytes})
+#
+# Stores **PNG bytes in RAM**, never on-disk paths. This is structurally immune
+# to the upstream bug class in Bambuddy #1212 — where caching live archive /
+# library 3MF *paths* meant the on-print-complete cache cleanup `unlink()`-ed
+# user data. Our cache holds image bytes in a dict; clearing it pops dict
+# entries and never touches the filesystem. If a future change ever switches
+# this cache to store file paths (e.g. memory-pressure refactor → "keep cover
+# on disk under archive_dir/temp/"), audit `clear_cover_cache` and any future
+# cleanup branches at the same time so they only `unlink()` paths under
+# `archive_dir/temp` — never under `archive/<printer_id>/...`,
+# `archive/unassigned/...`, or `library_files/...`.
 _cover_cache: dict[int, dict[tuple[str, str], bytes]] = {}
 
 
@@ -786,20 +810,31 @@ async def get_printer_cover(
     if not subtask_name:
         raise HTTPException(404, f"No subtask_name in printer state (state={state.state})")
 
-    # Extract plate number from gcode_file (e.g., "/data/Metadata/plate_12.gcode" -> 12)
-    plate_num = 1
-    gcode_file = state.gcode_file
-    if gcode_file:
-        match = re.search(r"plate_(\d+)\.gcode", gcode_file)
-        if match:
-            plate_num = int(match.group(1))
+    # Resolve the active plate. Tri-tier scheme (#1166):
+    #   1. resolve_plate_id(state) — prefers the plate BamDude dispatched
+    #      (when subtask matches) over the gcode_file regex.
+    #   2. If still None: scan the downloaded 3MF for a unique
+    #      Metadata/plate_N.gcode below — covers per-plate archives sliced
+    #      separately in Bambu Studio (operator did "Send selected plate"
+    #      on a multi-plate project), where the printer's gcode_file echo
+    #      is just the .3mf filename and we never dispatched.
+    #   3. Default to plate 1 if nothing else resolved.
+    # The 3MF-scan step runs LATER, after the file is on disk — this is
+    # why plate_num can be None here and we leave it that way.
+    plate_num = resolve_plate_id(state)
+    if plate_num is not None:
+        logger.info("Cover: resolved plate %s before download (subtask=%s)", plate_num, subtask_name)
 
     view_key = view or "default"
 
-    # In-memory cache for PNG bytes — key includes (subtask, plate, view)
-    # so multi-plate prints don't poison across plates.
+    # In-memory cache for PNG bytes — key is (subtask_name, view_key) only.
+    # clear_cover_cache() runs on every print start (main.py:_on_print_start),
+    # so a re-dispatch with a different plate gets a fresh image regardless.
+    # Pre-#1166 the key included plate_num, but with late plate resolution
+    # the cache check would always miss when plate_num is None at lookup
+    # time but resolved later from the scan fallback.
     if printer_id in _cover_cache:
-        cache_key = (subtask_name, plate_num, view_key)
+        cache_key = (subtask_name, view_key)
         if cache_key in _cover_cache[printer_id]:
             return Response(content=_cover_cache[printer_id][cache_key], media_type="image/png")
 
@@ -833,14 +868,17 @@ async def get_printer_cover(
     if archive is None:
         raise HTTPException(404, f"No archive with a local 3MF yet for '{subtask_base}' on printer {printer_id}")
 
-    # 1. If the archive already has an extracted thumbnail PNG — serve it directly.
+    # 1. If the archive already has an extracted thumbnail PNG — serve it
+    #    directly. This path is plate-agnostic (the extracted PNG is for the
+    #    plate the archive was created for, which is exactly what the user
+    #    wants to see), so we can short-circuit before the scan-fallback.
     if archive.thumbnail_path and view != "top":
         thumb_path = settings.base_dir / archive.thumbnail_path
         if thumb_path.exists():
             image_data = thumb_path.read_bytes()
             if printer_id not in _cover_cache:
                 _cover_cache[printer_id] = {}
-            _cover_cache[printer_id][(subtask_name, plate_num, view_key)] = image_data
+            _cover_cache[printer_id][(subtask_name, view_key)] = image_data
             return Response(content=image_data, media_type="image/png")
 
     # 2. Otherwise open the 3MF from archive_dir and extract the thumbnail
@@ -851,6 +889,30 @@ async def get_printer_cover(
 
     try:
         with zipfile.ZipFile(local_3mf, "r") as zf:
+            # 3MF-scan plate-detection fallback (#1166 tier 3). Per-plate
+            # archives sliced separately in Bambu Studio contain a single
+            # ``Metadata/plate_N.gcode`` for the active plate, even though
+            # the thumbnails for all plates are bundled. When we get here
+            # without a resolved plate (firmware echo didn't include the
+            # path AND BamDude didn't dispatch the print — Studio-direct
+            # "Send selected plate" on a quirky-firmware printer), reading
+            # that gcode's plate number prevents falling back to plate-1's
+            # thumbnail. ``len == 1`` guard keeps full multi-plate bundles
+            # falling through cleanly — those carry plate_1.gcode through
+            # plate_N.gcode and we genuinely don't know which is active.
+            if plate_num is None:
+                plate_gcodes = [name for name in zf.namelist() if re.match(r"^Metadata/plate_\d+\.gcode$", name)]
+                if len(plate_gcodes) == 1:
+                    match = re.search(r"plate_(\d+)\.gcode", plate_gcodes[0])
+                    if match:
+                        plate_num = int(match.group(1))
+                        logger.info("Cover: detected plate %s from 3MF contents (scan fallback)", plate_num)
+            # Tier 4: still nothing → default to plate 1 and let the layered
+            # thumbnail_paths array walk its plate-1 / generic-thumbnail
+            # fallbacks.
+            if plate_num is None:
+                plate_num = 1
+
             if view == "top":
                 thumbnail_paths = [
                     f"Metadata/top_{plate_num}.png",
@@ -875,7 +937,7 @@ async def get_printer_cover(
                     image_data = zf.read(thumb_path)
                     if printer_id not in _cover_cache:
                         _cover_cache[printer_id] = {}
-                    _cover_cache[printer_id][(subtask_name, plate_num, view_key)] = image_data
+                    _cover_cache[printer_id][(subtask_name, view_key)] = image_data
                     return Response(content=image_data, media_type="image/png")
                 except KeyError:
                     continue
@@ -886,7 +948,7 @@ async def get_printer_cover(
                     image_data = zf.read(name)
                     if printer_id not in _cover_cache:
                         _cover_cache[printer_id] = {}
-                    _cover_cache[printer_id][(subtask_name, plate_num, view_key)] = image_data
+                    _cover_cache[printer_id][(subtask_name, view_key)] = image_data
                     return Response(content=image_data, media_type="image/png")
 
     except zipfile.BadZipFile:
@@ -1399,7 +1461,13 @@ async def import_printer_files_to_library(
 
     folder: LibraryFolder | None = None
     if folder_id is not None:
-        folder = await db.get(LibraryFolder, folder_id)
+        # Eager-load .projects so save_3mf_bytes_to_library's
+        # inherit_folder_projects() doesn't trip async lazy-load.
+        folder = (
+            await db.execute(
+                select(LibraryFolder).where(LibraryFolder.id == folder_id).options(selectinload(LibraryFolder.projects))
+            )
+        ).scalar_one_or_none()
         if not folder:
             raise HTTPException(404, "Folder not found")
         # Read-only externals (mounted SMB shares the operator can browse but
@@ -2891,6 +2959,69 @@ async def refresh_ams_slot(
     asyncio.create_task(_apply_pa_after_refresh(printer_id, ams_id, slot_id))
 
     return {"success": True, "message": message}
+
+
+@router.post("/{printer_id}/ams/load")
+async def ams_load_filament(
+    printer_id: int,
+    tray_id: int = Query(..., description="0..15 = AMS slot; 254 = ext spool / Ext-L; 255 = Ext-R (H2D)"),
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Load filament from a specific AMS tray (#891 — surface the existing
+    `ams_change_filament` MQTT primitive as a granular HTTP route).
+
+    `tray_id` semantics match `BambuMQTTClient.ams_load_filament`: 0..15 for
+    AMS slots, 254 for external spool / left extruder on H2D, 255 for the
+    right extruder on H2D dual-nozzle. The printer no-ops gracefully if the
+    target slot is empty (matches BambuStudio's UX).
+    """
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    if not await printer_manager.ensure_fresh_connection_for_printer(printer):
+        raise HTTPException(500, "Can`t re-connect printer MQTT")
+
+    client = printer_manager.get_client(printer_id)
+    if not client:
+        raise HTTPException(400, "Printer not connected")
+
+    if not client.ams_load_filament(tray_id):
+        raise HTTPException(400, "Failed to send load command")
+
+    return {"success": True, "tray_id": tray_id}
+
+
+@router.post("/{printer_id}/ams/unload")
+async def ams_unload_filament(
+    printer_id: int,
+    _=RequirePermission(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Unload the currently loaded filament (#891).
+
+    Reads the current `tray_now` from printer state to populate the unload
+    command's source AMS id; nozzle temperature is derived from
+    `state.temperatures` with a PLA-safe fallback when the nozzle is cold.
+    """
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    if not await printer_manager.ensure_fresh_connection_for_printer(printer):
+        raise HTTPException(500, "Can`t re-connect printer MQTT")
+
+    client = printer_manager.get_client(printer_id)
+    if not client:
+        raise HTTPException(400, "Printer not connected")
+
+    if not client.ams_unload_filament():
+        raise HTTPException(400, "Failed to send unload command")
+
+    return {"success": True}
 
 
 async def _apply_pa_after_refresh(printer_id: int, ams_id: int, slot_id: int):

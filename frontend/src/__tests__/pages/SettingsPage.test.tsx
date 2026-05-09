@@ -306,4 +306,118 @@ describe('SettingsPage', () => {
       expect(deleteCallCount).toBe(1);
     });
   });
+
+  describe('external camera snapshot URL override (#1177)', () => {
+    /**
+     * The snapshot URL input only appears for stream camera types where the
+     * MJPEG warm-up problem can occur (mjpeg / rtsp / usb). Pure HTTP
+     * snapshot sources don't need an override since their stream URL is
+     * already a single-frame endpoint.
+     */
+    const mjpegPrinter = {
+      id: 7,
+      name: 'go2rtc Cam',
+      serial_number: 'TEST123',
+      ip_address: '192.168.1.100',
+      access_code: 'XXXX',
+      model: 'P1S',
+      location: null,
+      nozzle_count: 1,
+      is_active: true,
+      auto_archive: true,
+      external_camera_url: 'http://192.168.1.61:1984/api/stream.mjpeg?src=printer',
+      external_camera_type: 'mjpeg',
+      external_camera_enabled: true,
+      external_camera_snapshot_url: null,
+      camera_rotation: 0,
+      plate_detection_enabled: false,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+    };
+
+    /**
+     * The External Cameras section sits inside the Printing tab in our layout
+     * (different from upstream's tab arrangement). Each test must switch to
+     * Printing first before asserting on snapshot-URL UI.
+     */
+    const switchToPrintingTab = async () => {
+      const user = userEvent.setup();
+      const tabButton = await waitFor(() => {
+        const buttons = screen
+          .getAllByText('Printing')
+          .filter((el) => el.tagName === 'BUTTON');
+        expect(buttons.length).toBeGreaterThan(0);
+        return buttons[0];
+      });
+      await user.click(tabButton);
+    };
+
+    it('renders the snapshot URL input when camera_type is mjpeg', async () => {
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([mjpegPrinter])),
+      );
+
+      render(<SettingsPage />);
+      await switchToPrintingTab();
+
+      await waitFor(() => {
+        expect(screen.getByPlaceholderText(/api\/frame\.jpeg\?src=printer/)).toBeInTheDocument();
+      });
+    });
+
+    it('hides the snapshot URL input when camera_type is snapshot (already a single-frame source)', async () => {
+      server.use(
+        http.get('/api/v1/printers/', () =>
+          HttpResponse.json([{ ...mjpegPrinter, external_camera_type: 'snapshot' }]),
+        ),
+      );
+
+      render(<SettingsPage />);
+      await switchToPrintingTab();
+
+      // Wait for the printer name (rendered alongside the camera section) so
+      // we know the printing tab finished mounting before asserting absence
+      // of the snapshot input.
+      await waitFor(() => {
+        expect(screen.getByText('go2rtc Cam')).toBeInTheDocument();
+      });
+      expect(screen.queryByPlaceholderText(/api\/frame\.jpeg\?src=printer/)).not.toBeInTheDocument();
+    });
+
+    it('PATCHes the printer with external_camera_snapshot_url when the user types into the input', async () => {
+      let receivedBody: Record<string, unknown> | null = null;
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([mjpegPrinter])),
+        http.patch('/api/v1/printers/7', async ({ request }) => {
+          receivedBody = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json({ ...mjpegPrinter, ...receivedBody });
+        }),
+      );
+
+      render(<SettingsPage />);
+      await switchToPrintingTab();
+
+      const input = await waitFor(() =>
+        screen.getByPlaceholderText(/api\/frame\.jpeg\?src=printer/),
+      );
+
+      // delay:null makes user.type() instant instead of 50ms-per-char —
+      // 51 chars × 50ms ≈ 2.5s of pure typing on top of the debounced
+      // PATCH wait, which tipped the default 5s test timeout under load.
+      const user = userEvent.setup({ delay: null });
+      await user.type(input, 'http://192.168.1.61:1984/api/frame.jpeg?src=printer');
+
+      // Save is debounced by 800ms; assert the PATCH eventually fires with
+      // the typed snapshot URL.
+      await waitFor(
+        () => {
+          expect(receivedBody).not.toBeNull();
+          expect(receivedBody!.external_camera_snapshot_url).toBe(
+            'http://192.168.1.61:1984/api/frame.jpeg?src=printer',
+          );
+        },
+        { timeout: 3000 },
+      );
+    });
+  });
 });

@@ -4,6 +4,7 @@ import base64
 import binascii
 import contextlib
 import hashlib
+import json
 import logging
 import os
 import re
@@ -19,6 +20,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from backend.app.api.routes.cloud import resolve_api_key_cloud_owner
 from backend.app.core.auth import (
     require_ownership_permission,
     require_permission,
@@ -61,7 +63,7 @@ from backend.app.schemas.library import (
 )
 from backend.app.services.archive import ThreeMFParser
 from backend.app.services.library_helpers import compute_file_tags, detect_file_type
-from backend.app.services.print_plan import sync_plan_for_file, sync_plan_for_folder
+from backend.app.services.print_plan import inherit_folder_projects, sync_plan_for_file, sync_plan_for_folder
 from backend.app.services.stl_thumbnail import generate_stl_thumbnail
 from backend.app.services.threemf_capabilities import extract_3mf_capabilities
 from backend.app.utils.threemf_tools import (
@@ -352,11 +354,14 @@ async def save_3mf_bytes_to_library(
         source_url=source_url,
     )
     db.add(library_file)
+    await db.flush()
+    # Inherit folder projects + plant matching plan rows. Caller is
+    # responsible for ``selectinload(LibraryFolder.projects)`` on the
+    # passed folder so this doesn't trip async lazy-load.
+    await inherit_folder_projects(db, library_file, folder)
     if commit:
         await db.commit()
         await db.refresh(library_file)
-    else:
-        await db.flush()
 
     return library_file, was_existing
 
@@ -1363,15 +1368,16 @@ async def scan_external_folder(
                 except Exception as e:
                     logger.debug("Failed to extract metadata from external 3mf %s: %s", filepath, e)
 
-            # Generate thumbnail for STL files
-            if file_type == "stl" and thumbnail_path is None:
+            # Generate thumbnail for mesh files (STL + OBJ — trimesh handles
+            # both via extension dispatch, the renderer is format-agnostic).
+            if file_type in ("stl", "obj") and thumbnail_path is None:
                 try:
                     thumb_dir = get_library_thumbnails_dir()
                     thumb_result = generate_stl_thumbnail(str(filepath), str(thumb_dir))
                     if thumb_result:
                         thumbnail_path = to_relative_path(Path(thumb_result))
                 except Exception as e:
-                    logger.debug("Failed to generate STL thumbnail for external %s: %s", filepath, e)
+                    logger.debug("Failed to generate mesh thumbnail for external %s: %s", filepath, e)
 
             # Extract gcode thumbnail — only for raw .gcode files; sliced
             # .gcode.3mf already went through the 3MF parser branch above.
@@ -1627,6 +1633,86 @@ async def list_files(
 # archive route both call into them.
 
 
+# Keys in ``Metadata/project_settings.config`` that BambuStudio writes ``"-1"``
+# to when the user wants the value inherited from the parent process preset.
+# The CLI's ``StaticPrintConfig`` validator runs against the embedded settings
+# *before* ``--load-settings`` overrides apply, so a sentinel ``"-1"`` trips
+# the field's lower-bound range check and the CLI exits non-zero before our
+# profile triplet is ever consulted (upstream Bambuddy #1201 — MakerWorld P2S
+# models).
+#
+# Allowlisted (rather than "strip every '-1' value") because some fields
+# legitimately accept negative numbers (z_offset, translation values, etc.)
+# and a blanket strip would silently corrupt those.
+#
+# Add new entries here as more reports surface — the slicer's error message
+# names the offending field directly (``<field>: -1 not in range [...]``).
+_PROJECT_SETTINGS_SENTINEL_KEYS = frozenset(
+    {
+        # Reported in upstream #1201 (MakerWorld P2S 3MFs).
+        "raft_first_layer_expansion",
+        "tree_support_wall_count",
+        # Cited in the strip-experiment comment block inside
+        # ``_run_slicer_with_fallback`` as a known sentinel case from earlier
+        # reports.
+        "prime_tower_brim_width",
+    }
+)
+
+
+def _sanitize_project_settings_sentinels(zip_bytes: bytes) -> bytes:
+    """Strip ``"-1"`` inherit-from-parent sentinels from the 3MF's
+    ``Metadata/project_settings.config`` so the slicer CLI's range validator
+    accepts the file (upstream #1201).
+
+    Removes only allowlisted keys (see ``_PROJECT_SETTINGS_SENTINEL_KEYS``)
+    when their value is exactly ``"-1"``. The rest of the config — and every
+    other entry in the zip — is preserved byte-for-byte. Unlike a
+    full-strip-every-config approach (cautioned against in the comment block
+    inside ``_run_slicer_with_fallback``) this leaves ``StaticPrintConfig``
+    initialisation intact: the file is still present, still parses, and the
+    slicer falls back to the supplied ``--load-settings`` value for the
+    removed key.
+
+    Returns the original bytes unchanged when no sanitisation is needed
+    (input isn't a valid zip, no ``project_settings.config``, no allowlisted
+    sentinels present, malformed JSON, non-dict root, or any other parse
+    failure) so the caller can pass the result on without further checks.
+    """
+    from io import BytesIO
+
+    try:
+        with zipfile.ZipFile(BytesIO(zip_bytes), "r") as zin:
+            if "Metadata/project_settings.config" not in zin.namelist():
+                return zip_bytes
+            try:
+                config = json.loads(zin.read("Metadata/project_settings.config").decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                return zip_bytes
+            if not isinstance(config, dict):
+                return zip_bytes
+            removed = [key for key in _PROJECT_SETTINGS_SENTINEL_KEYS if config.get(key) == "-1"]
+            if not removed:
+                return zip_bytes
+            for key in removed:
+                config.pop(key, None)
+            patched = json.dumps(config)
+            logger.info(
+                "3MF sanitiser: removed sentinel '-1' for keys %s — slicer will use --load-settings defaults",
+                sorted(removed),
+            )
+            dst = BytesIO()
+            with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zout:
+                for item in zin.infolist():
+                    if item.filename == "Metadata/project_settings.config":
+                        zout.writestr(item, patched)
+                    else:
+                        zout.writestr(item, zin.read(item.filename))
+            return dst.getvalue()
+    except (zipfile.BadZipFile, OSError):
+        return zip_bytes
+
+
 async def _run_slicer_with_fallback(
     db: AsyncSession,
     *,
@@ -1653,6 +1739,7 @@ async def _run_slicer_with_fallback(
     """
     from backend.app.services.preset_resolver import resolve_preset_ref
     from backend.app.services.slicer_api import (
+        BundleNotFoundError,
         SlicerApiServerError,
         SlicerApiService,
         SlicerApiUnavailableError,
@@ -1664,21 +1751,24 @@ async def _run_slicer_with_fallback(
     if current_user_id is not None:
         user = await db.get(User, current_user_id)
 
+    bundle_spec = request.bundle  # may be None — bundle path is opt-in.
+
     presets: dict[str, str] = {}
-    refs = {
-        "printer": request.printer_preset,
-        "process": request.process_preset,
-    }
-    for slot, ref in refs.items():
-        assert ref is not None, "schema validator guarantees PresetRef is set"
-        presets[slot] = await resolve_preset_ref(db, user, ref, slot)
-    # Multi-color: resolve each filament slot in plate order. The schema
-    # validator backfills ``filament_presets`` from the legacy singular
-    # field for older single-color callers, so this list is non-empty.
     filament_jsons: list[str] = []
-    for ref in request.filament_presets:
-        assert ref is not None, "schema validator guarantees filament list is non-None"
-        filament_jsons.append(await resolve_preset_ref(db, user, ref, "filament"))
+    if bundle_spec is None:
+        refs = {
+            "printer": request.printer_preset,
+            "process": request.process_preset,
+        }
+        for slot, ref in refs.items():
+            assert ref is not None, "schema validator guarantees PresetRef is set"
+            presets[slot] = await resolve_preset_ref(db, user, ref, slot)
+        # Multi-color: resolve each filament slot in plate order. The schema
+        # validator backfills ``filament_presets`` from the legacy singular
+        # field for older single-color callers, so this list is non-empty.
+        for ref in request.filament_presets:
+            assert ref is not None, "schema validator guarantees filament list is non-None"
+            filament_jsons.append(await resolve_preset_ref(db, user, ref, "filament"))
 
     # Slicer routing — per-request override on the SliceRequest wins over
     # the global preferred_slicer setting; per-install URL setting wins
@@ -1716,6 +1806,15 @@ async def _run_slicer_with_fallback(
     # user changed (printer/process/filament) while the embedded plate /
     # model definitions remain intact.
     is_3mf = model_filename.lower().endswith(".3mf")
+    primary_bytes = model_bytes
+    if is_3mf:
+        # Strip "-1" inherit-from-parent sentinels from
+        # Metadata/project_settings.config so the CLI's StaticPrintConfig
+        # range validator accepts the file (upstream #1201). Surgical —
+        # keeps the config present, just removes the offending keys; the
+        # supplied --load-settings (and the fallback's embedded values for
+        # keys we didn't touch) still drive the slice.
+        primary_bytes = _sanitize_project_settings_sentinels(primary_bytes)
 
     used_embedded_settings = False
     service = SlicerApiService(api_url)
@@ -1734,18 +1833,37 @@ async def _run_slicer_with_fallback(
         progress_callback = _on_progress
     try:
         try:
-            result = await service.slice_with_profiles(
-                model_bytes=model_bytes,
-                model_filename=model_filename,
-                printer_profile_json=presets["printer"],
-                process_profile_json=presets["process"],
-                filament_profile_jsons=filament_jsons,
-                plate=request.plate,
-                export_3mf=request.export_3mf,
-                bed_type=request.bed_type,
-                request_id=progress_request_id,
-                on_progress=progress_callback,
-            )
+            if bundle_spec is not None:
+                # Bundle path: sidecar materialises printer/process/filament
+                # JSONs from the stored .bbscfg by name. Skips PresetRef
+                # resolution entirely — closes the cloud-preset-behind-login,
+                # "from User" sentinel, "# "-prefix clone, dangling-inherits
+                # corner cases the resolver had to chase per slice.
+                result = await service.slice_with_bundle(
+                    model_bytes=primary_bytes,
+                    model_filename=model_filename,
+                    bundle_id=bundle_spec.bundle_id,
+                    printer_name=bundle_spec.printer_name,
+                    process_name=bundle_spec.process_name,
+                    filament_names=bundle_spec.filament_names,
+                    plate=request.plate,
+                    export_3mf=request.export_3mf,
+                    request_id=progress_request_id,
+                    on_progress=progress_callback,
+                )
+            else:
+                result = await service.slice_with_profiles(
+                    model_bytes=primary_bytes,
+                    model_filename=model_filename,
+                    printer_profile_json=presets["printer"],
+                    process_profile_json=presets["process"],
+                    filament_profile_jsons=filament_jsons,
+                    plate=request.plate,
+                    export_3mf=request.export_3mf,
+                    bed_type=request.bed_type,
+                    request_id=progress_request_id,
+                    on_progress=progress_callback,
+                )
         except SlicerApiServerError as exc:
             if not is_3mf:
                 raise
@@ -1756,9 +1874,16 @@ async def _run_slicer_with_fallback(
             )
             # Forward the same request_id + callback so the toast's live
             # progress keeps updating across the fallback retry instead of
-            # going blank for the rest of the slice.
+            # going blank for the rest of the slice. Use the sanitised
+            # bytes — the embedded-settings path also reads the same
+            # project_settings.config and the same range validator runs
+            # there too, so without sanitisation the fallback would die
+            # on the same sentinel error (#1201). Bundle requests fall
+            # back through the same path — used_embedded_settings=True
+            # surfaces in the response so callers know the bundle didn't
+            # apply on this slice.
             result = await service.slice_without_profiles(
-                model_bytes=model_bytes,
+                model_bytes=primary_bytes,
                 model_filename=model_filename,
                 plate=request.plate,
                 export_3mf=request.export_3mf,
@@ -1767,6 +1892,12 @@ async def _run_slicer_with_fallback(
                 on_progress=progress_callback,
             )
             used_embedded_settings = True
+    except BundleNotFoundError as exc:
+        # Sidecar 404 on the bundle / preset name resolution → caller
+        # supplied bad input, not a server fault. 400 keeps the SliceModal's
+        # "fix the bundle pick and retry" UX without flagging a sidecar
+        # outage.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except SlicerInputError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except SlicerApiServerError as exc:
@@ -1882,6 +2013,19 @@ async def slice_and_persist(
         created_by_id=current_user_id,
     )
     db.add(new_file)
+    await db.flush()
+    # Inherit target folder's projects + plant matching plan rows so a
+    # sliced ``.gcode.3mf`` lands in the project's plan automatically.
+    # ``slice_and_persist`` doesn't load the folder itself — fetch with
+    # selectinload so the inherit helper doesn't trip async lazy-load.
+    if folder_id is not None:
+        target_folder_for_inherit = (
+            await db.execute(
+                select(LibraryFolder).where(LibraryFolder.id == folder_id).options(selectinload(LibraryFolder.projects))
+            )
+        ).scalar_one_or_none()
+        if target_folder_for_inherit is not None:
+            await inherit_folder_projects(db, new_file, target_folder_for_inherit)
     await db.commit()
     await db.refresh(new_file)
 
@@ -2014,9 +2158,19 @@ async def slice_library_file(
     request_body: dict,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD)),
+    api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
 ):
     """Enqueue a slice job for a library file. Returns 202 + job_id; the
     slice runs in the background, the caller polls ``GET /slice-jobs/{id}``.
+
+    When the caller authenticates via API key, ``current_user`` is None.
+    ``api_key_cloud_owner`` resolves to the key's owner *only* when
+    ``can_access_cloud=True`` is set on that key — that lets cloud presets
+    referenced by the slice request (printer/process/filament IDs in the
+    ``cloud:...`` form) bind to the owner's per-user Bambu Cloud token.
+    Without an owner, the slicer falls through to local + bundled presets;
+    cloud-only presets fail upstream with the existing "preset not found"
+    error (#1182).
     """
     from backend.app.core.database import async_session
     from backend.app.schemas.slicer import SliceRequest
@@ -2056,7 +2210,11 @@ async def slice_library_file(
     model_bytes = src_path.read_bytes()
     folder_id = lib_file.folder_id
     source_lib_file_id = lib_file.id
-    user_id = current_user.id if current_user else None
+    # JWT user wins; fall back to the API key's owner so a cloud-scoped key
+    # spends *that* user's token (#1182). The id is what the bg task needs —
+    # it re-loads the User in its own session to look up cloud creds.
+    cloud_token_user = current_user or api_key_cloud_owner
+    user_id = cloud_token_user.id if cloud_token_user else None
 
     # If the source has a ``print_name`` in its metadata (BambuStudio always
     # sets this; OrcaSlicer often leaves it blank), derive the sliced
@@ -2120,10 +2278,15 @@ async def upload_file(
         ext = os.path.splitext(filename)[1].lower()
         file_type = detect_file_type(filename)
 
-        # Verify folder exists if specified
+        # Verify folder exists if specified. Eager-load .projects so a
+        # subsequent ``inherit_folder_projects`` call doesn't trip the
+        # async lazy-load — the file inherits the folder's projects so the
+        # print plan auto-fills (#m048 + post-m044 fix).
         target_folder: LibraryFolder | None = None
         if folder_id is not None:
-            folder_result = await db.execute(select(LibraryFolder).where(LibraryFolder.id == folder_id))
+            folder_result = await db.execute(
+                select(LibraryFolder).where(LibraryFolder.id == folder_id).options(selectinload(LibraryFolder.projects))
+            )
             target_folder = folder_result.scalar_one_or_none()
             if not target_folder:
                 raise HTTPException(status_code=404, detail="Folder not found")
@@ -2210,8 +2373,8 @@ async def upload_file(
             # For image files, create a thumbnail from the image itself
             thumbnail_path = create_image_thumbnail(file_path, thumbnails_dir)
 
-        elif ext == ".stl":
-            # Generate STL thumbnail if enabled
+        elif ext in (".stl", ".obj"):
+            # Generate mesh thumbnail (STL + OBJ both go through trimesh).
             if generate_stl_thumbnails:
                 thumbnail_path = generate_stl_thumbnail(file_path, thumbnails_dir)
 
@@ -2247,6 +2410,11 @@ async def upload_file(
             swap_compatible=swap_compatible,
         )
         db.add(library_file)
+        await db.flush()
+        # Inherit the target folder's projects + plant matching print-plan
+        # rows so a 3MF dropped into a project-tagged folder shows up in
+        # the project's plan automatically.
+        await inherit_folder_projects(db, library_file, target_folder)
         await db.commit()
         await db.refresh(library_file)
 
@@ -2291,9 +2459,12 @@ async def extract_zip_file(
     if not file.filename or not file.filename.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="Only ZIP files are supported")
 
-    # Verify target folder exists if specified
+    # Verify target folder exists if specified. Eager-load .projects so the
+    # inherit-on-create path below doesn't trip the async lazy-load.
     if folder_id is not None:
-        folder_result = await db.execute(select(LibraryFolder).where(LibraryFolder.id == folder_id))
+        folder_result = await db.execute(
+            select(LibraryFolder).where(LibraryFolder.id == folder_id).options(selectinload(LibraryFolder.projects))
+        )
         target_folder = folder_result.scalar_one_or_none()
         if not target_folder:
             raise HTTPException(status_code=404, detail="Target folder not found")
@@ -2470,8 +2641,8 @@ async def extract_zip_file(
                     elif ext.lower() in IMAGE_EXTENSIONS:
                         thumbnail_path = create_image_thumbnail(file_path, thumbnails_dir)
 
-                    elif ext == ".stl":
-                        # Generate STL thumbnail if enabled
+                    elif ext in (".stl", ".obj"):
+                        # Generate mesh thumbnail (STL + OBJ both go through trimesh).
                         if generate_stl_thumbnails:
                             thumbnail_path = generate_stl_thumbnail(file_path, thumbnails_dir)
 
@@ -2496,6 +2667,26 @@ async def extract_zip_file(
                     )
                     db.add(library_file)
                     await db.flush()
+                    # Inherit target folder's projects → matching plan rows
+                    # so a 3MF unzipped into a project-tagged folder lands
+                    # in the project's plan automatically. Re-fetch the
+                    # folder with .projects eager-loaded for *this*
+                    # iteration's target_folder_id (may differ from the
+                    # outer one when ``preserve_structure`` created a
+                    # subfolder; subfolders inherit their parent's
+                    # projects only when explicitly assigned, so this is
+                    # a no-op for sub-folders that have no projects of
+                    # their own).
+                    if target_folder_id is not None:
+                        per_file_folder = (
+                            await db.execute(
+                                select(LibraryFolder)
+                                .where(LibraryFolder.id == target_folder_id)
+                                .options(selectinload(LibraryFolder.projects))
+                            )
+                        ).scalar_one_or_none()
+                        if per_file_folder is not None:
+                            await inherit_folder_projects(db, library_file, per_file_folder)
                     await db.refresh(library_file)
 
                     extracted_files.append(
@@ -2558,8 +2749,10 @@ async def batch_generate_stl_thumbnails(
     thumbnails_dir = get_library_thumbnails_dir()
     results: list[BatchThumbnailResult] = []
 
-    # Build query based on request (trash-aware: skip soft-deleted rows)
-    query = LibraryFile.active().where(LibraryFile.file_type == "stl")
+    # Build query based on request (trash-aware: skip soft-deleted rows).
+    # Both STL and OBJ go through the same trimesh renderer — pick up
+    # both file types in the batch sweep.
+    query = LibraryFile.active().where(LibraryFile.file_type.in_(("stl", "obj")))
 
     if request.file_ids:
         # Specific files

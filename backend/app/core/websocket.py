@@ -73,6 +73,37 @@ class ConnectionManager:
             }
         )
 
+    async def send_print_paused(self, printer_id: int, data: dict):
+        """Notify clients that a print transitioned RUNNING→PAUSE.
+
+        ``data`` carries ``filename``, ``reason`` (human-readable),
+        ``reason_code`` (normalised key — see ``hms_errors.classify_pause_reason``),
+        and optional ``hms_code`` so the frontend can route by reason
+        category without repeating the HMS-table lookup.
+        """
+        await self.broadcast(
+            {
+                "type": "print_paused",
+                "printer_id": printer_id,
+                "data": data,
+            }
+        )
+
+    async def send_print_resumed(self, printer_id: int, data: dict):
+        """Notify clients that a print transitioned PAUSE→RUNNING.
+
+        ``data`` carries ``filename`` and ``paused_for_seconds`` so the UI
+        can display "resumed after Nm Ms" without keeping its own pause
+        timestamp.
+        """
+        await self.broadcast(
+            {
+                "type": "print_resumed",
+                "printer_id": printer_id,
+                "data": data,
+            }
+        )
+
     async def send_archive_created(self, archive: dict):
         """Notify clients that a new archive was created."""
         await self.broadcast(

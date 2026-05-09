@@ -32,6 +32,8 @@ import { EmailSettings } from '../components/EmailSettings';
 import { LDAPSettings } from '../components/LDAPSettings';
 import { TwoFactorSettings } from '../components/TwoFactorSettings';
 import { OIDCProviderSettings } from '../components/OIDCProviderSettings';
+import { SecurityStatusCard } from '../components/SecurityStatusCard';
+import { SlicerBundlesPanel } from '../components/SlicerBundlesPanel';
 import { FailureDetectionSettings } from '../components/FailureDetectionSettings';
 import { APIBrowser } from '../components/APIBrowser';
 import { Toggle } from '../components/Toggle';
@@ -49,7 +51,7 @@ import { PrintOptionsPreferencesPanel } from '../components/settings/PrintOption
 
 const validTabs = ['general', 'printing', 'filament', 'notifications', 'plugs', 'network', 'virtual-printer', 'apikeys', 'failure-detection', 'users', 'backup'] as const;
 type TabType = typeof validTabs[number];
-type UsersSubTab = 'users' | 'email' | 'ldap' | 'twofa' | 'oidc';
+type UsersSubTab = 'users' | 'email' | 'ldap' | 'twofa' | 'oidc' | 'security';
 
 // Module-level search registry. Tab-level entries only — see lib/settingsSearch.ts
 // for the design note. Adding a narrower `anchor="card-xyz"` entry + id on the
@@ -259,6 +261,7 @@ export function SettingsPage() {
     can_queue: true,
     can_control_printer: false,
     can_read_status: true,
+    can_access_cloud: false,
   });
   const [createdAPIKey, setCreatedAPIKey] = useState<string | null>(null);
   const [showDeleteAPIKeyConfirm, setShowDeleteAPIKeyConfirm] = useState<number | null>(null);
@@ -477,8 +480,13 @@ export function SettingsPage() {
   });
 
   const createAPIKeyMutation = useMutation({
-    mutationFn: (data: { name: string; can_queue: boolean; can_control_printer: boolean; can_read_status: boolean }) =>
-      api.createAPIKey(data),
+    mutationFn: (data: {
+      name: string;
+      can_queue: boolean;
+      can_control_printer: boolean;
+      can_read_status: boolean;
+      can_access_cloud: boolean;
+    }) => api.createAPIKey(data),
     onSuccess: (data) => {
       setCreatedAPIKey(data.key || null);
       setShowCreateAPIKey(false);
@@ -932,7 +940,10 @@ export function SettingsPage() {
   };
 
   const applyUpdateMutation = useMutation({
-    mutationFn: api.applyUpdate,
+    // Pass the tag from the latest /check so apply hits exactly the release
+    // the user just saw (handles beta vs stable channel correctly — pre-fix
+    // the backend hardcoded origin/main and silently no-op'd beta installs).
+    mutationFn: (tagName?: string) => api.applyUpdate(tagName),
     onSuccess: (data) => {
       if (data.is_docker) {
         showToast(data.message, 'error');
@@ -1056,7 +1067,7 @@ export function SettingsPage() {
   });
 
   const updatePrinterMutation = useMutation({
-    mutationFn: ({ id, data }: { id: number; data: Partial<{ external_camera_url: string | null; external_camera_type: string | null; external_camera_enabled: boolean; camera_rotation: number }> }) =>
+    mutationFn: ({ id, data }: { id: number; data: Partial<{ external_camera_url: string | null; external_camera_type: string | null; external_camera_enabled: boolean; external_camera_snapshot_url: string | null; camera_rotation: number }> }) =>
       api.updatePrinter(id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['printers'] });
@@ -1101,6 +1112,11 @@ export function SettingsPage() {
       settings.ams_temp_good !== localSettings.ams_temp_good ||
       settings.ams_temp_fair !== localSettings.ams_temp_fair ||
       settings.ams_history_retention_days !== localSettings.ams_history_retention_days ||
+      // Nullish-fallback so a transient ``undefined`` on either side
+      // (stale settings query mid-fetch, fresh install before any
+      // user write) doesn't trigger an infinite save loop. Mirrors the
+      // ``archive_3mf_retention_days`` pattern above.
+      (settings.log_retention_days ?? 7) !== (localSettings.log_retention_days ?? 7) ||
       settings.disable_filament_warnings !== localSettings.disable_filament_warnings ||
       (settings.queue_drying_enabled ?? false) !== (localSettings.queue_drying_enabled ?? false) ||
       (settings.queue_shortest_first ?? false) !== (localSettings.queue_shortest_first ?? false) ||
@@ -1181,6 +1197,7 @@ export function SettingsPage() {
         ams_temp_good: localSettings.ams_temp_good,
         ams_temp_fair: localSettings.ams_temp_fair,
         ams_history_retention_days: localSettings.ams_history_retention_days,
+        log_retention_days: localSettings.log_retention_days,
         disable_filament_warnings: localSettings.disable_filament_warnings,
         queue_drying_enabled: localSettings.queue_drying_enabled,
         queue_shortest_first: localSettings.queue_shortest_first,
@@ -1272,19 +1289,31 @@ export function SettingsPage() {
   const [localCameraUrls, setLocalCameraUrls] = useState<Record<number, string>>({});
   const cameraUrlSaveTimeoutRef = useRef<Record<number, ReturnType<typeof setTimeout>>>({});
   const initializedPrinterUrlsRef = useRef<Set<number>>(new Set());
+  // Same debounced-save pattern for the optional snapshot URL override (#1177).
+  const [localSnapshotUrls, setLocalSnapshotUrls] = useState<Record<number, string>>({});
+  const snapshotUrlSaveTimeoutRef = useRef<Record<number, ReturnType<typeof setTimeout>>>({});
+  const initializedPrinterSnapshotUrlsRef = useRef<Set<number>>(new Set());
 
   // Initialize local camera URLs from printer data
   useEffect(() => {
     if (printers) {
       const urls: Record<number, string> = {};
+      const snapUrls: Record<number, string> = {};
       printers.forEach(p => {
         if (p.external_camera_url && !initializedPrinterUrlsRef.current.has(p.id)) {
           urls[p.id] = p.external_camera_url;
           initializedPrinterUrlsRef.current.add(p.id);
         }
+        if (p.external_camera_snapshot_url && !initializedPrinterSnapshotUrlsRef.current.has(p.id)) {
+          snapUrls[p.id] = p.external_camera_snapshot_url;
+          initializedPrinterSnapshotUrlsRef.current.add(p.id);
+        }
       });
       if (Object.keys(urls).length > 0) {
         setLocalCameraUrls(prev => ({ ...prev, ...urls }));
+      }
+      if (Object.keys(snapUrls).length > 0) {
+        setLocalSnapshotUrls(prev => ({ ...prev, ...snapUrls }));
       }
     }
   }, [printers]);
@@ -1303,6 +1332,21 @@ export function SettingsPage() {
       updatePrinterMutation.mutate({
         id: printerId,
         data: { external_camera_url: url || null }
+      });
+    }, 800);
+  };
+
+  const handleSnapshotUrlChange = (printerId: number, url: string) => {
+    setLocalSnapshotUrls(prev => ({ ...prev, [printerId]: url }));
+
+    if (snapshotUrlSaveTimeoutRef.current[printerId]) {
+      clearTimeout(snapshotUrlSaveTimeoutRef.current[printerId]);
+    }
+
+    snapshotUrlSaveTimeoutRef.current[printerId] = setTimeout(() => {
+      updatePrinterMutation.mutate({
+        id: printerId,
+        data: { external_camera_snapshot_url: url || null }
       });
     }, 800);
   };
@@ -2280,18 +2324,47 @@ export function SettingsPage() {
                         {updateStatus.error || updateStatus.message}
                       </div>
                     ) : updateCheck?.is_docker ? (
-                      <div className="mt-3 p-3 bg-bambu-dark-tertiary rounded-lg">
-                        <p className="text-sm text-bambu-gray mb-2">
-                          {t('settings.updateViaDocker')}
-                        </p>
-                        <code className="block text-xs bg-bambu-dark p-2 rounded text-bambu-green font-mono">
-                          docker compose pull && docker compose up -d
-                        </code>
+                      // Docker installs aren't updated in-app — instead show the
+                      // operator the exact commands they need for both common
+                      // shapes (image-pull from Docker Hub / GHCR, and source-
+                      // build with `compose build`). Pre-fix this was a single
+                      // `docker compose pull && up -d` snippet which silently
+                      // didn't work for any beta tag (`:latest` doesn't track
+                      // betas) or any pinned image tag (pull would re-fetch the
+                      // pinned version, no-op'ing the upgrade).
+                      <div className="mt-3 space-y-3">
+                        {/* Image-based path — most common */}
+                        <div className="p-3 bg-bambu-dark-tertiary rounded-lg">
+                          <p className="text-sm font-medium text-white mb-1">
+                            {t('settings.dockerImagePullTitle')}
+                          </p>
+                          <p className="text-xs text-bambu-gray mb-2">
+                            {updateCheck.is_prerelease
+                              ? t('settings.dockerImagePullBeta')
+                              : t('settings.dockerImagePullStable')}
+                          </p>
+                          <code className="block text-xs bg-bambu-dark p-2 rounded text-bambu-green font-mono whitespace-pre-wrap break-all">
+                            {`# docker-compose.yml\nimage: kainpl/bamdude:${updateCheck.is_prerelease ? updateCheck.latest_version : (updateCheck.latest_version ?? 'latest')}\n\n# then\ndocker compose pull && docker compose up -d`}
+                          </code>
+                        </div>
+
+                        {/* Source-build path — less common but supported */}
+                        <div className="p-3 bg-bambu-dark-tertiary rounded-lg">
+                          <p className="text-sm font-medium text-white mb-1">
+                            {t('settings.dockerSourceBuildTitle')}
+                          </p>
+                          <p className="text-xs text-bambu-gray mb-2">
+                            {t('settings.dockerSourceBuildHint')}
+                          </p>
+                          <code className="block text-xs bg-bambu-dark p-2 rounded text-bambu-green font-mono whitespace-pre-wrap break-all">
+                            {`git fetch origin --tags --prune --force\ngit checkout v${updateCheck.latest_version ?? '<tag>'}\ndocker compose build --pull\ndocker compose up -d`}
+                          </code>
+                        </div>
                       </div>
                     ) : (
                       <Button
                         className="mt-3"
-                        onClick={() => applyUpdateMutation.mutate()}
+                        onClick={() => applyUpdateMutation.mutate(updateCheck?.latest_version ?? undefined)}
                         disabled={applyUpdateMutation.isPending}
                       >
                         {applyUpdateMutation.isPending ? (
@@ -2382,6 +2455,28 @@ export function SettingsPage() {
                   </Button>
                 </div>
               )}
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-white">{t('settings.logRetention', 'Log retention')}</p>
+                  <p className="text-sm text-bambu-gray">
+                    {t(
+                      'settings.logRetentionDescription',
+                      'How many daily log files (bamdude-YYYY-MM-DD.log) to keep on disk. Older archives are auto-deleted on each midnight rotation. Live bamdude.log is unaffected.',
+                    )}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <input
+                    type="number"
+                    min={1}
+                    max={365}
+                    value={localSettings.log_retention_days ?? 7}
+                    onChange={(e) => updateSetting('log_retention_days', parseInt(e.target.value) || 7)}
+                    className="w-20 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                  />
+                  <span className="text-bambu-gray text-sm">{t('common.days')}</span>
+                </div>
+              </div>
               <div className="pt-4 border-t border-bambu-dark-tertiary">
                 <div className="flex items-center justify-between">
                   <div>
@@ -2612,6 +2707,35 @@ export function SettingsPage() {
                                 )}
                               </div>
                             )}
+                            {(printer.external_camera_type === 'mjpeg' || printer.external_camera_type === 'rtsp' || printer.external_camera_type === 'usb') && (
+                              <div className="space-y-1">
+                                <label className="text-xs text-bambu-gray">{t('settings.cameraSnapshotUrl', 'Snapshot URL (optional)')}</label>
+                                <div className="flex gap-2">
+                                  <input
+                                    type="text"
+                                    placeholder={t('settings.cameraSnapshotUrlPlaceholder', 'http://192.168.1.61:1984/api/frame.jpeg?src=printer')}
+                                    value={localSnapshotUrls[printer.id] ?? printer.external_camera_snapshot_url ?? ''}
+                                    onChange={(e) => handleSnapshotUrlChange(printer.id, e.target.value)}
+                                    className="flex-1 px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-sm focus:border-bambu-green focus:outline-none"
+                                  />
+                                  <Button
+                                    size="sm"
+                                    variant="secondary"
+                                    onClick={() => handleTestExternalCamera(printer.id, localSnapshotUrls[printer.id] ?? printer.external_camera_snapshot_url ?? '', 'snapshot')}
+                                    disabled={extCameraTestLoading[printer.id] || !(localSnapshotUrls[printer.id] ?? printer.external_camera_snapshot_url)}
+                                  >
+                                    {extCameraTestLoading[printer.id] ? (
+                                      <Loader2 className="w-4 h-4 animate-spin" />
+                                    ) : (
+                                      t('settings.test')
+                                    )}
+                                  </Button>
+                                </div>
+                                <p className="text-xs text-bambu-gray opacity-75">
+                                  {t('settings.cameraSnapshotUrlHelp', 'Single-frame URL used for notification thumbnails, finish photos, timelapse and plate detection. Leave blank to capture from the live stream above. Useful for go2rtc (/api/frame.jpeg) and IP cameras with a dedicated snapshot endpoint.')}
+                                </p>
+                              </div>
+                            )}
                             <div className="flex items-center gap-2">
                               <label className="text-xs text-bambu-gray">{t('settings.cameraRotation')}</label>
                               <select
@@ -2652,6 +2776,13 @@ export function SettingsPage() {
               <PrintOptionsPreferencesPanel />
             </CardContent>
           </Card>
+
+          {/* Slicer Preset Bundles — print-time pick that pairs with the
+              Saved Print Profiles above (both are pre-print profile state
+              the operator manages outside the slice-modal flow). Hidden
+              when use_slicer_api is off so Docker setups without the
+              sidecar don't see an empty card. */}
+          {(localSettings.use_slicer_api ?? false) && <SlicerBundlesPanel />}
 
           {/* Cost Tracking */}
           <Card>
@@ -4010,6 +4141,8 @@ export function SettingsPage() {
                   print_complete: { group: 'print', channel: 'all' },
                   print_failed: { group: 'print', channel: 'all' },
                   print_stopped: { group: 'print', channel: 'all' },
+                  print_paused: { group: 'print', channel: 'all' },
+                  print_resumed: { group: 'print', channel: 'all' },
                   print_progress: { group: 'print', channel: 'all' },
                   print_missing_spool_assignment: { group: 'print', channel: 'all' },
                   plate_not_empty: { group: 'print', channel: 'all' },
@@ -4289,6 +4422,18 @@ export function SettingsPage() {
                           <p className="text-xs text-bambu-gray">{t('settings.controlPrinterDescription')}</p>
                         </div>
                       </label>
+                      <label className="flex items-center gap-3 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={newAPIKeyPermissions.can_access_cloud}
+                          onChange={(e) => setNewAPIKeyPermissions(prev => ({ ...prev, can_access_cloud: e.target.checked }))}
+                          className="w-4 h-4 text-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark focus:ring-bambu-green"
+                        />
+                        <div>
+                          <span className="text-white">{t('settings.allowCloudAccess')}</span>
+                          <p className="text-xs text-bambu-gray">{t('settings.allowCloudAccessDescription')}</p>
+                        </div>
+                      </label>
                     </div>
                   </div>
                   <div className="flex items-center gap-2 pt-2">
@@ -4345,6 +4490,12 @@ export function SettingsPage() {
                             )}
                             {key.can_control_printer && (
                               <span className="px-1.5 py-0.5 bg-orange-500/20 text-orange-400 rounded">{t('settings.control')}</span>
+                            )}
+                            {key.can_access_cloud && (
+                              <span className="px-1.5 py-0.5 bg-purple-500/20 text-purple-400 rounded">{t('settings.cloudBadge')}</span>
+                            )}
+                            {key.user_id === null && (
+                              <span className="px-1.5 py-0.5 bg-bambu-dark-tertiary text-bambu-gray rounded">{t('settings.legacyBadge')}</span>
                             )}
                           </div>
                           <Button
@@ -5064,6 +5215,19 @@ export function SettingsPage() {
                 SSO / OIDC
               </button>
             )}
+            {isAdmin && (
+              <button
+                onClick={() => setUsersSubTab('security')}
+                className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+                  usersSubTab === 'security'
+                    ? 'text-bambu-green border-bambu-green'
+                    : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+                }`}
+              >
+                <Shield className="w-4 h-4" />
+                {t('settings.tabs.security')}
+              </button>
+            )}
           </div>
 
           {/* Users Sub-tab */}
@@ -5349,6 +5513,12 @@ export function SettingsPage() {
           {usersSubTab === 'oidc' && isAdmin && (
             <div className="max-w-3xl">
               <OIDCProviderSettings />
+            </div>
+          )}
+
+          {usersSubTab === 'security' && isAdmin && (
+            <div className="max-w-2xl">
+              <SecurityStatusCard />
             </div>
           )}
         </div>

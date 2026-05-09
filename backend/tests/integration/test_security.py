@@ -145,42 +145,39 @@ class TestEncryption:
             enc_mod._fernet_instance = original
             enc_mod._warn_shown = original_warn
 
-    def test_plaintext_passthrough_without_key(self):
+    def test_plaintext_passthrough_without_key(self, monkeypatch):
+        """When auto-bootstrap returns no key (DATA_DIR not writable / corrupt
+        key file), plaintext storage stays the legacy fallback — this test
+        pins that path explicitly by monkeypatching _load_or_generate_key
+        to return (None, 'none')."""
         import backend.app.core.encryption as enc_mod
 
-        original = enc_mod._fernet_instance
-        original_warn = enc_mod._warn_shown
-        try:
-            enc_mod._fernet_instance = None
-            enc_mod._warn_shown = False
-            with patch.dict("os.environ", {}, clear=True):
-                env = {k: v for k, v in __import__("os").environ.items() if k != "MFA_ENCRYPTION_KEY"}
-                with patch.dict("os.environ", env, clear=True):
-                    result = enc_mod.mfa_encrypt("plaintext-secret")
-                    assert result == "plaintext-secret"
-                    assert enc_mod.mfa_decrypt("plaintext-secret") == "plaintext-secret"
-        finally:
-            enc_mod._fernet_instance = original
-            enc_mod._warn_shown = original_warn
+        # Force the no-key code path. The autouse mfa_encryption_isolation
+        # fixture would otherwise let auto-bootstrap generate a key in the
+        # tmp_path DATA_DIR.
+        monkeypatch.setattr(enc_mod, "_load_or_generate_key", lambda: (None, "none"))
+        enc_mod._fernet_instance = None
+        enc_mod._warn_shown = False
+        enc_mod._key_source = None
 
-    def test_decrypt_raises_runtime_error_without_key_for_encrypted_value(self):
+        result = enc_mod.mfa_encrypt("plaintext-secret")
+        assert result == "plaintext-secret"
+        assert enc_mod.mfa_decrypt("plaintext-secret") == "plaintext-secret"
+
+    def test_decrypt_raises_runtime_error_without_key_for_encrypted_value(self, monkeypatch):
+        """When a fernet:-prefixed value is decrypted but no key is loadable,
+        we raise RuntimeError (not silently return the cipher text). Pin via
+        monkeypatch since the autouse fixture's tmp_path DATA_DIR would
+        otherwise auto-generate a key."""
         import backend.app.core.encryption as enc_mod
 
-        original = enc_mod._fernet_instance
-        original_warn = enc_mod._warn_shown
-        try:
-            enc_mod._fernet_instance = None
-            enc_mod._warn_shown = False
-            # A value with the fernet: prefix but no key configured
-            env = {k: v for k, v in __import__("os").environ.items() if k != "MFA_ENCRYPTION_KEY"}
-            with (
-                patch.dict("os.environ", env, clear=True),
-                pytest.raises(RuntimeError, match="MFA_ENCRYPTION_KEY must be set"),
-            ):
-                enc_mod.mfa_decrypt("fernet:gAAAAA-fake-ciphertext")
-        finally:
-            enc_mod._fernet_instance = original
-            enc_mod._warn_shown = original_warn
+        monkeypatch.setattr(enc_mod, "_load_or_generate_key", lambda: (None, "none"))
+        enc_mod._fernet_instance = None
+        enc_mod._warn_shown = False
+        enc_mod._key_source = None
+
+        with pytest.raises(RuntimeError, match="MFA_ENCRYPTION_KEY must be set"):
+            enc_mod.mfa_decrypt("fernet:gAAAAA-fake-ciphertext")
 
 
 # ===========================================================================

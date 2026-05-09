@@ -344,7 +344,7 @@ export function LibraryTrashPage() {
                           <img
                             src={api.getLibraryFileThumbnailUrl(item.id)}
                             alt=""
-                            className="w-full h-full object-cover"
+                            className="w-full h-full object-contain"
                             loading="lazy"
                             onError={(e) => {
                               (e.currentTarget as HTMLImageElement).style.display = 'none';

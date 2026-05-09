@@ -6,12 +6,16 @@ services:
     #   docker compose up -d          → pulls pre-built image from ghcr.io
     #   docker compose up -d --build  → builds locally from source
     container_name: bamdude
-    # Run as current user to avoid permission issues with mounted volumes
-    # Override with: PUID=$(id -u) PGID=$(id -g) docker compose up -d
-    user: "${PUID:-1000}:${PGID:-1000}"
+    # File ownership inside the data and logs volumes is normalised by the
+    # entrypoint at startup (chowns to PUID:PGID and drops privileges via
+    # gosu before running the app). Override PUID / PGID below to match
+    # your host user if needed — defaults to 1000:1000 to match the
+    # historical compose `user:` directive.
     #
-    # Proxy mode: allow binding to privileged ports (322, 990) as non-root user.
-    # Without this, the FTP and RTSP proxies silently fail.
+    # Allow binding to privileged ports (322, 990) as non-root user — required
+    # for FTPS in every VP mode and for the RTSPS camera proxy in proxy mode +
+    # non-proxy modes that have a target printer configured. Without this, the
+    # FTP and RTSP listeners silently fail.
     cap_add:
       - NET_BIND_SERVICE
     #
@@ -28,18 +32,29 @@ services:
     #  - "8883:8883"                  # Virtual printer MQTT
     #  - "990:990"                    # Virtual printer FTP control
     #  - "6000:6000"                  # Virtual printer file transfer tunnel
-    #  - "322:322"                    # Virtual printer RTSP camera (X1/H2/P2)
+    #  - "322:322"                    # Virtual printer RTSP camera (X1/H2/P2; proxy mode + non-proxy modes with a target printer)
     #  - "2024-2026:2024-2026"        # Virtual printer proprietary ports (A1/P1S)
     #  - "50000-50100:50000-50100"    # Virtual printer FTP passive data
     volumes:
       - bamdude_data:/app/data
       - bamdude_logs:/app/logs
       #
-      # Share virtual printer certs with native installation
-      # This ensures the slicer only needs to trust one CA certificate.
-      - ./virtual_printer:/app/data/virtual_printer
+      # OPTIONAL — only needed if you ALSO run a native install of BamDude
+      # on the same host and want both installs to share the same Virtual
+      # Printer CA certificate (so the slicer only has to trust one CA).
+      # Most Docker-only users should leave this commented out — the
+      # entrypoint will keep the VP data inside the named volume above.
+      # If uncommented, the entrypoint chowns the host directory to
+      # PUID:PGID on first start so the container user can write to it.
+      #- ./virtual_printer:/app/data/virtual_printer
     environment:
       - TZ=${TZ:-Europe/Kyiv}
+      # User/group the container drops to after the entrypoint normalises
+      # ownership on /app/data and /app/logs. Match your host user (run
+      # `id -u` / `id -g`) if you want files written by the container to
+      # show up as your user on the host. Defaults to 1000:1000.
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
       # Port BamDude runs on (default: 8000)
       # Usage: PORT=8080 docker compose up -d
       - PORT=${PORT:-8000}
@@ -50,6 +65,13 @@ services:
       # Required for FTP passive mode to work behind NAT.
       # Example: VIRTUAL_PRINTER_PASV_ADDRESS=192.168.1.100
       #- VIRTUAL_PRINTER_PASV_ADDRESS=
+      # MFA at-rest encryption key (TOTP seeds, OIDC client_secrets).
+      # Default-on: when unset, BamDude auto-generates a key on first startup
+      # and writes /app/data/.mfa_encryption_key (mode 0600). The file is
+      # bundled into backup ZIPs so backup→restore on a new host preserves
+      # access to encrypted secrets. Pin explicitly here for multi-host /
+      # multi-worker deployments where the key file is not shared.
+      #- MFA_ENCRYPTION_KEY=
     restart: unless-stopped
 
 volumes:

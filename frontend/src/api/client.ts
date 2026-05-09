@@ -1,5 +1,14 @@
 import type { ArchivePlatesResponse, LibraryFilePlatesResponse } from '../types/plates';
 
+export class ApiError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
 const API_BASE = '/api/v1';
 
 // Auth token storage
@@ -331,6 +340,7 @@ export interface Printer {
   external_camera_url: string | null;
   external_camera_type: string | null;  // "mjpeg", "rtsp", "snapshot"
   external_camera_enabled: boolean;
+  external_camera_snapshot_url: string | null;  // optional single-frame override (#1177)
   camera_rotation: number;  // 0, 90, 180, 270 degrees
   plate_detection_enabled: boolean;  // Check plate before print
   plate_detection_roi?: PlateDetectionROI;  // ROI for plate detection
@@ -421,6 +431,16 @@ export interface PrintOptions {
   filament_tangle_detect: boolean;
 }
 
+export interface FilaSwitchState {
+  installed: boolean;
+  // in[track] = currently loaded slot for that track (-1 = empty)
+  in_slots: number[];
+  // out[track] = extruder this track terminates at (0 = right, 1 = left)
+  out_extruders: number[];
+  stat: number;
+  info: number;
+}
+
 export interface PrinterStatus {
   id: number;
   name: string;
@@ -451,6 +471,17 @@ export interface PrinterStatus {
   } | null;
   cover_url: string | null;
   hms_errors: HMSError[];
+  // Pause classification (RUNNING→PAUSE edge, see hms_errors.classify_pause_reason).
+  // pause_reason: normalised key for routing — 'user' | 'filament_runout' |
+  //   'door_open' | 'presence_check' | 'file_pause_command' |
+  //   'ai_first_layer_defect' | 'ai_spaghetti' | 'foreign_object' |
+  //   'plate_objects' | 'hms_other' | 'unknown'. Null when not paused or pre-edge.
+  // pause_reason_label: operator-facing copy (precise HMS description or generic label).
+  // pause_started_at: epoch seconds at which the pause began — drives the live
+  //   "Paused N min" counter and survives F5.
+  pause_reason: string | null;
+  pause_reason_label: string | null;
+  pause_started_at: number | null;
   ams: AMSUnit[];
   ams_exists: boolean;
   vt_tray: AMSTray[];  // Virtual tray / external spool(s)
@@ -483,6 +514,11 @@ export interface PrinterStatus {
   // Format: {ams_id: extruder_id} where extruder 0=right, 1=left
   // Note: JSON keys are always strings
   ams_extruder_map: Record<string, number>;
+  // Filament Track Switch accessory — null when not installed. When present,
+  // AMS slots aren't tied to a specific extruder; the FTS routes any slot to
+  // either extruder, so per-extruder slot filtering must be skipped. Upstream
+  // Bambuddy #1162.
+  fila_switch: FilaSwitchState | null;
   // Currently loaded tray (global tray ID, 255 = no filament loaded, 254 = external spool)
   tray_now: number;
   // AMS status for filament change tracking (0=idle, 1=filament_change, 2=rfid_identifying, 3=assist, 4=calibration)
@@ -529,6 +565,7 @@ export interface PrinterCreate {
   external_camera_url?: string | null;
   external_camera_type?: string | null;
   external_camera_enabled?: boolean;
+  external_camera_snapshot_url?: string | null;  // optional single-frame override (#1177)
   camera_rotation?: number;
   plate_detection_enabled?: boolean;
   plate_detection_roi?: PlateDetectionROI;
@@ -1087,9 +1124,11 @@ export interface APIKey {
   id: number;
   name: string;
   key_prefix: string;
+  user_id: number | null;
   can_queue: boolean;
   can_control_printer: boolean;
   can_read_status: boolean;
+  can_access_cloud: boolean;
   printer_ids: number[] | null;
   enabled: boolean;
   last_used: string | null;
@@ -1102,6 +1141,7 @@ export interface APIKeyCreate {
   can_queue?: boolean;
   can_control_printer?: boolean;
   can_read_status?: boolean;
+  can_access_cloud?: boolean;
   printer_ids?: number[] | null;
   expires_at?: string | null;
 }
@@ -1115,6 +1155,7 @@ export interface APIKeyUpdate {
   can_queue?: boolean;
   can_control_printer?: boolean;
   can_read_status?: boolean;
+  can_access_cloud?: boolean;
   printer_ids?: number[] | null;
   enabled?: boolean;
   expires_at?: string | null;
@@ -1162,6 +1203,7 @@ export interface AppSettings {
   ams_temp_good: number;      // <= this is green/blue
   ams_temp_fair: number;      // <= this is orange, > is red
   ams_history_retention_days: number;  // days to keep AMS sensor history
+  log_retention_days: number;  // days to keep historical bamdude-YYYY-MM-DD.log archives
   // Queue auto-drying settings
   queue_drying_enabled: boolean;  // Auto-dry AMS between queued prints
   queue_drying_block: boolean;  // Block queue until drying completes
@@ -1484,6 +1526,22 @@ export type BedType =
   | 'Textured PEI Plate'
   | 'Supertack Plate';
 
+export interface SliceBundleSpec {
+  bundle_id: string;
+  printer_name: string;
+  process_name: string;
+  filament_names: string[];
+}
+
+export interface SlicerBundle {
+  id: string;
+  printer_preset_name: string;
+  printer: string[];
+  process: string[];
+  filament: string[];
+  version: string | null;
+}
+
 export interface SliceRequest {
   printer_preset_id?: number;
   process_preset_id?: number;
@@ -1509,6 +1567,11 @@ export interface SliceRequest {
   // "Cool Plate" (the upstream default — wrong for X1/A1 users who actually
   // use Textured PEI / SuperTack).
   bed_type?: BedType;
+  // Optional Printer Preset Bundle reference. When set, the dispatcher
+  // skips PresetRef resolution and asks the sidecar to materialise the
+  // printer / process / filament JSONs from the stored bundle by name.
+  // Mutually exclusive with the *_preset / *_preset_id fields.
+  bundle?: SliceBundleSpec;
 }
 
 export interface SlicerHealth {
@@ -2250,6 +2313,8 @@ export interface NotificationProvider {
   on_print_stopped: boolean;
   on_print_progress: boolean;
   on_print_missing_spool_assignment: boolean;
+  on_print_paused: boolean;
+  on_print_resumed: boolean;
   // Printer status events
   on_printer_offline: boolean;
   on_printer_error: boolean;
@@ -2304,6 +2369,8 @@ export interface NotificationProviderCreate {
   on_print_stopped?: boolean;
   on_print_progress?: boolean;
   on_print_missing_spool_assignment?: boolean;
+  on_print_paused?: boolean;
+  on_print_resumed?: boolean;
   // Printer status events
   on_printer_offline?: boolean;
   on_printer_error?: boolean;
@@ -2352,6 +2419,8 @@ export interface NotificationProviderUpdate {
   on_print_stopped?: boolean;
   on_print_progress?: boolean;
   on_print_missing_spool_assignment?: boolean;
+  on_print_paused?: boolean;
+  on_print_resumed?: boolean;
   // Printer status events
   on_printer_offline?: boolean;
   on_printer_error?: boolean;
@@ -2655,6 +2724,45 @@ export interface LinkedSpoolsMap {
   linked: Record<string, LinkedSpoolInfo>; // tag (uppercase) -> spool info
 }
 
+export interface SpoolmanVendor {
+  id: number;
+  name: string;
+}
+
+export interface SpoolmanFilamentEntry {
+  id: number;
+  name: string;
+  material: string | null;
+  color_hex: string | null;
+  color_name: string | null;
+  weight: number | null;
+  spool_weight: number | null;
+  vendor: SpoolmanVendor | null;
+}
+
+export interface SpoolmanSlotAssignmentEnriched {
+  printer_id: number;
+  printer_name: string | null;
+  ams_id: number;
+  tray_id: number;
+  spoolman_spool_id: number;
+  ams_label: string | null;
+}
+
+export interface SpoolmanFilamentPatch {
+  name?: string | null;
+  spool_weight?: number | null;
+  keep_existing_spools?: boolean;
+}
+
+export interface SpoolmanBulkCreateResult {
+  created: InventorySpool[];
+  failed: number;
+  failed_count: number;
+  requested_count: number;
+  first_error?: string;
+}
+
 // Inventory types
 export interface InventorySpool {
   id: number;
@@ -2698,7 +2806,26 @@ export interface InventorySpool {
   // B.8 — per-spool category + low-stock threshold override (%, 1..99).
   category: string | null;
   low_stock_threshold_pct: number | null;
+  storage_location?: string | null;
   k_profiles?: SpoolKProfile[];
+}
+
+// Spool label printing (B.1).
+export type SpoolLabelTemplate = 'ams_30x15' | 'box_62x29' | 'avery_5160' | 'avery_l7160';
+
+export interface SpoolLabelEntry {
+  id: number;
+  /** Optional override for the label's bold central line. The frontend forwards
+   *  the value composed by ``formatSpoolDisplayName`` against the user's
+   *  ``settings.spool_display_template`` so the printed label matches the
+   *  Inventory page. When omitted the backend composes a fallback as
+   *  ``color_name → slicer_filament_name → "{brand} {material}"``. */
+  display_name?: string | null;
+}
+
+export interface SpoolLabelRequest {
+  spools: SpoolLabelEntry[];
+  template: SpoolLabelTemplate;
 }
 
 export interface SpoolUsageRecord {
@@ -2763,6 +2890,7 @@ export interface UpdateCheckResult {
   update_available: boolean;
   current_version: string;
   latest_version: string | null;
+  is_prerelease?: boolean;
   release_name?: string;
   release_notes?: string;
   release_url?: string;
@@ -3108,6 +3236,9 @@ export interface OIDCProvider {
   /** Only consulted when email_claim === "email". Set false for legacy IdPs that never send email_verified. */
   require_email_verified: boolean;
   icon_url?: string | null;
+  /** Operator-configurable default group for auto-created OIDC users (#1173).
+   *  null → callback falls back to "Viewers". */
+  default_group_id?: number | null;
 }
 
 export interface OIDCProviderCreate {
@@ -3122,6 +3253,7 @@ export interface OIDCProviderCreate {
   email_claim?: string;
   require_email_verified?: boolean;
   icon_url?: string | null;
+  default_group_id?: number | null;
 }
 
 export interface OIDCLink {
@@ -3235,10 +3367,25 @@ export interface AuthStatus {
   requires_setup: boolean;
 }
 
+export interface EncryptionRowCounts {
+  oidc_providers: number;
+  user_totp: number;
+}
+
+export interface EncryptionStatus {
+  key_configured: boolean;
+  key_source: 'env' | 'file' | 'generated' | 'none';
+  legacy_plaintext_rows: EncryptionRowCounts;
+  encrypted_rows: EncryptionRowCounts;
+  decryption_broken: boolean;
+  migration_error_count: number;
+}
+
 // API functions
 export const api = {
   // Authentication
   getAuthStatus: () => request<AuthStatus>('/auth/status'),
+  getEncryptionStatus: () => request<EncryptionStatus>('/auth/encryption-status'),
   setupAuth: (data: SetupRequest) =>
     request<SetupResponse>('/auth/setup', {
       method: 'POST',
@@ -3570,6 +3717,19 @@ export const api = {
   refreshAmsSlot: (printerId: number, amsId: number, slotId: number) =>
     request<{ success: boolean; message: string }>(
       `/printers/${printerId}/ams/${amsId}/slot/${slotId}/refresh`,
+      { method: 'POST' }
+    ),
+
+  // AMS load/unload (#891) — granular ams_change_filament primitives.
+  // tray_id semantics: 0..15 = AMS slot, 254 = external spool / Ext-L, 255 = Ext-R (H2D).
+  amsLoadFilament: (printerId: number, trayId: number) =>
+    request<{ success: boolean; tray_id: number }>(
+      `/printers/${printerId}/ams/load?tray_id=${trayId}`,
+      { method: 'POST' }
+    ),
+  amsUnloadFilament: (printerId: number) =>
+    request<{ success: boolean }>(
+      `/printers/${printerId}/ams/unload`,
       { method: 'POST' }
     ),
 
@@ -4872,6 +5032,39 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
+  // Spool labels (B.1) — PDF rendered server-side, returned as Blob.
+  // ``display_name`` is the per-spool override for the label's bold central
+  // line; the modal forwards what ``formatSpoolDisplayName`` produced from
+  // the user's spool_display_template setting so the label matches the UI.
+  printSpoolLabels: async (body: SpoolLabelRequest): Promise<Blob> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    const response = await fetch(`${API_BASE}/inventory/labels`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+    return response.blob();
+  },
+  printSpoolmanSpoolLabels: async (body: SpoolLabelRequest): Promise<Blob> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    const response = await fetch(`${API_BASE}/spoolman/labels`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+    return response.blob();
+  },
+
   // Inventory
   getSpools: (includeArchived = false) =>
     request<InventorySpool[]>(`/inventory/spools?include_archived=${includeArchived}`),
@@ -4908,6 +5101,103 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(profiles),
     }),
+
+  // Spoolman Inventory proxy (unified UI when Spoolman is enabled — port of upstream PR #1241).
+  getSpoolmanInventoryFilaments: () =>
+    request<SpoolmanFilamentEntry[]>('/spoolman/inventory/filaments'),
+  patchSpoolmanFilament: (filamentId: number, data: SpoolmanFilamentPatch) =>
+    request<SpoolmanFilamentEntry>(`/spoolman/inventory/filaments/${filamentId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  getSpoolmanInventorySpools: (includeArchived = false) =>
+    request<InventorySpool[]>(`/spoolman/inventory/spools?include_archived=${includeArchived}`),
+  getSpoolmanInventorySpool: (id: number) =>
+    request<InventorySpool>(`/spoolman/inventory/spools/${id}`),
+  createSpoolmanInventorySpool: (
+    data: Omit<InventorySpool, 'id' | 'archived_at' | 'created_at' | 'updated_at' | 'k_profiles'>,
+  ) =>
+    request<InventorySpool>('/spoolman/inventory/spools', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  bulkCreateSpoolmanInventorySpools: (
+    data: Omit<InventorySpool, 'id' | 'archived_at' | 'created_at' | 'updated_at' | 'k_profiles'>,
+    quantity: number,
+  ) =>
+    request<SpoolmanBulkCreateResult | InventorySpool[]>(
+      '/spoolman/inventory/spools/bulk',
+      {
+        method: 'POST',
+        body: JSON.stringify({ spool: data, quantity }),
+      },
+    ),
+  updateSpoolmanInventorySpool: (
+    id: number,
+    data: Partial<Omit<InventorySpool, 'id' | 'archived_at' | 'created_at' | 'updated_at' | 'k_profiles'>>,
+  ) =>
+    request<InventorySpool>(`/spoolman/inventory/spools/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  deleteSpoolmanInventorySpool: (id: number) =>
+    request<{ status: string }>(`/spoolman/inventory/spools/${id}`, { method: 'DELETE' }),
+  archiveSpoolmanInventorySpool: (id: number) =>
+    request<InventorySpool>(`/spoolman/inventory/spools/${id}/archive`, { method: 'POST' }),
+  restoreSpoolmanInventorySpool: (id: number) =>
+    request<InventorySpool>(`/spoolman/inventory/spools/${id}/restore`, { method: 'POST' }),
+  linkTagToSpoolmanSpool: (
+    spoolId: number,
+    data: { tag_uid?: string; tray_uuid?: string },
+  ) =>
+    request<InventorySpool>(`/spoolman/inventory/spools/${spoolId}/tag`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  syncSpoolmanSpoolWeight: (spoolId: number, weightGrams: number) =>
+    request<{ status: string; weight_used: number }>(
+      `/spoolman/inventory/spools/${spoolId}/weight`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ weight_grams: weightGrams }),
+      },
+    ),
+  assignSpoolmanSlot: (data: {
+    spoolman_spool_id: number;
+    printer_id: number;
+    ams_id: number;
+    tray_id: number;
+  }) =>
+    request<InventorySpool>('/spoolman/inventory/slot-assignments', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  unassignSpoolmanSlot: (spoolmanSpoolId: number) =>
+    request<InventorySpool>(`/spoolman/inventory/slot-assignments/${spoolmanSpoolId}`, {
+      method: 'DELETE',
+    }),
+  getSpoolmanSlotAssignment: (printerId: number, amsId: number, trayId: number) =>
+    request<InventorySpool | null>(
+      `/spoolman/inventory/slot-assignments?printer_id=${printerId}&ams_id=${amsId}&tray_id=${trayId}`,
+    ),
+  getSpoolmanSlotAssignments: (printerId?: number) =>
+    request<SpoolmanSlotAssignmentEnriched[]>(
+      printerId !== undefined
+        ? `/spoolman/inventory/slot-assignments/all?printer_id=${printerId}`
+        : '/spoolman/inventory/slot-assignments/all',
+    ),
+  syncSpoolmanAmsWeights: () =>
+    request<{ synced: number; skipped: number }>('/spoolman/inventory/sync-ams-weights', {
+      method: 'POST',
+    }),
+  getSpoolmanKProfiles: (spoolId: number) =>
+    request<SpoolKProfile[]>(`/spoolman/inventory/spools/${spoolId}/k-profiles`),
+  saveSpoolmanKProfiles: (spoolId: number, profiles: SpoolKProfileInput[]) =>
+    request<SpoolKProfile[]>(`/spoolman/inventory/spools/${spoolId}/k-profiles`, {
+      method: 'PUT',
+      body: JSON.stringify(profiles),
+    }),
+
   getAssignments: (printerId?: number) =>
     request<SpoolAssignment[]>(`/inventory/assignments${printerId ? `?printer_id=${printerId}` : ''}`),
   assignSpool: (data: { spool_id: number; printer_id: number; ams_id: number; tray_id: number }) =>
@@ -4966,9 +5256,10 @@ export const api = {
   // Updates
   getVersion: () => request<VersionInfo>('/updates/version'),
   checkForUpdates: () => request<UpdateCheckResult>('/updates/check'),
-  applyUpdate: () =>
-    request<{ success: boolean; message: string; status?: UpdateStatus; is_docker?: boolean }>('/updates/apply', {
+  applyUpdate: (tagName?: string) =>
+    request<{ success: boolean; message: string; target_ref?: string; status?: UpdateStatus; is_docker?: boolean }>('/updates/apply', {
       method: 'POST',
+      body: JSON.stringify(tagName ? { tag_name: tagName } : {}),
     }),
   getUpdateStatus: () => request<UpdateStatus>('/updates/status'),
 
@@ -5755,6 +6046,32 @@ export const api = {
   getSlicerHealth: (slicer: 'orcaslicer' | 'bambu_studio') =>
     request<SlicerHealth>(`/slicer/health/${slicer}`),
 
+  // Slicer Preset Bundles (.bbscfg) — pick presets from a stored bundle
+  // sidecar-side instead of resolving cloud/local/standard PresetRefs every
+  // slice. SliceModal renders the bundle picker only when this list is
+  // non-empty; falls back to PresetRef triplet path when empty.
+  listSlicerBundles: () =>
+    request<SlicerBundle[]>('/slicer/bundles'),
+  getSlicerBundle: (id: string) =>
+    request<SlicerBundle>(`/slicer/bundles/${encodeURIComponent(id)}`),
+  importSlicerBundle: (file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return fetch(`${API_BASE}/slicer/bundles`, {
+      method: 'POST',
+      headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+      body: formData,
+    }).then(async (response) => {
+      if (!response.ok) {
+        const detail = await response.text().catch(() => `${response.status}`);
+        throw new Error(detail || `Failed to import slicer bundle: ${response.status}`);
+      }
+      return response.json() as Promise<SlicerBundle>;
+    });
+  },
+  deleteSlicerBundle: (id: string) =>
+    request<void>(`/slicer/bundles/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
   // Local Presets (OrcaSlicer imports)
   getLocalPresets: () =>
     request<LocalPresetsResponse>('/local-presets/'),
@@ -6492,6 +6809,10 @@ export interface VirtualPrinterConfig {
   /** Library folder where files arriving via FTP land (m040). null = library root. */
   target_folder_id: number | null;
   auto_dispatch: boolean;
+  /** When true (auto_queue mode), VP intake auto-pins per-slot type+color from each 3MF
+   *  as `force_color_match` overrides so the eligibility scheduler refuses printers
+   *  loaded with the right material in the wrong colour (#1188). */
+  queue_force_color_match: boolean;
   bind_ip: string | null;
   remote_interface_ip: string | null;
   /** Tailscale per-VP cert provisioning (#1070) — defaults to true (off). */
@@ -6500,11 +6821,21 @@ export interface VirtualPrinterConfig {
   status: {
     running: boolean;
     pending_files: number;
-    /** Tailnet FQDN currently advertised over SSDP (only present when LE cert is in use). */
-    tailscale_fqdn?: string;
     tailscale_disabled?: boolean;
     proxy?: VirtualPrinterProxyStatus;
   };
+}
+
+/** Host-level Tailscale identity returned by `GET /virtual-printers/tailscale-status`
+ *  (#1070 post-rip-out). Surfaces the IP + MagicDNS hostname users paste into the
+ *  slicer when reaching the VP over Tailscale; cert-trust is unaffected. */
+export interface TailscaleStatusResponse {
+  available: boolean;
+  hostname: string;
+  tailnet_name: string;
+  fqdn: string;
+  tailscale_ips: string[];
+  error: string | null;
 }
 
 export interface VirtualPrinterListResponse {
@@ -6517,6 +6848,9 @@ export const multiVirtualPrinterApi = {
 
   get: (id: number) => request<VirtualPrinterConfig>(`/virtual-printers/${id}`),
 
+  getTailscaleStatus: () =>
+    request<TailscaleStatusResponse>('/virtual-printers/tailscale-status'),
+
   create: (data: {
     name?: string;
     enabled?: boolean;
@@ -6526,6 +6860,7 @@ export const multiVirtualPrinterApi = {
     target_printer_id?: number;
     target_folder_id?: number;
     auto_dispatch?: boolean;
+    queue_force_color_match?: boolean;
     bind_ip?: string;
     remote_interface_ip?: string;
     tailscale_disabled?: boolean;
@@ -6548,6 +6883,7 @@ export const multiVirtualPrinterApi = {
     /** Explicitly null out target_folder_id (m040). null = files land at library root. */
     clear_target_folder?: boolean;
     auto_dispatch?: boolean;
+    queue_force_color_match?: boolean;
     bind_ip?: string;
     remote_interface_ip?: string;
     tailscale_disabled?: boolean;
@@ -6698,6 +7034,42 @@ export const supportApi = {
 
   clearLogs: () =>
     request<{ message: string }>('/support/logs', { method: 'DELETE' }),
+
+  // Historical log archive management — populated by daily rotation.
+  // Files matching ``bamdude-YYYY-MM-DD.log`` only; backend enforces
+  // path-traversal guard.
+  listLogArchives: () =>
+    request<{ archives: { filename: string; size_bytes: number; mtime: string }[] }>(
+      '/support/log-archives',
+    ),
+
+  downloadLogArchive: async (filename: string) => {
+    const headers: Record<string, string> = {};
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    const response = await fetch(
+      `${API_BASE}/support/log-archives/${encodeURIComponent(filename)}/download`,
+      { headers },
+    );
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+  },
+
+  deleteLogArchive: (filename: string) =>
+    request<{ message: string }>(
+      `/support/log-archives/${encodeURIComponent(filename)}`,
+      { method: 'DELETE' },
+    ),
 };
 
 // Macros
@@ -6776,6 +7148,38 @@ export interface MacroExecuteResponse {
   message: string;
   sequence_id: number | null;
 }
+
+// Bug Report API
+export interface BugReportRequest {
+  description: string;
+  email?: string;
+  screenshot_base64?: string;
+  include_support_info?: boolean;
+  debug_logs?: string;
+}
+
+export interface BugReportResponse {
+  success: boolean;
+  message: string;
+  issue_url?: string;
+  issue_number?: number;
+}
+
+export const bugReportApi = {
+  submit: (data: BugReportRequest) =>
+    request<BugReportResponse>('/bug-report/submit', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  startLogging: () =>
+    request<{ started: boolean; was_debug: boolean }>('/bug-report/start-logging', {
+      method: 'POST',
+    }),
+  stopLogging: (wasDebug: boolean) =>
+    request<{ logs: string }>(`/bug-report/stop-logging?was_debug=${wasDebug}`, {
+      method: 'POST',
+    }),
+};
 
 // Macros API
 export const macrosApi = {

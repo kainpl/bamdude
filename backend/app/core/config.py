@@ -4,8 +4,14 @@ from pathlib import Path
 from pydantic_settings import BaseSettings
 
 # Application version - single source of truth
-APP_VERSION = "0.4.3"
+APP_VERSION = "0.4.4"
 GITHUB_REPO = "kainpl/bamdude"
+
+# Bug-report relay endpoint. The relay holds the GitHub PAT and creates issues
+# against ``GITHUB_REPO`` on behalf of users. Default points at the bamdude.top
+# landing-site relay; self-hosters can override to run their own (~50 LOC FastAPI
+# forwarder) or set to empty string to disable the in-app bug-report UI.
+BUG_REPORT_RELAY_URL = os.environ.get("BUG_REPORT_RELAY_URL", "https://bamdude.top/api/bug-report")
 
 # App directory - where the application is installed (for static files)
 _app_dir = Path(__file__).resolve().parent.parent.parent.parent
@@ -53,6 +59,10 @@ class Settings(BaseSettings):
     # Logging
     log_level: str = "INFO"  # Override with LOG_LEVEL env var (DEBUG, INFO, WARNING, ERROR)
     log_to_file: bool = True  # Set to false to disable file logging
+    # log_retention_days lives in the DB-backed Settings (UI: Settings ->
+    # Data Management). Module-load uses a hardcoded 7-day bootstrap;
+    # lifespan startup reads the DB value and applies it via
+    # ``logging_state.update_log_retention``.
 
     # API
     api_prefix: str = "/api/v1"

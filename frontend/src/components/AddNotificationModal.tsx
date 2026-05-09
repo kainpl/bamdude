@@ -37,6 +37,8 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
   const [onPrintFailed, setOnPrintFailed] = useState(provider?.on_print_failed ?? true);
   const [onPrintStopped, setOnPrintStopped] = useState(provider?.on_print_stopped ?? true);
   const [onPrintProgress, setOnPrintProgress] = useState(provider?.on_print_progress ?? false);
+  const [onPrintPaused, setOnPrintPaused] = useState(provider?.on_print_paused ?? true);
+  const [onPrintResumed, setOnPrintResumed] = useState(provider?.on_print_resumed ?? true);
   const [onPrinterOffline, setOnPrinterOffline] = useState(provider?.on_printer_offline ?? false);
   const [onPrinterError, setOnPrinterError] = useState(provider?.on_printer_error ?? false);
   const [onFilamentLow, setOnFilamentLow] = useState(provider?.on_filament_low ?? false);
@@ -164,6 +166,8 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
       on_print_failed: onPrintFailed,
       on_print_stopped: onPrintStopped,
       on_print_progress: onPrintProgress,
+      on_print_paused: onPrintPaused,
+      on_print_resumed: onPrintResumed,
       on_printer_offline: onPrinterOffline,
       on_printer_error: onPrinterError,
       on_filament_low: onFilamentLow,
@@ -529,6 +533,14 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
                   <span className="text-sm text-white">{t('notifications.stopped')}</span>
                   <Toggle checked={onPrintStopped} onChange={setOnPrintStopped} />
                 </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-white">{t('notifications.paused')}</span>
+                  <Toggle checked={onPrintPaused} onChange={setOnPrintPaused} />
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-white">{t('notifications.resumed')}</span>
+                  <Toggle checked={onPrintResumed} onChange={setOnPrintResumed} />
+                </div>
                 <div className="flex items-center justify-between col-span-2">
                   <div>
                     <span className="text-sm text-white">{t('notifications.progress')}</span>
@@ -583,6 +595,8 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
               if (onPrintComplete) enabledEvents.push({ key: 'on_print_complete', label: t('notifications.complete') });
               if (onPrintFailed) enabledEvents.push({ key: 'on_print_failed', label: t('notifications.failed') });
               if (onPrintStopped) enabledEvents.push({ key: 'on_print_stopped', label: t('notifications.stopped') });
+              if (onPrintPaused) enabledEvents.push({ key: 'on_print_paused', label: t('notifications.paused') });
+              if (onPrintResumed) enabledEvents.push({ key: 'on_print_resumed', label: t('notifications.resumed') });
               if (onPrintProgress) enabledEvents.push({ key: 'on_print_progress', label: t('notifications.progress') });
               if (onBedCooled) enabledEvents.push({ key: 'on_bed_cooled', label: t('notifications.bedCooled') });
               if (onFirstLayerComplete) enabledEvents.push({ key: 'on_first_layer_complete', label: t('notifications.firstLayerCompleteLabel') });

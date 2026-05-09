@@ -16,6 +16,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from backend.app.api.routes.mfa import (
+    _derive_oidc_username_seed,
     _enforce_auto_link_safety,
     _is_valid_email_shaped,
     _resolve_provider_email,
@@ -188,3 +189,99 @@ class TestSchemaValidation:
         # handles cross-request cases at the route level.
         p = OIDCProviderUpdate(email_claim="upn")
         assert p.email_claim == "upn"
+
+
+class TestDeriveOIDCUsernameSeed:
+    """Pin the resolution order for auto-created OIDC usernames (#1173).
+
+    Pre-fix users with no email claim got ``oidc_<sha256>``-shaped names —
+    opaque + useless to the operator. The fix prefers IdP-provided
+    ``preferred_username`` then ``name`` then the raw provider sub.
+    """
+
+    def test_email_local_part_wins_when_email_resolved(self):
+        # The common case for any IdP that ships a usable email claim.
+        seed = _derive_oidc_username_seed(
+            claims={"preferred_username": "ignored", "name": "Ignored Too"},
+            provider_email="alice@corp.example",
+            provider_sub="ABC-XYZ-123-LONG-OPAQUE-SUB",
+        )
+        assert seed == "alice"
+
+    def test_preferred_username_wins_over_name(self):
+        seed = _derive_oidc_username_seed(
+            claims={"preferred_username": "alice", "name": "Alice Anderson"},
+            provider_email=None,
+            provider_sub="some-sub",
+        )
+        assert seed == "alice"
+
+    def test_name_used_when_preferred_username_missing(self):
+        seed = _derive_oidc_username_seed(
+            claims={"name": "Bob Builder"},
+            provider_email=None,
+            provider_sub="some-sub",
+        )
+        # Spaces stripped by the per-candidate sanitisation.
+        assert seed == "BobBuilder"
+
+    def test_falls_through_to_sub_when_all_claims_strip_empty(self):
+        # ``preferred_username`` and ``name`` both contain only sanitiser-
+        # rejected characters → must fall through to ``provider_sub`` rather
+        # than locking in ""
+        seed = _derive_oidc_username_seed(
+            claims={"preferred_username": "!!!", "name": "@@@"},
+            provider_email=None,
+            provider_sub="ABCDEFGHIJ",
+        )
+        assert seed == "ABCDEFGHIJ"
+
+    def test_falls_through_to_sub_when_no_human_claims(self):
+        seed = _derive_oidc_username_seed(
+            claims={},
+            provider_email=None,
+            provider_sub="abcdefghij1234567890",
+        )
+        assert seed == "abcdefghij1234567890"
+
+    def test_truncates_sub_to_30_chars(self):
+        long_sub = "x" * 100
+        seed = _derive_oidc_username_seed(claims={}, provider_email=None, provider_sub=long_sub)
+        assert seed == "x" * 30
+
+    def test_non_string_claim_values_are_skipped(self):
+        # Misconfigured IdP ships a list instead of a string — must not
+        # crash on .strip(), must fall through to the next candidate.
+        seed = _derive_oidc_username_seed(
+            claims={"preferred_username": ["a", "b"], "name": 42},
+            provider_email=None,
+            provider_sub="fallback-sub",
+        )
+        assert seed == "fallback-sub"
+
+
+class TestDefaultGroupIdSchema:
+    """Pin that ``default_group_id`` is round-tripped through the
+    Pydantic schemas. Cross-row validation (does the group exist?)
+    happens at the route layer and is covered by integration tests."""
+
+    def _create(self, **overrides):
+        base = {
+            "name": "Test",
+            "issuer_url": "https://id.example.com",
+            "client_id": "client",
+            "client_secret": "secret",
+        }
+        base.update(overrides)
+        return OIDCProviderCreate(**base)
+
+    def test_create_default_group_defaults_to_none(self):
+        assert self._create().default_group_id is None
+
+    def test_create_accepts_default_group_id(self):
+        assert self._create(default_group_id=42).default_group_id == 42
+
+    def test_update_accepts_default_group_id(self):
+        # ``OIDCProviderUpdate`` allows partial updates including this field.
+        p = OIDCProviderUpdate(default_group_id=7)
+        assert p.default_group_id == 7

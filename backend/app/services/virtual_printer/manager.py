@@ -8,15 +8,19 @@ import asyncio
 import logging
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from backend.app.core.config import settings as app_settings
 from backend.app.services.virtual_printer.bind_server import BindServer
 from backend.app.services.virtual_printer.certificate import CertificateService
 from backend.app.services.virtual_printer.ftp_server import VirtualPrinterFTPServer
+from backend.app.services.virtual_printer.mqtt_bridge import MQTTBridge
 from backend.app.services.virtual_printer.mqtt_server import SimpleMQTTServer
 from backend.app.services.virtual_printer.ssdp_server import SSDPProxy, VirtualPrinterSSDPServer
-from backend.app.services.virtual_printer.tailscale import tailscale_service
-from backend.app.services.virtual_printer.tcp_proxy import SlicerProxyManager
+from backend.app.services.virtual_printer.tcp_proxy import SlicerProxyManager, TCPProxy
+
+if TYPE_CHECKING:
+    from backend.app.services.printer_manager import PrinterManager
 
 logger = logging.getLogger(__name__)
 
@@ -111,11 +115,13 @@ class VirtualPrinterInstance:
         target_printer_id: int | None = None,
         target_folder_id: int | None = None,
         auto_dispatch: bool = True,
+        queue_force_color_match: bool = False,
         bind_ip: str = "",
         remote_interface_ip: str = "",
         tailscale_disabled: bool = True,
         base_dir: Path,
         session_factory: Callable | None = None,
+        printer_manager: "PrinterManager | None" = None,
     ):
         self.id = vp_id
         self.name = name
@@ -130,15 +136,12 @@ class VirtualPrinterInstance:
         # Forwarded to ``_save_to_library`` for every file the VP receives.
         self.target_folder_id = target_folder_id
         self.auto_dispatch = auto_dispatch
+        self.queue_force_color_match = queue_force_color_match
         self.bind_ip = bind_ip
         self.remote_interface_ip = remote_interface_ip
         self.tailscale_disabled = tailscale_disabled
         self._session_factory = session_factory
-
-        # Tailscale FQDN used for this instance (set at start_server/start_proxy time
-        # if Tailscale is available and not disabled). When set, SSDP advertises it
-        # so slicers see the hostname that matches the trusted LE cert.
-        self.tailscale_fqdn: str | None = None
+        self._printer_manager = printer_manager
 
         # Directories
         self.upload_dir = base_dir / "uploads" / str(vp_id)
@@ -164,17 +167,12 @@ class VirtualPrinterInstance:
         self._proxy: SlicerProxyManager | None = None
         self._ftp: VirtualPrinterFTPServer | None = None
         self._mqtt: SimpleMQTTServer | None = None
+        self._mqtt_bridge: MQTTBridge | None = None
+        self._rtsp_proxy: TCPProxy | None = None
         self._bind: BindServer | None = None
         self._ssdp: VirtualPrinterSSDPServer | None = None
         self._ssdp_proxy: SSDPProxy | None = None
         self._tasks: list[asyncio.Task] = []
-        # Cert renewal/restart tasks tracked separately from _tasks because they
-        # have a different lifecycle (run for the lifetime of the VP, not just
-        # during service start). See A.16: _cancel_restart_task must skip when
-        # the caller IS the restart task itself, otherwise the cert-rotation
-        # cron self-deadlocks the renewal restart.
-        self._cert_renewal_task: asyncio.Task | None = None
-        self._cert_restart_task: asyncio.Task | None = None
 
     @property
     def serial(self) -> str:
@@ -535,10 +533,13 @@ class VirtualPrinterInstance:
                 logger.error("[VP %s] Failed to save to library: %s", self.name, file_path.name)
                 return
 
+            import json
+
             from sqlalchemy import func as sa_func, select as sa_select
 
             from backend.app.models.auto_queue import AutoQueueItem
             from backend.app.services.auto_queue_threemf import extract_auto_queue_requirements
+            from backend.app.services.filament_requirements import extract_filament_requirements
 
             plate_id = self._extract_plate_id_from_metadata(library_file.file_metadata)
 
@@ -548,6 +549,29 @@ class VirtualPrinterInstance:
             # gone after _save_to_library cleans it up).
             on_disk = Path(app_settings.base_dir) / library_file.file_path
             requirements = extract_auto_queue_requirements(on_disk, plate_id=plate_id)
+
+            # When the per-VP toggle is on, also lift per-slot type+color from
+            # the 3MF and persist them as ``force_color_match=True`` overrides
+            # so the eligibility scheduler refuses printers loaded with the
+            # right material in the wrong colours (#1188). The eligibility
+            # path's `_get_missing_force_color_slots` validates the same JSON
+            # shape we build here. Default-off preserves legacy types-only
+            # routing for upgraders who don't want the colour filter.
+            filament_overrides_json: list[dict] | None = None
+            if self.queue_force_color_match:
+                per_slot = extract_filament_requirements(on_disk, plate_id=plate_id)
+                overrides = [
+                    {
+                        "slot_id": slot["slot_id"],
+                        "type": slot["type"],
+                        "color": slot.get("color", ""),
+                        "force_color_match": True,
+                    }
+                    for slot in per_slot
+                    if slot.get("type") and slot.get("color")
+                ]
+                if overrides:
+                    filament_overrides_json = overrides
 
             sliced_model: str | None = None
             if isinstance(library_file.file_metadata, dict):
@@ -563,13 +587,25 @@ class VirtualPrinterInstance:
                 )
                 next_pos = (max_pos or 0) + 1
 
+                # Serialise filament fields as JSON strings — the column is
+                # ``Text`` and the eligibility scheduler reads via
+                # ``json.loads`` in ``auto_queue_eligibility.py``. Storing the
+                # raw Python list works on SQLite (silently stringifies via
+                # str(list) → e.g. ``"['PLA']"``) but breaks the eligibility
+                # parser, which then treats the row as if it had no
+                # requirements. The /auto-queue/ POST route already does this
+                # right (`auto_queue.py:268`); this aligns the VP path.
+                required_types_json = (
+                    json.dumps(list(requirements.required_filament_types))
+                    if requirements.required_filament_types
+                    else None
+                )
                 item = AutoQueueItem(
                     library_file_id=library_file.id,
                     archive_id=None,  # archive created at print-start by _run_print_library_file
                     target_model=requirements.target_model or sliced_model,
-                    required_filament_types=(
-                        list(requirements.required_filament_types) if requirements.required_filament_types else None
-                    ),
+                    required_filament_types=required_types_json,
+                    filament_overrides=(json.dumps(filament_overrides_json) if filament_overrides_json else None),
                     plate_id=plate_id,
                     position=next_pos,
                     status="pending",
@@ -578,12 +614,14 @@ class VirtualPrinterInstance:
                 db.add(item)
                 await db.commit()
                 logger.info(
-                    "[VP %s] Added to auto-queue (item %s, library_file=%s, target_model=%s, filaments=%s)",
+                    "[VP %s] Added to auto-queue (item %s, library_file=%s, target_model=%s, "
+                    "filaments=%s, force_color=%s)",
                     self.name,
                     item.id,
                     library_file.id,
                     item.target_model,
                     item.required_filament_types,
+                    bool(filament_overrides_json),
                 )
         except Exception as e:
             logger.exception("[VP %s] Error adding to auto-queue: %s", self.name, e)
@@ -733,135 +771,19 @@ class VirtualPrinterInstance:
         candidates.sort(key=lambda c: (c[1], c[0].printer_id))
         return candidates[0][0]
 
-    # -- Tailscale cert renewal lifecycle (#1070, A.16) --
+    # -- Cert + advertise (#1070 post-rip-out) --
 
-    async def _cancel_renewal_task(self) -> None:
-        """Cancel the cert renewal task and await its completion."""
-        if self._cert_renewal_task:
-            self._cert_renewal_task.cancel()
-            try:
-                await self._cert_renewal_task
-            except asyncio.CancelledError:
-                pass
-            except Exception as e:
-                logger.warning("[VP %s] Unexpected error in cert renewal task: %s", self.name, e)
-            self._cert_renewal_task = None
-
-    async def _cancel_restart_task(self) -> None:
-        """Cancel the cert restart task and await its completion.
-
-        A.16 fix: skip when the caller IS the restart task itself —
-        ``stop_server()`` / ``stop_proxy()`` are called from inside
-        ``_restart_for_cert_renewal``, which runs AS ``_cert_restart_task``.
-        Cancelling + awaiting self flags a CancelledError on the next
-        ``await`` in stop_server, which tears down the old listeners but
-        never lets start_server run — the VP would sit on an expired cert
-        until process restart.
-        """
-        task = self._cert_restart_task
-        if task is asyncio.current_task():
-            # Renewal path cleaning up its own restart task: clear the
-            # reference so future callers don't see a stale task handle,
-            # but do NOT cancel-and-await ourselves.
-            self._cert_restart_task = None
-            return
-        if task and not task.done():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-            except Exception as e:
-                logger.warning("[VP %s] Unexpected error in cert restart task: %s", self.name, e)
-            self._cert_restart_task = None
-
-    async def _restart_for_cert_renewal(self) -> None:
-        """Restart VP services to load the newly renewed Tailscale cert into TLS listeners."""
-        logger.info("[VP %s] Restarting services to apply renewed Tailscale cert", self.name)
-        try:
-            if self.is_proxy:
-                await self.stop_proxy()
-                await self.start_proxy()
-            else:
-                await self.stop_server()
-                await self.start_server()
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            logger.error("[VP %s] Failed to restart after cert renewal: %s", self.name, e)
-
-    async def _cert_renewal_loop(self) -> None:
-        """Daily background check for Tailscale cert renewal while VP is running.
-
-        Checks first, then sleeps, so a cert that was just barely renewed at startup
-        is not re-checked for another 24 h. When a renewal actually happens the loop
-        schedules a VP restart so the new cert is loaded into the running TLS listeners.
-        """
-        while True:
-            try:
-                if self.tailscale_fqdn:
-                    needs_renewal = tailscale_service.cert_needs_renewal(
-                        self._cert_service.ts_cert_path, fqdn=self.tailscale_fqdn
-                    )
-                    if needs_renewal:
-                        renewed = await self._cert_service.use_tailscale_cert(self.tailscale_fqdn, tailscale_service)
-                        if renewed:
-                            logger.info(
-                                "[VP %s] Tailscale cert renewed for %s, scheduling restart",
-                                self.name,
-                                self.tailscale_fqdn,
-                            )
-                            # Schedule restart in a separate task; this loop ends here
-                            # so the restart can cleanly cancel _cert_renewal_task and
-                            # create a fresh one via start_server/start_proxy.
-                            self._cert_restart_task = asyncio.create_task(
-                                self._restart_for_cert_renewal(),
-                                name=f"vp_{self.id}_cert_restart",
-                            )
-                            break
-                await asyncio.sleep(86400)  # check once per day
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error("[VP %s] Cert renewal loop error: %s", self.name, e)
-                await asyncio.sleep(3600)  # back off 1 h on unexpected error
-
-    async def _resolve_cert_and_advertise(self) -> tuple[Path, Path, str]:
+    def _resolve_cert_and_advertise(self) -> tuple[Path, Path, str]:
         """Return (cert_path, key_path, advertise_address) for TLS services.
 
-        When Tailscale is available, provisions a LE cert and returns the
-        Tailscale FQDN as the advertise address so SSDP broadcasts the hostname
-        that matches the trusted cert.
-
-        Falls back to the self-signed cert and IP-based advertising when
-        Tailscale is absent or provisioning fails.
+        Always uses the self-signed CA flow — BambuStudio / OrcaSlicer's
+        printer-MQTT trust path validates only against the bundled BBL CA
+        (not the system trust store), so a publicly-trusted Let's Encrypt
+        cert via ``tailscale cert`` would never validate. The Tailscale
+        toggle is now informational only — when ON the VP card surfaces
+        the host's Tailscale IP / MagicDNS hostname so users know which
+        endpoint to paste into the slicer; the cert itself is unaffected.
         """
-        if self.tailscale_disabled:
-            logger.info("[VP %s] Tailscale integration disabled by user, using self-signed cert", self.name)
-        else:
-            try:
-                ts_status = await tailscale_service.get_status()
-                if ts_status.available:
-                    ts_result = await self._cert_service.use_tailscale_cert(ts_status.fqdn, tailscale_service)
-                    if ts_result:
-                        self.tailscale_fqdn = ts_status.fqdn
-                        logger.info("[VP %s] Using Tailscale cert for %s", self.name, ts_status.fqdn)
-                        return ts_result[0], ts_result[1], ts_status.fqdn
-                    logger.warning(
-                        "[VP %s] Tailscale available (%s) but cert provisioning failed, falling back to self-signed",
-                        self.name,
-                        ts_status.fqdn,
-                    )
-                else:
-                    logger.info(
-                        "[VP %s] Tailscale not available (%s), using self-signed cert",
-                        self.name,
-                        ts_status.error or "not connected",
-                    )
-            except Exception as e:
-                logger.warning("[VP %s] Tailscale cert check failed, falling back to self-signed: %s", self.name, e)
-
-        self.tailscale_fqdn = None
         cert_path, key_path = self.generate_certificates()
         advertise = self.remote_interface_ip or self.bind_ip or ""
         return cert_path, key_path, advertise
@@ -872,7 +794,7 @@ class VirtualPrinterInstance:
         """Start server-mode services (FTP, MQTT, SSDP, Bind) on this VP's bind_ip."""
         logger.info("[VP %s] Starting server-mode services on %s", self.name, self.bind_ip)
 
-        cert_path, key_path, advertise_addr = await self._resolve_cert_and_advertise()
+        cert_path, key_path, advertise_addr = self._resolve_cert_and_advertise()
         bind_addr = self.bind_ip or "0.0.0.0"  # nosec B104
 
         async def run_with_logging(coro, svc_name):
@@ -918,6 +840,46 @@ class VirtualPrinterInstance:
             )
         )
 
+        # MQTT bridge — fans out the target printer's pushes to slicers
+        # connected to this VP and forwards their commands back to the
+        # printer. Only meaningful when a target printer is configured AND
+        # printer_manager was injected (it always is at runtime; tests may
+        # omit it).
+        if self.target_printer_id is not None and self._printer_manager is not None:
+            self._mqtt_bridge = MQTTBridge(
+                vp_id=self.id,
+                vp_name=self.name,
+                vp_serial=self.serial,
+                target_printer_id=self.target_printer_id,
+                mqtt_server=self._mqtt,
+                printer_manager=self._printer_manager,
+            )
+            self._mqtt.set_bridge(self._mqtt_bridge)
+            await self._mqtt_bridge.start()
+
+            # RTSPS camera passthrough on port 322. BambuStudio's camera
+            # button connects to the device IP it bound on (the VP), not the
+            # IP in ``ipcam.rtsp_url``. Without a listener on
+            # ``<bind_ip>:322`` the slicer gets connection refused → "LAN
+            # connection failed". Same raw TCP pass-through used by
+            # SlicerProxyManager in proxy mode.
+            target_client = self._printer_manager.get_client(self.target_printer_id)
+            target_ip = getattr(target_client, "ip_address", None) if target_client else None
+            if target_ip:
+                self._rtsp_proxy = TCPProxy(
+                    name="RTSP",
+                    listen_port=322,
+                    target_host=target_ip,
+                    target_port=322,
+                    bind_address=bind_addr,
+                )
+                self._tasks.append(
+                    asyncio.create_task(
+                        run_with_logging(self._rtsp_proxy.start(), "RTSP"),
+                        name=f"vp_{self.id}_rtsp",
+                    )
+                )
+
         # Bind server
         self._bind = BindServer(
             serial=self.serial,
@@ -951,20 +913,24 @@ class VirtualPrinterInstance:
             )
         )
 
-        # Schedule daily cert-renewal check; replaces any stale renewal task
-        # left over from a previous start_server call.
-        await self._cancel_renewal_task()
-        self._cert_renewal_task = asyncio.create_task(
-            self._cert_renewal_loop(),
-            name=f"vp_{self.id}_cert_renewal",
-        )
-
         logger.info("[VP %s] Server-mode services started on %s", self.name, bind_addr)
 
     async def stop_server(self) -> None:
         """Stop server-mode services."""
-        await self._cancel_renewal_task()
-        await self._cancel_restart_task()
+        if self._mqtt_bridge:
+            try:
+                await self._mqtt_bridge.stop()
+            except Exception:
+                logger.exception("[VP %s] MQTT bridge stop failed", self.name)
+            if self._mqtt:
+                self._mqtt.set_bridge(None)
+            self._mqtt_bridge = None
+        if self._rtsp_proxy:
+            try:
+                await self._rtsp_proxy.stop()
+            except Exception:
+                logger.exception("[VP %s] RTSP proxy stop failed", self.name)
+            self._rtsp_proxy = None
         if self._ftp:
             await self._ftp.stop()
             self._ftp = None
@@ -983,11 +949,9 @@ class VirtualPrinterInstance:
         """Start proxy mode services for this instance."""
         logger.info("[VP %s] Starting proxy mode to %s", self.name, self.target_printer_ip)
 
-        # _resolve_cert_and_advertise sets self.tailscale_fqdn when LE provisioning
-        # succeeds; the advertise_addr is unused by proxy SSDP (it has its own
-        # advertise_ip wired below) but we still want LE provisioning + the
-        # daily renewal loop to run for proxy VPs.
-        cert_path, key_path, _ = await self._resolve_cert_and_advertise()
+        # Self-signed cert path; the advertise_addr is unused by proxy SSDP
+        # (it has its own advertise_ip wired below).
+        cert_path, key_path, _ = self._resolve_cert_and_advertise()
 
         self._proxy = SlicerProxyManager(
             target_host=self.target_printer_ip,
@@ -1042,13 +1006,6 @@ class VirtualPrinterInstance:
             )
         )
 
-        # Schedule daily cert-renewal check for the proxy as well.
-        await self._cancel_renewal_task()
-        self._cert_renewal_task = asyncio.create_task(
-            self._cert_renewal_loop(),
-            name=f"vp_{self.id}_cert_renewal",
-        )
-
     def _start_fallback_ssdp(self, proxy_serial: str, run_with_logging) -> None:
         """Start single-interface SSDP server as fallback for proxy mode."""
         self._ssdp = VirtualPrinterSSDPServer(
@@ -1067,8 +1024,6 @@ class VirtualPrinterInstance:
 
     async def stop_proxy(self) -> None:
         """Stop proxy mode services for this instance."""
-        await self._cancel_renewal_task()
-        await self._cancel_restart_task()
         if self._proxy:
             await self._proxy.stop()
             self._proxy = None
@@ -1098,8 +1053,6 @@ class VirtualPrinterInstance:
             "pending_files": len(self._pending_files),
             "tailscale_disabled": self.tailscale_disabled,
         }
-        if self.tailscale_fqdn:
-            status["tailscale_fqdn"] = self.tailscale_fqdn
         if self.is_proxy and self._proxy:
             status["proxy"] = self._proxy.get_status()
         return status
@@ -1113,6 +1066,7 @@ class VirtualPrinterManager:
 
     def __init__(self):
         self._session_factory: Callable | None = None
+        self._printer_manager: PrinterManager | None = None
         self._instances: dict[int, VirtualPrinterInstance] = {}
 
         # Directories
@@ -1136,6 +1090,10 @@ class VirtualPrinterManager:
     def set_session_factory(self, session_factory: Callable) -> None:
         """Set the database session factory."""
         self._session_factory = session_factory
+
+    def set_printer_manager(self, printer_manager: "PrinterManager") -> None:
+        """Inject the global ``printer_manager`` so non-proxy VPs can mirror their target's MQTT stream."""
+        self._printer_manager = printer_manager
 
     @property
     def is_enabled(self) -> bool:
@@ -1192,7 +1150,13 @@ class VirtualPrinterManager:
                 or instance.target_printer_id != vp.target_printer_id
                 or instance.target_folder_id != vp.target_folder_id
                 or instance.auto_dispatch != vp.auto_dispatch
-                or instance.tailscale_disabled != vp.tailscale_disabled
+                or instance.queue_force_color_match != vp.queue_force_color_match
+                # tailscale_disabled is informational only (#1070 post-rip-out):
+                # the toggle decides whether the VP card surfaces the host's
+                # Tailscale IP / hostname, but does NOT change the cert path
+                # (always self-signed) or the bind / advertise behaviour, so a
+                # flip doesn't need a service restart. Keep the field on the
+                # instance + on get_status, just don't diff it here.
             )
 
             if changed:
@@ -1225,11 +1189,13 @@ class VirtualPrinterManager:
                     target_printer_ip=target_ip,
                     target_printer_serial=target_serial,
                     auto_dispatch=vp.auto_dispatch,
+                    queue_force_color_match=vp.queue_force_color_match,
                     bind_ip=vp.bind_ip or "",
                     remote_interface_ip=vp.remote_interface_ip or "",
                     tailscale_disabled=vp.tailscale_disabled,
                     base_dir=self._base_dir,
                     session_factory=self._session_factory,
+                    printer_manager=self._printer_manager,
                 )
                 self._instances[vp.id] = instance
                 await instance.start_proxy()
@@ -1245,11 +1211,13 @@ class VirtualPrinterManager:
                     target_printer_id=vp.target_printer_id,
                     target_folder_id=vp.target_folder_id,
                     auto_dispatch=vp.auto_dispatch,
+                    queue_force_color_match=vp.queue_force_color_match,
                     bind_ip=vp.bind_ip or "",
                     remote_interface_ip=vp.remote_interface_ip or "",
                     tailscale_disabled=vp.tailscale_disabled,
                     base_dir=self._base_dir,
                     session_factory=self._session_factory,
+                    printer_manager=self._printer_manager,
                 )
                 self._instances[vp.id] = instance
                 await instance.start_server()

@@ -1,9 +1,11 @@
 import asyncio
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from logging.handlers import RotatingFileHandler
+from logging.handlers import TimedRotatingFileHandler
+from urllib.parse import urlparse
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
@@ -18,6 +20,7 @@ from backend.app.api.routes import (
     auth,
     auto_queue,
     background_dispatch as background_dispatch_routes,
+    bug_report,
     camera,
     cloud,
     discovery,
@@ -27,6 +30,7 @@ from backend.app.api.routes import (
     groups,
     inventory,
     kprofiles,
+    labels,
     library,
     library_notes,
     library_trash,
@@ -50,6 +54,7 @@ from backend.app.api.routes import (
     slicer_presets,
     smart_plugs,
     spoolman,
+    spoolman_inventory,
     support,
     system,
     telegram,
@@ -66,7 +71,7 @@ from backend.app.core.config import APP_VERSION, settings as app_settings
 from backend.app.core.database import async_session, engine, init_db
 from backend.app.core.websocket import ws_manager
 from backend.app.models.smart_plug import SmartPlug
-from backend.app.services.archive import ArchiveService
+from backend.app.services.archive import ArchiveService, resolve_display_stem
 from backend.app.services.auto_queue_scheduler import auto_queue_scheduler
 from backend.app.services.background_dispatch import background_dispatch
 from backend.app.services.bambu_mqtt import PrinterState
@@ -255,20 +260,44 @@ console_handler.setFormatter(logging.Formatter(log_format))
 console_handler.addFilter(_trace_id_filter)
 root_logger.addHandler(console_handler)
 
-# File handler - only in production or if explicitly enabled
+# File handler - only in production or if explicitly enabled.
+# Daily rotation at midnight (operator local time). Live file is
+# ``logs/bamdude.log``; rotated archives land as
+# ``bamdude-YYYY-MM-DD.log`` (date-in-stem via custom namer, see
+# ``logging_state.app_log_filename_namer``). The bootstrap retention
+# of 7 days is overridden at lifespan startup from the DB-backed
+# ``log_retention_days`` setting (Settings page → Data Management),
+# so the operator-facing knob lives where they'd expect it.
 if app_settings.log_to_file:
-    log_file = app_settings.log_dir / "bamdude.log"
-    file_handler = RotatingFileHandler(
-        log_file,
-        maxBytes=5 * 1024 * 1024,  # 5MB
-        backupCount=3,
-        encoding="utf-8",
+    from backend.app.core.logging_state import (  # noqa: E402
+        app_log_filename_namer,
+        set_app_log_handler,
     )
+
+    log_file = app_settings.log_dir / "bamdude.log"
+    file_handler = TimedRotatingFileHandler(
+        log_file,
+        when="midnight",
+        interval=1,
+        # Bootstrap value — actual retention is read from DB at lifespan
+        # startup. Hard-coded fallback covers the boot window before the
+        # DB is ready, plus fresh installs that never set the value.
+        backupCount=7,
+        encoding="utf-8",
+        utc=False,
+    )
+    # Suffix override — stdlib defaults to ``%Y-%m-%d_%H-%M-%S`` which is
+    # noisier than midnight-only rotations need. Date-only suffix +
+    # custom namer produce ``bamdude-YYYY-MM-DD.log`` (date-in-stem,
+    # ``.log`` extension preserved).
+    file_handler.suffix = "%Y-%m-%d"
+    file_handler.namer = app_log_filename_namer
     file_handler.setLevel(log_level)
     file_handler.setFormatter(logging.Formatter(log_format))
     file_handler.addFilter(_trace_id_filter)
     root_logger.addHandler(file_handler)
-    logging.info("Logging to file: %s", log_file)
+    set_app_log_handler(file_handler)
+    logging.info("Logging to file: %s (rotated daily at midnight)", log_file)
 
     # Pipe uvicorn's HTTP access log to bamdude.log too. Uvicorn ships its
     # access logger with propagate=False by default, so without this attach
@@ -756,6 +785,136 @@ _last_status_broadcast: dict[int, str] = {}
 # Track printers where we've updated nozzle_count
 _nozzle_count_updated: set[int] = set()
 
+# Pause/resume edge tracking — last observed gcode_state per printer, the
+# wall-clock at which the current pause started, and a one-shot reason hint
+# planted by internal pause-trigger paths (plate-detect today; future: any
+# server-initiated pause that wants its own reason instead of the generic
+# HMS classification). The reason hint is consumed + cleared by the next
+# pause edge so a subsequent unrelated user-pause doesn't inherit it.
+_last_printer_state: dict[int, str] = {}
+_pause_started_at: dict[int, float] = {}
+_expected_pause_reasons: dict[int, str] = {}
+
+
+def set_expected_pause_reason(printer_id: int, reason_code: str) -> None:
+    """Plant a reason hint for the next observed RUNNING→PAUSE edge.
+
+    Called by internal pause-trigger paths (currently
+    ``plate_detection_loop`` in the same file) immediately before issuing
+    ``client.pause_print()``, so the edge handler can label the pause with
+    the actual cause instead of falling through to "Paused by user" — Bambu
+    firmware fires HMS code ``0300_8001`` (paused by user) for any
+    pause-command we send, regardless of motivation. Hints are one-shot:
+    consumed + cleared by the next ``RUNNING→PAUSE`` transition or any
+    ``PAUSE→RUNNING`` (whichever comes first), so a stale hint never bleeds
+    into an unrelated pause.
+    """
+    _expected_pause_reasons[printer_id] = reason_code
+
+
+async def _handle_pause_edge(printer_id: int, state: PrinterState):
+    """Fire on_print_pause notification + WS push on RUNNING→PAUSE.
+
+    Reason resolution:
+      1. Internal hint planted by ``set_expected_pause_reason`` wins (e.g.
+         plate-detect sets ``"plate_objects"`` before issuing the pause
+         command — Bambu firmware responds with HMS ``0300_8001`` "paused
+         by user" for any pause-command we send, which would otherwise
+         label every internal pause as user-initiated).
+      2. Otherwise classify from active HMS codes via
+         ``hms_errors.classify_pause_reason``.
+      3. Fallback "unknown" only when neither path produced a code.
+    """
+    from backend.app.services.hms_errors import classify_pause_reason
+
+    try:
+        printer_info = printer_manager.get_printer(printer_id)
+        printer_name = printer_info.name if printer_info else f"Printer {printer_id}"
+
+        hms_codes = [e.get("code") for e in (state.hms_errors or []) if isinstance(e, dict) and e.get("code")]
+        expected = _expected_pause_reasons.pop(printer_id, None)
+        reason_code, reason_label, hms_code = classify_pause_reason(hms_codes, expected)
+
+        # Stash on state so frontend snapshot consumers can render the cause
+        # inline without re-querying the HMS table.
+        state.pause_reason = reason_code
+        state.pause_reason_label = reason_label
+
+        # Track pause start for resume duration calc + frontend live counter.
+        # Stored both on the per-printer ``state`` (snapshot-visible — survives
+        # F5 on the frontend) and in the module-level dict (read by
+        # ``_handle_resume_edge`` even when the snapshot has already been
+        # mutated by a subsequent state change).
+        now = time.time()
+        state.pause_started_at = now
+        _pause_started_at[printer_id] = now
+
+        filename = state.subtask_name or state.gcode_file
+        ws_data = {
+            "filename": filename,
+            "reason": reason_label,
+            "reason_code": reason_code,
+            "hms_code": hms_code,
+        }
+        await ws_manager.send_print_paused(printer_id, ws_data)
+
+        async with async_session() as db:
+            await notification_service.on_print_pause(
+                printer_id=printer_id,
+                printer_name=printer_name,
+                filename=filename,
+                reason_code=reason_code,
+                reason_label=reason_label,
+                hms_code=hms_code,
+                db=db,
+            )
+    except Exception as e:
+        logging.getLogger(__name__).warning("pause edge handler failed for printer %s: %s", printer_id, e)
+
+
+async def _handle_resume_edge(printer_id: int, state: PrinterState):
+    """Fire on_print_resume notification + WS push on PAUSE→RUNNING.
+
+    Computes paused duration from ``_pause_started_at`` (planted by
+    ``_handle_pause_edge``); falls back to ``None`` when the resume hits
+    without a recorded start (e.g. BamDude restarted while the printer
+    was paused).
+    """
+    try:
+        printer_info = printer_manager.get_printer(printer_id)
+        printer_name = printer_info.name if printer_info else f"Printer {printer_id}"
+
+        started_at = _pause_started_at.pop(printer_id, None)
+        paused_for_seconds = int(time.time() - started_at) if started_at is not None else None
+
+        # Clear pause-reason + pause-start from state so the snapshot stops
+        # carrying stale data after the resume edge.
+        state.pause_reason = None
+        state.pause_reason_label = None
+        state.pause_started_at = None
+        # Drop any one-shot reason hint that might have been planted but
+        # never consumed (e.g. plate-detect issued the pause + the printer
+        # resumed before the MQTT pause edge made it through).
+        _expected_pause_reasons.pop(printer_id, None)
+
+        filename = state.subtask_name or state.gcode_file
+        ws_data = {
+            "filename": filename,
+            "paused_for_seconds": paused_for_seconds,
+        }
+        await ws_manager.send_print_resumed(printer_id, ws_data)
+
+        async with async_session() as db:
+            await notification_service.on_print_resume(
+                printer_id=printer_id,
+                printer_name=printer_name,
+                filename=filename,
+                paused_for_seconds=paused_for_seconds,
+                db=db,
+            )
+    except Exception as e:
+        logging.getLogger(__name__).warning("resume edge handler failed for printer %s: %s", printer_id, e)
+
 
 async def on_printer_status_change(printer_id: int, state: PrinterState):
     """Handle printer status changes - broadcast via WebSocket."""
@@ -817,6 +976,21 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
             await mqtt_relay.on_printer_status(printer_id, state, printer_info.name, printer_info.serial_number)
     except Exception:
         pass  # Don't fail status callback if MQTT fails
+
+    # Pause / resume edge detection — runs BEFORE the dedup early-return so
+    # a state-only change (e.g. RUNNING→PAUSE with same temps + progress)
+    # still fires the event when the dedup key would otherwise skip it. Edge
+    # is computed against ``_last_printer_state`` rather than the snapshot
+    # broadcast key because we care about gcode_state transitions, not
+    # arbitrary status churn.
+    prev_state = _last_printer_state.get(printer_id)
+    current_state = state.state
+    if prev_state is not None and prev_state != current_state:
+        if prev_state == "RUNNING" and current_state == "PAUSE":
+            await _handle_pause_edge(printer_id, state)
+        elif prev_state == "PAUSE" and current_state == "RUNNING":
+            await _handle_resume_edge(printer_id, state)
+    _last_printer_state[printer_id] = current_state
 
     if _last_status_broadcast.get(printer_id) == status_key:
         return  # No change, skip WebSocket broadcast
@@ -1226,6 +1400,94 @@ async def on_ams_change(printer_id: int, ams_data: list):
                                         )
                                         existing_assignment.spool.weight_used = new_used
                                         await db.commit()
+
+                            # Re-apply stored K-profile when the live tray's
+                            # cali_idx drifted from the spool's stored profile.
+                            # Catches "reset slot → re-read" + any other path
+                            # where the firmware loses the user's K-profile
+                            # selection while the SpoolAssignment row persists.
+                            # Per upstream maintainer's rule (b30a2831): any time
+                            # a spool tag is identified and matches inventory,
+                            # the slot must be configured with the spool's
+                            # stored settings. Without this block the existing-
+                            # assignment branch only ran weight-sync and let the
+                            # firmware-default cali_idx win.
+                            try:
+                                spool = existing_assignment.spool
+                                if (
+                                    spool is not None
+                                    and is_bambu_tag(tag_uid, tray_uuid, tray_info_idx)
+                                    and spool.k_profiles
+                                ):
+                                    state = printer_manager.get_status(printer_id)
+                                    nozzle_diameter = "0.4"
+                                    if state and state.nozzles:
+                                        nd = state.nozzles[0].nozzle_diameter
+                                        if nd:
+                                            nozzle_diameter = nd
+                                    slot_extruder: int | None = None
+                                    if state and state.ams_extruder_map:
+                                        if ams_id == 255:
+                                            slot_extruder = 1 - tray_id
+                                        else:
+                                            slot_extruder = state.ams_extruder_map.get(str(ams_id))
+                                    # Prefer exact extruder match, fall back to
+                                    # extruder-agnostic kp for the same printer +
+                                    # nozzle. Avoids hard-skipping when the AMS is
+                                    # mapped differently than at calibration time.
+                                    matching_kp = None
+                                    fallback_kp = None
+                                    for kp in spool.k_profiles:
+                                        if (
+                                            kp.printer_id != printer_id
+                                            or kp.nozzle_diameter != nozzle_diameter
+                                            or kp.cali_idx is None
+                                        ):
+                                            continue
+                                        if (
+                                            slot_extruder is not None
+                                            and kp.extruder is not None
+                                            and kp.extruder == slot_extruder
+                                        ):
+                                            matching_kp = kp
+                                            break
+                                        if fallback_kp is None:
+                                            fallback_kp = kp
+                                    chosen_kp = matching_kp or fallback_kp
+                                    if chosen_kp is not None:
+                                        live_cali_idx = tray.get("cali_idx")
+                                        # Only fire MQTT when the printer's live
+                                        # cali_idx differs from the stored value.
+                                        # Avoids spamming the broker on every
+                                        # MQTT push during steady-state operation.
+                                        if live_cali_idx != chosen_kp.cali_idx:
+                                            client = printer_manager.get_client(printer_id)
+                                            if client:
+                                                cali_filament_id = spool.slicer_filament or tray_info_idx or ""
+                                                client.extrusion_cali_sel(
+                                                    ams_id=ams_id,
+                                                    tray_id=tray_id,
+                                                    cali_idx=chosen_kp.cali_idx,
+                                                    filament_id=cali_filament_id,
+                                                    nozzle_diameter=nozzle_diameter,
+                                                )
+                                                logger.info(
+                                                    "Re-applied K-profile cali_idx=%d for spool %d "
+                                                    "on printer %d AMS%d-T%d (live=%s drift detected)",
+                                                    chosen_kp.cali_idx,
+                                                    spool.id,
+                                                    printer_id,
+                                                    ams_id,
+                                                    tray_id,
+                                                    live_cali_idx,
+                                                )
+                            except Exception:
+                                logger.exception(
+                                    "K-profile re-apply failed for printer %d AMS%d-T%d",
+                                    printer_id,
+                                    ams_id,
+                                    tray_id,
+                                )
                             continue
 
                         if is_bambu_tag(tag_uid, tray_uuid, tray_info_idx):
@@ -1462,7 +1724,11 @@ async def _capture_snapshot_for_notification(printer_id: int, printer, logger) -
             logger.info("[SNAPSHOT] Capturing from external camera for printer %s", printer_id)
             from backend.app.services.external_camera import capture_frame
 
-            frame_data = await capture_frame(printer.external_camera_url, printer.external_camera_type or "mjpeg")
+            frame_data = await capture_frame(
+                printer.external_camera_url,
+                printer.external_camera_type or "mjpeg",
+                snapshot_url=printer.external_camera_snapshot_url,
+            )
             if frame_data and len(frame_data) <= 2_500_000:
                 logger.info("[SNAPSHOT] External camera frame: %s bytes", len(frame_data))
                 return _apply_camera_rotation(frame_data, printer, logger)
@@ -1911,6 +2177,7 @@ async def on_print_start(printer_id: int, data: dict):
                     external_camera_type=printer.external_camera_type,
                     use_external=printer.external_camera_enabled,
                     roi=roi,
+                    external_camera_snapshot_url=printer.external_camera_snapshot_url,
                 )
 
                 # Restore chamber light to original state
@@ -1926,6 +2193,12 @@ async def on_print_start(printer_id: int, data: dict):
                     )
                     client = printer_manager.get_client(printer_id)
                     if client:
+                        # Plant the reason hint BEFORE issuing the pause
+                        # command — Bambu firmware fires HMS 0300_8001
+                        # ("paused by user") for any pause-command we send,
+                        # so without this hint the resulting RUNNING→PAUSE
+                        # edge would label this auto-pause as user-initiated.
+                        set_expected_pause_reason(printer_id, "plate_objects")
                         client.pause_print()
                         logger.info("[PLATE CHECK] Print paused for printer %s", printer_id)
 
@@ -2361,6 +2634,132 @@ async def on_print_start(printer_id: int, data: dict):
             temp_path = None
             downloaded_filename = None
 
+        # Validate the downloaded 3MF actually matches the plate that's running
+        # (#1204): subtask_name lags across consecutive plates of the same model,
+        # so the first FTP candidate (built from subtask_name) can land on the
+        # previous plate's still-resident upload. Cross-check the slice_info
+        # plate index against the plate parsed from gcode_file (always fresh —
+        # it's the field whose change triggered this callback). Only runs when
+        # parse_plate_id() returns a value, so single-plate / cloud-named /
+        # non-Bambu jobs are unaffected.
+        if downloaded_filename and temp_path:
+            from backend.app.services.archive import (
+                peek_plate_index_in_3mf,
+                swap_plate_suffix,
+            )
+            from backend.app.services.bambu_ftp import (
+                FileNotOnPrinterError,
+                download_file_async,
+                get_ftp_retry_settings,
+                with_ftp_retry,
+            )
+
+            ftp_retry_enabled, ftp_retry_count, ftp_retry_delay, ftp_timeout = await get_ftp_retry_settings()
+
+            expected_plate = parse_plate_id(filename)
+            actual_plate = peek_plate_index_in_3mf(temp_path) if expected_plate is not None else None
+            if expected_plate is not None and actual_plate is not None and actual_plate != expected_plate:
+                logger.warning(
+                    "[CALLBACK] 3MF plate mismatch: downloaded %s reports plate %s but printer is "
+                    "running plate %s — subtask_name=%r appears stale, retrying with corrected name",
+                    downloaded_filename,
+                    actual_plate,
+                    expected_plate,
+                    subtask_name,
+                )
+                corrected_subtask = swap_plate_suffix(subtask_name, expected_plate)
+                retry_succeeded = False
+                if corrected_subtask and corrected_subtask != subtask_name:
+                    # Retry FTP with the swapped suffix. We use the same path
+                    # candidates list our existing download flow probes — the
+                    # printer caches uploads in a few directories depending on
+                    # firmware (root, /cache, /model, /data, /data/Metadata).
+                    for try_filename in (f"{corrected_subtask}.gcode.3mf", f"{corrected_subtask}.3mf"):
+                        retry_temp_path = temp_dir / try_filename
+                        retry_temp_path.parent.mkdir(parents=True, exist_ok=True)
+                        for remote_path in (
+                            f"/{try_filename}",
+                            f"/cache/{try_filename}",
+                            f"/model/{try_filename}",
+                            f"/data/{try_filename}",
+                            f"/data/Metadata/{try_filename}",
+                        ):
+                            try:
+                                if ftp_retry_enabled:
+                                    downloaded = await with_ftp_retry(
+                                        download_file_async,
+                                        printer.ip_address,
+                                        printer.access_code,
+                                        remote_path,
+                                        retry_temp_path,
+                                        timeout=ftp_timeout,
+                                        socket_timeout=ftp_timeout,
+                                        printer_model=printer.model,
+                                        max_retries=ftp_retry_count,
+                                        retry_delay=ftp_retry_delay,
+                                        operation_name=f"Re-download 3MF from {remote_path}",
+                                        non_retry_exceptions=(FileNotOnPrinterError,),
+                                    )
+                                else:
+                                    downloaded = await download_file_async(
+                                        printer.ip_address,
+                                        printer.access_code,
+                                        remote_path,
+                                        retry_temp_path,
+                                        timeout=ftp_timeout,
+                                        socket_timeout=ftp_timeout,
+                                        printer_model=printer.model,
+                                    )
+                                if downloaded and peek_plate_index_in_3mf(retry_temp_path) == expected_plate:
+                                    logger.info(
+                                        "[CALLBACK] Re-download succeeded with corrected name %s "
+                                        "(plate %s) — replacing wrong file",
+                                        try_filename,
+                                        expected_plate,
+                                    )
+                                    try:
+                                        temp_path.unlink(missing_ok=True)
+                                    except OSError:
+                                        pass
+                                    temp_path = retry_temp_path
+                                    downloaded_filename = try_filename
+                                    subtask_name = corrected_subtask
+                                    retry_succeeded = True
+                                    break
+                                elif downloaded:
+                                    # Wrong plate again — discard and keep trying.
+                                    try:
+                                        retry_temp_path.unlink(missing_ok=True)
+                                    except OSError:
+                                        pass
+                            except FileNotOnPrinterError:
+                                continue
+                            except Exception as e:
+                                logger.debug("Re-download failed for %s: %s", remote_path, e)
+                        if retry_succeeded:
+                            break
+                # If the retry didn't find a matching file, drop the wrong 3MF
+                # so the no-3MF fallback below creates an archive whose name
+                # at least reflects the right plate.
+                if not retry_succeeded:
+                    logger.warning(
+                        "[CALLBACK] Could not re-download correct plate %s — falling back to no-3MF archive",
+                        expected_plate,
+                    )
+                    try:
+                        temp_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    temp_path = None
+                    downloaded_filename = None
+                    # Override the stale subtask_name so the fallback archive's
+                    # print_name reflects the correct plate. Prefer the swapped
+                    # name when we have one; otherwise let filename win.
+                    if corrected_subtask:
+                        subtask_name = corrected_subtask
+                    else:
+                        subtask_name = ""
+
         # Post-download content-hash adoption: secondary safety net for the
         # mid-print recovery case (BamDude restarted while a print was active
         # → MQTT replay fires on_print_start, but pre-download name lookup
@@ -2483,6 +2882,7 @@ async def on_print_start(printer_id: int, data: dict):
                         fallback_archive.id,
                         printer.external_camera_url,
                         printer.external_camera_type or "mjpeg",
+                        snapshot_url=printer.external_camera_snapshot_url,
                     )
                     logger.info("Started layer timelapse for printer %s, archive %s", printer_id, fallback_archive.id)
 
@@ -2603,6 +3003,7 @@ async def on_print_start(printer_id: int, data: dict):
                         archive.id,
                         printer.external_camera_url,
                         printer.external_camera_type or "mjpeg",
+                        snapshot_url=printer.external_camera_snapshot_url,
                     )
                     logger.info("Started layer timelapse for printer %s, archive %s", printer_id, archive.id)
 
@@ -2739,8 +3140,6 @@ async def _scan_for_timelapse_with_retries(archive_id: int, baseline_names: set[
     Falls back to name-matching (print name contained in MP4 filename) if no
     new file appears after all retries.
     """
-    from pathlib import Path
-
     logger = logging.getLogger(__name__)
 
     # --- Phase 1: Take baseline snapshot of existing timelapse files ---
@@ -2784,10 +3183,11 @@ async def _scan_for_timelapse_with_retries(archive_id: int, baseline_names: set[
                     archive_id,
                 )
 
-            # Derive base_name for name-matching fallback
-            base_name = Path(archive.filename).stem if archive.filename else ""
-            if base_name.endswith(".gcode"):
-                base_name = base_name[:-6]
+            # Derive base_name for name-matching fallback. `resolve_display_stem`
+            # (#1152) drops the full `.gcode.3mf` double-suffix Bambu Studio
+            # writes by default — replaces the previous two-step strip-stem-
+            # then-strip-`.gcode` sequence with one canonical helper.
+            base_name = resolve_display_stem(archive.filename) if archive.filename else ""
 
     except Exception as e:
         logger.warning("[TIMELAPSE] Failed to take baseline snapshot for archive %s: %s", archive_id, e)
@@ -3089,12 +3489,27 @@ async def on_print_complete(printer_id: int, data: dict):
     # awaiting_plate_clear gate (#961 inversion).
     _plate_auto_cleared_by_swap = False
 
+    # Both swap paths below are gated on a successful completion. A print
+    # that ended with status=failed / aborted / cancelled has left material
+    # on the bed (the operator cancelled at hour 11, the printer self-
+    # aborted on a clog, the touchscreen-stop fired mid-print, etc.) — the
+    # bed is fouled regardless of whether the 3MF was swap_compatible or
+    # the queue-job had swap_mode_change_table queued. In that state we
+    # MUST NOT (a) auto-clear the gate (the operator has to inspect and
+    # clear manually) and MUST NOT (b) physically swap the table via the
+    # change_table macro (it'll either jam on the still-attached part or
+    # rotate the fouled plate into the next print's path, depending on
+    # the swap rig). Falling into the regular arm-gate block at the end
+    # of this function — and skipping the change_table execution — is the
+    # safe outcome.
+    _swap_status_ok = data.get("status", "completed") == "completed"
+
     # Swap-compatible files (macros baked in by third-party tooling like
     # swaplist.app) handle table changes internally — the plate is already
     # swapped and clean by the time the print finishes. Skip arming the
     # plate-clear gate so the queue scheduler doesn't block on manual
     # confirmation.
-    if archive_id:
+    if archive_id and _swap_status_ok:
         try:
             async with async_session() as db:
                 from backend.app.models.archive import PrintArchive as _ScArchive
@@ -3108,6 +3523,14 @@ async def on_print_complete(printer_id: int, data: dict):
                     )
         except Exception as e:
             logger.debug("[SWAP] swap_compatible check failed (non-critical): %s", e)
+    elif archive_id and not _swap_status_ok:
+        logger.info(
+            "[SWAP] Skipping swap_compatible auto-clear for printer %s archive %s: status=%s "
+            "(failed/aborted/cancelled prints leave material on the bed; manual clear required)",
+            printer_id,
+            archive_id,
+            data.get("status"),
+        )
 
     # Last-chance 3MF download: if this print has a fallback archive
     # (file_path="") and the print just finished, the file is still on
@@ -3339,7 +3762,23 @@ async def on_print_complete(printer_id: int, data: dict):
         except Exception as e:
             logger.debug("[SWAP] extra_data fallback lookup failed (non-critical): %s", e)
 
-    if "swap_mode_change_table" in swap_events:
+    if "swap_mode_change_table" in swap_events and not _swap_status_ok:
+        # Print ended in a non-success state — the part is still attached
+        # to the plate (or its remains are). Running change_table now would
+        # either jam the swap rig on the stuck part or rotate the fouled
+        # plate into the next print's path. Skip + leave the pending event
+        # in place (so a manual operator-driven retry can still pick it up
+        # if they explicitly choose to). The arm-gate block below will see
+        # ``_plate_auto_cleared_by_swap=False`` and raise the manual-clear
+        # gate as it would for a non-swap printer.
+        logger.info(
+            "[SWAP] Skipping change_table macro for printer %s archive %s: status=%s "
+            "(operator must inspect + clear manually before next print)",
+            printer_id,
+            archive_id,
+            data.get("status"),
+        )
+    elif "swap_mode_change_table" in swap_events:
         try:
             async with async_session() as db:
                 from backend.app.models.printer import Printer as _SwapPrinter
@@ -3822,7 +4261,21 @@ async def on_print_complete(printer_id: int, data: dict):
             await service.update_archive_status(
                 archive_id,
                 status=status,
-                completed_at=datetime.now(timezone.utc) if status in ("completed", "failed", "aborted") else None,
+                # ``cancelled`` joins the terminal-status list (#1198) so
+                # queue-UI cancellations get a ``completed_at`` timestamp the
+                # notification path can use to compute actual elapsed. Audited
+                # every ``completed_at`` consumer first: the two
+                # ``completed_at IS NULL`` queries in this file (lines 1707 +
+                # 2388) are both paired with ``status == 'printing'`` so a
+                # cancelled row can't slip in regardless; ``archives.py``'s
+                # actual-elapsed read at :83 gates on ``status == 'completed'``
+                # so this only adds rows to the stats-totals aggregation —
+                # cancelled prints with their real elapsed are MORE accurate
+                # than excluding them, which was the side-effect upstream
+                # called out as a win.
+                completed_at=(
+                    datetime.now(timezone.utc) if status in ("completed", "failed", "aborted", "cancelled") else None
+                ),
                 failure_reason=failure_reason,
             )
             logger.info(
@@ -4009,7 +4462,9 @@ async def on_print_complete(printer_id: int, data: dict):
                                 from backend.app.services.external_camera import capture_frame
 
                                 frame_data = await capture_frame(
-                                    printer.external_camera_url, printer.external_camera_type or "mjpeg"
+                                    printer.external_camera_url,
+                                    printer.external_camera_type or "mjpeg",
+                                    snapshot_url=printer.external_camera_snapshot_url,
                                 )
                                 if frame_data:
                                     photos_dir = archive_dir / "photos"
@@ -4099,8 +4554,21 @@ async def on_print_complete(printer_id: int, data: dict):
                     archive_result = await db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))
                     archive = archive_result.scalar_one_or_none()
                     if archive:
+                        # Actual elapsed from started_at/completed_at when both are
+                        # populated — every terminal status sets completed_at after
+                        # #1198 (cancelled joined completed/failed/aborted). When the
+                        # row is missing either timestamp (rare — partially-recovered
+                        # archive) we leave actual_time_seconds=None so the
+                        # notification template falls back to the slicer estimate.
+                        actual_time_seconds = None
+                        if archive.started_at and archive.completed_at:
+                            elapsed = (archive.completed_at - archive.started_at).total_seconds()
+                            if elapsed > 0:
+                                actual_time_seconds = int(elapsed)
+
                         archive_data = {
                             "print_time_seconds": archive.print_time_seconds,
+                            "actual_time_seconds": actual_time_seconds,
                             "actual_filament_grams": archive.filament_used_grams,
                             "failure_reason": archive.failure_reason,
                             "created_by_id": archive.created_by_id,
@@ -4741,6 +5209,24 @@ async def lifespan(app: FastAPI):
 
     await init_db()
 
+    # Apply DB-backed log retention to the live rotating handler. The
+    # handler was created at module-import time with a hardcoded 7-day
+    # bootstrap; now that the DB is up, override with whatever the
+    # operator configured under Settings -> Data Management. Best-effort
+    # — silent fallback to the bootstrap default if the lookup fails.
+    if app_settings.log_to_file:
+        try:
+            from backend.app.api.routes.settings import get_setting as _get_setting
+            from backend.app.core.database import async_session
+            from backend.app.core.logging_state import update_log_retention
+
+            async with async_session() as _ls_db:
+                _ret_str = await _get_setting(_ls_db, "log_retention_days")
+            if _ret_str:
+                update_log_retention(int(_ret_str))
+        except Exception as _ret_exc:
+            logging.getLogger(__name__).debug("Could not apply DB log_retention_days at startup: %s", _ret_exc)
+
     # Register an app-scoped httpx client for Bambu Cloud services so
     # per-request BambuCloudService instances reuse the same connection pool
     # (important for routes like /cloud/filament-info that chain many
@@ -5003,6 +5489,7 @@ async def lifespan(app: FastAPI):
     from backend.app.services.virtual_printer import virtual_printer_manager
 
     virtual_printer_manager.set_session_factory(async_session)
+    virtual_printer_manager.set_printer_manager(printer_manager)
     try:
         await virtual_printer_manager.sync_from_db()
         logging.info("Virtual printer manager synced from database")
@@ -5392,6 +5879,77 @@ async def auth_middleware(request, call_next):
     return await call_next(request)
 
 
+_security_headers_logger = logging.getLogger("backend.app.main.security_headers")
+
+
+def _parse_trusted_frame_origins() -> tuple[str, ...]:
+    """Parse ``TRUSTED_FRAME_ORIGINS`` env var into a validated allowlist (#1191).
+
+    Format: comma-separated list of ``scheme://host[:port]`` origins.
+
+    Used by ``security_headers_middleware`` to relax ``frame-ancestors`` for
+    trusted same-LAN deployments (typically Home Assistant Webpage panel
+    embedding BamDude on a different port). Defaults to empty — strict
+    ``'none'``.
+
+    Validation is strict by design — only ``http(s)``, no paths, no query/
+    fragment, no wildcards. Invalid entries are dropped with a warning rather
+    than failing startup, so a typo in one origin doesn't take the whole
+    deployment down.
+    """
+    raw = os.environ.get("TRUSTED_FRAME_ORIGINS", "").strip()
+    if not raw:
+        return ()
+    valid: list[str] = []
+    for item in raw.split(","):
+        candidate = item.strip()
+        if not candidate:
+            continue
+        try:
+            parsed = urlparse(candidate)
+        except ValueError as e:
+            _security_headers_logger.warning("TRUSTED_FRAME_ORIGINS: dropping %r — %s", candidate, e)
+            continue
+        if parsed.scheme not in ("http", "https"):
+            _security_headers_logger.warning("TRUSTED_FRAME_ORIGINS: dropping %r — must be http(s)", candidate)
+            continue
+        if not parsed.netloc:
+            _security_headers_logger.warning("TRUSTED_FRAME_ORIGINS: dropping %r — missing host", candidate)
+            continue
+        if parsed.path and parsed.path != "/":
+            _security_headers_logger.warning("TRUSTED_FRAME_ORIGINS: dropping %r — paths not allowed", candidate)
+            continue
+        if parsed.query or parsed.fragment:
+            _security_headers_logger.warning(
+                "TRUSTED_FRAME_ORIGINS: dropping %r — query/fragment not allowed", candidate
+            )
+            continue
+        if "*" in parsed.netloc:
+            _security_headers_logger.warning("TRUSTED_FRAME_ORIGINS: dropping %r — wildcards not allowed", candidate)
+            continue
+        valid.append(f"{parsed.scheme}://{parsed.netloc}")
+    if valid:
+        _security_headers_logger.info("TRUSTED_FRAME_ORIGINS: %s", ", ".join(valid))
+    return tuple(valid)
+
+
+_TRUSTED_FRAME_ORIGINS: tuple[str, ...] = _parse_trusted_frame_origins()
+
+
+def _frame_ancestors(default_value: str) -> str:
+    """Compose the ``frame-ancestors`` CSP directive (#1191).
+
+    ``default_value`` is the strict directive used when the operator has not
+    configured ``TRUSTED_FRAME_ORIGINS`` — typically ``'none'``. When trusted
+    origins are configured, ``'self'`` is always included so same-origin
+    embedding never breaks even if an operator forgets to add their own
+    origin to the list.
+    """
+    if _TRUSTED_FRAME_ORIGINS:
+        return "frame-ancestors 'self' " + " ".join(_TRUSTED_FRAME_ORIGINS) + ";"
+    return f"frame-ancestors {default_value};"
+
+
 @app.middleware("http")
 async def security_headers_middleware(request, call_next):
     """Add HTTP security headers + Content-Security-Policy to every response.
@@ -5414,17 +5972,21 @@ async def security_headers_middleware(request, call_next):
     - ``frame-src 'self' http: https:``: BamDude embeds Spoolman via
       reverse-proxy (same origin) and arbitrary external links from the
       sidebar. ``http:`` is allowed because self-hosted Spoolman typically
-      runs on plain HTTP on a LAN address (upstream #1054). ``frame-ancestors
-      'none'`` below still blocks BamDude being framed cross-origin — that's
-      the clickjacking defense that actually matters.
-    - ``frame-ancestors 'none'``: nobody may embed BamDude. This is the
-      modern equivalent of ``X-Frame-Options: DENY``; the SAMEORIGIN value
-      we keep on ``X-Frame-Options`` is for legacy browsers only — modern
-      browsers use ``frame-ancestors`` which takes precedence.
+      runs on plain HTTP on a LAN address (upstream #1054). ``frame-ancestors``
+      below still blocks BamDude being framed cross-origin (default ``'none'``)
+      — that's the clickjacking defense that actually matters.
+    - ``frame-ancestors``: by default ``'none'`` — nobody may embed BamDude.
+      This is the modern equivalent of ``X-Frame-Options: DENY``. Operators
+      can opt into trusted-origin embedding (e.g. HA Webpage panel) via the
+      ``TRUSTED_FRAME_ORIGINS`` env var (#1191); when set, the directive
+      becomes ``'self' <list>`` and ``X-Frame-Options`` is dropped (legacy
+      ``ALLOW-FROM`` syntax is deprecated and inconsistent across vendors —
+      modern browsers honour ``frame-ancestors`` which takes precedence).
     """
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "SAMEORIGIN"
+    if not _TRUSTED_FRAME_ORIGINS:
+        response.headers["X-Frame-Options"] = "SAMEORIGIN"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     if request.url.path in ("/docs", "/redoc", "/docs/oauth2-redirect"):
         # FastAPI's built-in Swagger UI / ReDoc pages load assets from
@@ -5439,8 +6001,7 @@ async def security_headers_middleware(request, call_next):
             "font-src 'self' data: https://fonts.gstatic.com; "
             "worker-src 'self' blob:; "
             "object-src 'none'; "
-            "base-uri 'self'; "
-            "frame-ancestors 'none';"
+            "base-uri 'self'; " + _frame_ancestors("'none'")
         )
     else:
         response.headers["Content-Security-Policy"] = (
@@ -5453,8 +6014,7 @@ async def security_headers_middleware(request, call_next):
             "font-src 'self' data: https://fonts.gstatic.com; "
             "object-src 'none'; "
             "base-uri 'self'; "
-            "frame-src 'self' http: https:; "
-            "frame-ancestors 'none';"
+            "frame-src 'self' http: https:; " + _frame_ancestors("'none'")
         )
     if request.url.scheme == "https":
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
@@ -5524,6 +6084,7 @@ app.include_router(printers.router, prefix=app_settings.api_prefix)
 app.include_router(archive_purge.router, prefix=app_settings.api_prefix)
 app.include_router(archives.router, prefix=app_settings.api_prefix)
 app.include_router(inventory.router, prefix=app_settings.api_prefix)
+app.include_router(labels.router, prefix=app_settings.api_prefix)
 app.include_router(settings_routes.router, prefix=app_settings.api_prefix)
 app.include_router(cloud.router, prefix=app_settings.api_prefix)
 app.include_router(local_presets.router, prefix=app_settings.api_prefix)
@@ -5540,6 +6101,7 @@ app.include_router(notifications.router, prefix=app_settings.api_prefix)
 app.include_router(notification_templates.router, prefix=app_settings.api_prefix)
 app.include_router(user_notifications.router, prefix=app_settings.api_prefix)
 app.include_router(spoolman.router, prefix=app_settings.api_prefix)
+app.include_router(spoolman_inventory.router, prefix=app_settings.api_prefix)
 app.include_router(updates.router, prefix=app_settings.api_prefix)
 app.include_router(macros.router, prefix=app_settings.api_prefix)
 app.include_router(maintenance.router, prefix=app_settings.api_prefix)
@@ -5555,6 +6117,7 @@ app.include_router(webhook.router, prefix=app_settings.api_prefix)
 app.include_router(ams_history.router, prefix=app_settings.api_prefix)
 app.include_router(system.router, prefix=app_settings.api_prefix)
 app.include_router(support.router, prefix=app_settings.api_prefix)
+app.include_router(bug_report.router, prefix=app_settings.api_prefix)
 app.include_router(websocket.router, prefix=app_settings.api_prefix)
 app.include_router(discovery.router, prefix=app_settings.api_prefix)
 app.include_router(firmware.router, prefix=app_settings.api_prefix)

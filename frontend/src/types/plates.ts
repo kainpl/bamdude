@@ -41,6 +41,14 @@ export interface ArchivePlatesResponse {
   filename: string;
   plates: PlateMetadata[];
   is_multi_plate: boolean;
+  // True when the on-disk container actually carries sliced gcode.
+  // Source-only project 3MFs (no slice) have plates with thumbnails and
+  // filament info but no gcode payload, so the gcode-tab in
+  // ModelViewerModal can't render anything for them — the modal falls
+  // through to the model-only view when this is false. Optional for
+  // backwards compatibility with cached responses from before the field
+  // was added.
+  has_gcode?: boolean;
   // Bound printer model from the source 3MF's project_settings.config (e.g.
   // "Bambu Lab A1"). Used by the SliceModal to warn before slicing if the
   // user picks a profile for a different printer — the slicer CLI cannot

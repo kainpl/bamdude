@@ -12,6 +12,7 @@ from backend.app.core.auth import (
 )
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.models.api_key import APIKey
 from backend.app.models.archive import PrintArchive
 from backend.app.models.group import Group
 from backend.app.models.library import LibraryFile
@@ -390,6 +391,15 @@ async def delete_user(
             update(PrintQueueItem).where(PrintQueueItem.created_by_id == user_id).values(created_by_id=None)
         )
         await db.execute(update(LibraryFile).where(LibraryFile.created_by_id == user_id).values(created_by_id=None))
+
+    # Cascade-delete the user's API keys. The model declares ON DELETE CASCADE
+    # on api_keys.user_id, but SQLite has PRAGMA foreign_keys=OFF by default
+    # so the FK isn't enforced — without this explicit DELETE the keys would
+    # outlive the user as silent orphans (still authenticated, no owner) and
+    # any can_access_cloud=True row would lose the cloud-token resolution
+    # path it depends on. Postgres would already cascade, but the explicit
+    # DELETE keeps the two backends behaviour-identical (#1182).
+    await db.execute(delete(APIKey).where(APIKey.user_id == user_id))
 
     await db.delete(user)
     await db.commit()

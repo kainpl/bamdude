@@ -14,6 +14,8 @@ class EventType(StrEnum):
     PRINT_COMPLETE = "print_complete"
     PRINT_FAILED = "print_failed"
     PRINT_STOPPED = "print_stopped"
+    PRINT_PAUSED = "print_paused"
+    PRINT_RESUMED = "print_resumed"
     PRINT_PROGRESS = "print_progress"
     PRINT_MISSING_SPOOL_ASSIGNMENT = "print_missing_spool_assignment"
     PRINTER_OFFLINE = "printer_offline"
@@ -62,6 +64,16 @@ EVENT_VARIABLES: dict[str, list[str]] = {
         "timestamp",
         "app_name",
     ],
+    "print_paused": [
+        "printer",
+        "filename",
+        "reason",
+        "reason_code",
+        "hms_code",
+        "timestamp",
+        "app_name",
+    ],
+    "print_resumed": ["printer", "filename", "paused_for", "timestamp", "app_name"],
     "print_progress": ["printer", "filename", "progress", "remaining_time", "eta", "timestamp", "app_name"],
     "print_missing_spool_assignment": [
         "printer",
@@ -146,6 +158,22 @@ SAMPLE_DATA: dict[str, dict[str, str]] = {
         "eta": "15:41",
         "timestamp": "2024-01-15 15:00",
         "app_name": "Bambuddy",
+    },
+    "print_paused": {
+        "printer": "Bambu X1C",
+        "filename": "Benchy.3mf",
+        "reason": "The door seems to be open, so printing was paused.",
+        "reason_code": "door_open",
+        "hms_code": "0300_800F",
+        "timestamp": "2024-01-15 15:10",
+        "app_name": "BamDude",
+    },
+    "print_resumed": {
+        "printer": "Bambu X1C",
+        "filename": "Benchy.3mf",
+        "paused_for": "0h 14m",
+        "timestamp": "2024-01-15 15:24",
+        "app_name": "BamDude",
     },
     "print_missing_spool_assignment": {
         "printer": "Bambu X1C",

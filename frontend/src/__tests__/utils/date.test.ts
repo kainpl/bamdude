@@ -293,17 +293,22 @@ describe('formatDateTime', () => {
 });
 
 describe('formatTimeOnly', () => {
+  // ``\D+`` matches any non-digit separator — locale-agnostic by design (#1213).
+  // ``formatTimeOnly`` calls ``date.toLocaleTimeString`` which respects the
+  // user's locale: ``en_DK`` uses ``"."`` ("02.30 pm"), some en_* locales use
+  // a U+202F narrow no-break space, most others use ``":"``. The contract is
+  // "hours and minutes, separated somehow" — pin that, not the separator.
   it('formats time with 12h format', () => {
     const date = new Date(2025, 5, 15, 14, 30);
     const result = formatTimeOnly(date, '12h');
-    expect(result).toMatch(/2:30|02:30/);
+    expect(result).toMatch(/0?2\D+30/);
     expect(result.toUpperCase()).toContain('PM');
   });
 
   it('formats time with 24h format', () => {
     const date = new Date(2025, 5, 15, 14, 30);
     const result = formatTimeOnly(date, '24h');
-    expect(result).toContain('14:30');
+    expect(result).toMatch(/14\D+30/);
   });
 });
 

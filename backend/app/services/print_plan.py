@@ -17,7 +17,7 @@ another sync pass.
 
 from __future__ import annotations
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, inspect as sqla_inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -26,8 +26,23 @@ from backend.app.models.project_print_plan import ProjectPrintPlanItem
 
 
 def _is_plan_eligible(file_type: str | None) -> bool:
-    """Plan-eligible files are sliced 3MFs. Everything else is ignored."""
-    return bool(file_type) and file_type.lower() == "3mf"
+    """Plan-eligible files are anything printable: sliced ``.gcode.3mf``
+    (which ``library_helpers.detect_file_type`` collapses to ``"gcode"``),
+    raw ``.gcode``, AND unsliced ``.3mf`` project packages.
+
+    Pre-fix this only matched ``"3mf"``, so every sliced file in the
+    library — the typical case after a slice-and-save flow — was filtered
+    out of the plan. Re-attaching a folder to a project would correctly
+    set the M2M pivot but skip the plan-row plant for these files,
+    leaving operators with empty plans even after a clean re-link.
+
+    STL / OBJ / STEP / STP are not directly printable → still excluded;
+    those formats must be sliced first (which produces a ``.gcode``-typed
+    sibling that DOES enter the plan).
+    """
+    if not file_type:
+        return False
+    return file_type.lower() in ("3mf", "gcode")
 
 
 async def _next_order_index(db: AsyncSession, project_id: int) -> int:
@@ -141,6 +156,69 @@ async def sync_plan_for_file(
                 order_index=order_index,
             )
         )
+
+
+async def inherit_folder_projects(
+    db: AsyncSession,
+    library_file: LibraryFile,
+    folder,
+) -> None:
+    """On file creation in a project-tagged folder, inherit the folder's
+    projects into the file's M2M and plant matching plan rows.
+
+    Symmetrical with the move / patch flows: a freshly-uploaded ``.3mf``
+    that lands in a folder linked to N projects must show up in those
+    projects' print plans without an extra UI step. Callers SHOULD
+    ``selectinload(LibraryFolder.projects)`` to avoid a roundtrip, but
+    this helper is defensive — when ``.projects`` is unloaded (e.g. a
+    just-created folder via ``db.add()`` + ``db.flush()`` with no
+    refresh) we refresh it ourselves so the lazy-load doesn't trip
+    ``MissingGreenlet`` outside an async-engine session boundary. The
+    refresh costs one extra ``SELECT … library_folder_projects`` only
+    when the caller didn't pre-load the relation.
+
+    Pre-fix, every upload / zip-extract / sliced-output / MakerWorld import
+    bypassed this path entirely — the file row was created with empty
+    M2M and ``project_print_plan_items`` stayed empty no matter how many
+    files the user dropped into the project's folder. Bug class lurked
+    since the m044 single-FK → M2M conversion (the old ``library_files
+    .project_id`` column inheritance was lost in that refactor; m048
+    backfills retroactive plan rows).
+
+    Caller is responsible for committing.
+    """
+    if folder is None:
+        return
+    # Defensive load: if the caller forgot to selectinload .projects,
+    # refresh the relation here instead of triggering a sync lazy-load
+    # that would raise MissingGreenlet under aiosqlite/asyncpg.
+    folder_state = sqla_inspect(folder)
+    if "projects" in folder_state.unloaded:
+        await db.refresh(folder, ["projects"])
+    folder_projects = list(folder.projects or [])
+    if not folder_projects:
+        return
+
+    if library_file.id is None:
+        # Creation paths usually call us after ``db.flush`` so the PK
+        # exists; if not, flush now so the next refresh works.
+        await db.flush()
+
+    # Eager-load the file's ``.projects`` collection before assignment.
+    # On a freshly-flushed persistent row the relation is unloaded, and
+    # assigning to an unloaded collection forces a lazy-load comparison —
+    # which raises ``MissingGreenlet`` outside an async-engine session
+    # boundary. Refreshing with the relation loaded short-circuits that.
+    await db.refresh(library_file, ["projects"])
+
+    # Mirror the move path: set the M2M, then sync plan rows in-step.
+    library_file.projects = list(folder_projects)
+    await sync_plan_for_file(
+        db,
+        library_file_id=library_file.id,
+        project_ids=[p.id for p in folder_projects],
+        file_type=library_file.file_type or "",
+    )
 
 
 async def sync_plan_for_folder(db: AsyncSession, *, folder_id: int, project_ids: list[int]) -> None:

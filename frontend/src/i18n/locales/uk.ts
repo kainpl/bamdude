@@ -188,6 +188,11 @@ export default {
       allStatuses: 'Усі статуси',
       allLocations: 'Усі локації'
     },
+    toolbar: {
+      filters: 'Фільтри',
+      view: 'Вигляд',
+      actions: 'Дії',
+    },
     // Printer card
     readyToPrint: 'Готовий до друку',
     external: 'Ext',
@@ -297,6 +302,9 @@ export default {
     // Toast messages
     toast: {
       missingSpoolAssignment: 'Друк розпочато на {{printer}}. Відсутнє призначення котушки для: {{slots}}',
+      printPausedEvent: '{{printer}} на паузі: {{reason}}',
+      printResumedEvent: '{{printer}} відновлено (стояв на паузі {{duration}})',
+      pauseReasonUnknown: 'Невідома причина',
       failedToDelete: 'Не вдалося видалити принтер',
       failedToAdd: 'Не вдалося додати принтер',
       failedToUpdate: 'Не вдалося оновити принтер',
@@ -349,6 +357,17 @@ export default {
     // RFID
     rfid: {
       reread: 'Перечитати RFID'
+    },
+    // AMS load/unload (#891)
+    ams: {
+      load: 'Завантажити',
+      unload: 'Вивантажити',
+      loading: 'Завантажую…',
+      unloading: 'Вивантажую…',
+      loadSuccess: 'Команду завантаження відправлено',
+      unloadSuccess: 'Команду вивантаження відправлено',
+      loadFailed: 'Не вдалося відправити команду завантаження',
+      unloadFailed: 'Не вдалося відправити команду вивантаження'
     },
     bedJog: {
       title: 'Перемістити стіл',
@@ -665,9 +684,7 @@ export default {
       delete: 'Видалити'
     },
     platePicker: {
-      // title / hint / objectCount викинули разом зі standalone
-      // PlatePickerModal — лишається тільки лейбл плити (header SliceModal
-      // + плитки в SlicePlateSelector).
+      // Використовується header SliceModal + тайлами SlicePlateSelector.
       plateLabel: 'Плита {{index}}',
     },
     permission: {
@@ -1231,7 +1248,35 @@ export default {
       users: 'Автентифікація',
       backup: 'Резервна копія',
       emailAuth: 'Email автентифікація',
-      ldap: 'LDAP'
+      ldap: 'LDAP',
+      security: 'Безпека'
+    },
+    encryption: {
+      title: 'Статус шифрування MFA',
+      enabledFromEnv: 'Шифрування активне (ключ із середовища)',
+      enabledFromFile: 'Шифрування активне (файл ключа)',
+      enabledGenerated: 'Шифрування активне (автогенерований ключ)',
+      backupHint: 'BamDude згенерував ключ при першому запуску. Зробіть резервну копію DATA_DIR/.mfa_encryption_key — без нього зашифровані секрети неможливо буде розшифрувати на новому хості.',
+      allEncrypted: 'Усі MFA-секрети зашифровані на диску.',
+      legacyRowsWarning_one: '{{count}} секрет ще зберігається у відкритому вигляді. Буде зашифрований при наступному записі.',
+      legacyRowsWarning_few: '{{count}} секрети ще зберігаються у відкритому вигляді. Будуть зашифровані при наступному записі.',
+      legacyRowsWarning_many: '{{count}} секретів ще зберігаються у відкритому вигляді. Будуть зашифровані при наступному записі.',
+      legacyRowsWarning_other: '{{count}} секретів ще зберігаються у відкритому вигляді. Будуть зашифровані при наступному записі.',
+      migrationErrorWarning_one: '{{count}} рядок було пропущено під час останньої міграції шифрування. Перевірте логи сервера.',
+      migrationErrorWarning_few: '{{count}} рядки було пропущено під час останньої міграції шифрування. Перевірте логи сервера.',
+      migrationErrorWarning_many: '{{count}} рядків було пропущено під час останньої міграції шифрування. Перевірте логи сервера.',
+      migrationErrorWarning_other: '{{count}} рядків було пропущено під час останньої міграції шифрування. Перевірте логи сервера.',
+      decryptionBrokenTitle: 'Розшифрування зламане — потрібно відновлення',
+      decryptionBrokenError_one: '{{count}} зашифрований секрет неможливо розшифрувати поточним ключем. Відновіть оригінальний файл ключа або пере-зареєструйте задіяних користувачів.',
+      decryptionBrokenError_few: '{{count}} зашифровані секрети неможливо розшифрувати поточним ключем. Відновіть оригінальний файл ключа або пере-зареєструйте задіяних користувачів.',
+      decryptionBrokenError_many: '{{count}} зашифрованих секретів неможливо розшифрувати поточним ключем. Відновіть оригінальний файл ключа або пере-зареєструйте задіяних користувачів.',
+      decryptionBrokenError_other: '{{count}} зашифрованих секретів неможливо розшифрувати поточним ключем. Відновіть оригінальний файл ключа або пере-зареєструйте задіяних користувачів.',
+      notConfigured: 'Шифрування не налаштоване',
+      notConfiguredDesc: 'Встановіть MFA_ENCRYPTION_KEY у середовищі або дозвольте BamDude автоматично згенерувати ключ при наступному перезапуску.',
+      encryptedRowsLabel: 'Зашифровані рядки',
+      legacyRowsLabel: 'Рядки у відкритому вигляді',
+      errorLoading: 'Не вдалося завантажити статус шифрування',
+      retry: 'Повторити'
     },
     // LDAP settings
     ldap: {
@@ -1480,6 +1525,10 @@ export default {
     manageQueueDescription: 'Додавання та видалення елементів черги друку',
     controlPrinter: 'Керування принтером',
     controlPrinterDescription: 'Пауза, продовження та зупинка друків',
+    allowCloudAccess: 'Bambu Cloud для слайсингу',
+    allowCloudAccessDescription: 'Дозволити цьому ключу витрачати ваш токен Bambu Cloud для слайсингу з хмарними пресетами',
+    cloudBadge: 'Cloud',
+    legacyBadge: 'Legacy',
     unnamedKey: 'Безіменний ключ',
     lastUsed: 'Останнє використання',
     read: 'Читання',
@@ -1517,6 +1566,8 @@ export default {
     historyRetention: 'Зберігання історії',
     keepSensorHistory: 'Зберігати історію сенсорів протягом',
     historyRetentionDescription: 'Старіші дані вологості та температури будуть автоматично видалені',
+    logRetention: 'Зберігання логів',
+    logRetentionDescription: 'Скільки добових файлів логів (bamdude-YYYY-MM-DD.log) тримати на диску. Старіші архіви авто-видаляються при кожній опівнічній ротації. Поточний bamdude.log не зачіпається.',
     autoQueueRouting: 'Маршрутизація авто-черги',
     autoQueueRoutingDescription: 'Керує тим, як планувальник авто-черги обирає наступне завдання для призначення.',
     queueShortestFirst: 'Спершу коротші друки',
@@ -1801,6 +1852,22 @@ export default {
     bambuStudioApiUrl: 'URL API BambuStudio',
     bambuStudioApiUrlDescription: 'Порожнє значення повертає до значення BAMBU_STUDIO_API_URL з оточення.',
     bothSlicersHint: 'Коли обидва URL задані та доступні, модальне вікно «Нарізати» дозволяє вибрати потрібний слайсер для кожного файлу.',
+    slicerBundles: {
+      title: 'Бандли слайсера',
+      description: 'Імпортуй Printer Preset Bundle (.bbscfg), експортований з BambuStudio (File → Export → Export Preset Bundle → "Printer preset bundle"). Після імпорту slice-запити можуть обирати пресети з бандла за іменем без повторного завантаження JSON-триплета профайлів.',
+      uploadButton: 'Завантажити бандл',
+      uploading: 'Завантаження…',
+      loading: 'Завантаження бандлів…',
+      empty: 'Жодного бандла ще не імпортовано.',
+      summary: '{{processCount}} процес · {{filamentCount}} пресетів філаменту',
+      delete: 'Видалити',
+      uploadSuccess: 'Імпортовано {{name}}',
+      uploadError: 'Не вдалося завантажити бандл: {{message}}',
+      deleteSuccess: 'Бандл видалено',
+      deleteError: 'Не вдалося видалити бандл: {{message}}',
+      confirmDeleteTitle: 'Видалити цей бандл?',
+      confirmDeleteMessage: 'Slice-запити, що посилаються на «{{name}}», будуть відмовляти, поки бандл не імпортовано повторно.',
+    },
     sidebarOrderDescription: 'Перетягніть елементи в бічній панелі для зміни порядку. Скинути до порядку за замовчуванням тут.',
     setDefault: 'Встановити за замовчуванням',
     sidebarOrderSetDefaultHint: 'Встановити за замовчуванням застосовує поточний порядок меню для користувачів, які не налаштували свій.',
@@ -1880,6 +1947,9 @@ export default {
     cameraTypeRtsp: 'RTSP потік',
     cameraTypeSnapshot: 'HTTP знімок',
     cameraTypeUsb: 'USB камера (V4L2)',
+    cameraSnapshotUrl: 'URL знімка (опційно)',
+    cameraSnapshotUrlPlaceholder: 'http://192.168.1.61:1984/api/frame.jpeg?src=printer',
+    cameraSnapshotUrlHelp: 'URL для single-frame захоплення (notification thumbnails, finish photos, timelapse, plate detection). Залиш порожнім — кадр буде братись з live-стріма вище. Корисно для go2rtc (/api/frame.jpeg) та IP-камер з окремим snapshot-ендпоінтом.',
     cameraRotation: 'Поворот',
     test: 'Тест',
     connected: 'Підключено',
@@ -1903,6 +1973,11 @@ export default {
     checkNow: 'Перевірити зараз',
     releaseNotes: 'Примітки до релізу',
     updateViaDocker: 'Оновити через Docker Compose:',
+    dockerImagePullTitle: 'Image-based встановлення (типове)',
+    dockerImagePullStable: 'Якщо image-tag пінений у docker-compose.yml — поправ; потім pull + recreate:',
+    dockerImagePullBeta: 'Бета-теги не підтягуються через `:latest`. Постав явний бета-tag у docker-compose.yml, потім pull + recreate:',
+    dockerSourceBuildTitle: 'Source-build встановлення (склонували репо)',
+    dockerSourceBuildHint: 'Checkout потрібного тегу, ребілд з вихідників, recreate:',
     installUpdate: 'Встановити оновлення',
     latestVersionRunning: 'Ви використовуєте останню версію',
     failedToCheckUpdates: 'Не вдалося перевірити оновлення: {{error}}',
@@ -2045,6 +2120,9 @@ export default {
         autoLinkDesc: 'Прив\'язувати локальні акаунти за збігом email при першому вході.',
         emailClaim: 'Email claim',
         emailClaimHelp: 'JWT claim, який використовується як email-ідентичність. За замовчуванням "email". Для Azure Entra ID встановіть "preferred_username" або "upn" - Azure не надсилає email_verified, а кастомний claim пропускає цю перевірку.',
+        defaultGroup: 'Група за замовчуванням',
+        defaultGroupViewers: 'Viewers (за замовчуванням)',
+        defaultGroupHelp: 'Група, у яку потрапляють автостворені OIDC-користувачі. Залиште "Viewers" для read-only-доступу; виберіть іншу групу, якщо цей IdP внутрішній і потрібна інша політика.',
         requireEmailVerified: 'Вимагати email_verified',
         requireEmailVerifiedDesc: 'Довіряти стандартному claim "email" лише коли провайдер явно встановлює email_verified=true. Вимкніть для застарілих IdP, які не надсилають цей claim. Обов\'язково ON, коли увімкнено авто-прив\'язку з "email" claim.',
         requireEmailVerifiedNAForCustomClaim: 'Не застосовується - кастомні claim ніколи не звертаються до email_verified.',
@@ -2729,6 +2807,9 @@ export default {
     selectPreset: '- Виберіть пресет -',
     noPresetsForSlot: 'Немає доступних пресетів',
     allPresetsRequired: 'Потрібно вибрати всі пресети',
+    bundle: 'Слайсерний бандл',
+    bundleNone: '— Немає (обирай пресети окремо) —',
+    bundleAllRequired: 'Треба обрати процес бандла та кожен слот філаменту',
     analyzingPlateFilaments: 'Аналіз філаментів плати…',
     analyzingPlateFilamentsHint: 'Виконується попереднє нарізання, щоб визначити, які слоти AMS використовує ця плата. Кешується після - повторне відкриття миттєве.',
     previewToast: 'Аналіз {{name}} - {{elapsed}}',
@@ -3069,6 +3150,7 @@ export default {
     generateThumbnail: 'Згенерувати мініатюру',
     generateThumbnails: 'Згенерувати мініатюри',
     generateThumbnailsForMissing: 'Згенерувати мініатюри для STL файлів без них',
+    regeneratingThumbnail: 'Регенерація…',
     gridView: 'Режим сітки',
     listView: 'Режим списку',
     lowDiskSpaceWarning: 'Попередження про мало місця',
@@ -3192,6 +3274,8 @@ export default {
     targetParts: 'Цільова кількість деталей',
     targetPartsPlaceholder: 'напр., 150',
     targetPartsHelp: 'Загальна кількість об\'єктів',
+    fromPlan: 'З плану: {{count}}',
+    usePlanValueTitle: 'Застосувати значення з плану друку',
     tagsLabel: 'Теги (через кому)',
     tagsPlaceholder: 'напр., voron, функціональний, подарунок',
     dueDate: 'Термін',
@@ -3331,7 +3415,9 @@ export default {
       totalFilament: 'Філамент',
       totalTime: 'Час',
       totalCost: 'Вартість',
-      costHint: '@ {{currency}}{{rate}}/кг'
+      costHint: '@ {{currency}}{{rate}}/кг',
+      applyTotals: 'Застосувати до проекту',
+      applyTotalsTitle: 'Застосувати до проекту: {{plates}} плит / {{parts}} деталей / бюджет {{budget}}',
     },
     bom: {
       title: 'Специфікація матеріалів',
@@ -3372,6 +3458,7 @@ export default {
     },
     toast: {
       projectUpdated: 'Проєкт оновлено',
+      totalsApplied: 'Цільові показники проекту оновлено з плану друку',
       partAdded: 'Деталь додано',
       partRemoved: 'Деталь видалено',
       projectExported: 'Проєкт експортовано',
@@ -3444,6 +3531,38 @@ export default {
     reportPartialUsageDesc: 'Коли друк не вдається або скасовується, звітувати про використаний філамент на основі прогресу шарів.'
   },
 
+  // In-app bug report (floating red bubble)
+  bugReport: {
+    title: 'Повідомити про баг',
+    description: 'Опис',
+    descriptionPlaceholder: 'Що пішло не так? Опишіть проблему…',
+    email: 'Email (необов\'язково)',
+    emailPlaceholder: 'your@email.com',
+    emailPrivacy: 'Якщо вкажете, email буде доданий у згорнутий блок GitHub-issue, щоб мейнтейнер міг зв\'язатися.',
+    screenshot: 'Скріншот',
+    uploadOrPaste: 'Завантажте, вставте з буфера або перетягніть зображення',
+    dataCollectedSummary: 'Які дані передаються у звіт?',
+    dataIncluded: 'Включається:',
+    dataIncludedList: 'Версія застосунку, ОС, архітектура, версія Python, статистика БД (тільки лічильники), моделі принтерів, кількість сопел, версії прошивок, стан з\'єднання, статус інтеграцій (Spoolman, MQTT, Home Assistant), нечутливі налаштування, кількість мережевих інтерфейсів, деталі Docker, версії залежностей.',
+    dataNeverIncluded: 'Ніколи не передається:',
+    dataNeverIncludedList: 'Імена принтерів, серійні номери, access-коди, паролі, IP-адреси, email, API-ключі, токени, webhook-URL, hostnames, імена користувачів.',
+    submit: 'Надіслати',
+    startLogging: 'Почати збір debug-логів',
+    stepEnableLogging: 'Debug-логування увімкнено',
+    stepReproduce: 'Відтворіть проблему зараз',
+    stepStopLogging: 'Зупинити та надіслати звіт',
+    stopAndSubmit: 'Зупинити та надіслати',
+    maxDuration: 'Авто-зупинка через {{minutes}} хв',
+    stoppingLogs: 'Збираємо логи та надсилаємо…',
+    submitting: 'Надсилаємо звіт про баг…',
+    submitSuccess: 'Звіт про баг успішно надіслано!',
+    submitFailed: 'Не вдалося надіслати звіт',
+    thankYou: 'Дякуємо!',
+    submitted: 'Ваш звіт про баг надіслано.',
+    viewIssue: 'Переглянути issue',
+    unexpectedError: 'Сталася неочікувана помилка',
+  },
+
   // Inventory
   inventory: {
     title: 'Філамент',
@@ -3502,6 +3621,19 @@ export default {
     unassignSpool: 'Зняти призначення',
     assignSuccess: 'Котушку призначено та слот AMS налаштовано',
     assignFailed: 'Не вдалося призначити котушку',
+    storageLocation: 'Місце зберігання',
+    storageLocationPlaceholder: 'Драйбокс 3, Полиця A4 тощо.',
+    spoolmanFilamentCatalog: 'Каталог філаментів Spoolman',
+    pickFromSpoolmanCatalog: 'Обрати філамент зі Spoolman...',
+    spoolmanFilamentSelected: 'Привʼязано до філамента Spoolman',
+    spoolmanFilamentUnlinked: 'Звʼязок зі Spoolman знято',
+    noSpoolmanFilaments: 'У каталозі Spoolman ще немає філаментів.',
+    spoolmanFilamentColorSwatch: 'Колір філамента',
+    linkedSpool: 'Призначена котушка',
+    unlinkConfirmTitle: 'Зняти призначення котушки зі слоту?',
+    unlinkConfirmBody: 'Призначення слоту буде знято. Котушка залишиться в інвентарі Spoolman.',
+    noUnlinkedSpools: 'Усі котушки Spoolman уже привʼязані до слотів.',
+    spoolsPartiallyCreated: 'Створено {{created}} з {{total}} котушок — решту дивіться в логах.',
     selectSpool: 'Виберіть котушку для призначення до цього слоту',
     assigned: 'Призначено',
     assigning: 'Призначення...',
@@ -3657,6 +3789,7 @@ export default {
       extraColorsHelp: 'Список hex-токенів через кому (6 або 8 символів), до 8. Порожньо = суцільний колір.',
       effectType: 'Візуальний ефект',
       effectNone: 'Без ефекту',
+      swatchPreview: 'Попередній перегляд',
       effects: {
         sparkle: 'Іскристий',
         silk: 'Шовк',
@@ -3667,7 +3800,48 @@ export default {
         galaxy: 'Галактика',
         rainbow: 'Веселка',
         metal: 'Метал',
-        translucent: 'Напівпрозорий'
+        translucent: 'Напівпрозорий',
+        gradient: 'Градієнт',
+        dualColor: 'Двоколірний',
+        triColor: 'Триколірний',
+        multicolor: 'Мультиколор'
+      }
+    },
+    // Друк наліпок для котушок (B.1 / upstream #809).
+    labels: {
+      printLabels: 'Друк наліпок…',
+      printOne: 'Надрукувати наліпку для цієї котушки',
+      title: 'Друк наліпок котушок',
+      bulkTitle: 'Виберіть котушки для друку наліпок з {{count}} показаних',
+      noSpoolsTitle: 'Немає котушок для друку наліпок',
+      selectedCount: 'обрано {{count}}',
+      searchPlaceholder: 'Пошук за назвою, брендом або #ID',
+      filterByMaterial: 'Матеріал:',
+      allMaterials: 'Усі',
+      pickSpools: 'Оберіть, для яких котушок друкувати наліпки:',
+      selectVisible: 'Обрати всі видимі ({{count}})',
+      deselectVisible: 'Зняти видимі',
+      clearAll: 'Скинути все',
+      noSpoolsToShow: 'Немає котушок. Змініть фільтр і спробуйте знову.',
+      noMatches: 'Жодна котушка не відповідає поточному пошуку чи фільтру.',
+      error: 'Не вдалося згенерувати наліпки: {{msg}}',
+      templates: {
+        ams: {
+          label: 'AMS-тримач (30 × 15 мм)',
+          hint: 'Одна наліпка на сторінку; підходить для популярного AMS-тримача наліпок філаменту.'
+        },
+        box: {
+          label: 'Наліпка на коробку (62 × 29 мм)',
+          hint: 'Одна наліпка на сторінку; розмір під Brother PT/QL та Dymo.'
+        },
+        averyL7160: {
+          label: 'Avery L7160 — лист A4 (38.1 × 63.5 мм × 21)',
+          hint: 'Європейський формат; 21 наліпка на сторінку A4.'
+        },
+        avery5160: {
+          label: 'Avery 5160 — лист US Letter (25.4 × 66.7 мм × 30)',
+          hint: 'Американський формат; 30 наліпок на сторінку Letter.'
+        }
       }
     }
   },
@@ -3831,6 +4005,8 @@ export default {
     providerLabel: 'Провайдер',
     providerGitHub: 'GitHub',
     providerGitLab: 'GitLab',
+    providerGitea: 'Gitea',
+    providerForgejo: 'Forgejo',
     apiBaseUrlLabel: 'Базова URL API',
     apiBaseUrlPlaceholder: 'https://gitlab.com',
     apiBaseUrlHint: 'Залиште порожнім для gitlab.com, або введіть URL вашого GitLab',
@@ -3840,6 +4016,7 @@ export default {
     enterNewToken: 'Введіть новий токен для оновлення',
     tokenHintGitHub: 'Fine-grained token з дозволом Contents: Read and write',
     tokenHintGitLab: 'Personal access token з правами api або write_repository',
+    tokenHintGitea: 'Personal access token з правом repo read/write (працює і для Gitea, і для Forgejo)',
     branch: 'Гілка',
     manualOnly: 'Тільки вручну',
     hourly: 'Щогодини',
@@ -4147,10 +4324,14 @@ export default {
       hint: 'Перевизначте IP адресу, що оголошується через SSDP та використовується в TLS сертифікаті. Корисно коли BamDude має кілька мережевих інтерфейсів.'
     },
     tailscale: {
-      title: 'Сертифікат Let\'s Encrypt через Tailscale',
-      description: 'Якщо ввімкнено - запросить у локального tailscale CLI сертифікат LE та оголошуватиме FQDN tailnet через SSDP. Слайсер підключатиметься за іменем хоста, що відповідає довіреному сертифікату (без ручного встановлення CA).',
-      activeFor: 'Активно - оголошується FQDN {{fqdn}}',
-      unavailable: 'Tailscale недоступний або LE сертифікат не вдалося отримати. Повертаємось до самопідписаного CA.'
+      title: 'Показати Tailscale адресу',
+      description: 'Якщо ввімкнено — показує IP та MagicDNS-ім’я хоста, щоб ви могли вставити їх у діалог Add Printer слайсера. Довіра сертифіката не змінюється (слайсер усе ще перевіряє BBL CA — імпортуйте bbl_ca.crt один раз).',
+      pasteHint: 'Вставте у діалог Add Printer слайсера:',
+      copyIp: 'Скопіювати IP',
+      copyHostname: 'Скопіювати ім’я',
+      copied: 'Скопійовано',
+      copyFailed: 'Не вдалось скопіювати',
+      unavailable: 'Демон Tailscale недоступний. Запустіть Tailscale на хості (і змонтуйте /var/run/tailscale/tailscaled.sock у Docker).'
     },
     mode: {
       title: 'Режим',
@@ -4182,6 +4363,10 @@ export default {
     autoSelectPrinter: {
       title: 'Автовибір принтера',
       description: 'Якщо увімкнено, завантаження потрапляє у роутер авто-черги, який підбирає будь-який вільний принтер за моделлю + філаментами. Якщо вимкнено - завантаження йде в чергу конкретного принтера.'
+    },
+    queueForceColorMatch: {
+      title: 'Збігання кольорів',
+      description: 'Закріпити тип+колір по слотах із кожного 3MF, щоб авто-черга відмовляла принтерам із правильним матеріалом, але неправильним кольором.'
     },
     setupRequired: {
       title: 'Потрібне налаштування',
@@ -4256,6 +4441,8 @@ export default {
     buildVolumeLabel: 'Стіл',
     buildVolumeUnit: 'мм',
     buildVolumeTooltip: 'Розмір стола, зображеного під переглядом — береться з 3MF (printable_area + printable_height) якщо є, інакше дефолт X1/P1/A1: 256×256×256.',
+    wireframeTitle: 'Перемкнути wireframe / X-ray режим',
+    exportPngTitle: 'Зберегти поточний вигляд як PNG',
     plates: 'Плити',
     allPlates: 'Усі плити',
     pickPlate: 'Виберіть плиту',
@@ -4281,6 +4468,24 @@ export default {
       noMeshes: 'Меші не знайдено у 3MF файлі',
       unsupportedFormat: 'Непідтримуваний формат файлу'
     }
+  },
+
+  // GCode viewer toolbar — кнопки + слайдер + текст про завантаження.
+  // Дефолти на компоненті теж є (defaultValue), тож пропуск тут не
+  // ламає UI — просто впадає на англомовний дефолт.
+  gcodeViewer: {
+    loading: 'Завантаження G-коду…',
+    downloading: 'Завантаження…',
+    parsing: 'Парсинг G-коду…',
+    travels: 'Травели',
+    travelsTitle: 'Показати travel-moves (G0)',
+    play: 'Програти',
+    pause: 'Пауза',
+    speed: 'Швидкість',
+    exportPng: 'Зберегти PNG',
+    exportPngTitle: 'Зберегти поточний вигляд як PNG',
+    start: 'Старт',
+    end: 'Кінець',
   },
 
   // Maintenance type descriptions (built-in)
@@ -4437,6 +4642,19 @@ export default {
     enableSwitchbarHint: 'Увімкніть "Показати в панелі" в Налаштування > Розумні розетки'
   },
 
+  // Панель історичних архівів логів — на сторінці /system під LogViewer.
+  // LogViewer стрімить поточний bamdude.log; ця панель керує добовими
+  // архівами що генеряться TimedRotatingFileHandler.
+  logArchives: {
+    title: 'Історичні логи',
+    subtitle: 'Добові ротовані архіви. Поточний bamdude.log показано вище.',
+    empty: 'Архівів ще немає — добова ротація відбувається опівночі.',
+    filename: 'Файл',
+    size: 'Розмір',
+    modified: 'Змінено',
+    deleted: 'Видалено {{filename}}',
+  },
+
   // Notifications
   notifications: {
     // Provider types
@@ -4482,6 +4700,8 @@ export default {
     complete: 'Завершено',
     failed: 'Помилка',
     stopped: 'Зупинено',
+    paused: 'На паузі',
+    resumed: 'Відновлено',
     progress: 'Прогрес',
     offline: 'Офлайн',
     lowFilament: 'Мало філаменту',
@@ -4507,6 +4727,10 @@ export default {
     missingSpoolAssignmentDescription: 'Сповістити, коли друк починається без призначеної котушки у лотках',
     printFailed: 'Друк невдалий',
     printStopped: 'Друк зупинено',
+    printPausedLabel: 'Друк на паузі',
+    printPausedDescription: 'Сповіщати при переході RUNNING→PAUSE (двері, кінець філаменту, plate-detect, ручна пауза)',
+    printResumedLabel: 'Друк відновлено',
+    printResumedDescription: 'Сповіщати при переході PAUSE→RUNNING (включає тривалість паузи)',
     progressMilestones: 'Етапи прогресу',
     progressMilestonesDescription: 'Сповіщати при 25%, 50%, 75%',
     printerOffline: 'Принтер офлайн',
@@ -4813,6 +5037,7 @@ export default {
       archives: 'Архіви',
       queue: 'Черга',
       library: 'Бібліотека',
+      makerworld: 'MakerWorld',
       projects: 'Проєкти',
       filaments: 'Філаменти',
       inventory: 'Інвентар',
@@ -4831,7 +5056,13 @@ export default {
       backup: 'Резервне копіювання',
       cloud: 'Хмара',
       apiKeys: 'API-ключі',
-      userManagement: 'Керування користувачами'
+      userManagement: 'Керування користувачами',
+      websocket: 'WebSocket',
+      users: 'Користувачі',
+      groups: 'Групи',
+      git: 'Git',
+      stats: 'Статистика',
+      amsHistory: 'Історія AMS'
     },
     actions: {
       read: 'Перегляд',
@@ -4846,7 +5077,10 @@ export default {
       scan: 'Сканування',
       backup: 'Резервне копіювання',
       restore: 'Відновлення',
-      auth: 'Автентифікація'
+      auth: 'Автентифікація',
+      purge: 'Очищення',
+      import: 'Імпорт',
+      connect: 'Підключення'
     },
     labels: {
       printerFiles: 'Файли принтера',
@@ -4866,8 +5100,10 @@ export default {
       updateAllLibrary: 'Оновлення всіх файлів',
       deleteOwnLibrary: 'Видалення власних файлів',
       deleteAllLibrary: 'Видалення всіх файлів',
+      libraryNotesWrite: 'Додавання нотаток до файлів',
       viewAssignments: 'Перегляд призначень котушок',
-      userEmailNotifications: 'Email-сповіщення користувача'
+      userEmailNotifications: 'Email-сповіщення користувача',
+      statsFilterByUser: 'Фільтр статистики за користувачем'
     }
   },
   telegram: {

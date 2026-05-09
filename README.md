@@ -85,6 +85,7 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 - External camera support (MJPEG, RTSP, USB)
 - Build plate empty detection
 - Printer control (stop, pause, resume, light, speed)
+- **Pause-state visualisation** — yellow status pip in compact mode, inline `Paused • {reason} · 14m` chip with live elapsed counter in card header (compact + expanded), instant WebSocket toast on RUNNING↔PAUSE edges with classified reason (door / filament runout / AI defect / plate-detect / etc.)
 - AMS management (RFID re-read, slot config, drying)
 - HMS error monitoring with history
 - Print success rates, filament usage, cost analytics
@@ -108,9 +109,9 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 ### File Manager (Library)
 - Upload and organize sliced files
 - **Composite file tags + chip-row filter** — `format` / `readiness` / `modifiers` / `provenance` chips drive both the badge row and a chip filter on the toolbar (sliced vs project vs raw geometry, single- vs multi-plate, MakerWorld provenance)
-- **Per-plate gallery + 3D / G-code preview with build-volume wireframe** — multi-plate 3MFs expose every plate; library viewer hides tabs that don't apply to the file (e.g. no 3D tab for sliced `.gcode.3mf`)
+- **Per-plate gallery + 3D / G-code preview with build-volume wireframe** — multi-plate 3MFs expose every plate; library viewer hides tabs that don't apply to the file (e.g. no 3D tab for sliced `.gcode.3mf`); dual-handle layer slider (crop both top and bottom), travel-moves toggle, layer-play with 1× / 2× / 4× / 8× speeds, theme-synced canvas, wireframe / X-ray toggle, OBJ format support, Export-as-PNG
 - External folder mounting (NAS, USB)
-- STL thumbnail generation
+- STL / OBJ thumbnail generation — shaded surfaces with Lambertian lighting + transparent background so cards "float" on whatever theme is rendering them
 - Folder structure with drag-and-drop
 - Print directly or add to queue
 - Duplicate detection
@@ -121,6 +122,7 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 - Track plates and parts
 - **Print plan table**: per-file copies with live filament/time/cost totals + per-row printed/remaining counters
 - **Headline "remaining" totals** on Print Jobs / Print Time / Filament Used cards (green when done, amber when there's work left)
+- **One-click "Apply to project"** in print plan + BOM totals rows — writes plate count, parts count, and budget (filament + materials cost) into the project's target fields; project edit modal also pre-fills from the plan + shows a "From plan: N" hint to re-sync after changes
 - Link folders or individual files from the File Manager — **many-to-many** (a file or folder can belong to several projects at once)
 - Per-chip unlink (`×` on each project chip) for granular detach
 - Import/Export as ZIP or JSON
@@ -153,6 +155,7 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 - Actionable buttons: clear plate, mark maintenance done, pause/stop on progress
 - Print finish photo, filament usage details
 - HMS error alerts, bed cooled alerts
+- **Pause / resume events with classified reason** — `print_paused` carries normalised `{reason}` (door / filament runout / presence-check / file-pause-command / AI defect / plate-objects / user) + matched `{hms_code}`; `print_resumed` carries `{paused_for}` (mm:ss). Default ON for new providers, included in default Telegram-chat event set
 - Queue events (waiting, skipped, failed)
 
 ### Spool Inventory

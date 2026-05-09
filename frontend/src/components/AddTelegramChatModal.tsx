@@ -136,6 +136,8 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
     print_complete: 'notifications.printCompleted',
     print_failed: 'notifications.printFailed',
     print_stopped: 'notifications.printStopped',
+    print_paused: 'notifications.printPausedLabel',
+    print_resumed: 'notifications.printResumedLabel',
     print_progress: 'notifications.progressMilestones',
     print_missing_spool_assignment: 'notifications.missingSpoolAssignmentLabel',
     printer_offline: 'notifications.printerOffline',

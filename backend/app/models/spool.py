@@ -50,7 +50,12 @@ class Spool(Base):
     # Quick-add's N-quantity path can auto-number lots 1..N — see
     # SpoolBulkCreate.auto_increment_lot.
     lot: Mapped[int | None] = mapped_column(Integer)
-    tag_uid: Mapped[str | None] = mapped_column(String(16))  # RFID tag UID (16 hex chars)
+    tag_uid: Mapped[str | None] = mapped_column(
+        String(32)
+    )  # RFID tag UID (16 hex chars; bumped to 32 for non-Bambu tag formats)
+    storage_location: Mapped[str | None] = mapped_column(
+        String(255)
+    )  # Free-form storage label for inventory UI ("Drybox 3", "Shelf A4", etc.)
     tray_uuid: Mapped[str | None] = mapped_column(String(32))  # Bambu Lab spool UUID (32 hex chars)
     data_origin: Mapped[str | None] = mapped_column(String(20))  # How data was populated: manual, rfid_auto, nfc_link
     tag_type: Mapped[str | None] = mapped_column(String(20))  # Tag vendor: bambulab, generic, etc.

@@ -7,6 +7,7 @@ import { GcodeViewer } from './GcodeViewer';
 import { Button } from './Button';
 import { api } from '../api/client';
 import { openInSlicer, type SlicerType } from '../utils/slicer';
+import { useTheme } from '../contexts/ThemeContext';
 import type { ArchivePlatesResponse, LibraryFilePlatesResponse, PlateMetadata } from '../types/plates';
 
 type ViewTab = '3d' | 'gcode';
@@ -34,6 +35,7 @@ interface Capabilities {
 
 export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, archivePlateIndex, onClose }: ModelViewerModalProps) {
   const { t } = useTranslation();
+  const { mode: themeMode } = useTheme();
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
   const preferredSlicer: SlicerType = settings?.preferred_slicer || 'bambu_studio';
   const isLibrary = libraryFileId != null;
@@ -661,6 +663,12 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
                     buildVolume={capabilities.build_volume}
                     filamentColors={capabilities.filament_colors}
                     selectedPlateId={selectedPlateId}
+                    theme={themeMode}
+                    exportFilename={selectedPlate?.name
+                      ? `${title}_${selectedPlate.name}`
+                      : selectedPlateId != null
+                        ? `${title}_plate_${selectedPlateId}`
+                        : title}
                     className="w-full h-full"
                   />
                 )}
@@ -733,6 +741,10 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
                       gcodeUrl={api.getLibraryFileGcodeUrl(libraryFileId!, selectedPlateId)}
                       buildVolume={capabilities.build_volume}
                       filamentColors={capabilities.filament_colors}
+                      theme={themeMode}
+                      exportFilename={selectedPlate?.name
+                        ? `${title}_${selectedPlate.name}`
+                        : `${title}_plate_${selectedPlateId}`}
                       className="w-full h-full"
                     />
                   )}
@@ -743,6 +755,8 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
                 gcodeUrl={isLibrary ? api.getLibraryFileGcodeUrl(libraryFileId!) : api.getArchiveGcode(archiveId!)}
                 buildVolume={capabilities.build_volume}
                 filamentColors={capabilities.filament_colors}
+                theme={themeMode}
+                exportFilename={title}
                 className="w-full h-full"
               />
             )

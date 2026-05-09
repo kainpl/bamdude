@@ -318,6 +318,113 @@ async def clear_logs(
     return {"message": "Log file does not exist"}
 
 
+# ── Historical log archives (rotated by TimedRotatingFileHandler) ────────────
+# The live log is ``bamdude.log``; daily-rotated archives land as
+# ``bamdude-YYYY-MM-DD.log`` (custom namer in core/logging_state.py). The
+# routes below let an operator list / download / delete those archives
+# from the System page UI without shelling into the container.
+
+# Strict pattern — ONLY match the well-formed rotated archive name. Defense
+# against path traversal + accidental delete of unrelated files in LOG_DIR.
+_ARCHIVE_NAME_RE = re.compile(r"^bamdude-\d{4}-\d{2}-\d{2}\.log$")
+
+
+class LogArchiveEntry(BaseModel):
+    filename: str
+    size_bytes: int
+    mtime: datetime
+
+
+class LogArchivesResponse(BaseModel):
+    archives: list[LogArchiveEntry]
+
+
+@router.get("/log-archives", response_model=LogArchivesResponse)
+async def list_log_archives(
+    _: User | None = RequirePermission(Permission.SETTINGS_READ),
+):
+    """List rotated log archives (newest first)."""
+    archives: list[LogArchiveEntry] = []
+    log_dir = settings.log_dir
+    if log_dir.is_dir():
+        for entry in log_dir.iterdir():
+            if not entry.is_file():
+                continue
+            if not _ARCHIVE_NAME_RE.match(entry.name):
+                continue
+            try:
+                stat = entry.stat()
+            except OSError:
+                continue
+            archives.append(
+                LogArchiveEntry(
+                    filename=entry.name,
+                    size_bytes=stat.st_size,
+                    mtime=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
+                )
+            )
+    archives.sort(key=lambda a: a.filename, reverse=True)
+    return LogArchivesResponse(archives=archives)
+
+
+@router.get("/log-archives/{filename}/download")
+async def download_log_archive(
+    filename: str,
+    _: User | None = RequirePermission(Permission.SETTINGS_READ),
+):
+    """Download a rotated log archive. Filename must match the strict
+    ``bamdude-YYYY-MM-DD.log`` pattern (path-traversal guard)."""
+    from fastapi.responses import FileResponse
+
+    if not _ARCHIVE_NAME_RE.match(filename):
+        raise HTTPException(status_code=400, detail="Invalid log archive filename")
+    target = settings.log_dir / filename
+    # Belt-and-braces resolve check — make sure the final path is still
+    # under log_dir even after symlink/double-dot expansion.
+    try:
+        resolved = target.resolve()
+        log_dir_resolved = settings.log_dir.resolve()
+        if not resolved.is_relative_to(log_dir_resolved):
+            raise HTTPException(status_code=403, detail="Path traversal detected")
+    except (OSError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=f"Invalid path: {e}") from e
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="Log archive not found")
+    return FileResponse(
+        path=str(target),
+        filename=filename,
+        media_type="text/plain",
+    )
+
+
+@router.delete("/log-archives/{filename}")
+async def delete_log_archive(
+    filename: str,
+    _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
+):
+    """Delete a rotated log archive. Same path-traversal guard as the
+    download route."""
+    if not _ARCHIVE_NAME_RE.match(filename):
+        raise HTTPException(status_code=400, detail="Invalid log archive filename")
+    target = settings.log_dir / filename
+    try:
+        resolved = target.resolve()
+        log_dir_resolved = settings.log_dir.resolve()
+        if not resolved.is_relative_to(log_dir_resolved):
+            raise HTTPException(status_code=403, detail="Path traversal detected")
+    except (OSError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=f"Invalid path: {e}") from e
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="Log archive not found")
+    try:
+        target.unlink()
+        logger.info("Log archive deleted by user: %s", filename)
+        return {"message": f"Deleted {filename}"}
+    except OSError as e:
+        logger.error("Failed to delete log archive %s: %s", filename, e)
+        raise HTTPException(status_code=500, detail=f"Failed to delete: {e}") from e
+
+
 def _sanitize_path(path: str) -> str:
     """Remove username from paths for privacy."""
 

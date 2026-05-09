@@ -9,6 +9,26 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+# Eagerly import every model that participates in a SQLAlchemy relationship the
+# tests below trigger at runtime — without this, calling ``AutoQueueItem(...)``
+# from inside ``_add_to_auto_queue`` runs SQLAlchemy's deferred mapper
+# initialisation, which walks Project.library_file_projects (the m044 pivot)
+# and fails with "name 'library_file_projects' is not defined" because the
+# pivot module was never imported in the test process. Same applies to a few
+# other relationship targets (auto_queue, library, etc.); listing them here
+# keeps the symptoms from drifting if a future PR adds another relationship.
+from backend.app.models import (  # noqa: F401
+    archive,
+    auto_queue,
+    library,
+    library_project_links,
+    print_queue,
+    printer_queue,
+    project,
+    project_print_plan,
+    user,
+)
+
 
 class TestVirtualPrinterInstance:
     """Tests for VirtualPrinterInstance class."""
@@ -382,12 +402,19 @@ class TestVirtualPrinterInstance:
         ):
             await inst._add_to_auto_queue(file_path, "192.168.1.100")
 
+        import json as _json
+
         assert len(added_items) == 1
         item = added_items[0]
         assert item.library_file_id == 42
         assert item.archive_id is None
         assert item.target_model == "P1S"
-        assert item.required_filament_types == ["PLA", "PETG"]
+        # Stored as JSON string so the eligibility scheduler's `json.loads`
+        # actually parses it. Pre-A.7 this column held a Python list and
+        # SQLAlchemy stringified it via str(list), which broke parsing.
+        assert _json.loads(item.required_filament_types) == ["PLA", "PETG"]
+        # queue_force_color_match=False (default) → no overrides written.
+        assert item.filament_overrides is None
         assert item.plate_id == 1
         assert item.status == "pending"
         assert item.position == 1
@@ -396,6 +423,150 @@ class TestVirtualPrinterInstance:
         # target_printer_id on VP must NOT bleed into the auto-queue item;
         # the router decides routing, not the VP config.
         assert not hasattr(item, "printer_id") or getattr(item, "printer_id", None) is None
+
+    @pytest.mark.asyncio
+    async def test_add_to_auto_queue_with_force_color_match_pins_overrides(self, tmp_path):
+        """``queue_force_color_match=True`` populates filament_overrides from the
+        per-slot type+color in the 3MF (#1188). Each entry is the shape the
+        eligibility scheduler's ``_get_missing_force_color_slots`` validates
+        against: ``{slot_id, type, color, force_color_match: True}``."""
+        import json as _json
+
+        from backend.app.services.auto_queue_threemf import AutoQueueRequirements
+        from backend.app.services.virtual_printer.manager import VirtualPrinterInstance
+
+        mock_db = AsyncMock()
+        added_items = []
+        mock_db.add = MagicMock(side_effect=lambda i: added_items.append(i))
+        mock_db.commit = AsyncMock()
+        mock_db.scalar = AsyncMock(return_value=0)
+
+        mock_session_factory = MagicMock()
+        mock_session_ctx = AsyncMock()
+        mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_db)
+        mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_session_factory.return_value = mock_session_ctx
+
+        inst = VirtualPrinterInstance(
+            vp_id=21,
+            name="ColourMatchVP",
+            mode="auto_queue",
+            model="C12",
+            access_code="12345678",
+            serial_suffix="391800021",
+            auto_dispatch=True,
+            queue_force_color_match=True,
+            base_dir=tmp_path,
+            session_factory=mock_session_factory,
+        )
+
+        file_path = tmp_path / "test.3mf"
+        file_path.write_bytes(b"fake3mf")
+        fake_lib = MagicMock(
+            id=43,
+            filename="test.3mf",
+            file_path="library/files/y.3mf",
+            file_metadata={"sliced_for_model": "P1S", "plates": [{"index": 1}]},
+        )
+        fake_reqs = AutoQueueRequirements(
+            target_model="P1S",
+            required_filament_types=["PLA"],
+            print_time_seconds=1800,
+            filament_slots=[],
+        )
+        # filament_requirements helper returns the per-slot type+color list.
+        fake_per_slot = [
+            {"slot_id": 1, "type": "PLA", "color": "#FF0000", "used_grams": 10.0},
+            {"slot_id": 2, "type": "PLA", "color": "#00FF00", "used_grams": 12.0},
+        ]
+
+        with (
+            patch.object(inst, "_save_to_library", new_callable=AsyncMock, return_value=fake_lib),
+            patch(
+                "backend.app.services.auto_queue_threemf.extract_auto_queue_requirements",
+                return_value=fake_reqs,
+            ),
+            patch(
+                "backend.app.services.filament_requirements.extract_filament_requirements",
+                return_value=fake_per_slot,
+            ),
+        ):
+            await inst._add_to_auto_queue(file_path, "192.168.1.100")
+
+        assert len(added_items) == 1
+        item = added_items[0]
+        overrides = _json.loads(item.filament_overrides)
+        assert overrides == [
+            {"slot_id": 1, "type": "PLA", "color": "#FF0000", "force_color_match": True},
+            {"slot_id": 2, "type": "PLA", "color": "#00FF00", "force_color_match": True},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_add_to_auto_queue_force_color_skips_slots_without_color(self, tmp_path):
+        """A slot without a color string (legacy / hand-edited 3MF) can't be
+        used for exact-colour matching — drop it from overrides rather than
+        emit ``color=""`` which would fail every match attempt."""
+        from backend.app.services.auto_queue_threemf import AutoQueueRequirements
+        from backend.app.services.virtual_printer.manager import VirtualPrinterInstance
+
+        mock_db = AsyncMock()
+        added_items = []
+        mock_db.add = MagicMock(side_effect=lambda i: added_items.append(i))
+        mock_db.commit = AsyncMock()
+        mock_db.scalar = AsyncMock(return_value=0)
+
+        mock_session_factory = MagicMock()
+        mock_session_ctx = AsyncMock()
+        mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_db)
+        mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_session_factory.return_value = mock_session_ctx
+
+        inst = VirtualPrinterInstance(
+            vp_id=22,
+            name="MissingColourVP",
+            mode="auto_queue",
+            model="C12",
+            access_code="12345678",
+            serial_suffix="391800022",
+            queue_force_color_match=True,
+            base_dir=tmp_path,
+            session_factory=mock_session_factory,
+        )
+
+        file_path = tmp_path / "test.3mf"
+        file_path.write_bytes(b"fake3mf")
+        fake_lib = MagicMock(
+            id=44,
+            filename="test.3mf",
+            file_path="library/files/z.3mf",
+            file_metadata={"sliced_for_model": "P1S", "plates": [{"index": 1}]},
+        )
+        fake_reqs = AutoQueueRequirements(
+            target_model="P1S",
+            required_filament_types=["PLA"],
+            print_time_seconds=900,
+            filament_slots=[],
+        )
+
+        with (
+            patch.object(inst, "_save_to_library", new_callable=AsyncMock, return_value=fake_lib),
+            patch(
+                "backend.app.services.auto_queue_threemf.extract_auto_queue_requirements",
+                return_value=fake_reqs,
+            ),
+            patch(
+                "backend.app.services.filament_requirements.extract_filament_requirements",
+                return_value=[
+                    {"slot_id": 1, "type": "PLA", "color": "", "used_grams": 10.0},
+                ],
+            ),
+        ):
+            await inst._add_to_auto_queue(file_path, "192.168.1.100")
+
+        item = added_items[0]
+        # Empty colour → no override emitted → filament_overrides stays None
+        # so the eligibility scheduler falls back to types-only matching.
+        assert item.filament_overrides is None
 
     @pytest.mark.asyncio
     async def test_add_to_auto_queue_respects_auto_dispatch_off(self, tmp_path):
@@ -700,6 +871,9 @@ class TestVirtualPrinterManager:
             # tests don't see a spurious diff.
             "target_folder_id": None,
             "auto_dispatch": True,
+            # m050 (#1188): default False to match the running instance's
+            # default so unchanged-instance sync tests don't see a diff.
+            "queue_force_color_match": False,
             "tailscale_disabled": True,
             "position": 0,
         }

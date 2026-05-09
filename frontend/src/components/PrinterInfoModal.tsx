@@ -19,14 +19,42 @@ function CopyButton({ value }: { value: string }) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
 
+  // navigator.clipboard.writeText is gated by the secure-context requirement
+  // (HTTPS or localhost). On the typical bare-IP HTTP LAN deployment shape
+  // navigator.clipboard is undefined; without the legacy fallback the copy
+  // silently fails and the icon never flips to the tick (#1174). Mirror the
+  // off-screen-textarea + document.execCommand('copy') path that the camera
+  // tokens panel already uses for the same scenario.
   const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(value);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // Clipboard may not be available in non-secure contexts
+    let succeeded = false;
+    if (navigator.clipboard && window.isSecureContext) {
+      try {
+        await navigator.clipboard.writeText(value);
+        succeeded = true;
+      } catch {
+        // Fall through to legacy path below.
+      }
     }
+    if (!succeeded) {
+      const textarea = document.createElement('textarea');
+      textarea.value = value;
+      textarea.setAttribute('readonly', '');
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      textarea.style.pointerEvents = 'none';
+      document.body.appendChild(textarea);
+      try {
+        textarea.select();
+        succeeded = document.execCommand('copy');
+      } catch {
+        succeeded = false;
+      } finally {
+        document.body.removeChild(textarea);
+      }
+    }
+    if (!succeeded) return;
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
 
   return (

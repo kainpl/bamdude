@@ -91,6 +91,27 @@ class NozzleInfo:
 
 
 @dataclass
+class FilaSwitchState:
+    """Filament Track Switch (FTS) accessory state.
+
+    The FTS is an external accessory that mediates filament routing between an
+    AMS and the printer's extruders. When installed, the AMS no longer has a
+    fixed extruder assignment — any slot can be routed to any extruder via the
+    track switch. Detected from print.device.fila_switch in MQTT. Upstream
+    Bambuddy #1162.
+    """
+
+    installed: bool = False
+    # in[track] = currently loaded slot for that track (-1 = empty). The slot
+    # value is reported as observed in MQTT (treated as a global tray ID).
+    in_slots: list[int] = field(default_factory=list)
+    # out[track] = extruder this track terminates at (0 = right/main, 1 = left)
+    out_extruders: list[int] = field(default_factory=list)
+    stat: int = 0  # status flags (0 = idle)
+    info: int = 0  # info flags
+
+
+@dataclass
 class PrintOptions:
     """AI detection and print options from xcam data."""
 
@@ -136,6 +157,22 @@ class PrinterState:
     wifi_signal: int | None = None  # WiFi signal strength in dBm
     wired_network: bool = False  # Ethernet connection detected (home_flag bit 18)
     door_open: bool = False  # Enclosure door open (home_flag bit 23 on X1*, stat bit 23 elsewhere)
+    # Last classified pause reason — populated by main.on_printer_status_change
+    # on the RUNNING→PAUSE edge using ``hms_errors.classify_pause_reason``,
+    # cleared back to ``None`` on the PAUSE→RUNNING edge. Surfaces in the
+    # status snapshot so frontend can render the cause inline without
+    # re-running the HMS table lookup. ``str | None`` not enum since the set
+    # of keys is owned by ``hms_errors.PAUSE_REASON_LABELS``.
+    pause_reason: str | None = None
+    pause_reason_label: str | None = None  # Human-readable text matching the key
+    # Wall-clock (epoch seconds, ``time.time()``) at which the current pause
+    # started. Populated by ``main._handle_pause_edge`` on the RUNNING→PAUSE
+    # transition, cleared back to ``None`` on PAUSE→RUNNING. Surfaces in the
+    # status snapshot so the frontend live-counter ("Paused 14 min") survives
+    # an F5 / page navigation — without it, the counter would reset to zero
+    # on every snapshot poll because there's no other authoritative source
+    # for "when did this pause start".
+    pause_started_at: float | None = None
     # Nozzle hardware info (for dual nozzle printers, index 0 = left, 1 = right)
     nozzles: list = field(default_factory=lambda: [NozzleInfo(), NozzleInfo()])
     # AI detection and print options
@@ -170,6 +207,21 @@ class PrinterState:
     ams_mapping: list = field(default_factory=list)
     # Per-AMS extruder map: {ams_id: extruder_id} where 0=right/main, 1=left/deputy
     ams_extruder_map: dict = field(default_factory=dict)
+    # Filament Track Switch (FTS) accessory — when installed, AMS info reports
+    # bits 8-11 = 0xE (uninitialized) because routing is dynamic. Upstream #1162.
+    fila_switch: "FilaSwitchState" = field(default_factory=lambda: FilaSwitchState())
+    # Plate dispatched by BamDude for the current print (#1166). Some firmware
+    # versions (P1S 01.10.00.00) only put the .3mf filename in
+    # ``print.gcode_file``, so the regex used to derive the plate number from
+    # the path always falls back to plate 1 — and the printer card shows the
+    # wrong thumbnail. When BamDude dispatches the print itself we know the
+    # plate authoritatively; we record it here and prefer it over the
+    # ``gcode_file`` regex. The subtask field guards against staleness: if the
+    # printer is currently running a different subtask (e.g. a Studio-direct
+    # dispatch on the same machine), these values are ignored. Cleared on
+    # disconnect.
+    dispatched_plate_id: int | None = None
+    dispatched_subtask: str | None = None
     # H2D per-extruder tray_now from snow field: {extruder_id: normalized_global_tray_id}
     # snow encodes AMS ID in high byte: ams_id = snow >> 8, slot = snow & 0xFF
     h2d_extruder_snow: dict = field(default_factory=dict)
@@ -333,6 +385,10 @@ class BambuMQTTClient:
         self._message_log: deque[MQTTLogEntry] = deque(maxlen=100)
         self._logging_enabled: bool = False
         self._last_message_time: float = 0.0  # Track when we last received a message
+        # Raw-message fan-out for VP MQTT bridge (non-proxy modes republish the
+        # printer's pushes verbatim to slicers connected to a virtual printer).
+        # Handlers receive (topic, payload_bytes) before JSON parsing.
+        self._raw_message_handlers: list[Callable[[str, bytes], None]] = []
         self._disconnection_event: threading.Event | None = None
         self._previous_ams_hash: str | None = None  # Track AMS changes
 
@@ -660,6 +716,15 @@ class BambuMQTTClient:
             self.on_state_change(self.state)
 
     def _on_message(self, client, userdata, msg):
+        for handler in self._raw_message_handlers:
+            try:
+                handler(msg.topic, msg.payload)
+            except Exception:
+                logger.exception(
+                    "[%s] raw-message handler crashed for topic=%s",
+                    self.serial_number,
+                    msg.topic,
+                )
         try:
             try:
                 raw = msg.payload.decode()
@@ -703,13 +768,26 @@ class BambuMQTTClient:
         if not isinstance(print_data, dict):
             return
         command = print_data.get("command", "")
-        if command == "project_file" and "ams_mapping" in print_data:
-            self._captured_ams_mapping = print_data["ams_mapping"]
-            logger.info(
-                "[%s] Captured ams_mapping from print command: %s",
-                self.serial_number,
-                self._captured_ams_mapping,
-            )
+        if command == "project_file":
+            if "ams_mapping" in print_data:
+                self._captured_ams_mapping = print_data["ams_mapping"]
+                logger.info(
+                    "[%s] Captured ams_mapping from print command: %s",
+                    self.serial_number,
+                    self._captured_ams_mapping,
+                )
+            # Diagnostic for upstream #1162 follow-up (X2D + FTS routing): when a
+            # slicer-launched project_file passes through the request topic, log
+            # the full payload so we can diff Studio's field set against ours.
+            # We pin our own sequence_id to "20000" when sending project_file
+            # ourselves, so any other value means the command came from
+            # Studio / Orca, not from us.
+            if print_data.get("sequence_id") != "20000":
+                logger.info(
+                    "[%s] External project_file payload: %s",
+                    self.serial_number,
+                    json.dumps(print_data),
+                )
 
     def _process_message(self, payload: dict):
         """Process incoming MQTT message from printer."""
@@ -897,8 +975,20 @@ class BambuMQTTClient:
                     and print_data.get("sequence_id") == self._dev_mode_probe_seq
                 ):
                     self._handle_dev_mode_probe_response(print_data)
-                # Track user-initiated ams_filament_setting responses (#887 zombie detection)
-                elif cmd == "ams_filament_setting" and self._last_ams_cmd_time > 0:
+                # Track user-initiated ams_filament_setting responses (#887
+                # zombie detection). Reset both the timer AND the unanswered
+                # counter on ANY response — the response proves the channel is
+                # alive, so the counter must not stay armed even when the
+                # watchdog already zeroed `_last_ams_cmd_time` on a previous
+                # tick. The original `and self._last_ams_cmd_time > 0` guard
+                # caused #1164: one sluggish response (>10s) would set the
+                # counter to 1 and zero the timer; the late response arrived
+                # but was ignored by this branch (timer is 0); the counter
+                # stayed at 1 indefinitely; the very next slow response —
+                # possibly hours later, on a totally unrelated command —
+                # would take it to 2 and force-reconnect, surfacing as
+                # "filament config doesn't reach the printer ~6 changes in".
+                elif cmd == "ams_filament_setting":
                     self._last_ams_cmd_time = 0.0
                     self._ams_cmd_unanswered = 0
             if "command" in print_data and print_data.get("command") == "extrusion_cali_get":
@@ -1537,8 +1627,17 @@ class BambuMQTTClient:
                 # Valid physical trays: 0-15 (regular AMS), 128-135 (AMS-HT), 254 (external spool)
                 tn = self.state.tray_now
                 if (0 <= tn <= 15) or (128 <= tn <= 135) or tn == 254:
-                    # Log tray change for mid-print usage splitting
-                    if tn != self.state.last_loaded_tray and self.state.state in ("RUNNING", "PAUSE"):
+                    # Log tray change for mid-print usage splitting. Gate on
+                    # the print-lifecycle flags (`_was_running` set on first
+                    # RUNNING / new print, `_completion_triggered` set when
+                    # on_print_complete fires) instead of ``state in
+                    # ("RUNNING", "PAUSE")`` — P2S firmware briefly transitions
+                    # out of RUNNING during AMS auto-fallback (#957), so a
+                    # literal-string gate misses the switch and the usage
+                    # tracker double-credits at completion (original tray gets
+                    # the full 3MF estimate via slot_to_tray + the AMS
+                    # remain%-delta path adds the fallback weight on top).
+                    if tn != self.state.last_loaded_tray and self._was_running and not self._completion_triggered:
                         self.state.tray_change_log.append((tn, self.state.layer_num))
                         logger.info(
                             "[%s] Tray change during print: tray=%d at layer=%d",
@@ -1989,6 +2088,22 @@ class BambuMQTTClient:
                 # Log 'cur' field if present (might indicate current/active extruder)
                 if "cur" in ext_data:
                     logger.debug("[%s] device.extruder.cur: %s", self.serial_number, ext_data["cur"])
+
+        # Filament Track Switch (FTS) detection — upstream #1162. Presence of
+        # device.fila_switch in MQTT means the FTS accessory is installed.
+        if "device" in data and isinstance(data.get("device"), dict):
+            fs_data = data["device"].get("fila_switch")
+            if isinstance(fs_data, dict):
+                in_raw = fs_data.get("in")
+                out_raw = fs_data.get("out")
+                self.state.fila_switch = FilaSwitchState(
+                    installed=True,
+                    in_slots=list(in_raw) if isinstance(in_raw, list) else [],
+                    out_extruders=list(out_raw) if isinstance(out_raw, list) else [],
+                    stat=int(fs_data.get("stat", 0) or 0),
+                    info=int(fs_data.get("info", 0) or 0),
+                )
+
         if "bed_temper" in data:
             temps["bed"] = float(data["bed_temper"])
         if "bed_target_temper" in data:
@@ -3053,6 +3168,15 @@ class BambuMQTTClient:
             protocol=mqtt.MQTTv311,
         )
 
+        # Bambu's broker has racy PUBACK matching with paho's QoS=1 inflight
+        # tracking (#1164). The default ceiling of 20 wedges sessions after
+        # ~16-20 cumulative commands; lifting it well above any realistic
+        # session count keeps QoS=1 working without changing wire-protocol
+        # behaviour across printer models (A1, P1S, X1C, H2D, P2S, X2D —
+        # all need QoS=1 for reliability). The 0.4.x watchdog reconnect
+        # stays as defence-in-depth.
+        self._client.max_inflight_messages_set(1000)
+
         self._client.username_pw_set("bblp", self.access_code)
         self._client.on_connect = self._on_connect
         self._client.on_disconnect = self._on_disconnect
@@ -3247,6 +3371,13 @@ class BambuMQTTClient:
 
             logger.info("[%s] Sending print command: %s", self.serial_number, json.dumps(command))
             self._client.publish(self.topic_publish, json.dumps(command), qos=1)
+            # Record what we dispatched so /cover can pick the right plate
+            # thumbnail even when the printer's gcode_file echo is just the
+            # 3MF filename without a plate path (#1166). Match the same
+            # subtask_name shape we send so the comparison in resolve_plate_id
+            # works against state.subtask_name reflected back via MQTT.
+            self.state.dispatched_plate_id = plate_id
+            self.state.dispatched_subtask = command["print"]["subtask_name"]
             return True
         else:
             # Log why we couldn't send the command
@@ -3506,6 +3637,39 @@ class BambuMQTTClient:
                     )
                 )
             self._client.publish(self.topic_publish, json.dumps(command), qos=1)
+
+    def register_raw_message_handler(self, handler: Callable[[str, bytes], None]) -> None:
+        """Register a handler invoked for every incoming MQTT message.
+
+        Used by the VP MQTT bridge to republish the printer's report pushes to
+        slicers connected to a virtual printer in non-proxy mode. Handlers run
+        on paho's network thread and must not block; exceptions are caught.
+        """
+        if handler not in self._raw_message_handlers:
+            self._raw_message_handlers.append(handler)
+
+    def unregister_raw_message_handler(self, handler: Callable[[str, bytes], None]) -> None:
+        """Unregister a previously-registered raw-message handler."""
+        try:
+            self._raw_message_handlers.remove(handler)
+        except ValueError:
+            pass
+
+    def publish_raw(self, topic: str, payload: bytes | str, qos: int = 1) -> bool:
+        """Publish a pre-formed payload directly to the printer's MQTT broker.
+
+        Used by the VP MQTT bridge to forward slicer-originated commands
+        without going through ``send_command``'s sequence-id mangling. Returns
+        False if the underlying paho client isn't ready.
+        """
+        if self._client is None:
+            return False
+        try:
+            info = self._client.publish(topic, payload, qos=qos)
+            return info.rc == mqtt.MQTT_ERR_SUCCESS
+        except Exception:
+            logger.exception("[%s] publish_raw failed for topic=%s", self.serial_number, topic)
+            return False
 
     def enable_logging(self, enabled: bool = True):
         """Enable or disable MQTT message logging."""
@@ -4315,7 +4479,9 @@ class BambuMQTTClient:
         """Load filament from a specific AMS tray.
 
         Args:
-            tray_id: Global tray ID (0-15 for AMS slots, or 254 for external spool)
+            tray_id: Global tray ID — 0..15 for AMS slots, 254 for external
+                spool (single-external printers and Ext-L on dual-nozzle H2D),
+                255 for Ext-R on dual-nozzle H2D.
             extruder_id: Unused - kept for API compatibility
 
         Returns:
@@ -4325,18 +4491,34 @@ class BambuMQTTClient:
             logger.warning("[%s] Cannot load filament: not connected", self.serial_number)
             return False
 
-        # Calculate ams_id and slot_id for logging
-        if tray_id == 254:
+        # Build the ams_change_filament command. Encoding differs by target type:
+        #   - AMS slots (0..15): slot_id is the local slot, curr/tar_temp = -1.
+        #   - External spool (tray_id=254): legacy capture from a single-extruder
+        #     printer used slot_id=254, curr/tar_temp=-1; preserved here.
+        #   - Ext-R on dual-nozzle H2D (tray_id=255): captured shape from
+        #     BambuStudio uses slot_id=0 (extruder index, 0=right), and
+        #     curr_temp/tar_temp = the actual right-nozzle temp. See upstream
+        #     #891 for the BambuStudio traffic capture rationale.
+        self._sequence_id += 1
+        if tray_id == 255:
+            ams_id = 255
+            slot_id = 0  # extruder index for the right nozzle
+            right_temp = int(self.state.temperatures.get("nozzle_2", 0) or 0)
+            if right_temp < 180:
+                right_temp = 215  # Reasonable default if right nozzle is cold/unknown
+            curr_temp = right_temp
+            tar_temp = right_temp
+        elif tray_id == 254:
             ams_id = 255  # External spool
             slot_id = 254
+            curr_temp = -1
+            tar_temp = -1
         else:
             ams_id = tray_id // 4  # AMS unit (0, 1, 2, 3...)
             slot_id = tray_id % 4  # Slot within AMS (0, 1, 2, 3)
+            curr_temp = -1
+            tar_temp = -1
 
-        # Command format from BambuStudio traffic capture:
-        # - No extruder_id field
-        # - curr_temp and tar_temp are -1 (not 0)
-        self._sequence_id += 1
         command = {
             "print": {
                 "command": "ams_change_filament",
@@ -4344,8 +4526,8 @@ class BambuMQTTClient:
                 "ams_id": ams_id,
                 "slot_id": slot_id,
                 "target": tray_id,
-                "curr_temp": -1,
-                "tar_temp": -1,
+                "curr_temp": curr_temp,
+                "tar_temp": tar_temp,
             }
         }
 

@@ -16,11 +16,11 @@ import json
 import logging
 import time
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.api.routes.cloud import get_stored_token
+from backend.app.api.routes.cloud import get_stored_token, resolve_api_key_cloud_owner
 from backend.app.core.auth import require_permission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -36,7 +36,15 @@ from backend.app.services.bambu_cloud import (
     BambuCloudError,
     BambuCloudService,
 )
-from backend.app.services.slicer_api import SlicerApiError, SlicerApiService
+from backend.app.services.slicer_api import (
+    BundleNotFoundError,
+    BundleSummary,
+    SlicerApiError,
+    SlicerApiServerError,
+    SlicerApiService,
+    SlicerApiUnavailableError,
+    SlicerInputError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -316,6 +324,7 @@ def _dedupe_by_name(
 async def list_unified_presets(
     db: AsyncSession = Depends(get_db),
     current_user: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD)),
+    api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
 ) -> UnifiedPresetsResponse:
     """List slicer presets across cloud / local / standard tiers, deduped by name.
 
@@ -325,8 +334,15 @@ async def list_unified_presets(
     gated on ``CLOUD_AUTH`` inside :func:`_fetch_cloud_presets` so a user
     with only ``LIBRARY_UPLOAD`` doesn't see cloud presets they shouldn't
     have access to.
+
+    For API-key callers (no JWT user) with ``can_access_cloud=True`` set on
+    the key, ``api_key_cloud_owner`` resolves to the key's owner so cloud
+    presets surface against that user's stored Bambu Cloud token (#1182).
+    Without an API-key cloud-owner, the cloud tier remains empty (the same
+    behaviour as a JWT request from a user with no cloud token).
     """
-    cloud, cloud_status = await _fetch_cloud_presets(db, current_user)
+    cloud_token_user = current_user or api_key_cloud_owner
+    cloud, cloud_status = await _fetch_cloud_presets(db, cloud_token_user)
     local = await _fetch_local_presets(db)
     standard = await _fetch_bundled_presets(db)
 
@@ -445,3 +461,123 @@ async def get_preview_slice_progress(
     if response.status_code == 404:
         raise HTTPException(status_code=404, detail="Progress unavailable")
     return response.json()
+
+
+# ---------------------------------------------------------------------------
+# Slicer Preset Bundles (.bbscfg) — pick presets from a stored bundle
+# instead of resolving cloud/local/standard PresetRefs every slice.
+# ---------------------------------------------------------------------------
+
+
+def _bundle_summary_to_dict(bundle: BundleSummary) -> dict:
+    """Serialise a BundleSummary for the JSON response."""
+    return {
+        "id": bundle.id,
+        "printer_preset_name": bundle.printer_preset_name,
+        "printer": bundle.printer,
+        "process": bundle.process,
+        "filament": bundle.filament,
+        "version": bundle.version,
+    }
+
+
+def _map_sidecar_error_to_http(exc: SlicerApiError) -> HTTPException:
+    """Sidecar 4xx → 400, 5xx → 502, unreachable → 503, BundleNotFound → 404.
+
+    Keeps the frontend's error rendering uniform across all bundle routes —
+    a sidecar that's misconfigured / offline shows a clear 503 instead of
+    leaking the underlying connection error to the operator.
+    """
+    if isinstance(exc, BundleNotFoundError):
+        return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, SlicerInputError):
+        return HTTPException(status_code=400, detail=str(exc))
+    if isinstance(exc, SlicerApiUnavailableError):
+        return HTTPException(status_code=503, detail=str(exc))
+    if isinstance(exc, SlicerApiServerError):
+        return HTTPException(status_code=502, detail=str(exc))
+    return HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/bundles", status_code=201)
+async def import_slicer_bundle(
+    file: UploadFile = File(...),  # noqa: B008 — FastAPI Depends-style default
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD)),
+) -> dict:
+    """``POST /slicer/bundles`` — upload a BambuStudio Printer Preset Bundle (.bbscfg).
+
+    Idempotent on the sidecar side: re-uploading the same file yields the
+    same id. Sidecar 4xx → 400 (invalid .bbscfg / path-traversal /
+    manifest validation failure), 5xx → 502, unreachable → 503.
+    """
+    api_url = await _resolve_slicer_api_url(db)
+    if not api_url:
+        raise HTTPException(status_code=503, detail="No slicer sidecar configured")
+    zip_bytes = await file.read()
+    filename = file.filename or "bundle.bbscfg"
+    try:
+        async with SlicerApiService(base_url=api_url) as svc:
+            bundle = await svc.import_bundle(zip_bytes, filename=filename)
+    except SlicerApiError as exc:
+        raise _map_sidecar_error_to_http(exc) from exc
+    return _bundle_summary_to_dict(bundle)
+
+
+@router.get("/bundles")
+async def list_slicer_bundles(
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD)),
+) -> list[dict]:
+    """``GET /slicer/bundles`` — every imported bundle and its presets.
+
+    Returns ``[]`` when the sidecar's bundle store is empty. 503 when the
+    sidecar is unreachable.
+    """
+    api_url = await _resolve_slicer_api_url(db)
+    if not api_url:
+        # Empty list rather than 503 here so the SliceModal's "is the bundle
+        # picker visible?" decision degrades gracefully on installs where
+        # the sidecar isn't configured at all.
+        return []
+    try:
+        async with SlicerApiService(base_url=api_url) as svc:
+            bundles = await svc.list_bundles()
+    except SlicerApiError as exc:
+        raise _map_sidecar_error_to_http(exc) from exc
+    return [_bundle_summary_to_dict(b) for b in bundles]
+
+
+@router.get("/bundles/{bundle_id}")
+async def get_slicer_bundle(
+    bundle_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD)),
+) -> dict:
+    """``GET /slicer/bundles/<id>`` — single bundle summary."""
+    api_url = await _resolve_slicer_api_url(db)
+    if not api_url:
+        raise HTTPException(status_code=503, detail="No slicer sidecar configured")
+    try:
+        async with SlicerApiService(base_url=api_url) as svc:
+            bundle = await svc.get_bundle(bundle_id)
+    except SlicerApiError as exc:
+        raise _map_sidecar_error_to_http(exc) from exc
+    return _bundle_summary_to_dict(bundle)
+
+
+@router.delete("/bundles/{bundle_id}", status_code=204)
+async def delete_slicer_bundle(
+    bundle_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD)),
+) -> None:
+    """``DELETE /slicer/bundles/<id>`` — remove a stored bundle."""
+    api_url = await _resolve_slicer_api_url(db)
+    if not api_url:
+        raise HTTPException(status_code=503, detail="No slicer sidecar configured")
+    try:
+        async with SlicerApiService(base_url=api_url) as svc:
+            await svc.delete_bundle(bundle_id)
+    except SlicerApiError as exc:
+        raise _map_sidecar_error_to_http(exc) from exc

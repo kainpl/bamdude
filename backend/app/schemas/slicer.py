@@ -17,6 +17,24 @@ class PresetRef(BaseModel):
     id: str = Field(..., description="Cloud setting_id, local DB row id (stringified), or standard preset name.")
 
 
+class SliceBundleSpec(BaseModel):
+    """A reference to a sidecar-stored ``.bbscfg`` Printer Preset Bundle.
+
+    When ``SliceRequest.bundle`` is set, the dispatcher skips PresetRef
+    resolution entirely and asks the sidecar to materialise the printer /
+    process / filament JSONs from the stored bundle by name. Replaces the
+    triplet for that slice — bundle and PresetRefs are mutually exclusive.
+    """
+
+    bundle_id: str = Field(..., description="Sidecar bundle id (returned from /slicer/bundles).")
+    printer_name: str = Field(..., description="Printer preset name within the bundle.")
+    process_name: str = Field(..., description="Process preset name within the bundle.")
+    filament_names: list[str] = Field(
+        default_factory=list,
+        description="Per-slot filament preset names within the bundle. Index 0 = slot 1.",
+    )
+
+
 class SliceRequest(BaseModel):
     """Body for ``POST /library/files/{file_id}/slice``.
 
@@ -101,6 +119,16 @@ class SliceRequest(BaseModel):
             "per source file. Falls back to the global preferred_slicer setting when null."
         ),
     )
+    bundle: SliceBundleSpec | None = Field(
+        default=None,
+        description=(
+            "Optional Printer Preset Bundle reference. When set, the dispatcher "
+            "skips PresetRef resolution and asks the sidecar to materialise the "
+            "printer / process / filament JSONs from the stored bundle by name. "
+            "Mutually exclusive with the *_preset / *_preset_id fields — a "
+            "request with both falls back to the bundle path."
+        ),
+    )
 
     @model_validator(mode="after")
     def normalise_preset_refs(self) -> "SliceRequest":
@@ -109,7 +137,17 @@ class SliceRequest(BaseModel):
         deals with the canonical shape. For filament: a non-empty
         ``filament_presets`` list satisfies the requirement on its own; an
         empty list falls back to the singular fields, which then promote
-        into a one-element list."""
+        into a one-element list.
+
+        When ``bundle`` is set, the per-slot PresetRef requirement is skipped
+        entirely — the bundle path resolves printer / process / filament
+        names sidecar-side from the stored ``.bbscfg``.
+        """
+        if self.bundle is not None:
+            # Bundle path: skip the PresetRef-required validation. The
+            # dispatcher will route through ``slice_with_bundle`` which
+            # ignores the *_preset fields.
+            return self
         for slot, ref_attr, legacy_attr in (
             ("printer", "printer_preset", "printer_preset_id"),
             ("process", "process_preset", "process_preset_id"),

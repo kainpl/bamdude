@@ -376,6 +376,9 @@ class OIDCProviderCreate(BaseModel):
     email_claim: str = Field(default="email", max_length=64)
     require_email_verified: bool = True
     icon_url: str | None = None
+    # Operator-configurable default group for auto-created OIDC users
+    # (#1173). NULL → callback falls back to "Viewers".
+    default_group_id: int | None = None
 
     @field_validator("issuer_url")
     @classmethod
@@ -430,6 +433,7 @@ class OIDCProviderUpdate(BaseModel):
     email_claim: str | None = Field(default=None, max_length=64)
     require_email_verified: bool | None = None
     icon_url: str | None = None
+    default_group_id: int | None = None
 
     @field_validator("scopes")
     @classmethod
@@ -476,6 +480,7 @@ class OIDCProviderResponse(BaseModel):
     email_claim: str = "email"
     require_email_verified: bool = True
     icon_url: str | None = None
+    default_group_id: int | None = None
 
     class Config:
         from_attributes = True
@@ -495,3 +500,22 @@ class OIDCLinkResponse(BaseModel):
     provider_name: str
     provider_email: str | None = None
     created_at: str
+
+
+class EncryptionRowCounts(BaseModel):
+    oidc_providers: int
+    user_totp: int
+
+
+class EncryptionStatusResponse(BaseModel):
+    key_configured: bool
+    key_source: Literal["env", "file", "generated", "none"]
+    legacy_plaintext_rows: EncryptionRowCounts
+    encrypted_rows: EncryptionRowCounts
+    # Filled by the endpoint after a sample-decrypt of one encrypted row, so
+    # a wrong-key state (key_configured=True but rows decrypt to junk) is
+    # detected, not just the no-key case.
+    decryption_broken: bool = False
+    # Number of rows skipped during the last legacy re-encryption migration.
+    # Filled from backend.app.core.database.get_migration_error_count().
+    migration_error_count: int = 0

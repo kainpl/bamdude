@@ -32,11 +32,14 @@ openpyxl>=3.1.0
 pywebpush>=2.0.0
 
 # Utilities
-python-multipart>=0.0.26  # CVE-2026-40347 (malformed multipart DoS)
+python-multipart>=0.0.27  # CVE-2026-42561 (parser-side; supersedes CVE-2026-40347 floor on 0.0.26)
 aiofiles>=23.0.0
 
 # QR Code generation
 qrcode[pil]>=7.4.0
+
+# PDF spool labels (B.1 from upstream 0.2.4b2)
+reportlab>=4.0.0
 
 # STL Thumbnail Generation
 trimesh>=4.0.0

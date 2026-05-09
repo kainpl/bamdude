@@ -1,4 +1,6 @@
-import { useState, useMemo, useEffect, type CSSProperties, type ReactNode } from 'react';
+import { useState, useMemo, useEffect, useRef, useCallback, type CSSProperties, type ReactNode } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { buildFilamentBackground } from '../components/filamentSwatchHelpers';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -7,12 +9,13 @@ import {
   TrendingDown, Layers, Printer, AlertTriangle, X, Clock, LayoutGrid, TableProperties, Columns,
   ArrowUp, ArrowDown, ArrowUpDown, Group, ChevronDown, Check, RefreshCw,
 } from 'lucide-react';
-import { api } from '../api/client';
+import { api, ApiError } from '../api/client';
 import type { InventorySpool, SpoolAssignment, SpoolCatalogEntry } from '../api/client';
 import { Button } from '../components/Button';
 import { SpoolFormModal } from '../components/SpoolFormModal';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { ColumnConfigModal, type ColumnConfig } from '../components/ColumnConfigModal';
+import { LabelTemplatePickerModal } from '../components/LabelTemplatePickerModal';
 import { useToast } from '../contexts/ToastContext';
 import { resolveSpoolColorName } from '../utils/colors';
 import { getCurrencySymbol } from '../utils/currency';
@@ -23,6 +26,7 @@ import {
   formatSpoolDisplayName,
   spoolDisplayNameMatches,
 } from '../utils/spoolName';
+// filterSpoolsByQuery — imported from utils/inventorySearch by Spoolman-mode upstream PR #1241; reserved for future Spoolman-side filtering paths.
 
 type ArchiveFilter = 'active' | 'archived';
 type UsageFilter = 'all' | 'used' | 'new' | 'lowstock';
@@ -35,23 +39,21 @@ type DisplayItem =
   | { type: 'group'; key: string; spools: InventorySpool[]; representative: InventorySpool };
 
 /**
- * B.1 — render the swatch as either a flat colour, a linear-gradient over the
- * extra-colour stops, or a CSS effect overlay. Always falls back to the
- * existing flat-`rgba` swatch shape so the helper is safe to swap in.
+ * B.1 / A.17 — render the swatch as a layered CSS background composed by the
+ * shared `buildFilamentBackground` helper: effect-overlay (sparkle / glow /
+ * etc.) on top of the colour layer (solid / 135° gradient / hard-split bars
+ * for dual-color · tri-color / conic for multicolor), with a fixed-tile
+ * checkerboard underlayer so transparent spools render visibly. Same
+ * helper drives the form preview and the `<FilamentSwatch>` component, so
+ * the inventory list, group banner, and edit form can never disagree.
  */
 function spoolSwatchStyle(s: InventorySpool): CSSProperties {
-  const base = s.rgba ? `#${s.rgba.substring(0, 6)}` : '#808080';
-  const stops = (s.extra_colors || '')
-    .split(',')
-    .map((token) => token.trim())
-    .filter((token) => /^[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$/.test(token))
-    .slice(0, 8)
-    .map((token) => `#${token.substring(0, 6)}`);
-  if (stops.length > 0) {
-    const colors = [base, ...stops];
-    return { background: `linear-gradient(135deg, ${colors.join(', ')})` };
-  }
-  return { backgroundColor: base };
+  return buildFilamentBackground({
+    rgba: s.rgba,
+    extraColors: s.extra_colors,
+    effectType: s.effect_type,
+    subtype: s.subtype,
+  });
 }
 
 function spoolGroupKey(s: InventorySpool): string {
@@ -75,6 +77,7 @@ const DEFAULT_COLUMNS: ColumnConfig[] = [
   { id: 'brand', label: 'Brand', visible: true },
   { id: 'slicer_filament', label: 'Slicer Filament', visible: false },
   { id: 'location', label: 'Location', visible: true },
+  { id: 'storage_location', label: 'Storage Location', visible: false },
   { id: 'label_weight', label: 'Label', visible: true },
   { id: 'net', label: 'Net', visible: true },
   { id: 'gross', label: 'Gross', visible: false },
@@ -181,11 +184,22 @@ function formatInventoryDate(dateStr: string | null, dateFormat: DateFormat = 's
   return formatDateInput(date, dateFormat);
 }
 
+// Slim shape for the LOCATION column — only the fields actually rendered.
+// Sourced from either local SpoolAssignment (lokal) or SpoolmanSlotAssignment
+// (Spoolman mode), so we can't reuse SpoolAssignment without dummy values.
+type LocationDisplay = {
+  printer_id: number;
+  printer_name: string | null;
+  ams_id: number;
+  tray_id: number;
+  ams_label: string | null;
+};
+
 type CellCtx = {
   spool: InventorySpool;
   remaining: number;
   pct: number;
-  assignmentMap: Record<number, SpoolAssignment>;
+  assignmentMap: Record<number, LocationDisplay>;
   catalogMap: Record<number, SpoolCatalogEntry>;
   currencySymbol: string;
   dateFormat: DateFormat;
@@ -212,6 +226,7 @@ const columnHeaders: Record<string, (t: TFn) => string> = {
   brand: (t) => t('inventory.columns.brand'),
   slicer_filament: (t) => t('inventory.columns.slicer_filament'),
   location: (t) => t('inventory.columns.location'),
+  storage_location: (t) => t('inventory.storageLocation'),
   label_weight: (t) => t('inventory.columns.label_weight'),
   net: (t) => t('inventory.columns.net'),
   gross: (t) => t('inventory.columns.gross'),
@@ -306,6 +321,14 @@ const columnCells: Record<string, (ctx: CellCtx) => ReactNode> = {
     return (
       <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-purple-500/20 text-purple-400">
         {printerLabel} {slotLabel}{assignment.ams_label ? ` (${assignment.ams_label})` : ''}
+      </span>
+    );
+  },
+  storage_location: ({ spool }) => {
+    if (!spool.storage_location) return <span className="text-sm text-bambu-gray">-</span>;
+    return (
+      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-blue-500/20 text-blue-400">
+        {spool.storage_location}
       </span>
     );
   },
@@ -451,7 +474,8 @@ const columnCells: Record<string, (ctx: CellCtx) => ReactNode> = {
 };
 
 // Sort value extractors - return a comparable value for each sortable column
-const columnSortValues: Record<string, (spool: InventorySpool, assignmentMap: Record<number, SpoolAssignment>) => string | number> = {
+// LocationDisplay (Spoolman-mode) augments the legacy SpoolAssignment shape (BamDude PR #1241 port).
+const columnSortValues: Record<string, (spool: InventorySpool, assignmentMap: Record<number, SpoolAssignment | LocationDisplay>) => string | number> = {
   id: (s) => s.id,
   // display_name is sortable — the real comparison lives in the sortedSpools
   // memo (it needs the user's configurable template which module scope can't
@@ -476,6 +500,7 @@ const columnSortValues: Record<string, (spool: InventorySpool, assignmentMap: Re
     const label = a.ams_label ? ` (${a.ams_label})` : '';
     return `${a.printer_name || ''} ${formatSlotLabel(a.ams_id, a.tray_id, isHt, isExt)}${label}`;
   },
+  storage_location: (s) => (s.storage_location || '').toLowerCase(),
   label_weight: (s) => s.label_weight,
   net: (s) => Math.max(0, s.label_weight - s.weight_used),
   gross: (s) => Math.max(0, s.label_weight - s.weight_used) + s.core_weight,
@@ -516,14 +541,16 @@ function saveSortState(state: SortState) {
   } catch { /* ignore */ }
 }
 
-// Wrapper: when Spoolman is enabled, embed its UI; otherwise show internal inventory
+// Wrapper: detects Spoolman mode and passes it to the shared inventory UI
 export default function InventoryPageRouter() {
   const { t } = useTranslation();
-  const { data: spoolmanSettings } = useQuery({
+  const { data: spoolmanSettings, isLoading: spoolmanSettingsLoading } = useQuery({
     queryKey: ['spoolman-settings'],
     queryFn: api.getSpoolmanSettings,
     staleTime: 5 * 60 * 1000,
   });
+  const spoolmanMode = spoolmanSettings?.spoolman_enabled === 'true';
+  const spoolmanModeReady = !spoolmanSettingsLoading;
 
   if (spoolmanSettings?.spoolman_enabled === 'true' && spoolmanSettings?.spoolman_url) {
     const spoolmanUrl = spoolmanSettings.spoolman_url.replace(/\/+$/, '');
@@ -576,15 +603,19 @@ export default function InventoryPageRouter() {
     );
   }
 
-  return <InventoryPage />;
+  return <InventoryPage spoolmanMode={spoolmanMode} spoolmanModeReady={spoolmanModeReady} />;
 }
 
-function InventoryPage() {
+function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spoolmanMode?: boolean; spoolmanModeReady?: boolean }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [formModal, setFormModal] = useState<{ spool?: InventorySpool | null } | null>(null);
+  const deepLinkHandled = useRef(false);
   const [confirmAction, setConfirmAction] = useState<{ type: 'delete' | 'archive'; spoolId: number } | null>(null);
+  // Label printing (B.1 #809). null = closed; otherwise the IDs to pre-check.
+  const [labelPickerSpoolIds, setLabelPickerSpoolIds] = useState<number[] | null>(null);
 
   // Filter state
   const [archiveFilter, setArchiveFilter] = useState<ArchiveFilter>('active');
@@ -627,11 +658,82 @@ function InventoryPage() {
   const dateFormat: DateFormat = settings?.date_format || 'system';
   const spoolDisplayTemplate = settings?.spool_display_template || DEFAULT_SPOOL_DISPLAY_TEMPLATE;
 
+  // Query key and fetch function differ based on data source
+  const spoolsQueryKey = spoolmanMode ? ['spoolman-inventory-spools'] : ['inventory-spools'];
   const { data: spools, isLoading } = useQuery({
-    queryKey: ['inventory-spools'],
-    queryFn: () => api.getSpools(true), // Always fetch all, filter client-side
+    queryKey: spoolsQueryKey,
+    queryFn: () =>
+      spoolmanMode ? api.getSpoolmanInventorySpools(true) : api.getSpools(true),
     refetchInterval: 30000,
   });
+
+  // Deep-link: open edit modal for ?spool=<id>
+  // Prefer the already-loaded spool list (no extra API call); fall back to a
+  // targeted fetch for the rare case where the full list hasn't arrived yet.
+  const _rawSpoolParam = searchParams.get('spool');
+  // Only accept strings of digits representing a positive integer — guards against
+  // NaN (Number('abc')), 0, negatives, and floats like '1.5' that would produce
+  // an invalid path parameter and trigger unnecessary 422 responses from the API.
+  const deepLinkSpoolId =
+    _rawSpoolParam && /^\d+$/.test(_rawSpoolParam) && Number(_rawSpoolParam) > 0
+      ? Number(_rawSpoolParam)
+      : null;
+  const deepLinkInList = spools?.find((s) => s.id === deepLinkSpoolId) ?? null;
+
+  const clearDeepLinkParam = useCallback(() => {
+    deepLinkHandled.current = true;
+    setSearchParams((prev) => { prev.delete('spool'); return prev; }, { replace: true });
+  }, [setSearchParams]);
+
+  // Targeted fetch — only fires when mode is known and spool isn't in the list yet
+  const { data: deepLinkSpool, isError: deepLinkFetchFailed, error: deepLinkError } = useQuery({
+    queryKey: spoolmanMode
+      ? ['spoolman-inventory-spool', deepLinkSpoolId]
+      : ['inventory-spool', deepLinkSpoolId],
+    queryFn: () =>
+      spoolmanMode
+        ? api.getSpoolmanInventorySpool(deepLinkSpoolId!)
+        : api.getSpool(deepLinkSpoolId!),
+    enabled: spoolmanModeReady && deepLinkSpoolId !== null && deepLinkInList === null,
+    staleTime: Infinity,
+    retry: (failureCount, error) =>
+      failureCount < 2 && !(error instanceof ApiError && error.status === 404),
+  });
+
+  useEffect(() => {
+    if (deepLinkHandled.current) return;
+
+    // Case 1: spool is already in the fetched list
+    if (spoolmanModeReady && deepLinkSpoolId && deepLinkInList) {
+      clearDeepLinkParam();
+      setFormModal({ spool: deepLinkInList });
+      return;
+    }
+
+    // Case 2: spool was fetched individually
+    if (deepLinkSpool) {
+      clearDeepLinkParam();
+      setFormModal({ spool: deepLinkSpool });
+      return;
+    }
+
+    // Case 3: fetch failed
+    if (deepLinkFetchFailed) {
+      clearDeepLinkParam();
+      const is404 = deepLinkError instanceof ApiError && deepLinkError.status === 404;
+      showToast(t(is404 ? 'inventory.deepLinkSpoolNotFound' : 'inventory.deepLinkFetchFailed'), 'error');
+    }
+  }, [
+    spoolmanModeReady,
+    deepLinkSpoolId,
+    deepLinkInList,
+    deepLinkSpool,
+    deepLinkFetchFailed,
+    deepLinkError,
+    clearDeepLinkParam,
+    showToast,
+    t,
+  ]);
 
   const { data: assignments } = useQuery({
     queryKey: ['spool-assignments'],
@@ -639,32 +741,89 @@ function InventoryPage() {
     refetchInterval: 30000,
   });
 
+  // Spoolman-mode slot assignments. spool.id IS the spoolman_spool_id, so this
+  // feeds into the same assignmentMap that the LOCATION column reads.
+  const {
+    data: spoolmanSlotAssignments = [],
+    isError: spoolmanSlotAssignmentsError,
+  } = useQuery({
+    queryKey: ['spoolman-slot-assignments-all'],
+    queryFn: () => api.getSpoolmanSlotAssignments(),
+    enabled: spoolmanMode,
+    refetchInterval: 30000,
+    staleTime: 10000,
+    retry: 1,
+  });
+
+  // Surface a single toast when the slot-assignment endpoint goes down — the
+  // LOCATION column would otherwise silently show "-" for every Spoolman spool.
+  // useRef guard prevents repeated toasts during refetchInterval polls.
+  const slotErrorToastShown = useRef(false);
+  useEffect(() => {
+    if (spoolmanSlotAssignmentsError && !slotErrorToastShown.current) {
+      slotErrorToastShown.current = true;
+      showToast(t('inventory.spoolmanUnreachable'), 'error');
+    } else if (!spoolmanSlotAssignmentsError) {
+      slotErrorToastShown.current = false;
+    }
+  }, [spoolmanSlotAssignmentsError, showToast, t]);
+
   const { data: catalogEntries } = useQuery({
     queryKey: ['spool-catalog'],
     queryFn: () => api.getSpoolCatalog(),
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (id: number) => api.deleteSpool(id),
+    mutationFn: (id: number) =>
+      spoolmanMode ? api.deleteSpoolmanInventorySpool(id) : api.deleteSpool(id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['inventory-spools'] });
+      queryClient.invalidateQueries({ queryKey: spoolsQueryKey });
       showToast(t('inventory.spoolDeleted'), 'success');
+    },
+    onError: (error: Error) => {
+      if (error instanceof ApiError && error.status === 404) {
+        showToast(t('inventory.deleteSpoolNotFound'), 'error');
+      } else if (error instanceof ApiError && error.status === 503) {
+        showToast(t('inventory.spoolmanUnreachable'), 'error');
+      } else {
+        showToast(t('inventory.deleteFailed'), 'error');
+      }
     },
   });
 
   const archiveMutation = useMutation({
-    mutationFn: (id: number) => api.archiveSpool(id),
+    mutationFn: (id: number) =>
+      spoolmanMode ? api.archiveSpoolmanInventorySpool(id) : api.archiveSpool(id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['inventory-spools'] });
+      queryClient.invalidateQueries({ queryKey: spoolsQueryKey });
       showToast(t('inventory.spoolArchived'), 'success');
+    },
+    onError: (error: Error) => {
+      if (error instanceof ApiError && error.status === 404) {
+        showToast(t('inventory.archiveSpoolNotFound'), 'error');
+      } else if (error instanceof ApiError && error.status === 503) {
+        showToast(t('inventory.spoolmanUnreachable'), 'error');
+      } else {
+        showToast(t('inventory.archiveFailed'), 'error');
+      }
     },
   });
 
   const restoreMutation = useMutation({
-    mutationFn: (id: number) => api.restoreSpool(id),
+    mutationFn: (id: number) =>
+      spoolmanMode ? api.restoreSpoolmanInventorySpool(id) : api.restoreSpool(id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['inventory-spools'] });
+      queryClient.invalidateQueries({ queryKey: spoolsQueryKey });
       showToast(t('inventory.spoolRestored'), 'success');
+    },
+    onError: (error: Error) => {
+      if (error instanceof ApiError && error.status === 404) {
+        showToast(t('inventory.restoreSpoolNotFound'), 'error');
+      } else if (error instanceof ApiError && error.status === 503) {
+        showToast(t('inventory.spoolmanUnreachable'), 'error');
+      } else {
+        showToast(t('inventory.restoreFailed'), 'error');
+      }
     },
   });
 
@@ -718,18 +877,50 @@ function InventoryPage() {
     return { totalWeight, totalConsumed, lowStock, byMaterial, totalSpools: activeCount };
   }, [spools, lowStockThreshold]);
 
-  const inPrinterCount = assignments?.length ?? 0;
+  const inPrinterCount =
+    (assignments?.length ?? 0) + (spoolmanMode ? spoolmanSlotAssignments.length : 0);
 
   const currencySymbol = getCurrencySymbol(settings?.currency || 'USD');
 
-  // Map spool_id -> assignment for location column
-  const assignmentMap = useMemo(() => {
-    const map: Record<number, SpoolAssignment> = {};
+  // Map spool_id -> location display data for the LOCATION column.
+  // Local SpoolAssignment entries first, then Spoolman SlotAssignment fills in
+  // remaining IDs. Local wins on collision (defensive — modes are exclusive in
+  // practice, but a stray pair with the same numeric id would otherwise be
+  // unpredictable). spool.id IS the spoolman_spool_id in Spoolman mode.
+  const assignmentMap = useMemo<Record<number, LocationDisplay>>(() => {
+    const map: Record<number, LocationDisplay> = {};
     for (const a of assignments || []) {
-      map[a.spool_id] = a;
+      map[a.spool_id] = {
+        printer_id: a.printer_id,
+        printer_name: a.printer_name,
+        ams_id: a.ams_id,
+        tray_id: a.tray_id,
+        ams_label: a.ams_label ?? null,
+      };
+    }
+    for (const a of spoolmanSlotAssignments) {
+      // Defensive: skip malformed entries (missing or invalid spool id, ams id,
+      // tray id). The Pydantic response model on the backend should already
+      // reject these, but MITM proxies and stale CDN responses can drop fields.
+      if (
+        typeof a?.spoolman_spool_id !== 'number' ||
+        a.spoolman_spool_id <= 0 ||
+        typeof a.printer_id !== 'number' ||
+        typeof a.ams_id !== 'number' ||
+        typeof a.tray_id !== 'number'
+      ) continue;
+      if (!map[a.spoolman_spool_id]) {
+        map[a.spoolman_spool_id] = {
+          printer_id: a.printer_id,
+          printer_name: a.printer_name ?? null,
+          ams_id: a.ams_id,
+          tray_id: a.tray_id,
+          ams_label: a.ams_label ?? null,
+        };
+      }
     }
     return map;
-  }, [assignments]);
+  }, [assignments, spoolmanSlotAssignments]);
 
   // Map catalog_id -> catalog entry for spool name column
   const catalogMap = useMemo(() => {
@@ -740,12 +931,15 @@ function InventoryPage() {
     return map;
   }, [catalogEntries]);
 
-  // Top materials by weight for stat card pills
+  // Materials by weight for the "By Material" stat card. Sorted heaviest
+  // first so the dominant material lands at the top of the chip list.
+  // No slice cap — operators with many materials (PLA / PETG / ABS / ASA /
+  // TPU / PC / PA / Wood / etc.) need to see them all on the dashboard;
+  // the card flex-wraps chips so it just grows in height when the list is
+  // long, and the other 4 stat cards in the row stretch to match.
   const topMaterials = useMemo(() => {
     if (!stats) return [];
-    return Object.entries(stats.byMaterial)
-      .sort((a, b) => b[1].weight - a[1].weight)
-      .slice(0, 4);
+    return Object.entries(stats.byMaterial).sort((a, b) => b[1].weight - a[1].weight);
   }, [stats]);
 
   // Filtering pipeline
@@ -1013,10 +1207,28 @@ function InventoryPage() {
           </div>
           <p className="text-sm text-bambu-gray">{t('inventory.noSpools').split('.')[0] ? '' : ''}</p>
         </div>
-        <Button onClick={() => setFormModal({ spool: null })}>
-          <Plus className="w-4 h-4" />
-          {t('inventory.addSpool')}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="secondary"
+            disabled={filteredSpools.length === 0}
+            // Pre-select every visible spool so the user lands in "all
+            // checked", then refines downward in the modal. Per-card icon
+            // pre-selects only that spool — both flows share the same picker.
+            onClick={() => setLabelPickerSpoolIds(filteredSpools.map((s) => s.id))}
+            title={
+              filteredSpools.length === 0
+                ? t('inventory.labels.noSpoolsTitle')
+                : t('inventory.labels.bulkTitle', { count: filteredSpools.length })
+            }
+          >
+            <Printer className="w-4 h-4" />
+            {t('inventory.labels.printLabels')}
+          </Button>
+          <Button onClick={() => setFormModal({ spool: null })}>
+            <Plus className="w-4 h-4" />
+            {t('inventory.addSpool')}
+          </Button>
+        </div>
       </div>
 
       {/* Stats Bar */}
@@ -1030,16 +1242,6 @@ function InventoryPage() {
             </div>
             <div className="text-xl font-bold text-white">{formatWeight(stats.totalWeight, true)}</div>
             <div className="text-xs text-bambu-gray mt-1">{stats.totalSpools} {stats.totalSpools !== 1 ? t('inventory.spools') : t('inventory.spool')}</div>
-          </div>
-
-          {/* Total Consumed */}
-          <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg p-4">
-            <div className="flex items-center gap-2 mb-1">
-              <TrendingDown className="w-4 h-4 text-blue-400" />
-              <span className="text-xs text-bambu-gray font-medium uppercase tracking-wide">{t('inventory.totalConsumed')}</span>
-            </div>
-            <div className="text-xl font-bold text-white">{formatWeight(stats.totalConsumed, true)}</div>
-            <div className="text-xs text-bambu-gray mt-1">{t('inventory.sinceTracking')}</div>
           </div>
 
           {/* By Material */}
@@ -1058,6 +1260,16 @@ function InventoryPage() {
                 </span>
               ))}
             </div>
+          </div>
+
+          {/* Total Consumed */}
+          <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg p-4">
+            <div className="flex items-center gap-2 mb-1">
+              <TrendingDown className="w-4 h-4 text-blue-400" />
+              <span className="text-xs text-bambu-gray font-medium uppercase tracking-wide">{t('inventory.totalConsumed')}</span>
+            </div>
+            <div className="text-xl font-bold text-white">{formatWeight(stats.totalConsumed, true)}</div>
+            <div className="text-xs text-bambu-gray mt-1">{t('inventory.sinceTracking')}</div>
           </div>
 
           {/* In Printer */}
@@ -1471,6 +1683,7 @@ function InventoryPage() {
                                 pct={pct}
                                 colorStyle={spoolColor}
                                 onClick={() => setFormModal({ spool })}
+                                onPrintLabel={() => setLabelPickerSpoolIds([spool.id])}
                                 t={t}
                               />
                             );
@@ -1492,6 +1705,7 @@ function InventoryPage() {
                     pct={pct}
                     colorStyle={colorStyle}
                     onClick={() => setFormModal({ spool })}
+                    onPrintLabel={() => setLabelPickerSpoolIds([spool.id])}
                     t={t}
                   />
                 );
@@ -1569,6 +1783,7 @@ function InventoryPage() {
                           onEdit={(s) => setFormModal({ spool: s })}
                           onArchive={(id) => setConfirmAction({ type: 'archive', spoolId: id })}
                           onDelete={(id) => setConfirmAction({ type: 'delete', spoolId: id })}
+                          onPrintLabel={(id) => setLabelPickerSpoolIds([id])}
                           visibleColumns={renderColumns}
                           assignmentMap={assignmentMap}
                           catalogMap={catalogMap}
@@ -1592,6 +1807,7 @@ function InventoryPage() {
                         onRestore={() => restoreMutation.mutate(spool.id)}
                         onArchive={() => setConfirmAction({ type: 'archive', spoolId: spool.id })}
                         onDelete={() => setConfirmAction({ type: 'delete', spoolId: spool.id })}
+                        onPrintLabel={() => setLabelPickerSpoolIds([spool.id])}
                         visibleColumns={renderColumns}
                         assignmentMap={assignmentMap}
                         catalogMap={catalogMap}
@@ -1686,6 +1902,8 @@ function InventoryPage() {
           onClose={() => setFormModal(null)}
           spool={formModal.spool}
           currencySymbol={currencySymbol}
+          spoolmanMode={spoolmanMode}
+          spoolsQueryKey={spoolsQueryKey}
         />
       )}
 
@@ -1715,6 +1933,18 @@ function InventoryPage() {
         columns={columnConfig}
         defaultColumns={DEFAULT_COLUMNS}
         onSave={handleColumnConfigSave}
+      />
+
+      {/* Label printing (B.1 #809). Spoolman path is wired in client + backend
+          but the inventory UI doesn't expose Spoolman directly here, so the
+          flag is hard-false — flip when the dedicated Spoolman tab lands. */}
+      <LabelTemplatePickerModal
+        isOpen={labelPickerSpoolIds !== null}
+        onClose={() => setLabelPickerSpoolIds(null)}
+        availableSpools={filteredSpools}
+        initialSelectedIds={labelPickerSpoolIds ?? []}
+        spoolmanMode={false}
+        spoolDisplayTemplate={spoolDisplayTemplate}
       />
     </div>
   );
@@ -1799,13 +2029,14 @@ function PaginationBar({
 
 /* Spool card for cards view */
 function SpoolCard({
-  spool, remaining, pct, colorStyle, onClick, t,
+  spool, remaining, pct, colorStyle, onClick, onPrintLabel, t,
 }: {
   spool: InventorySpool;
   remaining: number;
   pct: number;
   colorStyle: string;
   onClick: () => void;
+  onPrintLabel?: () => void;
   t: (key: string, opts?: Record<string, unknown>) => string;
 }) {
   return (
@@ -1826,9 +2057,21 @@ function SpoolCard({
             </h3>
             <p className="text-sm text-bambu-gray">{spool.brand || '-'}</p>
           </div>
-          <span className="text-xs font-mono text-bambu-gray bg-bambu-dark-tertiary px-2 py-1 rounded">
-            #{spool.id}
-          </span>
+          <div className="flex items-center gap-1">
+            {onPrintLabel && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onPrintLabel(); }}
+                className="p-1 text-bambu-gray hover:text-white rounded transition-colors"
+                title={t('inventory.labels.printOne')}
+                aria-label={t('inventory.labels.printOne')}
+              >
+                <Printer className="w-4 h-4" />
+              </button>
+            )}
+            <span className="text-xs font-mono text-bambu-gray bg-bambu-dark-tertiary px-2 py-1 rounded">
+              #{spool.id}
+            </span>
+          </div>
         </div>
         <div>
           <div className="flex justify-between text-xs text-bambu-gray mb-1">
@@ -1874,7 +2117,7 @@ function SpoolCard({
 
 /* Single spool row for table view */
 function SpoolTableRow({
-  spool, remaining, pct, onEdit, onRestore, onArchive, onDelete,
+  spool, remaining, pct, onEdit, onRestore, onArchive, onDelete, onPrintLabel,
   visibleColumns, assignmentMap, catalogMap, currencySymbol, dateFormat, t, onSyncWeight,
   spoolDisplayTemplate,
 }: {
@@ -1885,8 +2128,9 @@ function SpoolTableRow({
   onRestore: () => void;
   onArchive: () => void;
   onDelete: () => void;
+  onPrintLabel?: () => void;
   visibleColumns: string[];
-  assignmentMap: Record<number, SpoolAssignment>;
+  assignmentMap: Record<number, LocationDisplay>;
   catalogMap: Record<number, SpoolCatalogEntry>;
   currencySymbol: string;
   dateFormat: DateFormat;
@@ -1911,6 +2155,11 @@ function SpoolTableRow({
           <button onClick={onEdit} className="p-1.5 text-bambu-gray hover:text-white rounded transition-colors" title={t('common.edit')}>
             <Edit2 className="w-4 h-4" />
           </button>
+          {onPrintLabel && (
+            <button onClick={onPrintLabel} className="p-1.5 text-bambu-gray hover:text-white rounded transition-colors" title={t('inventory.labels.printOne')}>
+              <Printer className="w-4 h-4" />
+            </button>
+          )}
           {spool.archived_at ? (
             <button onClick={onRestore} className="p-1.5 text-bambu-gray hover:text-bambu-green rounded transition-colors" title={t('inventory.restore')}>
               <RotateCcw className="w-4 h-4" />
@@ -1932,7 +2181,7 @@ function SpoolTableRow({
 /* Grouped spool rows for table view */
 function SpoolTableGroup({
   spools, representative, remaining, pct, isExpanded, onToggle,
-  onEdit, onArchive, onDelete,
+  onEdit, onArchive, onDelete, onPrintLabel,
   visibleColumns, assignmentMap, catalogMap, currencySymbol, dateFormat, t, onSyncWeight,
   spoolDisplayTemplate,
 }: {
@@ -1945,8 +2194,9 @@ function SpoolTableGroup({
   onEdit: (spool: InventorySpool) => void;
   onArchive: (id: number) => void;
   onDelete: (id: number) => void;
+  onPrintLabel?: (spoolId: number) => void;
   visibleColumns: string[];
-  assignmentMap: Record<number, SpoolAssignment>;
+  assignmentMap: Record<number, LocationDisplay>;
   catalogMap: Record<number, SpoolCatalogEntry>;
   currencySymbol: string;
   dateFormat: DateFormat;
@@ -1997,6 +2247,7 @@ function SpoolTableGroup({
             onRestore={() => {}}
             onArchive={() => onArchive(spool.id)}
             onDelete={() => onDelete(spool.id)}
+            onPrintLabel={onPrintLabel ? () => onPrintLabel(spool.id) : undefined}
             visibleColumns={visibleColumns}
             assignmentMap={assignmentMap}
             catalogMap={catalogMap}

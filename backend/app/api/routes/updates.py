@@ -9,6 +9,7 @@ import sys
 
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -167,6 +168,61 @@ def is_newer_version(latest: str, current: str) -> bool:
         return False
 
 
+async def _is_release_prerelease(release: dict) -> bool:
+    """Belt-and-braces prerelease detection: respects both the parsed-from-tag
+    convention (``vX.Y.ZbN`` etc.) AND GitHub's own ``prerelease`` flag from
+    the release object. Either signal counts."""
+    parsed = parse_version(release.get("tag_name", ""))
+    if parsed[4] == 1:
+        return True
+    return bool(release.get("prerelease", False))
+
+
+async def _find_latest_release(include_beta: bool) -> dict | None:
+    """Fetch GitHub releases and pick the most recent one matching the channel.
+
+    Returns the raw GitHub release object (or None if nothing matched). Shared
+    by ``/check`` (informational) and ``/apply`` (when no explicit tag given —
+    re-resolves so the apply hits exactly what the user saw on check).
+
+    ``per_page=100`` instead of 20 — gives enough headroom that a long run of
+    betas between two stable releases doesn't accidentally hide the latest
+    stable when ``include_beta=False``.
+    """
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        # follow_redirects=True so that users still installed from an older
+        # repo URL (e.g. the pre-rename kainpl/bambutrack) are transparently
+        # forwarded to the renamed repo via GitHub's 301 Moved Permanently
+        # response. Without this, the 301 is returned as-is, the JSON body is
+        # a redirect message instead of a releases array, and the update
+        # check silently breaks with an AttributeError.
+        response = await client.get(
+            f"https://api.github.com/repos/{GITHUB_REPO}/releases?per_page=100",
+            headers={"Accept": "application/vnd.github.v3+json"},
+            timeout=10.0,
+        )
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        releases = response.json()
+
+    for release in releases:
+        if include_beta:
+            return release
+        if not await _is_release_prerelease(release):
+            return release
+    return None
+
+
+def _resolve_git_ref(tag_or_version: str) -> str:
+    """Normalise a tag/version string to a ``vX.Y.Z[bN]`` git-ref shape used
+    in ``refs/tags/`` lookups. Tags published by ``gh release create`` carry
+    a ``v`` prefix; APP_VERSION + GitHub's ``tag_name.lstrip('v')`` API shape
+    do not. Always re-add the ``v`` so the ref name resolves on the remote."""
+    cleaned = tag_or_version.lstrip("v")
+    return f"v{cleaned}"
+
+
 @router.get("/version")
 async def get_version():
     """Get current application version.
@@ -201,7 +257,7 @@ async def check_for_updates(
     # Check if beta updates should be included
     result = await db.execute(select(Settings).where(Settings.key == "include_beta_updates"))
     beta_setting = result.scalar_one_or_none()
-    include_beta = beta_setting and beta_setting.value.lower() == "true"
+    include_beta = bool(beta_setting and beta_setting.value.lower() == "true")
 
     _update_status = {
         "status": "checking",
@@ -211,93 +267,51 @@ async def check_for_updates(
     }
 
     try:
-        # follow_redirects=True so that users still installed from an older
-        # repo URL (e.g. the pre-rename kainpl/bambutrack) are transparently
-        # forwarded to the renamed repo via GitHub's 301 Moved Permanently
-        # response. Without this, the 301 is returned as-is, the JSON body
-        # is a redirect message instead of a releases array, and the update
-        # check silently breaks with an AttributeError.
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            response = await client.get(
-                f"https://api.github.com/repos/{GITHUB_REPO}/releases?per_page=20",
-                headers={"Accept": "application/vnd.github.v3+json"},
-                timeout=10.0,
-            )
+        release_data = await _find_latest_release(include_beta)
 
-            if response.status_code == 404:
-                # No releases yet
-                _update_status = {
-                    "status": "idle",
-                    "progress": 100,
-                    "message": "No releases found",
-                    "error": None,
-                }
-                return {
-                    "update_available": False,
-                    "current_version": APP_VERSION,
-                    "latest_version": None,
-                    "message": "No releases found",
-                }
-
-            response.raise_for_status()
-            releases = response.json()
-
-            # Find the appropriate release based on beta setting
-            release_data = None
-            for release in releases:
-                tag = release.get("tag_name", "")
-                if include_beta:
-                    # Accept any release (first = newest)
-                    release_data = release
-                    break
-                else:
-                    # Skip prereleases (based on version parsing, not GitHub flag)
-                    parsed = parse_version(tag)
-                    if parsed[4] == 0:  # is_prerelease == 0
-                        release_data = release
-                        break
-
-            if not release_data:
-                _update_status = {
-                    "status": "idle",
-                    "progress": 100,
-                    "message": "No releases found",
-                    "error": None,
-                }
-                return {
-                    "update_available": False,
-                    "current_version": APP_VERSION,
-                    "latest_version": None,
-                    "message": "No releases found",
-                }
-
-            latest_version = release_data.get("tag_name", "").lstrip("v")
-            release_name = release_data.get("name", latest_version)
-            release_notes = release_data.get("body", "")
-            release_url = release_data.get("html_url", "")
-            published_at = release_data.get("published_at", "")
-
-            update_available = is_newer_version(latest_version, APP_VERSION)
-
+        if not release_data:
             _update_status = {
                 "status": "idle",
                 "progress": 100,
-                "message": "Update available" if update_available else "Up to date",
+                "message": "No releases found",
                 "error": None,
             }
-
-            is_docker = _is_docker_environment()
             return {
-                "update_available": update_available,
+                "update_available": False,
                 "current_version": APP_VERSION,
-                "latest_version": latest_version,
-                "release_name": release_name,
-                "release_notes": release_notes,
-                "release_url": release_url,
-                "published_at": published_at,
-                "is_docker": is_docker,
-                "update_method": "docker" if is_docker else "git",
+                "latest_version": None,
+                "message": "No releases found",
             }
+
+        latest_version = release_data.get("tag_name", "").lstrip("v")
+        release_name = release_data.get("name", latest_version)
+        release_notes = release_data.get("body", "")
+        release_url = release_data.get("html_url", "")
+        published_at = release_data.get("published_at", "")
+        is_prerelease = await _is_release_prerelease(release_data)
+
+        update_available = is_newer_version(latest_version, APP_VERSION)
+
+        _update_status = {
+            "status": "idle",
+            "progress": 100,
+            "message": "Update available" if update_available else "Up to date",
+            "error": None,
+        }
+
+        is_docker = _is_docker_environment()
+        return {
+            "update_available": update_available,
+            "current_version": APP_VERSION,
+            "latest_version": latest_version,
+            "is_prerelease": is_prerelease,
+            "release_name": release_name,
+            "release_notes": release_notes,
+            "release_url": release_url,
+            "published_at": published_at,
+            "is_docker": is_docker,
+            "update_method": "docker" if is_docker else "git",
+        }
 
     except httpx.HTTPError as e:
         logger.error("Failed to check for updates: %s", e)
@@ -315,8 +329,16 @@ async def check_for_updates(
         }
 
 
-async def _perform_update():
-    """Perform the actual update using git fetch and reset."""
+async def _perform_update(target_ref: str):
+    """Perform the actual update by checking out a specific git tag.
+
+    ``target_ref`` is a ``vX.Y.Z[bN]`` tag name. Pre-fix this used to hardcode
+    ``origin/main`` and ``git reset --hard origin/main`` — which silently
+    no-op'd a beta install because the beta tag lives on ``dev``, not
+    ``main``. Now it resolves the explicit ``refs/tags/<target_ref>`` so
+    stable + beta channels both work regardless of which branch the user
+    happened to clone from.
+    """
     global _update_status
 
     try:
@@ -333,7 +355,7 @@ async def _perform_update():
             }
             return
 
-        logger.info("Using git at: %s", git_path)
+        logger.info("Using git at: %s; target ref: %s", git_path, target_ref)
 
         # Git config to avoid safe.directory issues
         git_config = ["-c", f"safe.directory={base_dir}"]
@@ -363,17 +385,26 @@ async def _perform_update():
         _update_status = {
             "status": "downloading",
             "progress": 20,
-            "message": "Fetching latest changes...",
+            "message": f"Fetching {target_ref}...",
             "error": None,
         }
 
-        # Fetch from origin
+        # Fetch tags from origin. ``--tags --prune --force`` because:
+        #  - tags must be explicit on `git fetch` (fetch only pulls them with
+        #    --tags or as part of a default refspec; we don't rely on the
+        #    refspec to be set to fetch tags)
+        #  - --prune removes local tags that no longer exist on origin
+        #  - --force lets fetch overwrite any locally-edited tag (rare but
+        #    happens when an upstream maintainer ever force-pushes a tag —
+        #    we want the canonical remote version on every update)
         process = await asyncio.create_subprocess_exec(
             git_path,
             *git_config,
             "fetch",
+            "--tags",
+            "--prune",
+            "--force",
             "origin",
-            "main",
             cwd=str(base_dir),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -394,17 +425,20 @@ async def _perform_update():
         _update_status = {
             "status": "downloading",
             "progress": 40,
-            "message": "Applying updates...",
+            "message": f"Applying {target_ref}...",
             "error": None,
         }
 
-        # Hard reset to origin/main (clean update, no merge conflicts)
+        # Hard reset to refs/tags/<target_ref> (clean update, no merge conflicts).
+        # The ``refs/tags/`` prefix is explicit so a hypothetical branch with
+        # the same name as a tag (extremely unlikely but cheap to guard
+        # against) doesn't shadow the tag lookup.
         process = await asyncio.create_subprocess_exec(
             git_path,
             *git_config,
             "reset",
             "--hard",
-            "origin/main",
+            f"refs/tags/{target_ref}",
             cwd=str(base_dir),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -413,11 +447,11 @@ async def _perform_update():
 
         if process.returncode != 0:
             error_msg = stderr.decode() if stderr else "Git reset failed"
-            logger.error("Git reset failed: %s", error_msg)
+            logger.error("Git reset to %s failed: %s", target_ref, error_msg)
             _update_status = {
                 "status": "error",
                 "progress": 0,
-                "message": "Failed to apply updates",
+                "message": f"Failed to apply {target_ref}",
                 "error": error_msg,
             }
             return
@@ -504,12 +538,24 @@ async def _perform_update():
         }
 
 
+class ApplyUpdateRequest(BaseModel):
+    """Body for ``POST /apply``. ``tag_name`` is what the frontend got back
+    from the latest ``/check`` (e.g. ``"0.4.5b1"`` or ``"v0.4.4"``). When
+    omitted, apply re-fetches GitHub respecting ``include_beta_updates`` —
+    backward compatible with older frontends + a sensible default for
+    scripted callers."""
+
+    tag_name: str | None = None
+
+
 @router.post("/apply")
 async def apply_update(
     background_tasks: BackgroundTasks,
+    body: ApplyUpdateRequest | None = None,
+    db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
-    """Apply available update (git pull + rebuild)."""
+    """Apply available update (git fetch --tags + reset to target tag)."""
     global _update_status
 
     if _update_status["status"] in ["downloading", "installing"]:
@@ -519,31 +565,58 @@ async def apply_update(
             "status": _update_status,
         }
 
-    # Check if running in Docker
+    target_tag = body.tag_name if body else None
+    if not target_tag:
+        # No explicit tag — re-resolve via /check logic so apply hits the
+        # exact release the frontend just saw.
+        beta_result = await db.execute(select(Settings).where(Settings.key == "include_beta_updates"))
+        beta_row = beta_result.scalar_one_or_none()
+        include_beta = bool(beta_row and beta_row.value.lower() == "true")
+        try:
+            release_data = await _find_latest_release(include_beta)
+        except httpx.HTTPError as e:
+            logger.error("apply: failed to resolve latest release: %s", e)
+            return {
+                "success": False,
+                "message": "Failed to resolve latest release from GitHub",
+            }
+        if not release_data:
+            return {"success": False, "message": "No release found"}
+        target_tag = release_data.get("tag_name", "")
+
+    if not target_tag:
+        return {"success": False, "message": "No target tag resolved"}
+
+    target_ref = _resolve_git_ref(target_tag)
+
+    # Check if running in Docker — instructions now include the specific tag
     if _is_docker_environment():
         return {
             "success": False,
             "is_docker": True,
+            "target_ref": target_ref,
             "message": (
-                "Docker installations cannot be updated in-app. "
-                "Please update via Docker Compose: "
-                "git pull && docker compose build --pull && docker compose up -d"
+                f"Docker installations cannot be updated in-app. Run: "
+                f"git fetch origin --tags --prune --force && "
+                f"git checkout {target_ref} && "
+                f"docker compose build --pull && docker compose up -d"
             ),
         }
 
     # Start update in background
-    background_tasks.add_task(_perform_update)
+    background_tasks.add_task(_perform_update, target_ref)
 
     _update_status = {
         "status": "downloading",
         "progress": 10,
-        "message": "Starting update...",
+        "message": f"Starting update to {target_ref}...",
         "error": None,
     }
 
     return {
         "success": True,
-        "message": "Update started",
+        "message": f"Update to {target_ref} started",
+        "target_ref": target_ref,
         "status": _update_status,
     }
 
