@@ -3510,6 +3510,38 @@ export default {
     reportPartialUsageDesc: 'Коли друк не вдається або скасовується, звітувати про використаний філамент на основі прогресу шарів.'
   },
 
+  // In-app bug report (floating red bubble)
+  bugReport: {
+    title: 'Повідомити про баг',
+    description: 'Опис',
+    descriptionPlaceholder: 'Що пішло не так? Опишіть проблему…',
+    email: 'Email (необов\'язково)',
+    emailPlaceholder: 'your@email.com',
+    emailPrivacy: 'Якщо вкажете, email буде доданий у згорнутий блок GitHub-issue, щоб мейнтейнер міг зв\'язатися.',
+    screenshot: 'Скріншот',
+    uploadOrPaste: 'Завантажте, вставте з буфера або перетягніть зображення',
+    dataCollectedSummary: 'Які дані передаються у звіт?',
+    dataIncluded: 'Включається:',
+    dataIncludedList: 'Версія застосунку, ОС, архітектура, версія Python, статистика БД (тільки лічильники), моделі принтерів, кількість сопел, версії прошивок, стан з\'єднання, статус інтеграцій (Spoolman, MQTT, Home Assistant), нечутливі налаштування, кількість мережевих інтерфейсів, деталі Docker, версії залежностей.',
+    dataNeverIncluded: 'Ніколи не передається:',
+    dataNeverIncludedList: 'Імена принтерів, серійні номери, access-коди, паролі, IP-адреси, email, API-ключі, токени, webhook-URL, hostnames, імена користувачів.',
+    submit: 'Надіслати',
+    startLogging: 'Почати збір debug-логів',
+    stepEnableLogging: 'Debug-логування увімкнено',
+    stepReproduce: 'Відтворіть проблему зараз',
+    stepStopLogging: 'Зупинити та надіслати звіт',
+    stopAndSubmit: 'Зупинити та надіслати',
+    maxDuration: 'Авто-зупинка через {{minutes}} хв',
+    stoppingLogs: 'Збираємо логи та надсилаємо…',
+    submitting: 'Надсилаємо звіт про баг…',
+    submitSuccess: 'Звіт про баг успішно надіслано!',
+    submitFailed: 'Не вдалося надіслати звіт',
+    thankYou: 'Дякуємо!',
+    submitted: 'Ваш звіт про баг надіслано.',
+    viewIssue: 'Переглянути issue',
+    unexpectedError: 'Сталася неочікувана помилка',
+  },
+
   // Inventory
   inventory: {
     title: 'Філамент',

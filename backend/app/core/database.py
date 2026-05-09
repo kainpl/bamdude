@@ -138,6 +138,7 @@ async def init_db():
         archive,
         auth_ephemeral,
         auto_queue,
+        bug_report,
         color_catalog,
         external_link,
         git_backup,

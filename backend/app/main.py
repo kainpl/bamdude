@@ -20,6 +20,7 @@ from backend.app.api.routes import (
     auth,
     auto_queue,
     background_dispatch as background_dispatch_routes,
+    bug_report,
     camera,
     cloud,
     discovery,
@@ -6116,6 +6117,7 @@ app.include_router(webhook.router, prefix=app_settings.api_prefix)
 app.include_router(ams_history.router, prefix=app_settings.api_prefix)
 app.include_router(system.router, prefix=app_settings.api_prefix)
 app.include_router(support.router, prefix=app_settings.api_prefix)
+app.include_router(bug_report.router, prefix=app_settings.api_prefix)
 app.include_router(websocket.router, prefix=app_settings.api_prefix)
 app.include_router(discovery.router, prefix=app_settings.api_prefix)
 app.include_router(firmware.router, prefix=app_settings.api_prefix)

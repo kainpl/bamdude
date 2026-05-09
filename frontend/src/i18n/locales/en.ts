@@ -3506,6 +3506,38 @@ export default {
     reportPartialUsageDesc: 'When a print fails or is cancelled, report the estimated filament used up to that point based on layer progress.'
   },
 
+  // In-app bug report (floating red bubble)
+  bugReport: {
+    title: 'Report a Bug',
+    description: 'Description',
+    descriptionPlaceholder: 'What went wrong? Please describe the issue...',
+    email: 'Email (optional)',
+    emailPlaceholder: 'your@email.com',
+    emailPrivacy: 'If provided, your email will be included in a collapsed section of the GitHub issue so the maintainer can follow up.',
+    screenshot: 'Screenshot',
+    uploadOrPaste: 'Upload, paste, or drag an image',
+    dataCollectedSummary: 'What data is included in the report?',
+    dataIncluded: 'Included:',
+    dataIncludedList: 'App version, OS, architecture, Python version, database stats (counts only), printer models, nozzle counts, firmware versions, connectivity status, integration status (Spoolman, MQTT, Home Assistant), non-sensitive settings, network interface count, Docker details, dependency versions.',
+    dataNeverIncluded: 'Never included:',
+    dataNeverIncludedList: 'Printer names, serial numbers, access codes, passwords, IP addresses, email addresses, API keys, tokens, webhook URLs, hostnames, or usernames.',
+    submit: 'Submit',
+    startLogging: 'Start Debug Logging',
+    stepEnableLogging: 'Debug logging enabled',
+    stepReproduce: 'Reproduce the issue now',
+    stepStopLogging: 'Stop & submit report',
+    stopAndSubmit: 'Stop & Submit',
+    maxDuration: 'Auto-stops after {{minutes}} min',
+    stoppingLogs: 'Collecting logs & submitting...',
+    submitting: 'Submitting bug report...',
+    submitSuccess: 'Bug report submitted successfully!',
+    submitFailed: 'Failed to submit bug report',
+    thankYou: 'Thank you!',
+    submitted: 'Your bug report has been submitted.',
+    viewIssue: 'View Issue',
+    unexpectedError: 'An unexpected error occurred',
+  },
+
   // Inventory
   inventory: {
     title: 'Spool Inventory',
