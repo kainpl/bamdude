@@ -123,7 +123,10 @@ async def test_color_resolved_via_catalog_hex(db_session):
             manufacturer="Bambu Lab",
             color_name="Translucent Cherry Pink",
             hex_color="#FF66AA",
-            material="PLA",
+            # SAMPLE_TRAY ships ``tray_sub_brands="PLA Basic"`` so the new
+            # material-variant filter (#1227) needs the catalog row to match
+            # by full variant, not bare ``"PLA"``.
+            material="PLA Basic",
             is_default=True,
         )
     )
@@ -155,6 +158,87 @@ async def test_color_unknown_hex_with_code_style_tray_id_name_yields_none(db_ses
     tray = {**SAMPLE_TRAY, "tray_color": "AABBCCFF", "tray_id_name": "A99-X9"}
     spool = await create_spool_from_tray(db_session, tray)
     assert spool.color_name is None
+
+
+# -- material-variant filter on shared-hex rows (upstream #1227) -----------
+
+
+def _seed_three_whites(db_session) -> None:
+    """Three Bambu Lab catalog rows that share #FFFFFF — Jade White (PLA Basic),
+    Ivory White (PLA Matte), White (PLA Silk). Insertion order matters for the
+    legacy bug: PLA Basic was first inserted so the un-filtered lookup always
+    returned Jade White regardless of which roll the AMS read."""
+    from backend.app.models.color_catalog import ColorCatalogEntry
+
+    db_session.add_all(
+        [
+            ColorCatalogEntry(
+                manufacturer="Bambu Lab", color_name="Jade White", hex_color="#FFFFFF", material="PLA Basic"
+            ),
+            ColorCatalogEntry(
+                manufacturer="Bambu Lab", color_name="Ivory White", hex_color="#FFFFFF", material="PLA Matte"
+            ),
+            ColorCatalogEntry(manufacturer="Bambu Lab", color_name="White", hex_color="#FFFFFF", material="PLA Silk"),
+        ]
+    )
+
+
+@pytest.mark.asyncio
+async def test_material_variant_disambiguates_ivory_white_pla_matte(db_session):
+    """PLA Matte roll with #FFFFFF must resolve to Ivory White, not Jade White.
+
+    Pre-#1227 the lookup filtered only by manufacturer+hex with no ORDER BY,
+    so SQLite returned the first-inserted row (Jade White / PLA Basic) for
+    every #FFFFFF roll regardless of material variant.
+    """
+    _seed_three_whites(db_session)
+    await db_session.commit()
+
+    tray = {**SAMPLE_TRAY, "tray_color": "FFFFFFFF", "tray_sub_brands": "PLA Matte"}
+    spool = await create_spool_from_tray(db_session, tray)
+    assert spool.color_name == "Ivory White"
+
+
+@pytest.mark.asyncio
+async def test_material_variant_disambiguates_pla_silk_white(db_session):
+    """PLA Silk roll with #FFFFFF must resolve to plain White."""
+    _seed_three_whites(db_session)
+    await db_session.commit()
+
+    tray = {**SAMPLE_TRAY, "tray_color": "FFFFFFFF", "tray_sub_brands": "PLA Silk"}
+    spool = await create_spool_from_tray(db_session, tray)
+    assert spool.color_name == "White"
+
+
+@pytest.mark.asyncio
+async def test_material_variant_disambiguates_jade_white_pla_basic(db_session):
+    """PLA Basic roll with #FFFFFF still resolves to Jade White after the fix.
+
+    Pins that adding the material filter doesn't break the originally-correct
+    case — Jade White is what PLA Basic should map to.
+    """
+    _seed_three_whites(db_session)
+    await db_session.commit()
+
+    tray = {**SAMPLE_TRAY, "tray_color": "FFFFFFFF", "tray_sub_brands": "PLA Basic"}
+    spool = await create_spool_from_tray(db_session, tray)
+    assert spool.color_name == "Jade White"
+
+
+@pytest.mark.asyncio
+async def test_empty_sub_brands_falls_back_deterministically_via_order_by(db_session):
+    """Third-party / OpenTag roll with no tray_sub_brands gets the lowest-id
+    catalog match deterministically across SQLite + PostgreSQL.
+
+    Without the explicit ``ORDER BY id`` the fallback was DB-implementation-
+    defined; with it, Jade White (first inserted) wins reproducibly.
+    """
+    _seed_three_whites(db_session)
+    await db_session.commit()
+
+    tray = {**SAMPLE_TRAY, "tray_color": "FFFFFFFF", "tray_sub_brands": ""}
+    spool = await create_spool_from_tray(db_session, tray)
+    assert spool.color_name == "Jade White"
 
 
 # -- get_spool_by_tag -------------------------------------------------------
