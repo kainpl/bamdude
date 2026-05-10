@@ -34,7 +34,6 @@ import { mapModelCode } from '../utils/printer';
 
 interface QueueCardProps {
   queue: PrinterQueue;
-  compact?: boolean;
   onEditItem?: (item: PrintQueueItem) => void;
 }
 
@@ -83,7 +82,7 @@ function StatusBadge({ status, t }: { status: string; t: (key: string) => string
   );
 }
 
-export function QueueCard({ queue, compact = false, onEditItem }: QueueCardProps) {
+export function QueueCard({ queue, onEditItem }: QueueCardProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
@@ -410,48 +409,7 @@ export function QueueCard({ queue, compact = false, onEditItem }: QueueCardProps
     />
   ) : null;
 
-  // --- Compact (S) mode ---
-  if (compact) {
-    return (
-      <div
-        className="relative"
-        onDragEnter={handleCardDragEnter}
-        onDragOver={handleCardDragOver}
-        onDragLeave={handleCardDragLeave}
-        onDrop={handleCardDrop}
-      >
-        <Card className={`${borderClass} border`}>
-          <CardContent className="!p-3">
-            <div className="flex items-center justify-between gap-2">
-              <Link
-                to={`/#printer-${queue.printer_id}`}
-                className="text-sm font-bold text-white truncate hover:text-bambu-green transition-colors"
-                title={t('queueCard.goToPrinter')}
-              >
-                {queue.printer_name ?? `Printer #${queue.printer_id}`}
-              </Link>
-              <div className="flex items-center gap-2 flex-shrink-0">
-                <StatusBadge status={queue.status} t={t} />
-                {queue.status === 'printing' && status?.progress != null &&
-                  (status.state === 'RUNNING' || status.state === 'PAUSE') && (
-                  <span className="text-xs text-blue-400 font-medium">{status.progress}%</span>
-                )}
-                {pendingCount > 0 && (
-                  <span className="text-xs px-1.5 py-0.5 bg-yellow-400/20 text-yellow-400 rounded">
-                    {pendingCount}
-                  </span>
-                )}
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-        {dropOverlay}
-        {dropPrintModal}
-      </div>
-    );
-  }
-
-  // --- Full (M) mode ---
+  // --- Card view ---
 
   const hasAutoDispatchItems = pendingItems?.some(item => !item.manual_start) ?? false;
   const needsClearPlate =

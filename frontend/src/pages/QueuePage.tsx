@@ -1,8 +1,8 @@
 import { useEffect, useState, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { useQuery } from '@tanstack/react-query';
-import { Activity, LayoutGrid, List, Loader2, Search, X, ArrowUpNarrowWide, ArrowDownWideNarrow } from 'lucide-react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { Calendar, LayoutGrid, Loader2 } from 'lucide-react';
 import { api } from '../api/client';
 import type { PrinterQueue, PrintQueueItem } from '../api/client';
 import { QueueCard } from '../components/QueueCard';
@@ -10,28 +10,25 @@ import { QueueStatsBar } from '../components/Queue/QueueStatsBar';
 import { StaggerBanner } from '../components/Queue/StaggerBanner';
 import { QueueTimelineView } from '../components/Queue/QueueTimelineView';
 import { AutoQueuePanel } from '../components/Queue/AutoQueuePanel';
+import { QueueToolbar } from '../components/Queue/QueueToolbar';
 import { PrintModal } from '../components/PrintModal';
 
-type ViewMode = 'compact' | 'expanded' | 'all' | 'timeline';
+type ViewMode = 'expanded' | 'all' | 'timeline';
 type SortOption = 'name' | 'status' | 'model' | 'location';
 
-const VIEW_LABELS: { mode: ViewMode; label: string; icon?: typeof List }[] = [
-  { mode: 'compact', label: 'S' },
-  { mode: 'expanded', label: 'M' },
-  { mode: 'all', label: 'All', icon: List },
-  { mode: 'timeline', label: '', icon: Activity },
-];
-
-const VALID_VIEW_MODES: ViewMode[] = ['compact', 'expanded', 'all', 'timeline'];
+const VALID_VIEW_MODES: ViewMode[] = ['expanded', 'all', 'timeline'];
 
 export function QueuePage() {
   const { t } = useTranslation();
   const [searchParams, setSearchParams] = useSearchParams();
+  const queryClient = useQueryClient();
 
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
     const fromUrl = searchParams.get('view');
+    if (fromUrl === 'compact') return 'expanded';
     if (fromUrl && VALID_VIEW_MODES.includes(fromUrl as ViewMode)) return fromUrl as ViewMode;
     const saved = localStorage.getItem('queueViewMode');
+    if (saved === 'compact') return 'expanded';
     if (saved && VALID_VIEW_MODES.includes(saved as ViewMode)) return saved as ViewMode;
     return 'expanded';
   });
@@ -49,10 +46,37 @@ export function QueuePage() {
   const [search, setSearch] = useState<string>(() => localStorage.getItem('queueSearch') || '');
   const [statusFilter, setStatusFilter] = useState<string>(() => localStorage.getItem('queueStatusFilter') || 'all');
   const [locationFilter, setLocationFilter] = useState<string>(() => localStorage.getItem('queueLocationFilter') || 'all');
+  const [hideOffline, setHideOffline] = useState<boolean>(() => localStorage.getItem('queueHideOffline') === 'true');
+
+  // Bumped on every printerStatus cache update so the offline filter recomputes
+  // when WebSocket / poll-driven status data lands. Same pattern as PrintersPage.
+  const [statusCacheVersion, setStatusCacheVersion] = useState(0);
 
   useEffect(() => { localStorage.setItem('queueSearch', search); }, [search]);
   useEffect(() => { localStorage.setItem('queueStatusFilter', statusFilter); }, [statusFilter]);
   useEffect(() => { localStorage.setItem('queueLocationFilter', locationFilter); }, [locationFilter]);
+
+  const toggleHideOffline = () => {
+    setHideOffline(prev => {
+      const next = !prev;
+      localStorage.setItem('queueHideOffline', String(next));
+      return next;
+    });
+  };
+
+  useEffect(() => {
+    const cache = queryClient.getQueryCache();
+    const unsubscribe = cache.subscribe((event) => {
+      if (
+        event.type === 'updated' &&
+        Array.isArray(event.query.queryKey) &&
+        event.query.queryKey[0] === 'printerStatus'
+      ) {
+        setStatusCacheVersion(v => v + 1);
+      }
+    });
+    return unsubscribe;
+  }, [queryClient]);
 
   // Fetch all printer queues
   const { data: queues, isLoading } = useQuery({
@@ -111,11 +135,8 @@ export function QueuePage() {
     });
   };
 
-  // Grid classes based on view mode
-  const getGridClasses = () => {
-    if (viewMode === 'compact') return 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6';
-    return 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3';
-  };
+  // Grid classes for the cards view
+  const gridClasses = 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3';
 
   // Distinct printer locations for the filter dropdown
   const availableLocations = useMemo(() => {
@@ -137,6 +158,10 @@ export function QueuePage() {
         const model = (q.printer_model || '').toLowerCase();
         const loc = (q.printer_location || '').toLowerCase();
         if (!name.includes(term) && !model.includes(term) && !loc.includes(term)) return false;
+      }
+      if (hideOffline) {
+        const status = queryClient.getQueryData<{ connected: boolean }>(['printerStatus', q.printer_id]);
+        if (!status?.connected) return false;
       }
       return true;
     });
@@ -166,7 +191,8 @@ export function QueuePage() {
 
     if (!sortAsc) filtered.reverse();
     return filtered;
-  }, [queues, search, statusFilter, locationFilter, sortBy, sortAsc]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- statusCacheVersion is intentional: it forces recompute when WS / poll updates printer status cache; queryClient is stable
+  }, [queues, search, statusFilter, locationFilter, hideOffline, sortBy, sortAsc, statusCacheVersion]);
 
   const hasActiveFilters = search.trim() !== '' || statusFilter !== 'all' || locationFilter !== 'all';
 
@@ -183,143 +209,42 @@ export function QueuePage() {
   }, [sortBy, sortedQueues, t]);
 
   const renderGrid = (items: PrinterQueue[]) => (
-    <div className={`grid gap-4 items-start ${getGridClasses()}`}>
+    <div className={`grid gap-4 items-start ${gridClasses}`}>
       {items.map((queue) => (
-        <QueueCard key={queue.id} queue={queue} compact={viewMode === 'compact'} onEditItem={setEditingItem} />
+        <QueueCard key={queue.id} queue={queue} onEditItem={setEditingItem} />
       ))}
     </div>
   );
 
   return (
     <div className="p-4 md:p-6">
-      {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-        <div>
-          <div className="flex items-center gap-3">
-            {/*<Disc3 className="w-6 h-6 text-bambu-green" />*/}
-            <h1 className="text-2xl font-bold text-white">{t('queue.title')}</h1>
-          </div>
-          {/*<p className="text-sm text-bambu-gray mt-1 ml-9">{t('inventory.noSpools').split('.')[0] ? '' : ''}</p>*/}
-        </div>
+      {/* Header: title + inline toolbar (search / filters / view modes) */}
+      <div className="space-y-3 mb-6">
+        <h1 className="text-2xl font-bold text-white flex items-center gap-3">
+          <Calendar className="w-7 h-7 text-bambu-green" />
+          {t('queue.title')}
+        </h1>
 
-        <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
-          {/* View mode selector */}
-          <div className="flex items-center bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
-            {VIEW_LABELS.map(({ mode, label, icon: Icon }, index) => {
-              const isSelected = viewMode === mode;
-              const titleText =
-                mode === 'compact' ? t('queueCard.viewCompact') :
-                mode === 'expanded' ? t('queueCard.viewExpanded') :
-                mode === 'all' ? t('queueCard.viewAll') :
-                t('queue.timeline.viewTimeline');
-              return (
-                <button
-                  key={mode}
-                  onClick={() => handleViewChange(mode)}
-                  className={`px-3 py-1.5 text-xs font-medium transition-colors ${
-                    index === 0 ? 'rounded-l-lg' : ''
-                  } ${
-                    index === VIEW_LABELS.length - 1 ? 'rounded-r-lg' : ''
-                  } ${
-                    isSelected
-                      ? 'bg-bambu-green text-white'
-                      : 'text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-white'
-                  }`}
-                  title={titleText}
-                  aria-label={titleText}
-                >
-                  {Icon ? (
-                    <span className="flex items-center gap-1">
-                      <Icon className="w-3.5 h-3.5" />
-                      {label}
-                    </span>
-                  ) : label}
-                </button>
-              );
-            })}
-          </div>
-        </div>
+        {!isLoading && queues && queues.length > 0 && (
+          <QueueToolbar
+            search={search}
+            onSearchChange={setSearch}
+            statusFilter={statusFilter}
+            onStatusFilterChange={setStatusFilter}
+            locationFilter={locationFilter}
+            onLocationFilterChange={setLocationFilter}
+            availableLocations={availableLocations}
+            sortBy={sortBy}
+            onSortByChange={handleSortChange}
+            sortAsc={sortAsc}
+            onSortDirectionToggle={toggleSortDirection}
+            viewMode={viewMode}
+            onViewModeChange={handleViewChange}
+            hideOffline={hideOffline}
+            onHideOfflineToggle={toggleHideOffline}
+          />
+        )}
       </div>
-
-      {/* Search + filters + sort panel - standalone row below header (hidden in All mode) */}
-      {queues && queues.length > 0 && viewMode !== 'all' && (
-        <div className="flex flex-wrap items-stretch gap-2 mb-4 p-3 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg">
-          {/* Search bar */}
-          <div className="relative w-full sm:w-[28rem] h-9">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray/50" />
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder={t('printers.search')}
-              aria-label={t('printers.search')}
-              className="w-full h-9 pl-10 pr-8 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm placeholder:text-bambu-gray/50 focus:outline-none focus:border-bambu-green"
-            />
-            {search && (
-              <button
-                type="button"
-                aria-label={t('common.clear')}
-                onClick={() => setSearch('')}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-bambu-gray hover:text-white"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            )}
-          </div>
-
-          {/* Status filter */}
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            className="h-9 min-w-[9rem] text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg px-3 text-white focus:border-bambu-green focus:outline-none"
-          >
-            <option value="all">{t('printers.filter.allStatuses')}</option>
-            <option value="printing">{t('printers.status.printing')}</option>
-            <option value="paused">{t('printers.status.paused')}</option>
-            <option value="idle">{t('printers.status.idle')}</option>
-            <option value="error">{t('printers.status.error')}</option>
-          </select>
-
-          {/* Location filter - only when at least one queue has a location */}
-          {availableLocations.length > 0 && (
-            <select
-              value={locationFilter}
-              onChange={(e) => setLocationFilter(e.target.value)}
-              className="h-9 min-w-[9rem] text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg px-3 text-white focus:border-bambu-green focus:outline-none"
-            >
-              <option value="all">{t('printers.filter.allLocations')}</option>
-              {availableLocations.map(loc => (
-                <option key={loc} value={loc}>{loc}</option>
-              ))}
-            </select>
-          )}
-
-          {/* Sort dropdown - pushed to far right via ml-auto */}
-          <div className="flex items-center gap-1 ml-auto">
-            <select
-              value={sortBy}
-              onChange={(e) => handleSortChange(e.target.value as SortOption)}
-              className="h-9 min-w-[9rem] text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg px-3 text-white focus:border-bambu-green focus:outline-none"
-            >
-              <option value="name">{t('printers.sort.name')}</option>
-              <option value="status">{t('printers.sort.status')}</option>
-              <option value="model">{t('printers.sort.model')}</option>
-              <option value="location">{t('printers.sort.location')}</option>
-            </select>
-            <button
-              onClick={toggleSortDirection}
-              className="h-9 w-9 flex items-center justify-center bg-bambu-dark border border-bambu-dark-tertiary rounded-lg hover:border-bambu-green transition-colors"
-              title={sortAsc ? t('printers.sort.descending') : t('printers.sort.ascending')}
-            >
-              {sortAsc ? (
-                <ArrowUpNarrowWide className="w-4 h-4 text-bambu-gray" />
-              ) : (
-                <ArrowDownWideNarrow className="w-4 h-4 text-bambu-gray" />
-              )}
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* Stats bar */}
       {!isLoading && queues && queues.length > 0 && (

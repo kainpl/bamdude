@@ -882,6 +882,19 @@ export default {
       bamdude_direct: 'Direct',
       bamdude_queue: 'Queue'
     },
+    view: {
+      cards: 'Cards',
+      list: 'List',
+      timeline: 'Timeline'
+    },
+    search: {
+      placeholder: 'Search queues…'
+    },
+    hideOffline: 'Hide offline',
+    toolbar: {
+      filters: 'Filters',
+      view: 'View'
+    },
     stagger: {
       slots: 'Stagger: {{occupied}}/{{capacity}} slots occupied',
       nextFreeIn: 'next free in {{duration}}',

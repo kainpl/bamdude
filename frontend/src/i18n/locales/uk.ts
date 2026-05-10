@@ -888,6 +888,19 @@ export default {
       bamdude_direct: 'Прямий',
       bamdude_queue: 'Черга'
     },
+    view: {
+      cards: 'Картки',
+      list: 'Список',
+      timeline: 'Таймлайн'
+    },
+    search: {
+      placeholder: 'Пошук черг…'
+    },
+    hideOffline: 'Приховати офлайн',
+    toolbar: {
+      filters: 'Фільтри',
+      view: 'Вигляд'
+    },
     stagger: {
       slots: 'Stagger: {{occupied}}/{{capacity}} слотів зайнято',
       nextFreeIn: 'наступний вільний через {{duration}}',
