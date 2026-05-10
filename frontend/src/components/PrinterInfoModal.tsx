@@ -4,7 +4,7 @@ import { X, Copy, Check, Signal, Cable } from 'lucide-react';
 import { Card, CardContent } from './Card';
 import { useQuery } from '@tanstack/react-query';
 import { formatDateTime, type TimeFormat, type DateFormat } from '../utils/date';
-import { api } from '../api/client';
+import { api, macrosApi } from '../api/client';
 import { getPrinterImage, getWifiStrength } from '../utils/printer';
 import type { Printer, PrinterStatus } from '../api/client';
 
@@ -71,6 +71,23 @@ function CopyButton({ value }: { value: string }) {
 export function PrinterInfoModal({ printer, status, totalPrintHours, onClose }: PrinterInfoModalProps) {
   const { t } = useTranslation();
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
+  // Swap profile catalog — only used to resolve the human label of the
+  // active ``swap_profile`` id for printers that support a plate swapper
+  // (currently A1 / A1 mini in BamDude). Cached for 5 min; small payload.
+  // Match the cache key + queryFn that ``PrintersPage.tsx`` uses so this
+  // modal doesn't fire its own duplicate request — and so the catalog
+  // resolves immediately when the user opens info from the printer card
+  // (the parent has already hydrated this cache). Earlier I used
+  // ``api.getSwapProfiles`` which isn't a real key on the main ``api``
+  // object — that lookup returned undefined, useQuery's queryFn then
+  // threw, ``swapProfiles`` stayed undefined, and the row fell back to
+  // showing the raw id (``a1mini_kit``) instead of the human label
+  // (``Kit Edition``).
+  const { data: swapProfiles } = useQuery({
+    queryKey: ['macros', 'swap-profiles'],
+    queryFn: macrosApi.getSwapProfiles,
+    staleTime: 5 * 60 * 1000,
+  });
   const timeFormat: TimeFormat = (settings as Record<string, string> | undefined)?.time_format as TimeFormat || 'system';
   const dateFormat: DateFormat = (settings as Record<string, string> | undefined)?.date_format as DateFormat || 'system';
 
@@ -212,9 +229,13 @@ export function PrinterInfoModal({ printer, status, totalPrintHours, onClose }: 
   }
 
 
-  // Cleanup After Print
+  // Delete-from-SD-after-print toggle. Reuses the same long-form label as
+  // the edit dialog (``printers.modal.cleanupAfterPrintLabel``) so users
+  // see the same wording in both places — the old short ``cleanupAfterPrint``
+  // label drifted into "Очищення після друку" which read ambiguously
+  // (could mean plate-clearing) and didn't match the edit dialog.
   rows.push({
-    label: t('printers.cleanupAfterPrint'),
+    label: t('printers.modal.cleanupAfterPrintLabel'),
     value: (
       <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
         printer.cleanup_after_print !== false
@@ -225,6 +246,72 @@ export function PrinterInfoModal({ printer, status, totalPrintHours, onClose }: 
       </span>
     ),
   });
+
+  // Plate-clear confirmation toggle — same setting & label as the edit
+  // dialog so the two views stay in sync.
+  rows.push({
+    label: t('printers.modal.requirePlateClear'),
+    value: (
+      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
+        printer.require_plate_clear
+          ? 'bg-bambu-green/20 text-bambu-green'
+          : 'bg-bambu-dark-tertiary text-bambu-gray'
+      }`}>
+        {printer.require_plate_clear ? t('printers.enabled') : t('printers.disabled')}
+      </span>
+    ),
+  });
+
+  // Swap-mode (automated plate swapper) — only relevant for printer models
+  // that have at least one swap profile registered (currently A1 / A1 Mini).
+  // We render the bool indicator AND the active profile label; both are
+  // hidden for models without any swap profile so the info card stays
+  // compact for X1/P1/H2 series owners.
+  //
+  // Match is case-insensitive — the catalog uses canonical ``A1 Mini`` but
+  // ``printer.model`` may have been seeded with ``A1 mini`` / ``A1MINI`` /
+  // similar drift from older detect paths, and a strict Array.includes was
+  // hiding the rows on real installs that have swap mode wired up.
+  //
+  // Fallback: if the catalog query hasn't loaded yet (or 401/403'd) but the
+  // printer itself reports ``swap_mode_enabled === true`` or has a non-null
+  // ``swap_profile``, we still surface the rows — the bool comes from the
+  // printer record directly, the profile label degrades to the raw id.
+  const modelLower = (printer.model ?? '').toLowerCase();
+  const modelSwapProfiles =
+    swapProfiles?.filter((p) => p.models.some((m) => m.toLowerCase() === modelLower)) ?? [];
+  const showSwapRows =
+    modelSwapProfiles.length > 0 || printer.swap_mode_enabled || !!printer.swap_profile;
+  if (showSwapRows) {
+    rows.push({
+      label: t('printers.modal.swapMode'),
+      value: (
+        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
+          printer.swap_mode_enabled
+            ? 'bg-bambu-green/20 text-bambu-green'
+            : 'bg-bambu-dark-tertiary text-bambu-gray'
+        }`}>
+          {printer.swap_mode_enabled ? t('printers.enabled') : t('printers.disabled')}
+        </span>
+      ),
+    });
+    if (printer.swap_mode_enabled) {
+      const activeProfile =
+        modelSwapProfiles.find((p) => p.id === printer.swap_profile) ??
+        swapProfiles?.find((p) => p.id === printer.swap_profile);
+      // Show the short ``label`` (e.g. "Kit Edition") same as the edit
+      // dropdown — the catalog id ("a1mini_kit") leaks only when the
+      // catalog query hasn't loaded yet OR no match is found, in which
+      // case the row falls back to that raw id so the field never goes
+      // empty. Description is intentionally NOT used: the row label
+      // already reads "Профіль swap-режиму", so adding the longer
+      // description on top makes the row visually heavy.
+      rows.push({
+        label: t('printers.modal.swapProfile'),
+        value: activeProfile?.label || printer.swap_profile || '-',
+      });
+    }
+  }
 
   // MQTT Connection Timeout
   rows.push({

@@ -96,6 +96,49 @@ export default {
     total: 'total'
   },
 
+  // Keyboard shortcuts modal (rendered from <Layout> on `?` keypress)
+  shortcuts: {
+    title: 'Keyboard Shortcuts',
+    goToLabel: 'Go to {{label}}',
+    openLabel: 'Open {{label}}',
+    click: 'Click',
+    rightClick: 'Right-click',
+    modifier: {
+      ctrl: 'Ctrl',
+      shift: 'Shift',
+      cmd: 'Cmd',
+    },
+    section: {
+      navigation: 'Navigation',
+      printers: 'Printers',
+      archives: 'Archives',
+      kProfiles: 'K-Profiles',
+      general: 'General',
+    },
+    printers: {
+      checkboxClick: 'Toggle one printer (checkbox click)',
+      toggleSelect: 'Toggle a printer in/out of the selection',
+      rangeSelect: 'Range-select from the last picked printer',
+      clearSelection: 'Clear selection / exit selection mode',
+    },
+    archives: {
+      focusSearch: 'Focus search',
+      openUpload: 'Open upload modal',
+      clearOrBlur: 'Clear selection / blur input',
+      contextMenu: 'Context menu on cards',
+    },
+    kprofiles: {
+      refresh: 'Refresh profiles',
+      new: 'New profile',
+      exitSelection: 'Exit selection mode',
+    },
+    general: {
+      help: 'Show this help',
+    },
+    footerPrefix: 'Press',
+    footerSuffix: 'or click outside to close',
+  },
+
   // Printers page
   printers: {
     title: 'Printers',
@@ -105,6 +148,9 @@ export default {
       selectAll: 'Select All',
       selectByState: 'By State',
       selectByLocation: 'By Location',
+      selectHint: 'Click to select • Shift-click for range • Ctrl/Cmd-click to toggle',
+      selectThis: 'Select this printer',
+      deselectThis: 'Deselect this printer',
       actionComplete: '{{count}} printer(s) updated',
       actions: {
         stop: 'Stop',
@@ -114,6 +160,8 @@ export default {
         clearPlate: 'Clear Plate'
       }
     },
+    expandCard: 'Expand card',
+    expandCardHint: 'Open this printer in a popup with full controls',
     editPrinter: 'Edit Printer',
     serialNumber: 'Serial Number',
     ipAddress: 'IP Address / Hostname',
@@ -389,7 +437,8 @@ export default {
       selectModel: 'Select model...',
       locationGroup: 'Location / Group (optional)',
       locationPlaceholder: 'e.g., Workshop, Office, Basement',
-      cleanupAfterPrintLabel: 'Delete print files from SD card after print (by default files are moved to cache)',
+      cleanupAfterPrintLabel: 'Delete print files from SD card after print',
+      cleanupAfterPrintHint: 'By default files are moved to a cache folder.',
       mqttConnectionTimeoutLabel: 'MQTT Connection Timeout',
       mqttConnectionTimeoutHint: 'seconds (0 = disabled)',
       staggerInterval: 'Stagger interval (minutes)',

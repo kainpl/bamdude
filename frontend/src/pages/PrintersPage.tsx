@@ -38,6 +38,8 @@ import {
   Search,
   Loader2,
   Square,
+  CheckSquare,
+  Maximize2,
   Pause,
   Play,
   X,
@@ -1368,7 +1370,8 @@ function PrinterCard({
   checkPrinterFirmware = true,
   dryingPresets = DRYING_PRESETS,
   isSelected = false,
-  onToggleSelect,
+  onSelect,
+  onExpand,
   spoolDisplayTemplate,
 }: {
   printer: Printer;
@@ -1401,7 +1404,19 @@ function PrinterCard({
   checkPrinterFirmware?: boolean;
   dryingPresets?: Record<string, { n3f: number; n3s: number; n3f_hours: number; n3s_hours: number }>;
   isSelected?: boolean;
-  onToggleSelect?: (id: number) => void;
+  // Modifier-aware select handler — receives the raw MouseEvent so the
+  // parent can branch on ``shiftKey`` (range), ``ctrlKey`` / ``metaKey``
+  // (toggle), or treat a plain checkbox click as a toggle. Always passed
+  // by ``PrintersPage``; the card always renders the selection checkbox
+  // and reacts to Ctrl/Cmd/Shift-click on its body.
+  onSelect?: (id: number, e: React.MouseEvent) => void;
+  // Expand-into-popup handler. Only renders the maximise button on
+  // compact (S) cards — expanded cards already show everything. The
+  // parent opens a modal that re-mounts ``<PrinterCard>`` with
+  // ``viewMode='expanded'`` cardSize={2} for the picked printer; this
+  // way nothing is duplicated and the controls inside the popup behave
+  // identically to a real M-size card.
+  onExpand?: (id: number) => void;
   spoolDisplayTemplate?: string;
 }) {
   const { t } = useTranslation();
@@ -2313,16 +2328,24 @@ function PrinterCard({
       onDragOver={handleCardDragOver}
       onDragLeave={handleCardDragLeave}
       onDrop={handleCardDrop}
+      // Card-body modifier-click → enter selection. Plain click is left
+      // alone so the buttons / hover cards inside the card aren't
+      // hijacked. Buttons that bubble (no e.stopPropagation()) are still
+      // safe because we only react to Ctrl/Cmd/Shift modifiers — ordinary
+      // single clicks are no-op here.
+      onClick={(e) => {
+        if (!onSelect) return;
+        if (e.ctrlKey || e.metaKey || e.shiftKey) {
+          e.preventDefault();
+          onSelect(printer.id, e);
+        }
+      }}
     >
-      {/* Selection checkbox */}
-      {onToggleSelect && (
-        <button
-          className="absolute top-2 left-2 z-10 w-5 h-5 rounded border border-bambu-dark-tertiary bg-bambu-dark flex items-center justify-center hover:border-bambu-green transition-colors"
-          onClick={(e) => { e.stopPropagation(); onToggleSelect(printer.id); }}
-        >
-          {isSelected && <div className="w-3 h-3 rounded-sm bg-bambu-green" />}
-        </button>
-      )}
+      {/* Selection checkbox is rendered inside the three-dot menu (see
+          below) as a regular menu row — keeps the card visual clean and
+          surfaces the same Ctrl/Shift modifiers via the menu-item click
+          event. The ``ring-2 ring-bambu-green`` on the Card root above is
+          the only at-a-glance "this printer is selected" indicator. */}
 
       {/* Drop zone overlay */}
       {(isDraggingFile || isDropUploading) && (
@@ -2441,8 +2464,53 @@ function PrinterCard({
                 </p>
               </div>
             </div>
-            {/* Menu button */}
-            <div className="relative flex-shrink-0">
+            {/* Selection checkbox + menu button + dropdown — single
+                ``relative flex`` container so the dropdown's ``right-0``
+                still anchors to the rightmost edge (which is the menu
+                button's right edge — checkbox sits to its left).
+                Checkbox is hidden when the parent doesn't pass
+                ``onSelect`` (single-printer farms etc.). Native click on
+                the checkbox preserves Shift/Ctrl/Meta modifiers, so
+                range-select works from the checkbox the same as from the
+                card body. */}
+            <div className="relative flex items-center gap-1 flex-shrink-0">
+              {onSelect && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSelect(printer.id, e);
+                  }}
+                  title={t('printers.bulk.selectHint')}
+                  aria-pressed={isSelected}
+                >
+                  {isSelected ? (
+                    <CheckSquare className="w-4 h-4 text-bambu-green" />
+                  ) : (
+                    <Square className="w-4 h-4 text-bambu-gray" />
+                  )}
+                </Button>
+              )}
+              {/* Maximise: only meaningful on compact (S) cards — clicking
+                  pops up the same printer rendered as a regular M-card so
+                  the operator can poke its controls without flipping the
+                  whole grid out of compact view. Hidden on M/L/XL where
+                  every action is already inline. */}
+              {viewMode === 'compact' && onExpand && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onExpand(printer.id);
+                  }}
+                  title={t('printers.expandCardHint')}
+                  aria-label={t('printers.expandCard')}
+                >
+                  <Maximize2 className="w-4 h-4" />
+                </Button>
+              )}
               <Button
                 variant="ghost"
                 size="sm"
@@ -2453,7 +2521,16 @@ function PrinterCard({
               {showMenu && (
                 <>
                 <div className="fixed inset-0 z-10" onClick={() => setShowMenu(false)} />
-                <div className="absolute right-0 mt-2 max-w-58 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-lg z-20 whitespace-nowrap">
+                {/* Anchor by the top-right corner of the cluster (kebab's
+                    own top edge): ``top-full`` was the previous default
+                    via static-positioned ``mt-2``, which let the dropdown
+                    push downward past the viewport bottom in the expand
+                    popup (and the small visible portion at the top
+                    suggested it was being clipped). ``top-0`` aligns the
+                    dropdown's top with the kebab's top so the menu unfurls
+                    from the corner — same direction (downward) but the
+                    visual origin is the corner, not the button's bottom. */}
+                <div className="absolute right-0 top-0 max-w-58 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-lg z-20 whitespace-nowrap">
                   {/* Info & Maintenance */}
                   <button
                     className="w-full px-4 py-2 text-left text-sm hover:bg-bambu-dark-tertiary flex items-center gap-2"
@@ -5893,17 +5970,20 @@ function AddPrinterModal({
 
               {/* Right column - Settings */}
               <div className="space-y-3">
-                <div className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    id="cleanup_after_print"
-                    checked={form.cleanup_after_print}
-                    onChange={(e) => setForm({ ...form, cleanup_after_print: e.target.checked })}
-                    className="rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
-                  />
-                  <label htmlFor="cleanup_after_print" className="text-sm text-bambu-gray">
-                    {t('printers.modal.cleanupAfterPrintLabel')}
-                  </label>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="cleanup_after_print"
+                      checked={form.cleanup_after_print}
+                      onChange={(e) => setForm({ ...form, cleanup_after_print: e.target.checked })}
+                      className="rounded border-bambu-dark-tertiary bg-bambu-dark text-bambu-green focus:ring-bambu-green"
+                    />
+                    <label htmlFor="cleanup_after_print" className="text-sm text-bambu-gray">
+                      {t('printers.modal.cleanupAfterPrintLabel')}
+                    </label>
+                  </div>
+                  <p className="text-xs text-bambu-gray mt-1 ml-6">{t('printers.modal.cleanupAfterPrintHint')}</p>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-bambu-gray mb-1">
@@ -6721,9 +6801,30 @@ export function PrintersPage() {
 
   // Bulk printer selection
   const [selectedPrinterIds, setSelectedPrinterIds] = useState<Set<number>>(new Set());
+  // Anchor for Shift-click range selection — the last id the user clicked
+  // without a Shift modifier. Standard file-manager pattern: Shift-click
+  // selects every card from the anchor through the just-clicked card in
+  // the current visual order; plain Ctrl/Cmd-click both selects and updates
+  // the anchor. Cleared whenever the selection set is emptied.
+  const [lastSelectedId, setLastSelectedId] = useState<number | null>(null);
   const [bulkConfirmAction, setBulkConfirmAction] = useState<'stop' | 'pause' | 'clearPlate' | null>(null);
   const [bulkActionPending, setBulkActionPending] = useState(false);
   const selectionMode = selectedPrinterIds.size > 0;
+  // Compact-card "expand into popup" — single printer id, null = closed.
+  // The popup re-mounts <PrinterCard> with viewMode='expanded' cardSize=2
+  // for the picked printer so all M-card affordances work identically.
+  const [expandedPrinterId, setExpandedPrinterId] = useState<number | null>(null);
+  // Global Escape handler for the expand popup. Lives at page-scope (not
+  // on the popup div) so it fires regardless of which child element has
+  // focus when the user presses Escape.
+  useEffect(() => {
+    if (expandedPrinterId === null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setExpandedPrinterId(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [expandedPrinterId]);
 
   // Embedded camera viewer state - supports multiple simultaneous viewers
   // Persisted to localStorage so cameras reopen after navigation
@@ -7018,16 +7119,16 @@ export function PrintersPage() {
   }, []);
 
   // Sort printers based on selected option
-  // Bulk selection helpers
-  const toggleSelect = useCallback((id: number) => {
-    setSelectedPrinterIds(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
-  }, []);
+  // Bulk selection helpers — modifier-aware ``handleSelectPrinter`` is
+  // declared further down (after ``sortedPrinters``, which it needs for
+  // range-select). The ``selectAll`` / ``selectByLocation`` / ``selectByState``
+  // helpers below replace the whole set in one shot, so they don't need
+  // modifier handling.
 
-  const clearSelection = useCallback(() => setSelectedPrinterIds(new Set()), []);
+  const clearSelection = useCallback(() => {
+    setSelectedPrinterIds(new Set());
+    setLastSelectedId(null);
+  }, []);
 
   const selectAll = useCallback(() => {
     if (!printers) return;
@@ -7144,6 +7245,19 @@ export function PrintersPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps -- statusCacheVersion is intentional: it forces recompute when WebSocket updates printer status cache
   }, [printers, search, statusFilter, locationFilter, queryClient, statusCacheVersion]);
 
+  // Modifier-aware single-printer selection. Behaves like a file-manager:
+  //
+  //   Plain click            — no-op (selection is opt-in; plain click on
+  //                            the card body must not interfere with the
+  //                            buttons / hover cards inside).
+  //   Ctrl/Cmd-click         — toggle this printer; update the range anchor.
+  //   Shift-click            — select every printer from the anchor through
+  //                            the just-clicked one, in the current sorted /
+  //                            filtered order. Anchor stays put so a chain
+  //                            of Shift-clicks reflows the same range.
+  //   Plain checkbox click   — toggle this printer (fast path for one-off
+  //                            picks; equivalent to Ctrl-click).
+  //
   // Derive unique locations for the location filter dropdown
   const availableLocations = useMemo(() => {
     if (!printers) return [];
@@ -7196,6 +7310,48 @@ export function PrintersPage() {
 
     return sorted;
   }, [filteredPrinters, sortBy, sortAsc, queryClient]);
+
+  // Modifier-aware single-printer selection. Behaves like a file-manager:
+  //
+  //   Plain click            — no-op (selection is opt-in; plain click on
+  //                            the card body must not interfere with the
+  //                            buttons / hover cards inside).
+  //   Ctrl/Cmd-click         — toggle this printer; update the range anchor.
+  //   Shift-click            — select every printer from the anchor through
+  //                            the just-clicked one, in the current sorted /
+  //                            filtered order. Anchor stays put so a chain
+  //                            of Shift-clicks reflows the same range.
+  //   Plain checkbox click   — toggle this printer (fast path for one-off
+  //                            picks; equivalent to Ctrl-click).
+  //
+  // Defined HERE — after both ``filteredPrinters`` and ``sortedPrinters``
+  // — because Shift-range needs the current visible order. Hoisting up
+  // would trip a temporal-dead-zone (`Cannot access 'sortedPrinters'
+  // before initialization`).
+  const handleSelectPrinter = useCallback(
+    (id: number, e: React.MouseEvent) => {
+      const ids = sortedPrinters.map((p) => p.id);
+      setSelectedPrinterIds((prev) => {
+        const next = new Set(prev);
+        if (e.shiftKey && lastSelectedId !== null && lastSelectedId !== id) {
+          const fromIdx = ids.indexOf(lastSelectedId);
+          const toIdx = ids.indexOf(id);
+          if (fromIdx >= 0 && toIdx >= 0) {
+            const [start, end] = fromIdx <= toIdx ? [fromIdx, toIdx] : [toIdx, fromIdx];
+            for (let i = start; i <= end; i++) next.add(ids[i]);
+            return next;
+          }
+        }
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      });
+      // Anchor advances on every non-Shift action so the next Shift-click
+      // ranges from the just-clicked id, not from some forgotten earlier pick.
+      if (!e.shiftKey) setLastSelectedId(id);
+    },
+    [lastSelectedId, sortedPrinters],
+  );
 
   // Group printers by location when sorted by location
   const groupedPrinters = useMemo(() => {
@@ -7598,7 +7754,8 @@ export function PrintersPage() {
                     checkPrinterFirmware={settings?.check_printer_firmware !== false}
                     dryingPresets={effectiveDryingPresets}
                     isSelected={selectedPrinterIds.has(printer.id)}
-                    onToggleSelect={selectionMode ? toggleSelect : undefined}
+                    onSelect={handleSelectPrinter}
+                    onExpand={(id) => setExpandedPrinterId(id)}
                     spoolDisplayTemplate={settings?.spool_display_template || undefined}
                   />
                 ))}
@@ -7640,7 +7797,8 @@ export function PrintersPage() {
               checkPrinterFirmware={settings?.check_printer_firmware !== false}
               dryingPresets={effectiveDryingPresets}
               isSelected={selectedPrinterIds.has(printer.id)}
-              onToggleSelect={selectionMode ? toggleSelect : undefined}
+              onSelect={handleSelectPrinter}
+              onExpand={(id) => setExpandedPrinterId(id)}
               spoolDisplayTemplate={settings?.spool_display_template || undefined}
             />
           ))}
@@ -7697,6 +7855,79 @@ export function PrintersPage() {
           onCancel={() => setBulkConfirmAction(null)}
         />
       )}
+
+      {/* Compact-card "expand into popup": re-mount the same PrinterCard
+          with M-size sizing for the picked printer. Backdrop click +
+          Escape close. The popup card itself does NOT receive ``onExpand``
+          (no nested popup) and is forced to ``viewMode='expanded'`` /
+          ``cardSize=2`` regardless of the page's current sizing.
+
+          Why a re-mount instead of cloning: the outer page still has the
+          live-updating React-Query subscriptions for printer status,
+          smart-plug state, AMS data etc. — re-using PrinterCard piggybacks
+          on those subscriptions automatically, no extra wiring. */}
+      {expandedPrinterId !== null && (() => {
+        const expandedPrinter = sortedPrinters.find((p) => p.id === expandedPrinterId);
+        if (!expandedPrinter) return null;
+        return (
+          <div
+            // ``items-center`` centers the card in the viewport so the
+            // three-dot menu dropdown — which opens BELOW the kebab button
+            // — has half the screen of room downward. With the previous
+            // ``items-start + my-8`` the card sat at the top, putting the
+            // kebab right under viewport top; the dropdown still rendered
+            // downward but felt visually clipped because the surrounding
+            // chrome (card header) was right at the screen edge with no
+            // breathing room. ``overflow-y-auto`` keeps tall cards reachable
+            // via scroll on the backdrop itself; the inner div uses ``my-4``
+            // so a tall card has visible top/bottom gutters when scrolled.
+            className="fixed inset-0 bg-black/60 z-40 flex items-center justify-center p-4 overflow-y-auto"
+            onClick={() => setExpandedPrinterId(null)}
+            onKeyDown={(e) => { if (e.key === 'Escape') setExpandedPrinterId(null); }}
+            role="dialog"
+            tabIndex={-1}
+          >
+            <div
+              className="w-full max-w-xl my-4"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <PrinterCard
+                printer={expandedPrinter}
+                hideIfDisconnected={false}
+                maintenanceInfo={maintenanceByPrinter[expandedPrinter.id]}
+                viewMode="expanded"
+                cardSize={2}
+                spoolmanEnabled={spoolmanEnabled}
+                hasUnlinkedSpools={hasUnlinkedSpools}
+                linkedSpools={linkedSpools}
+                spoolmanUrl={spoolmanStatus?.url}
+                spoolmanSyncMode={spoolmanSyncMode}
+                spoolmanSpools={spoolmanSpoolsData}
+                spoolmanSlotAssignments={spoolmanSlotAssignments}
+                spoolmanLoading={spoolmanLoading}
+                onUnassignSpoolmanSpool={(spoolId) => unassignSpoolmanMutation.mutate(spoolId)}
+                onGetAssignment={getAssignment}
+                onUnassignSpool={(pid, aid, tid) => unassignMutation.mutate({ printerId: pid, amsId: aid, trayId: tid })}
+                amsThresholds={settings ? {
+                  humidityGood: Number(settings.ams_humidity_good) || 40,
+                  humidityFair: Number(settings.ams_humidity_fair) || 60,
+                  tempGood: Number(settings.ams_temp_good) || 28,
+                  tempFair: Number(settings.ams_temp_fair) || 35,
+                } : undefined}
+                timeFormat={settings?.time_format || 'system'}
+                dateFormat={settings?.date_format || 'system'}
+                cameraViewMode={settings?.camera_view_mode || 'window'}
+                onOpenEmbeddedCamera={(id, name) => setEmbeddedCameraPrinters(prev => new Map(prev).set(id, { id, name }))}
+                checkPrinterFirmware={settings?.check_printer_firmware !== false}
+                dryingPresets={effectiveDryingPresets}
+                isSelected={selectedPrinterIds.has(expandedPrinter.id)}
+                onSelect={handleSelectPrinter}
+                spoolDisplayTemplate={settings?.spool_display_template || undefined}
+              />
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Bulk Printer Toolbar */}
       {selectionMode && printers && (

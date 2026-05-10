@@ -96,6 +96,49 @@ export default {
     total: 'всього'
   },
 
+  // Keyboard shortcuts modal (rendered from <Layout> on `?` keypress)
+  shortcuts: {
+    title: 'Гарячі клавіші',
+    goToLabel: 'Перейти до {{label}}',
+    openLabel: 'Відкрити {{label}}',
+    click: 'Клік',
+    rightClick: 'Правий клік',
+    modifier: {
+      ctrl: 'Ctrl',
+      shift: 'Shift',
+      cmd: 'Cmd',
+    },
+    section: {
+      navigation: 'Навігація',
+      printers: 'Принтери',
+      archives: 'Архіви',
+      kProfiles: 'K-профілі',
+      general: 'Загальне',
+    },
+    printers: {
+      checkboxClick: 'Перемкнути один принтер (клік по чекбоксу)',
+      toggleSelect: 'Додати/прибрати принтер у виборі',
+      rangeSelect: 'Вибрати діапазон від останнього обраного',
+      clearSelection: 'Скинути вибір / вийти з режиму вибору',
+    },
+    archives: {
+      focusSearch: 'Фокус на пошук',
+      openUpload: 'Відкрити модалку завантаження',
+      clearOrBlur: 'Скинути вибір / зняти фокус з input',
+      contextMenu: 'Контекстне меню на картках',
+    },
+    kprofiles: {
+      refresh: 'Оновити профілі',
+      new: 'Новий профіль',
+      exitSelection: 'Вийти з режиму вибору',
+    },
+    general: {
+      help: 'Показати цю довідку',
+    },
+    footerPrefix: 'Натисни',
+    footerSuffix: 'або клікни поза вікном для закриття',
+  },
+
   // Printers page
   printers: {
     title: 'Принтери',
@@ -105,6 +148,9 @@ export default {
       selectAll: 'Обрати всі',
       selectByState: 'За статусом',
       selectByLocation: 'За локацією',
+      selectHint: 'Клік для вибору • Shift-клік для діапазону • Ctrl/Cmd-клік для перемикання',
+      selectThis: 'Вибрати цей принтер',
+      deselectThis: 'Прибрати з вибору',
       actionComplete: '{{count}} принтер(ів) оновлено',
       actions: {
         stop: 'Зупинити',
@@ -114,6 +160,8 @@ export default {
         clearPlate: 'Очистити стіл'
       }
     },
+    expandCard: 'Розгорнути картку',
+    expandCardHint: 'Відкрити принтер у попапі з повним керуванням',
     editPrinter: 'Редагувати принтер',
     serialNumber: 'Серійний номер',
     ipAddress: 'IP-адреса / Ім\'я хоста',
@@ -399,7 +447,8 @@ export default {
       selectModel: 'Оберіть модель...',
       locationGroup: 'Розташування / Група (необов\'язково)',
       locationPlaceholder: 'напр., Майстерня, Офіс, Підвал',
-      cleanupAfterPrintLabel: 'Видаляти файли друку з SD-карти після друку (за замовчуванням файли переміщуються в кеш)',
+      cleanupAfterPrintLabel: 'Видалення файлів з SD-карти після друку',
+      cleanupAfterPrintHint: 'За замовчуванням файли переміщуються в кеш-папку.',
       mqttConnectionTimeoutLabel: 'Тайм-аут з\'єднання MQTT',
       mqttConnectionTimeoutHint: 'секунд (0 = вимкнено)',
       staggerInterval: 'Інтервал поетапного запуску (хвилини)',
