@@ -101,10 +101,11 @@ describe('QueuePage', () => {
     it('renders view-mode selector buttons', async () => {
       render(<QueuePage />);
       await waitFor(() => {
-        // S, M, All view-mode toggles. Timeline button has no label text (icon-only).
-        expect(screen.getByText('S')).toBeInTheDocument();
-        expect(screen.getByText('M')).toBeInTheDocument();
-        expect(screen.getByText('All')).toBeInTheDocument();
+        // Cards / List / Timeline view-mode toggles. Old S/M/All labels were
+        // dropped in 0.4.4 along with the rarely-used compact (S) mode.
+        expect(screen.getByText('Cards')).toBeInTheDocument();
+        expect(screen.getByText('List')).toBeInTheDocument();
+        expect(screen.getByText('Timeline')).toBeInTheDocument();
       });
     });
 
@@ -140,17 +141,18 @@ describe('QueuePage', () => {
   });
 
   describe('view modes', () => {
-    it('switches to All view when clicking the All button', async () => {
+    it('switches to List view when clicking the List button', async () => {
       const user = userEvent.setup();
       render(<QueuePage />);
       await waitFor(() => {
-        expect(screen.getByText('All')).toBeInTheDocument();
+        expect(screen.getByText('List')).toBeInTheDocument();
       });
-      await user.click(screen.getByText('All'));
-      // 'All' view renders the flat pending list — the pending item's name now
-      // appears in both the card title and a tooltip/attribute, so multiple
-      // elements share the text. `getAllByText` + length assertion proves the
-      // item rendered without caring about the exact DOM duplication.
+      await user.click(screen.getByText('List'));
+      // 'List' view (formerly 'All') renders the flat pending list — the
+      // pending item's name now appears in both the card title and a
+      // tooltip/attribute, so multiple elements share the text.
+      // `getAllByText` + length assertion proves the item rendered without
+      // caring about the exact DOM duplication.
       await waitFor(() => {
         expect(screen.getAllByText('Pending Print').length).toBeGreaterThanOrEqual(1);
       });
