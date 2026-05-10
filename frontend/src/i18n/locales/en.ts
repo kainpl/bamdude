@@ -13,7 +13,7 @@ export default {
     makerworld: 'MakerWorld',
     notifications: 'Notifications',
     settings: 'Settings',
-    system: 'System',
+    system: 'Information',
     collapseSidebar: 'Collapse sidebar',
     expandSidebar: 'Expand sidebar',
     update: 'Update',
@@ -27,7 +27,15 @@ export default {
     switchToLight: 'Switch to light mode',
     switchToDark: 'Switch to dark mode',
     smartSwitches: 'Smart Switches',
-    logout: 'Logout'
+    logout: 'Logout',
+    group: {
+      operations: 'Operations',
+      workshop: 'Workshop',
+      resources: 'Resources',
+      care: 'Care',
+      system: 'System',
+      external: 'Links',
+    },
   },
 
   // Common

@@ -13,7 +13,7 @@ export default {
     makerworld: 'MakerWorld',
     notifications: 'Сповіщення',
     settings: 'Налаштування',
-    system: 'Система',
+    system: 'Інформація',
     collapseSidebar: 'Згорнути',
     expandSidebar: 'Розгорнути',
     update: 'Оновлення',
@@ -27,7 +27,15 @@ export default {
     switchToLight: 'Світла тема',
     switchToDark: 'Темна тема',
     smartSwitches: 'Розумні вимикачі',
-    logout: 'Вийти'
+    logout: 'Вийти',
+    group: {
+      operations: 'Операції',
+      workshop: 'Майстерня',
+      resources: 'Ресурси',
+      care: 'Догляд',
+      system: 'Система',
+      external: 'Посилання',
+    },
   },
 
   // Common

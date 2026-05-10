@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from 'react';
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { Printer, Archive, Calendar, BarChart3, Cloud, Settings, Sun, Moon, ChevronLeft, ChevronRight, Keyboard, GripVertical, ArrowUpCircle, Wrench, FolderKanban, FolderOpen, X, Menu, Info, Plug, Bug, LogOut, Key, Loader2, Disc3, ShieldAlert, Bell, BookOpen, type LucideIcon } from 'lucide-react';
 import { GitHubIcon, TelegramIcon, MakerWorldIcon } from './BrandIcons';
@@ -19,6 +19,14 @@ import { Button } from './Button';
 import { BugReportBubble } from './BugReportBubble';
 
 
+// Sidebar groups (for visual section dividers + labels). Group membership
+// is item-level; the renderer injects a divider whenever an item's group
+// differs from the previous item's group. Drag-drop reorder is preserved
+// (user can still cross-group drag) — the dividers follow the resulting
+// adjacency, which surfaces a "you put a system item in the middle of
+// operations" cue without blocking the move.
+export type NavGroup = 'operations' | 'workshop' | 'resources' | 'care' | 'system';
+
 interface NavItem {
   id: string;
   to: string;
@@ -26,31 +34,78 @@ interface NavItem {
   // className-only contract, so a structural component type covers both.
   icon: LucideIcon | React.ComponentType<{ className?: string }>;
   labelKey: string; // Translation key
+  group: NavGroup;
 }
 
+// Default-order list defines both the order AND the group structure. Every
+// item lives in exactly one group; the renderer (below) injects a divider
+// + group label between items when the group changes. Order within each
+// group is by typical operator visit-frequency.
 export const defaultNavItems: NavItem[] = [
-  // Primary workflow items
-  { id: 'printers', to: '/', icon: Printer, labelKey: 'nav.printers' },
-  { id: 'archives', to: '/archives', icon: Archive, labelKey: 'nav.archives' },
-  { id: 'queue', to: '/queue', icon: Calendar, labelKey: 'nav.queue' },
-  { id: 'stats', to: '/stats', icon: BarChart3, labelKey: 'nav.stats' },
-  { id: 'profiles', to: '/profiles', icon: Cloud, labelKey: 'nav.profiles' },
-  { id: 'maintenance', to: '/maintenance', icon: Wrench, labelKey: 'nav.maintenance' },
-  { id: 'projects', to: '/projects', icon: FolderKanban, labelKey: 'nav.projects' },
-  { id: 'inventory', to: '/inventory', icon: Disc3, labelKey: 'nav.inventory' },
-  { id: 'files', to: '/files', icon: FolderOpen, labelKey: 'nav.files' },
-  { id: 'makerworld', to: '/makerworld', icon: MakerWorldIcon, labelKey: 'nav.makerworld' },
-  // User-account features: kept adjacent to Settings intentionally
-  { id: 'notifications', to: '/notifications', icon: Bell, labelKey: 'nav.notifications' },
-  { id: 'settings', to: '/settings', icon: Settings, labelKey: 'nav.settings' },
+  // Operations — live status + history of the farm
+  { id: 'printers', to: '/', icon: Printer, labelKey: 'nav.printers', group: 'operations' },
+  { id: 'queue', to: '/queue', icon: Calendar, labelKey: 'nav.queue', group: 'operations' },
+  { id: 'archives', to: '/archives', icon: Archive, labelKey: 'nav.archives', group: 'operations' },
+  { id: 'stats', to: '/stats', icon: BarChart3, labelKey: 'nav.stats', group: 'operations' },
+  // Workshop — what to print
+  { id: 'projects', to: '/projects', icon: FolderKanban, labelKey: 'nav.projects', group: 'workshop' },
+  { id: 'files', to: '/files', icon: FolderOpen, labelKey: 'nav.files', group: 'workshop' },
+  { id: 'makerworld', to: '/makerworld', icon: MakerWorldIcon, labelKey: 'nav.makerworld', group: 'workshop' },
+  // Resources — consumables + slicer presets
+  { id: 'inventory', to: '/inventory', icon: Disc3, labelKey: 'nav.inventory', group: 'resources' },
+  { id: 'profiles', to: '/profiles', icon: Cloud, labelKey: 'nav.profiles', group: 'resources' },
+  // Care — long-term printer health
+  { id: 'maintenance', to: '/maintenance', icon: Wrench, labelKey: 'nav.maintenance', group: 'care' },
+  // System — account-level configuration
+  { id: 'notifications', to: '/notifications', icon: Bell, labelKey: 'nav.notifications', group: 'system' },
+  { id: 'system', to: '/system', icon: Info, labelKey: 'nav.system', group: 'system' },
+  { id: 'settings', to: '/settings', icon: Settings, labelKey: 'nav.settings', group: 'system' },
 ];
+
+// One-shot legacy default order (pre-grouping cycle). If localStorage
+// still carries this exact array, the user never reordered the sidebar
+// manually — switch them to the new grouped default. Users who DID
+// reorder keep their custom order; the renderer will inject group
+// dividers based on each item's ``group`` field, which produces a
+// "groups follow your reorder" effect that's surprising but accurate.
+const LEGACY_DEFAULT_ORDER = [
+  'printers', 'archives', 'queue', 'stats', 'profiles',
+  'maintenance', 'projects', 'inventory', 'files', 'makerworld',
+  'notifications', 'settings',
+];
+
+// Pre-`system` grouped default (operators on the previous cycle's grouped
+// order, before the System info menu item was promoted from a bottom icon
+// into a real sidebar entry). Same migration treatment as LEGACY_DEFAULT_ORDER.
+const LEGACY_GROUPED_ORDER_PRE_SYSTEM = [
+  'printers', 'queue', 'archives', 'stats',
+  'projects', 'files', 'makerworld',
+  'inventory', 'profiles',
+  'maintenance',
+  'notifications', 'settings',
+];
+
+function arraysEqual(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((v, i) => v === b[i]);
+}
 
 // Get unified sidebar order from localStorage
 function getSidebarOrder(): string[] {
   const stored = localStorage.getItem('sidebarOrder');
   if (stored) {
     try {
-      return JSON.parse(stored);
+      const parsed = JSON.parse(stored);
+      if (
+        Array.isArray(parsed) &&
+        (arraysEqual(parsed, LEGACY_DEFAULT_ORDER) || arraysEqual(parsed, LEGACY_GROUPED_ORDER_PRE_SYSTEM))
+      ) {
+        // Legacy default — operator never customised. Return the new
+        // grouped default so they see the cleaner ordering on next load.
+        const newDefault = defaultNavItems.map(i => i.id);
+        localStorage.setItem('sidebarOrder', JSON.stringify(newDefault));
+        return newDefault;
+      }
+      return parsed;
     } catch {
       return defaultNavItems.map(i => i.id);
     }
@@ -284,6 +339,7 @@ export function Layout() {
       makerworld: 'makerworld:view',
       settings: 'settings:read',
       notifications: 'notifications:user_email',
+      system: 'system:read',
     };
 
     const isHidden = (id: string) => {
@@ -523,7 +579,11 @@ export function Layout() {
             : `fixed inset-y-0 left-0 z-30 ${sidebarExpanded ? 'w-64' : 'w-16'}`
         }`}
       >
-        {/* Logo (clickable — opens the public landing page in a new tab). */}
+        {/* Logo (clickable — opens the public landing page in a new tab).
+            Collapsed sidebar uses the standalone icon (favicon-style,
+            android-chrome-192 — pre-cropped square, no wordmark to
+            partial-letter-clip); expanded uses the theme-aware wordmark
+            PNG. */}
         <div className={`border-b border-bambu-dark-tertiary flex items-center justify-center ${isSidebarCompact || sidebarExpanded ? 'p-4' : 'p-2'}`}>
           <a
             href={LANDING_URL}
@@ -533,9 +593,13 @@ export function Layout() {
             title="BamDude"
           >
             <img
-              src={mode === 'dark' ? '/img/bamdude_logo_dark_transparent.png' : '/img/bamdude_logo_light.png'}
+              src={
+                isSidebarCompact || sidebarExpanded
+                  ? (mode === 'dark' ? '/img/bamdude_logo_dark_transparent.png' : '/img/bamdude_logo_light.png')
+                  : '/img/android-chrome-192x192.png'
+              }
               alt="BamDude"
-              className={isSidebarCompact || sidebarExpanded ? 'h-16 w-auto' : 'h-8 w-8 object-cover object-left'}
+              className={isSidebarCompact || sidebarExpanded ? 'h-16 w-auto' : 'h-12 w-12 rounded'}
             />
           </a>
         </div>
@@ -543,8 +607,31 @@ export function Layout() {
         {/* Navigation */}
         <nav className="flex-1 p-2 overflow-y-auto">
           <ul className="space-y-2">
-            {orderedSidebarIds.map((id) => {
+            {orderedSidebarIds.map((id, index) => {
               const isExternal = isExternalLinkId(id);
+              // Group-divider injection: each item declares its group
+              // (operations / workshop / resources / care / system).
+              // External links land in their own ``external`` bucket so
+              // user-added shortcuts get a clean separator from the
+              // built-in nav. We render a divider before any item whose
+              // group differs from the previous item's group — this
+              // handles default ordering AND degrades gracefully when
+              // the user drag-drop reorders cross-group (the divider
+              // simply follows the new adjacency).
+              const currentGroup: NavGroup | 'external' = isExternal
+                ? 'external'
+                : (navItemsMap.get(id)?.group ?? 'operations');
+              const prevId = index > 0 ? orderedSidebarIds[index - 1] : null;
+              const prevGroup: NavGroup | 'external' | null = prevId
+                ? isExternalLinkId(prevId)
+                  ? 'external'
+                  : (navItemsMap.get(prevId)?.group ?? 'operations')
+                : null;
+              const showGroupHeader = currentGroup !== prevGroup;
+              const groupLabel = showGroupHeader
+                ? t(`nav.group.${currentGroup}`)
+                : '';
+              const showText = isSidebarCompact || sidebarExpanded;
 
               if (isExternal) {
                 // Render external link
@@ -553,8 +640,19 @@ export function Layout() {
 
                 const LinkIcon = link.custom_icon ? null : getIconByName(link.icon);
                 return (
+                  <Fragment key={id}>
+                  {showGroupHeader && (
+                    <li className="pointer-events-none select-none">
+                      {showText ? (
+                        <div className={`text-[10px] uppercase tracking-wider text-bambu-gray font-medium px-3 ${index === 0 ? 'pt-0' : 'pt-2'}`}>
+                          {groupLabel}
+                        </div>
+                      ) : (
+                        <div className={`border-t border-bambu-dark-tertiary mx-2 ${index === 0 ? '' : 'mt-1'}`} />
+                      )}
+                    </li>
+                  )}
                   <li
-                    key={id}
                     draggable
                     onDragStart={(e) => handleDragStart(e, id)}
                     onDragOver={(e) => handleDragOver(e, id)}
@@ -619,6 +717,7 @@ export function Layout() {
                       </NavLink>
                     )}
                   </li>
+                  </Fragment>
                 );
               } else {
                 // Render internal nav item
@@ -632,8 +731,19 @@ export function Layout() {
                 const showClearPlateDot = id === 'printers' && needsClearPlate;
 
                 return (
+                  <Fragment key={id}>
+                  {showGroupHeader && (
+                    <li className="pointer-events-none select-none">
+                      {showText ? (
+                        <div className={`text-[10px] uppercase tracking-wider text-bambu-gray font-medium px-3 ${index === 0 ? 'pt-0' : 'pt-2'}`}>
+                          {groupLabel}
+                        </div>
+                      ) : (
+                        <div className={`border-t border-bambu-dark-tertiary mx-2 ${index === 0 ? '' : 'mt-1'}`} />
+                      )}
+                    </li>
+                  )}
                   <li
-                    key={id}
                     draggable
                     onDragStart={(e) => handleDragStart(e, id)}
                     onDragOver={(e) => handleDragOver(e, id)}
@@ -676,6 +786,7 @@ export function Layout() {
                       {(isSidebarCompact || sidebarExpanded) && <span>{t(labelKey)}</span>}
                     </NavLink>
                   </li>
+                  </Fragment>
                 );
               }
             })}
@@ -719,26 +830,6 @@ export function Layout() {
                       <SwitchbarPopover onClose={() => setShowSwitchbar(false)} />
                     )}
                   </div>
-                )}
-                {hasPermission('system:read') ? (
-                  <NavLink
-                    to="/system"
-                    className={({ isActive }) =>
-                      `p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors ${
-                        isActive ? 'text-bambu-green' : 'text-bambu-gray-light hover:text-white'
-                      }`
-                    }
-                    title={t('nav.system')}
-                  >
-                    <Info className="w-5 h-5" />
-                  </NavLink>
-                ) : (
-                  <span
-                    className="p-2 rounded-lg text-bambu-gray/50 cursor-not-allowed"
-                    title="You do not have permission to view system information"
-                  >
-                    <Info className="w-5 h-5" />
-                  </span>
                 )}
                 <button
                   onClick={() => setShowShortcuts(true)}
@@ -844,26 +935,6 @@ export function Layout() {
                     <SwitchbarPopover onClose={() => setShowSwitchbar(false)} />
                   )}
                 </div>
-              )}
-              {hasPermission('system:read') ? (
-                <NavLink
-                  to="/system"
-                  className={({ isActive }) =>
-                    `p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors ${
-                      isActive ? 'text-bambu-green' : 'text-bambu-gray-light hover:text-white'
-                    }`
-                  }
-                  title={t('nav.system')}
-                >
-                  <Info className="w-5 h-5" />
-                </NavLink>
-              ) : (
-                <span
-                  className="p-2 rounded-lg text-bambu-gray/50 cursor-not-allowed"
-                  title="You do not have permission to view system information"
-                >
-                  <Info className="w-5 h-5" />
-                </span>
               )}
               <a
                 href="https://github.com/kainpl/bambuddy-hedy"
