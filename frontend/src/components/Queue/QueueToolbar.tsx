@@ -202,8 +202,8 @@ export function QueueToolbar({
             title={sortAsc ? t('printers.sort.descending') : t('printers.sort.ascending')}
           >
             {sortAsc
-              ? <ArrowUpNarrowWide className="w-4 h-4 text-bambu-gray" />
-              : <ArrowDownWideNarrow className="w-4 h-4 text-bambu-gray" />}
+              ? <ArrowUpNarrowWide className="w-4 h-4 text-white" />
+              : <ArrowDownWideNarrow className="w-4 h-4 text-white" />}
           </button>
         </div>
 

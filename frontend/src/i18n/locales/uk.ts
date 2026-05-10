@@ -1215,6 +1215,26 @@ export default {
     statusTab: 'Стан',
     historyTab: 'Історія',
     settingsTab: 'Налаштування',
+    tabs: {
+      status: 'Стан',
+      history: 'Історія',
+      settings: 'Налаштування'
+    },
+    search: {
+      placeholder: 'Пошук принтерів…'
+    },
+    filter: {
+      all: 'Усі',
+      due: 'Прострочені',
+      warning: 'Скоро',
+      ok: 'OK'
+    },
+    sort: {
+      upcoming: 'Найближчі події',
+      name: 'Назва',
+      hours: 'Години друку',
+      location: 'Розташування'
+    },
     // History tab
     historyEmpty: 'Історія обслуговування порожня',
     historyDate: 'Дата',

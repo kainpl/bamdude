@@ -1207,6 +1207,26 @@ export default {
     statusTab: 'Status',
     historyTab: 'History',
     settingsTab: 'Settings',
+    tabs: {
+      status: 'Status',
+      history: 'History',
+      settings: 'Settings'
+    },
+    search: {
+      placeholder: 'Search printers…'
+    },
+    filter: {
+      all: 'All',
+      due: 'Due',
+      warning: 'Due soon',
+      ok: 'OK'
+    },
+    sort: {
+      upcoming: 'Upcoming events',
+      name: 'Name',
+      hours: 'Print hours',
+      location: 'Location'
+    },
     // History tab
     historyEmpty: 'No maintenance history',
     historyDate: 'Date',

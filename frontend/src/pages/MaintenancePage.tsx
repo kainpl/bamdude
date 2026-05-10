@@ -54,6 +54,7 @@ import { useToast } from '../contexts/ToastContext';
 import { formatDateTime } from '../utils/date';
 import { useAuth } from '../contexts/AuthContext';
 import { getMaintenanceWikiUrl } from '../utils/maintenanceWikiUrls';
+import { MaintenanceToolbar } from '../components/Maintenance/MaintenanceToolbar';
 
 // Icon mapping for maintenance types
 const iconMap: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -1415,6 +1416,47 @@ export function MaintenancePage() {
   const printerIdParam = searchParams.get('printer') ? Number(searchParams.get('printer')) : undefined;
   const [activeTab, setActiveTab] = useState<TabType>('status');
 
+  // Status-tab filters / sort, persisted in localStorage.
+  type StatusFilter = 'all' | 'due' | 'warning' | 'ok';
+  type SortOption = 'upcoming' | 'name' | 'hours' | 'location';
+  const [search, setSearch] = useState<string>(() => localStorage.getItem('maintenanceSearch') || '');
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>(() => (localStorage.getItem('maintenanceStatusFilter') as StatusFilter) || 'all');
+  const [locationFilter, setLocationFilter] = useState<string>(() => localStorage.getItem('maintenanceLocationFilter') || 'all');
+  const [sortBy, setSortBy] = useState<SortOption>(() => (localStorage.getItem('maintenanceSortBy') as SortOption) || 'upcoming');
+  const [sortAsc, setSortAsc] = useState<boolean>(() => localStorage.getItem('maintenanceSortAsc') === 'true');
+  const [hideOffline, setHideOffline] = useState<boolean>(() => localStorage.getItem('maintenanceHideOffline') === 'true');
+  const [statusCacheVersion, setStatusCacheVersion] = useState(0);
+
+  useEffect(() => { localStorage.setItem('maintenanceSearch', search); }, [search]);
+  useEffect(() => { localStorage.setItem('maintenanceStatusFilter', statusFilter); }, [statusFilter]);
+  useEffect(() => { localStorage.setItem('maintenanceLocationFilter', locationFilter); }, [locationFilter]);
+  useEffect(() => { localStorage.setItem('maintenanceSortBy', sortBy); }, [sortBy]);
+  useEffect(() => { localStorage.setItem('maintenanceSortAsc', String(sortAsc)); }, [sortAsc]);
+
+  const toggleHideOffline = () => {
+    setHideOffline(prev => {
+      const next = !prev;
+      localStorage.setItem('maintenanceHideOffline', String(next));
+      return next;
+    });
+  };
+
+  // Bump statusCacheVersion when printerStatus cache updates so the offline
+  // filter recomputes when WebSocket / poll data lands. Same pattern as
+  // PrintersPage + QueuePage.
+  useEffect(() => {
+    const cache = queryClient.getQueryCache();
+    return cache.subscribe((event) => {
+      if (
+        event.type === 'updated' &&
+        Array.isArray(event.query.queryKey) &&
+        event.query.queryKey[0] === 'printerStatus'
+      ) {
+        setStatusCacheVersion(v => v + 1);
+      }
+    });
+  }, [queryClient]);
+
   useEffect(() => {
     if (printerIdParam && activeTab !== 'history') {
       setActiveTab('history');
@@ -1559,88 +1601,167 @@ export function MaintenancePage() {
   const totalDue = overview?.reduce((sum, p) => sum + p.due_count, 0) || 0;
   const totalWarning = overview?.reduce((sum, p) => sum + p.warning_count, 0) || 0;
 
+  const availableLocations = (() => {
+    if (!overview) return [] as string[];
+    const set = new Set<string>();
+    overview.forEach(p => { if (p.printer_location) set.add(p.printer_location); });
+    return Array.from(set).sort();
+  })();
+
+  // Filter + sort the Status-tab overviews.
+  const visibleOverviews = (() => {
+    if (!overview) return [];
+    const term = search.trim().toLowerCase();
+    const filtered = overview.filter(p => {
+      if (term) {
+        const name = (p.printer_name || '').toLowerCase();
+        const model = (p.printer_model || '').toLowerCase();
+        const loc = (p.printer_location || '').toLowerCase();
+        if (!name.includes(term) && !model.includes(term) && !loc.includes(term)) return false;
+      }
+      if (locationFilter !== 'all' && (p.printer_location || '') !== locationFilter) return false;
+      if (statusFilter !== 'all') {
+        if (statusFilter === 'due' && p.due_count === 0) return false;
+        if (statusFilter === 'warning' && p.warning_count === 0) return false;
+        if (statusFilter === 'ok' && (p.due_count > 0 || p.warning_count > 0)) return false;
+      }
+      if (hideOffline) {
+        const status = queryClient.getQueryData<{ connected: boolean }>(['printerStatus', p.printer_id]);
+        if (!status?.connected) return false;
+      }
+      return true;
+    });
+
+    const sorted = [...filtered];
+    switch (sortBy) {
+      case 'upcoming':
+        sorted.sort((a, b) => {
+          const aScore = a.due_count * 10 + a.warning_count;
+          const bScore = b.due_count * 10 + b.warning_count;
+          if (aScore !== bScore) return bScore - aScore;
+          return a.printer_name.localeCompare(b.printer_name);
+        });
+        break;
+      case 'name':
+        sorted.sort((a, b) => a.printer_name.localeCompare(b.printer_name));
+        break;
+      case 'hours':
+        sorted.sort((a, b) => b.total_print_hours - a.total_print_hours);
+        break;
+      case 'location':
+        sorted.sort((a, b) => (a.printer_location || '').localeCompare(b.printer_location || ''));
+        break;
+    }
+    if (!sortAsc && sortBy !== 'upcoming') sorted.reverse();
+    if (sortAsc && sortBy === 'upcoming') sorted.reverse();
+    return sorted;
+  })();
+
+  // Group by location when sortBy === 'location' (echoes the PrintersPage shape).
+  const groupedOverviews = (() => {
+    if (sortBy !== 'location' || availableLocations.length === 0) return null;
+    const groups: Record<string, typeof visibleOverviews> = {};
+    visibleOverviews.forEach(p => {
+      const key = p.printer_location || t('printers.ungrouped');
+      (groups[key] ??= []).push(p);
+    });
+    return Object.entries(groups);
+  })();
+
+  // statusCacheVersion is read so the filter recomputes when WS updates land
+  // (the offline-filter branch above reads from the QueryClient cache).
+  void statusCacheVersion;
+
   return (
     <div className="p-4 md:p-6 space-y-4">
       {/* Header */}
-      <div>
-        <div className="flex items-center gap-3">
-          {/*<Disc3 className="w-6 h-6 text-bambu-green" />*/}
-          <h1 className="text-2xl font-bold text-white">{t('maintenance.title')}</h1>
+      <div className="space-y-3">
+        <div>
+          <h1 className="text-2xl font-bold text-white flex items-center gap-3">
+            <Wrench className="w-7 h-7 text-bambu-green" />
+            {t('maintenance.title')}
+          </h1>
+          <p className="text-sm text-bambu-gray mt-1">
+            {activeTab === 'status' ? (
+                <>
+                  {totalDue > 0 && <span className="text-red-400">{t('maintenance.dueCount', { count: totalDue })}</span>}
+                  {totalDue > 0 && totalWarning > 0 && ' · '}
+                  {totalWarning > 0 && <span className="text-amber-400">{t('maintenance.warningCount', { count: totalWarning })}</span>}
+                  {totalDue === 0 && totalWarning === 0 && <span className="text-bambu-green">{t('maintenance.allOk')}</span>}
+                </>
+            ) : (
+                t('maintenance.configureSettings')
+            )}
+          </p>
         </div>
-        <p className="text-sm text-bambu-gray">
-          {activeTab === 'status' ? (
-              <>
-                {totalDue > 0 && <span className="text-red-400">{t('maintenance.dueCount', { count: totalDue })}</span>}
-                {totalDue > 0 && totalWarning > 0 && ' · '}
-                {totalWarning > 0 && <span className="text-amber-400">{t('maintenance.warningCount', { count: totalWarning })}</span>}
-                {totalDue === 0 && totalWarning === 0 && <span className="text-bambu-green">{t('maintenance.allOk')}</span>}
-              </>
-          ) : (
-              t('maintenance.configureSettings')
-          )}
-        </p>
-      </div>
 
-      {/* Tabs */}
-      <div className="flex gap-1 mb-4 border-b border-bambu-dark-tertiary">
-        <button
-          onClick={() => setActiveTab('status')}
-          className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
-            activeTab === 'status'
-              ? 'text-bambu-green border-bambu-green'
-              : 'text-bambu-gray border-transparent hover:text-white'
-          }`}
-        >
-          {t('maintenance.statusTab')}
-        </button>
-        <button
-          onClick={() => setActiveTab('history')}
-          className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors flex items-center gap-1.5 ${
-            activeTab === 'history'
-              ? 'text-bambu-green border-bambu-green'
-              : 'text-bambu-gray border-transparent hover:text-white'
-          }`}
-        >
-          <History className="w-4 h-4" />
-          {t('maintenance.historyTab')}
-        </button>
-        <button
-          onClick={() => setActiveTab('settings')}
-          className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
-            activeTab === 'settings'
-              ? 'text-bambu-green border-bambu-green'
-              : 'text-bambu-gray border-transparent hover:text-white'
-          }`}
-        >
-          {t('maintenance.settingsTab')}
-        </button>
+        <MaintenanceToolbar
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
+          search={search}
+          onSearchChange={setSearch}
+          statusFilter={statusFilter}
+          onStatusFilterChange={setStatusFilter}
+          locationFilter={locationFilter}
+          onLocationFilterChange={setLocationFilter}
+          availableLocations={availableLocations}
+          sortBy={sortBy}
+          onSortByChange={setSortBy}
+          sortAsc={sortAsc}
+          onSortDirectionToggle={() => setSortAsc(v => !v)}
+          hideOffline={hideOffline}
+          onHideOfflineToggle={toggleHideOffline}
+        />
       </div>
 
       {/* Tab content */}
       {activeTab === 'status' ? (
-        <div>
+        <div className="space-y-6">
           {overview && overview.length > 0 ? (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
-            {[...overview].sort((a, b) => {
-              // Sort printers with issues first
-              const aScore = a.due_count * 10 + a.warning_count;
-              const bScore = b.due_count * 10 + b.warning_count;
-              if (aScore !== bScore) return bScore - aScore;
-              return a.printer_name.localeCompare(b.printer_name);
-            }).map((printerOverview) => (
-              <PrinterSection
-                key={printerOverview.printer_id}
-                overview={printerOverview}
-                types={types || []}
-                macroMeta={macroMeta}
-                onPerform={handlePerform}
-                onToggle={handleToggle}
-                onSetHours={handleSetHours}
-                hasPermission={hasPermission}
-                t={t}
-              />
-            ))}
-            </div>
+            visibleOverviews.length === 0 ? (
+              <Card>
+                <CardContent className="text-center py-12">
+                  <p className="text-bambu-gray">{t('printers.noSearchResults')}</p>
+                </CardContent>
+              </Card>
+            ) : groupedOverviews ? (
+              groupedOverviews.map(([location, items]) => (
+                <div key={location} className="space-y-3">
+                  <h2 className="text-lg font-semibold text-bambu-green">{location} <span className="text-bambu-gray text-sm font-normal">({items.length})</span></h2>
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 items-start">
+                    {items.map((printerOverview) => (
+                      <PrinterSection
+                        key={printerOverview.printer_id}
+                        overview={printerOverview}
+                        types={types || []}
+                        macroMeta={macroMeta}
+                        onPerform={handlePerform}
+                        onToggle={handleToggle}
+                        onSetHours={handleSetHours}
+                        hasPermission={hasPermission}
+                        t={t}
+                      />
+                    ))}
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 items-start">
+                {visibleOverviews.map((printerOverview) => (
+                  <PrinterSection
+                    key={printerOverview.printer_id}
+                    overview={printerOverview}
+                    types={types || []}
+                    macroMeta={macroMeta}
+                    onPerform={handlePerform}
+                    onToggle={handleToggle}
+                    onSetHours={handleSetHours}
+                    hasPermission={hasPermission}
+                    t={t}
+                  />
+                ))}
+              </div>
+            )
           ) : (
             <Card>
               <CardContent className="text-center py-16">

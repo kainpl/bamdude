@@ -2960,6 +2960,7 @@ export interface PrinterMaintenanceOverview {
   printer_id: number;
   printer_name: string;
   printer_model: string | null;
+  printer_location: string | null;
   total_print_hours: number;
   maintenance_items: MaintenanceStatus[];
   due_count: number;
