@@ -225,6 +225,10 @@ export function MakerworldPage() {
       // Backend auto-creates a "MakerWorld" folder on first import; refresh
       // the folder tree so users see it without having to reload the page.
       queryClient.invalidateQueries({ queryKey: ['library-folders'] });
+      // Recent-imports list lives in its own React-Query cache; without
+      // invalidating it the panel keeps showing the pre-import snapshot
+      // until the next manual refresh / page revisit.
+      queryClient.invalidateQueries({ queryKey: ['makerworld-recent-imports'] });
       // Track by profile_id so each plate's row can render its own inline
       // follow-up buttons even after multiple imports in the same session.
       if (data.profile_id) {

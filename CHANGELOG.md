@@ -8,6 +8,20 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **Archive page-size selector now includes "All".** Added `12 / 24 / 48 / 96 / All`. "All" sends `all=true` to `/api/v1/archives` which drops the SQL `LIMIT`/`OFFSET` entirely instead of relying on a large cap.
+
+- **Inventory page-size selector aligned with Archive.** Values are now `12 / 24 / 48 / 96 / Усі` (was `15 / 30 / 50 / 100 / Усі`); default 24. Old persisted sizes (`15/30/50/100`) fall back to 24.
+
+- **Page-title icons now match the sidebar.** Added/uncommented the matching lucide icon (green, 24×24) in the page header on Archives, Inventory, Stats, Projects, Files, Profiles, System Information, and Settings. Brings them in line with Printers / Queue / Maintenance which already did this.
+
+### Fixed
+
+- **Information page → Database → Filaments was blank.** `/api/v1/system/info` returned the count under key `spools`; frontend read `filaments`. Renamed the API key to `filaments` and narrowed the count to active spools (`archived_at IS NULL`) so it matches the inventory list.
+
+- **MakerWorld "Recent imports" panel didn't refresh after import.** `importMutation.onSuccess` missed the `makerworld-recent-imports` query invalidation that `sliceMutation` / `deleteImportMutation` already did.
+
 ---
 
 ## [0.4.4b3] - 2026-05-11

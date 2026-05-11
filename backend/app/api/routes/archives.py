@@ -198,6 +198,7 @@ async def list_archives(
     sort_by: str = Query("date-desc"),
     page: int = Query(1, ge=1),
     per_page: int = Query(24, ge=1, le=200),
+    all: bool = Query(False, description="When true, skip pagination and return every matching row"),
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.ARCHIVES_READ),
 ):
@@ -207,7 +208,7 @@ async def list_archives(
     # Parse comma-separated colors
     color_list = [c.strip() for c in colors.split(",") if c.strip()] if colors else None
 
-    offset = (page - 1) * per_page
+    offset = 0 if all else (page - 1) * per_page
     archives, total = await service.list_archives(
         printer_id=printer_id,
         project_id=project_id,
@@ -224,7 +225,7 @@ async def list_archives(
         tag=tag,
         file_type=file_type,
         sort_by=sort_by,
-        limit=per_page,
+        limit=None if all else per_page,
         offset=offset,
     )
 
@@ -330,14 +331,21 @@ async def list_archives(
 
     import math
 
-    last_page = max(1, math.ceil(total / per_page))
+    if all:
+        meta_page = 1
+        meta_per_page = total or 1
+        last_page = 1
+    else:
+        meta_page = page
+        meta_per_page = per_page
+        last_page = max(1, math.ceil(total / per_page))
 
     return PaginatedArchiveResponse(
         data=data,
         meta=PaginationMeta(
             total=total,
-            current_page=page,
-            per_page=per_page,
+            current_page=meta_page,
+            per_page=meta_per_page,
             last_page=last_page,
         ),
     )

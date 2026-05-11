@@ -19,6 +19,7 @@ import {
   Calculator,
   Calendar,
   ChevronDown,
+  BarChart3,
 } from 'lucide-react';
 import {
   BarChart,
@@ -1131,7 +1132,7 @@ export function StatsPage() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
         <div>
           <div className="flex items-center gap-3">
-            {/*<Disc3 className="w-6 h-6 text-bambu-green" />*/}
+            <BarChart3 className="w-6 h-6 text-bambu-green" />
             <h1 className="text-2xl font-bold text-white">{t('stats.title')}</h1>
           </div>
           <p className="text-sm text-bambu-gray mt-1 ml-9">{t('stats.subtitle')}</p>

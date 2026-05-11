@@ -44,7 +44,7 @@ import { availableLanguages } from '../i18n';
 import { useToast } from '../contexts/ToastContext';
 import { useTheme, type ThemeStyle, type DarkBackground, type LightBackground, type ThemeAccent } from '../contexts/ThemeContext';
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Palette, Search } from 'lucide-react';
+import { Palette, Search, Settings } from 'lucide-react';
 import { registerSettingsSearch, getSettingsSearchEntries } from '../lib/settingsSearch';
 import { SlicerHealthIndicator } from '../components/SlicerHealthIndicator';
 import { PrintOptionsPreferencesPanel } from '../components/settings/PrintOptionsPreferencesPanel';
@@ -1372,6 +1372,7 @@ export function SettingsPage() {
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="flex items-center gap-3">
+            <Settings className="w-6 h-6 text-bambu-green" />
             <h1 className="text-2xl font-bold text-white">{t('settings.title')}</h1>
           </div>
           <p className="text-sm text-bambu-gray">{t('settings.configureBamdude')}</p>

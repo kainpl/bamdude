@@ -55,6 +55,7 @@ import {
   ArrowDownWideNarrow,
   DownloadCloud,
   Cog,
+  Archive as ArchiveIcon,
 } from 'lucide-react';
 import { MakerWorldIcon } from '../components/BrandIcons';
 import { api } from '../api/client';
@@ -2615,7 +2616,8 @@ export function ArchivesPage() {
 
   const archiveParams: ArchiveListParams = {
     page,
-    per_page: perPage,
+    per_page: perPage === -1 ? undefined : perPage,
+    all: perPage === -1 ? true : undefined,
     printer_id: filterPrinter || undefined,
     search: debouncedSearch || undefined,
     collection: collection !== 'all' ? collection : undefined,
@@ -2964,7 +2966,10 @@ export function ArchivesPage() {
 
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
         <div>
-          <h1 className="text-2xl font-bold text-white">{t('archives.page.title')}</h1>
+          <div className="flex items-center gap-3">
+            <ArchiveIcon className="w-6 h-6 text-bambu-green" />
+            <h1 className="text-2xl font-bold text-white">{t('archives.page.title')}</h1>
+          </div>
           {viewMode === 'calendar' && (
             <p className="text-bambu-gray text-sm">{t('archives.calendarView')}</p>
           )}
@@ -3314,6 +3319,7 @@ export function ArchivesPage() {
                   {[12, 24, 48, 96].map((n) => (
                     <option key={n} value={n}>{n}</option>
                   ))}
+                  <option value={-1}>{t('common.all')}</option>
                 </select>
               </div>
               <div className="flex items-center gap-1">

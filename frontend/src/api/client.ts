@@ -739,6 +739,7 @@ export interface ArchiveFilterOptions {
 export interface ArchiveListParams {
   page?: number;
   per_page?: number;
+  all?: boolean;
   printer_id?: number;
   project_id?: number;
   date_from?: string;
@@ -3859,8 +3860,9 @@ export const api = {
   // Archives
   getArchives: (params: ArchiveListParams = {}) => {
     const qs = new URLSearchParams();
-    if (params.page) qs.set('page', String(params.page));
-    if (params.per_page) qs.set('per_page', String(params.per_page));
+    if (params.all) qs.set('all', 'true');
+    if (params.page && !params.all) qs.set('page', String(params.page));
+    if (params.per_page && !params.all) qs.set('per_page', String(params.per_page));
     if (params.printer_id) qs.set('printer_id', String(params.printer_id));
     if (params.project_id) qs.set('project_id', String(params.project_id));
     if (params.date_from) qs.set('date_from', params.date_from);

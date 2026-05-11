@@ -7,7 +7,7 @@ import {
   Plus, Loader2, Trash2, Archive, RotateCcw, Edit2, Package,
   Search, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight,
   TrendingDown, Layers, Printer, AlertTriangle, X, Clock, LayoutGrid, TableProperties, Columns,
-  ArrowUp, ArrowDown, ArrowUpDown, Group, ChevronDown, Check, RefreshCw,
+  ArrowUp, ArrowDown, ArrowUpDown, Group, ChevronDown, Check, RefreshCw, Disc3,
 } from 'lucide-react';
 import { api, ApiError } from '../api/client';
 import type { InventorySpool, SpoolAssignment, SpoolCatalogEntry } from '../api/client';
@@ -644,10 +644,10 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
       const stored = localStorage.getItem('bamdude-inventory-pageSize');
       if (stored) {
         const n = Number(stored);
-        if ([15, 30, 50, 100, -1].includes(n)) return n;
+        if ([12, 24, 48, 96, -1].includes(n)) return n;
       }
     } catch { /* ignore */ }
-    return 15;
+    return 24;
   });
 
   const { data: settings } = useQuery({
@@ -1202,7 +1202,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
       <div className="flex items-center justify-between">
         <div>
           <div className="flex items-center gap-3">
-            {/*<Disc3 className="w-6 h-6 text-bambu-green" />*/}
+            <Disc3 className="w-6 h-6 text-bambu-green" />
             <h1 className="text-2xl font-bold text-white">{t('inventory.title')}</h1>
           </div>
           <p className="text-sm text-bambu-gray">{t('inventory.noSpools').split('.')[0] ? '' : ''}</p>
@@ -1840,7 +1840,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
                   onChange={(e) => handlePageSizeChange(Number(e.target.value))}
                   className="px-2 py-1 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-sm focus:outline-none focus:border-bambu-green"
                 >
-                  {[15, 30, 50, 100].map((n) => (
+                  {[12, 24, 48, 96].map((n) => (
                     <option key={n} value={n}>{n}</option>
                   ))}
                   <option value={-1}>{t('inventory.all')}</option>
@@ -1982,7 +1982,7 @@ function PaginationBar({
           onChange={(e) => onPageSizeChange(Number(e.target.value))}
           className="px-2 py-1 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-sm focus:outline-none focus:border-bambu-green"
         >
-          {[15, 30, 50, 100].map((n) => (
+          {[12, 24, 48, 96].map((n) => (
             <option key={n} value={n}>{n}</option>
           ))}
           <option value={-1}>{t('inventory.all')}</option>
