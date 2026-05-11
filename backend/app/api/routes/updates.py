@@ -365,7 +365,14 @@ async def _perform_update(target_ref: str):
     global _update_status
 
     try:
-        base_dir = settings.base_dir
+        # All git / pip / npm operations must run against the **app**
+        # directory (where requirements.txt, the .git tree, and frontend/
+        # live), not the **data** directory (mounted volume on Docker;
+        # may coincide with app on native installs but only by accident).
+        # Pre-fix this used settings.base_dir which is an alias for
+        # data_dir — pip then errored with "No such file: requirements.txt"
+        # and git fetched against a missing .git, all silently.
+        app_dir = settings.app_dir
 
         # Find git executable (may not be in PATH when running as systemd service)
         git_path = _find_executable("git")
@@ -381,7 +388,7 @@ async def _perform_update(target_ref: str):
         logger.info("Using git at: %s; target ref: %s", git_path, target_ref)
 
         # Git config to avoid safe.directory issues
-        git_config = ["-c", f"safe.directory={base_dir}"]
+        git_config = ["-c", f"safe.directory={app_dir}"]
 
         _update_status = {
             "status": "downloading",
@@ -390,20 +397,49 @@ async def _perform_update(target_ref: str):
             "error": None,
         }
 
-        # Ensure remote uses HTTPS (SSH may not be available)
-        https_url = f"https://github.com/{GITHUB_REPO}.git"
-        process = await asyncio.create_subprocess_exec(
+        # Only override origin if it points at an UNRELATED repo. Pre-fix
+        # we unconditionally set origin to the canonical HTTPS URL —
+        # which clobbered every developer's `git@github.com:fork/...`
+        # SSH remote the moment they tested the in-app upgrade flow, and
+        # the next `git push` from their terminal prompted for HTTPS
+        # credentials and bounced.
+        # The check: read origin; if it already resolves to the expected
+        # repo (HTTPS *or* SSH form), leave it. Only force-set HTTPS when
+        # origin is missing / points elsewhere / is unparseable.
+        get_url_proc = await asyncio.create_subprocess_exec(
             git_path,
             *git_config,
             "remote",
-            "set-url",
+            "get-url",
             "origin",
-            https_url,
-            cwd=str(base_dir),
+            cwd=str(app_dir),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        await process.communicate()
+        get_url_stdout, _ = await get_url_proc.communicate()
+        current_origin = get_url_stdout.decode().strip() if get_url_stdout else ""
+        # GITHUB_REPO is "owner/repo" — match against both shapes.
+        # https://github.com/<repo>(.git)? OR git@github.com:<repo>(.git)?
+        expected_in_origin = GITHUB_REPO.lower() in current_origin.lower()
+        if not expected_in_origin:
+            https_url = f"https://github.com/{GITHUB_REPO}.git"
+            logger.info(
+                "Origin %r doesn't point at %s — resetting to HTTPS canonical URL",
+                current_origin or "(unset)",
+                GITHUB_REPO,
+            )
+            process = await asyncio.create_subprocess_exec(
+                git_path,
+                *git_config,
+                "remote",
+                "set-url",
+                "origin",
+                https_url,
+                cwd=str(app_dir),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await process.communicate()
 
         _update_status = {
             "status": "downloading",
@@ -428,7 +464,7 @@ async def _perform_update(target_ref: str):
             "--prune",
             "--force",
             "origin",
-            cwd=str(base_dir),
+            cwd=str(app_dir),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -462,7 +498,7 @@ async def _perform_update(target_ref: str):
             "reset",
             "--hard",
             f"refs/tags/{target_ref}",
-            cwd=str(base_dir),
+            cwd=str(app_dir),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -495,7 +531,7 @@ async def _perform_update(target_ref: str):
             "-r",
             "requirements.txt",
             "-q",
-            cwd=str(base_dir),
+            cwd=str(app_dir),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -506,7 +542,7 @@ async def _perform_update(target_ref: str):
 
         # Try to build frontend if npm is available (optional - static files are pre-built)
         npm_path = _find_executable("npm")
-        frontend_dir = base_dir / "frontend"
+        frontend_dir = app_dir / "frontend"
 
         if npm_path and frontend_dir.exists():
             _update_status = {

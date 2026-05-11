@@ -51,6 +51,13 @@ class Settings(BaseSettings):
     data_dir: Path = _data_dir
     log_dir: Path = _log_dir
     base_dir: Path = _data_dir  # For backwards compatibility (alias for data_dir)
+    # Application install directory — where requirements.txt, the .git
+    # tree, and frontend/ live. Distinct from data_dir on Docker (data is
+    # a mounted volume, app is in the container's /app); on native
+    # installs the two coincide as project_root + project_root/data.
+    # Used by the in-app updater to run git / pip / npm against the
+    # code tree rather than the data tree (#1240, etc.).
+    app_dir: Path = _app_dir
     archive_dir: Path = _data_dir / "archive"
     plate_calibration_dir: Path = _plate_cal_dir  # Plate detection references
     static_dir: Path = _app_dir / "static"  # Static files are part of app, not data
