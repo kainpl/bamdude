@@ -52,7 +52,7 @@ class TelegramAuthMiddleware(BaseMiddleware):
                 if should_register:
                     tg_chat = await self._auto_register(db, event, chat_id)
                     lang = await get_language()
-                    await self._reply(event, escape_md(t(lang, NS, "auth.registered")))
+                    await self._reply(event, t(lang, NS, "auth.registered"))
                     return  # Don't process further - chat is disabled
                 # Unknown chat, silently ignore
                 return
@@ -61,14 +61,14 @@ class TelegramAuthMiddleware(BaseMiddleware):
                 if chat_id not in _notified_chats:
                     _notified_chats.add(chat_id)
                     lang = await get_language()
-                    await self._reply(event, escape_md(t(lang, NS, "auth.disabled")))
+                    await self._reply(event, t(lang, NS, "auth.disabled"))
                 return
 
             if tg_chat.group_id is None:
                 if chat_id not in _notified_chats:
                     _notified_chats.add(chat_id)
                     lang = await get_language()
-                    await self._reply(event, escape_md(t(lang, NS, "auth.pending_setup")))
+                    await self._reply(event, t(lang, NS, "auth.pending_setup"))
                 return
 
         # Chat is authorized - attach to handler data and proceed
@@ -144,12 +144,18 @@ class TelegramAuthMiddleware(BaseMiddleware):
         return tg_chat
 
     @staticmethod
-    async def _reply(event: TelegramObject, text: str) -> None:
-        """Send a reply to the event."""
+    async def _reply(event: TelegramObject, raw_text: str) -> None:
+        """Send a reply to the event.
+
+        Takes raw (un-escaped) text and escapes only for the path that uses
+        the bot's MarkdownV2 default. CallbackQuery.answer renders the alert
+        body as plain text — pre-escaping there would surface visible
+        backslashes to the user.
+        """
         try:
             if isinstance(event, Message):
-                await event.answer(text)
+                await event.answer(escape_md(raw_text))
             elif isinstance(event, CallbackQuery):
-                await event.answer(text, show_alert=True)
+                await event.answer(raw_text, show_alert=True)
         except Exception as e:
             logger.warning("Failed to reply to unauthorized chat: %s", e)
