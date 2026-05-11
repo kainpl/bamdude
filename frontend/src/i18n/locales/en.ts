@@ -3691,6 +3691,7 @@ export default {
     title: 'Spool Inventory',
     addSpool: 'Add Spool',
     editSpool: 'Edit Spool',
+    copySpool: 'Copy Spool',
     material: 'Material',
     selectMaterial: 'Select material...',
     subtype: 'Subtype',

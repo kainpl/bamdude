@@ -3695,6 +3695,7 @@ export default {
     title: 'Філамент',
     addSpool: 'Додати котушку',
     editSpool: 'Редагувати котушку',
+    copySpool: 'Копіювати котушку',
     material: 'Матеріал',
     selectMaterial: 'Виберіть матеріал...',
     subtype: 'Підтип',
