@@ -2846,7 +2846,7 @@ export interface InventorySpool {
 }
 
 // Spool label printing (B.1).
-export type SpoolLabelTemplate = 'ams_30x15' | 'box_62x29' | 'avery_5160' | 'avery_l7160';
+export type SpoolLabelTemplate = 'ams_30x15' | 'box_40x30' | 'box_62x29' | 'avery_5160' | 'avery_l7160';
 
 export interface SpoolLabelEntry {
   id: number;
