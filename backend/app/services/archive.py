@@ -231,6 +231,8 @@ class ThreeMFParser:
                             self.metadata["print_time_seconds"] = int(value)
                         elif key == "weight" and value:
                             self.metadata["filament_used_grams"] = float(value)
+                        elif key == "curr_bed_type" and value:
+                            self.metadata["bed_type"] = value
 
                     # Extract printable objects for skip object functionality
                     # Objects are stored as <object identify_id="123" name="Part1" skipped="false" />
@@ -461,6 +463,14 @@ class ThreeMFParser:
                 from backend.app.utils.printer_models import normalize_printer_model
 
                 self.metadata["sliced_for_model"] = normalize_printer_model(data["printer_model"])
+
+            # Build plate type — only set from project_settings if slice_info didn't
+            # already provide it (slice_info reflects the exported plate, so it's
+            # the authoritative source on multi-plate 3MFs).
+            if "bed_type" not in self.metadata and "curr_bed_type" in data:
+                val = data["curr_bed_type"]
+                if isinstance(val, str) and val.strip():
+                    self.metadata["bed_type"] = val.strip()
         except Exception:
             pass  # Print settings are optional; missing values are left unset
 
@@ -1827,6 +1837,7 @@ class ArchiveService:
             total_layers=metadata.get("total_layers"),
             nozzle_diameter=metadata.get("nozzle_diameter"),
             bed_temperature=metadata.get("bed_temperature"),
+            bed_type=metadata.get("bed_type"),
             nozzle_temperature=metadata.get("nozzle_temperature"),
             sliced_for_model=metadata.get("sliced_for_model"),
             plate_index=resolved_plate_index,

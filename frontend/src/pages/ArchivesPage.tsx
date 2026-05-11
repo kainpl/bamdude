@@ -63,6 +63,7 @@ import { openInSlicer, type SlicerType } from '../utils/slicer';
 import { getArchiveStatusBadge } from '../utils/archiveStatus';
 import { formatDateTime, formatDateOnly, type TimeFormat, type DateFormat, formatDuration } from '../utils/date';
 import { getCurrencySymbol } from '../utils/currency';
+import { getBedTypeInfo } from '../utils/bedType';
 import { useIsMobile } from '../hooks/useIsMobile';
 import type { Archive, ProjectListItem, ArchiveListParams } from '../api/client';
 import { Card, CardContent } from '../components/Card';
@@ -977,6 +978,12 @@ function ArchiveCard({
         </div>
         <div className="flex items-center gap-2 mb-3 flex-wrap">
           <p className="text-xs text-bambu-gray">{printerName}</p>
+          {(() => {
+            const bed = getBedTypeInfo(archive.bed_type);
+            return bed ? (
+              <img src={bed.icon} alt={bed.label} title={bed.label} className="w-4 h-4 flex-shrink-0" />
+            ) : null;
+          })()}
           {/* File type badge */}
           <span
             className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
@@ -1159,7 +1166,7 @@ function ArchiveCard({
                 title={!archive.file_path ? t('archives.card.noFileForReprint') : !canModify('archives', 'reprint', archive.created_by_id) ? t('archives.card.noPermissionReprint') : undefined}
               >
                 <Printer className="w-3 h-3 flex-shrink-0" />
-                <span className="hidden sm:inline truncate">{t('archives.card.reprint')}</span>
+                <span className="hidden xl:inline truncate">{t('archives.card.reprint')}</span>
               </Button>
               <Button
                 variant="secondary"
@@ -1170,7 +1177,7 @@ function ArchiveCard({
                 title={!archive.file_path ? t('archives.card.noFileForReprint') : !hasPermission('queue:create') ? t('archives.permission.noAddToQueue') : t('archives.card.schedulePrint')}
               >
                 <Calendar className="w-3 h-3 flex-shrink-0" />
-                <span className="hidden sm:inline truncate">{t('archives.card.schedule')}</span>
+                <span className="hidden xl:inline truncate">{t('archives.card.schedule')}</span>
               </Button>
               <Button
                 variant="secondary"
@@ -1198,7 +1205,7 @@ function ArchiveCard({
               title={t('archives.card.openInBambuStudioToSlice')}
             >
               <ExternalLink className="w-3 h-3 flex-shrink-0" />
-              <span className="hidden sm:inline truncate">{t('archives.card.slice')}</span>
+              <span className="hidden xl:inline truncate">{t('archives.card.slice')}</span>
             </Button>
           )}
           <Button
@@ -2124,8 +2131,14 @@ function ArchiveListRow({
             </div>
           )}
         </div>
-        <div className="text-sm text-bambu-gray whitespace-nowrap">
-          {printerName}
+        <div className="text-sm text-bambu-gray whitespace-nowrap flex items-center gap-1.5">
+          <span>{printerName}</span>
+          {(() => {
+            const bed = getBedTypeInfo(archive.bed_type);
+            return bed ? (
+              <img src={bed.icon} alt={bed.label} title={bed.label} className="w-3.5 h-3.5 flex-shrink-0" />
+            ) : null;
+          })()}
         </div>
         <div className="text-sm text-bambu-gray whitespace-nowrap">
           <div>{formatDateTime(archive.created_at, timeFormat, dateFormat)}</div>
@@ -3418,7 +3431,7 @@ export function ArchivesPage() {
             <ArchiveCard
               key={archive.id}
               archive={archive}
-              printerName={archive.printer_id ? printerMap.get(archive.printer_id) || t('archives.page.unknownPrinter') : (archive.sliced_for_model ? t('archives.page.slicedFor', { model: archive.sliced_for_model }) : t('archives.page.noPrinter'))}
+              printerName={archive.printer_id ? printerMap.get(archive.printer_id) || t('archives.page.unknownPrinter') : (archive.sliced_for_model || t('archives.page.noPrinter'))}
               isSelected={selectedIds.has(archive.id)}
               onSelect={toggleSelect}
               selectionMode={selectionMode}
@@ -3460,7 +3473,7 @@ export function ArchivesPage() {
               <ArchiveListRow
                 key={archive.id}
                 archive={archive}
-                printerName={archive.printer_id ? printerMap.get(archive.printer_id) || t('archives.page.unknownPrinter') : (archive.sliced_for_model ? t('archives.page.slicedFor', { model: archive.sliced_for_model }) : t('archives.page.noPrinter'))}
+                printerName={archive.printer_id ? printerMap.get(archive.printer_id) || t('archives.page.unknownPrinter') : (archive.sliced_for_model || t('archives.page.noPrinter'))}
                 isSelected={selectedIds.has(archive.id)}
                 onSelect={toggleSelect}
                 selectionMode={selectionMode}
