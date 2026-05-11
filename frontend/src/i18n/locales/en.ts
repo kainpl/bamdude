@@ -3744,6 +3744,7 @@ export default {
     assignSpool: 'Assign Spool',
     unassignSpool: 'Unassign',
     assignSuccess: 'Spool assigned and AMS slot configured',
+    assignPendingInsert: 'Spool assigned. The slot will be configured when you insert the filament.',
     assignFailed: 'Failed to assign spool',
     storageLocation: 'Storage location',
     storageLocationPlaceholder: 'Drybox 3, Shelf A4, etc.',

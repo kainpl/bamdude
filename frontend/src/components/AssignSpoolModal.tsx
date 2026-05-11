@@ -129,7 +129,10 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
         return filtered;
       });
       queryClient.invalidateQueries({ queryKey: ['spool-assignments'] });
-      showToast(t('inventory.assignSuccess'), 'success');
+      showToast(
+        t(newAssignment.pending_config ? 'inventory.assignPendingInsert' : 'inventory.assignSuccess'),
+        'success',
+      );
       setShowMismatchConfirm(false);
       setPendingAssignId(null);
       setMismatchDetails(null);

@@ -3748,6 +3748,7 @@ export default {
     assignSpool: 'Призначити котушку',
     unassignSpool: 'Зняти призначення',
     assignSuccess: 'Котушку призначено та слот AMS налаштовано',
+    assignPendingInsert: 'Котушку призначено. Слот налаштується, коли ви вставите філамент.',
     assignFailed: 'Не вдалося призначити котушку',
     storageLocation: 'Місце зберігання',
     storageLocationPlaceholder: 'Драйбокс 3, Полиця A4 тощо.',
