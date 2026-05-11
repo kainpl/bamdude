@@ -34,6 +34,7 @@ from backend.app.schemas.archive import (
 )
 from backend.app.services.archive import ArchiveService, resolve_display_stem
 from backend.app.services.threemf_capabilities import extract_3mf_capabilities
+from backend.app.utils.http import build_content_disposition
 from backend.app.utils.threemf_tools import (
     extract_nozzle_mapping_from_3mf,
     extract_project_filaments_from_3mf,
@@ -773,7 +774,7 @@ async def export_archives(
     return StreamingResponse(
         io.BytesIO(file_bytes),
         media_type=content_type,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": build_content_disposition(filename)},
     )
 
 
@@ -808,7 +809,7 @@ async def export_stats(
     return StreamingResponse(
         io.BytesIO(file_bytes),
         media_type=content_type,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": build_content_disposition(filename)},
     )
 
 
@@ -2525,10 +2526,11 @@ async def get_qrcode(
     pil_img.save(buffer, format="PNG")
     buffer.seek(0)
 
+    qr_filename = f"qr_{archive.print_name or archive_id}.png"
     return Response(
         content=buffer.getvalue(),
         media_type="image/png",
-        headers={"Content-Disposition": f'inline; filename="qr_{archive.print_name or archive_id}.png"'},
+        headers={"Content-Disposition": build_content_disposition(qr_filename, disposition="inline")},
     )
 
 

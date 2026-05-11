@@ -27,6 +27,7 @@ from backend.app.schemas.maintenance import (
     PrinterMaintenanceUpdate,
 )
 from backend.app.services.notification_service import notification_service
+from backend.app.utils.http import build_content_disposition
 from backend.app.utils.printer_models import get_rod_type
 
 logger = logging.getLogger(__name__)
@@ -781,7 +782,7 @@ async def export_maintenance_history(
     return StreamingResponse(
         output,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": build_content_disposition(filename)},
     )
 
 
