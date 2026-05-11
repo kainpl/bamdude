@@ -942,6 +942,74 @@ def RequirePermission(*permissions: str | Permission):
     return Depends(require_permission(*permissions))
 
 
+def require_any_permission(*permissions: str | Permission):
+    """Dependency factory: pass when the user has ANY of the listed permissions.
+
+    Mirror of ``require_permission`` with ``has_any_permission`` instead of
+    ``has_all_permissions``. Used by stock-forecasting endpoints so operators
+    with the legacy ``inventory:update`` permission keep access without
+    needing the new ``inventory:forecast_write`` re-granted, and viewers
+    with ``inventory:read`` can still see the panel.
+    """
+    perm_strings = [p.value if isinstance(p, Permission) else p for p in permissions]
+
+    async def permission_checker(
+        credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)] = None,
+        x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
+    ) -> User | None:
+        async with async_session() as db:
+            if x_api_key:
+                api_key = await _validate_api_key(db, x_api_key)
+                if api_key:
+                    return None
+
+            credentials_exception = HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Could not validate credentials",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+            if credentials is None:
+                raise credentials_exception
+
+            token = credentials.credentials
+            if token.startswith("bb_"):
+                api_key = await _validate_api_key(db, token)
+                if api_key:
+                    return None
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid API key",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+
+            try:
+                payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+                username: str = payload.get("sub")
+                if username is None:
+                    raise credentials_exception
+            except JWTError:
+                raise credentials_exception
+
+            user = await get_user_by_username(db, username)
+            if user is None or not user.is_active:
+                raise credentials_exception
+
+            if not user.has_any_permission(*perm_strings):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Missing any of the required permissions: {', '.join(perm_strings)}",
+                )
+            return user
+
+    return permission_checker
+
+
+def RequireAnyPermission(*permissions: str | Permission):
+    """Convenience dependency that requires ANY of the specified permissions."""
+    return Depends(require_any_permission(*permissions))
+
+
 def require_camera_stream_token():
     """Dependency that validates a camera-stream token passed as ``?token=...``.
 

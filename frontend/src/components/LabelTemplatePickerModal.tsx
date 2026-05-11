@@ -36,6 +36,7 @@ interface TemplateOption {
 
 const TEMPLATE_OPTIONS: TemplateOption[] = [
   { value: 'ams_30x15', i18nKey: 'ams' },
+  { value: 'box_40x30', i18nKey: 'box40x30' },
   { value: 'box_62x29', i18nKey: 'box' },
   { value: 'avery_l7160', i18nKey: 'averyL7160' },
   { value: 'avery_5160', i18nKey: 'avery5160' },
@@ -302,7 +303,7 @@ export function LabelTemplatePickerModal({
         </div>
 
         {/* Spool list — ``min-h-0`` overrides the implicit min-height: auto on
-            flex items so the list can yield height to keep all 4 templates +
+            flex items so the list can yield height to keep all 5 templates +
             Cancel visible on tight viewports (upstream #1230 / 61314cf2). */}
         <div className="flex-1 overflow-y-auto px-2 pb-2 min-h-0">
           {visibleSpools.length === 0 ? (
@@ -348,7 +349,7 @@ export function LabelTemplatePickerModal({
           )}
         </div>
 
-        {/* Templates — 2x2 grid on >= sm so all 4 plus the Cancel footer fit
+        {/* Templates — 2-col grid on >= sm so all 5 plus the Cancel footer fit
             inside max-h-[90vh] even when browser chrome eats into the viewport
             (upstream #1230 / 4c0a12b9). Stacked single column on mobile widths. */}
         <div className="px-3 pt-2 pb-2 grid grid-cols-1 sm:grid-cols-2 gap-2 border-t border-bambu-dark-tertiary">

@@ -1093,14 +1093,20 @@ async def retry_failed_item(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
 ):
-    """Put a failed item back into pending status, appended to end of queue."""
+    """Put a terminal-state item back into pending status, appended to end of queue.
+
+    Accepts both ``failed`` (auto-dispatch error) and ``cancelled``
+    (user-initiated cancel during dispatch) items. The "retry"/"restart"
+    distinction is presentation-level only — backend state machine is the
+    same: terminal → pending, error_message cleared, position appended.
+    """
     from backend.app.services.queue_counters import update_queue_counters
 
     item = (await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == item_id))).scalar_one_or_none()
     if not item:
         raise HTTPException(404, "Queue item not found")
-    if item.status != "failed":
-        raise HTTPException(400, f"Only failed items can be retried, current status: '{item.status}'")
+    if item.status not in ("failed", "cancelled"):
+        raise HTTPException(400, f"Only failed or cancelled items can be retried, current status: '{item.status}'")
 
     max_pos = (
         await db.execute(

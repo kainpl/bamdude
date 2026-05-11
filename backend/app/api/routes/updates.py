@@ -53,6 +53,17 @@ def _is_docker_environment() -> bool:
     return False
 
 
+def _is_ha_addon() -> bool:
+    """Detect if running as a Home Assistant Supervisor addon.
+
+    HA Supervisor injects ``SUPERVISOR_TOKEN`` into every addon container;
+    the variable is not set in any other environment, so a single env-var
+    check is sufficient with no false-positive surface. An empty string is
+    treated as unset (Pydantic-style ``""`` → falsy).
+    """
+    return bool(os.environ.get("SUPERVISOR_TOKEN"))
+
+
 def _find_executable(name: str) -> str | None:
     """Find an executable in PATH or common locations."""
     # Try standard PATH first
@@ -300,6 +311,17 @@ async def check_for_updates(
         }
 
         is_docker = _is_docker_environment()
+        is_ha_addon = _is_ha_addon()
+        # HA addons are also Docker, so the more specific shape wins for
+        # `update_method`. is_docker stays True so older frontend bundles
+        # still hit a managed-deployment branch instead of rendering an
+        # Install button that can't work.
+        if is_ha_addon:
+            update_method = "ha_addon"
+        elif is_docker:
+            update_method = "docker"
+        else:
+            update_method = "git"
         return {
             "update_available": update_available,
             "current_version": APP_VERSION,
@@ -310,7 +332,8 @@ async def check_for_updates(
             "release_url": release_url,
             "published_at": published_at,
             "is_docker": is_docker,
-            "update_method": "docker" if is_docker else "git",
+            "is_ha_addon": is_ha_addon,
+            "update_method": update_method,
         }
 
     except httpx.HTTPError as e:
@@ -342,7 +365,14 @@ async def _perform_update(target_ref: str):
     global _update_status
 
     try:
-        base_dir = settings.base_dir
+        # All git / pip / npm operations must run against the **app**
+        # directory (where requirements.txt, the .git tree, and frontend/
+        # live), not the **data** directory (mounted volume on Docker;
+        # may coincide with app on native installs but only by accident).
+        # Pre-fix this used settings.base_dir which is an alias for
+        # data_dir — pip then errored with "No such file: requirements.txt"
+        # and git fetched against a missing .git, all silently.
+        app_dir = settings.app_dir
 
         # Find git executable (may not be in PATH when running as systemd service)
         git_path = _find_executable("git")
@@ -358,7 +388,7 @@ async def _perform_update(target_ref: str):
         logger.info("Using git at: %s; target ref: %s", git_path, target_ref)
 
         # Git config to avoid safe.directory issues
-        git_config = ["-c", f"safe.directory={base_dir}"]
+        git_config = ["-c", f"safe.directory={app_dir}"]
 
         _update_status = {
             "status": "downloading",
@@ -367,20 +397,49 @@ async def _perform_update(target_ref: str):
             "error": None,
         }
 
-        # Ensure remote uses HTTPS (SSH may not be available)
-        https_url = f"https://github.com/{GITHUB_REPO}.git"
-        process = await asyncio.create_subprocess_exec(
+        # Only override origin if it points at an UNRELATED repo. Pre-fix
+        # we unconditionally set origin to the canonical HTTPS URL —
+        # which clobbered every developer's `git@github.com:fork/...`
+        # SSH remote the moment they tested the in-app upgrade flow, and
+        # the next `git push` from their terminal prompted for HTTPS
+        # credentials and bounced.
+        # The check: read origin; if it already resolves to the expected
+        # repo (HTTPS *or* SSH form), leave it. Only force-set HTTPS when
+        # origin is missing / points elsewhere / is unparseable.
+        get_url_proc = await asyncio.create_subprocess_exec(
             git_path,
             *git_config,
             "remote",
-            "set-url",
+            "get-url",
             "origin",
-            https_url,
-            cwd=str(base_dir),
+            cwd=str(app_dir),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        await process.communicate()
+        get_url_stdout, _ = await get_url_proc.communicate()
+        current_origin = get_url_stdout.decode().strip() if get_url_stdout else ""
+        # GITHUB_REPO is "owner/repo" — match against both shapes.
+        # https://github.com/<repo>(.git)? OR git@github.com:<repo>(.git)?
+        expected_in_origin = GITHUB_REPO.lower() in current_origin.lower()
+        if not expected_in_origin:
+            https_url = f"https://github.com/{GITHUB_REPO}.git"
+            logger.info(
+                "Origin %r doesn't point at %s — resetting to HTTPS canonical URL",
+                current_origin or "(unset)",
+                GITHUB_REPO,
+            )
+            process = await asyncio.create_subprocess_exec(
+                git_path,
+                *git_config,
+                "remote",
+                "set-url",
+                "origin",
+                https_url,
+                cwd=str(app_dir),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await process.communicate()
 
         _update_status = {
             "status": "downloading",
@@ -405,7 +464,7 @@ async def _perform_update(target_ref: str):
             "--prune",
             "--force",
             "origin",
-            cwd=str(base_dir),
+            cwd=str(app_dir),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -439,7 +498,7 @@ async def _perform_update(target_ref: str):
             "reset",
             "--hard",
             f"refs/tags/{target_ref}",
-            cwd=str(base_dir),
+            cwd=str(app_dir),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -472,7 +531,7 @@ async def _perform_update(target_ref: str):
             "-r",
             "requirements.txt",
             "-q",
-            cwd=str(base_dir),
+            cwd=str(app_dir),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -483,7 +542,7 @@ async def _perform_update(target_ref: str):
 
         # Try to build frontend if npm is available (optional - static files are pre-built)
         npm_path = _find_executable("npm")
-        frontend_dir = base_dir / "frontend"
+        frontend_dir = app_dir / "frontend"
 
         if npm_path and frontend_dir.exists():
             _update_status = {
@@ -589,6 +648,22 @@ async def apply_update(
 
     target_ref = _resolve_git_ref(target_tag)
 
+    # Managed-deployment shapes own the update lifecycle. HA addons ARE
+    # Docker containers, so check HA first — otherwise the Docker branch
+    # would mis-classify them and surface a docker-compose snippet that
+    # operators of HA-managed installs can't run.
+    if _is_ha_addon():
+        return {
+            "success": False,
+            "is_ha_addon": True,
+            "is_docker": True,
+            "target_ref": target_ref,
+            "message": (
+                "BamDude is running as a Home Assistant addon. "
+                "Updates are managed by the Home Assistant Supervisor "
+                "(Settings → Add-ons → BamDude → Update)."
+            ),
+        }
     # Check if running in Docker — instructions now include the specific tag
     if _is_docker_environment():
         return {

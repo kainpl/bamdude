@@ -2859,7 +2859,7 @@ export function ProfilesPage() {
       {/* Page Header */}
       <div>
         <div className="flex items-center gap-3">
-          {/*<Disc3 className="w-6 h-6 text-bambu-green" />*/}
+          <Cloud className="w-6 h-6 text-bambu-green" />
           <h1 className="text-2xl font-bold text-white">{t('profiles.title')}</h1>
         </div>
         <p className="text-sm text-bambu-gray">{t('profiles.subtitle')}</p>

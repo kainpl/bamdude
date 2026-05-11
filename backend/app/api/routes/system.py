@@ -402,7 +402,10 @@ async def get_system_info(
     # Database stats
     archive_count = await db.scalar(select(func.count(PrintArchive.id)))
     printer_count = await db.scalar(select(func.count(Printer.id)))
-    spool_count = await db.scalar(select(func.count(Spool.id)))
+    # Count only active spools — archived ones aren't shown in the inventory
+    # UI either, so the Information-page "Filaments" stat should match what
+    # the user actually sees in the spool list.
+    spool_count = await db.scalar(select(func.count(Spool.id)).where(Spool.archived_at.is_(None)))
     project_count = await db.scalar(select(func.count(Project.id)))
     smart_plug_count = await db.scalar(select(func.count(SmartPlug.id)))
 
@@ -489,7 +492,7 @@ async def get_system_info(
             "archives_failed": failed_count,
             "archives_printing": printing_count,
             "printers": printer_count,
-            "spools": spool_count,
+            "filaments": spool_count,
             "projects": project_count,
             "smart_plugs": smart_plug_count,
             "total_print_time_seconds": total_print_time,

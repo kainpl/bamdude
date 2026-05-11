@@ -69,7 +69,7 @@ import { api, discoveryApi, firmwareApi, macrosApi, withStreamToken } from '../a
 import { BulkPrinterToolbar } from '../components/BulkPrinterToolbar';
 import { PauseChip } from '../components/PauseChip';
 import { formatDateOnly, formatETA, formatDuration } from '../utils/date';
-import type { Printer, PrinterCreate, PrinterStatus, AMSUnit, DiscoveredPrinter, FirmwareUpdateInfo, FirmwareUploadStatus, LinkedSpoolInfo, SpoolAssignment, HMSError, Macro, InventorySpool } from '../api/client';
+import type { Printer, PrinterCreate, PrinterStatus, AMSUnit, DiscoveredPrinter, FirmwareUpdateInfo, FirmwareUploadStatus, LinkedSpoolInfo, SpoolAssignment, HMSError, Macro, InventorySpool, SmartPlug } from '../api/client';
 
 // Source of truth for Spoolman ↔ AMS slot binding (upstream PR #1241).
 // Mirrors backend `spoolman_slot_assignments` rows; PrintersPage subscribes to
@@ -1434,6 +1434,7 @@ function PrinterCard({
   const [showCalibration, setShowCalibration] = useState(false);
   const [showPowerOnConfirm, setShowPowerOnConfirm] = useState(false);
   const [showPowerOffConfirm, setShowPowerOffConfirm] = useState(false);
+  const [haToggleConfirm, setHaToggleConfirm] = useState<SmartPlug | null>(null);
   const [showHMSModal, setShowHMSModal] = useState(false);
   const [showStopConfirm, setShowStopConfirm] = useState(false);
   const [showPauseConfirm, setShowPauseConfirm] = useState(false);
@@ -4639,7 +4640,13 @@ function PrinterCard({
                     return (
                       <button
                         key={script.id}
-                        onClick={() => runScriptMutation.mutate({ id: script.id, action: isScript ? 'on' : 'toggle' })}
+                        onClick={() => {
+                          if (isScript) {
+                            runScriptMutation.mutate({ id: script.id, action: 'on' });
+                          } else {
+                            setHaToggleConfirm(script);
+                          }
+                        }}
                         disabled={runScriptMutation.isPending}
                         title={`${isScript ? 'Run' : 'Toggle'} ${script.ha_entity_id}`}
                         className="px-2 py-0.5 text-xs bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 rounded transition-colors flex items-center gap-1"
@@ -5135,6 +5142,28 @@ function PrinterCard({
             setShowPowerOnConfirm(false);
           }}
           onCancel={() => setShowPowerOnConfirm(false)}
+        />
+      )}
+
+      {/* HA entity toggle confirmation (switch/light/etc. on the printer card).
+          script.* entities skip this — they're fire-once triggers and adding a
+          confirm modal would annoy. Mirrors the power-off variant + warning
+          copy when status.state === 'RUNNING'. */}
+      {haToggleConfirm && (
+        <ConfirmModal
+          title={t('printers.confirm.haToggleTitle', { name: haToggleConfirm.name })}
+          message={
+            status?.state === 'RUNNING'
+              ? t('printers.confirm.haToggleWarning', { name: printer.name, entity: haToggleConfirm.ha_entity_id || haToggleConfirm.name })
+              : t('printers.confirm.haToggleMessage', { entity: haToggleConfirm.ha_entity_id || haToggleConfirm.name })
+          }
+          confirmText={t('printers.confirm.haToggleButton')}
+          variant={status?.state === 'RUNNING' ? 'danger' : 'default'}
+          onConfirm={() => {
+            runScriptMutation.mutate({ id: haToggleConfirm.id, action: 'toggle' });
+            setHaToggleConfirm(null);
+          }}
+          onCancel={() => setHaToggleConfirm(null)}
         />
       )}
 

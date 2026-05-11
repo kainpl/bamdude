@@ -6,7 +6,7 @@ import pytest
 
 from backend.app.services.label_renderer import LabelData, render_labels
 
-ALL_TEMPLATES = ("ams_30x15", "box_62x29", "avery_5160", "avery_l7160")
+ALL_TEMPLATES = ("ams_30x15", "box_40x30", "box_62x29", "avery_5160", "avery_l7160")
 
 
 def _sample(spool_id: int = 1, **overrides) -> LabelData:
@@ -121,8 +121,8 @@ def _render_uncompressed(template, data):
     from backend.app.services.label_renderer import _draw_label  # noqa: PLC0415
 
     # Mirror the page-size choice from render_labels but force pageCompression=0.
-    if template in ("ams_30x15", "box_62x29"):
-        sizes = {"ams_30x15": (30.0, 15.0), "box_62x29": (62.0, 29.0)}
+    if template in ("ams_30x15", "box_40x30", "box_62x29"):
+        sizes = {"ams_30x15": (30.0, 15.0), "box_40x30": (40.0, 30.0), "box_62x29": (62.0, 29.0)}
         w_mm, h_mm = sizes[template]
         page_w, page_h = w_mm * _mm, h_mm * _mm
         buf = _io.BytesIO()
@@ -223,3 +223,61 @@ def test_box_template_does_not_truncate_normal_brand_or_name():
     assert b"Shelf 3, slot B" in pdf, "box template must render the storage location"
     # Big spool ID at bottom.
     assert b"#7" in pdf or (b"7" in pdf and b"#" in pdf), "box template must render the spool ID"
+
+
+# ── #809 follow-up: hex code + bold brand + 40×30 template ──
+
+
+def test_hex_code_renders_on_roomy_layout():
+    """The hex colour code lands on the label so operators can tell near-identical
+    colours apart when the swatch alone isn't enough."""
+    data = [
+        LabelData(
+            spool_id=11,
+            name="Bambu Beige",
+            material="PLA",
+            brand="Bambu Lab",
+            subtype="Basic",
+            rgba="C8B89AFF",
+            deeplink_url="https://example.test/inventory?spool=11",
+        )
+    ]
+    pdf = _render_uncompressed("box_40x30", data)
+    assert b"#C8B89A" in pdf, "40×30 box template must render the uppercase #RRGGBB hex code"
+
+
+def test_hex_code_skipped_on_malformed_rgba():
+    """A None / invalid rgba doesn't crash, doesn't render a half-broken hex
+    string, and falls back to the grey swatch."""
+    data = [
+        LabelData(
+            spool_id=12,
+            name="Test",
+            material="PLA",
+            brand="Polymaker",
+            subtype="Matte",
+            rgba=None,
+            deeplink_url="https://example.test/inventory?spool=12",
+        ),
+        LabelData(
+            spool_id=13,
+            name="Test",
+            material="PLA",
+            brand="Polymaker",
+            subtype="Matte",
+            rgba="not-a-color",
+            deeplink_url="https://example.test/inventory?spool=13",
+        ),
+    ]
+    pdf = _render_uncompressed("box_40x30", data)
+    # Neither label should carry a `#` hex marker (the `#12` / `#13` spool IDs
+    # do, but they're not 6 hex digits after the hash).
+    assert b"#NOT" not in pdf.upper(), "Malformed rgba must not render as a hex code"
+
+
+def test_brand_uses_helvetica_bold_on_box_label():
+    """#809 follow-up: brand line is bolder than before so it reads cleanly at
+    arm's length. The uncompressed PDF must reference the Helvetica-Bold font."""
+    data = [_sample(brand="Polymaker", name="Polymaker Ivory")]
+    pdf = _render_uncompressed("box_62x29", data)
+    assert b"Helvetica-Bold" in pdf, "Brand line on roomy layouts must use Helvetica-Bold"

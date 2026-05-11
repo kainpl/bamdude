@@ -34,6 +34,7 @@ from backend.app.schemas.archive import (
 )
 from backend.app.services.archive import ArchiveService, resolve_display_stem
 from backend.app.services.threemf_capabilities import extract_3mf_capabilities
+from backend.app.utils.http import build_content_disposition
 from backend.app.utils.threemf_tools import (
     extract_nozzle_mapping_from_3mf,
     extract_project_filaments_from_3mf,
@@ -144,6 +145,7 @@ def archive_to_response(
         "total_layers": archive.total_layers,
         "nozzle_diameter": archive.nozzle_diameter,
         "bed_temperature": archive.bed_temperature,
+        "bed_type": archive.bed_type,
         "nozzle_temperature": archive.nozzle_temperature,
         "sliced_for_model": archive.sliced_for_model,
         "status": archive.status,
@@ -198,6 +200,7 @@ async def list_archives(
     sort_by: str = Query("date-desc"),
     page: int = Query(1, ge=1),
     per_page: int = Query(24, ge=1, le=200),
+    all: bool = Query(False, description="When true, skip pagination and return every matching row"),
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.ARCHIVES_READ),
 ):
@@ -207,7 +210,7 @@ async def list_archives(
     # Parse comma-separated colors
     color_list = [c.strip() for c in colors.split(",") if c.strip()] if colors else None
 
-    offset = (page - 1) * per_page
+    offset = 0 if all else (page - 1) * per_page
     archives, total = await service.list_archives(
         printer_id=printer_id,
         project_id=project_id,
@@ -224,7 +227,7 @@ async def list_archives(
         tag=tag,
         file_type=file_type,
         sort_by=sort_by,
-        limit=per_page,
+        limit=None if all else per_page,
         offset=offset,
     )
 
@@ -330,14 +333,21 @@ async def list_archives(
 
     import math
 
-    last_page = max(1, math.ceil(total / per_page))
+    if all:
+        meta_page = 1
+        meta_per_page = total or 1
+        last_page = 1
+    else:
+        meta_page = page
+        meta_per_page = per_page
+        last_page = max(1, math.ceil(total / per_page))
 
     return PaginatedArchiveResponse(
         data=data,
         meta=PaginationMeta(
             total=total,
-            current_page=page,
-            per_page=per_page,
+            current_page=meta_page,
+            per_page=meta_per_page,
             last_page=last_page,
         ),
     )
@@ -765,7 +775,7 @@ async def export_archives(
     return StreamingResponse(
         io.BytesIO(file_bytes),
         media_type=content_type,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": build_content_disposition(filename)},
     )
 
 
@@ -800,7 +810,7 @@ async def export_stats(
     return StreamingResponse(
         io.BytesIO(file_bytes),
         media_type=content_type,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": build_content_disposition(filename)},
     )
 
 
@@ -1399,6 +1409,8 @@ async def rescan_archive(
         archive.nozzle_diameter = metadata["nozzle_diameter"]
     if metadata.get("bed_temperature"):
         archive.bed_temperature = metadata["bed_temperature"]
+    if metadata.get("bed_type"):
+        archive.bed_type = metadata["bed_type"]
     if metadata.get("nozzle_temperature"):
         archive.nozzle_temperature = metadata["nozzle_temperature"]
     if metadata.get("makerworld_url"):
@@ -2517,10 +2529,11 @@ async def get_qrcode(
     pil_img.save(buffer, format="PNG")
     buffer.seek(0)
 
+    qr_filename = f"qr_{archive.print_name or archive_id}.png"
     return Response(
         content=buffer.getvalue(),
         media_type="image/png",
-        headers={"Content-Disposition": f'inline; filename="qr_{archive.print_name or archive_id}.png"'},
+        headers={"Content-Disposition": build_content_disposition(qr_filename, disposition="inline")},
     )
 
 

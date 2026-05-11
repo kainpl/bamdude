@@ -19,6 +19,23 @@ _dispatcher: Dispatcher | None = None
 _polling_task: asyncio.Task | None = None
 
 
+def _detach_sub_routers(dispatcher: Dispatcher) -> None:
+    """Clear ``_parent_router`` on every sub-router of ``dispatcher``.
+
+    Handler modules export module-level ``Router`` singletons (``start_router``,
+    ``printers_router``, …). aiogram refuses to ``include_router`` a router
+    whose ``_parent_router`` is non-None — so once a router has been attached
+    to a dispatcher, **every** future ``Dispatcher`` instance needs a fresh
+    re-attach, which means we must detach from the current one before letting
+    that one go out of scope. The public setter rejects ``None``, so we clear
+    the private attribute directly. Without this, restarting the bot after a
+    token change crashes with ``"Router is already attached to <Dispatcher>"``.
+    """
+    for sub in list(dispatcher.sub_routers):
+        sub._parent_router = None  # noqa: SLF001 - only way to detach
+    dispatcher.sub_routers.clear()
+
+
 def get_bot() -> Bot | None:
     """Get the active bot instance."""
     return _bot
@@ -107,6 +124,15 @@ async def start_telegram_bot() -> None:
         await _register_commands()
     except Exception as e:
         logger.error("Failed to start Telegram bot: %s", e)
+        # Detach the routers we just attached so the next start can re-include
+        # them. Without this the singletons stay bound to this now-orphaned
+        # dispatcher and a follow-up start (e.g. user fixes the token) raises
+        # "Router is already attached to <Dispatcher>" inside include_router.
+        _detach_sub_routers(_dispatcher)
+        try:
+            await _bot.session.close()
+        except Exception:
+            logger.debug("Bot session close raised during start-failure cleanup", exc_info=True)
         _bot = None
         _dispatcher = None
         return
@@ -175,15 +201,9 @@ async def stop_telegram_bot() -> None:
                 raise
             logger.debug("stop_polling() reported polling already stopped - ignoring")
 
-        # Detach all sub-routers - handler modules export module-level Router
-        # singletons, and aiogram refuses to attach one to a new Dispatcher
-        # while its ``parent_router`` still points at the old one. aiogram's
-        # public setter rejects ``None``, so we clear the private attribute
-        # directly and drop the sub_routers list. Without this the next
-        # include_router() raises "Router is already attached to …".
-        for sub in list(_dispatcher.sub_routers):
-            sub._parent_router = None  # noqa: SLF001 - only way to detach
-        _dispatcher.sub_routers.clear()
+        # Detach module-level router singletons so the next Dispatcher can
+        # re-attach them. See ``_detach_sub_routers`` for the full rationale.
+        _detach_sub_routers(_dispatcher)
         _dispatcher = None
 
     if _bot:

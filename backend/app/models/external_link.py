@@ -17,6 +17,11 @@ class ExternalLink(Base):
     icon: Mapped[str] = mapped_column(String(50), default="link")
     custom_icon: Mapped[str | None] = mapped_column(String(255), nullable=True)  # Filename of uploaded icon
     open_in_new_tab: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Sidebar group this link belongs to. Mirrors the frontend ``NavGroup``
+    # type (operations / workshop / resources / care / system) plus the
+    # dedicated ``external`` bucket — the default — for user-added links
+    # that don't logically fit any built-in section. m055 backfills.
+    nav_group: Mapped[str] = mapped_column(String(20), default="external")
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())

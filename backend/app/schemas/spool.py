@@ -145,6 +145,12 @@ class SpoolAssignmentResponse(BaseModel):
     created_at: datetime
     spool: SpoolResponse | None = None
     configured: bool = False
+    # True when the target slot was empty at assign time so MQTT was deferred.
+    # `on_ams_change` replays the configuration when filament is later inserted.
+    # Bambu firmware silently drops ams_filament_setting / extrusion_cali_sel
+    # for unloaded slots (no filament context for cali_idx to attach to), so
+    # pre-load assignment must skip the publish and arm a replay.
+    pending_config: bool = False
     ams_label: str | None = None  # User-defined friendly name for the AMS unit
 
     class Config:

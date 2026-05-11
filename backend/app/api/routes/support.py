@@ -35,6 +35,7 @@ from backend.app.models.user import User
 from backend.app.services.discovery import is_running_in_docker
 from backend.app.services.network_utils import get_network_interfaces
 from backend.app.services.printer_manager import printer_manager
+from backend.app.utils.http import build_content_disposition
 
 router = APIRouter(prefix="/support", tags=["support"])
 logger = logging.getLogger(__name__)
@@ -1002,7 +1003,7 @@ async def generate_support_bundle(
     logger.info("Generated support bundle: %s", filename)
 
     return StreamingResponse(
-        zip_buffer, media_type="application/zip", headers={"Content-Disposition": f"attachment; filename={filename}"}
+        zip_buffer, media_type="application/zip", headers={"Content-Disposition": build_content_disposition(filename)}
     )
 
 

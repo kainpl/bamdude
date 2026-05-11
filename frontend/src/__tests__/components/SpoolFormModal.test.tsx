@@ -25,6 +25,7 @@ vi.mock('../../api/client', () => ({
     getSpoolCatalog: vi.fn().mockResolvedValue([]),
     getColorCatalog: vi.fn().mockResolvedValue([]),
     getLocalPresets: vi.fn().mockResolvedValue({ filament: [] }),
+    getBuiltinFilaments: vi.fn().mockResolvedValue([]),
     getPrinters: vi.fn().mockResolvedValue([]),
     getSpoolUsageHistory: vi.fn().mockResolvedValue([]),
     createSpool: vi.fn().mockResolvedValue({ id: 99 }),
@@ -391,5 +392,94 @@ describe('SpoolFormModal weightTouched', () => {
       );
       expect(bambuFound).toBeTruthy();
     });
+  });
+});
+
+/* B.copy-filament follow-up — port of upstream's `SpoolFormModal copy mode`
+ * test block (commit 6a130c09). Verifies the three contract guarantees of
+ * copy mode that the live code at SpoolFormModal.tsx makes:
+ *  1. The header title is "Copy Spool" (not "Edit Spool" or "Add Spool").
+ *  2. Saving fires api.createSpool, never api.updateSpool — even though
+ *     `spool` is truthy. The bug-prone shape would be `isEditing = !!spool`,
+ *     which our `mode`-prop-driven implementation specifically avoids.
+ *  3. weight_used in the create payload is reset to 0, regardless of how
+ *     much the source spool had used — copy is a "new fresh roll" gesture.
+ */
+describe('SpoolFormModal copy mode', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('shows "Copy Spool" as the modal title when spool and mode="copy" are passed', async () => {
+    render(
+      <SpoolFormModal
+        isOpen={true}
+        onClose={vi.fn()}
+        spool={existingSpool}
+        mode="copy"
+        currencySymbol="$"
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Copy Spool' })).toBeInTheDocument();
+    });
+  });
+
+  it('calls api.createSpool (not api.updateSpool) when saving in copy mode', async () => {
+    render(
+      <SpoolFormModal
+        isOpen={true}
+        onClose={vi.fn()}
+        spool={existingSpool}
+        mode="copy"
+        currencySymbol="$"
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Copy Spool' })).toBeInTheDocument();
+    });
+
+    // The footer save button label is "Copy Spool" in copy mode — find
+    // the <button> (not the <h2> heading) that carries the matching name.
+    const saveBtn = screen.getAllByRole('button', { name: /copy spool/i })
+      .find(btn => btn.tagName === 'BUTTON' && btn.querySelector('svg'));
+    expect(saveBtn).toBeTruthy();
+    fireEvent.click(saveBtn!);
+
+    await waitFor(() => {
+      expect(api.createSpool).toHaveBeenCalledTimes(1);
+    });
+    expect(api.updateSpool).not.toHaveBeenCalled();
+  });
+
+  it('resets weight_used to 0 in the create payload when copying a spool with non-zero usage', async () => {
+    // existingSpool has weight_used: 300 — copy mode must reset it to 0.
+    render(
+      <SpoolFormModal
+        isOpen={true}
+        onClose={vi.fn()}
+        spool={existingSpool}
+        mode="copy"
+        currencySymbol="$"
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Copy Spool' })).toBeInTheDocument();
+    });
+
+    const saveBtn = screen.getAllByRole('button', { name: /copy spool/i })
+      .find(btn => btn.tagName === 'BUTTON' && btn.querySelector('svg'));
+    expect(saveBtn).toBeTruthy();
+    fireEvent.click(saveBtn!);
+
+    await waitFor(() => {
+      expect(api.createSpool).toHaveBeenCalledTimes(1);
+    });
+
+    const [payload] = vi.mocked(api.createSpool).mock.calls[0];
+    expect((payload as Record<string, unknown>).weight_used).toBe(0);
   });
 });

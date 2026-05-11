@@ -13,6 +13,19 @@ class MakerWorldResolveRequest(BaseModel):
     url: str = Field(..., description="Any MakerWorld model URL (scheme optional)")
 
 
+class MakerWorldAlreadyImportedEntry(BaseModel):
+    """One entry in :class:`MakerWorldResolvedModel.already_imported_by_profile_id`.
+
+    Carries enough info for the frontend to surface "already imported"
+    inline (the library row's id + folder + filename) without a second
+    round-trip to the library API.
+    """
+
+    library_file_id: int
+    folder_id: int | None = None
+    filename: str
+
+
 class MakerWorldResolvedModel(BaseModel):
     """Structured result of URL resolution.
 
@@ -32,6 +45,17 @@ class MakerWorldResolvedModel(BaseModel):
     already_imported_library_ids: list[int] = Field(
         default_factory=list,
         description="LibraryFile IDs that were previously imported from this model URL",
+    )
+    already_imported_by_profile_id: dict[str, MakerWorldAlreadyImportedEntry] = Field(
+        default_factory=dict,
+        description=(
+            "Per-variant dedupe map: ``profileId -> {library_file_id, folder_id, filename}``. "
+            "Keys are stringified profileIds (JSON doesn't allow int keys). Lets the "
+            "frontend mark each instance card as 'already imported' before the user "
+            "clicks Import and deep-link directly to the existing library row. A "
+            "legacy whole-model import (source_url has no ``#profileId-`` fragment) is "
+            "represented under the special key ``0``."
+        ),
     )
 
 
@@ -76,6 +100,30 @@ class MakerWorldRecentImport(BaseModel):
         "link and to extract model/profile ids without a second API round-trip.",
     )
     created_at: str
+    # Meta fields surfaced for the History grid card layout (m056). Optional
+    # because legacy imports might still lack a backfilled meta row.
+    title: str | None = None
+    author_name: str | None = None
+    sliced_for: str | None = None
+    profile_id: int | None = None
+    has_cover: bool = False
+    has_variant_cover: bool = False
+
+
+class MakerWorldImportsPaginationMeta(BaseModel):
+    """Pagination envelope for the History list."""
+
+    total: int
+    current_page: int
+    per_page: int
+    last_page: int
+
+
+class MakerWorldImportsPage(BaseModel):
+    """Paginated response for ``GET /makerworld/imports``."""
+
+    data: list[MakerWorldRecentImport]
+    meta: MakerWorldImportsPaginationMeta
 
 
 class MakerWorldImportResponse(BaseModel):

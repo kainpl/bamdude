@@ -264,6 +264,15 @@ class AppSettings(BaseModel):
         description="Low stock threshold percentage (%) for inventory filtering and display",
     )
 
+    # Forecasting (upstream #1184): floor applied on top of each SKU's
+    # lead-time. Lets the operator set a uniform default ("everything from
+    # this supplier takes at least N days") without touching individual SKUs.
+    forecast_global_lead_time_days: int = Field(
+        default=0,
+        ge=0,
+        description="Global minimum lead-time in days; combined with per-SKU lead time as max(global, sku)",
+    )
+
     # Auto-Print G-code Injection (#422). Per-model snippet library:
     # ``{model: {"start_gcode": "...", "end_gcode": "..."}}`` JSON-encoded.
     # Resolved by background_dispatch when a queue item has gcode_injection=True.
@@ -412,6 +421,7 @@ class AppSettingsUpdate(BaseModel):
     prometheus_enabled: bool | None = None
     prometheus_token: str | None = None
     low_stock_threshold: float | None = Field(default=None, ge=0.1, le=99.9)
+    forecast_global_lead_time_days: int | None = Field(default=None, ge=0)
     user_notifications_enabled: bool | None = None
     ldap_enabled: bool | None = None
     ldap_server_url: str | None = None

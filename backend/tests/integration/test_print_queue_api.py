@@ -542,6 +542,139 @@ class TestQueueCancelEndpoint:
         assert response.status_code == 400
 
 
+class TestQueueRetryEndpoint:
+    """Tests for the /queue/{item_id}/retry endpoint.
+
+    Previously the endpoint only accepted ``failed`` items. After the
+    cancel-during-dispatch fix, ``cancelled`` items also need to be able
+    to come back to ``pending`` via the same restart action — these tests
+    pin both branches plus the rejection of in-flight statuses.
+    """
+
+    @pytest.fixture
+    async def printer_factory(self, db_session):
+        _counter = [0]
+
+        async def _create_printer(**kwargs):
+            _counter[0] += 1
+            i = _counter[0]
+            defaults = {
+                "name": f"Retry Test Printer {i}",
+                "ip_address": f"192.168.1.{200 + i}",
+                "serial_number": f"TESTRETRY{i:04d}",
+                "access_code": "12345678",
+                "model": "X1C",
+            }
+            defaults.update(kwargs)
+            printer, queue = await _create_printer_with_queue(db_session, **defaults)
+            return printer, queue
+
+        return _create_printer
+
+    @pytest.fixture
+    async def archive_factory(self, db_session):
+        _counter = [0]
+
+        async def _create_archive(**kwargs):
+            from backend.app.models.archive import PrintArchive
+
+            _counter[0] += 1
+            i = _counter[0]
+            defaults = {
+                "filename": f"retry_test_{i}.3mf",
+                "print_name": f"Retry Test Print {i}",
+                "file_path": f"/tmp/retry_test_{i}.3mf",
+                "file_size": 1024,
+                "content_hash": f"retryhash{i:08d}",
+                "status": "completed",
+            }
+            defaults.update(kwargs)
+            archive = PrintArchive(**defaults)
+            db_session.add(archive)
+            await db_session.commit()
+            await db_session.refresh(archive)
+            return archive
+
+        return _create_archive
+
+    @pytest.fixture
+    async def queue_item_factory(self, db_session, printer_factory, archive_factory):
+        async def _create_queue_item(**kwargs):
+            from backend.app.models.print_queue import PrintQueueItem
+
+            if "queue_id" not in kwargs:
+                _printer, queue = await printer_factory()
+                kwargs["queue_id"] = queue.id
+
+            if "archive_id" not in kwargs:
+                archive = await archive_factory()
+                kwargs["archive_id"] = archive.id
+
+            defaults = {"status": "pending", "position": 1}
+            defaults.update(kwargs)
+            item = PrintQueueItem(**defaults)
+            db_session.add(item)
+            await db_session.commit()
+            await db_session.refresh(item)
+            return item
+
+        return _create_queue_item
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_retry_failed_item_flips_to_pending(self, async_client: AsyncClient, queue_item_factory, db_session):
+        """Existing behaviour: a ``failed`` item retried returns to ``pending``."""
+        from backend.app.models.print_queue import PrintQueueItem
+
+        item = await queue_item_factory(status="failed", error_message="Some old error", position=5)
+
+        response = await async_client.post(f"/api/v1/queue/{item.id}/retry")
+        assert response.status_code == 200, response.text
+
+        # Re-fetch and verify side effects.
+        await db_session.refresh(item)
+        assert item.status == "pending"
+        assert item.error_message is None
+        # Position is bumped to end-of-pending.
+        assert item.position >= 1
+        _ = PrintQueueItem  # quiet lint
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_retry_cancelled_item_flips_to_pending(
+        self, async_client: AsyncClient, queue_item_factory, db_session
+    ):
+        """New behaviour after the cancel-during-dispatch fix: ``cancelled`` items
+        accept ``/retry`` and become ``pending`` again, with ``error_message`` cleared.
+        """
+        item = await queue_item_factory(status="cancelled", error_message="Cancelled by user", position=3)
+
+        response = await async_client.post(f"/api/v1/queue/{item.id}/retry")
+        assert response.status_code == 200, response.text
+
+        await db_session.refresh(item)
+        assert item.status == "pending"
+        assert item.error_message is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_retry_rejects_in_flight_statuses(self, async_client: AsyncClient, queue_item_factory):
+        """``/retry`` must reject ``pending``, ``printing``, ``completed`` —
+        anything that isn't ``failed`` or ``cancelled``."""
+        for bad_status in ("pending", "printing", "completed", "skipped"):
+            item = await queue_item_factory(status=bad_status)
+            response = await async_client.post(f"/api/v1/queue/{item.id}/retry")
+            assert response.status_code == 400, (
+                f"Expected 400 for status={bad_status}, got {response.status_code}: {response.text}"
+            )
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_retry_unknown_id_returns_404(self, async_client: AsyncClient):
+        response = await async_client.post("/api/v1/queue/999999/retry")
+        assert response.status_code == 404
+
+
 class TestQueueLibraryFileSupport:
     """Tests for queue items with library_file_id (instead of archive_id)."""
 

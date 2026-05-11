@@ -945,13 +945,6 @@ class BackgroundDispatchService:
                         printer_model=printer_model,
                     )
 
-                # Clean up patched temp file after upload (original stays intact).
-                if _patch_cleanup_dir:
-                    import shutil
-
-                    shutil.rmtree(_patch_cleanup_dir, ignore_errors=True)
-                    _patch_cleanup_dir = None
-
                 if uploaded:
                     await self._set_active_upload_progress(job, 1, 1)
 
@@ -1099,12 +1092,28 @@ class BackgroundDispatchService:
                 job.outcome = {"success": True, "archive_id": archive.id, "error": None, "cancelled": False}
             except DispatchJobCancelled:
                 await self._set_active_message(job, f"Cancelled upload on {printer_name}.")
-                job.outcome = {"success": False, "archive_id": None, "error": "Cancelled", "cancelled": True}
+                # archive_print committed the row before this branch, so the
+                # outer session rollback can't undo it. Flip the zombie from
+                # "printing" → "cancelled" in a fresh session so the UI
+                # doesn't keep it spinning forever. Defensive id check in
+                # case future refactors move cancel checkpoints earlier.
+                _archive_id = getattr(archive, "id", None) if archive else None
+                if _archive_id:
+                    await self._mark_dispatch_archive_terminal(_archive_id, "cancelled", "Cancelled before start")
+                job.outcome = {"success": False, "archive_id": _archive_id, "error": "Cancelled", "cancelled": True}
                 raise
             except Exception as e:
                 job.outcome = {"success": False, "archive_id": None, "error": str(e), "cancelled": False}
                 raise
             finally:
+                # Patched-3MF temp dir must clean up on every exit path —
+                # cancel mid-upload otherwise leaks the temp into /tmp until
+                # process restart.
+                if _patch_cleanup_dir:
+                    import shutil
+
+                    shutil.rmtree(_patch_cleanup_dir, ignore_errors=True)
+                    _patch_cleanup_dir = None
                 job.completion_event.set()
 
     async def _run_swap_macro_if_needed(
@@ -1415,13 +1424,6 @@ class BackgroundDispatchService:
                         printer_model=printer_model,
                     )
 
-                # Clean up patched temp file after upload.
-                if _patch_cleanup_dir_lib:
-                    import shutil
-
-                    shutil.rmtree(_patch_cleanup_dir_lib, ignore_errors=True)
-                    _patch_cleanup_dir_lib = None
-
                 if uploaded:
                     await self._set_active_upload_progress(job, 1, 1)
 
@@ -1615,6 +1617,14 @@ class BackgroundDispatchService:
                 job.outcome = {"success": False, "archive_id": archive.id, "error": str(e), "cancelled": False}
                 raise
             finally:
+                # Patched-3MF temp dir must clean up on every exit path —
+                # cancel mid-upload otherwise leaks the temp into /tmp until
+                # process restart.
+                if _patch_cleanup_dir_lib:
+                    import shutil
+
+                    shutil.rmtree(_patch_cleanup_dir_lib, ignore_errors=True)
+                    _patch_cleanup_dir_lib = None
                 job.completion_event.set()
 
     @staticmethod

@@ -8,6 +8,96 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+---
+
+## [0.4.4] - 2026-05-12
+
+Stable 0.4.4 release — consolidates the cumulative b1+b2+b3 beta cycle (see the `[0.4.4b3]` section below for the full detail) plus the post-b3 upstream Bambuddy v0.2.4 audit closeout. Image: `ghcr.io/kainpl/bamdude:0.4.4` / `kainpl/bamdude:0.4.4` (`:latest` now tracks this).
+
+The major user-facing arrivals this release: **Stock forecasting + Logistics view** for the inventory page, **MakerWorld** moves from one-shot import to a managed library (History tab, Re-download, per-variant dedupe with View-in-Library, full meta + local covers), **Maintenance page reshape** (3-column grid, in-header toolbar with Location grouping + Status segmented tabs), **daily log rotation** with operator-managed retention, and the Telegram bot becomes resilient to token swaps and mid-print MarkdownV2 quirks.
+
+### Added
+
+- **Stock forecasting + Logistics view in the inventory (#1184).** Third inventory tab next to Table / Cards. Per-SKU reorder intelligence on top of the real `spool_usage_history` — exponentially-weighted daily rate (30-day half-life), 95%-service-level safety stock, days-left projection, reorder-by date, top-5 stacked chart with ROP lines. Inline editors for lead-time + safety-margin (days|grams) + alert-snooze. Companion **Shopping List** panel walks `pending → purchased → received`; mark-as-received auto-creates `category='Stock'` spools. New global `forecast_global_lead_time_days` setting acts as a floor across SKUs. Two new permissions (`inventory:forecast_read` / `:forecast_write`) back-filled onto existing groups by m059. Hidden in Spoolman mode. Adapted from upstream `37c9d5f2`.
+
+- **MakerWorld "History" tab.** Server-paginated 4-column grid (`GET /makerworld/imports?page=…&search=…&sort_by=…`) with locally-cached cover thumbnails, sliced-for badges, debounced search across filename + title + author. Page-size + sort persist in localStorage.
+
+- **MakerWorld "Re-download" action for already-imported variants.** Replaces the Import button when a variant is in your library; refreshes the on-disk 3MF bytes + meta + cover images while keeping the `library_file_id` stable (so queue items / project links / archives stay attached). New endpoint `POST /makerworld/imports/{id}/redownload`.
+
+- **MakerWorld resolve surfaces per-variant dedupe.** `POST /makerworld/resolve` now returns `already_imported_by_profile_id` — each instance card on the resolve preview surfaces an "already imported" badge + View-in-Library deep-link before you click Import.
+
+- **MakerWorld import metadata persists alongside library files.** New `library_file_makerworld_meta` child table captures title, description, author, license, variant URL, sliced-for list, AMS requirement, material count, raw design/instance JSON. Cover images downloaded locally at import — UI never re-hotlinks MakerWorld's CDN. Migration m056 back-fills historical imports best-effort.
+
+- **Build-plate icon on archive cards + uniform printer/model line (#1253).** Every archive card and list row renders an OrcaSlicer-style bed icon with the full plate name (Cool Plate / SuperTack / Engineering / High Temp / Textured PEI / Smooth PEI) in the tooltip. New `bed_type` column on `print_archives` (m057) with automatic back-fill from on-disk 3MFs. The legacy `Sliced for X1C` prefix is gone — cards now scan as `<name-or-model> [bed-icon] GCODE <hash>` regardless of provenance. Adapted from upstream `79d54a8d`.
+
+- **Copy Spool action on the inventory page (#1246).** Copy button on every spool row (table / cards / grouped) opens the form pre-filled with the source data as a new create. `weight_used` resets to 0; the new row gets a fresh id; the source row is untouched. Adapted from upstream `6a130c09`.
+
+- **5th printable spool-label template (40 × 30 mm) + hex code + bolder brand (#809 follow-up).** Adds a 40×30 single-label-per-page format (common DK / Brother roll size between AMS-holder and box label). Every label now also carries the colour hex code; brand line bumped to **Helvetica-Bold** for arm's-length legibility. Adapted from upstream `83a83ed7`.
+
+- **Defensive `settings` dedupe + UNIQUE(key) index for legacy DBs (m058).** Safety net for operators upgrading from pre-fork Bambuddy SQLite files that lacked the UNIQUE constraint and accumulated duplicate rows over restarts. Fresh installs / clean DBs no-op out. Adapted from upstream `b99ceb26`.
+
+### Changed
+
+- **Cancel-during-dispatch pauses the queue instead of failing it.** Cancelled item flips to `cancelled` and the queue transitions to `paused`; cancelled items appear in the queue-card "Issues" section with a **Restart** button that puts them back into `pending`.
+
+- **Archive + Inventory page-size selectors aligned at `12 / 24 / 48 / 96 / All`.** Archive adds the `All` option (server drops `LIMIT`/`OFFSET` entirely). Inventory default moves from 30 to 24; legacy `15/30/50/100` persisted sizes fall back to 24.
+
+- **Sidebar drag is now group-constrained.** Items only re-order within their own group (Operations / Workshop / Resources / Care / System / Links); cross-group drops are rejected. Whole groups can be reordered by dragging the group header.
+
+- **External links belong to a sidebar group.** New `nav_group` dropdown in `AddExternalLinkModal` (m055). Default for new links is `external`, and the `external` bucket now slots **before** `system` so new links are visible at a glance.
+
+- **Page-title icons match the sidebar.** Archives / Inventory / Stats / Projects / Files / Profiles / System Information / Settings now render the matching lucide icon (green, 24×24) — in line with Printers / Queue / Maintenance.
+
+- **MakerWorld page restyled to match the rest of the app.** Sidebar-style header icon, full-width container, "uses community API" disclaimer moved next to the URL input. Page now splits into **Import** + **History** underline-tabs (persisted in localStorage). URL input has an inline X-clear button.
+
+### Security
+
+- **Bumped pip to ≥26.1 in the production Dockerfile (CVE-2026-6357).** `python:3.13-slim` ships pip `26.0.1` — vulnerable to a self-update-check-after-install attack. We now upgrade pip before installing `requirements.txt`. Adapted from upstream `1c778e8a`.
+
+### Fixed
+
+- **Telegram bot survives token change after a failed start.** When `Bot.get_me()` raised (invalid token / network blip), the bot ended up permanently dead until full app restart — the just-attached module-level routers were never detached, so the next start crashed with `"Router is already attached to <Dispatcher>"`. The error path now detaches routers + closes the session. Two regression tests pin failure-then-success and happy restart paths. Reported in the field.
+
+- **Telegram bot: Printers / `/status` no longer crash when a printer is mid-print.** Float `progress` was interpolated raw into MarkdownV2 message text — `f"{25.0}%"` carries an unescaped `.`. Both call sites cast to `int()` (Bambu reports `mc_percent` as an integer anyway). Three regression tests walk the rendered text. Reported by Vladyslav Biletskyi.
+
+- **Telegram bot auth-middleware: alert popups no longer show literal backslashes.** `_reply` helper now escapes only on the parsed Message path, not the plain-text CallbackQuery alert popup.
+
+- **Spool assign defers MQTT for an empty AMS slot and replays on physical insert (#1247).** Pre-load workflow (weigh-then-assign) used to fire `ams_filament_setting` against an empty slot — Bambu firmware silently drops it and the slicer kept showing default-PLA forever. The endpoint now detects empty slots and skips MQTT; `on_ams_change` replays the full configuration when the slot transitions to loaded (`state == 11`, works for 3rd-party tags without RFID too). Toast now reads "Spool assigned. The slot will be configured when you insert the filament." Adapted from upstream `b42aaca5`.
+
+- **Spool form Slicer Preset dropdown shows every per-printer / per-nozzle variant (#1248).** Cloud presets no longer short-circuit local-presets when logged into Bambu Cloud; per-printer variants (`@P1S` / `@X1C` / `@A1`) no longer collapse into one row. Adapted from upstream `30fe88a3`.
+
+- **In-app updater on native installs: pip + git + npm now run in the app dir, not data dir.** Updater used `settings.base_dir` (= data dir, mounted volume) for `cwd`; native installs with `DATA_DIR` set hit `No such file: requirements.txt`. Switched to the newly-exposed `settings.app_dir` (code-tree path). `_perform_update` also preserves existing SSH origins instead of clobbering them to HTTPS. Adapted from upstream `a85855f2` + `cc5692a2`.
+
+- **Forward-looking HA-addon detection wired in (#1167).** BamDude does **not** ship as a Home Assistant Supervisor addon today — but the update UI now defers to HA Supervisor instead of misleading the operator with a docker-compose snippet if a third party packages BamDude that way. Detection via `SUPERVISOR_TOKEN`; new `update_method='ha_addon'`. Adapted from upstream `4aea4be2`.
+
+- **HA-entity toggle on the printer card now opens a confirmation modal (#1260).** Smart plugs with `Show on Printer Card` enabled used to fire on the first click — operators accidentally toggled things during prints. Fire-once `script.*` entities keep instant behaviour; `switch.*` / `light.*` open a danger-style ConfirmModal. Adapted from upstream `dfd9fced`.
+
+- **Archive card buttons no longer show truncated `"Re..."` / `"Sc..."` labels (#1249).** Label breakpoint moved to `xl:` (≥ 1280 px); below that, buttons render icon-only with `title=` tooltip. Adapted from upstream `a1931455`.
+
+- **Dual-nozzle X2D / H2D / X2 Pro without AMS lost external-spool extruder routing (#1257).** Dual-nozzle detection now prefers the hardware-reported `nozzles[1].nozzle_diameter` over `ams_extruder_map` so dual-nozzle printers running with two external spools (no AMS) route correctly. Adapted from upstream `080176c6`.
+
+- **Non-ASCII filenames no longer crash file-download responses (#1245).** New `build_content_disposition` helper emits both legacy ASCII `filename="..."` and RFC 5987 `filename*=UTF-8''<percent-encoded>` so Chinese / Japanese / Arabic / accented Latin filenames round-trip through Save-As intact. Applied across archives / printer files / project ZIP / labels / maintenance / support bundle. Adapted from upstream `3f58fc74`.
+
+- **Gitea / Forgejo backup failures surfaced as cryptic one-word messages (#1224, #1225, #1239, #1255).** Push paths in all four providers (GitHub, Gitea, Forgejo, base) now extract JSON SHAs through a typed helper, refuse to commit on truncated tree listings, guard against branch-create retry loops, and include HTTP status + body excerpt in every failure. Forgejo v15+ pre-flights `GET /user` so bad-token / no-scope is told apart from inaccessible-repo. 103-case unit suite covers all four backends. Adapted from upstream `7afb303f` + companion PRs.
+
+- **MakerWorld cover images failed to render with "auth required".** Cover endpoints renamed so the substring `/cover` matches the auth-middleware public whitelist (`<img src>` can't carry an Authorization header). JSON `.../meta` endpoint keeps its permission gate.
+
+- **Cancel during reprint dispatch left a zombie "printing" archive.** The reprint path now mirrors the library-file path and marks the archive `cancelled` on `DispatchJobCancelled`.
+
+- **Patched-3MF temp dir was leaked into `/tmp` on cancel mid-upload.** Cleanup moved from the success path to a `finally:` block.
+
+- **Information page → Database → Filaments was blank.** `/api/v1/system/info` now returns the count under `filaments`, narrowed to active spools (`archived_at IS NULL`).
+
+- **MakerWorld "Recent imports" panel didn't refresh after import.** `importMutation.onSuccess` now invalidates the `makerworld-recent-imports` query.
+
+---
+
+## [0.4.4b3] - 2026-05-11
+
+Third beta of the 0.4.4 cycle. Image: `ghcr.io/kainpl/bamdude:0.4.4b3` / `kainpl/bamdude:0.4.4b3`. Pin the exact tag — `:latest` still tracks 0.4.3.
+
+Cumulative since 0.4.3 (covers b1 + b2 + b3): Spoolman inventory becomes a first-class operator experience, .bbscfg slicer preset bundles, MFA at-rest encryption default-on via auto-bootstrap, pause/resume notification events with classified reasons across all transports + frontend visualisation, in-app bug-report bubble (relay-driven GitHub issue creation), STL/OBJ shaded thumbnails, daily log rotation + archive UI, 3D viewer Export-as-PNG, mouse-pick selection + S→popup expand on Printers, Queue page reshape into in-header toolbar with Cards/List/Timeline modes + Hide-offline, Maintenance page reshape (3-col grid + Розташування grouping + Status/History/Settings as segmented tabs), Information sidebar entry promoted from a footer icon. Many fixes from upstream Bambuddy v0.2.4 audit cycle. Full detail below.
+
 ### Added
 
 - **Printers page: S-card maximize button opens an M-size card in a centered popup.** Compact view drops the temperature panel, clear-plate button, and per-AMS slot detail for grid density; previously reaching those meant flipping the whole grid to M/L. New Maximize2 button between selection checkbox and kebab opens a fixed-overlay popup with the printer re-mounted as `viewMode='expanded' cardSize={2}`. Closes on backdrop click, Escape, or clicking another printer's expand button. Hidden in M/L/XL.

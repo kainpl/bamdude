@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { X, Loader2, Save, Beaker, Palette, Zap, Tag, Unlink } from 'lucide-react';
 import { api, ApiError } from '../api/client';
-import type { InventorySpool, SlicerSetting, SpoolCatalogEntry, LocalPreset, SpoolmanBulkCreateResult, SpoolKProfileInput, SpoolmanFilamentEntry } from '../api/client';
+import type { InventorySpool, SlicerSetting, SpoolCatalogEntry, LocalPreset, SpoolmanBulkCreateResult, SpoolKProfileInput, SpoolmanFilamentEntry, BuiltinFilament } from '../api/client';
 import { Button } from './Button';
 import { useToast } from '../contexts/ToastContext';
 import type { SpoolFormData, PrinterWithCalibrations, ColorPreset } from './spool-form/types';
@@ -21,10 +21,17 @@ type TabId = 'filament' | 'pa-profile';
 
 const CLEAR_TAG_PAYLOAD = { tag_uid: null, tray_uuid: null, tag_type: null, data_origin: null };
 
+export type SpoolFormMode = 'create' | 'edit' | 'copy';
+
 interface SpoolFormModalProps {
   isOpen: boolean;
   onClose: () => void;
   spool?: InventorySpool | null;
+  /** 'create' = empty form, 'edit' = mutate the given spool, 'copy' =
+   *  pre-fill from the given spool but POST a new row (serial / RFID tag
+   *  cleared, weight_used reset to 0). Defaults to 'edit' when a spool is
+   *  passed for backwards-compat with any caller still on the old contract. */
+  mode?: SpoolFormMode;
   printersWithCalibrations?: PrinterWithCalibrations[];
   currencySymbol: string;
   onSpoolsCreated?: (spools: InventorySpool[]) => void;
@@ -38,6 +45,7 @@ export function SpoolFormModal({
   isOpen,
   onClose,
   spool,
+  mode,
   printersWithCalibrations = [],
   currencySymbol,
   onSpoolsCreated,
@@ -48,7 +56,11 @@ export function SpoolFormModal({
   const queryClient = useQueryClient();
   const { showToast } = useToast();
 
-  const isEditing = !!spool;
+  // Resolve the operating mode. The `mode` prop wins; absent that we fall
+  // back to the pre-feature shape (spool present → edit, otherwise create).
+  const resolvedMode: SpoolFormMode = mode ?? (spool ? 'edit' : 'create');
+  const isEditing = resolvedMode === 'edit';
+  const isCopying = resolvedMode === 'copy';
 
   // Form state
   const [formData, setFormData] = useState<SpoolFormData>(defaultFormData);
@@ -70,6 +82,9 @@ export function SpoolFormModal({
 
   // Local presets (OrcaSlicer imports)
   const [localPresets, setLocalPresets] = useState<LocalPreset[]>([]);
+
+  // Built-in filaments (cloud-free fallback / dedup floor)
+  const [builtinFilaments, setBuiltinFilaments] = useState<BuiltinFilament[]>([]);
 
   // Color catalog
   const [colorCatalog, setColorCatalog] = useState<{ manufacturer: string; color_name: string; hex_color: string; material: string | null }[]>([]);
@@ -134,6 +149,7 @@ export function SpoolFormModal({
       }
       api.getColorCatalog().then(setColorCatalog).catch(console.error);
       api.getLocalPresets().then(r => setLocalPresets(r.filament)).catch(console.error);
+      api.getBuiltinFilaments().then(setBuiltinFilaments).catch(console.error);
 
       // Fetch printer calibrations if not provided via props
       if (printersWithCalibrations.length === 0) {
@@ -187,10 +203,13 @@ export function SpoolFormModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, printersWithCalibrations.length]);
 
-  // Build filament options: cloud → local → fallback
+  // Build filament options: union of cloud + local + built-in.
+  // Cloud / local variants are NOT collapsed by base name — every per-printer
+  // / per-nozzle variant renders as its own row (the spool itself is
+  // printer-agnostic; the variant is what gets persisted as slicer_filament).
   const filamentOptions = useMemo(
-    () => buildFilamentOptions(cloudPresets, new Set(), localPresets),
-    [cloudPresets, localPresets],
+    () => buildFilamentOptions(cloudPresets, new Set(), localPresets, builtinFilaments),
+    [cloudPresets, localPresets, builtinFilaments],
   );
 
   // Extract brands from presets
@@ -296,7 +315,7 @@ export function SpoolFormModal({
           label_weight: spool.label_weight || 1000,
           core_weight: spool.core_weight || 250,
           core_weight_catalog_id: spool.core_weight_catalog_id ?? null,
-          weight_used: spool.weight_used || 0,
+          weight_used: isCopying ? 0 : spool.weight_used || 0,
           slicer_filament: spool.slicer_filament || '',
           note: spool.note || '',
           cost_per_kg: spool.cost_per_kg ?? null,
@@ -339,7 +358,7 @@ export function SpoolFormModal({
       setWeightTouched(false);
       setStorageLocationTouched(false);
     }
-  }, [isOpen, spool]);
+  }, [isOpen, spool, resolvedMode, isCopying]);
 
   // Expand all printers in PA profile section when calibrations are available
   useEffect(() => {
@@ -706,7 +725,7 @@ export function SpoolFormModal({
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-bambu-dark-tertiary flex-shrink-0">
           <h2 className="text-lg font-semibold text-white">
-            {isEditing ? t('inventory.editSpool') : t('inventory.addSpool')}
+            {isEditing ? t('inventory.editSpool') : isCopying ? t('inventory.copySpool') : t('inventory.addSpool')}
           </h2>
           <button
             onClick={onClose}
@@ -716,8 +735,12 @@ export function SpoolFormModal({
           </button>
         </div>
 
-        {/* Quick Add toggle - only in create mode */}
-        {!isEditing && (
+        {/* Quick Add toggle — only in create mode (not edit, not copy). In
+            copy mode the modal title is the singular "Copy Spool", so the
+            quantity-driven bulkCreateMutation path would silently produce N
+            copies under a misleading title — keep this toggle out of that
+            mode entirely. */}
+        {resolvedMode === 'create' && (
           <div className="flex items-center justify-between px-4 py-2 border-b border-bambu-dark-tertiary flex-shrink-0">
             <div className="flex items-center gap-2">
               <Zap className="w-4 h-4 text-amber-400" />
@@ -908,7 +931,7 @@ export function SpoolFormModal({
             ) : (
               <>
                 <Save className="w-4 h-4" />
-                {isEditing ? t('common.save') : t('inventory.addSpool')}
+                {isEditing ? t('common.save') : isCopying ? t('inventory.copySpool') : t('inventory.addSpool')}
               </>
             )}
           </Button>

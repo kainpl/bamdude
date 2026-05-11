@@ -22,6 +22,7 @@ import {
   Headphones,
   FolderOpen,
   Cog,
+  Info,
 } from 'lucide-react';
 import { api, supportApi } from '../api/client';
 import { Card } from '../components/Card';
@@ -188,7 +189,7 @@ export function SystemInfoPage() {
       <div className="flex items-center justify-between">
         <div>
           <div className="flex items-center gap-3">
-            {/*<Disc3 className="w-6 h-6 text-bambu-green" />*/}
+            <Info className="w-6 h-6 text-bambu-green" />
             <h1 className="text-2xl font-bold text-white">{t('system.title', 'System Information')}</h1>
           </div>
           <p className="text-sm text-bambu-gray">{t('system.subtitle', 'Monitor system resources and database statistics')}</p>

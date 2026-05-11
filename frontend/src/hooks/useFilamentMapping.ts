@@ -16,7 +16,22 @@ import type { PrinterStatus } from '../api/client';
 export function buildLoadedFilaments(printerStatus: PrinterStatus | undefined): LoadedFilament[] {
   const filaments: LoadedFilament[] = [];
   const amsExtruderMap = printerStatus?.ams_extruder_map;
-  const hasDualNozzle = amsExtruderMap && Object.keys(amsExtruderMap).length > 0;
+  // Dual-nozzle detection (#1257 — upstream `080176c6`). The backend always
+  // emits a 2-entry `nozzles` array (default-stub second entry on single-nozzle
+  // printers), so `length` alone is not a reliable signal. Real second-nozzle
+  // hardware populates `nozzles[1].nozzle_diameter` from the MQTT
+  // `right_nozzle_diameter` field; without that, the entry stays at its empty
+  // default. Belt-and-braces: a populated `ams_extruder_map` (dual-nozzle with
+  // AMS) and `vt_tray.length > 1` (only dual-nozzle hardware exposes multiple
+  // external feeds) each independently imply dual-nozzle — keep them as
+  // fallbacks for any firmware rev that surfaces one signal but not the other.
+  // Affects X2D, H2D, X2 Pro running without AMS: previously they fell through
+  // to `extruderId=undefined` for external spools and the nozzle-aware filter
+  // rejected every candidate because `undefined !== 0/1`.
+  const hasDualNozzle =
+    Boolean(printerStatus?.nozzles?.[1]?.nozzle_diameter)
+    || (amsExtruderMap && Object.keys(amsExtruderMap).length > 0)
+    || (printerStatus?.vt_tray?.length ?? 0) > 1;
 
   // Add filaments from all AMS units (regular and HT)
   printerStatus?.ams?.forEach((amsUnit) => {

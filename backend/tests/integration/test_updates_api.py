@@ -92,6 +92,49 @@ class TestUpdatesAPI:
         with patch("os.path.exists", return_value=True):
             assert _is_docker_environment() is True
 
+    def test_is_ha_addon_present(self):
+        """SUPERVISOR_TOKEN is what HA Supervisor injects into every addon
+        container. Presence (and non-empty value) flips the detection True."""
+        from backend.app.api.routes.updates import _is_ha_addon
+
+        with patch.dict("os.environ", {"SUPERVISOR_TOKEN": "abc123"}, clear=False):
+            assert _is_ha_addon() is True
+
+    def test_is_ha_addon_absent(self):
+        from backend.app.api.routes.updates import _is_ha_addon
+
+        with patch.dict("os.environ", {}, clear=True):
+            assert _is_ha_addon() is False
+
+    def test_is_ha_addon_empty_string_is_unset(self):
+        """An empty string for SUPERVISOR_TOKEN must be treated as unset —
+        otherwise a misconfigured docker-compose with ``SUPERVISOR_TOKEN=``
+        would mis-classify a plain Docker install as an HA addon."""
+        from backend.app.api.routes.updates import _is_ha_addon
+
+        with patch.dict("os.environ", {"SUPERVISOR_TOKEN": ""}, clear=False):
+            assert _is_ha_addon() is False
+
+    @pytest.mark.asyncio
+    async def test_apply_update_ha_addon_precedes_docker(self, async_client: AsyncClient):
+        """HA addons ARE Docker containers, so the HA-precedence check must
+        win — otherwise the Docker branch would hand operators a
+        docker-compose snippet they can't run."""
+        with (
+            patch("backend.app.api.routes.updates._is_ha_addon", return_value=True),
+            patch("backend.app.api.routes.updates._is_docker_environment", return_value=True),
+            patch(
+                "backend.app.api.routes.updates._find_latest_release",
+                new=AsyncMock(return_value={"tag_name": "v0.4.4"}),
+            ),
+        ):
+            response = await async_client.post("/api/v1/updates/apply")
+        result = response.json()
+        assert result["success"] is False
+        assert result["is_ha_addon"] is True
+        assert result["is_docker"] is True
+        assert "Home Assistant" in result["message"]
+
 
 class TestParseVersion:
     """parse_version returns (major, minor, patch, micro, is_prerelease, prerelease_num)."""

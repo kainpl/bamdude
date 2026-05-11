@@ -3,7 +3,7 @@ import DOMPurify from 'dompurify';
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { AlertCircle, ArrowRight, Check, ChevronLeft, ChevronRight, Download, ExternalLink, FolderOpen, Images, Loader2, Trash2, X } from 'lucide-react';
+import { AlertCircle, ArrowRight, Check, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, ExternalLink, FolderOpen, History, Images, Loader2, Trash2, X } from 'lucide-react';
 import { MakerWorldIcon } from '../components/BrandIcons';
 
 import {
@@ -116,6 +116,14 @@ export function MakerworldPage() {
 
   const canImport = hasPermission('makerworld:import');
 
+  const [activeTab, setActiveTab] = useState<'import' | 'history'>(() => {
+    const saved = localStorage.getItem('makerworldActiveTab');
+    return saved === 'history' ? 'history' : 'import';
+  });
+  useEffect(() => {
+    localStorage.setItem('makerworldActiveTab', activeTab);
+  }, [activeTab]);
+
   const [urlInput, setUrlInput] = useState('');
   const [resolved, setResolved] = useState<MakerworldResolvedModel | null>(null);
   // Selected target folder. ``null`` means "let the backend use the default
@@ -167,9 +175,54 @@ export function MakerworldPage() {
     queryFn: () => api.getLibraryFolders(),
   });
 
-  const recentQuery = useQuery({
-    queryKey: ['makerworld-recent-imports'],
-    queryFn: () => api.getMakerworldRecentImports(10),
+  // History grid (server-paginated). Persisted UI state covers
+  // page-size + sort; the search box is ephemeral by design (operators
+  // usually re-type to find something specific instead of resuming a
+  // prior search across sessions).
+  const [historyPage, setHistoryPage] = useState(1);
+  const [historyPerPage, setHistoryPerPage] = useState<number>(() => {
+    const saved = Number(localStorage.getItem('makerworldHistoryPerPage'));
+    return [12, 24, 48, 96, -1].includes(saved) ? saved : 24;
+  });
+  useEffect(() => {
+    localStorage.setItem('makerworldHistoryPerPage', String(historyPerPage));
+  }, [historyPerPage]);
+  const [historySortBy, setHistorySortBy] = useState<'date-desc' | 'date-asc' | 'name-asc' | 'name-desc'>(() => {
+    const saved = localStorage.getItem('makerworldHistorySortBy');
+    return saved === 'date-asc' || saved === 'name-asc' || saved === 'name-desc' ? saved : 'date-desc';
+  });
+  useEffect(() => {
+    localStorage.setItem('makerworldHistorySortBy', historySortBy);
+  }, [historySortBy]);
+  const [historySearch, setHistorySearch] = useState('');
+  const [historyDebouncedSearch, setHistoryDebouncedSearch] = useState('');
+  useEffect(() => {
+    const id = setTimeout(() => setHistoryDebouncedSearch(historySearch.trim()), 300);
+    return () => clearTimeout(id);
+  }, [historySearch]);
+  useEffect(() => {
+    // Any filter/sort/per-page change snaps back to page 1 so the
+    // visible result is the first slice, not page-3-of-the-old-result.
+    setHistoryPage(1);
+  }, [historyDebouncedSearch, historySortBy, historyPerPage]);
+
+  const historyQuery = useQuery({
+    queryKey: [
+      'makerworld-imports',
+      historyPage,
+      historyPerPage,
+      historyDebouncedSearch,
+      historySortBy,
+    ],
+    queryFn: () =>
+      api.getMakerworldImports({
+        page: historyPage,
+        per_page: historyPerPage === -1 ? 100000 : historyPerPage,
+        search: historyDebouncedSearch || undefined,
+        sort_by: historySortBy,
+      }),
+    placeholderData: (prev) => prev,
+    enabled: activeTab === 'history',
   });
 
   const settingsQuery = useQuery({
@@ -199,8 +252,25 @@ export function MakerworldPage() {
     onSuccess: (data, url) => {
       setResolved(data);
       setResolvedForUrl(url);
-      // Fresh resolve — clear any success card from a previous model.
-      setImportsByProfile({});
+      // Fresh resolve — seed ``importsByProfile`` from the backend's
+      // per-variant dedupe map so each instance card surfaces the
+      // "already imported" badge + deep-link button without needing the
+      // user to click Import first. Synthesised entries carry
+      // ``was_existing=true`` so the existing post-click UI path
+      // renders them identically.
+      const seeded: { [profileId: number]: MakerworldImportResponse } = {};
+      for (const [pidStr, entry] of Object.entries(data.already_imported_by_profile_id ?? {})) {
+        const pid = Number(pidStr);
+        if (!Number.isFinite(pid) || pid === 0) continue; // skip legacy "0" whole-model bucket
+        seeded[pid] = {
+          library_file_id: entry.library_file_id,
+          folder_id: entry.folder_id,
+          filename: entry.filename,
+          profile_id: pid,
+          was_existing: true,
+        };
+      }
+      setImportsByProfile(seeded);
     },
     onError: (err: Error) => showToast(err.message || t('makerworld.errors.resolveFailed'), 'error'),
   });
@@ -225,6 +295,11 @@ export function MakerworldPage() {
       // Backend auto-creates a "MakerWorld" folder on first import; refresh
       // the folder tree so users see it without having to reload the page.
       queryClient.invalidateQueries({ queryKey: ['library-folders'] });
+      // Recent-imports list lives in its own React-Query cache; without
+      // invalidating it the panel keeps showing the pre-import snapshot
+      // until the next manual refresh / page revisit.
+      queryClient.invalidateQueries({ queryKey: ["makerworld-recent-imports"] });
+      queryClient.invalidateQueries({ queryKey: ["makerworld-imports"] });
       // Track by profile_id so each plate's row can render its own inline
       // follow-up buttons even after multiple imports in the same session.
       if (data.profile_id) {
@@ -245,6 +320,26 @@ export function MakerworldPage() {
   // (file + DB row). Used by the inline trash-icon button on imported plates
   // so users can quickly undo an accidental import without navigating to
   // File Manager. ``profileId`` is only used for local state cleanup.
+  // Force re-download a previously imported variant. Distinct from
+  // ``importMutation`` which short-circuits on the backend dedupe and
+  // returns the existing row untouched — this endpoint refetches the
+  // 3MF bytes, overwrites them on disk, and refreshes meta + covers.
+  // Used when the creator pushed a model update on MakerWorld.
+  const redownloadMutation = useMutation({
+    mutationFn: ({ libraryFileId }: { libraryFileId: number; profileId: number }) =>
+      api.redownloadMakerworldImport(libraryFileId),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['library-files'] });
+      queryClient.invalidateQueries({ queryKey: ["makerworld-recent-imports"] });
+      queryClient.invalidateQueries({ queryKey: ["makerworld-imports"] });
+      if (data.profile_id) {
+        setImportsByProfile((prev) => ({ ...prev, [data.profile_id!]: data }));
+      }
+      showToast(t('makerworld.redownloadSuccess', { filename: data.filename }), 'success');
+    },
+    onError: (err: Error) => showToast(err.message || t('makerworld.errors.downloadFailed'), 'error'),
+  });
+
   const deleteImportMutation = useMutation({
     mutationFn: ({ libraryFileId }: { libraryFileId: number; profileId: number }) =>
       api.deleteLibraryFile(libraryFileId),
@@ -257,7 +352,8 @@ export function MakerworldPage() {
       // otherwise serve a stale snapshot).
       queryClient.invalidateQueries({ queryKey: ['library-trash'] });
       queryClient.invalidateQueries({ queryKey: ['library-trash-count'] });
-      queryClient.invalidateQueries({ queryKey: ['makerworld-recent-imports'] });
+      queryClient.invalidateQueries({ queryKey: ["makerworld-recent-imports"] });
+      queryClient.invalidateQueries({ queryKey: ["makerworld-imports"] });
       setImportsByProfile((prev) => {
         const next = { ...prev };
         delete next[profileId];
@@ -283,7 +379,8 @@ export function MakerworldPage() {
     onSuccess: async (data: MakerworldImportResponse) => {
       queryClient.invalidateQueries({ queryKey: ['library-files'] });
       queryClient.invalidateQueries({ queryKey: ['library-folders'] });
-      queryClient.invalidateQueries({ queryKey: ['makerworld-recent-imports'] });
+      queryClient.invalidateQueries({ queryKey: ["makerworld-recent-imports"] });
+      queryClient.invalidateQueries({ queryKey: ["makerworld-imports"] });
       if (data.profile_id) {
         setImportsByProfile((prev) => ({ ...prev, [data.profile_id!]: data }));
       }
@@ -415,20 +512,39 @@ export function MakerworldPage() {
   const downloadCount = pickNumber(design, 'downloadCount');
 
   return (
-    <div className="p-6 max-w-screen-2xl mx-auto space-y-6">
+    <div className="p-4 md:p-6 space-y-6">
       <div className="flex items-center gap-3">
-        <MakerWorldIcon className="w-7 h-7 text-brand-500" />
-        <h1 className="text-2xl font-bold">{t('makerworld.title')}</h1>
+        <MakerWorldIcon className="w-6 h-6 text-bambu-green" />
+        <h1 className="text-2xl font-bold text-white">{t('makerworld.title')}</h1>
       </div>
 
-      <p className="text-sm text-gray-600 dark:text-gray-400">
-        {t('makerworld.description')}
-      </p>
+      {/* Tab Navigation */}
+      <div className="flex border-b border-bambu-dark-tertiary">
+        <button
+          onClick={() => setActiveTab('import')}
+          className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px ${
+            activeTab === 'import'
+              ? 'text-bambu-green border-bambu-green'
+              : 'text-bambu-gray hover:text-white border-transparent'
+          }`}
+        >
+          <Download className="w-4 h-4" />
+          {t('makerworld.tabs.import')}
+        </button>
+        <button
+          onClick={() => setActiveTab('history')}
+          className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px ${
+            activeTab === 'history'
+              ? 'text-bambu-green border-bambu-green'
+              : 'text-bambu-gray hover:text-white border-transparent'
+          }`}
+        >
+          <History className="w-4 h-4" />
+          {t('makerworld.tabs.history')}
+        </button>
+      </div>
 
-      {/* Two-column layout: main flow on the left, sticky "Recent imports"
-          sidebar on the right at lg+. Collapses to single column on narrow
-          screens (tablet/phone), with the sidebar tucked below the main flow. */}
-      <div className="grid gap-6 lg:grid-cols-[1fr_20rem]">
+      {activeTab === 'import' && (
         <div className="space-y-6 min-w-0">
       {!hasToken && (
         <Card className="border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20">
@@ -454,17 +570,36 @@ export function MakerworldPage() {
       <Card>
         <CardHeader>
           <h2 className="text-lg font-semibold">{t('makerworld.pasteUrlHeader')}</h2>
+          <p className="text-sm text-bambu-gray mt-1">{t('makerworld.description')}</p>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleResolve} className="flex gap-2">
-            <input
-              type="text"
-              value={urlInput}
-              onChange={(e) => setUrlInput(e.target.value)}
-              placeholder={t('makerworld.pasteUrlPlaceholder')}
-              className="flex-1 min-w-0 px-3 py-2 border rounded bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-700"
-              autoComplete="off"
-            />
+            <div className="relative flex-1 min-w-0">
+              <input
+                type="text"
+                value={urlInput}
+                onChange={(e) => setUrlInput(e.target.value)}
+                placeholder={t('makerworld.pasteUrlPlaceholder')}
+                className="w-full px-3 py-2 pr-9 border rounded bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-700"
+                autoComplete="off"
+              />
+              {(urlInput || resolved) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setUrlInput('');
+                    setResolved(null);
+                    setResolvedForUrl('');
+                    setImportsByProfile({});
+                  }}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary transition-colors"
+                  title={t('makerworld.clearButton')}
+                  aria-label={t('makerworld.clearButton')}
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
             <Button
               type="submit"
               variant="primary"
@@ -478,6 +613,7 @@ export function MakerworldPage() {
               <span className="ml-2">{t('makerworld.resolveButton')}</span>
             </Button>
           </form>
+          <p className="text-xs text-bambu-gray mt-2">{t('makerworld.disclaimer')}</p>
         </CardContent>
       </Card>
 
@@ -687,28 +823,72 @@ export function MakerworldPage() {
                         )}
                       </div>
                       <div className="flex gap-2 shrink-0">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          disabled={!canImport || !canDownload || isImporting || isPrinting || bulkProgress !== null}
-                          onClick={() => importMutation.mutate({ instanceId, profileId })}
-                          title={!canDownload ? t('makerworld.signInRequiredTitle') : undefined}
-                        >
-                          {isImporting ? (
-                            <>
-                              <Loader2 className="w-4 h-4 animate-spin" />
-                              <span className="ml-2">
-                                {importPhaseLabel}
-                                {importElapsed > 0 && ` · ${importElapsed}s`}
-                              </span>
-                            </>
-                          ) : (
-                            <>
-                              <Download className="w-4 h-4" />
-                              <span className="ml-2">{t('makerworld.importToLibrary')}</span>
-                            </>
-                          )}
-                        </Button>
+                        {imported?.was_existing && profileId !== null ? (
+                          // Variant already in library — Import would no-op
+                          // server-side, so the primary action shifts to a
+                          // force re-download (creator pushed updated bytes).
+                          (() => {
+                            const isRedownloading =
+                              redownloadMutation.isPending &&
+                              redownloadMutation.variables?.profileId === profileId;
+                            return (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                disabled={
+                                  !canImport ||
+                                  !canDownload ||
+                                  isImporting ||
+                                  isPrinting ||
+                                  isRedownloading ||
+                                  bulkProgress !== null
+                                }
+                                onClick={() =>
+                                  redownloadMutation.mutate({
+                                    libraryFileId: imported.library_file_id,
+                                    profileId,
+                                  })
+                                }
+                                title={!canDownload ? t('makerworld.signInRequiredTitle') : undefined}
+                              >
+                                {isRedownloading ? (
+                                  <>
+                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                    <span className="ml-2">{t('makerworld.redownloading')}</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Download className="w-4 h-4" />
+                                    <span className="ml-2">{t('makerworld.redownload')}</span>
+                                  </>
+                                )}
+                              </Button>
+                            );
+                          })()
+                        ) : (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            disabled={!canImport || !canDownload || isImporting || isPrinting || bulkProgress !== null}
+                            onClick={() => importMutation.mutate({ instanceId, profileId })}
+                            title={!canDownload ? t('makerworld.signInRequiredTitle') : undefined}
+                          >
+                            {isImporting ? (
+                              <>
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                                <span className="ml-2">
+                                  {importPhaseLabel}
+                                  {importElapsed > 0 && ` · ${importElapsed}s`}
+                                </span>
+                              </>
+                            ) : (
+                              <>
+                                <Download className="w-4 h-4" />
+                                <span className="ml-2">{t('makerworld.importToLibrary')}</span>
+                              </>
+                            )}
+                          </Button>
+                        )}
                         <Button
                           variant="primary"
                           size="sm"
@@ -826,38 +1006,96 @@ export function MakerworldPage() {
       )}
 
         </div>
+      )}
 
-        {/* Right column — Recent imports sidebar. Sticky at lg+ so it stays
-            reachable while browsing long plate lists. Vertical list here,
-            not the horizontal scroll we used in the bottom-of-page layout. */}
-        <aside className="lg:sticky lg:top-6 lg:self-start min-w-0">
-          {recentQuery.data && recentQuery.data.length > 0 && (
-            <Card>
-              <CardHeader>
-                <h2 className="text-base font-semibold">{t('makerworld.recentImportsHeader')}</h2>
-              </CardHeader>
-              <CardContent>
-                <div className="flex flex-col gap-2 max-h-[28rem] overflow-y-auto -mx-2 px-2">
-                  {recentQuery.data.map((item: MakerworldRecentImport) => (
+      {activeTab === 'history' && (
+        <div className="space-y-4">
+          {/* Toolbar: search + sort + page-size */}
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+            <div className="flex-1 min-w-0">
+              <input
+                type="text"
+                value={historySearch}
+                onChange={(e) => setHistorySearch(e.target.value)}
+                placeholder={t('makerworld.history.searchPlaceholder')}
+                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none"
+              />
+            </div>
+            <select
+              value={historySortBy}
+              onChange={(e) => setHistorySortBy(e.target.value as typeof historySortBy)}
+              className="h-9 min-w-[10rem] px-3 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+            >
+              <option value="date-desc">{t('makerworld.history.sort.dateDesc')}</option>
+              <option value="date-asc">{t('makerworld.history.sort.dateAsc')}</option>
+              <option value="name-asc">{t('makerworld.history.sort.nameAsc')}</option>
+              <option value="name-desc">{t('makerworld.history.sort.nameDesc')}</option>
+            </select>
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-bambu-gray">{t('common.show')}</span>
+              <select
+                value={historyPerPage}
+                onChange={(e) => setHistoryPerPage(Number(e.target.value))}
+                className="h-9 px-3 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-bambu-gray focus:border-bambu-green focus:outline-none"
+              >
+                {[12, 24, 48, 96].map((n) => (
+                  <option key={n} value={n}>{n}</option>
+                ))}
+                <option value={-1}>{t('common.all')}</option>
+              </select>
+            </div>
+          </div>
+
+          {historyQuery.isLoading ? (
+            <div className="flex justify-center py-12">
+              <Loader2 className="w-6 h-6 text-bambu-green animate-spin" />
+            </div>
+          ) : historyQuery.data && historyQuery.data.data.length > 0 ? (
+            <>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+                {historyQuery.data.data.map((item: MakerworldRecentImport) => {
+                  const coverSrc = item.has_variant_cover
+                    ? api.getMakerworldImportCoverUrl(item.library_file_id, true)
+                    : item.has_cover
+                      ? api.getMakerworldImportCoverUrl(item.library_file_id, false)
+                      : item.thumbnail_path
+                        ? api.getLibraryFileThumbnailUrl(item.library_file_id)
+                        : null;
+                  const displayTitle = item.title || item.filename;
+                  return (
                     <div
                       key={item.library_file_id}
-                      className="flex gap-2 p-2 border rounded border-gray-200 dark:border-gray-700"
+                      className="flex flex-col rounded-lg overflow-hidden bg-bambu-dark border border-bambu-dark-tertiary"
                     >
-                      {item.thumbnail_path ? (
-                        <img
-                          src={api.getLibraryFileThumbnailUrl(item.library_file_id)}
-                          alt=""
-                          className="w-12 h-12 shrink-0 object-contain rounded bg-gray-100 dark:bg-gray-800"
-                          loading="lazy"
-                        />
-                      ) : (
-                        <div className="w-12 h-12 shrink-0 rounded bg-gray-100 dark:bg-gray-800" />
-                      )}
-                      <div className="flex-1 min-w-0 flex flex-col gap-1">
-                        <p className="text-xs font-medium truncate" title={item.filename}>
-                          {item.filename}
+                      <div className="relative w-full aspect-[4/3] bg-bambu-dark-secondary">
+                        {coverSrc ? (
+                          <img
+                            src={coverSrc}
+                            alt=""
+                            className="absolute inset-0 w-full h-full object-cover"
+                            loading="lazy"
+                          />
+                        ) : (
+                          <div className="absolute inset-0 flex items-center justify-center text-bambu-gray text-xs">
+                            {t('makerworld.history.noCover')}
+                          </div>
+                        )}
+                        {item.sliced_for && (
+                          <span className="absolute top-1.5 right-1.5 px-1.5 py-0.5 text-[10px] font-medium rounded bg-bambu-dark/80 text-bambu-green border border-bambu-green/40">
+                            {item.sliced_for}
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex flex-col gap-1 p-2.5 min-w-0">
+                        <p className="text-sm font-medium text-white truncate" title={displayTitle}>
+                          {displayTitle}
                         </p>
-                        <div className="flex gap-0.5">
+                        {item.author_name && (
+                          <p className="text-xs text-bambu-gray truncate" title={item.author_name}>
+                            {item.author_name}
+                          </p>
+                        )}
+                        <div className="flex items-center gap-0.5 mt-1">
                           <Button
                             variant="ghost"
                             size="sm"
@@ -875,9 +1113,7 @@ export function MakerworldPage() {
                             <Button
                               variant="ghost"
                               size="sm"
-                              onClick={() =>
-                                openSliceForLibraryFile(item.library_file_id, item.filename)
-                              }
+                              onClick={() => openSliceForLibraryFile(item.library_file_id, item.filename)}
                               title={t('slice.action', 'Slice')}
                             >
                               <Cog className="w-3.5 h-3.5" />
@@ -899,7 +1135,7 @@ export function MakerworldPage() {
                               href={item.source_url}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="inline-flex items-center justify-center h-7 w-7 rounded text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                              className="inline-flex items-center justify-center h-7 w-7 rounded text-bambu-gray hover:text-white"
                               title={t('makerworld.openOnMakerworld')}
                             >
                               <MakerWorldIcon className="w-3.5 h-3.5" />
@@ -908,17 +1144,67 @@ export function MakerworldPage() {
                         </div>
                       </div>
                     </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
-          )}
-        </aside>
-      </div>
+                  );
+                })}
+              </div>
 
-      <p className="text-xs text-gray-500 dark:text-gray-400 pt-4 border-t border-gray-200 dark:border-gray-700">
-        {t('makerworld.disclaimer')}
-      </p>
+              {historyQuery.data.meta.last_page > 1 && (
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs text-bambu-gray">
+                    {t('makerworld.history.showingRange', {
+                      from: (historyQuery.data.meta.current_page - 1) * historyQuery.data.meta.per_page + 1,
+                      to: Math.min(
+                        historyQuery.data.meta.current_page * historyQuery.data.meta.per_page,
+                        historyQuery.data.meta.total
+                      ),
+                      total: historyQuery.data.meta.total,
+                    })}
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => setHistoryPage(1)}
+                      disabled={historyPage <= 1}
+                      className="p-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white disabled:opacity-50 hover:bg-bambu-dark-secondary"
+                    >
+                      <ChevronsLeft className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={() => setHistoryPage((p) => Math.max(1, p - 1))}
+                      disabled={historyPage <= 1}
+                      className="p-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white disabled:opacity-50 hover:bg-bambu-dark-secondary"
+                    >
+                      <ChevronLeft className="w-4 h-4" />
+                    </button>
+                    <span className="text-sm text-bambu-gray px-2">
+                      {historyQuery.data.meta.current_page} / {historyQuery.data.meta.last_page}
+                    </span>
+                    <button
+                      onClick={() =>
+                        setHistoryPage((p) => Math.min(historyQuery.data?.meta.last_page ?? p, p + 1))
+                      }
+                      disabled={historyPage >= historyQuery.data.meta.last_page}
+                      className="p-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white disabled:opacity-50 hover:bg-bambu-dark-secondary"
+                    >
+                      <ChevronRight className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={() => setHistoryPage(historyQuery.data?.meta.last_page ?? 1)}
+                      disabled={historyPage >= historyQuery.data.meta.last_page}
+                      className="p-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white disabled:opacity-50 hover:bg-bambu-dark-secondary"
+                    >
+                      <ChevronsRight className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
+          ) : (
+            <p className="text-sm text-bambu-gray py-12 text-center">
+              {historyDebouncedSearch ? t('makerworld.history.noResults') : t('makerworld.noRecentImports')}
+            </p>
+          )}
+        </div>
+      )}
 
       {pendingDelete && (
         <ConfirmModal

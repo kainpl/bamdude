@@ -21,10 +21,11 @@ import { BugReportBubble } from './BugReportBubble';
 
 // Sidebar groups (for visual section dividers + labels). Group membership
 // is item-level; the renderer injects a divider whenever an item's group
-// differs from the previous item's group. Drag-drop reorder is preserved
-// (user can still cross-group drag) — the dividers follow the resulting
-// adjacency, which surfaces a "you put a system item in the middle of
-// operations" cue without blocking the move.
+// differs from the previous item's group. Drag-drop is constrained: items
+// can be reordered only within their own group, and whole groups can be
+// reordered by dragging the group header. Cross-group item drops are
+// refused — the visual indicator hides and `handleDrop` returns without
+// mutating the order.
 export type NavGroup = 'operations' | 'workshop' | 'resources' | 'care' | 'system';
 
 interface NavItem {
@@ -367,19 +368,95 @@ export function Layout() {
       }
     }
 
-    // Add any new external links not in stored order
+    // Add any new external links not in stored order. Default insertion
+    // point puts the legacy ``external`` bucket immediately BEFORE the
+    // ``system`` group instead of after — newly-added links are visible
+    // rather than buried at the bottom. Links with an explicit
+    // ``nav_group`` (operator picked one in AddExternalLinkModal) slot
+    // in at the end of that group's existing run so the renderer doesn't
+    // produce duplicate group dividers.
+    const groupOrder: (NavGroup | 'external')[] = [
+      'operations', 'workshop', 'resources', 'care', 'external', 'system',
+    ];
+    const resolveGroupForId = (id: string): NavGroup | 'external' => {
+      if (id.startsWith('ext-')) {
+        const link = (externalLinks || []).find(l => `ext-${l.id}` === id);
+        const ng = link?.nav_group;
+        return (ng === 'operations' || ng === 'workshop' || ng === 'resources' || ng === 'care' || ng === 'system' || ng === 'external')
+          ? ng
+          : 'external';
+      }
+      return navItemsMap.get(id)?.group ?? 'operations';
+    };
     for (const link of externalLinks || []) {
       const extId = `ext-${link.id}`;
-      if (!seen.has(extId)) {
-        result.push(extId);
-        seen.add(extId);
+      if (seen.has(extId)) continue;
+      const linkGroup = (link.nav_group as NavGroup | 'external' | undefined) || 'external';
+      let insertIdx = -1;
+      // Prefer "at the end of existing same-group run".
+      for (let i = result.length - 1; i >= 0; i--) {
+        if (resolveGroupForId(result[i]) === linkGroup) {
+          insertIdx = i + 1;
+          break;
+        }
       }
+      // First item in this group → use canonical group order to find slot.
+      if (insertIdx === -1) {
+        const linkGroupIdx = groupOrder.indexOf(linkGroup);
+        const laterIdx = result.findIndex(id => {
+          const g = resolveGroupForId(id);
+          const gIdx = groupOrder.indexOf(g);
+          return gIdx > linkGroupIdx;
+        });
+        insertIdx = laterIdx === -1 ? result.length : laterIdx;
+      }
+      result.splice(insertIdx, 0, extId);
+      seen.add(extId);
     }
 
     return result;
   })();
 
-  // Unified drag handlers
+  // Drag-handler helpers. Sidebar ordering is constrained: an item can
+  // only swap with another item in the SAME group; whole groups can be
+  // reordered by dragging the group header. Cross-group item drops are
+  // refused at handleDragOver (no visual indicator) and rejected in
+  // handleDrop. Group ids carry a `group:` prefix in drag-state so the
+  // existing draggedId / dragOverId can route both modes.
+  const GROUP_DRAG_PREFIX = 'group:';
+  const isGroupDragId = (id: string | null): boolean => !!id && id.startsWith(GROUP_DRAG_PREFIX);
+  const stripGroupDragId = (id: string): NavGroup | 'external' =>
+    id.slice(GROUP_DRAG_PREFIX.length) as NavGroup | 'external';
+  const getItemGroup = (id: string): NavGroup | 'external' => {
+    if (isExternalLinkId(id)) {
+      // External link's group is operator-configurable (see
+      // AddExternalLinkModal). Falls back to the legacy ``external``
+      // bucket when ``nav_group`` is missing or invalid.
+      const link = extLinksMap.get(id);
+      const ng = link?.nav_group;
+      if (ng === 'operations' || ng === 'workshop' || ng === 'resources' || ng === 'care' || ng === 'system' || ng === 'external') {
+        return ng;
+      }
+      return 'external';
+    }
+    return navItemsMap.get(id)?.group ?? 'operations';
+  };
+
+  // True when dragging X over Y should NOT show the drop-here indicator
+  // (cross-group item, or item↔group mix).
+  const isDropForbidden = (draggedId: string, targetId: string): boolean => {
+    if (draggedId === targetId) return true;
+    const dGroup = isGroupDragId(draggedId);
+    const tGroup = isGroupDragId(targetId);
+    if (dGroup !== tGroup) return true; // group↔item mix
+    if (!dGroup) {
+      // Item-to-item: require same group.
+      return getItemGroup(draggedId) !== getItemGroup(targetId);
+    }
+    // Group-to-group: never forbidden (different groups by construction).
+    return stripGroupDragId(draggedId) === stripGroupDragId(targetId);
+  };
+
   const handleDragStart = (e: React.DragEvent, id: string) => {
     setDraggedId(id);
     e.dataTransfer.effectAllowed = 'move';
@@ -388,6 +465,11 @@ export function Layout() {
 
   const handleDragOver = (e: React.DragEvent, id: string) => {
     e.preventDefault();
+    if (draggedId && isDropForbidden(draggedId, id)) {
+      e.dataTransfer.dropEffect = 'none';
+      setDragOverId(null);
+      return;
+    }
     e.dataTransfer.dropEffect = 'move';
     setDragOverId(id);
   };
@@ -398,29 +480,44 @@ export function Layout() {
 
   const handleDrop = (e: React.DragEvent, targetId: string) => {
     e.preventDefault();
-    if (draggedId === null || draggedId === targetId) {
+    if (draggedId === null || isDropForbidden(draggedId, targetId)) {
       setDraggedId(null);
       setDragOverId(null);
       return;
     }
 
     const currentOrder = [...orderedSidebarIds];
-    const draggedIndex = currentOrder.indexOf(draggedId);
-    const targetIndex = currentOrder.indexOf(targetId);
 
-    if (draggedIndex === -1 || targetIndex === -1) {
-      setDraggedId(null);
-      setDragOverId(null);
-      return;
+    if (isGroupDragId(draggedId) && isGroupDragId(targetId)) {
+      // Group-to-group reorder: extract every item of source group,
+      // re-insert as one block at the target group's first position.
+      const srcGroup = stripGroupDragId(draggedId);
+      const tgtGroup = stripGroupDragId(targetId);
+      const srcItems = currentOrder.filter((id) => getItemGroup(id) === srcGroup);
+      const rest = currentOrder.filter((id) => getItemGroup(id) !== srcGroup);
+      const tgtFirstIdx = rest.findIndex((id) => getItemGroup(id) === tgtGroup);
+      if (srcItems.length === 0 || tgtFirstIdx === -1) {
+        setDraggedId(null);
+        setDragOverId(null);
+        return;
+      }
+      const newOrder = [...rest.slice(0, tgtFirstIdx), ...srcItems, ...rest.slice(tgtFirstIdx)];
+      setSidebarOrder(newOrder);
+      saveSidebarOrder(newOrder);
+    } else {
+      // Item-to-item within same group (forbidden case already filtered).
+      const draggedIndex = currentOrder.indexOf(draggedId);
+      const targetIndex = currentOrder.indexOf(targetId);
+      if (draggedIndex === -1 || targetIndex === -1) {
+        setDraggedId(null);
+        setDragOverId(null);
+        return;
+      }
+      currentOrder.splice(draggedIndex, 1);
+      currentOrder.splice(targetIndex, 0, draggedId);
+      setSidebarOrder(currentOrder);
+      saveSidebarOrder(currentOrder);
     }
-
-    // Reorder
-    currentOrder.splice(draggedIndex, 1);
-    currentOrder.splice(targetIndex, 0, draggedId);
-
-    // Save to localStorage and update state
-    setSidebarOrder(currentOrder);
-    saveSidebarOrder(currentOrder);
 
     setDraggedId(null);
     setDragOverId(null);
@@ -431,10 +528,14 @@ export function Layout() {
     setDragOverId(null);
   };
 
-  // Show update banner if update available and not dismissed for this version
+  // Show update banner if update available and not dismissed for this version.
+  // HA-addon installs are suppressed — the HA Supervisor surfaces its own
+  // update notification natively, so our banner would be duplicate noise
+  // linking to a page that just says "update via HA".
   const showUpdateBanner = updateCheck?.update_available &&
     updateCheck.latest_version &&
-    updateCheck.latest_version !== dismissedUpdateVersion;
+    updateCheck.latest_version !== dismissedUpdateVersion &&
+    !updateCheck.is_ha_addon;
 
   const dismissUpdateBanner = () => {
     if (updateCheck?.latest_version) {
@@ -618,15 +719,13 @@ export function Layout() {
               // handles default ordering AND degrades gracefully when
               // the user drag-drop reorders cross-group (the divider
               // simply follows the new adjacency).
-              const currentGroup: NavGroup | 'external' = isExternal
-                ? 'external'
-                : (navItemsMap.get(id)?.group ?? 'operations');
+              // Group adjacency uses the same ``getItemGroup`` resolver as
+              // the drag-and-drop validator so an external link that the
+              // operator moved into e.g. ``workshop`` renders inside that
+              // section instead of always getting the ``external`` bucket.
+              const currentGroup = getItemGroup(id);
               const prevId = index > 0 ? orderedSidebarIds[index - 1] : null;
-              const prevGroup: NavGroup | 'external' | null = prevId
-                ? isExternalLinkId(prevId)
-                  ? 'external'
-                  : (navItemsMap.get(prevId)?.group ?? 'operations')
-                : null;
+              const prevGroup: NavGroup | 'external' | null = prevId ? getItemGroup(prevId) : null;
               const showGroupHeader = currentGroup !== prevGroup;
               const groupLabel = showGroupHeader
                 ? t(`nav.group.${currentGroup}`)
@@ -642,15 +741,38 @@ export function Layout() {
                 return (
                   <Fragment key={id}>
                   {showGroupHeader && (
-                    <li className="pointer-events-none select-none">
-                      {showText ? (
-                        <div className={`text-[10px] uppercase tracking-wider text-bambu-gray font-medium px-3 ${index === 0 ? 'pt-0' : 'pt-2'}`}>
-                          {groupLabel}
-                        </div>
-                      ) : (
+                    showText ? (
+                      (() => {
+                        const groupDragId = `${GROUP_DRAG_PREFIX}${currentGroup}`;
+                        return (
+                          <li
+                            draggable
+                            onDragStart={(e) => handleDragStart(e, groupDragId)}
+                            onDragOver={(e) => handleDragOver(e, groupDragId)}
+                            onDragLeave={handleDragLeave}
+                            onDrop={(e) => handleDrop(e, groupDragId)}
+                            onDragEnd={handleDragEnd}
+                            className={`relative select-none cursor-grab active:cursor-grabbing group/grp ${
+                              draggedId === groupDragId ? 'opacity-50' : ''
+                            } ${
+                              dragOverId === groupDragId && draggedId !== groupDragId
+                                ? 'before:absolute before:left-0 before:right-0 before:top-0 before:h-0.5 before:bg-bambu-green'
+                                : ''
+                            }`}
+                            title={t('nav.dragGroupHint')}
+                          >
+                            <div className={`flex items-center gap-1 text-[10px] uppercase tracking-wider text-bambu-gray font-medium px-3 ${index === 0 ? 'pt-0' : 'pt-2'}`}>
+                              <GripVertical className="w-3 h-3 opacity-0 group-hover/grp:opacity-50 -ml-1" />
+                              <span>{groupLabel}</span>
+                            </div>
+                          </li>
+                        );
+                      })()
+                    ) : (
+                      <li className="pointer-events-none select-none">
                         <div className={`border-t border-bambu-dark-tertiary mx-2 ${index === 0 ? '' : 'mt-1'}`} />
-                      )}
-                    </li>
+                      </li>
+                    )
                   )}
                   <li
                     draggable
@@ -733,15 +855,38 @@ export function Layout() {
                 return (
                   <Fragment key={id}>
                   {showGroupHeader && (
-                    <li className="pointer-events-none select-none">
-                      {showText ? (
-                        <div className={`text-[10px] uppercase tracking-wider text-bambu-gray font-medium px-3 ${index === 0 ? 'pt-0' : 'pt-2'}`}>
-                          {groupLabel}
-                        </div>
-                      ) : (
+                    showText ? (
+                      (() => {
+                        const groupDragId = `${GROUP_DRAG_PREFIX}${currentGroup}`;
+                        return (
+                          <li
+                            draggable
+                            onDragStart={(e) => handleDragStart(e, groupDragId)}
+                            onDragOver={(e) => handleDragOver(e, groupDragId)}
+                            onDragLeave={handleDragLeave}
+                            onDrop={(e) => handleDrop(e, groupDragId)}
+                            onDragEnd={handleDragEnd}
+                            className={`relative select-none cursor-grab active:cursor-grabbing group/grp ${
+                              draggedId === groupDragId ? 'opacity-50' : ''
+                            } ${
+                              dragOverId === groupDragId && draggedId !== groupDragId
+                                ? 'before:absolute before:left-0 before:right-0 before:top-0 before:h-0.5 before:bg-bambu-green'
+                                : ''
+                            }`}
+                            title={t('nav.dragGroupHint')}
+                          >
+                            <div className={`flex items-center gap-1 text-[10px] uppercase tracking-wider text-bambu-gray font-medium px-3 ${index === 0 ? 'pt-0' : 'pt-2'}`}>
+                              <GripVertical className="w-3 h-3 opacity-0 group-hover/grp:opacity-50 -ml-1" />
+                              <span>{groupLabel}</span>
+                            </div>
+                          </li>
+                        );
+                      })()
+                    ) : (
+                      <li className="pointer-events-none select-none">
                         <div className={`border-t border-bambu-dark-tertiary mx-2 ${index === 0 ? '' : 'mt-1'}`} />
-                      )}
-                    </li>
+                      </li>
+                    )
                   )}
                   <li
                     draggable

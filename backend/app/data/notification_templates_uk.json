@@ -129,6 +129,16 @@
     "title_template": "{app_name} - Скидання пароля",
     "body_template": "Привіт, {username}!\n\nВаш пароль було скинуто.\nНовий пароль: {password}\n\nУвійти: {login_url}"
   },
+  "stock_reorder_alert": {
+    "name": "Поріг повторного замовлення",
+    "title_template": "Час замовляти: {material}",
+    "body_template": "{material} ({brand}) досяг точки повторного замовлення.\nЗалишок: {stock_g}г | Темп: {rate_g_day}г/день | Днів лишилось: {days_left}\nЗамовляй зараз, щоб не залишитися без матеріалу."
+  },
+  "stock_break_alert": {
+    "name": "Ризик закінчення матеріалу",
+    "title_template": "Ризик закінчення: {material}",
+    "body_template": "{material} ({brand}) закінчиться до прибуття поповнення.\nЗалишок: {stock_g}г | Темп: {rate_g_day}г/день | Термін постачання: {lead_time_days}д\nЛишилось лише {days_left}д запасу — замовляй негайно."
+  },
   "user_print_start": {
     "name": "Друк користувача розпочато",
     "title_template": "Ваш друк розпочато",

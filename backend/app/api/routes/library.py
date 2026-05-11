@@ -2027,7 +2027,9 @@ async def slice_and_persist(
         if target_folder_for_inherit is not None:
             await inherit_folder_projects(db, new_file, target_folder_for_inherit)
     await db.commit()
-    await db.refresh(new_file)
+    # No refresh: expire_on_commit=False keeps id/filename accessible, and
+    # refreshing here flakes under pytest-xdist when teardown of a sibling
+    # test races the SELECT. Upstream Bambuddy b42aaca5.
 
     return SliceResponse(
         library_file_id=new_file.id,

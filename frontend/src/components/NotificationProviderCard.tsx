@@ -284,6 +284,14 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                             <span
                                 className="px-2 py-0.5 bg-amber-500/20 text-amber-300 text-xs rounded">{t('notifications.missingSpoolAssignmentLabel')}</span>
                         )}
+                        {!isTelegram && provider.on_stock_reorder_alert && (
+                            <span
+                                className="px-2 py-0.5 bg-lime-500/20 text-lime-400 text-xs rounded">{t('notifications.stockReorderAlert')}</span>
+                        )}
+                        {!isTelegram && provider.on_stock_break_alert && (
+                            <span
+                                className="px-2 py-0.5 bg-red-600/20 text-red-300 text-xs rounded">{t('notifications.stockBreakAlert')}</span>
+                        )}
                         {!isTelegram && provider.quiet_hours_enabled && (
                             <span
                                 className="px-2 py-0.5 bg-indigo-500/20 text-indigo-400 text-xs rounded flex items-center gap-1">
@@ -591,6 +599,33 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                                     <Toggle
                                         checked={provider.on_ams_ht_temperature_high ?? false}
                                         onChange={(checked) => updateMutation.mutate({on_ams_ht_temperature_high: checked})}
+                                    />
+                                </div>
+                            </div>
+
+                            {/* Inventory Stock Alerts (upstream #1184; scaffold — UI-only today) */}
+                            <div className="space-y-2">
+                                <p className="text-xs text-bambu-gray uppercase tracking-wide">{t('notifications.inventoryAlerts')}</p>
+
+                                <div className="flex items-center justify-between">
+                                    <div>
+                                        <p className="text-sm text-white">{t('notifications.stockReorderAlert')}</p>
+                                        <p className="text-xs text-bambu-gray">{t('notifications.stockReorderAlertDescription')}</p>
+                                    </div>
+                                    <Toggle
+                                        checked={provider.on_stock_reorder_alert ?? false}
+                                        onChange={(checked) => updateMutation.mutate({on_stock_reorder_alert: checked})}
+                                    />
+                                </div>
+
+                                <div className="flex items-center justify-between">
+                                    <div>
+                                        <p className="text-sm text-white">{t('notifications.stockBreakAlert')}</p>
+                                        <p className="text-xs text-bambu-gray">{t('notifications.stockBreakAlertDescription')}</p>
+                                    </div>
+                                    <Toggle
+                                        checked={provider.on_stock_break_alert ?? false}
+                                        onChange={(checked) => updateMutation.mutate({on_stock_break_alert: checked})}
                                     />
                                 </div>
                             </div>

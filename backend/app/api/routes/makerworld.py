@@ -28,10 +28,15 @@ from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.library import LibraryFile, LibraryFolder
+from backend.app.models.library_file_makerworld_meta import LibraryFileMakerworldMeta
 from backend.app.models.user import User
+from backend.app.schemas.library_file_makerworld_meta import LibraryFileMakerworldMetaResponse
 from backend.app.schemas.makerworld import (
+    MakerWorldAlreadyImportedEntry,
     MakerWorldImportRequest,
     MakerWorldImportResponse,
+    MakerWorldImportsPage,
+    MakerWorldImportsPaginationMeta,
     MakerWorldRecentImport,
     MakerWorldResolvedModel,
     MakerWorldResolveRequest,
@@ -46,6 +51,7 @@ from backend.app.services.makerworld import (
     MakerWorldUnavailableError,
     MakerWorldUrlError,
 )
+from backend.app.services.makerworld_meta import build_meta_dict, download_covers
 
 logger = logging.getLogger(__name__)
 
@@ -222,12 +228,43 @@ async def resolve_url(
     # to mark imported plates in the instance picker.
     model_prefix = _canonical_url(model_id)
     existing_q = await db.execute(
-        select(LibraryFile.id).where(
+        select(
+            LibraryFile.id,
+            LibraryFile.source_url,
+            LibraryFile.folder_id,
+            LibraryFile.filename,
+        ).where(
             (LibraryFile.source_url == model_prefix) | (LibraryFile.source_url.like(f"{model_prefix}#profileId-%")),
             LibraryFile.deleted_at.is_(None),
         )
     )
-    already_imported = [row[0] for row in existing_q.all()]
+    already_imported_rows = list(existing_q.all())
+    already_imported = [row[0] for row in already_imported_rows]
+
+    # Build the per-variant dedupe map by re-parsing the source_url. The
+    # ``#profileId-N`` fragment is appended by ``_canonical_url`` — pulling
+    # it out here keeps the route as the only place that needs to know
+    # the URL shape (the frontend can stay shape-agnostic).
+    import re as _re
+
+    profile_re = _re.compile(rf"^{_re.escape(model_prefix)}#profileId-(\d+)$")
+    already_imported_by_profile: dict[str, MakerWorldAlreadyImportedEntry] = {}
+    for lib_id, src, folder_id_val, filename_val in already_imported_rows:
+        entry = MakerWorldAlreadyImportedEntry(
+            library_file_id=lib_id,
+            folder_id=folder_id_val,
+            filename=filename_val,
+        )
+        if src == model_prefix:
+            # Legacy whole-model import — keep under the conventional "0"
+            # bucket so the frontend can surface a "this model was imported
+            # before any plate was promoted" badge.
+            already_imported_by_profile.setdefault("0", entry)
+            continue
+        m = profile_re.match(src or "")
+        if m:
+            # str keys: JSON doesn't allow int dict keys.
+            already_imported_by_profile.setdefault(m.group(1), entry)
 
     return MakerWorldResolvedModel(
         model_id=model_id,
@@ -235,6 +272,7 @@ async def resolve_url(
         design=design,
         instances=instances,
         already_imported_library_ids=already_imported,
+        already_imported_by_profile_id=already_imported_by_profile,
     )
 
 
@@ -380,8 +418,8 @@ async def import_instance(
     except MakerWorldError as exc:
         await service.close()
         raise _map_service_error(exc) from exc
-    finally:
-        await service.close()
+    # NOTE: service stays open here — the post-import meta block below
+    # reuses it for /instances + cover downloads, then closes it itself.
 
     # Prefer the server-provided human-readable filename; the signed URL's
     # path ends in a UUID that's not meaningful to users. Decode the
@@ -399,12 +437,259 @@ async def import_instance(
         source_url=source_url,
     )
 
+    # Stash detailed MakerWorld metadata + download covers locally. Reuses
+    # the same service instance so we don't make a third client. Wrapped
+    # in a separate try so a meta failure never breaks the import — the
+    # 3MF is already on disk and the LibraryFile row is committed.
+    if not was_existing:
+        try:
+            envelope = await service.get_design_instances(body.model_id)
+            instances = envelope.get("hits") if isinstance(envelope.get("hits"), list) else []
+            variant_cover_url: str | None = None
+            for inst in instances or []:
+                if isinstance(inst, dict) and inst.get("profileId") == profile_id:
+                    cov = inst.get("cover")
+                    if isinstance(cov, str):
+                        variant_cover_url = cov
+                    break
+            meta_dict = build_meta_dict(
+                library_file_id=library_file.id,
+                design=design,
+                instances=instances or [],
+                profile_id=profile_id,
+                variant_url=source_url,
+                model_id_alphanumeric=alphanumeric_model_id,
+            )
+            cover_url = design.get("coverUrl") if isinstance(design.get("coverUrl"), str) else None
+            cover_rel, variant_cover_rel = await download_covers(
+                service,
+                library_file_id=library_file.id,
+                cover_url=cover_url,
+                variant_cover_url=variant_cover_url,
+            )
+            db.add(
+                LibraryFileMakerworldMeta(
+                    **meta_dict,
+                    cover_path=cover_rel,
+                    variant_cover_path=variant_cover_rel,
+                )
+            )
+            await db.commit()
+        except Exception as exc:
+            logger.warning("MakerWorld meta save failed for library_file_id=%s: %s", library_file.id, exc)
+            await db.rollback()
+        finally:
+            # close the service before returning — original code closed
+            # it before save_3mf_bytes_to_library, but we now need it for
+            # cover downloads, so the close moves here.
+            await service.close()
+    else:
+        await service.close()
+
     return MakerWorldImportResponse(
         library_file_id=library_file.id,
         filename=library_file.filename,
         folder_id=library_file.folder_id,
         profile_id=profile_id,
         was_existing=was_existing,
+    )
+
+
+def _row_to_recent_import(row: LibraryFile, meta: LibraryFileMakerworldMeta | None) -> MakerWorldRecentImport:
+    """Project a (library_file, meta?) pair into the wire shape."""
+    return MakerWorldRecentImport(
+        library_file_id=row.id,
+        filename=row.filename,
+        folder_id=row.folder_id,
+        thumbnail_path=row.thumbnail_path,
+        source_url=row.source_url,
+        created_at=row.created_at.isoformat() if row.created_at else "",
+        title=meta.title if meta else None,
+        author_name=meta.author_name if meta else None,
+        sliced_for=meta.sliced_for if meta else None,
+        profile_id=meta.profile_id if meta else None,
+        has_cover=bool(meta and meta.cover_path),
+        has_variant_cover=bool(meta and meta.variant_cover_path),
+    )
+
+
+@router.post(
+    "/imports/{library_file_id}/redownload",
+    response_model=MakerWorldImportResponse,
+)
+async def redownload_import(
+    library_file_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = RequirePermission(Permission.MAKERWORLD_IMPORT),
+):
+    """Re-download a previously imported MakerWorld variant — overwrites
+    on-disk bytes, refreshes the meta row, re-downloads covers.
+
+    Keeps the same ``library_file_id`` (and FK references — queue items,
+    project links, archives) intact: only the file bytes + metadata are
+    refreshed. The dedupe-skip on ``/import`` deliberately means clicking
+    Import again is a no-op; users who actually want fresh bytes (the
+    creator pushed an update on MakerWorld) come through this endpoint.
+    """
+    import re as _re
+    from pathlib import Path
+
+    from backend.app.api.routes.library import calculate_file_hash, to_absolute_path
+    from backend.app.services.archive import ThreeMFParser
+    from backend.app.services.makerworld_meta import build_meta_dict, download_covers
+
+    lib = (await db.execute(LibraryFile.active().where(LibraryFile.id == library_file_id))).scalar_one_or_none()
+    if lib is None:
+        raise HTTPException(status_code=404, detail="Library file not found")
+    if lib.source_type != _SOURCE_TYPE or not lib.source_url:
+        raise HTTPException(
+            status_code=400,
+            detail="This library file is not a MakerWorld import",
+        )
+
+    # Parse model_id + (optional) profile_id back out of the canonical URL.
+    # _canonical_url is the only producer of this shape, so the regex is
+    # stable.
+    match = _re.match(
+        r"^https://makerworld\.com/models/(\d+)(?:#profileId-(\d+))?$",
+        lib.source_url,
+    )
+    if not match:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unparseable MakerWorld source_url: {lib.source_url!r}",
+        )
+    model_id = int(match.group(1))
+    profile_id = int(match.group(2)) if match.group(2) else None
+
+    service = await _build_service(db, current_user)
+    try:
+        try:
+            design = await service.get_design(model_id)
+        except MakerWorldError as exc:
+            raise _map_service_error(exc) from exc
+
+        alphanumeric_model_id = design.get("modelId")
+        if not isinstance(alphanumeric_model_id, str) or not alphanumeric_model_id:
+            raise HTTPException(
+                status_code=502,
+                detail="MakerWorld design metadata missing the modelId field",
+            )
+
+        if profile_id is None:
+            # Legacy whole-model rows have no profile_id in the URL. Pick
+            # the first available variant (same fallback the import-path
+            # uses) so we still get fresh bytes.
+            for instance in design.get("instances") or []:
+                pid = instance.get("profileId")
+                if isinstance(pid, int) and pid > 0:
+                    profile_id = pid
+                    break
+            if profile_id is None:
+                raise HTTPException(
+                    status_code=502,
+                    detail="MakerWorld returned no instances for this model",
+                )
+
+        try:
+            manifest = await service.get_profile_download(profile_id, alphanumeric_model_id)
+        except MakerWorldError as exc:
+            raise _map_service_error(exc) from exc
+
+        signed_url = manifest.get("url")
+        if not signed_url or not isinstance(signed_url, str):
+            raise HTTPException(status_code=502, detail="MakerWorld did not return a download URL")
+
+        try:
+            file_bytes, _download_filename = await service.download_3mf(signed_url)
+        except MakerWorldError as exc:
+            raise _map_service_error(exc) from exc
+
+        # Overwrite the existing file on disk. We deliberately keep
+        # ``lib.file_path`` + ``lib.filename`` unchanged so any external
+        # references (queue items pointing at the on-disk path, project
+        # BOM links, etc.) stay valid.
+        abs_path = to_absolute_path(lib.file_path)
+        if abs_path is None:
+            raise HTTPException(status_code=500, detail="Library file has no resolvable on-disk path")
+        with open(abs_path, "wb") as fh:
+            fh.write(file_bytes)
+
+        # Refresh hash / size / metadata. Mirrors the on-import branch
+        # in ``save_3mf_bytes_to_library`` but operates on the existing row.
+        lib.file_size = len(file_bytes)
+        lib.file_hash = calculate_file_hash(Path(abs_path))
+        try:
+            parser = ThreeMFParser(str(abs_path))
+            raw_metadata = parser.parse()
+            from backend.app.api.routes.library import _clean_3mf_metadata
+
+            lib.file_metadata = _clean_3mf_metadata(raw_metadata)
+        except Exception:  # noqa: BLE001
+            logger.debug("redownload: 3MF re-parse failed (non-critical)")
+
+        # Refresh meta row + covers. We reuse the open ``service`` for
+        # the /instances call + cover downloads.
+        try:
+            envelope = await service.get_design_instances(model_id)
+            instances = envelope.get("hits") if isinstance(envelope.get("hits"), list) else []
+            variant_cover_url: str | None = None
+            for inst in instances or []:
+                if isinstance(inst, dict) and inst.get("profileId") == profile_id:
+                    cov = inst.get("cover")
+                    if isinstance(cov, str):
+                        variant_cover_url = cov
+                    break
+            meta_dict = build_meta_dict(
+                library_file_id=lib.id,
+                design=design,
+                instances=instances or [],
+                profile_id=profile_id,
+                variant_url=lib.source_url,
+                model_id_alphanumeric=alphanumeric_model_id,
+            )
+            cover_url = design.get("coverUrl") if isinstance(design.get("coverUrl"), str) else None
+            cover_rel, variant_cover_rel = await download_covers(
+                service,
+                library_file_id=lib.id,
+                cover_url=cover_url,
+                variant_cover_url=variant_cover_url,
+            )
+
+            existing_meta = (
+                await db.execute(
+                    select(LibraryFileMakerworldMeta).where(LibraryFileMakerworldMeta.library_file_id == lib.id)
+                )
+            ).scalar_one_or_none()
+            if existing_meta is None:
+                db.add(
+                    LibraryFileMakerworldMeta(
+                        **meta_dict,
+                        cover_path=cover_rel,
+                        variant_cover_path=variant_cover_rel,
+                    )
+                )
+            else:
+                for k, v in meta_dict.items():
+                    if k == "library_file_id":
+                        continue
+                    setattr(existing_meta, k, v)
+                existing_meta.cover_path = cover_rel
+                existing_meta.variant_cover_path = variant_cover_rel
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("redownload: meta refresh failed for library_file_id=%s: %s", lib.id, exc)
+
+        await db.commit()
+        await db.refresh(lib)
+    finally:
+        await service.close()
+
+    return MakerWorldImportResponse(
+        library_file_id=lib.id,
+        filename=lib.filename,
+        folder_id=lib.folder_id,
+        profile_id=profile_id,
+        was_existing=True,
     )
 
 
@@ -416,9 +701,9 @@ async def recent_imports(
 ):
     """Last N MakerWorld imports, newest first.
 
-    Surfaces files whose ``source_type`` is ``"makerworld"`` so the MakerWorld
-    page can show a 'Recent imports' sidebar that persists across resolves.
-    ``limit`` is clamped to ``[1, 50]`` to keep payloads sensible.
+    Compact summary for "recent" widgets; the History tab uses the
+    paginated :func:`list_imports` endpoint below instead. ``limit`` is
+    clamped to ``[1, 50]`` to keep payloads sensible.
     """
     _ = current_user  # permission gate only
     capped = max(1, min(50, int(limit)))
@@ -428,15 +713,216 @@ async def recent_imports(
         .order_by(LibraryFile.created_at.desc())
         .limit(capped)
     )
-    rows = result.scalars().all()
-    return [
-        MakerWorldRecentImport(
-            library_file_id=row.id,
-            filename=row.filename,
-            folder_id=row.folder_id,
-            thumbnail_path=row.thumbnail_path,
-            source_url=row.source_url,
-            created_at=row.created_at.isoformat() if row.created_at else "",
-        )
-        for row in rows
+    rows = list(result.scalars().all())
+    if not rows:
+        return []
+    meta_by_id: dict[int, LibraryFileMakerworldMeta] = {}
+    meta_rows = await db.execute(
+        select(LibraryFileMakerworldMeta).where(LibraryFileMakerworldMeta.library_file_id.in_([r.id for r in rows]))
+    )
+    for meta in meta_rows.scalars().all():
+        meta_by_id[meta.library_file_id] = meta
+    return [_row_to_recent_import(row, meta_by_id.get(row.id)) for row in rows]
+
+
+@router.get("/imports", response_model=MakerWorldImportsPage)
+async def list_imports(
+    page: int = Query(1, ge=1),
+    per_page: int = Query(24, ge=1, le=200),
+    search: str | None = Query(None, description="Match against filename / meta title / author"),
+    sort_by: str = Query("date-desc", description="One of date-desc / date-asc / name-asc / name-desc"),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.MAKERWORLD_VIEW),
+):
+    """Paginated, searchable, sortable MakerWorld import history.
+
+    Drives the "Історія" tab grid on the MakerWorld page. Joins
+    ``library_files`` with ``library_file_makerworld_meta`` so search can
+    match meta fields (title, author) on top of the raw filename. Sort
+    options mirror the Archives page.
+    """
+    from sqlalchemy import or_
+
+    base_filters = [
+        LibraryFile.source_type == _SOURCE_TYPE,
+        LibraryFile.deleted_at.is_(None),
     ]
+
+    if search:
+        like = f"%{search.strip()}%"
+        base_filters.append(
+            or_(
+                LibraryFile.filename.ilike(like),
+                LibraryFileMakerworldMeta.title.ilike(like),
+                LibraryFileMakerworldMeta.author_name.ilike(like),
+            )
+        )
+
+    # We always LEFT JOIN meta so a search on meta fields can hit it; rows
+    # without meta still surface (their meta columns are NULL → won't
+    # match the OR-clause, which is correct).
+    query_base = (
+        select(LibraryFile)
+        .outerjoin(
+            LibraryFileMakerworldMeta,
+            LibraryFileMakerworldMeta.library_file_id == LibraryFile.id,
+        )
+        .where(*base_filters)
+    )
+
+    # Total count for pagination meta — same WHERE/JOIN, no ORDER/LIMIT.
+    from sqlalchemy import func as _func
+
+    count_q = (
+        select(_func.count())
+        .select_from(
+            LibraryFile.__table__.outerjoin(
+                LibraryFileMakerworldMeta.__table__,
+                LibraryFileMakerworldMeta.library_file_id == LibraryFile.id,
+            )
+        )
+        .where(*base_filters)
+    )
+    total = (await db.execute(count_q)).scalar() or 0
+
+    sort_map = {
+        "date-desc": LibraryFile.created_at.desc(),
+        "date-asc": LibraryFile.created_at.asc(),
+        "name-asc": LibraryFile.filename.asc(),
+        "name-desc": LibraryFile.filename.desc(),
+    }
+    order_clause = sort_map.get(sort_by, sort_map["date-desc"])
+
+    offset = (page - 1) * per_page
+    rows_q = query_base.order_by(order_clause).limit(per_page).offset(offset)
+    rows = list((await db.execute(rows_q)).scalars().all())
+
+    meta_by_id: dict[int, LibraryFileMakerworldMeta] = {}
+    if rows:
+        meta_rows = await db.execute(
+            select(LibraryFileMakerworldMeta).where(LibraryFileMakerworldMeta.library_file_id.in_([r.id for r in rows]))
+        )
+        for meta in meta_rows.scalars().all():
+            meta_by_id[meta.library_file_id] = meta
+
+    import math as _math
+
+    last_page = max(1, _math.ceil(total / per_page)) if total else 1
+
+    return MakerWorldImportsPage(
+        data=[_row_to_recent_import(row, meta_by_id.get(row.id)) for row in rows],
+        meta=MakerWorldImportsPaginationMeta(
+            total=total,
+            current_page=page,
+            per_page=per_page,
+            last_page=last_page,
+        ),
+    )
+
+
+@router.get(
+    "/imports/{library_file_id}/meta",
+    response_model=LibraryFileMakerworldMetaResponse,
+)
+async def get_makerworld_meta(
+    library_file_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.MAKERWORLD_VIEW),
+):
+    """Get the MakerWorld metadata row for a library file."""
+    meta = (
+        await db.execute(
+            select(LibraryFileMakerworldMeta).where(LibraryFileMakerworldMeta.library_file_id == library_file_id)
+        )
+    ).scalar_one_or_none()
+    if meta is None:
+        raise HTTPException(status_code=404, detail="No MakerWorld metadata for this library file")
+    return LibraryFileMakerworldMetaResponse(
+        library_file_id=meta.library_file_id,
+        title=meta.title,
+        description=meta.description,
+        author_name=meta.author_name,
+        author_profile_url=meta.author_profile_url,
+        license=meta.license,
+        original_design_id=meta.original_design_id,
+        variant_title=meta.variant_title,
+        variant_description=meta.variant_description,
+        variant_url=meta.variant_url,
+        profile_id=meta.profile_id,
+        sliced_for=meta.sliced_for,
+        compatible_models=meta.compatible_models,
+        needs_ams=meta.needs_ams,
+        material_count=meta.material_count,
+        materials=meta.materials,
+        model_id_alphanumeric=meta.model_id_alphanumeric,
+        has_cover=bool(meta.cover_path),
+        has_variant_cover=bool(meta.variant_cover_path),
+        imported_at=meta.imported_at,
+    )
+
+
+def _serve_local_cover(rel_path: str | None) -> Response:
+    """Serve a cover image file from disk with proper Content-Type."""
+    if not rel_path:
+        raise HTTPException(status_code=404, detail="Cover not available")
+    from pathlib import Path as _Path
+
+    from backend.app.core.config import settings as _settings
+
+    abs_path = _Path(_settings.base_dir) / rel_path
+    if not abs_path.exists() or not abs_path.is_file():
+        raise HTTPException(status_code=404, detail="Cover file missing")
+    ext = abs_path.suffix.lower()
+    mime = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+    }.get(ext, "application/octet-stream")
+    return Response(content=abs_path.read_bytes(), media_type=mime, headers={"Cache-Control": "private, max-age=86400"})
+
+
+@router.get("/imports/{library_file_id}/cover")
+async def get_makerworld_cover(
+    library_file_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Serve the model-level cover image saved locally during import.
+
+    No ``RequirePermission`` here — ``<img src>`` browser fetches can't
+    carry an Authorization header. The auth-middleware whitelist treats
+    URL paths containing ``/cover`` as public (same pattern used by
+    library file thumbnails / printer covers). The data exposed is the
+    same image MakerWorld serves publicly on their site, so this isn't a
+    privacy regression.
+    """
+    meta = (
+        await db.execute(
+            select(LibraryFileMakerworldMeta.cover_path).where(
+                LibraryFileMakerworldMeta.library_file_id == library_file_id
+            )
+        )
+    ).scalar_one_or_none()
+    return _serve_local_cover(meta)
+
+
+@router.get("/imports/{library_file_id}/cover-variant")
+async def get_makerworld_variant_cover(
+    library_file_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Serve the variant (plate-level) cover image saved locally.
+
+    Path intentionally ends with ``cover-variant`` (not ``variant-cover``)
+    so the ``/cover`` substring still matches the auth-middleware public
+    whitelist — same reasoning as :func:`get_makerworld_cover`.
+    """
+    meta = (
+        await db.execute(
+            select(LibraryFileMakerworldMeta.variant_cover_path).where(
+                LibraryFileMakerworldMeta.library_file_id == library_file_id
+            )
+        )
+    ).scalar_one_or_none()
+    return _serve_local_cover(meta)

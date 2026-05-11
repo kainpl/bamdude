@@ -7,16 +7,19 @@ import {
   Plus, Loader2, Trash2, Archive, RotateCcw, Edit2, Package,
   Search, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight,
   TrendingDown, Layers, Printer, AlertTriangle, X, Clock, LayoutGrid, TableProperties, Columns,
-  ArrowUp, ArrowDown, ArrowUpDown, Group, ChevronDown, Check, RefreshCw,
+  ArrowUp, ArrowDown, ArrowUpDown, Group, ChevronDown, Check, RefreshCw, Disc3, Copy,
+  TrendingUp, Lock,
 } from 'lucide-react';
+import { ForecastPanel } from '../components/ForecastPanel';
 import { api, ApiError } from '../api/client';
 import type { InventorySpool, SpoolAssignment, SpoolCatalogEntry } from '../api/client';
 import { Button } from '../components/Button';
-import { SpoolFormModal } from '../components/SpoolFormModal';
+import { SpoolFormModal, type SpoolFormMode } from '../components/SpoolFormModal';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { ColumnConfigModal, type ColumnConfig } from '../components/ColumnConfigModal';
 import { LabelTemplatePickerModal } from '../components/LabelTemplatePickerModal';
 import { useToast } from '../contexts/ToastContext';
+import { useAuth } from '../contexts/AuthContext';
 import { resolveSpoolColorName } from '../utils/colors';
 import { getCurrencySymbol } from '../utils/currency';
 import { formatDateInput, parseUTCDate, type DateFormat } from '../utils/date';
@@ -30,7 +33,7 @@ import {
 
 type ArchiveFilter = 'active' | 'archived';
 type UsageFilter = 'all' | 'used' | 'new' | 'lowstock';
-type ViewMode = 'table' | 'cards';
+type ViewMode = 'table' | 'cards' | 'forecast';
 type SortDirection = 'asc' | 'desc';
 type SortState = { column: string; direction: SortDirection } | null;
 
@@ -610,8 +613,12 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
+  const { hasPermission, loading: authLoading } = useAuth();
+  // Forecast tab gated on perm + non-Spoolman mode (Spoolman proxies spools, so we
+  // can't read spool_usage_history through the iframe).
+  const canViewForecast = !authLoading && !spoolmanMode && hasPermission('inventory:forecast_read');
   const [searchParams, setSearchParams] = useSearchParams();
-  const [formModal, setFormModal] = useState<{ spool?: InventorySpool | null } | null>(null);
+  const [formModal, setFormModal] = useState<{ spool?: InventorySpool | null; mode: SpoolFormMode } | null>(null);
   const deepLinkHandled = useRef(false);
   const [confirmAction, setConfirmAction] = useState<{ type: 'delete' | 'archive'; spoolId: number } | null>(null);
   // Label printing (B.1 #809). null = closed; otherwise the IDs to pre-check.
@@ -644,10 +651,10 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
       const stored = localStorage.getItem('bamdude-inventory-pageSize');
       if (stored) {
         const n = Number(stored);
-        if ([15, 30, 50, 100, -1].includes(n)) return n;
+        if ([12, 24, 48, 96, -1].includes(n)) return n;
       }
     } catch { /* ignore */ }
-    return 15;
+    return 24;
   });
 
   const { data: settings } = useQuery({
@@ -706,14 +713,14 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     // Case 1: spool is already in the fetched list
     if (spoolmanModeReady && deepLinkSpoolId && deepLinkInList) {
       clearDeepLinkParam();
-      setFormModal({ spool: deepLinkInList });
+      setFormModal({ spool: deepLinkInList, mode: 'edit' });
       return;
     }
 
     // Case 2: spool was fetched individually
     if (deepLinkSpool) {
       clearDeepLinkParam();
-      setFormModal({ spool: deepLinkSpool });
+      setFormModal({ spool: deepLinkSpool, mode: 'edit' });
       return;
     }
 
@@ -1202,7 +1209,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
       <div className="flex items-center justify-between">
         <div>
           <div className="flex items-center gap-3">
-            {/*<Disc3 className="w-6 h-6 text-bambu-green" />*/}
+            <Disc3 className="w-6 h-6 text-bambu-green" />
             <h1 className="text-2xl font-bold text-white">{t('inventory.title')}</h1>
           </div>
           <p className="text-sm text-bambu-gray">{t('inventory.noSpools').split('.')[0] ? '' : ''}</p>
@@ -1224,7 +1231,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
             <Printer className="w-4 h-4" />
             {t('inventory.labels.printLabels')}
           </Button>
-          <Button onClick={() => setFormModal({ spool: null })}>
+          <Button onClick={() => setFormModal({ spool: null, mode: 'create' })}>
             <Plus className="w-4 h-4" />
             {t('inventory.addSpool')}
           </Button>
@@ -1416,6 +1423,22 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
               <LayoutGrid className="w-4 h-4" />
               <span className="hidden sm:inline">{t('inventory.cards')}</span>
             </button>
+            {/* Forecast tab — gated on perm + non-Spoolman mode (upstream #1184) */}
+            {!spoolmanMode && (
+              <button
+                onClick={() => canViewForecast && setViewMode('forecast')}
+                disabled={!canViewForecast}
+                title={canViewForecast ? undefined : t('forecast.noReadAccess')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                  viewMode === 'forecast'
+                    ? 'bg-bambu-green text-white'
+                    : 'text-bambu-gray hover:bg-bambu-dark-tertiary'
+                }`}
+              >
+                {canViewForecast ? <TrendingUp className="w-4 h-4" /> : <Lock className="w-4 h-4" />}
+                <span className="hidden sm:inline">{t('forecast.title')}</span>
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -1630,6 +1653,9 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
         <div className="flex justify-center py-16">
           <Loader2 className="w-8 h-8 text-bambu-green animate-spin" />
         </div>
+      ) : viewMode === 'forecast' ? (
+        /* Forecast view (upstream #1184) */
+        <ForecastPanel spools={spools || []} />
       ) : viewMode === 'cards' ? (
         /* Cards view */
         pagedItems.length > 0 ? (
@@ -1682,8 +1708,9 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
                                 remaining={remaining}
                                 pct={pct}
                                 colorStyle={spoolColor}
-                                onClick={() => setFormModal({ spool })}
+                                onClick={() => setFormModal({ spool, mode: 'edit' })}
                                 onPrintLabel={() => setLabelPickerSpoolIds([spool.id])}
+                                onCopy={() => setFormModal({ spool, mode: 'copy' })}
                                 t={t}
                               />
                             );
@@ -1704,8 +1731,9 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
                     remaining={remaining}
                     pct={pct}
                     colorStyle={colorStyle}
-                    onClick={() => setFormModal({ spool })}
+                    onClick={() => setFormModal({ spool, mode: 'edit' })}
                     onPrintLabel={() => setLabelPickerSpoolIds([spool.id])}
+                    onCopy={() => setFormModal({ spool, mode: 'copy' })}
                     t={t}
                   />
                 );
@@ -1725,7 +1753,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
         ) : (
           <EmptyFilterState
             hasFilters={hasActiveFilters}
-            onAddSpool={() => setFormModal({ spool: null })}
+            onAddSpool={() => setFormModal({ spool: null, mode: 'create' })}
             t={t}
           />
         )
@@ -1780,7 +1808,8 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
                           pct={pct}
                           isExpanded={isExpanded}
                           onToggle={() => toggleGroupExpand(key)}
-                          onEdit={(s) => setFormModal({ spool: s })}
+                          onEdit={(s) => setFormModal({ spool: s, mode: 'edit' })}
+                          onCopy={(s) => setFormModal({ spool: s, mode: 'copy' })}
                           onArchive={(id) => setConfirmAction({ type: 'archive', spoolId: id })}
                           onDelete={(id) => setConfirmAction({ type: 'delete', spoolId: id })}
                           onPrintLabel={(id) => setLabelPickerSpoolIds([id])}
@@ -1803,7 +1832,8 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
                         spool={spool}
                         remaining={remaining}
                         pct={pct}
-                        onEdit={() => setFormModal({ spool })}
+                        onEdit={() => setFormModal({ spool, mode: 'edit' })}
+                        onCopy={() => setFormModal({ spool, mode: 'copy' })}
                         onRestore={() => restoreMutation.mutate(spool.id)}
                         onArchive={() => setConfirmAction({ type: 'archive', spoolId: spool.id })}
                         onDelete={() => setConfirmAction({ type: 'delete', spoolId: spool.id })}
@@ -1840,7 +1870,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
                   onChange={(e) => handlePageSizeChange(Number(e.target.value))}
                   className="px-2 py-1 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-sm focus:outline-none focus:border-bambu-green"
                 >
-                  {[15, 30, 50, 100].map((n) => (
+                  {[12, 24, 48, 96].map((n) => (
                     <option key={n} value={n}>{n}</option>
                   ))}
                   <option value={-1}>{t('inventory.all')}</option>
@@ -1889,7 +1919,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
         ) : (
           <EmptyFilterState
             hasFilters={hasActiveFilters}
-            onAddSpool={() => setFormModal({ spool: null })}
+            onAddSpool={() => setFormModal({ spool: null, mode: 'create' })}
             t={t}
           />
         )
@@ -1901,6 +1931,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
           isOpen={true}
           onClose={() => setFormModal(null)}
           spool={formModal.spool}
+          mode={formModal.mode}
           currencySymbol={currencySymbol}
           spoolmanMode={spoolmanMode}
           spoolsQueryKey={spoolsQueryKey}
@@ -1982,7 +2013,7 @@ function PaginationBar({
           onChange={(e) => onPageSizeChange(Number(e.target.value))}
           className="px-2 py-1 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-sm focus:outline-none focus:border-bambu-green"
         >
-          {[15, 30, 50, 100].map((n) => (
+          {[12, 24, 48, 96].map((n) => (
             <option key={n} value={n}>{n}</option>
           ))}
           <option value={-1}>{t('inventory.all')}</option>
@@ -2029,7 +2060,7 @@ function PaginationBar({
 
 /* Spool card for cards view */
 function SpoolCard({
-  spool, remaining, pct, colorStyle, onClick, onPrintLabel, t,
+  spool, remaining, pct, colorStyle, onClick, onPrintLabel, onCopy, t,
 }: {
   spool: InventorySpool;
   remaining: number;
@@ -2037,6 +2068,7 @@ function SpoolCard({
   colorStyle: string;
   onClick: () => void;
   onPrintLabel?: () => void;
+  onCopy?: () => void;
   t: (key: string, opts?: Record<string, unknown>) => string;
 }) {
   return (
@@ -2058,6 +2090,16 @@ function SpoolCard({
             <p className="text-sm text-bambu-gray">{spool.brand || '-'}</p>
           </div>
           <div className="flex items-center gap-1">
+            {onCopy && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onCopy(); }}
+                className="p-1 text-bambu-gray hover:text-bambu-green rounded transition-colors"
+                title={t('inventory.copySpool')}
+                aria-label={t('inventory.copySpool')}
+              >
+                <Copy className="w-4 h-4" />
+              </button>
+            )}
             {onPrintLabel && (
               <button
                 onClick={(e) => { e.stopPropagation(); onPrintLabel(); }}
@@ -2117,7 +2159,7 @@ function SpoolCard({
 
 /* Single spool row for table view */
 function SpoolTableRow({
-  spool, remaining, pct, onEdit, onRestore, onArchive, onDelete, onPrintLabel,
+  spool, remaining, pct, onEdit, onCopy, onRestore, onArchive, onDelete, onPrintLabel,
   visibleColumns, assignmentMap, catalogMap, currencySymbol, dateFormat, t, onSyncWeight,
   spoolDisplayTemplate,
 }: {
@@ -2125,6 +2167,7 @@ function SpoolTableRow({
   remaining: number;
   pct: number;
   onEdit: () => void;
+  onCopy?: () => void;
   onRestore: () => void;
   onArchive: () => void;
   onDelete: () => void;
@@ -2155,6 +2198,11 @@ function SpoolTableRow({
           <button onClick={onEdit} className="p-1.5 text-bambu-gray hover:text-white rounded transition-colors" title={t('common.edit')}>
             <Edit2 className="w-4 h-4" />
           </button>
+          {onCopy && (
+            <button onClick={onCopy} className="p-1.5 text-bambu-gray hover:text-bambu-green rounded transition-colors" title={t('inventory.copySpool')}>
+              <Copy className="w-4 h-4" />
+            </button>
+          )}
           {onPrintLabel && (
             <button onClick={onPrintLabel} className="p-1.5 text-bambu-gray hover:text-white rounded transition-colors" title={t('inventory.labels.printOne')}>
               <Printer className="w-4 h-4" />
@@ -2181,7 +2229,7 @@ function SpoolTableRow({
 /* Grouped spool rows for table view */
 function SpoolTableGroup({
   spools, representative, remaining, pct, isExpanded, onToggle,
-  onEdit, onArchive, onDelete, onPrintLabel,
+  onEdit, onCopy, onArchive, onDelete, onPrintLabel,
   visibleColumns, assignmentMap, catalogMap, currencySymbol, dateFormat, t, onSyncWeight,
   spoolDisplayTemplate,
 }: {
@@ -2192,6 +2240,7 @@ function SpoolTableGroup({
   isExpanded: boolean;
   onToggle: () => void;
   onEdit: (spool: InventorySpool) => void;
+  onCopy?: (spool: InventorySpool) => void;
   onArchive: (id: number) => void;
   onDelete: (id: number) => void;
   onPrintLabel?: (spoolId: number) => void;
@@ -2244,6 +2293,7 @@ function SpoolTableGroup({
             remaining={r}
             pct={p}
             onEdit={() => onEdit(spool)}
+            onCopy={onCopy ? () => onCopy(spool) : undefined}
             onRestore={() => {}}
             onArchive={() => onArchive(spool.id)}
             onDelete={() => onDelete(spool.id)}

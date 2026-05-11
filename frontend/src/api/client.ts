@@ -662,6 +662,7 @@ export interface Archive {
   total_layers: number | null;
   nozzle_diameter: number | null;
   bed_temperature: number | null;
+  bed_type: string | null;  // Build plate type from 3MF (e.g. "Cool Plate", "Textured PEI Plate")
   nozzle_temperature: number | null;
   sliced_for_model: string | null;  // Printer model this file was sliced for
   // Which plate of the source 3MF was actually printed (m038). NULL for
@@ -739,6 +740,7 @@ export interface ArchiveFilterOptions {
 export interface ArchiveListParams {
   page?: number;
   per_page?: number;
+  all?: boolean;
   printer_id?: number;
   project_id?: number;
   date_from?: string;
@@ -1275,6 +1277,8 @@ export interface AppSettings {
   bed_cooled_threshold: number;
   // Inventory low stock threshold
   low_stock_threshold: number;
+  // Stock forecasting (upstream #1184): global floor applied on top of each SKU's lead time
+  forecast_global_lead_time_days: number;
   // User email notifications toggle
   user_notifications_enabled: boolean;
   // Default sidebar order (admin-set for all users)
@@ -1452,12 +1456,21 @@ export interface MakerworldStatus {
   can_download: boolean;
 }
 
+export interface MakerworldAlreadyImportedEntry {
+  library_file_id: number;
+  folder_id: number | null;
+  filename: string;
+}
+
 export interface MakerworldResolvedModel {
   model_id: number;
   profile_id: number | null;
   design: Record<string, unknown>;
   instances: Array<Record<string, unknown>>;
   already_imported_library_ids: number[];
+  // Per-variant dedupe map: profileId (stringified) → existing library row info.
+  // Key "0" is reserved for legacy whole-model imports (no #profileId fragment).
+  already_imported_by_profile_id: Record<string, MakerworldAlreadyImportedEntry>;
 }
 
 export interface MakerworldImportResponse {
@@ -1475,6 +1488,31 @@ export interface MakerworldRecentImport {
   thumbnail_path: string | null;
   source_url: string | null;
   created_at: string;
+  title?: string | null;
+  author_name?: string | null;
+  sliced_for?: string | null;
+  profile_id?: number | null;
+  has_cover?: boolean;
+  has_variant_cover?: boolean;
+}
+
+export interface MakerworldImportsPage {
+  data: MakerworldRecentImport[];
+  meta: {
+    total: number;
+    current_page: number;
+    per_page: number;
+    last_page: number;
+  };
+}
+
+export type MakerworldImportsSortBy = 'date-desc' | 'date-asc' | 'name-asc' | 'name-desc';
+
+export interface MakerworldImportsListParams {
+  page?: number;
+  per_page?: number;
+  search?: string;
+  sort_by?: MakerworldImportsSortBy;
 }
 
 // Local preset types (OrcaSlicer imports)
@@ -2339,6 +2377,9 @@ export interface NotificationProvider {
   on_queue_job_skipped: boolean;
   on_queue_job_failed: boolean;
   on_queue_completed: boolean;
+  // Stock forecasting (scaffold, upstream #1184)
+  on_stock_reorder_alert: boolean;
+  on_stock_break_alert: boolean;
   // Quiet hours
   quiet_hours_enabled: boolean;
   quiet_hours_start: string | null;
@@ -2396,6 +2437,9 @@ export interface NotificationProviderCreate {
   on_queue_job_skipped?: boolean;
   on_queue_job_failed?: boolean;
   on_queue_completed?: boolean;
+  // Stock forecasting (scaffold)
+  on_stock_reorder_alert?: boolean;
+  on_stock_break_alert?: boolean;
   // Quiet hours
   quiet_hours_enabled?: boolean;
   quiet_hours_start?: string | null;
@@ -2446,6 +2490,9 @@ export interface NotificationProviderUpdate {
   on_queue_job_skipped?: boolean;
   on_queue_job_failed?: boolean;
   on_queue_completed?: boolean;
+  // Stock forecasting (scaffold)
+  on_stock_reorder_alert?: boolean;
+  on_stock_break_alert?: boolean;
   // Quiet hours
   quiet_hours_enabled?: boolean;
   quiet_hours_start?: string | null;
@@ -2811,7 +2858,7 @@ export interface InventorySpool {
 }
 
 // Spool label printing (B.1).
-export type SpoolLabelTemplate = 'ams_30x15' | 'box_62x29' | 'avery_5160' | 'avery_l7160';
+export type SpoolLabelTemplate = 'ams_30x15' | 'box_40x30' | 'box_62x29' | 'avery_5160' | 'avery_l7160';
 
 export interface SpoolLabelEntry {
   id: number;
@@ -2876,8 +2923,43 @@ export interface SpoolAssignment {
   fingerprint_type: string | null;
   spool?: InventorySpool | null;
   configured: boolean;
+  pending_config?: boolean;  // Slot was empty at assign time; will configure on insert
   created_at: string;
   ams_label?: string | null;  // User-defined friendly name for the AMS unit
+}
+
+// Stock forecasting (upstream #1184) — per-SKU reorder configuration +
+// shopping list. Algorithm runs entirely in ForecastPanel; these types
+// describe the persistence layer.
+export interface FilamentSkuSettings {
+  id: number;
+  material: string;
+  subtype: string | null;
+  brand: string | null;
+  lead_time_days: number;
+  safety_margin_value: number;
+  safety_margin_unit: 'days' | 'g';
+  alerts_snoozed: boolean;
+}
+
+export interface ShoppingListItem {
+  id: number;
+  material: string;
+  subtype: string | null;
+  brand: string | null;
+  quantity_spools: number;
+  note: string | null;
+  status: 'pending' | 'purchased' | 'received';
+  purchased_at: string | null;
+  added_at: string;
+}
+
+export interface ShoppingListItemCreate {
+  material: string;
+  subtype: string | null;
+  brand: string | null;
+  quantity_spools: number;
+  note?: string | null;
 }
 
 // Update types
@@ -2898,7 +2980,8 @@ export interface UpdateCheckResult {
   error?: string;
   message?: string;
   is_docker?: boolean;
-  update_method?: 'docker' | 'git';
+  is_ha_addon?: boolean;
+  update_method?: 'docker' | 'git' | 'ha_addon';
 }
 
 export interface UpdateStatus {
@@ -3008,6 +3091,8 @@ export interface MaintenanceSummary {
 }
 
 // External Links (sidebar)
+export type ExternalLinkNavGroup = 'operations' | 'workshop' | 'resources' | 'care' | 'system' | 'external';
+
 export interface ExternalLink {
   id: number;
   name: string;
@@ -3015,6 +3100,7 @@ export interface ExternalLink {
   icon: string;
   open_in_new_tab: boolean;
   custom_icon: string | null;
+  nav_group: ExternalLinkNavGroup;
   sort_order: number;
   created_at: string;
   updated_at: string;
@@ -3025,6 +3111,7 @@ export interface ExternalLinkCreate {
   url: string;
   icon: string;
   open_in_new_tab?: boolean;
+  nav_group?: ExternalLinkNavGroup;
 }
 
 export interface ExternalLinkUpdate {
@@ -3032,6 +3119,7 @@ export interface ExternalLinkUpdate {
   url?: string;
   icon?: string;
   open_in_new_tab?: boolean;
+  nav_group?: ExternalLinkNavGroup;
 }
 
 // Permission type - all available permissions
@@ -3049,6 +3137,7 @@ export type Permission =
   | 'projects:read' | 'projects:create' | 'projects:update' | 'projects:delete'
   | 'filaments:read' | 'filaments:create' | 'filaments:update' | 'filaments:delete'
   | 'inventory:read' | 'inventory:create' | 'inventory:update' | 'inventory:delete' | 'inventory:view_assignments'
+  | 'inventory:forecast_read' | 'inventory:forecast_write'
   | 'smart_plugs:read' | 'smart_plugs:create' | 'smart_plugs:update' | 'smart_plugs:delete' | 'smart_plugs:control'
   | 'camera:view'
   | 'maintenance:read' | 'maintenance:create' | 'maintenance:update' | 'maintenance:delete'
@@ -3859,8 +3948,9 @@ export const api = {
   // Archives
   getArchives: (params: ArchiveListParams = {}) => {
     const qs = new URLSearchParams();
-    if (params.page) qs.set('page', String(params.page));
-    if (params.per_page) qs.set('per_page', String(params.per_page));
+    if (params.all) qs.set('all', 'true');
+    if (params.page && !params.all) qs.set('page', String(params.page));
+    if (params.per_page && !params.all) qs.set('per_page', String(params.per_page));
     if (params.printer_id) qs.set('printer_id', String(params.printer_id));
     if (params.project_id) qs.set('project_id', String(params.project_id));
     if (params.date_from) qs.set('date_from', params.date_from);
@@ -4555,6 +4645,16 @@ export const api = {
     }),
   getMakerworldRecentImports: (limit = 10) =>
     request<MakerworldRecentImport[]>(`/makerworld/recent-imports?limit=${limit}`),
+  getMakerworldImports: (params: MakerworldImportsListParams = {}) => {
+    const qs = new URLSearchParams();
+    if (params.page) qs.set('page', String(params.page));
+    if (params.per_page) qs.set('per_page', String(params.per_page));
+    if (params.search) qs.set('search', params.search);
+    if (params.sort_by) qs.set('sort_by', params.sort_by);
+    return request<MakerworldImportsPage>(`/makerworld/imports?${qs}`);
+  },
+  getMakerworldImportCoverUrl: (libraryFileId: number, variant = false) =>
+    `/api/v1/makerworld/imports/${libraryFileId}/${variant ? 'cover-variant' : 'cover'}`,
   importMakerworldInstance: (
     model_id: number,
     instance_id: number | null,
@@ -4569,6 +4669,10 @@ export const api = {
         profile_id: profile_id ?? null,
         folder_id: folder_id ?? null,
       }),
+    }),
+  redownloadMakerworldImport: (libraryFileId: number) =>
+    request<MakerworldImportResponse>(`/makerworld/imports/${libraryFileId}/redownload`, {
+      method: 'POST',
     }),
   getCloudSettingDetail: (settingId: string) =>
     request<SlicerSettingDetail>(`/cloud/settings/${settingId}`),
@@ -5251,6 +5355,30 @@ export const api = {
     request<{ status: string }>(`/inventory/spools/${spoolId}/usage`, { method: 'DELETE' }),
   syncWeightsFromAms: () =>
     request<{ synced: number; skipped: number }>('/inventory/sync-ams-weights', { method: 'POST' }),
+  // Stock forecasting + shopping list (upstream #1184)
+  getSkuSettings: () =>
+    request<FilamentSkuSettings[]>('/inventory/sku-settings'),
+  upsertSkuSettings: (data: Omit<FilamentSkuSettings, 'id'>) =>
+    request<FilamentSkuSettings>('/inventory/sku-settings', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  getShoppingList: () =>
+    request<ShoppingListItem[]>('/inventory/shopping-list'),
+  addToShoppingList: (data: ShoppingListItemCreate) =>
+    request<ShoppingListItem>('/inventory/shopping-list', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  removeFromShoppingList: (id: number) =>
+    request<{ status: string }>(`/inventory/shopping-list/${id}`, { method: 'DELETE' }),
+  clearShoppingList: () =>
+    request<{ deleted: number }>('/inventory/shopping-list', { method: 'DELETE' }),
+  updateShoppingListStatus: (id: number, status: 'pending' | 'purchased' | 'received') =>
+    request<ShoppingListItem>(`/inventory/shopping-list/${id}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status }),
+    }),
   getFilamentPresets: () =>
     request<SlicerSetting[]>('/cloud/filaments'),
 
@@ -5258,7 +5386,7 @@ export const api = {
   getVersion: () => request<VersionInfo>('/updates/version'),
   checkForUpdates: () => request<UpdateCheckResult>('/updates/check'),
   applyUpdate: (tagName?: string) =>
-    request<{ success: boolean; message: string; target_ref?: string; status?: UpdateStatus; is_docker?: boolean }>('/updates/apply', {
+    request<{ success: boolean; message: string; target_ref?: string; status?: UpdateStatus; is_docker?: boolean; is_ha_addon?: boolean }>('/updates/apply', {
       method: 'POST',
       body: JSON.stringify(tagName ? { tag_name: tagName } : {}),
     }),

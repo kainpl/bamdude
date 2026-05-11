@@ -539,6 +539,14 @@ class LibraryTrashService:
                     abs_path.unlink()
             except OSError as e:
                 logger.warning("Trash sweep: failed to unlink %s: %s", abs_path, e)
+        # m056 — MakerWorld cover JPGs live in a separate dir; FK-CASCADE
+        # drops the meta row but the on-disk covers need explicit wipe.
+        try:
+            from backend.app.services.makerworld_meta import cleanup_cover_files
+
+            cleanup_cover_files(row.id)
+        except Exception as e:
+            logger.debug("Trash sweep: cover cleanup skipped for %s: %s", row.id, e)
 
     # ---- User-facing trash ops ----------------------------------------
 
