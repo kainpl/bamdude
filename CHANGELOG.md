@@ -8,6 +8,14 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+---
+
+## [0.4.4b3] - 2026-05-11
+
+Third beta of the 0.4.4 cycle. Image: `ghcr.io/kainpl/bamdude:0.4.4b3` / `kainpl/bamdude:0.4.4b3`. Pin the exact tag — `:latest` still tracks 0.4.3.
+
+Cumulative since 0.4.3 (covers b1 + b2 + b3): Spoolman inventory becomes a first-class operator experience, .bbscfg slicer preset bundles, MFA at-rest encryption default-on via auto-bootstrap, pause/resume notification events with classified reasons across all transports + frontend visualisation, in-app bug-report bubble (relay-driven GitHub issue creation), STL/OBJ shaded thumbnails, daily log rotation + archive UI, 3D viewer Export-as-PNG, mouse-pick selection + S→popup expand on Printers, Queue page reshape into in-header toolbar with Cards/List/Timeline modes + Hide-offline, Maintenance page reshape (3-col grid + Розташування grouping + Status/History/Settings as segmented tabs), Information sidebar entry promoted from a footer icon. Many fixes from upstream Bambuddy v0.2.4 audit cycle. Full detail below.
+
 ### Added
 
 - **Printers page: S-card maximize button opens an M-size card in a centered popup.** Compact view drops the temperature panel, clear-plate button, and per-AMS slot detail for grid density; previously reaching those meant flipping the whole grid to M/L. New Maximize2 button between selection checkbox and kebab opens a fixed-overlay popup with the printer re-mounted as `viewMode='expanded' cardSize={2}`. Closes on backdrop click, Escape, or clicking another printer's expand button. Hidden in M/L/XL.
