@@ -8,7 +8,9 @@ import {
   Search, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight,
   TrendingDown, Layers, Printer, AlertTriangle, X, Clock, LayoutGrid, TableProperties, Columns,
   ArrowUp, ArrowDown, ArrowUpDown, Group, ChevronDown, Check, RefreshCw, Disc3, Copy,
+  TrendingUp, Lock,
 } from 'lucide-react';
+import { ForecastPanel } from '../components/ForecastPanel';
 import { api, ApiError } from '../api/client';
 import type { InventorySpool, SpoolAssignment, SpoolCatalogEntry } from '../api/client';
 import { Button } from '../components/Button';
@@ -17,6 +19,7 @@ import { ConfirmModal } from '../components/ConfirmModal';
 import { ColumnConfigModal, type ColumnConfig } from '../components/ColumnConfigModal';
 import { LabelTemplatePickerModal } from '../components/LabelTemplatePickerModal';
 import { useToast } from '../contexts/ToastContext';
+import { useAuth } from '../contexts/AuthContext';
 import { resolveSpoolColorName } from '../utils/colors';
 import { getCurrencySymbol } from '../utils/currency';
 import { formatDateInput, parseUTCDate, type DateFormat } from '../utils/date';
@@ -30,7 +33,7 @@ import {
 
 type ArchiveFilter = 'active' | 'archived';
 type UsageFilter = 'all' | 'used' | 'new' | 'lowstock';
-type ViewMode = 'table' | 'cards';
+type ViewMode = 'table' | 'cards' | 'forecast';
 type SortDirection = 'asc' | 'desc';
 type SortState = { column: string; direction: SortDirection } | null;
 
@@ -610,6 +613,10 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
+  const { hasPermission, loading: authLoading } = useAuth();
+  // Forecast tab gated on perm + non-Spoolman mode (Spoolman proxies spools, so we
+  // can't read spool_usage_history through the iframe).
+  const canViewForecast = !authLoading && !spoolmanMode && hasPermission('inventory:forecast_read');
   const [searchParams, setSearchParams] = useSearchParams();
   const [formModal, setFormModal] = useState<{ spool?: InventorySpool | null; mode: SpoolFormMode } | null>(null);
   const deepLinkHandled = useRef(false);
@@ -1416,6 +1423,22 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
               <LayoutGrid className="w-4 h-4" />
               <span className="hidden sm:inline">{t('inventory.cards')}</span>
             </button>
+            {/* Forecast tab — gated on perm + non-Spoolman mode (upstream #1184) */}
+            {!spoolmanMode && (
+              <button
+                onClick={() => canViewForecast && setViewMode('forecast')}
+                disabled={!canViewForecast}
+                title={canViewForecast ? undefined : t('forecast.noReadAccess')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                  viewMode === 'forecast'
+                    ? 'bg-bambu-green text-white'
+                    : 'text-bambu-gray hover:bg-bambu-dark-tertiary'
+                }`}
+              >
+                {canViewForecast ? <TrendingUp className="w-4 h-4" /> : <Lock className="w-4 h-4" />}
+                <span className="hidden sm:inline">{t('forecast.title')}</span>
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -1630,6 +1653,9 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
         <div className="flex justify-center py-16">
           <Loader2 className="w-8 h-8 text-bambu-green animate-spin" />
         </div>
+      ) : viewMode === 'forecast' ? (
+        /* Forecast view (upstream #1184) */
+        <ForecastPanel spools={spools || []} />
       ) : viewMode === 'cards' ? (
         /* Cards view */
         pagedItems.length > 0 ? (

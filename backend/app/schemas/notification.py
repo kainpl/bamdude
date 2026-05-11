@@ -75,6 +75,10 @@ class NotificationProviderBase(BaseModel):
     on_queue_job_failed: bool = Field(default=True, description="Notify when job fails to start")
     on_queue_completed: bool = Field(default=False, description="Notify when all queue jobs finish")
 
+    # Event triggers - Stock forecasting (scaffold, upstream #1184)
+    on_stock_reorder_alert: bool = Field(default=False, description="Notify when an SKU crosses its reorder point")
+    on_stock_break_alert: bool = Field(default=False, description="Notify when an SKU will run out within lead time")
+
     # Quiet hours
     quiet_hours_enabled: bool = Field(default=False, description="Enable quiet hours")
     quiet_hours_start: str | None = Field(default=None, description="Start time in HH:MM format")
@@ -158,6 +162,10 @@ class NotificationProviderUpdate(BaseModel):
     on_queue_job_skipped: bool | None = None
     on_queue_job_failed: bool | None = None
     on_queue_completed: bool | None = None
+
+    # Event triggers - Stock forecasting
+    on_stock_reorder_alert: bool | None = None
+    on_stock_break_alert: bool | None = None
 
     # Quiet hours
     quiet_hours_enabled: bool | None = None

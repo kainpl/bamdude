@@ -1277,6 +1277,8 @@ export interface AppSettings {
   bed_cooled_threshold: number;
   // Inventory low stock threshold
   low_stock_threshold: number;
+  // Stock forecasting (upstream #1184): global floor applied on top of each SKU's lead time
+  forecast_global_lead_time_days: number;
   // User email notifications toggle
   user_notifications_enabled: boolean;
   // Default sidebar order (admin-set for all users)
@@ -2375,6 +2377,9 @@ export interface NotificationProvider {
   on_queue_job_skipped: boolean;
   on_queue_job_failed: boolean;
   on_queue_completed: boolean;
+  // Stock forecasting (scaffold, upstream #1184)
+  on_stock_reorder_alert: boolean;
+  on_stock_break_alert: boolean;
   // Quiet hours
   quiet_hours_enabled: boolean;
   quiet_hours_start: string | null;
@@ -2432,6 +2437,9 @@ export interface NotificationProviderCreate {
   on_queue_job_skipped?: boolean;
   on_queue_job_failed?: boolean;
   on_queue_completed?: boolean;
+  // Stock forecasting (scaffold)
+  on_stock_reorder_alert?: boolean;
+  on_stock_break_alert?: boolean;
   // Quiet hours
   quiet_hours_enabled?: boolean;
   quiet_hours_start?: string | null;
@@ -2482,6 +2490,9 @@ export interface NotificationProviderUpdate {
   on_queue_job_skipped?: boolean;
   on_queue_job_failed?: boolean;
   on_queue_completed?: boolean;
+  // Stock forecasting (scaffold)
+  on_stock_reorder_alert?: boolean;
+  on_stock_break_alert?: boolean;
   // Quiet hours
   quiet_hours_enabled?: boolean;
   quiet_hours_start?: string | null;
@@ -2917,6 +2928,40 @@ export interface SpoolAssignment {
   ams_label?: string | null;  // User-defined friendly name for the AMS unit
 }
 
+// Stock forecasting (upstream #1184) — per-SKU reorder configuration +
+// shopping list. Algorithm runs entirely in ForecastPanel; these types
+// describe the persistence layer.
+export interface FilamentSkuSettings {
+  id: number;
+  material: string;
+  subtype: string | null;
+  brand: string | null;
+  lead_time_days: number;
+  safety_margin_value: number;
+  safety_margin_unit: 'days' | 'g';
+  alerts_snoozed: boolean;
+}
+
+export interface ShoppingListItem {
+  id: number;
+  material: string;
+  subtype: string | null;
+  brand: string | null;
+  quantity_spools: number;
+  note: string | null;
+  status: 'pending' | 'purchased' | 'received';
+  purchased_at: string | null;
+  added_at: string;
+}
+
+export interface ShoppingListItemCreate {
+  material: string;
+  subtype: string | null;
+  brand: string | null;
+  quantity_spools: number;
+  note?: string | null;
+}
+
 // Update types
 export interface VersionInfo {
   version: string;
@@ -3092,6 +3137,7 @@ export type Permission =
   | 'projects:read' | 'projects:create' | 'projects:update' | 'projects:delete'
   | 'filaments:read' | 'filaments:create' | 'filaments:update' | 'filaments:delete'
   | 'inventory:read' | 'inventory:create' | 'inventory:update' | 'inventory:delete' | 'inventory:view_assignments'
+  | 'inventory:forecast_read' | 'inventory:forecast_write'
   | 'smart_plugs:read' | 'smart_plugs:create' | 'smart_plugs:update' | 'smart_plugs:delete' | 'smart_plugs:control'
   | 'camera:view'
   | 'maintenance:read' | 'maintenance:create' | 'maintenance:update' | 'maintenance:delete'
@@ -5309,6 +5355,30 @@ export const api = {
     request<{ status: string }>(`/inventory/spools/${spoolId}/usage`, { method: 'DELETE' }),
   syncWeightsFromAms: () =>
     request<{ synced: number; skipped: number }>('/inventory/sync-ams-weights', { method: 'POST' }),
+  // Stock forecasting + shopping list (upstream #1184)
+  getSkuSettings: () =>
+    request<FilamentSkuSettings[]>('/inventory/sku-settings'),
+  upsertSkuSettings: (data: Omit<FilamentSkuSettings, 'id'>) =>
+    request<FilamentSkuSettings>('/inventory/sku-settings', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  getShoppingList: () =>
+    request<ShoppingListItem[]>('/inventory/shopping-list'),
+  addToShoppingList: (data: ShoppingListItemCreate) =>
+    request<ShoppingListItem>('/inventory/shopping-list', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  removeFromShoppingList: (id: number) =>
+    request<{ status: string }>(`/inventory/shopping-list/${id}`, { method: 'DELETE' }),
+  clearShoppingList: () =>
+    request<{ deleted: number }>('/inventory/shopping-list', { method: 'DELETE' }),
+  updateShoppingListStatus: (id: number, status: 'pending' | 'purchased' | 'received') =>
+    request<ShoppingListItem>(`/inventory/shopping-list/${id}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status }),
+    }),
   getFilamentPresets: () =>
     request<SlicerSetting[]>('/cloud/filaments'),
 

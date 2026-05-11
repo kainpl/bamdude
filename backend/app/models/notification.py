@@ -98,6 +98,12 @@ class NotificationProvider(Base):
     on_queue_job_failed = Column(Boolean, default=True)  # Job failed to start
     on_queue_completed = Column(Boolean, default=False)  # All pending jobs finished
 
+    # Event triggers - Stock forecasting (upstream #1184). Scaffold only — no
+    # backend trigger fires these today; ForecastPanel renders alerts client-
+    # side. Toggles reserved for a future scheduled aggregation task.
+    on_stock_reorder_alert = Column(Boolean, default=False)  # SKU crossed reorder point
+    on_stock_break_alert = Column(Boolean, default=False)  # SKU will run out within lead time
+
     # Quiet hours (do not disturb)
     quiet_hours_enabled = Column(Boolean, default=False)
     quiet_hours_start = Column(String(5), nullable=True)  # HH:MM format, e.g., "22:00"
