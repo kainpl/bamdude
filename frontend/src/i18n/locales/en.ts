@@ -16,6 +16,7 @@ export default {
     system: 'Information',
     collapseSidebar: 'Collapse sidebar',
     expandSidebar: 'Expand sidebar',
+    dragGroupHint: 'Drag to reorder group',
     update: 'Update',
     updateAvailable: 'Update available: v{{version}}',
     updateAvailableBanner: 'Version {{version}} is available!',
@@ -1001,6 +1002,7 @@ export default {
       unsetManualStart: 'Unset manual start',
       viewArchive: 'View archive',
       retry: 'Retry',
+      restart: 'Restart',
       more: 'More'
     },
     issues: {
@@ -2824,6 +2826,7 @@ export default {
     pasteUrlHeader: 'Import from MakerWorld',
     pasteUrlPlaceholder: 'https://makerworld.com/en/models/… or paste any MakerWorld link',
     resolveButton: 'Resolve',
+    clearButton: 'Clear',
     signInRequiredTitle: 'Bambu Cloud sign-in required to download',
     signInRequiredBody: 'You can browse model details anonymously, but MakerWorld requires a Bambu Cloud account to download 3MF files.',
     openCloudSettings: 'Open Cloud settings',
@@ -2843,6 +2846,9 @@ export default {
     alsoCompatible: 'Also marked compatible: {{printers}}',
     importToLibrary: 'Save',
     sliceIn: 'Save & Slice in {{slicer}}',
+    redownload: 'Re-download',
+    redownloading: 'Re-downloading…',
+    redownloadSuccess: 'Re-downloaded {{filename}}',
     disclaimer: 'MakerWorld integration uses community-documented API endpoints. BamDude is not affiliated with or endorsed by MakerWorld or Bambu Lab.',
     lastImportSuccess: 'Imported to your library',
     lastImportAlreadyInLibrary: 'Already in your library',
@@ -2851,6 +2857,23 @@ export default {
     openInOrcaSlicer: 'Open in OrcaSlicer',
     importTo: 'Import to file manager',
     recentImportsHeader: 'Recent imports',
+    noRecentImports: 'No imports yet.',
+    tabs: {
+      import: 'Import',
+      history: 'History',
+    },
+    history: {
+      searchPlaceholder: 'Search by file, title, or author...',
+      noCover: 'No cover',
+      noResults: 'Nothing matched your search.',
+      showingRange: '{{from}}–{{to}} of {{total}}',
+      sort: {
+        dateDesc: 'Newest first',
+        dateAsc: 'Oldest first',
+        nameAsc: 'Name (A → Z)',
+        nameDesc: 'Name (Z → A)',
+      },
+    },
     phaseResolving: 'Resolving',
     phaseDownloading: 'Downloading',
     folderAuto: 'MakerWorld (default)',
@@ -5016,7 +5039,8 @@ export default {
     noLinksHint: 'Click "Add Link" to add one',
     deleteLink: 'Delete Link',
     deleteLinkConfirm: 'Are you sure you want to delete "{{name}}"? This action cannot be undone.',
-    openInNewTab: 'Open in new tab'
+    openInNewTab: 'Open in new tab',
+    navGroup: 'Sidebar group'
   },
 
   // Keyboard Shortcuts Modal

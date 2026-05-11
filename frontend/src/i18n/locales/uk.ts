@@ -16,6 +16,7 @@ export default {
     system: 'Інформація',
     collapseSidebar: 'Згорнути',
     expandSidebar: 'Розгорнути',
+    dragGroupHint: 'Перетягніть, щоб переставити групу',
     update: 'Оновлення',
     updateAvailable: 'Доступне оновлення: v{{version}}',
     updateAvailableBanner: 'Доступна версія {{version}}!',
@@ -1007,6 +1008,7 @@ export default {
       unsetManualStart: 'Вимкнути ручний старт',
       viewArchive: 'Показати архів',
       retry: 'Повторити',
+      restart: 'Перезапустити',
       more: 'Більше'
     },
     issues: {
@@ -2840,6 +2842,7 @@ export default {
     pasteUrlHeader: 'Імпорт з MakerWorld',
     pasteUrlPlaceholder: 'https://makerworld.com/en/models/… або будь-яке MakerWorld-посилання',
     resolveButton: 'Завантажити',
+    clearButton: 'Очистити',
     signInRequiredTitle: 'Для завантаження потрібен Bambu Cloud',
     signInRequiredBody: 'Перегляд моделі працює без входу, але MakerWorld вимагає акаунт Bambu Cloud для скачування 3MF-файлів.',
     openCloudSettings: 'Відкрити налаштування Cloud',
@@ -2859,6 +2862,9 @@ export default {
     alsoCompatible: 'Також сумісно: {{printers}}',
     importToLibrary: 'Зберегти',
     sliceIn: 'Зберегти й нарізати в {{slicer}}',
+    redownload: 'Перезавантажити',
+    redownloading: 'Перезавантаження…',
+    redownloadSuccess: 'Перезавантажено {{filename}}',
     disclaimer: 'Інтеграція MakerWorld використовує спільнотні API-ендпоінти. BamDude не пов\'язаний і не схвалений MakerWorld чи Bambu Lab.',
     lastImportSuccess: 'Імпортовано в бібліотеку',
     lastImportAlreadyInLibrary: 'Вже в бібліотеці',
@@ -2867,6 +2873,23 @@ export default {
     openInOrcaSlicer: 'Відкрити в OrcaSlicer',
     importTo: 'Імпортувати у файловий менеджер',
     recentImportsHeader: 'Останні імпорти',
+    noRecentImports: 'Поки немає імпортів.',
+    tabs: {
+      import: 'Імпорт',
+      history: 'Історія',
+    },
+    history: {
+      searchPlaceholder: 'Пошук за файлом, назвою або автором...',
+      noCover: 'Без обкладинки',
+      noResults: 'Нічого не знайдено за запитом.',
+      showingRange: '{{from}}–{{to}} з {{total}}',
+      sort: {
+        dateDesc: 'Спочатку нові',
+        dateAsc: 'Спочатку старі',
+        nameAsc: 'Назва (А → Я)',
+        nameDesc: 'Назва (Я → А)',
+      },
+    },
     phaseResolving: 'Завантаження інформації',
     phaseDownloading: 'Завантаження файлу',
     folderAuto: 'MakerWorld (за замовчуванням)',
@@ -5019,7 +5042,8 @@ export default {
     noLinksHint: 'Натисніть "Додати посилання" щоб додати',
     deleteLink: 'Видалити посилання',
     deleteLinkConfirm: 'Ви впевнені, що хочете видалити "{{name}}"? Цю дію неможливо скасувати.',
-    openInNewTab: 'Відкрити в новій вкладці'
+    openInNewTab: 'Відкрити в новій вкладці',
+    navGroup: 'Група бічної панелі'
   },
 
   // Keyboard Shortcuts Modal

@@ -1453,12 +1453,21 @@ export interface MakerworldStatus {
   can_download: boolean;
 }
 
+export interface MakerworldAlreadyImportedEntry {
+  library_file_id: number;
+  folder_id: number | null;
+  filename: string;
+}
+
 export interface MakerworldResolvedModel {
   model_id: number;
   profile_id: number | null;
   design: Record<string, unknown>;
   instances: Array<Record<string, unknown>>;
   already_imported_library_ids: number[];
+  // Per-variant dedupe map: profileId (stringified) → existing library row info.
+  // Key "0" is reserved for legacy whole-model imports (no #profileId fragment).
+  already_imported_by_profile_id: Record<string, MakerworldAlreadyImportedEntry>;
 }
 
 export interface MakerworldImportResponse {
@@ -1476,6 +1485,31 @@ export interface MakerworldRecentImport {
   thumbnail_path: string | null;
   source_url: string | null;
   created_at: string;
+  title?: string | null;
+  author_name?: string | null;
+  sliced_for?: string | null;
+  profile_id?: number | null;
+  has_cover?: boolean;
+  has_variant_cover?: boolean;
+}
+
+export interface MakerworldImportsPage {
+  data: MakerworldRecentImport[];
+  meta: {
+    total: number;
+    current_page: number;
+    per_page: number;
+    last_page: number;
+  };
+}
+
+export type MakerworldImportsSortBy = 'date-desc' | 'date-asc' | 'name-asc' | 'name-desc';
+
+export interface MakerworldImportsListParams {
+  page?: number;
+  per_page?: number;
+  search?: string;
+  sort_by?: MakerworldImportsSortBy;
 }
 
 // Local preset types (OrcaSlicer imports)
@@ -3009,6 +3043,8 @@ export interface MaintenanceSummary {
 }
 
 // External Links (sidebar)
+export type ExternalLinkNavGroup = 'operations' | 'workshop' | 'resources' | 'care' | 'system' | 'external';
+
 export interface ExternalLink {
   id: number;
   name: string;
@@ -3016,6 +3052,7 @@ export interface ExternalLink {
   icon: string;
   open_in_new_tab: boolean;
   custom_icon: string | null;
+  nav_group: ExternalLinkNavGroup;
   sort_order: number;
   created_at: string;
   updated_at: string;
@@ -3026,6 +3063,7 @@ export interface ExternalLinkCreate {
   url: string;
   icon: string;
   open_in_new_tab?: boolean;
+  nav_group?: ExternalLinkNavGroup;
 }
 
 export interface ExternalLinkUpdate {
@@ -3033,6 +3071,7 @@ export interface ExternalLinkUpdate {
   url?: string;
   icon?: string;
   open_in_new_tab?: boolean;
+  nav_group?: ExternalLinkNavGroup;
 }
 
 // Permission type - all available permissions
@@ -4557,6 +4596,16 @@ export const api = {
     }),
   getMakerworldRecentImports: (limit = 10) =>
     request<MakerworldRecentImport[]>(`/makerworld/recent-imports?limit=${limit}`),
+  getMakerworldImports: (params: MakerworldImportsListParams = {}) => {
+    const qs = new URLSearchParams();
+    if (params.page) qs.set('page', String(params.page));
+    if (params.per_page) qs.set('per_page', String(params.per_page));
+    if (params.search) qs.set('search', params.search);
+    if (params.sort_by) qs.set('sort_by', params.sort_by);
+    return request<MakerworldImportsPage>(`/makerworld/imports?${qs}`);
+  },
+  getMakerworldImportCoverUrl: (libraryFileId: number, variant = false) =>
+    `/api/v1/makerworld/imports/${libraryFileId}/${variant ? 'cover-variant' : 'cover'}`,
   importMakerworldInstance: (
     model_id: number,
     instance_id: number | null,
@@ -4571,6 +4620,10 @@ export const api = {
         profile_id: profile_id ?? null,
         folder_id: folder_id ?? null,
       }),
+    }),
+  redownloadMakerworldImport: (libraryFileId: number) =>
+    request<MakerworldImportResponse>(`/makerworld/imports/${libraryFileId}/redownload`, {
+      method: 'POST',
     }),
   getCloudSettingDetail: (settingId: string) =>
     request<SlicerSettingDetail>(`/cloud/settings/${settingId}`),

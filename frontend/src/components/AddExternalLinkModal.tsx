@@ -3,7 +3,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { X, Save, Loader2, Upload, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api/client';
-import type { ExternalLink, ExternalLinkCreate, ExternalLinkUpdate } from '../api/client';
+import type { ExternalLink, ExternalLinkCreate, ExternalLinkNavGroup, ExternalLinkUpdate } from '../api/client';
 import { Button } from './Button';
 import { IconPicker, getIconByName } from './IconPicker';
 interface AddExternalLinkModalProps {
@@ -21,6 +21,7 @@ export function AddExternalLinkModal({ link, onClose }: AddExternalLinkModalProp
   const [url, setUrl] = useState(link?.url || '');
   const [icon, setIcon] = useState(link?.icon || 'link');
   const [openInNewTab, setOpenInNewTab] = useState(link?.open_in_new_tab || false);
+  const [navGroup, setNavGroup] = useState<ExternalLinkNavGroup>(link?.nav_group || 'external');
   const [useCustomIcon, setUseCustomIcon] = useState(!!link?.custom_icon);
   const [customIconPreview, setCustomIconPreview] = useState<string | null>(
     link?.custom_icon ? api.getExternalLinkIconUrl(link.id) : null
@@ -141,6 +142,7 @@ export function AddExternalLinkModal({ link, onClose }: AddExternalLinkModalProp
       url: url.trim(),
       icon: useCustomIcon ? icon : icon, // Keep preset icon as fallback
       open_in_new_tab: openInNewTab,
+      nav_group: navGroup,
     };
 
     if (isEditing) {
@@ -215,6 +217,23 @@ export function AddExternalLinkModal({ link, onClose }: AddExternalLinkModalProp
               placeholder="https://example.com"
               className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
             />
+          </div>
+
+          {/* Sidebar group */}
+          <div>
+            <label className="block text-sm text-bambu-gray mb-1">{t('externalLinks.navGroup')}</label>
+            <select
+              value={navGroup}
+              onChange={(e) => setNavGroup(e.target.value as ExternalLinkNavGroup)}
+              className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+            >
+              <option value="operations">{t('nav.group.operations')}</option>
+              <option value="workshop">{t('nav.group.workshop')}</option>
+              <option value="resources">{t('nav.group.resources')}</option>
+              <option value="care">{t('nav.group.care')}</option>
+              <option value="system">{t('nav.group.system')}</option>
+              <option value="external">{t('nav.group.external')}</option>
+            </select>
           </div>
 
           {/* Open in New Tab */}

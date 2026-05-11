@@ -145,6 +145,7 @@ async def init_db():
         group,
         kprofile_note,
         library,
+        library_file_makerworld_meta,
         library_file_note,
         library_project_links,
         local_preset,

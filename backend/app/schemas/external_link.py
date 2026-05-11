@@ -2,6 +2,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator
 
+VALID_NAV_GROUPS = ("operations", "workshop", "resources", "care", "system", "external")
+
 
 class ExternalLinkBase(BaseModel):
     """Base schema for external links."""
@@ -10,6 +12,18 @@ class ExternalLinkBase(BaseModel):
     url: str = Field(..., min_length=1, max_length=500, description="External URL")
     icon: str = Field(default="link", max_length=50, description="Lucide icon name")
     open_in_new_tab: bool = False
+    nav_group: str = Field(
+        default="external",
+        max_length=20,
+        description="Sidebar group: one of operations/workshop/resources/care/system/external",
+    )
+
+    @field_validator("nav_group")
+    @classmethod
+    def validate_nav_group(cls, v: str) -> str:
+        if v not in VALID_NAV_GROUPS:
+            raise ValueError(f"nav_group must be one of {VALID_NAV_GROUPS}")
+        return v
 
     @field_validator("url")
     @classmethod
@@ -33,6 +47,7 @@ class ExternalLinkUpdate(BaseModel):
     url: str | None = Field(default=None, min_length=1, max_length=500)
     icon: str | None = Field(default=None, max_length=50)
     open_in_new_tab: bool | None = None
+    nav_group: str | None = Field(default=None, max_length=20)
 
     @field_validator("url")
     @classmethod
@@ -40,6 +55,13 @@ class ExternalLinkUpdate(BaseModel):
         """Validate URL format."""
         if v is not None and not v.startswith(("http://", "https://")):
             raise ValueError("URL must start with http:// or https://")
+        return v
+
+    @field_validator("nav_group")
+    @classmethod
+    def validate_nav_group(cls, v: str | None) -> str | None:
+        if v is not None and v not in VALID_NAV_GROUPS:
+            raise ValueError(f"nav_group must be one of {VALID_NAV_GROUPS}")
         return v
 
 

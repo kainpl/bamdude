@@ -157,9 +157,20 @@ class LibraryFile(Base):
         # PostgreSQL FKs handle it at the DB level too; both paths converge.
         passive_deletes=False,
     )
+    # m056 — 1:1 MakerWorld source metadata. Same cascade rationale as
+    # ``file_notes``: ORM-side deletion covers in-session deletes
+    # regardless of SQLite FK pragma state; the DB FK also has CASCADE.
+    makerworld_meta: Mapped["LibraryFileMakerworldMeta | None"] = relationship(
+        "LibraryFileMakerworldMeta",
+        back_populates="library_file",
+        cascade="all, delete-orphan",
+        passive_deletes=False,
+        uselist=False,
+    )
 
 
 from backend.app.models.archive import PrintArchive  # noqa: E402, F811
+from backend.app.models.library_file_makerworld_meta import LibraryFileMakerworldMeta  # noqa: E402, F401
 from backend.app.models.library_file_note import LibraryFileNote  # noqa: E402, F401
 from backend.app.models.project import Project  # noqa: E402, F811
 from backend.app.models.user import User  # noqa: E402, F811

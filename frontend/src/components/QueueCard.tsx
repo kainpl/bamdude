@@ -21,6 +21,8 @@ import {
   Pencil,
   MoreVertical,
   Upload,
+  Ban,
+  RotateCcw,
 } from 'lucide-react';
 import { BatchActionDialog } from './Queue/BatchActionDialog';
 import { PrintModal } from './PrintModal';
@@ -126,6 +128,11 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
   const { data: skippedItems } = useQuery({
     queryKey: ['queue', queue.printer_id, 'skipped'],
     queryFn: () => api.getQueue(queue.printer_id, 'skipped'),
+    refetchInterval: 30000,
+  });
+  const { data: cancelledItems } = useQuery({
+    queryKey: ['queue', queue.printer_id, 'cancelled'],
+    queryFn: () => api.getQueue(queue.printer_id, 'cancelled'),
     refetchInterval: 30000,
   });
 
@@ -744,10 +751,11 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
           </div>
         )}
 
-        {/* Issues section — failed + skipped items with retry / unskip */}
-        {((failedItems?.length ?? 0) > 0 || (skippedItems?.length ?? 0) > 0) && (
+        {/* Issues section — failed + cancelled + skipped items with retry / unskip */}
+        {((failedItems?.length ?? 0) > 0 || (skippedItems?.length ?? 0) > 0 || (cancelledItems?.length ?? 0) > 0) && (
           <IssuesSection
             failedItems={failedItems ?? []}
+            cancelledItems={cancelledItems ?? []}
             skippedItems={skippedItems ?? []}
             queueKey={['queue', queue.printer_id]}
             hasPermission={hasPermission}
@@ -1089,6 +1097,7 @@ function PendingItemRow({
 
 interface IssuesSectionProps {
   failedItems: PrintQueueItem[];
+  cancelledItems: PrintQueueItem[];
   skippedItems: PrintQueueItem[];
   queueKey: (string | number)[];
   hasPermission: (perm: Permission) => boolean;
@@ -1102,7 +1111,7 @@ interface IssuesSectionProps {
  * Collapsed by default — summary only.  Expands on click.  Each row
  * has its own mutation state; no bulk actions here.
  */
-function IssuesSection({ failedItems, skippedItems, queueKey, hasPermission, t }: IssuesSectionProps) {
+function IssuesSection({ failedItems, cancelledItems, skippedItems, queueKey, hasPermission, t }: IssuesSectionProps) {
   const queryClient = useQueryClient();
   const { showToast } = useToast();
   const [open, setOpen] = useState(false);
@@ -1134,7 +1143,7 @@ function IssuesSection({ failedItems, skippedItems, queueKey, hasPermission, t }
     onError: (err: Error) => showToast(err.message, 'error'),
   });
 
-  const total = failedItems.length + skippedItems.length;
+  const total = failedItems.length + cancelledItems.length + skippedItems.length;
   const canUpdate = hasPermission('queue:update_all');
 
   return (
@@ -1168,6 +1177,38 @@ function IssuesSection({ failedItems, skippedItems, queueKey, hasPermission, t }
                     title={t('queueCard.actions.retry')}
                   >
                     <Play className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    onClick={() => removeMutation.mutate(item.id)}
+                    disabled={removeMutation.isPending}
+                    className="p-0.5 rounded hover:bg-red-500/20 text-red-400 disabled:opacity-50"
+                    title={t('queue.removeFromQueue')}
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+          {cancelledItems.map(item => {
+            const name = item.archive_name || item.library_file_name || `File #${item.archive_id || item.library_file_id}`;
+            return (
+              <div key={item.id} className="flex items-center gap-2 py-1 px-2 rounded bg-bambu-dark-tertiary/40 group">
+                <Ban className="w-3 h-3 text-bambu-gray flex-shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs text-white truncate">{name}</p>
+                  {item.error_message && (
+                    <p className="text-[10px] text-bambu-gray truncate">{item.error_message}</p>
+                  )}
+                </div>
+                <div className="flex items-center gap-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <button
+                    onClick={() => retryMutation.mutate(item.id)}
+                    disabled={retryMutation.isPending || !canUpdate}
+                    className="p-0.5 rounded hover:bg-bambu-green/20 text-bambu-green disabled:opacity-50"
+                    title={t('queueCard.actions.restart')}
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
                   </button>
                   <button
                     onClick={() => removeMutation.mutate(item.id)}

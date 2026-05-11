@@ -111,6 +111,24 @@ async def set_queue_printing(db: AsyncSession, queue_id: int, item_id: int | Non
     queue.last_activity_at = datetime.now(timezone.utc)
 
 
+async def set_queue_paused(db: AsyncSession, queue_id: int, paused_item_id: int | None = None) -> None:
+    """Pause the queue after a user-initiated cancel.
+
+    Different from ``set_queue_error``: cancel is intentional, not a fault.
+    Operator can inspect, dequeue/reorder, then resume manually instead of
+    having the next pending item auto-dispatched right after their cancel.
+    """
+    result = await db.execute(select(PrinterQueue).where(PrinterQueue.id == queue_id))
+    queue = result.scalar_one_or_none()
+    if not queue:
+        return
+
+    queue.status = "paused"
+    queue.current_item_id = None
+    queue.last_activity_at = datetime.now(timezone.utc)
+    logger.info("Queue %d paused after cancel (item: %s)", queue_id, paused_item_id)
+
+
 async def set_queue_idle(db: AsyncSession, queue_id: int) -> None:
     """Set queue to idle status when a print completes successfully."""
     result = await db.execute(select(PrinterQueue).where(PrinterQueue.id == queue_id))

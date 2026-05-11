@@ -58,6 +58,8 @@ async def create_external_link(
         name=link_data.name,
         url=link_data.url,
         icon=link_data.icon,
+        open_in_new_tab=link_data.open_in_new_tab,
+        nav_group=link_data.nav_group,
         sort_order=next_order,
     )
 

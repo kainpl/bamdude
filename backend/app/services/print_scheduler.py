@@ -1444,6 +1444,23 @@ class PrintScheduler:
         await update_queue_counters(db, item.queue_id)
         await db.commit()
 
+    async def _cancel_item(self, db: AsyncSession, item: PrintQueueItem) -> None:
+        """Mark item as cancelled by user and pause the queue.
+
+        Differs from ``_fail_item`` in two ways: status is ``cancelled``
+        (not ``failed``) and the queue is paused (not in error). User
+        cancel is intentional — pausing lets the operator decide whether
+        to resume the rest of the queue.
+        """
+        from backend.app.services.queue_counters import set_queue_paused, update_queue_counters
+
+        item.status = "cancelled"
+        item.error_message = "Cancelled by user"
+        item.completed_at = datetime.now(timezone.utc)
+        await set_queue_paused(db, item.queue_id, paused_item_id=item.id)
+        await update_queue_counters(db, item.queue_id)
+        await db.commit()
+
     async def _start_print(self, db: AsyncSession, item: PrintQueueItem):
         """Upload file and start print for a queue item.
 
@@ -1658,8 +1675,16 @@ class PrintScheduler:
                 return
 
             if not outcome.get("success"):
-                err = outcome.get("error") or "Dispatch failed"
                 item = await db.get(PrintQueueItem, queue_item_id)
+                if outcome.get("cancelled"):
+                    # User-initiated cancel — mark item cancelled and pause
+                    # the queue. Don't fire the "queue job failed"
+                    # notification: nothing failed, the user stopped it.
+                    if item:
+                        await self._cancel_item(db, item)
+                        await self._power_off_if_needed(db, item)
+                    return
+                err = outcome.get("error") or "Dispatch failed"
                 if item:
                     await self._fail_item(db, item, err)
                 await notification_service.on_queue_job_failed(
