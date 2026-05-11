@@ -945,7 +945,11 @@ export function SettingsPage() {
     // the backend hardcoded origin/main and silently no-op'd beta installs).
     mutationFn: (tagName?: string) => api.applyUpdate(tagName),
     onSuccess: (data) => {
-      if (data.is_docker) {
+      // Both HA-addon and plain Docker return a managed-deployment message
+      // instead of starting an in-place upgrade — surface as a toast so the
+      // operator sees the actual instructions (HA: go to Supervisor; Docker:
+      // run the compose snippet).
+      if (data.is_ha_addon || data.is_docker) {
         showToast(data.message, 'error');
       } else {
         refetchUpdateStatus();
@@ -2323,6 +2327,17 @@ export function SettingsPage() {
                     ) : updateStatus?.status === 'error' ? (
                       <div className="mt-3 p-2 bg-red-500/20 rounded text-sm text-red-400">
                         {updateStatus.error || updateStatus.message}
+                      </div>
+                    ) : updateCheck?.is_ha_addon ? (
+                      // HA addon installs defer to Home Assistant Supervisor for
+                      // updates — point operator at the HA UI instead of rendering
+                      // the docker-compose snippet (which they can't act on, since
+                      // Supervisor owns the addon lifecycle). Must precede the
+                      // is_docker branch — HA addons ARE Docker.
+                      <div className="mt-3 p-3 bg-bambu-dark-tertiary rounded-lg">
+                        <p className="text-sm text-bambu-gray">
+                          {t('settings.updateViaHomeAssistant')}
+                        </p>
                       </div>
                     ) : updateCheck?.is_docker ? (
                       // Docker installs aren't updated in-app — instead show the

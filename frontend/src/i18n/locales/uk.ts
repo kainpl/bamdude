@@ -2073,6 +2073,7 @@ export default {
     checkNow: 'Перевірити зараз',
     releaseNotes: 'Примітки до релізу',
     updateViaDocker: 'Оновити через Docker Compose:',
+    updateViaHomeAssistant: 'BamDude працює як аддон Home Assistant. Оновленням керує HA Supervisor — відкрий Налаштування → Аддони → BamDude → Оновити.',
     dockerImagePullTitle: 'Image-based встановлення (типове)',
     dockerImagePullStable: 'Якщо image-tag пінений у docker-compose.yml — поправ; потім pull + recreate:',
     dockerImagePullBeta: 'Бета-теги не підтягуються через `:latest`. Постав явний бета-tag у docker-compose.yml, потім pull + recreate:',

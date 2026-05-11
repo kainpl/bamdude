@@ -2059,6 +2059,7 @@ export default {
     checkNow: 'Check now',
     releaseNotes: 'Release Notes',
     updateViaDocker: 'Update via Docker Compose:',
+    updateViaHomeAssistant: 'BamDude is running as a Home Assistant addon. Updates are managed by the HA Supervisor — open Settings → Add-ons → BamDude → Update.',
     dockerImagePullTitle: 'Image-based install (typical)',
     dockerImagePullStable: 'Edit your docker-compose.yml image tag if pinned, then pull + recreate:',
     dockerImagePullBeta: 'Beta tags are not pulled by `:latest`. Edit your docker-compose.yml to pin the beta image tag, then pull + recreate:',

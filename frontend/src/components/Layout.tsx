@@ -528,10 +528,14 @@ export function Layout() {
     setDragOverId(null);
   };
 
-  // Show update banner if update available and not dismissed for this version
+  // Show update banner if update available and not dismissed for this version.
+  // HA-addon installs are suppressed — the HA Supervisor surfaces its own
+  // update notification natively, so our banner would be duplicate noise
+  // linking to a page that just says "update via HA".
   const showUpdateBanner = updateCheck?.update_available &&
     updateCheck.latest_version &&
-    updateCheck.latest_version !== dismissedUpdateVersion;
+    updateCheck.latest_version !== dismissedUpdateVersion &&
+    !updateCheck.is_ha_addon;
 
   const dismissUpdateBanner = () => {
     if (updateCheck?.latest_version) {

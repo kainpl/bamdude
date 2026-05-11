@@ -2934,7 +2934,8 @@ export interface UpdateCheckResult {
   error?: string;
   message?: string;
   is_docker?: boolean;
-  update_method?: 'docker' | 'git';
+  is_ha_addon?: boolean;
+  update_method?: 'docker' | 'git' | 'ha_addon';
 }
 
 export interface UpdateStatus {
@@ -5314,7 +5315,7 @@ export const api = {
   getVersion: () => request<VersionInfo>('/updates/version'),
   checkForUpdates: () => request<UpdateCheckResult>('/updates/check'),
   applyUpdate: (tagName?: string) =>
-    request<{ success: boolean; message: string; target_ref?: string; status?: UpdateStatus; is_docker?: boolean }>('/updates/apply', {
+    request<{ success: boolean; message: string; target_ref?: string; status?: UpdateStatus; is_docker?: boolean; is_ha_addon?: boolean }>('/updates/apply', {
       method: 'POST',
       body: JSON.stringify(tagName ? { tag_name: tagName } : {}),
     }),

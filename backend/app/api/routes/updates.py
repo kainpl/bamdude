@@ -53,6 +53,17 @@ def _is_docker_environment() -> bool:
     return False
 
 
+def _is_ha_addon() -> bool:
+    """Detect if running as a Home Assistant Supervisor addon.
+
+    HA Supervisor injects ``SUPERVISOR_TOKEN`` into every addon container;
+    the variable is not set in any other environment, so a single env-var
+    check is sufficient with no false-positive surface. An empty string is
+    treated as unset (Pydantic-style ``""`` → falsy).
+    """
+    return bool(os.environ.get("SUPERVISOR_TOKEN"))
+
+
 def _find_executable(name: str) -> str | None:
     """Find an executable in PATH or common locations."""
     # Try standard PATH first
@@ -300,6 +311,17 @@ async def check_for_updates(
         }
 
         is_docker = _is_docker_environment()
+        is_ha_addon = _is_ha_addon()
+        # HA addons are also Docker, so the more specific shape wins for
+        # `update_method`. is_docker stays True so older frontend bundles
+        # still hit a managed-deployment branch instead of rendering an
+        # Install button that can't work.
+        if is_ha_addon:
+            update_method = "ha_addon"
+        elif is_docker:
+            update_method = "docker"
+        else:
+            update_method = "git"
         return {
             "update_available": update_available,
             "current_version": APP_VERSION,
@@ -310,7 +332,8 @@ async def check_for_updates(
             "release_url": release_url,
             "published_at": published_at,
             "is_docker": is_docker,
-            "update_method": "docker" if is_docker else "git",
+            "is_ha_addon": is_ha_addon,
+            "update_method": update_method,
         }
 
     except httpx.HTTPError as e:
@@ -589,6 +612,22 @@ async def apply_update(
 
     target_ref = _resolve_git_ref(target_tag)
 
+    # Managed-deployment shapes own the update lifecycle. HA addons ARE
+    # Docker containers, so check HA first — otherwise the Docker branch
+    # would mis-classify them and surface a docker-compose snippet that
+    # operators of HA-managed installs can't run.
+    if _is_ha_addon():
+        return {
+            "success": False,
+            "is_ha_addon": True,
+            "is_docker": True,
+            "target_ref": target_ref,
+            "message": (
+                "BamDude is running as a Home Assistant addon. "
+                "Updates are managed by the Home Assistant Supervisor "
+                "(Settings → Add-ons → BamDude → Update)."
+            ),
+        }
     # Check if running in Docker — instructions now include the specific tag
     if _is_docker_environment():
         return {
