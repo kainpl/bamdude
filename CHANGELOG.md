@@ -36,6 +36,10 @@ All notable changes to BamDude will be documented in this file.
 
 - **MakerWorld URL input has an inline "Clear" button.** The X button appears inside the input on the right whenever the field has content or a resolved-model preview is visible. Clicking it wipes `urlInput`, `resolved`, `resolvedForUrl`, and the per-instance imports cache — same effect as resetting the page, but one click instead of refresh.
 
+### Security
+
+- **Bumped pip to ≥26.1 in the production Dockerfile (CVE-2026-6357).** The `python:3.13-slim` base ships pip `26.0.1`, which runs its self-update check after installing wheels — a malicious wheel that included a module name matching a deferred stdlib import (urllib / ssl / …) could hijack the import inside the install step. We now upgrade pip immediately before installing `requirements.txt`, so the install runs under the patched pip and the dist-info metadata in the final image is the fixed version. Adapted from upstream `1c778e8a`.
+
 ### Fixed
 
 - **MakerWorld cover images failed to render with "auth required".** The cover endpoints were originally registered as `.../cover` and `.../variant-cover` with `RequirePermission(MAKERWORLD_VIEW)` — but `<img src>` browser fetches can't carry an Authorization header. Renamed the variant route to `.../cover-variant` so the substring `/cover` matches the auth-middleware public whitelist (the same mechanism library thumbnails and printer covers use), and dropped `RequirePermission` from both cover routes. The JSON `.../meta` endpoint keeps its permission gate since fetch() requests carry the JWT normally.
