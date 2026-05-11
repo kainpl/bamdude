@@ -498,7 +498,11 @@ export default {
       powerOffTitle: 'Power Off Printer',
       powerOffMessage: 'Are you sure you want to turn OFF the power for "{{name}}"?',
       powerOffWarning: 'WARNING: "{{name}}" is currently printing! Are you sure you want to turn OFF the power? This will interrupt the print and may damage the printer.',
-      powerOffButton: 'Power Off'
+      powerOffButton: 'Power Off',
+      haToggleTitle: 'Toggle "{{name}}"',
+      haToggleMessage: 'Toggle Home Assistant entity {{entity}}?',
+      haToggleWarning: 'WARNING: "{{name}}" is currently printing! Toggling {{entity}} now could interrupt the print or kill the printer\'s power. Continue?',
+      haToggleButton: 'Toggle'
     },
     // Discovery
     discovery: {

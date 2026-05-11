@@ -508,7 +508,11 @@ export default {
       powerOffTitle: 'Вимкнути принтер',
       powerOffMessage: 'Ви впевнені, що хочете вимкнути живлення "{{name}}"?',
       powerOffWarning: 'УВАГА: "{{name}}" зараз друкує! Ви впевнені, що хочете вимкнути живлення? Це перерве друк і може пошкодити принтер.',
-      powerOffButton: 'Вимкнути'
+      powerOffButton: 'Вимкнути',
+      haToggleTitle: 'Перемкнути "{{name}}"',
+      haToggleMessage: 'Перемкнути сутність Home Assistant {{entity}}?',
+      haToggleWarning: 'УВАГА: "{{name}}" зараз друкує! Перемкнення {{entity}} зараз може перервати друк або відрубати живлення принтера. Продовжити?',
+      haToggleButton: 'Перемкнути'
     },
     // Discovery
     discovery: {
