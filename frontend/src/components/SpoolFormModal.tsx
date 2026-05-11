@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { X, Loader2, Save, Beaker, Palette, Zap, Tag, Unlink } from 'lucide-react';
 import { api, ApiError } from '../api/client';
-import type { InventorySpool, SlicerSetting, SpoolCatalogEntry, LocalPreset, SpoolmanBulkCreateResult, SpoolKProfileInput, SpoolmanFilamentEntry } from '../api/client';
+import type { InventorySpool, SlicerSetting, SpoolCatalogEntry, LocalPreset, SpoolmanBulkCreateResult, SpoolKProfileInput, SpoolmanFilamentEntry, BuiltinFilament } from '../api/client';
 import { Button } from './Button';
 import { useToast } from '../contexts/ToastContext';
 import type { SpoolFormData, PrinterWithCalibrations, ColorPreset } from './spool-form/types';
@@ -71,6 +71,9 @@ export function SpoolFormModal({
   // Local presets (OrcaSlicer imports)
   const [localPresets, setLocalPresets] = useState<LocalPreset[]>([]);
 
+  // Built-in filaments (cloud-free fallback / dedup floor)
+  const [builtinFilaments, setBuiltinFilaments] = useState<BuiltinFilament[]>([]);
+
   // Color catalog
   const [colorCatalog, setColorCatalog] = useState<{ manufacturer: string; color_name: string; hex_color: string; material: string | null }[]>([]);
 
@@ -134,6 +137,7 @@ export function SpoolFormModal({
       }
       api.getColorCatalog().then(setColorCatalog).catch(console.error);
       api.getLocalPresets().then(r => setLocalPresets(r.filament)).catch(console.error);
+      api.getBuiltinFilaments().then(setBuiltinFilaments).catch(console.error);
 
       // Fetch printer calibrations if not provided via props
       if (printersWithCalibrations.length === 0) {
@@ -187,10 +191,13 @@ export function SpoolFormModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, printersWithCalibrations.length]);
 
-  // Build filament options: cloud → local → fallback
+  // Build filament options: union of cloud + local + built-in.
+  // Cloud / local variants are NOT collapsed by base name — every per-printer
+  // / per-nozzle variant renders as its own row (the spool itself is
+  // printer-agnostic; the variant is what gets persisted as slicer_filament).
   const filamentOptions = useMemo(
-    () => buildFilamentOptions(cloudPresets, new Set(), localPresets),
-    [cloudPresets, localPresets],
+    () => buildFilamentOptions(cloudPresets, new Set(), localPresets, builtinFilaments),
+    [cloudPresets, localPresets, builtinFilaments],
   );
 
   // Extract brands from presets
