@@ -83,7 +83,10 @@ async def show_printer_list(message_or_callback, tg_chat: TelegramChat | None = 
             line += f" \\[{model}\\]"
         line += f" – {label}"
         if p["state"] == "RUNNING" and p["progress"]:
-            line += f" \\({p['progress']}%\\)"
+            # progress is float (mc_percent cast to float); cast to int because
+            # MarkdownV2 reserves "." and the percent has no sub-integer
+            # precision anyway — `f"{25.0}"` would render "25.0%" and crash.
+            line += f" \\({int(p['progress'])}%\\)"
 
         due, warning = await get_maintenance_counts(p["id"])
         if due > 0:
@@ -165,7 +168,7 @@ async def show_printer_detail(
 
     if printer["state"] == "RUNNING":
         lines.append(f"\n\U0001f4c4 {escape_md(printer['current_file'] or '–')}")
-        lines.append(f"\U0001f4ca {escape_md(t(lang, NS, 'printers.progress'))}: {printer['progress']}%")
+        lines.append(f"\U0001f4ca {escape_md(t(lang, NS, 'printers.progress'))}: {int(printer['progress'])}%")
         lines.append(
             f"\u23f1 {escape_md(t(lang, NS, 'printers.remaining'))}: {escape_md(format_time(lang, printer['remaining_time']))}"
         )
