@@ -12,6 +12,8 @@ All notable changes to BamDude will be documented in this file.
 
 - **AMS Settings dialog (Bambu Studio parity).** Gear icon in the AMS panel header opens a per-printer modal. Toggle insertion / power-on RFID auto-read, remaining-capacity estimation, AMS filament backup, air-print detection (A1 series only). Calibrate an AMS unit (`M620 C<id>`). Switch A1 firmware between LITE and FULL. Reset connected-AMS ID sequence (H2D). All visibility gated per printer model — only the rows your printer actually supports show up. Backend gated by `printers:update`; every applied change recorded in the new `ams_setting_audit` table for forensic trace (migration m060). Strings sourced verbatim from BS source + Ukrainian translations from BS .po (some msgstr are still empty upstream — those remain English with `// TBD-uk` markers in the locale file).
 
+- **Printer Settings dialog.** New kebab-menu item "Printer Settings" opens a tabbed modal (Print Options + Printer Parts) — Bambu Studio parity for ~15 toggles (AI detections with Low/Medium/High sensitivity, filament tangle, nozzle blob, FOD check, displacement, open-door check, purify-air-at-end, auto recovery, prompt sound, snapshot, build-plate detection, plate alignment). Read-only nozzle info on Parts tab. Gated by `printers:update`; per-model `supports.*` hides unsupported rows. Audit table `printer_setting_audit` (m061) records every applied change. Calibration stays under its own kebab item.
+
 ### Fixed
 
 - **AMS humidity/temperature history modal** — missing i18n keys (Ukrainian users saw English fallbacks) + the dialog now follows the active theme background variant (warm/cool/oled/slate/forest), not just light/dark mode.
