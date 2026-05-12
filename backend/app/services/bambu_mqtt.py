@@ -132,6 +132,20 @@ class PrintOptions:
     airprint_sensitivity: str = "medium"
     auto_recovery_step_loss: bool = True  # Uses print.print_option command
     filament_tangle_detect: bool = False
+    # New flags added for the Printer Settings dialog. Each is bool|None
+    # (None = "printer hasn't reported"); the rest of the dataclass uses
+    # plain bool defaults — we keep the original defaults intact and only
+    # surface None for the new ones via the API.
+    nozzle_blob_detect: bool | None = None
+    sound_enable: bool | None = None
+    save_remote_to_storage: int | None = None
+    air_purification: int | None = None  # 0 Off / 1 Inside / 2 Outside
+    open_door_check: int | None = None  # 0 Off / 1 Pause / 2 Halt
+    plate_type_detect: bool | None = None  # build_plate_marker_detect echo
+    plate_align_check: bool | None = None
+    snapshot_enabled: bool | None = None
+    fod_check: bool | None = None
+    displacement_detection: bool | None = None
 
 
 @dataclass
@@ -224,6 +238,12 @@ class PrinterState:
     # while ``time.time() - hold < 3.0``. Avoids the toggle visually flipping
     # back during the half-second printer-confirms-the-change round-trip.
     ams_settings_hold: dict = field(default_factory=dict)  # flag_name -> epoch_seconds
+    # Hold-timer for Printer Settings dialog. Same 3 s TTL pattern as
+    # ams_settings_hold — keys are flag names ("auto_recovery",
+    # "sound_enable", "purify_air", "open_door", "spaghetti_detector", …)
+    # mapped to epoch_seconds. Push parser ignores echoes for a key while
+    # the hold is active.
+    printer_settings_hold: dict = field(default_factory=dict)
     # Filament Track Switch (FTS) accessory — when installed, AMS info reports
     # bits 8-11 = 0xE (uninitialized) because routing is dynamic. Upstream #1162.
     fila_switch: "FilaSwitchState" = field(default_factory=lambda: FilaSwitchState())
@@ -937,6 +957,37 @@ class BambuMQTTClient:
             if "air_print_detect" in print_data:
                 if (self.state.ams_settings_hold.get("ams_air_print_detect", 0) + 3.0) < _ams_echo_now:
                     self.state.ams_air_print_detect = bool(print_data["air_print_detect"])
+
+            # Printer Settings dialog echoes — direct field echoes for the
+            # print_option toggles. Each respects a 3 s hold from
+            # printer_settings_hold so a freshly-toggled flag isn't
+            # immediately overwritten by the printer's confirm push.
+            _ps_now = time.time()
+            _ps_ttl = 3.0
+
+            def _ps_hold(flag: str) -> bool:
+                ts = self.state.printer_settings_hold.get(flag)
+                return ts is not None and (_ps_now - ts) < _ps_ttl
+
+            po = self.state.print_options
+            if "auto_recovery" in print_data and not _ps_hold("auto_recovery"):
+                po.auto_recovery_step_loss = bool(print_data["auto_recovery"])
+            if "sound_enable" in print_data and not _ps_hold("sound_enable"):
+                po.sound_enable = bool(print_data["sound_enable"])
+            if "filament_tangle_detect" in print_data and not _ps_hold("filament_tangle"):
+                po.filament_tangle_detect = bool(print_data["filament_tangle_detect"])
+            if "nozzle_blob_detect" in print_data and not _ps_hold("nozzle_blob"):
+                po.nozzle_blob_detect = bool(print_data["nozzle_blob_detect"])
+            if "build_plate_marker_detect" in print_data and not _ps_hold("plate_type"):
+                po.plate_type_detect = bool(print_data["build_plate_marker_detect"])
+            if "plate_align_check" in print_data and not _ps_hold("plate_align"):
+                po.plate_align_check = bool(print_data["plate_align_check"])
+            if "air_purification" in print_data and not _ps_hold("purify_air"):
+                po.air_purification = int(print_data["air_purification"])
+            if "xcam_door_open_check" in print_data and not _ps_hold("open_door"):
+                po.open_door_check = int(print_data["xcam_door_open_check"])
+            if "xcam__save_remote_print_file_to_storage" in print_data and not _ps_hold("save_remote_to_storage"):
+                po.save_remote_to_storage = int(print_data["xcam__save_remote_print_file_to_storage"])
 
             # Handle vir_slot (H2-series external spool data) - list of external trays
             # Process vir_slot FIRST so it takes priority over vt_tray
@@ -3637,6 +3688,114 @@ class BambuMQTTClient:
             self.state.print_options.auto_recovery_step_loss = enabled
 
         return True
+
+    # ---------- Printer Settings dialog publishers (Print Options tab) ----------
+    # Each publisher matches BS DeviceCore/DevPrintOptions.cpp shapes. All use
+    # ``print.command = "print_option"`` with one toggle field per call;
+    # snapshot uses ``camera.command = "ipcam_cap_pic_set"``. Return
+    # ``(success, sequence_id)``. Hold-timer is stamped on
+    # ``state.printer_settings_hold`` so the push parser doesn't clobber
+    # the optimistic value during the printer's confirm round-trip.
+
+    def _publish_print_option_bool(self, field: str, hold_key: str, enabled: bool) -> tuple[bool, str | None]:
+        if not self._client or not self.state.connected:
+            return False, None
+        self._sequence_id += 1
+        seq = str(self._sequence_id)
+        command = {"print": {"command": "print_option", "sequence_id": seq, field: bool(enabled)}}
+        self._client.publish(self.topic_publish, json.dumps(command), qos=1)
+        self.state.printer_settings_hold[hold_key] = time.time()
+        return True, seq
+
+    def _publish_print_option_int(self, field: str, hold_key: str, value: int) -> tuple[bool, str | None]:
+        if not self._client or not self.state.connected:
+            return False, None
+        self._sequence_id += 1
+        seq = str(self._sequence_id)
+        command = {"print": {"command": "print_option", "sequence_id": seq, field: int(value)}}
+        self._client.publish(self.topic_publish, json.dumps(command), qos=1)
+        self.state.printer_settings_hold[hold_key] = time.time()
+        return True, seq
+
+    def print_option_auto_recovery(self, enabled: bool) -> tuple[bool, str | None]:
+        return self._publish_print_option_bool("auto_recovery", "auto_recovery", enabled)
+
+    def print_option_sound(self, enabled: bool) -> tuple[bool, str | None]:
+        return self._publish_print_option_bool("sound_enable", "sound_enable", enabled)
+
+    def print_option_filament_tangle(self, enabled: bool) -> tuple[bool, str | None]:
+        return self._publish_print_option_bool("filament_tangle_detect", "filament_tangle", enabled)
+
+    def print_option_nozzle_blob(self, enabled: bool) -> tuple[bool, str | None]:
+        return self._publish_print_option_bool("nozzle_blob_detect", "nozzle_blob", enabled)
+
+    def print_option_plate_type(self, enabled: bool) -> tuple[bool, str | None]:
+        return self._publish_print_option_bool("build_plate_marker_detect", "plate_type", enabled)
+
+    def print_option_plate_align(self, enabled: bool) -> tuple[bool, str | None]:
+        return self._publish_print_option_bool("plate_align_check", "plate_align", enabled)
+
+    def print_option_purify_air(self, value: int) -> tuple[bool, str | None]:
+        return self._publish_print_option_int("air_purification", "purify_air", value)
+
+    def print_option_open_door(self, value: int) -> tuple[bool, str | None]:
+        return self._publish_print_option_int("xcam_door_open_check", "open_door", value)
+
+    def print_option_save_remote_to_storage(self, value: int) -> tuple[bool, str | None]:
+        return self._publish_print_option_int(
+            "xcam__save_remote_print_file_to_storage", "save_remote_to_storage", value
+        )
+
+    def camera_snapshot_enable(self, enabled: bool) -> tuple[bool, str | None]:
+        if not self._client or not self.state.connected:
+            return False, None
+        self._sequence_id += 1
+        seq = str(self._sequence_id)
+        command = {
+            "camera": {
+                "command": "ipcam_cap_pic_set",
+                "sequence_id": seq,
+                "control": "enable" if enabled else "disable",
+            }
+        }
+        self._client.publish(self.topic_publish, json.dumps(command), qos=1)
+        self.state.printer_settings_hold["snapshot"] = time.time()
+        return True, seq
+
+    def xcam_control_for_settings(
+        self,
+        module: str,
+        enabled: bool,
+        sensitivity: str | None = None,
+    ) -> tuple[bool, str | None]:
+        """Thin wrapper over ``set_xcam_option`` for the Printer Settings router.
+
+        Unlike the existing ``set_xcam_option`` (which returns bool and
+        always sends ``halt_print_sensitivity``), this:
+          - returns (ok, sequence_id) for audit-trail correlation,
+          - omits ``halt_print_sensitivity`` when ``sensitivity is None``,
+          - stamps ``printer_settings_hold[module]``.
+        Wire format from BS DevPrintOptions.cpp::command_xcam_control.
+        """
+        if not self._client or not self.state.connected:
+            return False, None
+        self._sequence_id += 1
+        seq = str(self._sequence_id)
+        command: dict = {
+            "xcam": {
+                "command": "xcam_control_set",
+                "sequence_id": seq,
+                "module_name": module,
+                "control": bool(enabled),
+                "enable": bool(enabled),
+                "print_halt": True,
+            }
+        }
+        if sensitivity is not None:
+            command["xcam"]["halt_print_sensitivity"] = sensitivity
+        self._client.publish(self.topic_publish, json.dumps(command), qos=1)
+        self.state.printer_settings_hold[module] = time.time()
+        return True, seq
 
     def start_calibration(
         self,

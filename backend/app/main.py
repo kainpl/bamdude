@@ -48,6 +48,7 @@ from backend.app.api.routes import (
     print_options_preferences,
     print_queue,
     printer_queues,
+    printer_settings as printer_settings_routes,
     printers,
     projects,
     settings as settings_routes,
@@ -6172,6 +6173,7 @@ app.include_router(api_keys.router, prefix=app_settings.api_prefix)
 app.include_router(webhook.router, prefix=app_settings.api_prefix)
 app.include_router(ams_history.router, prefix=app_settings.api_prefix)
 app.include_router(ams_settings_routes.router, prefix=app_settings.api_prefix)
+app.include_router(printer_settings_routes.router, prefix=app_settings.api_prefix)
 app.include_router(system.router, prefix=app_settings.api_prefix)
 app.include_router(support.router, prefix=app_settings.api_prefix)
 app.include_router(bug_report.router, prefix=app_settings.api_prefix)

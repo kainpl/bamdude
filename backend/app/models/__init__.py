@@ -17,6 +17,7 @@ from backend.app.models.notification_template import NotificationTemplate
 from backend.app.models.orca_base_cache import OrcaBaseProfile
 from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
+from backend.app.models.printer_setting_audit import PrinterSettingAudit
 from backend.app.models.project import Project
 from backend.app.models.project_print_plan import ProjectPrintPlanItem
 from backend.app.models.settings import Settings
@@ -50,6 +51,7 @@ __all__ = [
     "AMSSensorHistory",
     "AmsLabel",
     "AmsSettingAudit",
+    "PrinterSettingAudit",
     "LibraryFolder",
     "LibraryFileNote",
     "LibraryFile",
