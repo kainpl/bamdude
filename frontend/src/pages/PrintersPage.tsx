@@ -23,6 +23,7 @@ import {
   PowerOff,
   Zap,
   Wrench,
+  Droplet,
   ChevronDown,
   Filter,
   MoreHorizontal,
@@ -97,6 +98,7 @@ import { AssignSpoolModal } from '../components/AssignSpoolModal';
 import { ConfigureAmsSlotModal } from '../components/ConfigureAmsSlotModal';
 import { AMSSettingsModal } from '../components/AMSSettingsModal';
 import { PrinterSettingsModal } from '../components/PrinterSettingsModal';
+import { FilamentCalibrationModal } from '../components/FilamentCalibrationModal';
 import { useToast } from '../contexts/ToastContext';
 import { ChamberLight } from '../components/icons/ChamberLight';
 import { PlateClearedIcon } from '../components/icons/PlateClearedIcon';
@@ -1470,6 +1472,7 @@ function PrinterCard({
   } | null>(null);
   const [amsSettingsOpen, setAmsSettingsOpen] = useState(false);
   const [printerSettingsOpen, setPrinterSettingsOpen] = useState(false);
+  const [filamentCaliOpen, setFilamentCaliOpen] = useState(false);
   const [linkSpoolModal, setLinkSpoolModal] = useState<{
     tagUid: string;
     trayUuid: string;
@@ -2585,6 +2588,19 @@ function PrinterCard({
                   >
                     <Settings className="w-4 h-4" />
                     {t('printerSettings.menuItem')}
+                  </button>
+                  <button
+                    className={`w-full px-4 py-2 text-left text-sm hover:bg-bambu-dark-tertiary flex items-center gap-2 ${
+                      !hasPermission('printers:update') ? 'opacity-50 cursor-not-allowed' : ''
+                    }`}
+                    onClick={() => {
+                      if (!hasPermission('printers:update')) return;
+                      setFilamentCaliOpen(true);
+                      setShowMenu(false);
+                    }}
+                  >
+                    <Droplet className="w-4 h-4" />
+                    {t('filamentCali.menuItem')}
                   </button>
                   {hasMatchingMacros && (
                     <button
@@ -5353,6 +5369,13 @@ function PrinterCard({
       <PrinterSettingsModal
         isOpen={printerSettingsOpen}
         onClose={() => setPrinterSettingsOpen(false)}
+        printerId={printer.id}
+      />
+
+      {/* Filament Calibration wizard (Plan 2) */}
+      <FilamentCalibrationModal
+        isOpen={filamentCaliOpen}
+        onClose={() => setFilamentCaliOpen(false)}
         printerId={printer.id}
       />
 

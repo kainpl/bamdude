@@ -21,6 +21,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.core.websocket import ws_manager
 from backend.app.models.calibration_session import CalibrationSession
 from backend.app.models.filament_calibration import FilamentCalibration
 from backend.app.models.printer import Printer
@@ -36,6 +37,27 @@ from backend.app.services.calibration_constants import (
 from backend.app.services.printer_manager import printer_manager
 
 ASSET_ROOT = Path(__file__).resolve().parent.parent / "data" / "calib_assets"
+
+
+async def broadcast_calibration_event(*, printer_id: int, event: str, payload: dict | None = None) -> None:
+    """Wrap ws_manager.broadcast with a ``calibration.<event>`` envelope.
+
+    Frontend ``useWebSocket`` routes ``calibration.*`` messages to a
+    CustomEvent + TanStack Query invalidation; the wizard hook listens
+    for ``calibration-event`` and advances its step machine. Emission is
+    best-effort — never break the persistence path on WS failure.
+    """
+    try:
+        await ws_manager.broadcast(
+            {
+                "type": f"calibration.{event}",
+                "printer_id": printer_id,
+                "data": payload or {},
+            }
+        )
+    except Exception:
+        pass
+
 
 _MODE_TO_PATH = {
     CaliMode.PA_LINE: ("pressure_advance", "pa_line"),
@@ -219,6 +241,11 @@ class CalibrationService:
         db.add(session)
         await db.commit()
         await db.refresh(session)
+        await broadcast_calibration_event(
+            printer_id=printer_id,
+            event="started",
+            payload={"session_id": session.id, "cali_mode": cali_mode.value, "method": method.value},
+        )
         return session
 
     async def submit_manual_result(
@@ -456,6 +483,11 @@ class CalibrationService:
 
         session.status = "saved"
         await db.commit()
+        await broadcast_calibration_event(
+            printer_id=session.printer_id,
+            event="saved",
+            payload={"session_id": session.id, "filament_calibration_id": new_row.id},
+        )
         return new_row
 
     async def cancel_session(self, *, db: AsyncSession, session_id: int) -> None:
@@ -476,6 +508,7 @@ class CalibrationService:
                 stop_fn()
         s.status = "cancelled"
         await db.commit()
+        await broadcast_calibration_event(printer_id=s.printer_id, event="cancelled", payload={"session_id": s.id})
 
 
 async def resolve_active_calibration(

@@ -241,6 +241,21 @@ export function useWebSocket() {
   }, [queryClient]);
 
   const handleMessage = useCallback((message: WebSocketMessage) => {
+    // Filament Calibration wizard events (m062 / Plan 2). Routed to a
+    // CustomEvent so the useFilamentCalibration hook can advance its
+    // step machine, plus a query invalidation so resume-banner data stays
+    // fresh. Skipped by the switch below to avoid unknown-type warnings.
+    if (message.type?.startsWith('calibration.')) {
+      queryClient.invalidateQueries({ queryKey: ['calibration', 'sessions'] });
+      if (message.printer_id != null) {
+        queryClient.invalidateQueries({
+          queryKey: ['calibration', 'awaiting', message.printer_id],
+        });
+      }
+      window.dispatchEvent(new CustomEvent('calibration-event', { detail: message }));
+      return;
+    }
+
     switch (message.type) {
       case 'printer_status':
         if (message.printer_id !== undefined && message.data) {

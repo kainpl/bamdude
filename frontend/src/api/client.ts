@@ -3603,6 +3603,118 @@ export interface PrinterSettingsPostResponse {
   sequence_id: string | null;
 }
 
+// ---------- Filament Calibration (m062 / Plan 2) ----------
+
+export type CaliMode =
+  | 'pa_line'
+  | 'pa_pattern'
+  | 'pa_tower'
+  | 'auto_pa_line'
+  | 'flow_rate'
+  | 'temp_tower'
+  | 'vol_speed_tower'
+  | 'vfa_tower'
+  | 'retraction_tower';
+
+export type CaliMethod = 'auto' | 'manual';
+
+export type NozzleVolumeType = 'standard' | 'high_flow' | 'tpu_high_flow' | 'hybrid';
+
+export interface CalibCapabilities {
+  pa_manual: boolean;
+  flow_manual: boolean;
+  temp_tower: boolean;
+  vol_speed_tower: boolean;
+  vfa_tower: boolean;
+  retraction_tower: boolean;
+  pa_auto: boolean;
+  flow_auto: boolean;
+  dual_extruder: boolean;
+  extruders: Array<{ id: number; name: string }>;
+  nozzles: Array<{
+    id: number;
+    diameter: number | null;
+    type: string | null;
+    flow_type: string | null;
+  }>;
+}
+
+export interface CalibFilamentIn {
+  ams_id: number;
+  slot_id: number;
+  tray_id: number;
+  filament_id: string;
+  filament_setting_id?: string | null;
+  bed_temp: number;
+  nozzle_temp: number;
+  max_volumetric_speed: number;
+  flow_rate?: number;
+}
+
+export interface StartSessionIn {
+  cali_mode: CaliMode;
+  method: CaliMethod;
+  nozzle_diameter: number;
+  nozzle_volume_type: NozzleVolumeType;
+  extruder_id?: number;
+  filaments: CalibFilamentIn[];
+}
+
+export interface CalibrationSessionOut {
+  id: number;
+  printer_id: number;
+  user_id: number | null;
+  cali_mode: string;
+  method: string;
+  nozzle_diameter: number;
+  nozzle_volume_type: string;
+  extruder_id: number;
+  status: 'running' | 'awaiting_user_input' | 'saved' | 'cancelled' | 'failed';
+  stage: number;
+  coarse_ratio: number | null;
+  parent_session_id: number | null;
+  mqtt_sequence_id: string | null;
+  print_queue_item_id: number | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FilamentCalibrationOut {
+  id: number;
+  printer_model: string;
+  filament_id: string;
+  filament_setting_id: string | null;
+  nozzle_diameter: number;
+  nozzle_volume_type: string;
+  extruder_id: number;
+  pa_k_value: number | null;
+  pa_n_coef: number | null;
+  flow_ratio: number | null;
+  confidence: number | null;
+  cali_mode: string;
+  source: string;
+  is_active: boolean;
+  cali_idx: number | null;
+  name: string;
+  notes: string | null;
+  calibrated_on_printer_id: number | null;
+  calibrated_by_user_id: number | null;
+  created_at: string;
+}
+
+export interface ManualResultIn {
+  best_line_index?: number;
+  coarse_modifier?: number;
+  skip_fine?: boolean;
+  fine_modifier?: number;
+}
+
+export interface ManualResultOut {
+  saved_rows: FilamentCalibrationOut[];
+  next_session_id: number | null;
+}
+
 // API functions
 export const api = {
   // Authentication
@@ -3972,6 +4084,28 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+
+  // Filament Calibration (m062 / Plan 2)
+  getCalibrationCapabilities: (printerId: number) =>
+    request<CalibCapabilities>(`/printers/${printerId}/calibration/capabilities`),
+  startCalibrationSession: (printerId: number, body: StartSessionIn) =>
+    request<CalibrationSessionOut>(`/printers/${printerId}/calibration/sessions`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  getCalibrationSession: (sessionId: number) =>
+    request<CalibrationSessionOut>(`/calibration/sessions/${sessionId}`),
+  cancelCalibrationSession: (sessionId: number) =>
+    request<void>(`/calibration/sessions/${sessionId}/cancel`, { method: 'POST' }),
+  submitManualResult: (sessionId: number, body: ManualResultIn) =>
+    request<ManualResultOut>(`/calibration/sessions/${sessionId}/manual-result`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  listAwaitingSessions: (printerId: number) =>
+    request<CalibrationSessionOut[]>(
+      `/calibration/sessions?printer_id=${printerId}&status=awaiting_user_input`,
+    ),
 
   // MQTT Debug Logging
   enableMQTTLogging: (printerId: number) =>
