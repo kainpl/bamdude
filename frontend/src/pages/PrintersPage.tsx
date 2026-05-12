@@ -96,6 +96,7 @@ import { LinkSpoolModal } from '../components/LinkSpoolModal';
 import { AssignSpoolModal } from '../components/AssignSpoolModal';
 import { ConfigureAmsSlotModal } from '../components/ConfigureAmsSlotModal';
 import { AMSSettingsModal } from '../components/AMSSettingsModal';
+import { PrinterSettingsModal } from '../components/PrinterSettingsModal';
 import { useToast } from '../contexts/ToastContext';
 import { ChamberLight } from '../components/icons/ChamberLight';
 import { PlateClearedIcon } from '../components/icons/PlateClearedIcon';
@@ -1468,6 +1469,7 @@ function PrinterCard({
     mode: 'humidity' | 'temperature';
   } | null>(null);
   const [amsSettingsOpen, setAmsSettingsOpen] = useState(false);
+  const [printerSettingsOpen, setPrinterSettingsOpen] = useState(false);
   const [linkSpoolModal, setLinkSpoolModal] = useState<{
     tagUid: string;
     trayUuid: string;
@@ -2570,6 +2572,19 @@ function PrinterCard({
                   >
                     <Wrench className="w-4 h-4" />
                     {t('printers.calibration.menuItem')}
+                  </button>
+                  <button
+                    className={`w-full px-4 py-2 text-left text-sm hover:bg-bambu-dark-tertiary flex items-center gap-2 ${
+                      !hasPermission('printers:update') ? 'opacity-50 cursor-not-allowed' : ''
+                    }`}
+                    onClick={() => {
+                      if (!hasPermission('printers:update')) return;
+                      setPrinterSettingsOpen(true);
+                      setShowMenu(false);
+                    }}
+                  >
+                    <Settings className="w-4 h-4" />
+                    {t('printerSettings.menuItem')}
                   </button>
                   {hasMatchingMacros && (
                     <button
@@ -5331,6 +5346,13 @@ function PrinterCard({
       <AMSSettingsModal
         isOpen={amsSettingsOpen}
         onClose={() => setAmsSettingsOpen(false)}
+        printerId={printer.id}
+      />
+
+      {/* Printer Settings Modal (Print Options + Parts tabs) */}
+      <PrinterSettingsModal
+        isOpen={printerSettingsOpen}
+        onClose={() => setPrinterSettingsOpen(false)}
         printerId={printer.id}
       />
 

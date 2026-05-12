@@ -3522,6 +3522,87 @@ export interface AmsSettingsPostResponse {
   sequence_id: string | null;
 }
 
+// Printer Settings dialog. Mirrors backend/app/schemas/printer_settings.py.
+export interface AiDetectorStateOut {
+  enabled: boolean | null;
+  sensitivity: string | null;
+}
+
+export interface PrintOptionsState {
+  auto_recovery: boolean | null;
+  sound: boolean | null;
+  filament_tangle: boolean | null;
+  nozzle_blob: boolean | null;
+  save_remote_to_storage: number | null;
+  purify_air: number | null;
+  open_door: number | null;
+  plate_type: boolean | null;
+  plate_align: boolean | null;
+  snapshot: boolean | null;
+  fod_check: boolean | null;
+  displacement_detection: boolean | null;
+  spaghetti_detector: AiDetectorStateOut;
+  pileup_detector: AiDetectorStateOut;
+  nozzleclumping_detector: AiDetectorStateOut;
+  airprinting_detector: AiDetectorStateOut;
+  first_layer_inspector: AiDetectorStateOut;
+  ai_monitoring: AiDetectorStateOut;
+}
+
+export interface PrinterPartsState {
+  nozzles: { id: number; type: string | null; diameter: number | null; flow_type: string | null }[];
+}
+
+export interface PrinterSettingsSupports {
+  spaghetti_detector: boolean;
+  pileup_detector: boolean;
+  nozzleclumping_detector: boolean;
+  airprinting_detector: boolean;
+  first_layer_inspector: boolean;
+  ai_monitoring: boolean;
+  filament_tangle: boolean;
+  nozzle_blob: boolean;
+  fod_check: boolean;
+  displacement_detection: boolean;
+  open_door_check: boolean;
+  purify_air: boolean;
+  auto_recovery: boolean;
+  sound: boolean;
+  save_remote_to_storage: boolean;
+  snapshot: boolean;
+  plate_type: boolean;
+  plate_align: boolean;
+  parts_editable: boolean;
+  parts_dual: boolean;
+}
+
+export interface PrinterSettingsGetResponse {
+  print_options: PrintOptionsState;
+  parts: PrinterPartsState;
+  supports: PrinterSettingsSupports;
+}
+
+export type PrinterSettingsPostBody =
+  | { action: 'print_option_bool';
+      key: 'auto_recovery' | 'sound' | 'filament_tangle' | 'nozzle_blob' | 'plate_type' | 'plate_align';
+      enabled: boolean }
+  | { action: 'print_option_int';
+      key: 'save_remote_to_storage' | 'purify_air' | 'open_door';
+      value: number }
+  | { action: 'xcam_control';
+      module: 'first_layer_inspector' | 'spaghetti_detector' | 'purgechutepileup_detector'
+            | 'nozzleclumping_detector' | 'airprinting_detector' | 'fod_check'
+            | 'displacement_detection' | 'ai_monitoring';
+      enabled: boolean;
+      sensitivity: 'low' | 'medium' | 'high' | null }
+  | { action: 'camera_snapshot'; enabled: boolean }
+  | { action: 'set_nozzle'; nozzle_id: number; type: string; diameter: number; flow_type: string };
+
+export interface PrinterSettingsPostResponse {
+  ok: boolean;
+  sequence_id: string | null;
+}
+
 // API functions
 export const api = {
   // Authentication
@@ -3880,6 +3961,14 @@ export const api = {
     request<AmsSettingsGetResponse>(`/printers/${printerId}/ams/settings`),
   postAmsSettings: (printerId: number, body: AmsSettingsPostBody) =>
     request<AmsSettingsPostResponse>(`/printers/${printerId}/ams/settings`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  getPrinterSettings: (printerId: number) =>
+    request<PrinterSettingsGetResponse>(`/printers/${printerId}/settings`),
+  postPrinterSettings: (printerId: number, body: PrinterSettingsPostBody) =>
+    request<PrinterSettingsPostResponse>(`/printers/${printerId}/settings`, {
       method: 'POST',
       body: JSON.stringify(body),
     }),
