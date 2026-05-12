@@ -207,6 +207,23 @@ class PrinterState:
     ams_mapping: list = field(default_factory=list)
     # Per-AMS extruder map: {ams_id: extruder_id} where 0=right/main, 1=left/deputy
     ams_extruder_map: dict = field(default_factory=dict)
+    # ---------- AMS system-level user settings (BS "AMS Settings" dialog) ----------
+    # Each flag mirrors the corresponding push field from print.ams (insert_flag,
+    # power_on_flag, calibrate_remain_flag) and the cfg bitfield (auto_switch
+    # bit 10 X1 / bit 18 P1+A1, air-print echo). None means "printer hasn't
+    # reported it yet" — distinct from False ("printer says off").
+    ams_insertion_update: bool | None = None
+    ams_power_on_update: bool | None = None
+    ams_remain_capacity: bool | None = None
+    ams_auto_switch_filament: bool | None = None
+    ams_air_print_detect: bool | None = None
+    ams_firmware_idx_run: int | None = None
+    ams_firmware_idx_sel: int | None = None
+    # Hold-timer: when we publish an AMS setting command we stamp the flag
+    # name here; the push parser skips overwriting the corresponding field
+    # while ``time.time() - hold < 3.0``. Avoids the toggle visually flipping
+    # back during the half-second printer-confirms-the-change round-trip.
+    ams_settings_hold: dict = field(default_factory=dict)  # flag_name -> epoch_seconds
     # Filament Track Switch (FTS) accessory — when installed, AMS info reports
     # bits 8-11 = 0xE (uninitialized) because routing is dynamic. Upstream #1162.
     fila_switch: "FilaSwitchState" = field(default_factory=lambda: FilaSwitchState())
@@ -910,6 +927,17 @@ class BambuMQTTClient:
                 except Exception as e:
                     logger.error("[%s] Error handling AMS data from print: %s", self.serial_number, e)
 
+            # AMS Settings dialog echoes: the printer reflects the most recently
+            # accepted ``print_option`` values directly under the ``print`` key.
+            # Same hold-timer pattern as the ams.* flags above.
+            _ams_echo_now = time.time()
+            if "auto_switch_filament" in print_data:
+                if (self.state.ams_settings_hold.get("ams_auto_switch_filament", 0) + 3.0) < _ams_echo_now:
+                    self.state.ams_auto_switch_filament = bool(print_data["auto_switch_filament"])
+            if "air_print_detect" in print_data:
+                if (self.state.ams_settings_hold.get("ams_air_print_detect", 0) + 3.0) < _ams_echo_now:
+                    self.state.ams_air_print_detect = bool(print_data["air_print_detect"])
+
             # Handle vir_slot (H2-series external spool data) - list of external trays
             # Process vir_slot FIRST so it takes priority over vt_tray
             if "vir_slot" in print_data:
@@ -1426,6 +1454,23 @@ class BambuMQTTClient:
             non_list_fields = {k: v for k, v in ams_data.items() if k != "ams"}
             if non_list_fields:
                 logger.debug("[%s] AMS dict fields: %s", self.serial_number, non_list_fields)
+
+            # AMS system-level user settings (BS "AMS Settings" dialog).
+            # Each respects a 3-second hold-timer so a just-sent toggle isn't
+            # clobbered by the printer's interleaved echo (BS HOLD_TIME_3SEC).
+            _ams_settings_now = time.time()
+            _ams_hold_ttl = 3.0
+
+            def _ams_hold_active(flag_name: str) -> bool:
+                ts = self.state.ams_settings_hold.get(flag_name)
+                return ts is not None and (_ams_settings_now - ts) < _ams_hold_ttl
+
+            if "insert_flag" in ams_data and not _ams_hold_active("ams_insertion_update"):
+                self.state.ams_insertion_update = bool(ams_data["insert_flag"])
+            if "power_on_flag" in ams_data and not _ams_hold_active("ams_power_on_update"):
+                self.state.ams_power_on_update = bool(ams_data["power_on_flag"])
+            if "calibrate_remain_flag" in ams_data and not _ams_hold_active("ams_remain_capacity"):
+                self.state.ams_remain_capacity = bool(ams_data["calibrate_remain_flag"])
 
             # IMPORTANT: Parse ams_status FIRST before tray_now, so we have fresh status
             # when checking if we're in filament change mode for tray_now disambiguation
@@ -2549,6 +2594,36 @@ class BambuMQTTClient:
                                 )
                             )
 
+        # AMS Settings — newer firmware embeds the four toggles into the print
+        # ``cfg`` field as a hex-string bitfield (BS DeviceManager.cpp:4204).
+        # bit 0 = DetectOnInsert, bit 1 = DetectOnPowerup,
+        # bit 17 = DetectRemain, bit 18 = AutoRefill.
+        # Older builds report the first three under print.ams.{insert,power_on,
+        # calibrate_remain}_flag — that path is handled in _handle_ams_data().
+        # Respect the 3 s hold-timer in both cases.
+        cfg_raw = data.get("cfg")
+        if isinstance(cfg_raw, str) and cfg_raw:
+            try:
+                _cfg_int = int(cfg_raw, 16)
+            except ValueError:
+                _cfg_int = None
+            if _cfg_int is not None:
+                _cfg_now = time.time()
+                _hold_ttl = 3.0
+
+                def _ams_cfg_hold_active(flag_name: str) -> bool:
+                    ts = self.state.ams_settings_hold.get(flag_name)
+                    return ts is not None and (_cfg_now - ts) < _hold_ttl
+
+                if not _ams_cfg_hold_active("ams_insertion_update"):
+                    self.state.ams_insertion_update = bool((_cfg_int >> 0) & 0x1)
+                if not _ams_cfg_hold_active("ams_power_on_update"):
+                    self.state.ams_power_on_update = bool((_cfg_int >> 1) & 0x1)
+                if not _ams_cfg_hold_active("ams_remain_capacity"):
+                    self.state.ams_remain_capacity = bool((_cfg_int >> 17) & 0x1)
+                if not _ams_cfg_hold_active("ams_auto_switch_filament"):
+                    self.state.ams_auto_switch_filament = bool((_cfg_int >> 18) & 0x1)
+
         # Parse home_flag first so SD-card / door detection below can use it.
         # Bit 8 = HAS_SDCARD_NORMAL, bit 9 = HAS_SDCARD_ABNORMAL, bit 11 = store-to-SD,
         # bit 18 = wired network, bit 23 = door-open (X1 family only).
@@ -2558,6 +2633,24 @@ class BambuMQTTClient:
             # Convert to unsigned 32-bit if negative
             if home_flag < 0:
                 home_flag = home_flag & 0xFFFFFFFF
+
+        # AMS Settings — X1 / P1 family ship the "remaining capacity estimate"
+        # and "filament backup" toggles in ``home_flag`` (BS DeviceManager.cpp
+        # parse_home_flag — bit 7 = DetectRemain, bit 10 = AutoRefill). Newer
+        # firmware uses the ``cfg`` hex string path instead (handled above);
+        # both paths are idempotent and respect the same 3 s hold-timer.
+        if home_flag is not None:
+            _hf_now = time.time()
+            _hf_ttl = 3.0
+
+            def _hf_hold_active(flag_name: str) -> bool:
+                ts = self.state.ams_settings_hold.get(flag_name)
+                return ts is not None and (_hf_now - ts) < _hf_ttl
+
+            if not _hf_hold_active("ams_remain_capacity"):
+                self.state.ams_remain_capacity = bool((home_flag >> 7) & 0x1)
+            if not _hf_hold_active("ams_auto_switch_filament"):
+                self.state.ams_auto_switch_filament = bool((home_flag >> 10) & 0x1)
 
         # SD card presence.
         # Use the top-level `sdcard` field with a permissive truthy check covering
@@ -4800,6 +4893,175 @@ class BambuMQTTClient:
         self._last_ams_cmd_time = time.monotonic()  # zombie detection (#887)
         self._client.publish(self.topic_publish, command_json, qos=1)
         return True
+
+    # ----------------- AMS Settings dialog publishers -----------------
+    # The four below back the BambuStudio AMSSetting dialog (port). The
+    # firmware_switch + reorder commands live in separate methods because
+    # their payloads are not yet pinned down.
+
+    def ams_user_setting(
+        self,
+        startup_read: bool,
+        tray_read: bool,
+        calibrate_remain: bool,
+    ) -> tuple[bool, str | None]:
+        """BS ``command_ams_user_settings`` (DeviceManager.cpp:1575).
+
+        Sends the three RFID/remain toggles in one MQTT message.
+        ``ams_id=-1`` is BS's "apply to every AMS on this printer" convention.
+        Stamps a 3-second hold-timer on the three corresponding state fields
+        so the push parser doesn't clobber the just-sent value while the
+        printer confirms.
+
+        Returns:
+            (success, sequence_id_string_or_None)
+        """
+        if not self._client or not self.state.connected:
+            logger.warning("[%s] Cannot send ams_user_setting: not connected", self.serial_number)
+            return False, None
+
+        self._sequence_id += 1
+        seq = str(self._sequence_id)
+        command = {
+            "print": {
+                "command": "ams_user_setting",
+                "sequence_id": seq,
+                "ams_id": -1,
+                "startup_read_option": bool(startup_read),
+                "tray_read_option": bool(tray_read),
+                "calibrate_remain_flag": bool(calibrate_remain),
+            }
+        }
+        self._client.publish(self.topic_publish, json.dumps(command), qos=1)
+        now = time.time()
+        self.state.ams_settings_hold["ams_insertion_update"] = now
+        self.state.ams_settings_hold["ams_power_on_update"] = now
+        self.state.ams_settings_hold["ams_remain_capacity"] = now
+        logger.info(
+            "[%s] ams_user_setting: startup=%s tray=%s remain=%s seq=%s",
+            self.serial_number,
+            startup_read,
+            tray_read,
+            calibrate_remain,
+            seq,
+        )
+        return True, seq
+
+    def print_option_auto_switch_filament(self, enabled: bool) -> tuple[bool, str | None]:
+        """BS ``command_ams_switch_filament`` (DeviceManager.cpp:1751).
+
+        Routed through ``print.command = "print_option"`` (NOT
+        ``ams_user_setting``) — same channel as ``air_print_detect``.
+        """
+        if not self._client or not self.state.connected:
+            logger.warning("[%s] Cannot send print_option auto_switch_filament: not connected", self.serial_number)
+            return False, None
+
+        self._sequence_id += 1
+        seq = str(self._sequence_id)
+        command = {
+            "print": {
+                "command": "print_option",
+                "sequence_id": seq,
+                "auto_switch_filament": bool(enabled),
+            }
+        }
+        self._client.publish(self.topic_publish, json.dumps(command), qos=1)
+        self.state.ams_settings_hold["ams_auto_switch_filament"] = time.time()
+        logger.info(
+            "[%s] print_option auto_switch_filament=%s seq=%s",
+            self.serial_number,
+            enabled,
+            seq,
+        )
+        return True, seq
+
+    def print_option_air_print_detect(self, enabled: bool) -> tuple[bool, str | None]:
+        """BS ``command_ams_air_print_detect`` (DeviceManager.cpp:1765)."""
+        if not self._client or not self.state.connected:
+            logger.warning("[%s] Cannot send print_option air_print_detect: not connected", self.serial_number)
+            return False, None
+
+        self._sequence_id += 1
+        seq = str(self._sequence_id)
+        command = {
+            "print": {
+                "command": "print_option",
+                "sequence_id": seq,
+                "air_print_detect": bool(enabled),
+            }
+        }
+        self._client.publish(self.topic_publish, json.dumps(command), qos=1)
+        self.state.ams_settings_hold["ams_air_print_detect"] = time.time()
+        logger.info(
+            "[%s] print_option air_print_detect=%s seq=%s",
+            self.serial_number,
+            enabled,
+            seq,
+        )
+        return True, seq
+
+    def ams_calibrate(self, ams_id: int) -> bool:
+        """BS ``command_ams_calibrate`` (DeviceManager.cpp:1595): ``M620 C<id>``.
+
+        Wrapped via the existing ``send_gcode`` so the printer's
+        ``gcode_claim_action`` envelope is added consistently with our other
+        macro calls.
+        """
+        return self.send_gcode(f"M620 C{int(ams_id)}\n")
+
+    def ams_firmware_switch(self, firmware_idx: int) -> tuple[bool, str | None]:
+        """BS ``DevAmsSystemFirmwareSwitch::CrtlSwitchFirmware`` (DevFilaAmsSettingCtrl.cpp:7).
+
+        Note: this payload sits under ``upgrade`` (NOT ``print``). ``src_id=1``
+        is the slicer identifier — we reuse 1 so the printer treats us the
+        same as BambuStudio.
+        """
+        if not self._client or not self.state.connected:
+            logger.warning("[%s] Cannot send ams_firmware_switch: not connected", self.serial_number)
+            return False, None
+
+        self._sequence_id += 1
+        seq = str(self._sequence_id)
+        command = {
+            "upgrade": {
+                "command": "mc_for_ams_firmware_upgrade",
+                "sequence_id": seq,
+                "src_id": 1,
+                "id": int(firmware_idx),
+            }
+        }
+        self._client.publish(self.topic_publish, json.dumps(command), qos=1)
+        logger.info(
+            "[%s] ams_firmware_switch: firmware_idx=%s seq=%s",
+            self.serial_number,
+            firmware_idx,
+            seq,
+        )
+        return True, seq
+
+    def ams_reset_sequence(self) -> tuple[bool, str | None]:
+        """BS ``DevFilaSystem::CtrlAmsReset`` (DevFilaSystemCtrl.cpp:11).
+
+        Resets the AMS ID sequence. The dialog flow expects the user to
+        physically disconnect + reconnect AMS units in their desired order
+        AFTER this is sent — there's no order array on the wire.
+        """
+        if not self._client or not self.state.connected:
+            logger.warning("[%s] Cannot send ams_reset: not connected", self.serial_number)
+            return False, None
+
+        self._sequence_id += 1
+        seq = str(self._sequence_id)
+        command = {
+            "print": {
+                "command": "ams_reset",
+                "sequence_id": seq,
+            }
+        }
+        self._client.publish(self.topic_publish, json.dumps(command), qos=1)
+        logger.info("[%s] ams_reset_sequence: seq=%s", self.serial_number, seq)
+        return True, seq
 
     def extrusion_cali_sel(
         self,

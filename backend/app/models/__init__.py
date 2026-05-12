@@ -1,5 +1,6 @@
 from backend.app.models.ams_history import AMSSensorHistory
 from backend.app.models.ams_label import AmsLabel
+from backend.app.models.ams_setting_audit import AmsSettingAudit
 from backend.app.models.api_key import APIKey
 from backend.app.models.archive import PrintArchive
 from backend.app.models.color_catalog import ColorCatalogEntry
@@ -48,6 +49,7 @@ __all__ = [
     "APIKey",
     "AMSSensorHistory",
     "AmsLabel",
+    "AmsSettingAudit",
     "LibraryFolder",
     "LibraryFileNote",
     "LibraryFile",

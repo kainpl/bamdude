@@ -14,6 +14,7 @@ from sqlalchemy import delete, or_, select, text
 
 from backend.app.api.routes import (
     ams_history,
+    ams_settings as ams_settings_routes,
     api_keys,
     archive_purge,
     archives,
@@ -6170,6 +6171,7 @@ app.include_router(library_trash.router, prefix=app_settings.api_prefix)
 app.include_router(api_keys.router, prefix=app_settings.api_prefix)
 app.include_router(webhook.router, prefix=app_settings.api_prefix)
 app.include_router(ams_history.router, prefix=app_settings.api_prefix)
+app.include_router(ams_settings_routes.router, prefix=app_settings.api_prefix)
 app.include_router(system.router, prefix=app_settings.api_prefix)
 app.include_router(support.router, prefix=app_settings.api_prefix)
 app.include_router(bug_report.router, prefix=app_settings.api_prefix)
