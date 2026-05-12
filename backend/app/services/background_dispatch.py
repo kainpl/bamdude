@@ -1774,3 +1774,52 @@ class BackgroundDispatchService:
 
 
 background_dispatch = BackgroundDispatchService()
+
+
+async def enqueue_calibration_print(
+    *,
+    printer_id: int,
+    asset_path: str,
+    cali_mode: str,
+    user_id: int | None,
+    ams_id: int,
+    slot_id: int,
+    tray_id: int,
+) -> int:
+    """Enqueue a Filament Calibration print job (m062 / Plan 1).
+
+    Creates a ``PrintQueueItem`` with ``is_calibration=True`` referencing a
+    local 3MF asset from ``backend/app/data/calib_assets/``. The dispatcher
+    pipeline picks it up like any other queued item — but the on_print_complete
+    hook routes the linked ``calibration_session`` to ``awaiting_user_input``
+    (or ``saved`` for tower modes) instead of producing a normal archive entry.
+
+    Returns the new ``PrintQueueItem.id``. Caller updates
+    ``calibration_session_id`` separately once the session row exists.
+    """
+    import json as _json
+
+    from backend.app.models.print_queue import PrintQueueItem
+    from backend.app.models.printer_queue import PrinterQueue
+
+    async with async_session() as db:
+        queue = (
+            await db.execute(select(PrinterQueue).where(PrinterQueue.printer_id == printer_id))
+        ).scalar_one_or_none()
+        if queue is None:
+            raise ValueError(f"No PrinterQueue for printer_id={printer_id}")
+
+        item = PrintQueueItem(
+            queue_id=queue.id,
+            status="pending",
+            is_calibration=True,
+            created_by_id=user_id,
+            ams_mapping=_json.dumps([tray_id]),
+            bed_levelling=False,
+            flow_cali=False,
+            layer_inspect=False,
+        )
+        db.add(item)
+        await db.commit()
+        await db.refresh(item)
+        return item.id

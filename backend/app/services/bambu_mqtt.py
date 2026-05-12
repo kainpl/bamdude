@@ -91,6 +91,49 @@ class NozzleInfo:
 
 
 @dataclass
+class ExtrusionCaliResult:
+    """One row from push ``extrusion_cali_get_result`` (X1 auto-cali path).
+
+    PrinterState.extrusion_cali_results accumulates these between
+    ``extrusion_cali_start`` and the matching done-event. UI drains the
+    list when the user clicks Save on the auto-cali results page.
+    """
+
+    tray_id: int = 0
+    ams_id: int = 0
+    slot_id: int = 0
+    extruder_id: int = 0
+    nozzle_diameter: float = 0.4
+    nozzle_volume_type: str = "standard"
+    filament_id: str = ""
+    setting_id: str = ""
+    k_value: float = 0.0
+    n_coef: float = 0.0
+    confidence: int = -1
+    nozzle_pos_id: int = -1
+    nozzle_sn: str = ""
+
+
+@dataclass
+class PACalibHistoryEntry:
+    """One row from push ``extrusion_cali_get`` (printer-side 16-slot history).
+
+    Pulled on-demand by the History modal via ``extrusion_cali_query_history``
+    so operators can see / pick / delete entries the printer firmware stored.
+    """
+
+    cali_idx: int = -1
+    name: str = ""
+    filament_id: str = ""
+    setting_id: str = ""
+    nozzle_diameter: float = 0.4
+    nozzle_volume_type: str = "standard"
+    extruder_id: int = 0
+    k_value: float = 0.0
+    n_coef: float = 0.0
+
+
+@dataclass
 class FilaSwitchState:
     """Filament Track Switch (FTS) accessory state.
 
@@ -244,6 +287,23 @@ class PrinterState:
     # mapped to epoch_seconds. Push parser ignores echoes for a key while
     # the hold is active.
     printer_settings_hold: dict = field(default_factory=dict)
+    # ---------- Filament Calibration (m062 / Plan 1) ----------
+    # Push parser of `print.command=extrusion_cali_get_result` accumulates one
+    # ExtrusionCaliResult per filament here. Drained by CalibrationService
+    # when the operator clicks Save on the auto-cali results page.
+    extrusion_cali_results: list = field(default_factory=list)
+    # MQTT sequence_id from the active extrusion_cali_start publish. Helps
+    # the parser correlate `print.gcode_file=auto_cali_for_user*` events
+    # with our session.
+    extrusion_cali_session_id: str | None = None
+    # idle | running | completed | failed — drives wizard step transitions
+    extrusion_cali_status: str = "idle"
+    # 16-slot PA history pulled from `print.command=extrusion_cali_get`.
+    # Refreshed on demand from the History modal; consumed read-only.
+    extrusion_cali_history: list = field(default_factory=list)
+    # Capability flags from printer push.func bitfield + cfg overrides
+    is_support_pa_calibration: bool = False
+    is_support_auto_flow_calibration: bool = False
     # Filament Track Switch (FTS) accessory — when installed, AMS info reports
     # bits 8-11 = 0xE (uninitialized) because routing is dynamic. Upstream #1162.
     fila_switch: "FilaSwitchState" = field(default_factory=lambda: FilaSwitchState())
@@ -1072,6 +1132,14 @@ class BambuMQTTClient:
                     self._ams_cmd_unanswered = 0
             if "command" in print_data and print_data.get("command") == "extrusion_cali_get":
                 self._handle_kprofile_response(print_data)
+                # Also mirror the same payload into Plan-1 cali history
+                # (PACalibHistoryEntry list) for the Filament Calibration
+                # History modal. KProfile stays the source of truth for the
+                # legacy K-profiles UI; this is the new typed view.
+                self._handle_extrusion_cali_history(print_data)
+
+            if "command" in print_data and print_data.get("command") == "extrusion_cali_get_result":
+                self._handle_extrusion_cali_get_result(print_data)
 
             self._update_state(print_data)
 
@@ -2001,6 +2069,37 @@ class BambuMQTTClient:
     def _update_state(self, data: dict):
         """Update printer state from message data."""
         _previous_state = self.state.state
+
+        # Calibration capability flags from push (m062 / Plan 1). Modern
+        # firmware sends explicit boolean fields; legacy X1 advertises via
+        # ``func`` bitfield bits 15 (flow) / 16 (PA).
+        if isinstance(data.get("support_pa_calibration"), bool):
+            self.state.is_support_pa_calibration = bool(data["support_pa_calibration"])
+        if isinstance(data.get("support_auto_flow_calibration"), bool):
+            self.state.is_support_auto_flow_calibration = bool(data["support_auto_flow_calibration"])
+        # Some X1 firmware reports the same capabilities via ``func`` bitfield
+        # (see BS DeviceManager.cpp:1035). Bit 15 = flow_calibration, bit 16
+        # = pa_calibration. We OR these in so neither path stomps the other.
+        if isinstance(data.get("func"), int):
+            func = int(data["func"])
+            if (func >> 16) & 0x1:
+                self.state.is_support_pa_calibration = True
+            if (func >> 15) & 0x1:
+                self.state.is_support_auto_flow_calibration = True
+
+        # Detect cali completion from ``mc_print_stage`` IDLE flip while a
+        # cali session is active. BS DeviceManager.cpp:1003 uses the same
+        # heuristic: ``mc_print_stage == 1`` AND ``gcode_file`` contains
+        # "auto_cali" → cali finished. We mark status=completed so the wizard
+        # frontend can advance from Running to the appropriate Save page.
+        if isinstance(data.get("mc_print_stage"), (int, str)):
+            try:
+                stage_val = int(data["mc_print_stage"])
+            except (ValueError, TypeError):
+                stage_val = -1
+            gcode_file = data.get("gcode_file") or self.state.gcode_file or ""
+            if stage_val == 1 and self.state.extrusion_cali_status == "running" and "auto_cali" in str(gcode_file):
+                self.state.extrusion_cali_status = "completed"
 
         # Update state fields
         if "gcode_state" in data:
@@ -3983,6 +4082,76 @@ class BambuMQTTClient:
         )
         return True
 
+    def _handle_extrusion_cali_history(self, data: dict) -> None:
+        """Mirror ``extrusion_cali_get`` push into ``state.extrusion_cali_history``.
+
+        Same payload that ``_handle_kprofile_response`` reads into the
+        legacy KProfile list; this one parses into typed ``PACalibHistoryEntry``
+        with float k_value / n_coef and float nozzle_diameter for the new
+        Filament Calibration History modal.
+        """
+        filaments = data.get("filaments", [])
+        if not isinstance(filaments, list):
+            return
+        history: list = []
+        for f in filaments:
+            if not isinstance(f, dict):
+                continue
+            try:
+                history.append(
+                    PACalibHistoryEntry(
+                        cali_idx=int(f.get("cali_idx", -1)),
+                        name=str(f.get("name", "")),
+                        filament_id=str(f.get("filament_id", "")),
+                        setting_id=str(f.get("setting_id", "") or ""),
+                        nozzle_diameter=float(f.get("nozzle_diameter", 0.4) or 0.4),
+                        nozzle_volume_type=str(f.get("nozzle_volume_type", "standard") or "standard"),
+                        extruder_id=int(f.get("extruder_id", 0)),
+                        k_value=float(f.get("k_value", 0.0) or 0.0),
+                        n_coef=float(f.get("n_coef", 0.0) or 0.0),
+                    )
+                )
+            except (ValueError, TypeError):
+                # Tolerate malformed rows; keep the rest of the history.
+                pass
+        self.state.extrusion_cali_history = history
+
+    def _handle_extrusion_cali_get_result(self, data: dict) -> None:
+        """Parse the X1 auto-cali result batch into ``state.extrusion_cali_results``.
+
+        Marks ``extrusion_cali_status='completed'`` so the wizard hook can
+        advance from the Running step to the Save step.
+        """
+        filaments = data.get("filaments", [])
+        if not isinstance(filaments, list):
+            return
+        results: list = []
+        for f in filaments:
+            if not isinstance(f, dict):
+                continue
+            try:
+                results.append(
+                    ExtrusionCaliResult(
+                        tray_id=int(f.get("tray_id", 0)),
+                        ams_id=int(f.get("ams_id", 0)),
+                        slot_id=int(f.get("slot_id", 0)),
+                        extruder_id=int(f.get("extruder_id", 0)),
+                        nozzle_diameter=float(f.get("nozzle_diameter", 0.4) or 0.4),
+                        nozzle_volume_type=str(f.get("nozzle_volume_type", "standard") or "standard"),
+                        filament_id=str(f.get("filament_id", "")),
+                        setting_id=str(f.get("setting_id", "") or ""),
+                        k_value=float(f.get("k_value", 0.0) or 0.0),
+                        n_coef=float(f.get("n_coef", 0.0) or 0.0),
+                        confidence=int(f.get("confidence", -1)),
+                        nozzle_pos_id=int(f.get("nozzle_pos_id", -1)),
+                        nozzle_sn=str(f.get("nozzle_sn", "") or ""),
+                    )
+                )
+            except (ValueError, TypeError):
+                pass
+        self.state.extrusion_cali_results = results
+        self.state.extrusion_cali_status = "completed"
+
     def _handle_kprofile_response(self, data: dict):
         """Handle K-profile response from printer."""
         response_nozzle = data.get("nozzle_diameter")
@@ -5365,6 +5534,112 @@ class BambuMQTTClient:
         logger.debug("[%s] extrusion_cali_set command: %s", self.serial_number, command_json)
         self._client.publish(self.topic_publish, command_json, qos=1)
         return True
+
+    # ---------- Filament Calibration wizard (m062 / Plan 1) ----------
+
+    def extrusion_cali_start(
+        self,
+        *,
+        nozzle_diameter: float,
+        cali_mode: int,
+        filaments: list[dict],
+    ) -> tuple[bool, str | None]:
+        """Start PA calibration. MQTT ``print.command=extrusion_cali``.
+
+        cali_mode: 0=auto (X1 lidar), 1=manual. ``filaments`` is the
+        full BS payload (one dict per tray, see CalibrationService).
+        """
+        if not self._client or not self.state.connected:
+            return False, None
+        self._sequence_id += 1
+        seq = str(self._sequence_id)
+        payload = {
+            "print": {
+                "command": "extrusion_cali",
+                "sequence_id": seq,
+                "nozzle_diameter": str(nozzle_diameter),
+                "mode": cali_mode,
+                "filaments": filaments,
+            }
+        }
+        self._client.publish(self.topic_publish, json.dumps(payload), qos=1)
+        self.state.extrusion_cali_session_id = seq
+        self.state.extrusion_cali_status = "running"
+        return True, seq
+
+    def flow_rate_cali_start(
+        self,
+        *,
+        nozzle_diameter: float,
+        filaments: list[dict],
+    ) -> tuple[bool, str | None]:
+        """Start flow rate calibration (X1 auto). Same ``extrusion_cali``
+        verb but with ``flow_rate`` populated in each filament dict.
+        """
+        if not self._client or not self.state.connected:
+            return False, None
+        self._sequence_id += 1
+        seq = str(self._sequence_id)
+        payload = {
+            "print": {
+                "command": "extrusion_cali",
+                "sequence_id": seq,
+                "nozzle_diameter": str(nozzle_diameter),
+                "filaments": filaments,
+            }
+        }
+        self._client.publish(self.topic_publish, json.dumps(payload), qos=1)
+        self.state.extrusion_cali_session_id = seq
+        self.state.extrusion_cali_status = "running"
+        return True, seq
+
+    def extrusion_cali_query_history(
+        self,
+        *,
+        nozzle_diameter: float,
+        extruder_id: int = 0,
+    ) -> tuple[bool, str | None]:
+        """Ask printer for current PA history. Reply pushes back via
+        ``extrusion_cali_get`` (handled by ``_on_message``).
+        """
+        if not self._client or not self.state.connected:
+            return False, None
+        self._sequence_id += 1
+        seq = str(self._sequence_id)
+        payload = {
+            "print": {
+                "command": "extrusion_cali_get",
+                "sequence_id": seq,
+                "nozzle_diameter": str(nozzle_diameter),
+                "extruder_id": extruder_id,
+            }
+        }
+        self._client.publish(self.topic_publish, json.dumps(payload), qos=1)
+        return True, seq
+
+    def extrusion_cali_query_result(
+        self,
+        *,
+        nozzle_diameter: float,
+    ) -> tuple[bool, str | None]:
+        """Ask printer for auto-cali result (X1 lidar batches).
+
+        Reply lands in ``extrusion_cali_get_result`` push (handled by
+        ``_on_message`` → ``state.extrusion_cali_results``).
+        """
+        if not self._client or not self.state.connected:
+            return False, None
+        self._sequence_id += 1
+        seq = str(self._sequence_id)
+        payload = {
+            "print": {
+                "command": "extrusion_cali_get_result",
+                "sequence_id": seq,
+                "nozzle_diameter": str(nozzle_diameter),
+            }
+        }
+        self._client.publish(self.topic_publish, json.dumps(payload), qos=1)
+        return True, seq
 
     def set_timelapse(self, enable: bool) -> bool:
         """Enable or disable timelapse recording.

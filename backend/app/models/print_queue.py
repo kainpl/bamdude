@@ -98,6 +98,13 @@ class PrintQueueItem(Base):
         ForeignKey("auto_queue_items.id", ondelete="SET NULL"), nullable=True
     )
 
+    # Filament Calibration tagging (m062). When True, the dispatcher routes
+    # the on_print_complete hook to flip the linked calibration_session row
+    # to awaiting_user_input (or saved, for tower modes) instead of treating
+    # it as a normal print.
+    is_calibration: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
+    calibration_session_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     # Relationships
     queue: Mapped["PrinterQueue"] = relationship(back_populates="items")
     archive: Mapped["PrintArchive | None"] = relationship()

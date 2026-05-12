@@ -132,6 +132,15 @@ class PrintArchive(Base):
     # User tracking (who uploaded/created this archive)
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
+    # Filament Calibration flag (m062). True when this archive belongs to a
+    # calibration print job (PA Line / Flow Rate / Tower mode). The wizard
+    # tags the queue item; on_print_complete propagates the flag here so
+    # operators can later filter / hide cali rows from normal archive views.
+    # calibration_session_id links back to the orchestration row that
+    # produced this print, if any.
+    is_calibration: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    calibration_session_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     @classmethod
     def active(cls) -> "Select[tuple[PrintArchive]]":
         """Select statement that excludes trashed archives.

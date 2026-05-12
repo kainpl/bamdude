@@ -26,6 +26,7 @@ from backend.app.api.routes import (
     cloud,
     discovery,
     external_links,
+    filament_calibration as filament_calibration_routes,
     firmware,
     git_backup,
     groups,
@@ -6174,6 +6175,7 @@ app.include_router(webhook.router, prefix=app_settings.api_prefix)
 app.include_router(ams_history.router, prefix=app_settings.api_prefix)
 app.include_router(ams_settings_routes.router, prefix=app_settings.api_prefix)
 app.include_router(printer_settings_routes.router, prefix=app_settings.api_prefix)
+app.include_router(filament_calibration_routes.router, prefix=app_settings.api_prefix)
 app.include_router(system.router, prefix=app_settings.api_prefix)
 app.include_router(support.router, prefix=app_settings.api_prefix)
 app.include_router(bug_report.router, prefix=app_settings.api_prefix)

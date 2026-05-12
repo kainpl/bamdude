@@ -90,3 +90,55 @@ def compute_printer_supports(state: PrinterState, printer_model: str | None, mod
         parts_editable=False,  # read-only this iteration
         parts_dual=is_h2 and m in {"H2D", "H2DPRO"},
     )
+
+
+# ---------- Filament Calibration capabilities (m062 / Plan 1) ----------
+
+_LIDAR_MODELS = frozenset({"X1", "X1C", "X1E", "H2D", "H2DPRO"})
+_DUAL_EXTRUDER_MODELS = frozenset({"H2D", "H2DPRO"})
+
+
+def _list_extruders(model_norm: str) -> list[dict]:
+    if model_norm in _DUAL_EXTRUDER_MODELS:
+        return [{"id": 0, "name": "Right"}, {"id": 1, "name": "Left"}]
+    return [{"id": 0, "name": "Main"}]
+
+
+def compute_calibration_supports(
+    state: PrinterState,
+    printer_model: str | None,
+    module_vers: dict,
+) -> dict:
+    """Per-model capability matrix for Filament Calibration wizard.
+
+    auto_* gates: model must have lidar AND the printer state must report
+    support flag. Manual paths universally available. Tower modes universal
+    (just a print). Dual-extruder for H2D family.
+    """
+    m = _norm(printer_model)
+    has_lidar = m in _LIDAR_MODELS
+
+    return {
+        # Manual paths
+        "pa_manual": True,
+        "flow_manual": True,
+        "temp_tower": True,
+        "vol_speed_tower": True,
+        "vfa_tower": True,
+        "retraction_tower": True,
+        # Auto paths (lidar + push flag)
+        "pa_auto": has_lidar and bool(getattr(state, "is_support_pa_calibration", False)),
+        "flow_auto": has_lidar and bool(getattr(state, "is_support_auto_flow_calibration", False)),
+        # Layout
+        "dual_extruder": m in _DUAL_EXTRUDER_MODELS,
+        "extruders": _list_extruders(m),
+        "nozzles": [
+            {
+                "id": i,
+                "diameter": getattr(n, "diameter", None),
+                "type": getattr(n, "type", None),
+                "flow_type": getattr(n, "flow_type", None),
+            }
+            for i, n in enumerate(getattr(state, "nozzles", []) or [])
+        ],
+    }
