@@ -88,3 +88,7 @@ site/
 # Local tool wrapper binaries (npm-installed CLIs, pip --user scripts) that
 # some dev setups drop into a repo-local bin/ — never part of the source tree.
 bin/
+
+# Internal planning docs (specs, plans, design exploration). Local workflow
+# artifacts; not part of the public repo.
+docs/
