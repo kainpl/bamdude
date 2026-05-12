@@ -8,6 +8,10 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **AMS Settings dialog (Bambu Studio parity).** Gear icon in the AMS panel header opens a per-printer modal. Toggle insertion / power-on RFID auto-read, remaining-capacity estimation, AMS filament backup, air-print detection (A1 series only). Calibrate an AMS unit (`M620 C<id>`). Switch A1 firmware between LITE and FULL. Reset connected-AMS ID sequence (H2D). All visibility gated per printer model — only the rows your printer actually supports show up. Backend gated by `printers:update`; every applied change recorded in the new `ams_setting_audit` table for forensic trace (migration m060). Strings sourced verbatim from BS source + Ukrainian translations from BS .po (some msgstr are still empty upstream — those remain English with `// TBD-uk` markers in the locale file).
+
 ---
 
 ## [0.4.4.1] - 2026-05-12
