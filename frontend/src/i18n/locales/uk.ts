@@ -3991,6 +3991,48 @@ export default {
     configure: 'Налаштувати'
   },
 
+  // AMS Settings dialog (Bambu Studio port). Ukrainian strings sourced from
+  // BambuStudio_uk.po where available; gaps filled to match BamDude's tone.
+  amsSettings: {
+    title: 'Налаштування AMS',
+    openTooltip: 'Налаштування AMS',
+    insertionUpdate: 'Оновлення вставки',
+    insertionUpdateTipOn:
+      'AMS автоматично зчитає інформацію про філамент при вставці нового філаменту Bambu Lab. Це займе близько 20 секунд.',
+    insertionUpdateTipNote:
+      'Примітка: якщо під час друку вставлений новий філамент, AMS автоматично не прочитає жодної інформації, поки друк не буде завершено.',
+    insertionUpdateTipOff:
+      'При вставці нової нитки AMS не автоматично зчитуватиме її інформацію, залишивши поле порожнім для введення вручну.',
+    powerOnUpdate: 'Оновлення під час увімкнення',
+    powerOnTipOn:
+      'AMS автоматично зчитує інформацію про вставлений філамент. Це займе близько 1 хвилини. У процесі зчитування крутиться котушка.',
+    powerOnTipOff:
+      'AMS не буде автоматично зчитувати інформацію з вставленого філаменту під час запуску і продовжить використовувати інформацію, записану перед останнім вимкненням.',
+    updateRemain: 'Оновлення залишкової ємності',
+    updateRemainTip: 'AMS спробує оцінити залишок філаменту Bambu Lab.',
+    filamentBackup: 'Резервне копіювання філаменту в AMS',
+    filamentBackupTip:
+      'AMS автоматично перейде на іншу котушку з філаментом тих самих властивостей, коли поточний філамент закінчиться',
+    airPrintDetection: 'Виявлення друку в повітрі',
+    airPrintTip: 'Виявляє засмічення та стирання нитки, негайно зупиняючи друк для економії часу та матеріалу.',
+    amsType: 'Тип AMS',
+    arrangeOrder: 'Порядок AMS',
+    arrangeNote:
+      "Якщо потрібна певна послідовність ID для AMS, після натискання «Скинути» від'єднайте всі AMS, а потім підключіть їх у бажаному порядку.",
+    reset: 'Скинути',
+    confirmReorder: 'Скинути послідовність ID підключених AMS?',
+    reorderTitle: 'Скидання послідовності AMS',
+    busyCantSwitch: 'Принтер зайнятий — неможливо змінити тип AMS.',
+    unloadBeforeSwitch: 'Перед перемиканням вивантажте весь філамент.',
+    switchFirmwareConfirm: 'Перемикання типу AMS потребує оновлення прошивки (близько 30 с). Перемкнути зараз?',
+    confirm: 'Прийняти',
+    cancel: 'Скасувати',
+    calibrate: 'Калібрувати AMS',
+    selectAmsForCalibrate: 'AMS-юніт',
+    waitingForPrinter: 'Очікування статусу принтера',
+    requestFailed: 'Помилка запиту',
+  },
+
   // Print modal
   printModal: {
     selectPrinter: 'Виберіть принтер',

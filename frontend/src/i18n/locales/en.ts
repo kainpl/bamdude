@@ -3987,6 +3987,49 @@ export default {
     configure: 'Configure'
   },
 
+  // AMS Settings dialog (Bambu Studio port). Strings sourced verbatim
+  // from BambuStudio/src/slic3r/GUI/AMSSetting.cpp _L() calls.
+  amsSettings: {
+    title: 'AMS Settings',
+    openTooltip: 'AMS Settings',
+    insertionUpdate: 'Insertion update',
+    insertionUpdateTipOn:
+      'The AMS will automatically read the filament information when inserting a new Bambu Lab filament. This takes about 20 seconds.',
+    insertionUpdateTipNote:
+      'Note: if a new filament is inserted during printing, the AMS will not automatically read any information until printing is completed.',
+    insertionUpdateTipOff:
+      'When inserting a new filament, the AMS will not automatically read its information, leaving it blank for you to enter manually.',
+    powerOnUpdate: 'Power on update',
+    powerOnTipOn:
+      'The AMS will automatically read the information of inserted filament on start-up. It will take about 1 minute. The reading process will roll filament spools.',
+    powerOnTipOff:
+      'The AMS will not automatically read information from inserted filament during startup and will continue to use the information recorded before the last shutdown.',
+    updateRemain: 'Update remaining capacity',
+    updateRemainTip: 'AMS will attempt to estimate the remaining capacity of the Bambu Lab filaments.',
+    filamentBackup: 'AMS filament backup',
+    filamentBackupTip:
+      'AMS will continue to another spool with the same properties of filament automatically when current filament runs out',
+    airPrintDetection: 'Air Printing Detection',
+    airPrintTip:
+      'Detects clogging and filament grinding, halting printing immediately to conserve time and filament.',
+    amsType: 'AMS Type',
+    arrangeOrder: 'Arrange AMS Order',
+    arrangeNote:
+      "If you want a specific AMS ID sequence, please disconnect all AMS after clicking 'Reset', and then reconnect them in the desired order.",
+    reset: 'Reset',
+    confirmReorder: 'Are you sure to reset the ID sequence of the connected AMS?',
+    reorderTitle: 'Reset AMS Sequence',
+    busyCantSwitch: 'The printer is busy and cannot switch AMS type.',
+    unloadBeforeSwitch: 'Please unload all filament before switching.',
+    switchFirmwareConfirm: 'AMS type switching needs firmware update, taking about 30s. Switch now?',
+    confirm: 'Confirm',
+    cancel: 'Cancel',
+    calibrate: 'Calibrate AMS',
+    selectAmsForCalibrate: 'AMS unit',
+    waitingForPrinter: 'Waiting for printer status',
+    requestFailed: 'Request failed',
+  },
+
   // Print modal
   printModal: {
     selectPrinter: 'Select Printer',

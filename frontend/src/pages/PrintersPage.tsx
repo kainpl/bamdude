@@ -62,6 +62,7 @@ import {
   ArrowUpFromLine,
   Eye,
   EyeOff,
+  Settings,
 } from 'lucide-react';
 
 import { Link as RouterLink, useNavigate } from 'react-router-dom';
@@ -94,6 +95,7 @@ import { FilamentHoverCard, EmptySlotHoverCard } from '../components/FilamentHov
 import { LinkSpoolModal } from '../components/LinkSpoolModal';
 import { AssignSpoolModal } from '../components/AssignSpoolModal';
 import { ConfigureAmsSlotModal } from '../components/ConfigureAmsSlotModal';
+import { AMSSettingsModal } from '../components/AMSSettingsModal';
 import { useToast } from '../contexts/ToastContext';
 import { ChamberLight } from '../components/icons/ChamberLight';
 import { PlateClearedIcon } from '../components/icons/PlateClearedIcon';
@@ -1465,6 +1467,7 @@ function PrinterCard({
     amsLabel: string;
     mode: 'humidity' | 'temperature';
   } | null>(null);
+  const [amsSettingsOpen, setAmsSettingsOpen] = useState(false);
   const [linkSpoolModal, setLinkSpoolModal] = useState<{
     tagUid: string;
     trayUuid: string;
@@ -3424,6 +3427,17 @@ function PrinterCard({
                       {t('printers.filaments')}
                     </span>
                     <div className="flex-1 h-px bg-bambu-dark-tertiary/30" />
+                    {hasPermission('printers:update') && (status?.connected ?? false) && amsData.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setAmsSettingsOpen(true)}
+                        title={t('amsSettings.openTooltip')}
+                        aria-label={t('amsSettings.openTooltip')}
+                        className="p-1 rounded hover:bg-bambu-dark-tertiary/30 text-bambu-gray hover:text-white"
+                      >
+                        <Settings className="w-3 h-3" />
+                      </button>
+                    )}
                   </div>
 
                   {/* AMS Content */}
@@ -5312,6 +5326,13 @@ function PrinterCard({
           thresholds={amsThresholds}
         />
       )}
+
+      {/* AMS Settings Modal */}
+      <AMSSettingsModal
+        isOpen={amsSettingsOpen}
+        onClose={() => setAmsSettingsOpen(false)}
+        printerId={printer.id}
+      />
 
       {/* Link Spool Modal */}
       {linkSpoolModal && (

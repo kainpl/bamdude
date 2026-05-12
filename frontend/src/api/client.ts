@@ -3471,6 +3471,57 @@ export interface EncryptionStatus {
   migration_error_count: number;
 }
 
+// AMS Settings dialog (BS port). Mirrors backend/app/schemas/ams_settings.py.
+export interface AmsSystemSettingState {
+  insertion_update: boolean | null;
+  power_on_update: boolean | null;
+  remain_capacity: boolean | null;
+  auto_switch_filament: boolean | null;
+  air_print_detect: boolean | null;
+  firmware_idx_run: number | null;
+  firmware_idx_sel: number | null;
+}
+
+export interface AmsSystemSettingSupports {
+  insertion_update: boolean;
+  power_on_update: boolean;
+  remain_capacity: boolean;
+  auto_switch_filament: boolean;
+  air_print_detect: boolean;
+  firmware_switch: boolean;
+  reorder: boolean;
+}
+
+export interface AmsSettingsUnitInfo {
+  ams_id: number;
+  label: string;
+}
+
+export interface AmsSettingsFirmwareOption {
+  idx: number;
+  label: string;
+}
+
+export interface AmsSettingsGetResponse {
+  state: AmsSystemSettingState;
+  supports: AmsSystemSettingSupports;
+  ams_units: AmsSettingsUnitInfo[];
+  firmware_options: AmsSettingsFirmwareOption[];
+}
+
+export type AmsSettingsPostBody =
+  | { action: 'user_setting'; startup_read_option: boolean; tray_read_option: boolean; calibrate_remain_flag: boolean }
+  | { action: 'auto_switch_filament'; enabled: boolean }
+  | { action: 'air_print_detect'; enabled: boolean }
+  | { action: 'calibrate'; ams_id: number }
+  | { action: 'firmware_switch'; firmware_idx: number }
+  | { action: 'reorder' };
+
+export interface AmsSettingsPostResponse {
+  ok: boolean;
+  sequence_id: string | null;
+}
+
 // API functions
 export const api = {
   // Authentication
@@ -3822,6 +3873,16 @@ export const api = {
       `/printers/${printerId}/ams/unload`,
       { method: 'POST' }
     ),
+
+  // AMS Settings dialog (BS port). Mirrors backend/app/schemas/ams_settings.py
+  // — keep field names in sync.
+  getAmsSettings: (printerId: number) =>
+    request<AmsSettingsGetResponse>(`/printers/${printerId}/ams/settings`),
+  postAmsSettings: (printerId: number, body: AmsSettingsPostBody) =>
+    request<AmsSettingsPostResponse>(`/printers/${printerId}/ams/settings`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
 
   // MQTT Debug Logging
   enableMQTTLogging: (printerId: number) =>
