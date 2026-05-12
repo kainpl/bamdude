@@ -39,7 +39,7 @@ import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from backend.app.migrations.helpers import add_column
 
@@ -104,24 +104,30 @@ async def seed(session_factory):
     from backend.app.core.config import settings as app_settings
     from backend.app.models.archive import PrintArchive
 
+    # Column-explicit read + Core update — see feedback_migration_seed_columns.
+    # ``select(PrintArchive)`` would emit every model column in the SQL and
+    # crash future upgrade chains that run this seed before a later
+    # migration adds yet another archive column.
     async with session_factory() as session:
-        result = await session.execute(select(PrintArchive).where(PrintArchive.bed_type.is_(None)))
-        archives = result.scalars().all()
-        if not archives:
+        result = await session.execute(
+            select(PrintArchive.id, PrintArchive.file_path).where(PrintArchive.bed_type.is_(None))
+        )
+        rows = result.all()
+        if not rows:
             logger.info("m057: no archives with bed_type=NULL — backfill skipped")
             return
 
-        logger.info("m057: scanning %d archives for on-disk bed_type backfill", len(archives))
+        logger.info("m057: scanning %d archives for on-disk bed_type backfill", len(rows))
 
         updated = 0
         skipped_missing = 0
         skipped_no_value = 0
 
-        for archive in archives:
-            if not archive.file_path:
+        for row in rows:
+            if not row.file_path:
                 skipped_missing += 1
                 continue
-            file_path = app_settings.base_dir / archive.file_path
+            file_path = app_settings.base_dir / row.file_path
             if not file_path.exists():
                 skipped_missing += 1
                 continue
@@ -131,7 +137,7 @@ async def seed(session_factory):
                 skipped_no_value += 1
                 continue
 
-            archive.bed_type = bed_type
+            await session.execute(update(PrintArchive).where(PrintArchive.id == row.id).values(bed_type=bed_type))
             updated += 1
 
         if updated:

@@ -10,6 +10,16 @@ All notable changes to BamDude will be documented in this file.
 
 ---
 
+## [0.4.4.1] - 2026-05-12
+
+Hotfix on top of 0.4.4. Image: `ghcr.io/kainpl/bamdude:0.4.4.1` / `kainpl/bamdude:0.4.4.1` (`:latest` now tracks this).
+
+### Fixed
+
+- **Upgrades from pre-m038 installs (e.g. 0.4.0.1) crashed at boot with `no such column: print_archives.bed_type`.** Migration m038's plate-index re-parse seed loaded the full `PrintArchive` ORM entity, which compiled to a `SELECT` that included `bed_type` — a column only added later by m057. On a DB that hadn't yet applied m038, the seed ran before m057 had a chance to create the column and `_run_pending` died mid-chain. Seed now reads + writes named columns explicitly. Same shape preemptively applied to m046 / m057 / m059 so any future column addition can't reproduce the trap.
+
+---
+
 ## [0.4.4] - 2026-05-12
 
 Stable 0.4.4 release — consolidates the cumulative b1+b2+b3 beta cycle (see the `[0.4.4b3]` section below for the full detail) plus the post-b3 upstream Bambuddy v0.2.4 audit closeout. Image: `ghcr.io/kainpl/bamdude:0.4.4` / `kainpl/bamdude:0.4.4` (`:latest` now tracks this).

@@ -41,7 +41,7 @@ this migration touches them too for consistency, but their next startup
 re-seed will overwrite them with the canonical list anyway.
 """
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from backend.app.models.group import Group
 
@@ -88,15 +88,19 @@ async def seed(session_factory):
 
     valid = set(ALL_PERMISSIONS)
 
+    # Column-explicit read + Core update — the model evolves, and an
+    # entity-wide ``select(Group)`` would emit future columns in the SQL
+    # and crash an upgrade chain where this migration runs before they
+    # exist. See feedback_migration_seed_columns.
     async with session_factory() as db:
-        result = await db.execute(select(Group))
-        groups = result.scalars().all()
+        result = await db.execute(select(Group.id, Group.permissions))
+        rows = result.all()
         dirty = 0
-        for group in groups:
-            old = list(group.permissions or [])
+        for row in rows:
+            old = list(row.permissions or [])
             new = _normalize(old, valid)
             if new != old:
-                group.permissions = new
+                await db.execute(update(Group).where(Group.id == row.id).values(permissions=new))
                 dirty += 1
         if dirty:
             await db.commit()

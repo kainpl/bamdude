@@ -242,6 +242,15 @@ async def _reparse_multi_plate_archives(session_factory):
 
     Idempotent — the parser is a pure function of the 3MF + plate
     index, so re-runs write the same values.
+
+    Reads + writes are column-explicit (no ``select(PrintArchive)``
+    entity load, no ORM attribute mutations). Reason: a seed must work
+    on a DB whose columns are pinned to *this* migration's era — newer
+    migrations add columns to the model later in the chain, and an
+    entity-wide select would emit those columns in the SQL and crash
+    on `no such column` mid-upgrade. Real incident: pre-fix this seed
+    selected the whole model; after m057 added ``bed_type`` anyone
+    upgrading from <m038 to ≥m057 failed at boot here.
     """
     # Imports are local to keep the module-import cost low for the
     # common case (migration table check + fast skip on already-applied).
@@ -249,34 +258,41 @@ async def _reparse_multi_plate_archives(session_factory):
 
     async with session_factory() as db:
         rows = (
-            (
-                await db.execute(
-                    select(PrintArchive)
-                    .where(PrintArchive.plate_index.isnot(None), PrintArchive.plate_index > 1)
-                    .order_by(PrintArchive.id)
+            await db.execute(
+                select(
+                    PrintArchive.id,
+                    PrintArchive.file_path,
+                    PrintArchive.plate_index,
+                    PrintArchive.print_time_seconds,
+                    PrintArchive.filament_used_grams,
+                    PrintArchive.filament_type,
+                    PrintArchive.filament_color,
+                    PrintArchive.total_layers,
+                    PrintArchive.extra_data,
+                    PrintArchive.thumbnail_path,
                 )
+                .where(PrintArchive.plate_index.isnot(None), PrintArchive.plate_index > 1)
+                .order_by(PrintArchive.id)
             )
-            .scalars()
-            .all()
-        )
+        ).all()
 
         examined = 0
         updated = 0
         thumbnails_written = 0
-        for archive in rows:
+        for row in rows:
             examined += 1
-            if not archive.file_path:
+            if not row.file_path:
                 # Fallback / no_3mf_available archive — nothing to re-parse.
                 continue
-            archive_path = settings.base_dir / archive.file_path
+            archive_path = settings.base_dir / row.file_path
             if not archive_path.is_file() or not zipfile.is_zipfile(archive_path):
                 continue
 
             try:
-                parser = ThreeMFParser(archive_path, plate_number=archive.plate_index)
+                parser = ThreeMFParser(archive_path, plate_number=row.plate_index)
                 metadata = parser.parse()
             except Exception as exc:  # noqa: BLE001 — keep the loop going
-                logger.debug("m038[B]: re-parse failed for archive %s: %s", archive.id, exc)
+                logger.debug("m038[B]: re-parse failed for archive %s: %s", row.id, exc)
                 continue
 
             # Slicer-derived columns. Only overwrite when the new value
@@ -289,37 +305,33 @@ async def _reparse_multi_plate_archives(session_factory):
             new_filament_color = metadata.get("filament_color")
             new_total_layers = metadata.get("total_layers")
 
-            changed = False
-            if new_print_time is not None and archive.print_time_seconds != new_print_time:
-                archive.print_time_seconds = new_print_time
-                changed = True
-            if new_filament_grams is not None and archive.filament_used_grams != new_filament_grams:
-                archive.filament_used_grams = new_filament_grams
-                changed = True
-            if new_filament_type and archive.filament_type != new_filament_type:
-                archive.filament_type = new_filament_type
-                changed = True
-            if new_filament_color and archive.filament_color != new_filament_color:
-                archive.filament_color = new_filament_color
-                changed = True
-            if new_total_layers is not None and archive.total_layers != new_total_layers:
-                archive.total_layers = new_total_layers
-                changed = True
+            update_values: dict = {}
+            if new_print_time is not None and row.print_time_seconds != new_print_time:
+                update_values["print_time_seconds"] = new_print_time
+            if new_filament_grams is not None and row.filament_used_grams != new_filament_grams:
+                update_values["filament_used_grams"] = new_filament_grams
+            if new_filament_type and row.filament_type != new_filament_type:
+                update_values["filament_type"] = new_filament_type
+            if new_filament_color and row.filament_color != new_filament_color:
+                update_values["filament_color"] = new_filament_color
+            if new_total_layers is not None and row.total_layers != new_total_layers:
+                update_values["total_layers"] = new_total_layers
 
             # Merge per-plate keys into existing extra_data without
             # touching user-edited / system fields. Keys we own:
             # ``printable_objects``, ``filament_slots``, ``plate_id``
             # (mirror of the column for legacy queue_virtual reader).
-            existing_extra = dict(archive.extra_data or {})
+            existing_extra = dict(row.extra_data or {})
+            extra_changed = False
             for key in ("printable_objects", "filament_slots"):
                 if key in metadata and existing_extra.get(key) != metadata[key]:
                     existing_extra[key] = metadata[key]
-                    changed = True
-            if existing_extra.get("plate_id") != archive.plate_index:
-                existing_extra["plate_id"] = archive.plate_index
-                changed = True
-            if changed:
-                archive.extra_data = existing_extra
+                    extra_changed = True
+            if existing_extra.get("plate_id") != row.plate_index:
+                existing_extra["plate_id"] = row.plate_index
+                extra_changed = True
+            if extra_changed:
+                update_values["extra_data"] = existing_extra
 
             # Thumbnail: parser surfaces ``_thumbnail_data`` /
             # ``_thumbnail_ext`` only when the targeted plate's PNG
@@ -327,20 +339,21 @@ async def _reparse_multi_plate_archives(session_factory):
             # file in place — same path, new bytes — so any cached
             # image URL keeps working.
             thumb_data = metadata.get("_thumbnail_data")
-            if thumb_data and archive.thumbnail_path:
+            if thumb_data and row.thumbnail_path:
                 try:
-                    thumb_abs = settings.base_dir / archive.thumbnail_path
+                    thumb_abs = settings.base_dir / row.thumbnail_path
                     if thumb_abs.parent.is_dir():
                         thumb_abs.write_bytes(thumb_data)
                         thumbnails_written += 1
                 except OSError as exc:
                     logger.debug(
                         "m038[B]: thumbnail rewrite failed for archive %s: %s",
-                        archive.id,
+                        row.id,
                         exc,
                     )
 
-            if changed:
+            if update_values:
+                await db.execute(update(PrintArchive).where(PrintArchive.id == row.id).values(**update_values))
                 updated += 1
 
         if examined:

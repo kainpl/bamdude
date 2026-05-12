@@ -141,7 +141,7 @@ async def seed(session_factory):
     """
     import json
 
-    from sqlalchemy import select
+    from sqlalchemy import select, update
 
     from backend.app.core.permissions import Permission
     from backend.app.models.group import Group
@@ -149,10 +149,11 @@ async def seed(session_factory):
     READ_KEY = Permission.INVENTORY_FORECAST_READ.value
     WRITE_KEY = Permission.INVENTORY_FORECAST_WRITE.value
 
+    # Column-explicit read + Core update — see feedback_migration_seed_columns.
     async with session_factory() as db:
-        result = await db.execute(select(Group))
-        for group in result.scalars().all():
-            perms = group.permissions or []
+        result = await db.execute(select(Group.id, Group.permissions))
+        for row in result.all():
+            perms = row.permissions or []
             if isinstance(perms, str):
                 try:
                     perms = json.loads(perms)
@@ -167,5 +168,5 @@ async def seed(session_factory):
                 perms.append(WRITE_KEY)
                 changed = True
             if changed:
-                group.permissions = perms
+                await db.execute(update(Group).where(Group.id == row.id).values(permissions=perms))
         await db.commit()
