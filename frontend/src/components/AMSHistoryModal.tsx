@@ -159,12 +159,15 @@ export function AMSHistoryModal({
     return '#c62828';
   };
 
-  // Theme-aware styles (using isDark since dark: prefix doesn't work in portals)
-  const modalBg = isDark ? '#2d2d2d' : '#ffffff';
-  const cardBg = isDark ? '#1d1d1d' : '#f3f4f6';
-  const borderColor = isDark ? '#3d3d3d' : '#e5e7eb';
-  const textPrimary = isDark ? '#ffffff' : '#111827';
-  const textSecondary = isDark ? '#9ca3af' : '#4b5563';
+  // Theme-aware styles via CSS variables so the dialog follows the active
+  // theme variant (warm / cool / oled / slate / forest) — not just mode.
+  // Recharts <CartesianGrid> still uses the isDark fallback below because
+  // SVG stroke="var(...)" isn't always resolved.
+  const modalBg = 'var(--bg-secondary)';
+  const cardBg = 'var(--bg-primary)';
+  const borderColor = 'var(--bg-tertiary)';
+  const textPrimary = 'var(--text-primary)';
+  const textSecondary = 'var(--text-muted)';
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>

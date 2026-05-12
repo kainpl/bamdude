@@ -102,7 +102,18 @@ export default {
     right: 'Right',
     showingRange: 'Showing {{from}}-{{to}} of {{total}}',
     show: 'Show',
-    total: 'total'
+    total: 'total',
+    history: 'History',
+    humidity: 'Humidity',
+    temperature: 'Temperature',
+    current: 'Current',
+    average: 'Average',
+    min: 'Min',
+    max: 'Max'
+  },
+
+  amsHistory: {
+    recordingInfo: 'Data is recorded every 5 minutes while the printer is connected',
   },
 
   // Keyboard shortcuts modal (rendered from <Layout> on `?` keypress)

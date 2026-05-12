@@ -102,7 +102,18 @@ export default {
     right: 'Праворуч',
     showingRange: '{{from}}-{{to}} з {{total}}',
     show: 'Показати',
-    total: 'всього'
+    total: 'всього',
+    history: 'Історія',
+    humidity: 'Вологість',
+    temperature: 'Температура',
+    current: 'Зараз',
+    average: 'Середнє',
+    min: 'Мін',
+    max: 'Макс'
+  },
+
+  amsHistory: {
+    recordingInfo: 'Дані записуються кожні 5 хвилин, поки принтер підключений',
   },
 
   // Keyboard shortcuts modal (rendered from <Layout> on `?` keypress)
