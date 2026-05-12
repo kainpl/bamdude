@@ -3649,6 +3649,7 @@ export interface CalibFilamentIn {
   nozzle_temp: number;
   max_volumetric_speed: number;
   flow_rate?: number;
+  extruder_id?: number | null;
 }
 
 export interface StartSessionIn {
@@ -3713,6 +3714,47 @@ export interface ManualResultIn {
 export interface ManualResultOut {
   saved_rows: FilamentCalibrationOut[];
   next_session_id: number | null;
+}
+
+export interface ExtrusionCaliResultOut {
+  tray_id: number;
+  ams_id: number;
+  slot_id: number;
+  extruder_id: number;
+  nozzle_diameter: number;
+  nozzle_volume_type: string;
+  filament_id: string;
+  setting_id: string;
+  k_value: number;
+  n_coef: number;
+  confidence: number;
+  nozzle_pos_id: number;
+  nozzle_sn: string;
+}
+
+export interface AutoResultEditIn {
+  tray_id: number;
+  k_value?: number;
+  n_coef?: number;
+  flow_ratio?: number;
+  name?: string;
+  save?: boolean;
+}
+
+export interface AutoResultIn {
+  results: AutoResultEditIn[];
+}
+
+export interface PACalibHistoryEntryOut {
+  cali_idx: number;
+  name: string;
+  filament_id: string;
+  setting_id: string;
+  nozzle_diameter: number;
+  nozzle_volume_type: string;
+  extruder_id: number;
+  k_value: number;
+  n_coef: number;
 }
 
 // API functions
@@ -4105,6 +4147,42 @@ export const api = {
   listAwaitingSessions: (printerId: number) =>
     request<CalibrationSessionOut[]>(
       `/calibration/sessions?printer_id=${printerId}&status=awaiting_user_input`,
+    ),
+  submitAutoResult: (sessionId: number, body: AutoResultIn) =>
+    request<FilamentCalibrationOut[]>(`/calibration/sessions/${sessionId}/auto-result`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  getCalibrationAutoResults: (printerId: number) =>
+    request<ExtrusionCaliResultOut[]>(`/printers/${printerId}/calibration/auto-results`),
+  listFilamentCalibrations: (params: {
+    printer_model?: string;
+    filament_id?: string;
+    nozzle_diameter?: number;
+    is_active?: boolean;
+  }) => {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) {
+      if (v != null) q.append(k, String(v));
+    }
+    return request<FilamentCalibrationOut[]>(`/filament-calibrations?${q.toString()}`);
+  },
+  setActiveCalibration: (caliId: number) =>
+    request<FilamentCalibrationOut>(`/filament-calibrations/${caliId}/set-active`, {
+      method: 'POST',
+    }),
+  deleteCalibration: (caliId: number) =>
+    request<void>(`/filament-calibrations/${caliId}`, { method: 'DELETE' }),
+  getPrinterCalibrationHistory: (printerId: number) =>
+    request<PACalibHistoryEntryOut[]>(`/printers/${printerId}/calibration/history`),
+  refreshPrinterCalibrationHistory: (
+    printerId: number,
+    nozzle_diameter: number,
+    extruder_id: number = 0,
+  ) =>
+    request<{ sequence_id: string }>(
+      `/printers/${printerId}/calibration/history/refresh?nozzle_diameter=${nozzle_diameter}&extruder_id=${extruder_id}`,
+      { method: 'POST' },
     ),
 
   // MQTT Debug Logging

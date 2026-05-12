@@ -51,6 +51,7 @@ class CalibFilamentIn(BaseModel):
     nozzle_temp: int
     max_volumetric_speed: float
     flow_rate: float = 0.98
+    extruder_id: int | None = None
 
 
 class StartSessionIn(BaseModel):

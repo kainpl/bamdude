@@ -13,22 +13,25 @@ interface OptionRow {
   labelKey: string;
   descKey: string;
   capKey: keyof CalibCapabilities;
-  comingPlan3?: boolean;
 }
 
-// Plan 2: only PA Line + Flow Rate manual paths are wired end-to-end.
-// Auto + Pattern + Tower + Towers are dimmed with a "Coming in Plan 3" hint
-// so users see the full feature surface but can't trigger half-baked paths.
 const PA_OPTIONS: OptionRow[] = [
   { mode: 'pa_line', method: 'manual', labelKey: 'paLine', descKey: 'paLineDesc', capKey: 'pa_manual' },
-  { mode: 'pa_pattern', method: 'manual', labelKey: 'paPattern', descKey: 'paPatternDesc', capKey: 'pa_manual', comingPlan3: true },
-  { mode: 'pa_tower', method: 'manual', labelKey: 'paTower', descKey: 'paTowerDesc', capKey: 'pa_manual', comingPlan3: true },
-  { mode: 'auto_pa_line', method: 'auto', labelKey: 'paAuto', descKey: 'paAutoDesc', capKey: 'pa_auto', comingPlan3: true },
+  { mode: 'pa_pattern', method: 'manual', labelKey: 'paPattern', descKey: 'paPatternDesc', capKey: 'pa_manual' },
+  { mode: 'pa_tower', method: 'manual', labelKey: 'paTower', descKey: 'paTowerDesc', capKey: 'pa_manual' },
+  { mode: 'auto_pa_line', method: 'auto', labelKey: 'paAuto', descKey: 'paAutoDesc', capKey: 'pa_auto' },
 ];
 
 const FLOW_OPTIONS: OptionRow[] = [
   { mode: 'flow_rate', method: 'manual', labelKey: 'flowRate', descKey: 'flowRateDesc', capKey: 'flow_manual' },
-  { mode: 'flow_rate', method: 'auto', labelKey: 'flowAuto', descKey: 'flowAutoDesc', capKey: 'flow_auto', comingPlan3: true },
+  { mode: 'flow_rate', method: 'auto', labelKey: 'flowAuto', descKey: 'flowAutoDesc', capKey: 'flow_auto' },
+];
+
+const TOWER_OPTIONS: OptionRow[] = [
+  { mode: 'temp_tower', method: 'manual', labelKey: 'tempTower', descKey: 'tempTowerDesc', capKey: 'temp_tower' },
+  { mode: 'vol_speed_tower', method: 'manual', labelKey: 'volSpeedTower', descKey: 'volSpeedTowerDesc', capKey: 'vol_speed_tower' },
+  { mode: 'vfa_tower', method: 'manual', labelKey: 'vfaTower', descKey: 'vfaTowerDesc', capKey: 'vfa_tower' },
+  { mode: 'retraction_tower', method: 'manual', labelKey: 'retractionTower', descKey: 'retractionTowerDesc', capKey: 'retraction_tower' },
 ];
 
 export function CalibrationStartPage({ capabilities, onPick }: Props) {
@@ -36,12 +39,8 @@ export function CalibrationStartPage({ capabilities, onPick }: Props) {
 
   const renderRow = (r: OptionRow) => {
     const supported = capabilities ? Boolean(capabilities[r.capKey]) : false;
-    const disabled = !supported || r.comingPlan3;
-    const reason = r.comingPlan3
-      ? t('filamentCali.start.comingInPlan3')
-      : !supported
-        ? t('filamentCali.start.notSupported')
-        : '';
+    const disabled = !supported;
+    const reason = !supported ? t('filamentCali.start.notSupported') : '';
     return (
       <button
         key={`${r.mode}-${r.method}`}
@@ -76,6 +75,11 @@ export function CalibrationStartPage({ capabilities, onPick }: Props) {
       <section>
         <h4 className="text-sm font-medium text-bambu-gray mb-2">{t('filamentCali.start.flowGroup')}</h4>
         <div className="space-y-2">{FLOW_OPTIONS.map(renderRow)}</div>
+      </section>
+
+      <section>
+        <h4 className="text-sm font-medium text-bambu-gray mb-2">{t('filamentCali.start.towerGroup')}</h4>
+        <div className="space-y-2">{TOWER_OPTIONS.map(renderRow)}</div>
       </section>
     </div>
   );

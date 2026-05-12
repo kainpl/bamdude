@@ -10,6 +10,8 @@ import { CalibrationRunningPage } from './calibration/CalibrationRunningPage';
 import { CalibrationManualSavePage } from './calibration/CalibrationManualSavePage';
 import { CalibrationCoarseSavePage } from './calibration/CalibrationCoarseSavePage';
 import { CalibrationFineSavePage } from './calibration/CalibrationFineSavePage';
+import { CalibrationAutoSavePage } from './calibration/CalibrationAutoSavePage';
+import { CalibrationTowerFinishPage } from './calibration/CalibrationTowerFinishPage';
 import { CalibrationFinishPage } from './calibration/CalibrationFinishPage';
 import { ResumeBanner } from './calibration/ResumeBanner';
 
@@ -125,6 +127,25 @@ export function FilamentCalibrationModal({ isOpen, onClose, printerId }: Props) 
               session={cali.session}
               onSubmit={(body) => cali.submitManualResult(body)}
               isSubmitting={cali.isSubmitting}
+            />
+          )}
+
+          {cali.step === 'autoSave' && cali.session && (
+            <CalibrationAutoSavePage
+              session={cali.session}
+              onSubmit={(body) => cali.submitAutoResult(body)}
+              isSubmitting={cali.isSubmitting}
+            />
+          )}
+
+          {cali.step === 'towerFinish' && cali.session && (
+            <CalibrationTowerFinishPage
+              session={cali.session}
+              onClose={onClose}
+              onCalibrateAnother={() => {
+                cali.setSessionId(null);
+                cali.setStep('start');
+              }}
             />
           )}
 

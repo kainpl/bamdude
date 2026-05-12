@@ -35,7 +35,27 @@ interface LoadedSlot {
   label: string;
 }
 
-export function CalibrationPresetPage({ printerId, capabilities, onBack, onStart }: Props) {
+interface PerExtruderState {
+  selectedSlot: LoadedSlot | null;
+  bedTemp: number;
+  nozzleTemp: number;
+  maxVolSpeed: number;
+}
+
+const DEFAULT_PER_EXTRUDER: PerExtruderState = {
+  selectedSlot: null,
+  bedTemp: 60,
+  nozzleTemp: 220,
+  maxVolSpeed: 12,
+};
+
+export function CalibrationPresetPage({
+  printerId,
+  method,
+  capabilities,
+  onBack,
+  onStart,
+}: Props) {
   const { t } = useTranslation();
 
   const statusQuery = useQuery<PrinterStatus>({
@@ -47,18 +67,33 @@ export function CalibrationPresetPage({ printerId, capabilities, onBack, onStart
   const firstNozzleDia = capabilities?.nozzles?.[0]?.diameter ?? 0.4;
   const [nozzleDia, setNozzleDia] = useState<number>(firstNozzleDia);
   const [nozzleVolType, setNozzleVolType] = useState<NozzleVolumeType>('standard');
-  const [bedTemp, setBedTemp] = useState<number>(60);
-  const [nozzleTemp, setNozzleTemp] = useState<number>(220);
-  const [maxVolSpeed, setMaxVolSpeed] = useState<number>(12);
-  const [selectedSlot, setSelectedSlot] = useState<LoadedSlot | null>(null);
+
+  const isDual = Boolean(capabilities?.dual_extruder);
+  const extruderList = useMemo(
+    () => capabilities?.extruders ?? [{ id: 0, name: 'Main' }],
+    [capabilities?.extruders],
+  );
+  const [activeExtruder, setActiveExtruder] = useState<number>(extruderList[0]?.id ?? 0);
+
+  const [perExtruder, setPerExtruder] = useState<Record<number, PerExtruderState>>(() => {
+    const init: Record<number, PerExtruderState> = {};
+    for (const ex of extruderList) init[ex.id] = { ...DEFAULT_PER_EXTRUDER };
+    return init;
+  });
+
+  const current = perExtruder[activeExtruder] ?? DEFAULT_PER_EXTRUDER;
+
+  const patchCurrent = (p: Partial<PerExtruderState>) =>
+    setPerExtruder((prev) => ({
+      ...prev,
+      [activeExtruder]: { ...(prev[activeExtruder] ?? DEFAULT_PER_EXTRUDER), ...p },
+    }));
 
   const loadedSlots = useMemo<LoadedSlot[]>(() => {
     const units = statusQuery.data?.ams ?? [];
     const out: LoadedSlot[] = [];
     for (const unit of units) {
       for (const tray of unit.tray) {
-        // state 11 = loaded (per AMSTray docstring). Some firmware leaves
-        // state null but populates tray_info_idx — treat both as loaded.
         const loaded = tray.state === 11 || (tray.tray_info_idx && tray.tray_info_idx !== '');
         if (!loaded || !tray.tray_info_idx) continue;
         const globalTrayId = unit.id * 4 + tray.id;
@@ -76,33 +111,82 @@ export function CalibrationPresetPage({ printerId, capabilities, onBack, onStart
     return out;
   }, [statusQuery.data]);
 
-  const canStart =
-    selectedSlot != null && bedTemp > 0 && nozzleTemp > 0 && maxVolSpeed > 0;
+  const buildFilament = (st: PerExtruderState, exId: number): CalibFilamentIn | null => {
+    if (!st.selectedSlot || st.bedTemp <= 0 || st.nozzleTemp <= 0 || st.maxVolSpeed <= 0) {
+      return null;
+    }
+    return {
+      ams_id: st.selectedSlot.ams_id,
+      slot_id: st.selectedSlot.slot_id,
+      tray_id: st.selectedSlot.tray_id,
+      filament_id: st.selectedSlot.filament_id,
+      filament_setting_id: st.selectedSlot.filament_setting_id,
+      bed_temp: st.bedTemp,
+      nozzle_temp: st.nozzleTemp,
+      max_volumetric_speed: st.maxVolSpeed,
+      extruder_id: isDual ? exId : undefined,
+    };
+  };
 
   const submit = async () => {
-    if (!selectedSlot) return;
+    if (method === 'auto' && isDual) {
+      const filaments: CalibFilamentIn[] = [];
+      for (const ex of extruderList) {
+        const f = buildFilament(perExtruder[ex.id] ?? DEFAULT_PER_EXTRUDER, ex.id);
+        if (f) filaments.push(f);
+      }
+      if (filaments.length === 0) return;
+      await onStart({
+        nozzle_diameter: nozzleDia,
+        nozzle_volume_type: nozzleVolType,
+        extruder_id: filaments[0].extruder_id ?? 0,
+        filaments,
+      });
+      return;
+    }
+
+    const f = buildFilament(current, activeExtruder);
+    if (!f) return;
     await onStart({
       nozzle_diameter: nozzleDia,
       nozzle_volume_type: nozzleVolType,
-      extruder_id: 0,
-      filaments: [
-        {
-          ams_id: selectedSlot.ams_id,
-          slot_id: selectedSlot.slot_id,
-          tray_id: selectedSlot.tray_id,
-          filament_id: selectedSlot.filament_id,
-          filament_setting_id: selectedSlot.filament_setting_id,
-          bed_temp: bedTemp,
-          nozzle_temp: nozzleTemp,
-          max_volumetric_speed: maxVolSpeed,
-        },
-      ],
+      extruder_id: activeExtruder,
+      filaments: [f],
     });
   };
+
+  const canStart = (() => {
+    if (method === 'auto' && isDual) {
+      return extruderList.some((ex) => buildFilament(perExtruder[ex.id] ?? DEFAULT_PER_EXTRUDER, ex.id) != null);
+    }
+    return buildFilament(current, activeExtruder) != null;
+  })();
+
+  const extruderLabel = (name: string) =>
+    t(`filamentCali.extruder.${name.toLowerCase()}`, { defaultValue: name });
 
   return (
     <div className="space-y-4">
       <h3 className="text-base font-semibold text-white">{t('filamentCali.preset.heading')}</h3>
+
+      {isDual && (
+        <div className="flex gap-1 rounded-lg p-1 bg-bambu-dark border border-bambu-dark-tertiary">
+          {extruderList.map((ex) => (
+            <button
+              key={ex.id}
+              type="button"
+              onClick={() => setActiveExtruder(ex.id)}
+              className={`flex-1 px-3 py-1.5 text-sm rounded transition-colors ${
+                activeExtruder === ex.id
+                  ? 'bg-bambu-green text-white'
+                  : 'text-bambu-gray hover:text-white'
+              }`}
+            >
+              {extruderLabel(ex.name)}
+            </button>
+          ))}
+        </div>
+      )}
 
       <section>
         <div className="grid grid-cols-2 gap-2">
@@ -150,9 +234,10 @@ export function CalibrationPresetPage({ printerId, capabilities, onBack, onStart
               <button
                 key={`${s.ams_id}-${s.slot_id}`}
                 type="button"
-                onClick={() => setSelectedSlot(s)}
+                onClick={() => patchCurrent({ selectedSlot: s })}
                 className={`w-full text-left p-2 rounded border ${
-                  selectedSlot?.ams_id === s.ams_id && selectedSlot.slot_id === s.slot_id
+                  current.selectedSlot?.ams_id === s.ams_id &&
+                  current.selectedSlot.slot_id === s.slot_id
                     ? 'border-bambu-green bg-bambu-green/10'
                     : 'border-bambu-dark-tertiary bg-bambu-dark hover:border-bambu-green/50'
                 }`}
@@ -169,8 +254,8 @@ export function CalibrationPresetPage({ printerId, capabilities, onBack, onStart
           <span className="text-xs text-bambu-gray">{t('filamentCali.preset.bedTemp')}</span>
           <input
             type="number"
-            value={bedTemp}
-            onChange={(e) => setBedTemp(parseInt(e.target.value, 10) || 0)}
+            value={current.bedTemp}
+            onChange={(e) => patchCurrent({ bedTemp: parseInt(e.target.value, 10) || 0 })}
             className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
           />
         </label>
@@ -178,8 +263,8 @@ export function CalibrationPresetPage({ printerId, capabilities, onBack, onStart
           <span className="text-xs text-bambu-gray">{t('filamentCali.preset.nozzleTemp')}</span>
           <input
             type="number"
-            value={nozzleTemp}
-            onChange={(e) => setNozzleTemp(parseInt(e.target.value, 10) || 0)}
+            value={current.nozzleTemp}
+            onChange={(e) => patchCurrent({ nozzleTemp: parseInt(e.target.value, 10) || 0 })}
             className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
           />
         </label>
@@ -188,8 +273,8 @@ export function CalibrationPresetPage({ printerId, capabilities, onBack, onStart
           <input
             type="number"
             step="0.5"
-            value={maxVolSpeed}
-            onChange={(e) => setMaxVolSpeed(parseFloat(e.target.value) || 0)}
+            value={current.maxVolSpeed}
+            onChange={(e) => patchCurrent({ maxVolSpeed: parseFloat(e.target.value) || 0 })}
             className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
           />
         </label>

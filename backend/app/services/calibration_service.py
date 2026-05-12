@@ -38,6 +38,27 @@ from backend.app.services.printer_manager import printer_manager
 
 ASSET_ROOT = Path(__file__).resolve().parent.parent / "data" / "calib_assets"
 
+# Tower modes are print-and-finish — no save dialog, no filament_calibration
+# row. The dispatch on-complete handler flips the session straight to
+# "saved" instead of "awaiting_user_input".
+TOWER_MODES = frozenset(
+    {
+        CaliMode.TEMP_TOWER,
+        CaliMode.VOL_SPEED_TOWER,
+        CaliMode.VFA_TOWER,
+        CaliMode.RETRACTION_TOWER,
+    }
+)
+
+
+def is_tower_mode(cali_mode: str | CaliMode) -> bool:
+    if isinstance(cali_mode, str):
+        try:
+            cali_mode = CaliMode(cali_mode)
+        except ValueError:
+            return False
+    return cali_mode in TOWER_MODES
+
 
 async def broadcast_calibration_event(*, printer_id: int, event: str, payload: dict | None = None) -> None:
     """Wrap ws_manager.broadcast with a ``calibration.<event>`` envelope.
@@ -106,6 +127,7 @@ class CalibFilamentInput:
     nozzle_temp: int
     max_volumetric_speed: float
     flow_rate: float = 0.98
+    extruder_id_override: int | None = None
 
 
 @dataclass
@@ -171,7 +193,7 @@ class CalibrationService:
         filaments_payload = [
             {
                 "tray_id": f.tray_id,
-                "extruder_id": extruder_id,
+                "extruder_id": f.extruder_id_override if f.extruder_id_override is not None else extruder_id,
                 "bed_temp": f.bed_temp,
                 "filament_id": f.filament_id,
                 "setting_id": f.filament_setting_id or "",
@@ -364,6 +386,10 @@ class CalibrationService:
         if not client:
             raise ValueError("Printer not online")
 
+        # X1 auto-flow delivers the flow ratio via the same push slot as PA's
+        # k_value — the firmware reuses the field. Branch by session.cali_mode
+        # so each row lands in the right column (pa_k_value vs flow_ratio).
+        is_flow = CaliMode(s.cali_mode) == CaliMode.FLOW_RATE
         results_by_tray = {r.tray_id: r for r in client.state.extrusion_cali_results}
         saved: list[FilamentCalibration] = []
         for edit in edits:
@@ -374,22 +400,37 @@ class CalibrationService:
                 continue
             # edit.get(...) returns the value even when it's None — fall back
             # to base.* explicitly so user-omitted fields don't blow up float().
-            k_raw = edit.get("k_value")
-            k = float(k_raw if k_raw is not None else base.k_value)
-            n_raw = edit.get("n_coef")
-            n = float(n_raw if n_raw is not None else base.n_coef)
-            name = edit.get("name") or f"{base.filament_id} PA {k:.4f}"
-            row = await self.save_result(
-                db=db,
-                session=s,
-                payload=ResultPayload(
-                    pa_k_value=k,
-                    pa_n_coef=n,
-                    confidence=base.confidence,
-                    source="auto",
-                    name=name,
-                ),
-            )
+            if is_flow:
+                flow_raw = edit.get("flow_ratio")
+                flow = float(flow_raw if flow_raw is not None else base.k_value)
+                name = edit.get("name") or f"{base.filament_id} flow {flow:.3f}"
+                row = await self.save_result(
+                    db=db,
+                    session=s,
+                    payload=ResultPayload(
+                        flow_ratio=flow,
+                        confidence=base.confidence,
+                        source="auto",
+                        name=name,
+                    ),
+                )
+            else:
+                k_raw = edit.get("k_value")
+                k = float(k_raw if k_raw is not None else base.k_value)
+                n_raw = edit.get("n_coef")
+                n = float(n_raw if n_raw is not None else base.n_coef)
+                name = edit.get("name") or f"{base.filament_id} PA {k:.4f}"
+                row = await self.save_result(
+                    db=db,
+                    session=s,
+                    payload=ResultPayload(
+                        pa_k_value=k,
+                        pa_n_coef=n,
+                        confidence=base.confidence,
+                        source="auto",
+                        name=name,
+                    ),
+                )
             saved.append(row)
         return saved
 
@@ -459,12 +500,15 @@ class CalibrationService:
         await db.commit()
         await db.refresh(new_row)
 
-        # MQTT push to printer history + auto-bind
+        # MQTT push to printer history + auto-bind. BS uses the same
+        # extrusion_cali_set verb for both PA and flow ratio — firmware
+        # routes by session context. Push whichever value we computed.
+        push_value = payload.pa_k_value if payload.pa_k_value is not None else payload.flow_ratio
         client = printer_manager.get_client(session.printer_id)
-        if client and client.state.connected and payload.pa_k_value is not None:
+        if client and client.state.connected and push_value is not None:
             client.extrusion_cali_set(
                 tray_id=fil["tray_id"],
-                k_value=payload.pa_k_value,
+                k_value=push_value,
                 nozzle_diameter=str(session.nozzle_diameter),
                 nozzle_temp=fil.get("nozzle_temp", 220),
                 filament_id=fil["filament_id"],
@@ -509,6 +553,50 @@ class CalibrationService:
         s.status = "cancelled"
         await db.commit()
         await broadcast_calibration_event(printer_id=s.printer_id, event="cancelled", payload={"session_id": s.id})
+
+
+async def reconcile_session_status(db: AsyncSession, session: CalibrationSession) -> bool:
+    """Lazy-flip running → awaiting_user_input | saved | failed.
+
+    Auto path: PrinterState.extrusion_cali_status reports "completed" once
+    the printer pushes extrusion_cali_get_result → flip to
+    awaiting_user_input.
+
+    Manual path: linked PrintQueueItem reaches "completed" / "failed" →
+    flip to awaiting_user_input (tower modes go straight to "saved").
+
+    Returns True if status changed. Best-effort; never raises.
+    """
+    if session.status != "running":
+        return False
+    try:
+        client = printer_manager.get_client(session.printer_id)
+        new_status: str | None = None
+        if session.method == "auto":
+            if client and getattr(client.state, "extrusion_cali_status", "idle") == "completed":
+                new_status = "saved" if is_tower_mode(session.cali_mode) else "awaiting_user_input"
+        elif session.print_queue_item_id is not None:
+            from backend.app.models.print_queue import PrintQueueItem  # local import
+
+            item = await db.get(PrintQueueItem, session.print_queue_item_id)
+            if item and item.status in {"completed", "failed"}:
+                if item.status == "failed":
+                    new_status = "failed"
+                else:
+                    new_status = "saved" if is_tower_mode(session.cali_mode) else "awaiting_user_input"
+
+        if new_status and new_status != session.status:
+            session.status = new_status
+            await db.commit()
+            await broadcast_calibration_event(
+                printer_id=session.printer_id,
+                event="saved" if new_status == "saved" else ("failed" if new_status == "failed" else "completed"),
+                payload={"session_id": session.id},
+            )
+            return True
+    except Exception:
+        return False
+    return False
 
 
 async def resolve_active_calibration(

@@ -32,7 +32,11 @@ from backend.app.schemas.filament_calibration import (
     PACalibHistoryEntryOut,
     StartSessionIn,
 )
-from backend.app.services.calibration_service import CalibFilamentInput, CalibrationService
+from backend.app.services.calibration_service import (
+    CalibFilamentInput,
+    CalibrationService,
+    reconcile_session_status,
+)
 from backend.app.services.printer_capabilities import compute_calibration_supports
 from backend.app.services.printer_manager import printer_manager
 
@@ -122,6 +126,7 @@ async def start_session(
                     nozzle_temp=f.nozzle_temp,
                     max_volumetric_speed=f.max_volumetric_speed,
                     flow_rate=f.flow_rate,
+                    extruder_id_override=f.extruder_id,
                 )
                 for f in body.filaments
             ],
@@ -175,6 +180,10 @@ async def get_session(
     s = (await db.execute(select(CalibrationSession).where(CalibrationSession.id == session_id))).scalar_one_or_none()
     if not s:
         raise HTTPException(404, "Session not found")
+    # Lazy reconciliation: while the wizard polls this endpoint, flip
+    # running → awaiting_user_input | saved | failed if printer state /
+    # linked print queue item has moved past us.
+    await reconcile_session_status(db, s)
     return CalibrationSessionOut.model_validate(s)
 
 
@@ -442,6 +451,43 @@ async def get_history(
             n_coef=h.n_coef,
         )
         for h in (client.state.extrusion_cali_history or [])
+    ]
+
+
+@router.get(
+    "/printers/{printer_id}/calibration/auto-results",
+    response_model=list[dict],
+)
+async def get_auto_results(
+    printer_id: int,
+    _: User | None = RequirePermission(Permission.PRINTERS_READ),
+) -> list[dict]:
+    """Drain PrinterState.extrusion_cali_results for the X1 auto-cali save UI.
+
+    Each row pairs an AMS slot with the K (or flow ratio — firmware reuses
+    the same payload slot) the lidar measured. UI lets the operator pick /
+    edit / skip per row before saving.
+    """
+    client = printer_manager.get_client(printer_id)
+    if not client or not client.state.connected:
+        raise HTTPException(404, "Printer not online")
+    return [
+        {
+            "tray_id": r.tray_id,
+            "ams_id": r.ams_id,
+            "slot_id": r.slot_id,
+            "extruder_id": r.extruder_id,
+            "nozzle_diameter": r.nozzle_diameter,
+            "nozzle_volume_type": r.nozzle_volume_type,
+            "filament_id": r.filament_id,
+            "setting_id": r.setting_id,
+            "k_value": r.k_value,
+            "n_coef": r.n_coef,
+            "confidence": r.confidence,
+            "nozzle_pos_id": r.nozzle_pos_id,
+            "nozzle_sn": r.nozzle_sn,
+        }
+        for r in (client.state.extrusion_cali_results or [])
     ]
 
 

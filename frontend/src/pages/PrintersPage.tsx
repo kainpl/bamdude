@@ -99,6 +99,7 @@ import { ConfigureAmsSlotModal } from '../components/ConfigureAmsSlotModal';
 import { AMSSettingsModal } from '../components/AMSSettingsModal';
 import { PrinterSettingsModal } from '../components/PrinterSettingsModal';
 import { FilamentCalibrationModal } from '../components/FilamentCalibrationModal';
+import { CalibrationHistoryModal } from '../components/CalibrationHistoryModal';
 import { useToast } from '../contexts/ToastContext';
 import { ChamberLight } from '../components/icons/ChamberLight';
 import { PlateClearedIcon } from '../components/icons/PlateClearedIcon';
@@ -1473,6 +1474,7 @@ function PrinterCard({
   const [amsSettingsOpen, setAmsSettingsOpen] = useState(false);
   const [printerSettingsOpen, setPrinterSettingsOpen] = useState(false);
   const [filamentCaliOpen, setFilamentCaliOpen] = useState(false);
+  const [calibrationHistoryOpen, setCalibrationHistoryOpen] = useState(false);
   const [linkSpoolModal, setLinkSpoolModal] = useState<{
     tagUid: string;
     trayUuid: string;
@@ -2601,6 +2603,19 @@ function PrinterCard({
                   >
                     <Droplet className="w-4 h-4" />
                     {t('filamentCali.menuItem')}
+                  </button>
+                  <button
+                    className={`w-full px-4 py-2 text-left text-sm hover:bg-bambu-dark-tertiary flex items-center gap-2 ${
+                      !hasPermission('printers:update') ? 'opacity-50 cursor-not-allowed' : ''
+                    }`}
+                    onClick={() => {
+                      if (!hasPermission('printers:update')) return;
+                      setCalibrationHistoryOpen(true);
+                      setShowMenu(false);
+                    }}
+                  >
+                    <Droplet className="w-4 h-4" />
+                    {t('filamentCali.history.menuItem')}
                   </button>
                   {hasMatchingMacros && (
                     <button
@@ -5377,6 +5392,14 @@ function PrinterCard({
         isOpen={filamentCaliOpen}
         onClose={() => setFilamentCaliOpen(false)}
         printerId={printer.id}
+      />
+
+      {/* Calibration History modal */}
+      <CalibrationHistoryModal
+        isOpen={calibrationHistoryOpen}
+        onClose={() => setCalibrationHistoryOpen(false)}
+        printerId={printer.id}
+        printerModel={printer.model ?? ''}
       />
 
       {/* Link Spool Modal */}

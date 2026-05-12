@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { api } from '../api/client';
 import type {
+  AutoResultEditIn,
   CaliMethod,
   CaliMode,
   CalibCapabilities,
@@ -12,6 +13,17 @@ import type {
   ManualResultIn,
   NozzleVolumeType,
 } from '../api/client';
+
+const TOWER_MODES: CaliMode[] = [
+  'temp_tower',
+  'vol_speed_tower',
+  'vfa_tower',
+  'retraction_tower',
+];
+
+function isTowerCaliMode(m: CaliMode | undefined): boolean {
+  return m != null && (TOWER_MODES as CaliMode[]).includes(m);
+}
 
 /**
  * Wizard step machine for the Filament Calibration modal.
@@ -31,6 +43,8 @@ export type WizardStep =
   | 'manualSave'
   | 'coarseSave'
   | 'fineSave'
+  | 'autoSave'
+  | 'towerFinish'
   | 'finish';
 
 export interface ComputeNextStepInput {
@@ -42,6 +56,7 @@ export interface ComputeNextStepInput {
   skipFine?: boolean;
   savedRows?: number;
   nextSessionId?: number | null;
+  isTowerMode?: boolean;
 }
 
 /** Pure helper for unit tests. */
@@ -52,7 +67,9 @@ export function computeNextStep(current: WizardStep, ctx: ComputeNextStepInput):
     case 'preset':
       return ctx.sessionStarted ? 'running' : 'preset';
     case 'running':
+      if (ctx.sessionStatus === 'saved' && ctx.isTowerMode) return 'towerFinish';
       if (ctx.sessionStatus !== 'awaiting_user_input') return 'running';
+      if (ctx.method === 'auto') return 'autoSave';
       if (ctx.cali_mode === 'flow_rate') {
         return ctx.stage === 2 ? 'fineSave' : 'coarseSave';
       }
@@ -63,9 +80,11 @@ export function computeNextStep(current: WizardStep, ctx: ComputeNextStepInput):
       return 'coarseSave';
     case 'manualSave':
     case 'fineSave':
+    case 'autoSave':
       return ctx.savedRows ? 'finish' : current;
+    case 'towerFinish':
     case 'finish':
-      return 'finish';
+      return current;
     default:
       return 'start';
   }
@@ -147,6 +166,20 @@ export function useFilamentCalibration(printerId: number, enabled: boolean) {
     onError: (e: Error) => setErrorMsg(e.message),
   });
 
+  const submitAutoMutation = useMutation({
+    mutationFn: (body: { results: AutoResultEditIn[] }) => {
+      if (sessionId == null) throw new Error('No active session');
+      return api.submitAutoResult(sessionId, body);
+    },
+    onSuccess: (rows) => {
+      setSavedRows(rows);
+      setStep('finish');
+      qc.invalidateQueries({ queryKey: ['filament-calibrations'] });
+      qc.invalidateQueries({ queryKey: ['calibration', 'awaiting', printerId] });
+    },
+    onError: (e: Error) => setErrorMsg(e.message),
+  });
+
   const cancelMutation = useMutation({
     mutationFn: () =>
       sessionId != null ? api.cancelCalibrationSession(sessionId) : Promise.resolve(),
@@ -176,19 +209,24 @@ export function useFilamentCalibration(printerId: number, enabled: boolean) {
     return () => window.removeEventListener('calibration-event', handler);
   }, [sessionId, qc]);
 
-  // Auto-advance running → save when session flips to awaiting_user_input
+  // Auto-advance running → save/towerFinish when session flips to
+  // awaiting_user_input (manual/auto) or saved (tower modes go straight there).
   useEffect(() => {
-    if (sessionQuery.data?.status !== 'awaiting_user_input') return;
+    const s = sessionQuery.data;
+    if (!s) return;
     if (step !== 'running') return;
+    if (s.status !== 'awaiting_user_input' && s.status !== 'saved') return;
+    const mode = s.cali_mode as CaliMode;
     setStep(
       computeNextStep('running', {
-        cali_mode: input.cali_mode,
+        cali_mode: mode,
         method: input.method,
-        stage: sessionQuery.data.stage,
-        sessionStatus: sessionQuery.data.status,
+        stage: s.stage,
+        sessionStatus: s.status,
+        isTowerMode: isTowerCaliMode(mode),
       }),
     );
-  }, [sessionQuery.data, step, input.cali_mode, input.method]);
+  }, [sessionQuery.data, step, input.method]);
 
   const setInput = (patch: Partial<WizardInput>) =>
     setInputState((prev) => ({ ...prev, ...patch }));
@@ -210,6 +248,8 @@ export function useFilamentCalibration(printerId: number, enabled: boolean) {
       isSubmitting: submitManualMutation.isPending,
       startSession: (body: WizardInput) => startMutation.mutateAsync(body),
       submitManualResult: (body: ManualResultIn) => submitManualMutation.mutateAsync(body),
+      submitAutoResult: (body: { results: AutoResultEditIn[] }) =>
+        submitAutoMutation.mutateAsync(body),
       cancelSession: () => cancelMutation.mutateAsync(),
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -224,6 +264,7 @@ export function useFilamentCalibration(printerId: number, enabled: boolean) {
       errorMsg,
       startMutation.isPending,
       submitManualMutation.isPending,
+      submitAutoMutation.isPending,
     ],
   );
 }

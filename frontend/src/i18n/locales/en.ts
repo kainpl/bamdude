@@ -4104,24 +4104,79 @@ export default {
       heading: 'What do you want to calibrate?',
       paGroup: 'Pressure Advance',
       flowGroup: 'Flow Rate',
-      towerGroup: 'Towers (Plan 3)',
+      towerGroup: 'Towers',
       paLine: 'PA Line (manual, 50 lines)',
       paLineDesc:
         'Print a tower of 50 lines, each with a different Pressure Advance value. Pick the cleanest line at the end.',
       paPattern: 'PA Pattern (manual, grid)',
-      paPatternDesc: 'A grid of PA values printed flat — easier on bowden setups. (Comes in Plan 3.)',
+      paPatternDesc: 'A grid of PA values printed flat — easier on bowden setups.',
       paTower: 'PA Tower (manual, tower)',
-      paTowerDesc: 'A vertical tower with stepped PA. (Comes in Plan 3.)',
+      paTowerDesc: 'A vertical tower with stepped PA.',
       paAuto: 'Auto PA (X1 lidar)',
-      paAutoDesc:
-        'Printer prints + scans + computes K automatically. Requires lidar. (Comes in Plan 3.)',
+      paAutoDesc: 'Printer prints + scans + computes K automatically. Requires lidar.',
       flowRate: 'Flow Rate (manual, coarse + fine)',
       flowRateDesc:
         'Two-stage 9-block test. Coarse picks best block from −20 % to +20 %; fine refines around it.',
       flowAuto: 'Auto Flow Rate (X1 lidar)',
-      flowAutoDesc: 'Printer scans printed lines and reports flow ratio. (Comes in Plan 3.)',
+      flowAutoDesc: 'Printer scans printed lines and reports flow ratio.',
+      tempTower: 'Temperature Tower',
+      tempTowerDesc:
+        'Print a tower stepping through nozzle temperatures. Manually pick the cleanest step.',
+      volSpeedTower: 'Max Volumetric Speed Tower',
+      volSpeedTowerDesc:
+        'Print a tower stepping through volumetric speeds. Pick the highest clean step.',
+      vfaTower: 'VFA Tower (Vertical Fine Artifacts)',
+      vfaTowerDesc: 'Find the speed that eliminates vertical fine artifacts on outer walls.',
+      retractionTower: 'Retraction Tower',
+      retractionTowerDesc:
+        'Step through retraction lengths to find the minimum that stops stringing.',
       notSupported: 'Not supported on this printer',
-      comingInPlan3: 'Coming in Plan 3',
+    },
+    autoSave: {
+      heading: 'Review auto-calibration results',
+      instruction:
+        'Printer scanned the printed lines with its lidar. Pick the rows you want to apply and adjust values if needed.',
+      waiting: 'Waiting for lidar results…',
+      apply: 'Apply',
+      flowRatio: 'Flow ratio',
+      name: 'Save as',
+      saveSelected: 'Save selected',
+    },
+    towerFinish: {
+      heading: 'Print complete',
+      body: "Read the calibrated value off the printed tower visually, then enter it in your slicer's filament profile.",
+      tip: {
+        generic: 'Most slicers carry these values per-filament — adjust there.',
+        temp_tower:
+          'Pick the temperature step with the cleanest extrusion and no stringing. Update Filament → Nozzle temperature.',
+        vol_speed_tower:
+          'Find the highest speed step without under-extrusion. Update Filament → Max volumetric speed.',
+        vfa_tower:
+          'Pick the speed step with no Vertical Fine Artifacts. Update Print → Outer wall speed.',
+        retraction_tower:
+          'Pick the retraction step with no oozing. Update Filament → Retraction length.',
+      },
+    },
+    history: {
+      menuItem: 'Calibration History',
+      title: 'Filament Calibration History',
+      refresh: 'Refresh from printer',
+      refreshHint: 'Pulls the current 16-slot PA history off the printer for cross-check',
+      empty: 'No calibrations yet. Run the wizard once.',
+      printerSide: 'Printer-side history',
+      bamdudeSide: 'BamDude history',
+      setActive: 'Set active',
+      delete: 'Delete',
+      deleteConfirm: 'Delete this calibration row?',
+      active: 'Active',
+      source: { auto: 'Auto', manual: 'Manual' },
+      groupNozzle: '{{diameter}} mm · {{type}}',
+    },
+    extruder: {
+      right: 'Right',
+      left: 'Left',
+      main: 'Main',
+      tab: 'Extruder',
     },
     preset: {
       heading: 'Choose filament + settings',

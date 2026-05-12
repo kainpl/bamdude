@@ -68,4 +68,33 @@ describe('computeNextStep', () => {
   it('fineSave → finish on saved rows', () => {
     expect(computeNextStep('fineSave', { savedRows: 1 })).toBe('finish');
   });
+
+  it('running auto → autoSave on awaiting_user_input', () => {
+    expect(
+      computeNextStep('running', {
+        method: 'auto',
+        cali_mode: 'auto_pa_line',
+        sessionStatus: 'awaiting_user_input',
+      }),
+    ).toBe('autoSave');
+  });
+
+  it('running tower → towerFinish on saved', () => {
+    expect(
+      computeNextStep('running', {
+        method: 'manual',
+        cali_mode: 'temp_tower',
+        sessionStatus: 'saved',
+        isTowerMode: true,
+      }),
+    ).toBe('towerFinish');
+  });
+
+  it('autoSave → finish on saved rows', () => {
+    expect(computeNextStep('autoSave', { savedRows: 1 })).toBe('finish');
+  });
+
+  it('towerFinish stays put', () => {
+    expect(computeNextStep('towerFinish', {})).toBe('towerFinish');
+  });
 });
