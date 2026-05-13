@@ -30,7 +30,7 @@ import logging
 from sqlalchemy import text
 
 from backend.app.core.db_dialect import is_postgres
-from backend.app.migrations.helpers import column_exists, table_exists
+from backend.app.migrations.helpers import column_exists, recreate_table, table_exists
 from backend.app.utils.filament_ids import setting_id_to_filament_id
 
 logger = logging.getLogger(__name__)
@@ -44,6 +44,40 @@ _NOZZLE_PREFIX_TO_VOL_TYPE = {
     "HH": "high_flow",
     "HU": "tpu_high_flow",
     "HY": "hybrid",
+}
+
+
+# Target schemas for the SQLite recreate path. Mirror the post-m064 model
+# definitions exactly so fresh installs (which create the table from the
+# model) and upgraded installs (which run through this migration) converge.
+_NEW_DDL_SPOOL_K_PROFILE = """CREATE TABLE spool_k_profile (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    spool_id INTEGER NOT NULL REFERENCES spool(id) ON DELETE CASCADE,
+    printer_id INTEGER NOT NULL REFERENCES printers(id) ON DELETE CASCADE,
+    extruder INTEGER NOT NULL DEFAULT 0,
+    filament_calibration_id INTEGER NOT NULL REFERENCES filament_calibration(id) ON DELETE CASCADE,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+)"""
+
+_NEW_DDL_SPOOLMAN_K_PROFILE = """CREATE TABLE spoolman_k_profile (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    spoolman_spool_id INTEGER NOT NULL,
+    printer_id INTEGER NOT NULL REFERENCES printers(id) ON DELETE CASCADE,
+    extruder INTEGER NOT NULL DEFAULT 0,
+    filament_calibration_id INTEGER NOT NULL REFERENCES filament_calibration(id) ON DELETE CASCADE,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_spoolman_kp UNIQUE (spoolman_spool_id, printer_id, extruder, filament_calibration_id),
+    CONSTRAINT ck_spoolman_kp_extruder_range CHECK (extruder >= 0 AND extruder <= 1)
+)"""
+
+_COLUMNS_TO_COPY = {
+    "spool_k_profile": "id, spool_id, printer_id, extruder, filament_calibration_id, created_at",
+    "spoolman_k_profile": "id, spoolman_spool_id, printer_id, extruder, filament_calibration_id, created_at",
+}
+
+_NEW_DDLS = {
+    "spool_k_profile": _NEW_DDL_SPOOL_K_PROFILE,
+    "spoolman_k_profile": _NEW_DDL_SPOOLMAN_K_PROFILE,
 }
 
 
@@ -183,10 +217,31 @@ async def _convert_table(conn, table: str) -> None:
     # 5. Delete rows where backfill failed.
     await conn.execute(text(f"DELETE FROM {table} WHERE filament_calibration_id IS NULL"))
 
-    # 6. Drop OLD columns. Both Postgres + SQLite 3.35+ support DROP COLUMN.
-    for col in ("k_value", "name", "cali_idx", "setting_id", "nozzle_type", "nozzle_diameter"):
-        if await column_exists(conn, table, col):
-            await conn.execute(text(f"ALTER TABLE {table} DROP COLUMN {col}"))
+    # 6. Drop OLD K-data columns. SQLite's ``DROP COLUMN`` (3.35+) refuses
+    # when an inline UNIQUE/CHECK constraint still references the column
+    # (``spoolman_k_profile`` had ``UNIQUE(..., nozzle_diameter)``). Use the
+    # established ``recreate_table`` dance: build the target table, copy rows
+    # by name, drop the old, rename. Postgres needs to drop the named
+    # constraint first since ``DROP COLUMN`` there errors without CASCADE.
+    before = (await conn.execute(text(f"SELECT COUNT(*) FROM {table}"))).scalar() or 0
+    if is_postgres():
+        if table == "spoolman_k_profile":
+            await conn.execute(text("ALTER TABLE spoolman_k_profile DROP CONSTRAINT IF EXISTS uq_spoolman_kp"))
+        for col in ("k_value", "name", "cali_idx", "setting_id", "nozzle_type", "nozzle_diameter"):
+            if await column_exists(conn, table, col):
+                await conn.execute(text(f"ALTER TABLE {table} DROP COLUMN IF EXISTS {col}"))
+        if table == "spoolman_k_profile":
+            await conn.execute(
+                text(
+                    "ALTER TABLE spoolman_k_profile ADD CONSTRAINT uq_spoolman_kp "
+                    "UNIQUE (spoolman_spool_id, printer_id, extruder, filament_calibration_id)"
+                )
+            )
+    else:
+        await recreate_table(conn, table, _NEW_DDLS[table], _COLUMNS_TO_COPY[table])
+    after = (await conn.execute(text(f"SELECT COUNT(*) FROM {table}"))).scalar() or 0
+    if after != before:
+        raise RuntimeError(f"m064 recreate_table lost rows on {table}: before={before} after={after}")
 
 
 async def upgrade(conn) -> None:

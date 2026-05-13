@@ -71,7 +71,19 @@ async def engine_with_pre_m064():
         await conn.execute(text("CREATE TABLE spool (id INTEGER PRIMARY KEY, slicer_filament TEXT)"))
         await conn.execute(text(_post_m063_filament_calibration_ddl()))
         await conn.execute(text(_pre_m064_spool_kprofile_ddl("spool_k_profile")))
-        await conn.execute(text(_pre_m064_spool_kprofile_ddl("spoolman_k_profile")))
+        # spoolman_k_profile ships with an inline UNIQUE constraint that
+        # references nozzle_diameter (m053). Reproduce it so the migration's
+        # column-drop path has to deal with the same blocker SQLite raises
+        # in production — without this, the test passed while real DBs
+        # crashed with "no such column: nozzle_diameter" mid-DROP COLUMN.
+        await conn.execute(
+            text(
+                _pre_m064_spool_kprofile_ddl(
+                    "spoolman_k_profile",
+                    extra_unique=", CONSTRAINT uq_spoolman_kp UNIQUE (spoolman_spool_id, printer_id, extruder, nozzle_diameter)",
+                )
+            )
+        )
     try:
         yield engine
     finally:
