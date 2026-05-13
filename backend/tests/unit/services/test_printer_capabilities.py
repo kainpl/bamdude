@@ -1,7 +1,7 @@
 """Tests for compute_printer_supports — Print Options + Parts row visibility."""
 
 from backend.app.services.bambu_mqtt import PrinterState
-from backend.app.services.printer_capabilities import compute_printer_supports
+from backend.app.services.printer_capabilities import compute_calibration_supports, compute_printer_supports
 
 
 def _supports(model: str | None):
@@ -87,3 +87,45 @@ def test_all_supports_keys_present():
         "parts_dual",
     ):
         assert key in s, f"missing key: {key}"
+
+
+# ---------- compute_calibration_supports ----------
+
+
+def test_cali_supports_sidecar_offline_gates_tower_modes():
+    """Without a connected slicer sidecar, STL/STEP-geometry modes are off."""
+    s = compute_calibration_supports(PrinterState(), "X1C", module_vers={}, slicer_sidecar_available=False)
+    # Pre-sliced 3MFs always on
+    assert s["pa_manual"] is True
+    assert s["flow_manual"] is True
+    # STL/STEP-geometry gated
+    assert s["temp_tower"] is False
+    assert s["vol_speed_tower"] is False
+    assert s["vfa_tower"] is False
+    assert s["retraction_tower"] is False
+    assert s["slicer_sidecar_available"] is False
+
+
+def test_cali_supports_sidecar_online_enables_tower_modes():
+    s = compute_calibration_supports(PrinterState(), "X1C", module_vers={}, slicer_sidecar_available=True)
+    assert s["temp_tower"] is True
+    assert s["vol_speed_tower"] is True
+    assert s["vfa_tower"] is True
+    assert s["retraction_tower"] is True
+    assert s["slicer_sidecar_available"] is True
+
+
+def test_cali_supports_pa_auto_requires_lidar():
+    """pa_auto / flow_auto gate on lidar model + push flag, independent of sidecar."""
+    # X1C has lidar — pa_auto + flow_auto unlocked when state reports support
+    state = PrinterState()
+    state.is_support_pa_calibration = True
+    state.is_support_auto_flow_calibration = True
+    s = compute_calibration_supports(state, "X1C", module_vers={}, slicer_sidecar_available=False)
+    assert s["pa_auto"] is True
+    assert s["flow_auto"] is True
+
+    # P1S has no lidar — pa_auto off regardless of state flags
+    s = compute_calibration_supports(state, "P1S", module_vers={}, slicer_sidecar_available=True)
+    assert s["pa_auto"] is False
+    assert s["flow_auto"] is False

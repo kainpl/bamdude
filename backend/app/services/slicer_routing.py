@@ -26,8 +26,10 @@ Routing rule:
 from __future__ import annotations
 
 import logging
+import time
 from typing import Literal
 
+import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import settings as app_settings
@@ -36,6 +38,13 @@ logger = logging.getLogger(__name__)
 
 SlicerKind = Literal["orcaslicer", "bambu_studio"]
 _VALID_SLICERS: tuple[SlicerKind, ...] = ("orcaslicer", "bambu_studio")
+
+# Module-level "is any sidecar online?" cache. 30s TTL is enough to dampen
+# capability fetches during a wizard open without making stale-state lag
+# feel obvious. Separate from slicer_presets.py::_health_cache (which keys
+# on resolved URL) because we only care about the OR-of-both answer here.
+_ANY_SIDECAR_TTL_SECONDS = 30.0
+_any_sidecar_cache: tuple[float, bool] | None = None
 
 
 async def resolve_sidecar_url(
@@ -78,3 +87,41 @@ async def resolve_sidecar_url(
 def slicer_label(kind: SlicerKind) -> str:
     """Human-readable label for an error message ("OrcaSlicer" / "BambuStudio")."""
     return "OrcaSlicer" if kind == "orcaslicer" else "BambuStudio"
+
+
+async def any_sidecar_online(db: AsyncSession) -> bool:
+    """Probe both slicer sidecars and return True if at least one ``/health`` is 2xx.
+
+    Used by the calibration capabilities endpoint to gate STL-based modes
+    (PA Line / PA Tower / Temp / VolSpeed / VFA / Retraction) — those need
+    a connected sidecar for the Wave 2 slicing pipeline. Result cached
+    30 s module-wide to keep the wizard's capability poll off the wire.
+
+    Returns False on any failure (network, non-2xx, unconfigured URL) —
+    "available" must be unambiguously true, never best-guess.
+    """
+    global _any_sidecar_cache
+    now = time.monotonic()
+    if _any_sidecar_cache and (now - _any_sidecar_cache[0]) < _ANY_SIDECAR_TTL_SECONDS:
+        return _any_sidecar_cache[1]
+
+    urls: list[str] = []
+    for kind in _VALID_SLICERS:
+        _, url = await resolve_sidecar_url(db, slicer_override=kind)
+        if url:
+            urls.append(url)
+
+    online = False
+    if urls:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            for url in urls:
+                try:
+                    response = await client.get(f"{url}/health")
+                    if 200 <= response.status_code < 300:
+                        online = True
+                        break
+                except httpx.RequestError:
+                    continue
+
+    _any_sidecar_cache = (now, online)
+    return online

@@ -40,6 +40,14 @@ logger = logging.getLogger(__name__)
 
 ASSET_ROOT = Path(__file__).resolve().parent.parent / "data" / "calib_assets"
 
+
+class SlicerSidecarRequiredError(Exception):
+    """Raised when a calibration mode needs slicing but no sidecar pipeline
+    is wired up yet (Wave 2 placeholder). Routes translate this to 409 with
+    error_code='slicer_sidecar_required' so the UI can show the right
+    "Configure slicer API in Settings" hint."""
+
+
 # Tower modes are print-and-finish — no save dialog, no filament_calibration
 # row. The dispatch on-complete handler flips the session straight to
 # "saved" instead of "awaiting_user_input".
@@ -82,36 +90,51 @@ async def broadcast_calibration_event(*, printer_id: int, event: str, payload: d
         pass
 
 
-_MODE_TO_PATH = {
-    CaliMode.PA_LINE: ("pressure_advance", "pa_line"),
-    CaliMode.PA_PATTERN: ("pressure_advance", "pa_pattern"),
-    CaliMode.PA_TOWER: ("pressure_advance", "pa_tower"),
-    CaliMode.TEMP_TOWER: ("temp_tower", "temp_tower"),
-    CaliMode.VOL_SPEED_TOWER: ("volumetric_speed", "vol_speed_tower"),
-    CaliMode.VFA_TOWER: ("vfa", "vfa_tower"),
-    CaliMode.RETRACTION_TOWER: ("retraction", "retraction_tower"),
+# Calibration asset map — real Bambu Studio filenames mirrored under
+# ``backend/app/data/calib_assets/``. Each entry: (relative_path, kind,
+# requires_slicing). BS ships one geometry per mode; diameter is applied
+# at slice time for STL/STEP assets (Wave 2 — slicer-sidecar pipeline).
+_MODE_TO_ASSET: dict[CaliMode, tuple[str, str, bool]] = {
+    # Pre-sliced 3MFs — ship straight to printer, no slicer required.
+    CaliMode.PA_PATTERN: ("pressure_advance/pa_pattern.3mf", "3mf", False),
+    # STL — need a slicer sidecar to inject the active filament profile + per-mode g-code.
+    CaliMode.PA_LINE: ("pressure_advance/tower_with_seam.stl", "stl", True),
+    CaliMode.PA_TOWER: ("pressure_advance/tower.stl", "stl", True),
+    CaliMode.TEMP_TOWER: ("temperature_tower/temperature_tower.stl", "stl", True),
+    CaliMode.VFA_TOWER: ("vfa/VFA.stl", "stl", True),
+    CaliMode.RETRACTION_TOWER: ("retraction/retraction_tower.stl", "stl", True),
+    CaliMode.VOL_SPEED_TOWER: ("volumetric_speed/SpeedTestStructure.step", "step", True),
 }
 
 
-def resolve_asset_path(cali_mode: CaliMode, *, nozzle_diameter: float, pass_n: int = 1) -> Path:
-    """Map (cali_mode, diameter) → 3MF asset path. Falls back to 0.4mm if a
-    diameter-specific variant is missing.
-    """
-    if cali_mode == CaliMode.FLOW_RATE:
-        fname = f"flowrate_pass{pass_n}_{nozzle_diameter}.3mf"
-        path = ASSET_ROOT / "filament_flow" / fname
-        if not path.exists():
-            path = ASSET_ROOT / "filament_flow" / f"flowrate_pass{pass_n}_0.4.3mf"
-        return path
+@dataclass(frozen=True)
+class CalibAsset:
+    """Geometry + slicing hint for one calibration mode."""
 
-    bucket = _MODE_TO_PATH.get(cali_mode)
-    if bucket is None:
+    path: Path
+    kind: str  # "3mf" | "stl" | "step"
+    requires_slicing: bool
+
+
+def resolve_asset(cali_mode: CaliMode, *, extruder_count: int = 1, pass_n: int = 1) -> CalibAsset:
+    """Map cali_mode → ``CalibAsset`` pointing at the BS-mirrored geometry.
+
+    ``extruder_count`` switches AUTO_PA_LINE between BS's single / dual
+    versions. ``pass_n`` picks Flow Rate pass 1 (coarse, 9-block) vs
+    pass 2 (fine, 7-block). All other modes ignore both.
+    """
+    if cali_mode == CaliMode.AUTO_PA_LINE:
+        fname = "auto_pa_line_dual.3mf" if extruder_count >= 2 else "auto_pa_line_single.3mf"
+        return CalibAsset(ASSET_ROOT / "pressure_advance" / fname, "3mf", False)
+    if cali_mode == CaliMode.FLOW_RATE:
+        fname = "flowrate-test-pass2.3mf" if pass_n == 2 else "flowrate-test-pass1.3mf"
+        return CalibAsset(ASSET_ROOT / "filament_flow" / fname, "3mf", False)
+
+    mapping = _MODE_TO_ASSET.get(cali_mode)
+    if mapping is None:
         raise ValueError(f"No asset mapping for cali_mode: {cali_mode}")
-    subdir, stem = bucket
-    path = ASSET_ROOT / subdir / f"{stem}_{nozzle_diameter}.3mf"
-    if not path.exists():
-        path = ASSET_ROOT / subdir / f"{stem}_0.4.3mf"
-    return path
+    rel_path, kind, requires_slicing = mapping
+    return CalibAsset(ASSET_ROOT / rel_path, kind, requires_slicing)
 
 
 @dataclass
@@ -230,17 +253,25 @@ class CalibrationService:
             if not ok:
                 raise ValueError("MQTT publish failed")
         else:
-            # MANUAL path: resolve 3MF asset → enqueue as is_calibration print
+            # MANUAL path: resolve geometry asset → enqueue as is_calibration print.
+            # STL/STEP-based modes need slicing through a connected sidecar — Wave 2
+            # of the calibration pipeline. Reject explicitly until that lands so
+            # the wizard surfaces a clear "not implemented yet" instead of a
+            # confusing "MQTT publish failed" further down the chain.
             from backend.app.services import background_dispatch  # late import to dodge cycle
 
-            asset_path = resolve_asset_path(cali_mode, nozzle_diameter=nozzle_diameter, pass_n=1)
-            if not asset_path.exists():
-                raise ValueError(f"calibration asset not available: {asset_path.name}")
+            asset = resolve_asset(cali_mode, pass_n=1)
+            if asset.requires_slicing:
+                raise SlicerSidecarRequiredError(
+                    f"{cali_mode.value} requires a slicer sidecar — Wave 2 of the calibration pipeline."
+                )
+            if not asset.path.exists():
+                raise ValueError(f"calibration asset not available: {asset.path.name}")
             if not filaments:
                 raise ValueError("manual calibration needs at least one filament")
             print_queue_item_id = await background_dispatch.enqueue_calibration_print(
                 printer_id=printer_id,
-                asset_path=str(asset_path),
+                asset_path=str(asset.path),
                 cali_mode=cali_mode.value,
                 user_id=user_id,
                 ams_id=filaments[0].ams_id,

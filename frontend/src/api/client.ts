@@ -3629,14 +3629,20 @@ export type CaliMethod = 'auto' | 'manual';
 export type NozzleVolumeType = 'standard' | 'high_flow' | 'tpu_high_flow' | 'hybrid';
 
 export interface CalibCapabilities {
-  pa_manual: boolean;
-  flow_manual: boolean;
-  temp_tower: boolean;
-  vol_speed_tower: boolean;
-  vfa_tower: boolean;
-  retraction_tower: boolean;
+  pa_manual: boolean;  // PA Pattern only — Pre-sliced 3MF, always on
+  flow_manual: boolean;  // Flow Rate pass 1 + pass 2 — pre-sliced 3MF, always on
+  temp_tower: boolean;  // STL — gated on slicer_sidecar_available
+  vol_speed_tower: boolean;  // STEP — gated on slicer_sidecar_available
+  vfa_tower: boolean;  // STL — gated
+  retraction_tower: boolean;  // STL — gated
   pa_auto: boolean;
   flow_auto: boolean;
+  // True when at least one of the configured slicer sidecars
+  // (OrcaSlicer / BambuStudio) answered /health 2xx in the last 30s.
+  // STL/STEP-based modes (PA Line, PA Tower, all towers) require this
+  // before they can be sliced for the active filament profile (W2 of
+  // the calibration pipeline).
+  slicer_sidecar_available: boolean;
   dual_extruder: boolean;
   extruders: Array<{ id: number; name: string }>;
   nozzles: Array<{

@@ -4288,20 +4288,6 @@ class BambuMQTTClient:
         expected_nozzle = getattr(self, "_expected_kprofile_nozzle", None)
         has_pending_request = self._pending_kprofile_response is not None
 
-        # Dump the FULL raw printer-side payload BEFORE we interpret it —
-        # keys, casing, types are all firmware-dependent and a useful sanity
-        # check when behaviour drifts between models / firmware versions.
-        try:
-            import json as _json
-
-            logger.info(
-                "[%s] extrusion_cali_get raw payload: %s",
-                self.serial_number,
-                _json.dumps(data, ensure_ascii=False, default=str, indent=2),
-            )
-        except Exception as _e:  # noqa: BLE001
-            logger.warning("[%s] extrusion_cali_get raw dump failed: %s", self.serial_number, _e)
-
         # Log all incoming responses when we have a pending request (for debugging)
         if has_pending_request:
             logger.info(

@@ -30,7 +30,10 @@ repos:
         exclude: ^(static/|frontend/tsconfig\.)
       - id: check-added-large-files
         args: ['--maxkb=1000']
-        exclude: ^static/assets/
+        # static/assets — vite bundle; calib_assets — BS-mirrored 3MF/STL/STEP
+        # geometry for the Filament Calibration wizard (AGPL-3.0, see
+        # backend/app/data/calib_assets/LICENSE.md).
+        exclude: ^(static/assets/|backend/app/data/calib_assets/)
       - id: check-merge-conflict
       - id: debug-statements
       - id: detect-private-key

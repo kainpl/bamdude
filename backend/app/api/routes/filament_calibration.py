@@ -35,10 +35,12 @@ from backend.app.schemas.filament_calibration import (
 from backend.app.services.calibration_service import (
     CalibFilamentInput,
     CalibrationService,
+    SlicerSidecarRequiredError,
     reconcile_session_status,
 )
 from backend.app.services.printer_capabilities import compute_calibration_supports
 from backend.app.services.printer_manager import printer_manager
+from backend.app.services.slicer_routing import any_sidecar_online
 
 router = APIRouter(tags=["filament-calibration"])
 _service = CalibrationService()
@@ -91,8 +93,14 @@ async def get_capabilities(
     client = printer_manager.get_client(printer_id)
     if not client or not client.state.connected:
         raise HTTPException(404, "Printer not online")
+    sidecar_ok = await any_sidecar_online(db)
     return CalibCapabilities(
-        **compute_calibration_supports(client.state, printer.model, getattr(client, "module_vers", {}))
+        **compute_calibration_supports(
+            client.state,
+            printer.model,
+            getattr(client, "module_vers", {}),
+            slicer_sidecar_available=sidecar_ok,
+        )
     )
 
 
@@ -131,6 +139,24 @@ async def start_session(
                 for f in body.filaments
             ],
             user_id=user.id if user else None,
+        )
+    except SlicerSidecarRequiredError as e:
+        # Audit the rejected start so the trail still shows what the user tried.
+        try:
+            await _audit(
+                db,
+                printer_id=printer_id,
+                user=user,
+                action="start_session",
+                payload=body.model_dump(),
+                result="error",
+                error=str(e),
+            )
+        except Exception:
+            pass
+        raise HTTPException(
+            409,
+            detail={"detail": "slicer_sidecar_required", "message": str(e)},
         )
     except ValueError as e:
         msg = str(e)

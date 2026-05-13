@@ -4135,6 +4135,10 @@ export default {
       retractionTowerDesc:
         'Step through retraction lengths to find the minimum that stops stringing.',
       notSupported: 'Not supported on this printer',
+      requiresSlicer: 'Slicer sidecar required',
+      slicerBannerTitle: 'STL-based modes are disabled',
+      slicerBannerBody:
+        'PA Line, PA Tower, and the Temperature / Volumetric Speed / VFA / Retraction towers need a connected slicer sidecar (OrcaSlicer or Bambu Studio) to slice the test geometry against your active filament profile. Configure one under Settings → Profiles → Slicer API to enable these modes. PA Pattern, Flow Rate and the Auto modes work out of the box.',
     },
     autoSave: {
       heading: 'Review auto-calibration results',
