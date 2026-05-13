@@ -361,9 +361,13 @@ export default {
     nozzleHardenedSteel: 'Загартована сталь',
     nozzleStainlessSteel: 'Нержавіюча сталь',
     nozzleTungstenCarbide: 'Вольфрамовий карбід',
+    nozzleBrass: 'Латунь',
+    nozzleE3D: 'E3D',
+    nozzleUndefined: 'Не визначено',
     nozzleFlow: 'Потік',
     nozzleHighFlow: 'Високий потік',
     nozzleStandardFlow: 'Стандартний',
+    nozzleTpuHighFlow: 'TPU високий потік',
     // Firmware
     firmware: 'Прошивка',
     // Discovery

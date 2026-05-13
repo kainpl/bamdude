@@ -56,12 +56,16 @@ class FilamentCalibration(Base):
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # Provenance for "who/where calibrated" — distinct from printer_id which is
-    # the scope. Useful when the calibration was first introduced on a different
-    # printer of the same model and copied here.
-    calibrated_on_printer_id: Mapped[int | None] = mapped_column(
-        ForeignKey("printers.id", ondelete="SET NULL"), nullable=True
-    )
+    # Raw printer-side nozzle identifier (e.g. ``HS00-0.4``, ``HH00-0.4``).
+    # ``nozzle_volume_type`` above is the parsed/categorical view derived from
+    # this; we keep the raw value so debugging + future filter tweaks have a
+    # source of truth. Nullable since older firmwares can omit it.
+    nozzle_id: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
+    # Provenance: who calibrated. Manual wizard saves stamp the calling user;
+    # printer-side cache rows (``source="printer_sync"``) stamp the first
+    # admin as a placeholder. ``printer_id`` already encodes "where" since
+    # m063 made calibrations per-printer-instance.
     calibrated_by_user_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

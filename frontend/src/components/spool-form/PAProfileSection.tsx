@@ -1,7 +1,9 @@
 import { ChevronDown, ChevronRight, Loader2, Sparkles } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { useQuery } from '@tanstack/react-query';
+import { api } from '../../api/client';
 import type { CalibrationProfile, PAProfileSectionProps } from './types';
-import { isMatchingCalibration } from './utils';
+import { isMatchingCalibration, normalizeSlicerCodeToFilamentId } from './utils';
 
 export function PAProfileSection({
   formData,
@@ -13,6 +15,25 @@ export function PAProfileSection({
   setExpandedPrinters,
 }: PAProfileSectionProps) {
   const { t } = useTranslation();
+
+  // Resolve a Bambu filament_id (GF*-form) from the spool's slicer preset so
+  // matching can compare ids directly with the printer's k-profile entries.
+  // GFS-prefix and built-in codes resolve synchronously via the utils helper.
+  // Cloud user presets (P-prefix) only expose their filament_id through the
+  // cloud detail endpoint — fetch it eagerly here so a single source of
+  // truth feeds every isMatchingCalibration call below.
+  const syncFilamentId = normalizeSlicerCodeToFilamentId(formData.slicer_filament);
+  const needsCloudDetail = !!formData.slicer_filament
+    && !syncFilamentId
+    && formData.slicer_filament.startsWith('P');
+  const cloudSettingDetailQuery = useQuery({
+    queryKey: ['cloud-setting-detail', formData.slicer_filament],
+    queryFn: () => api.getCloudSettingDetail(formData.slicer_filament!),
+    enabled: needsCloudDetail,
+    staleTime: 60_000,
+  });
+  const targetFilamentId =
+    syncFilamentId ?? cloudSettingDetailQuery.data?.filament_id ?? null;
 
   const togglePrinterExpanded = (printerId: string) => {
     setExpandedPrinters((prev) => {
@@ -54,7 +75,7 @@ export function PAProfileSection({
       if (!printer.connected) continue;
 
       const matchingCals = calibrations.filter(cal =>
-        isMatchingCalibration(cal, formData),
+        isMatchingCalibration(cal, formData, targetFilamentId),
       );
 
       // Group by extruder
@@ -112,7 +133,7 @@ export function PAProfileSection({
   // Count total matching profiles
   const totalMatching = printersWithCalibrations.reduce((sum, { printer, calibrations }) => {
     if (!printer.connected) return sum;
-    return sum + calibrations.filter(cal => isMatchingCalibration(cal, formData)).length;
+    return sum + calibrations.filter(cal => isMatchingCalibration(cal, formData, targetFilamentId)).length;
   }, 0);
 
   const renderProfile = (printer: { id: number }, cal: CalibrationProfile) => {
@@ -170,7 +191,7 @@ export function PAProfileSection({
       <div className="space-y-3">
         {printersWithCalibrations.map(({ printer, calibrations }) => {
           const isExpanded = expandedPrinters.has(String(printer.id));
-          const matchingCals = calibrations.filter(cal => isMatchingCalibration(cal, formData));
+          const matchingCals = calibrations.filter(cal => isMatchingCalibration(cal, formData, targetFilamentId));
           const matchingCount = matchingCals.length;
 
           // Multi-nozzle grouping

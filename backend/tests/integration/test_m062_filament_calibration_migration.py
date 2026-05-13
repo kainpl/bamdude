@@ -73,6 +73,7 @@ async def test_m062_creates_filament_calibration(engine_with_prereqs):
             "cali_idx",
             "name",
             "notes",
+            "nozzle_id",
             "calibrated_on_printer_id",
             "calibrated_by_user_id",
             "created_at",

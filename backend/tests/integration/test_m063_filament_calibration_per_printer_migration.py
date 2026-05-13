@@ -42,7 +42,7 @@ async def engine_with_pre_m063():
                     cali_idx INTEGER, name TEXT NOT NULL, notes TEXT,
                     calibrated_on_printer_id INTEGER,
                     calibrated_by_user_id INTEGER,
-                    created_at TEXT
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
@@ -80,15 +80,17 @@ async def test_m063_backfills_printer_id_from_calibrated_on_printer_id(engine_wi
 
         await m063_filament_calibration_per_printer.upgrade(conn)
 
-        # printer_id populated, printer_model dropped
+        # printer_id populated, printer_model + calibrated_on_printer_id dropped
         rows = (await conn.execute(text("SELECT printer_id, pa_k_value FROM filament_calibration"))).mappings().all()
         assert len(rows) == 1
         assert rows[0]["printer_id"] == 1
 
-        # printer_model column gone
         cols = [r[1] for r in (await conn.execute(text("PRAGMA table_info(filament_calibration)"))).fetchall()]
         assert "printer_model" not in cols
+        assert "calibrated_on_printer_id" not in cols
         assert "printer_id" in cols
+        assert "calibrated_by_user_id" in cols  # kept
+        assert "nozzle_id" in cols  # added by m063 when missing from legacy m062 shape
 
 
 @pytest.mark.asyncio

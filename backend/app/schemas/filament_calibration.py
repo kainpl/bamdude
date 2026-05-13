@@ -108,7 +108,7 @@ class FilamentCalibrationOut(BaseModel):
     cali_idx: int | None
     name: str
     notes: str | None
-    calibrated_on_printer_id: int | None
+    nozzle_id: str | None
     calibrated_by_user_id: int | None
     created_at: datetime
 

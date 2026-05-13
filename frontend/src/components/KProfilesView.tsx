@@ -48,10 +48,15 @@ const getFlowTypeLabel = (nozzleId: string) => {
   return 'S';  // Standard Flow (default)
 };
 
-// Extract nozzle type prefix from nozzle_id (e.g., "HH00-0.4" -> "HH00")
+// Extract nozzle type prefix from nozzle_id (e.g., "HH00-0.4" -> "HH00").
+// Defaults to ``HS00`` (Standard) — same fallback the backend's
+// ``parse_nozzle_vol_type`` uses when the printer reports an empty / unknown
+// ``nozzle_id`` (e.g. older P1 firmwares). Without this the modal silently
+// flipped Standard rows to "High Flow" on open (UI default ↔ DB default
+// disagreement).
 const getNozzleTypePrefix = (nozzleId: string) => {
   const match = nozzleId.match(/^([A-Z]{2}\d{2})/);
-  return match ? match[1] : 'HH00';
+  return match ? match[1] : 'HS00';
 };
 
 // Extract filament name from profile name (e.g., "High Flow_Devil Design PLA Basic" -> "Devil Design PLA Basic")
@@ -185,7 +190,7 @@ function KProfileModal({
   const [filamentId, setFilamentId] = useState(profile?.filament_id || '');
   // Split nozzle into type and diameter
   const [nozzleType, setNozzleType] = useState(
-    profile?.nozzle_id ? getNozzleTypePrefix(profile.nozzle_id) : 'HH00'
+    profile?.nozzle_id ? getNozzleTypePrefix(profile.nozzle_id) : 'HS00'
   );
   const [modalDiameter, setModalDiameter] = useState(
     profile?.nozzle_diameter || nozzleDiameter
@@ -495,11 +500,13 @@ function KProfileModal({
                     const newNozzleType = e.target.value;
                     setNozzleType(newNozzleType);
                     // Update profile name when flow type changes (for new profiles)
-                    // Only auto-generate if name is empty - don't overwrite user input
+                    // Only auto-generate if name is empty - don't overwrite user input.
+                    // HH00 = High Flow (HF), HS00 = Standard (S) — matches the
+                    // option list below; previously this ternary was inverted.
                     if (!profile && filamentId && !name) {
                       const selectedFilament = knownFilaments.find(f => f.id === filamentId);
                       if (selectedFilament) {
-                        const flowLabel = newNozzleType === 'HS00' ? 'HF' : 'S';
+                        const flowLabel = newNozzleType === 'HH00' ? 'HF' : 'S';
                         setName(`${flowLabel} ${selectedFilament.name}`);
                       }
                     }

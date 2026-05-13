@@ -288,11 +288,53 @@ export function saveRecentColor(color: ColorPreset, currentRecent: ColorPreset[]
   return updated;
 }
 
-// Check if a calibration matches based on brand, material, and variant
+// Normalize a slicer-preset code (whatever shape the spool form stored)
+// to the Bambu filament_id (GF*-form, no "S"). Returns null when the code
+// can't be resolved synchronously — caller falls back to name-based match.
+//
+// Cases:
+//   - "GFG99" / built-in filament_id → already correct, returned as-is.
+//   - "GFSG99" / cloud setting_id    → strip the "S" → "GFG99".
+//   - "P<uuid>" / cloud user preset  → null (filament_id only available via
+//                                      ``api.getCloudSettingDetail``; the
+//                                      caller passes the resolved value via
+//                                      ``targetFilamentId`` instead).
+//   - numeric local-preset id        → null.
+//   - material name ("PETG")          → null (fallback to name-based match).
+export function normalizeSlicerCodeToFilamentId(code: string | null | undefined): string | null {
+  if (!code) return null;
+  const base = code.includes('_') ? code.split('_')[0] : code;
+  if (base.startsWith('GFS') && base.length >= 5) return 'GF' + base.slice(3);
+  if (base.startsWith('GF')) return base;
+  return null;
+}
+
+// Check if a calibration matches the spool's filament selection.
+//
+// Preferred path (when we can resolve a filament_id from the spool):
+//   ``cal.filament_id === target`` — exact ID equality across the two Bambu
+//   formats (printer uses GF*, cloud presets use GFS*). This is robust to
+//   profile name spellings ("Bambu PETG Basic", "PETG K=0.025", localized
+//   text) which used to silently miss matches.
+//
+// Fallback (no slicer_filament or its filament_id can't be resolved sync):
+//   the legacy parsePresetName(cal.name) string match on brand/material/
+//   variant. Keep this so manually-filled spools (brand/material only, no
+//   slicer preset) still surface relevant profiles.
 export function isMatchingCalibration(
   cal: { name?: string; filament_id?: string },
-  formData: { material: string; brand: string; subtype: string },
+  formData: { material: string; brand: string; subtype: string; slicer_filament?: string },
+  // Caller may pass a pre-resolved filament_id (e.g., from an async cloud
+  // detail fetch for a P-prefix preset). When provided it overrides the
+  // sync derivation below.
+  targetFilamentId?: string | null,
 ): boolean {
+  const resolvedTarget = targetFilamentId ?? normalizeSlicerCodeToFilamentId(formData.slicer_filament);
+  if (resolvedTarget && cal.filament_id) {
+    return cal.filament_id === resolvedTarget;
+  }
+
+  // No filament_id available on either side → fall back to name-based match.
   if (!formData.material) return false;
 
   const profileName = cal.name || '';

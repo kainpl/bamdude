@@ -353,9 +353,13 @@ export default {
     nozzleHardenedSteel: 'Hardened Steel',
     nozzleStainlessSteel: 'Stainless Steel',
     nozzleTungstenCarbide: 'Tungsten Carbide',
+    nozzleBrass: 'Brass',
+    nozzleE3D: 'E3D',
+    nozzleUndefined: 'Undefined',
     nozzleFlow: 'Flow',
     nozzleHighFlow: 'High Flow',
     nozzleStandardFlow: 'Standard',
+    nozzleTpuHighFlow: 'TPU High Flow',
     // Firmware
     firmware: 'Firmware',
     // Discovery

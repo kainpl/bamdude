@@ -393,7 +393,7 @@ async def set_active_calibration(
 
     await _audit(
         db,
-        printer_id=row.calibrated_on_printer_id or 0,
+        printer_id=row.printer_id,
         user=user,
         action="set_active",
         payload={"cali_id": cali_id},
@@ -411,7 +411,7 @@ async def delete_calibration(
     row = (await db.execute(select(FilamentCalibration).where(FilamentCalibration.id == cali_id))).scalar_one_or_none()
     if not row:
         raise HTTPException(404, "Calibration not found")
-    printer_id = row.calibrated_on_printer_id or 0
+    printer_id = row.printer_id
     audit_payload = {"cali_id": cali_id}
     await db.delete(row)
     await db.commit()

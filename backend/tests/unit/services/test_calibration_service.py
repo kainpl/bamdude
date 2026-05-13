@@ -840,6 +840,7 @@ async def test_sync_idempotent_when_already_in_sync(db_session, printer_factory)
         is_active=True,
         cali_idx=5,
         name="PETG-HF K=0.025",
+        nozzle_id="HS00-0.4",
     )
     db_session.add(fc)
     await db_session.commit()

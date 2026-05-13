@@ -14,6 +14,22 @@ from backend.app.services.bambu_mqtt import BambuMQTTClient, MQTTLogEntry, Print
 
 logger = logging.getLogger(__name__)
 
+
+async def _sync_kprofiles_for_printer(printer_id: int) -> None:
+    """Async coroutine wired into ``on_kprofiles_changed``: opens a fresh
+    DB session and pulls the printer's live K-profile list into the
+    ``filament_calibration`` cache. Wraps :func:`sync_printer_kprofiles_to_cache`
+    so callers don't need to construct a session themselves."""
+    from backend.app.core.database import async_session
+    from backend.app.services.calibration_service import sync_printer_kprofiles_to_cache
+
+    try:
+        async with async_session() as db:
+            await sync_printer_kprofiles_to_cache(db=db, printer_id=printer_id)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Auto-sync of K-profiles for printer %s failed: %s", printer_id, e)
+
+
 # Models that have a real chamber temperature sensor
 # Based on Home Assistant Bambu Lab integration
 # P1P/P1S and A1/A1Mini do NOT have chamber temp sensors
@@ -402,6 +418,12 @@ class PrinterManager:
         def on_macro_complete(macro_name: str, status: str):
             self._schedule_async(self._broadcast_macro_complete(printer_id, macro_name, status))
 
+        def on_kprofiles_changed():
+            # Hash-diff in the MQTT client already filtered out duplicate
+            # broadcasts, so this fires exactly when the printer's profile
+            # list actually changed (connect / set / edit / delete / save).
+            self._schedule_async(_sync_kprofiles_for_printer(printer_id))
+
         client = BambuMQTTClient(
             ip_address=printer.ip_address,
             serial_number=printer.serial_number,
@@ -413,6 +435,7 @@ class PrinterManager:
             on_ams_change=on_ams_change,
             on_layer_change=on_layer_change,
             on_macro_complete=on_macro_complete,
+            on_kprofiles_changed=on_kprofiles_changed,
         )
 
         client.connect()

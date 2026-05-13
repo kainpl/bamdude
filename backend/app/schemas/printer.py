@@ -180,7 +180,8 @@ class AMSUnit(BaseModel):
 
 
 class NozzleInfoResponse(BaseModel):
-    nozzle_type: str = ""  # "stainless_steel" or "hardened_steel"
+    nozzle_type: str = ""  # canonical material: "stainless_steel" / "hardened_steel" / ...
+    nozzle_flow: str = ""  # parsed flow: "standard" / "high_flow" / "tpu_high_flow"
     nozzle_diameter: str = ""  # e.g., "0.4"
 
 

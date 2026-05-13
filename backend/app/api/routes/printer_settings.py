@@ -157,15 +157,12 @@ async def get_printer_settings(
 
     nozzles = []
     for idx, n in enumerate(getattr(client.state, "nozzles", []) or []):
-        raw_type = getattr(n, "type", None) or getattr(n, "nozzle_type", None)
-        raw_dia = getattr(n, "diameter", None) or getattr(n, "nozzle_diameter", None)
-        raw_flow = getattr(n, "flow_type", None) or getattr(n, "nozzle_flow_type", None)
         nozzles.append(
             NozzleInfoOut(
                 id=idx,
-                type=_str_or_none(raw_type),
-                diameter=_float_or_none(raw_dia),
-                flow_type=_str_or_none(raw_flow),
+                type=_str_or_none(getattr(n, "nozzle_type", None)),
+                diameter=_float_or_none(getattr(n, "nozzle_diameter", None)),
+                flow_type=_str_or_none(getattr(n, "nozzle_flow", None)),
             )
         )
     parts = PartsState(nozzles=nozzles)

@@ -495,7 +495,7 @@ class CalibrationService:
             is_active=True,
             cali_idx=payload.cali_idx,
             name=payload.name or f"{fil['filament_id']} cali",
-            calibrated_on_printer_id=session.printer_id,
+            nozzle_id=generate_nozzle_id(NozzleVolumeType(session.nozzle_volume_type), session.nozzle_diameter),
             calibrated_by_user_id=session.user_id,
         )
         db.add(new_row)
@@ -801,6 +801,31 @@ async def apply_active_calibration_to_slot(
         return False, cache_row
 
 
+async def _first_admin_user_id(db: AsyncSession) -> int | None:
+    """Return the id of the lowest-id admin.
+
+    Matches the ``User.is_admin`` rule: either the legacy ``role='admin'``
+    flag or membership in the ``Administrators`` group. Used as the
+    placeholder ``calibrated_by_user_id`` on rows synced from the printer's
+    own K-profile list — those entries weren't created by any specific
+    BamDude session, so we stamp the canonical admin. Returns ``None`` if
+    no such user exists, in which case the column stays NULL — non-fatal.
+    """
+    from sqlalchemy import or_
+
+    from backend.app.models.group import Group
+    from backend.app.models.user import User
+
+    stmt = (
+        select(User.id)
+        .outerjoin(User.groups)
+        .where(or_(User.role == "admin", Group.name == "Administrators"))
+        .order_by(User.id.asc())
+        .limit(1)
+    )
+    return (await db.execute(stmt)).scalar()
+
+
 async def sync_printer_kprofiles_to_cache(
     *,
     db: AsyncSession,
@@ -813,7 +838,9 @@ async def sync_printer_kprofiles_to_cache(
     cached ``cali_idx`` on existing rows (printer reorders happen).
 
     New rows ship as ``is_active=False`` so user-managed activation stays
-    explicit (matches the m064 backfill choice).
+    explicit (matches the m064 backfill choice). ``calibrated_by_user_id``
+    is stamped with the first admin's id as a placeholder for "this row
+    came from the printer, not from a wizard session".
 
     Returns the count of rows touched (created or refreshed).
     """
@@ -823,6 +850,12 @@ async def sync_printer_kprofiles_to_cache(
     live = client.state.kprofiles or []
     if not live:
         return 0
+
+    default_user_id = await _first_admin_user_id(db)
+
+    # State.nozzles is decoded per BS — pull flow class so we can fill in
+    # nozzle_id for printers that don't ship a per-profile value (P1S, A1 mini).
+    state_nozzles = getattr(client.state, "nozzles", []) or []
 
     touched = 0
     for kp in live:
@@ -834,8 +867,15 @@ async def sync_printer_kprofiles_to_cache(
             kp_nozzle_dia = float(kp.nozzle_diameter or 0.4)
         except (TypeError, ValueError):
             kp_nozzle_dia = 0.4
-        vol_type = parse_nozzle_vol_type(getattr(kp, "nozzle_id", None) or getattr(kp, "nozzle_type", None))
         extruder_id = int(getattr(kp, "extruder_id", 0) or 0)
+        kp_nozzle_id = getattr(kp, "nozzle_id", None) or getattr(kp, "nozzle_type", None)
+        if not kp_nozzle_id and 0 <= extruder_id < len(state_nozzles):
+            flow = getattr(state_nozzles[extruder_id], "nozzle_flow", "") or "standard"
+            try:
+                kp_nozzle_id = generate_nozzle_id(NozzleVolumeType(flow), kp_nozzle_dia)
+            except ValueError:
+                kp_nozzle_id = None
+        vol_type = parse_nozzle_vol_type(kp_nozzle_id)
         kp_filament_id = getattr(kp, "filament_id", "") or ""
         kp_name = getattr(kp, "name", "") or f"{kp_filament_id} K={kp_k:.4f}"
         kp_setting_id = getattr(kp, "setting_id", None)
@@ -873,12 +913,22 @@ async def sync_printer_kprofiles_to_cache(
                     is_active=False,
                     cali_idx=kp_slot_id,
                     name=kp_name,
+                    nozzle_id=kp_nozzle_id,
+                    calibrated_by_user_id=default_user_id,
                 )
             )
             touched += 1
         else:
+            row_touched = False
             if existing.cali_idx != kp_slot_id:
                 existing.cali_idx = kp_slot_id
+                row_touched = True
+            # Backfill nozzle_id on existing cache rows that pre-date the
+            # column (or were created before save_result started writing it).
+            if not existing.nozzle_id and kp_nozzle_id:
+                existing.nozzle_id = kp_nozzle_id
+                row_touched = True
+            if row_touched:
                 touched += 1
     if touched:
         await db.commit()

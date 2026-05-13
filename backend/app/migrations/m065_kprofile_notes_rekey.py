@@ -10,6 +10,13 @@ User-confirmed clean-slate: existing notes are dropped (they were already
 unreliable; partial recovery via stale ``setting_id`` is not worth the code
 complexity).
 
+SQLite's ``ALTER TABLE DROP COLUMN`` refuses to drop a column referenced by
+a FOREIGN KEY clause in the table's own schema (the old ``printer_id``
+column carried ``REFERENCES printers(id)``). Since the row population is
+zero after the user-accepted clean-slate, the cheapest correct path is to
+drop the table entirely and recreate it with the new shape — no temp-table
+dance, no row copy. Same path applies on Postgres.
+
 Idempotent: guarded by ``column_exists`` / ``table_exists``.
 """
 
@@ -22,6 +29,23 @@ version = 65
 name = "kprofile_notes_rekey"
 
 
+_NEW_DDL_POSTGRES = """CREATE TABLE kprofile_notes (
+    id SERIAL PRIMARY KEY,
+    filament_calibration_id INTEGER NOT NULL REFERENCES filament_calibration(id) ON DELETE CASCADE,
+    note TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)"""
+
+_NEW_DDL_SQLITE = """CREATE TABLE kprofile_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    filament_calibration_id INTEGER NOT NULL REFERENCES filament_calibration(id) ON DELETE CASCADE,
+    note TEXT NOT NULL DEFAULT '',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+)"""
+
+
 async def upgrade(conn) -> None:
     if not await table_exists(conn, "kprofile_notes"):
         return
@@ -32,32 +56,10 @@ async def upgrade(conn) -> None:
     ):
         return
 
-    # 1. Drop all rows (clean slate; setting_id was unstable so partial
-    # recovery would land notes on wrong profiles).
-    await conn.execute(text("DELETE FROM kprofile_notes"))
-
-    # 2. Drop OLD indexes (names from m000 import + later migrations).
     await conn.execute(text("DROP INDEX IF EXISTS ix_kprofile_notes_printer_setting"))
     await conn.execute(text("DROP INDEX IF EXISTS uq_kprofile_notes_printer_setting"))
-
-    # 3. Add filament_calibration_id column.
-    if not await column_exists(conn, "kprofile_notes", "filament_calibration_id"):
-        if is_postgres():
-            await conn.execute(
-                text(
-                    "ALTER TABLE kprofile_notes ADD COLUMN filament_calibration_id INTEGER "
-                    "REFERENCES filament_calibration(id) ON DELETE CASCADE NOT NULL"
-                )
-            )
-        else:
-            await conn.execute(text("ALTER TABLE kprofile_notes ADD COLUMN filament_calibration_id INTEGER NOT NULL"))
-
-    # 4. Drop OLD columns (printer_id, setting_id).
-    for col in ("setting_id", "printer_id"):
-        if await column_exists(conn, "kprofile_notes", col):
-            await conn.execute(text(f"ALTER TABLE kprofile_notes DROP COLUMN {col}"))
-
-    # 5. Create new unique index on the FK.
+    await conn.execute(text("DROP TABLE kprofile_notes"))
+    await conn.execute(text(_NEW_DDL_POSTGRES if is_postgres() else _NEW_DDL_SQLITE))
     await conn.execute(
         text("CREATE UNIQUE INDEX IF NOT EXISTS uq_kprofile_notes_fc ON kprofile_notes (filament_calibration_id)")
     )

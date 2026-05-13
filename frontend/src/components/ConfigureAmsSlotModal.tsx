@@ -83,6 +83,32 @@ interface ConfigureAmsSlotModalProps {
 // Known filament material types
 const MATERIAL_TYPES = ['PLA', 'PETG', 'PCTG', 'ABS', 'ASA', 'TPU', 'PC', 'PA', 'NYLON', 'PVA', 'HIPS', 'PP', 'PET'];
 
+// Generic Bambu filament_id by material — fallback when a local preset only
+// carries the material name (e.g., "PETG") rather than a real filament_id.
+// Mirrors the table the assign mutation uses to derive ``tray_info_idx``.
+const GENERIC_FILAMENT_IDS_BY_MATERIAL: Record<string, string> = {
+  'PLA': 'GFL99', 'PLA-CF': 'GFL98', 'PLA SILK': 'GFL96', 'PLA HIGH SPEED': 'GFL95',
+  'PETG': 'GFG99', 'PETG HF': 'GFG96', 'PETG-CF': 'GFG98', 'PCTG': 'GFG97',
+  'ABS': 'GFB99', 'ASA': 'GFB98',
+  'PC': 'GFC99',
+  'PA': 'GFN99', 'PA-CF': 'GFN98', 'NYLON': 'GFN99',
+  'TPU': 'GFU99',
+  'PVA': 'GFS99', 'HIPS': 'GFS98',
+  'PE': 'GFP99', 'PP': 'GFP97',
+};
+
+function resolveGenericFilamentIdByMaterial(material: string | null | undefined): string | null {
+  if (!material) return null;
+  const m = material.toUpperCase();
+  return (
+    GENERIC_FILAMENT_IDS_BY_MATERIAL[m]
+    || GENERIC_FILAMENT_IDS_BY_MATERIAL[m.replace(/[-\s]?CF$/, '')]
+    || GENERIC_FILAMENT_IDS_BY_MATERIAL[m.replace(/\+$/, '')]
+    || GENERIC_FILAMENT_IDS_BY_MATERIAL[m.split(/[-\s]/)[0]]
+    || null
+  );
+}
+
 // Extract filament type from preset name by finding known material type
 function parsePresetName(name: string): { material: string; brand: string; variant: string } {
   // Remove printer/nozzle suffix first
@@ -638,64 +664,60 @@ export function ConfigureAmsSlotModal({
     });
   }, [colorCatalog, selectedPresetInfo]);
 
+  // Cloud user presets (P-prefix setting_ids) only carry their filament_id
+  // in the cloud detail endpoint — fetch it eagerly so the match below can
+  // run synchronously. GFS-prefix and built-in / local presets resolve
+  // directly without a round-trip.
+  const needsCloudDetail = !!selectedPresetId
+    && !selectedPresetId.startsWith('local_')
+    && !selectedPresetId.startsWith('builtin_')
+    && !selectedPresetId.startsWith('GFS');
+  const cloudSettingDetailQuery = useQuery({
+    queryKey: ['cloud-setting-detail', selectedPresetId],
+    queryFn: () => api.getCloudSettingDetail(selectedPresetId!),
+    enabled: needsCloudDetail,
+    staleTime: 60_000,
+  });
+
+  // Normalize the selected preset to a Bambu filament_id (GF*-form, no "S").
+  // This is the same identity the printer reports on each K-profile's
+  // ``filament_id`` field, so equality matching collapses naturally —
+  // ``Generic PETG`` preset (GFSG99) → filament_id ``GFG99`` → matches every
+  // K-profile the printer stored under that same id, regardless of how the
+  // profile name was written on the printer side.
+  const targetFilamentId = useMemo<string | null>(() => {
+    if (!selectedPresetId) return null;
+
+    if (selectedPresetId.startsWith('builtin_')) {
+      return selectedPresetId.replace('builtin_', '');
+    }
+    if (selectedPresetId.startsWith('local_')) {
+      const localId = parseInt(selectedPresetId.replace('local_', ''), 10);
+      const lp = localPresets?.filament.find(p => p.id === localId);
+      if (!lp) return null;
+      // Local presets only carry ``filament_type`` (a material name like
+      // "PETG"). Map it to the generic Bambu filament_id using the same
+      // table the assign-path uses.
+      const mat = lp.filament_type || parsePresetName(lp.name).material || '';
+      return resolveGenericFilamentIdByMaterial(mat);
+    }
+    if (selectedPresetId.startsWith('GFS')) {
+      return convertToTrayInfoIdx(selectedPresetId);
+    }
+    // Cloud user preset (P*) — comes from the async detail fetch above.
+    // ``null`` until the query resolves; matchingKProfiles falls back to []
+    // until then so the UI shows "no matches" briefly, not a wrong list.
+    return cloudSettingDetailQuery.data?.filament_id || null;
+  }, [selectedPresetId, localPresets?.filament, cloudSettingDetailQuery.data]);
+
   const matchingKProfiles = useMemo(() => {
-    if (!kprofilesData?.profiles || !selectedPresetInfo) return [];
+    if (!kprofilesData?.profiles || !targetFilamentId) return [];
 
-    const { fullName, material, brand } = selectedPresetInfo;
-    const upperFullName = fullName.toUpperCase();
-    const upperMaterial = material.toUpperCase();
-    const upperBrand = brand.toUpperCase();
+    const filtered = kprofilesData.profiles.filter(p => p.filament_id === targetFilamentId);
 
-    // Material must be at least 2 chars to avoid false positives
-    if (!upperMaterial || upperMaterial.length < 2) return [];
-
-    // Filter profiles - require brand match if brand is present in selected preset
-    const filtered = kprofilesData.profiles.filter(p => {
-      const profileName = p.name.toUpperCase();
-
-      // If the selected preset has a brand (e.g., "Azurefilm PLA Wood"),
-      // only show profiles that match the brand
-      if (upperBrand) {
-        // Must contain the brand name
-        if (!profileName.includes(upperBrand)) {
-          return false;
-        }
-        // And must contain the material type
-        if (!profileName.includes(upperMaterial)) {
-          return false;
-        }
-        return true;
-      }
-
-      // No brand in selected preset - match on full name or material
-      // Priority 1: Exact match with full name
-      if (profileName.includes(upperFullName)) {
-        return true;
-      }
-
-      // Priority 2: Material type match (only when no brand specified)
-      if (profileName.includes(upperMaterial)) {
-        return true;
-      }
-
-      // Check for common material aliases
-      const aliases: Record<string, string[]> = {
-        'NYLON': ['PA', 'PA-CF', 'PA6'],
-        'PA': ['NYLON'],
-      };
-
-      const materialAliases = aliases[upperMaterial] || [];
-      for (const alias of materialAliases) {
-        if (profileName.includes(alias)) {
-          return true;
-        }
-      }
-
-      return false;
-    });
-
-    // Deduplicate profiles with same name and k_value (multi-nozzle printers have duplicates)
-    // Prefer the profile matching the slot's extruder (e.g. ext-R uses extruder 0, ext-L uses extruder 1)
+    // Deduplicate profiles with same name and k_value (multi-nozzle printers
+    // have duplicates). Prefer the profile matching the slot's extruder
+    // (ext-R uses extruder 0, ext-L uses extruder 1).
     const seen = new Map<string, KProfile>();
     for (const profile of filtered) {
       const key = `${profile.name}|${profile.k_value}`;
@@ -703,12 +725,11 @@ export function ConfigureAmsSlotModal({
       if (!existing) {
         seen.set(key, profile);
       } else if (slotInfo.extruderId !== undefined && profile.extruder_id === slotInfo.extruderId && existing.extruder_id !== slotInfo.extruderId) {
-        // Replace with profile matching slot's extruder
         seen.set(key, profile);
       }
     }
     return Array.from(seen.values());
-  }, [kprofilesData?.profiles, selectedPresetInfo, slotInfo.extruderId]);
+  }, [kprofilesData?.profiles, targetFilamentId, slotInfo.extruderId]);
 
   // Pre-select current profile when modal opens, reset when closes
   useEffect(() => {

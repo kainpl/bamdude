@@ -1306,13 +1306,13 @@ class TestNozzleRackData:
         assert slot["filament_type"] == "ABS"
 
     def test_nozzle_info_updates_nozzle_state(self, mqtt_client):
-        """Nozzle info for IDs 0,1 should also update nozzle state (type/diameter)."""
+        """Nozzle info for IDs 0,1 decodes the BS 4-char code into canonical material + flow."""
         payload = {
             "print": {
                 "device": {
                     "nozzle": {
                         "info": [
-                            {"id": 0, "type": "HS", "diameter": "0.4"},
+                            {"id": 0, "type": "HS00", "diameter": "0.4"},
                             {"id": 1, "type": "HH01", "diameter": "0.6"},
                         ]
                     }
@@ -1321,9 +1321,11 @@ class TestNozzleRackData:
         }
         mqtt_client._process_message(payload)
 
-        assert mqtt_client.state.nozzles[0].nozzle_type == "HS"
+        assert mqtt_client.state.nozzles[0].nozzle_type == "stainless_steel"
+        assert mqtt_client.state.nozzles[0].nozzle_flow == "standard"
         assert mqtt_client.state.nozzles[0].nozzle_diameter == "0.4"
-        assert mqtt_client.state.nozzles[1].nozzle_type == "HH01"
+        assert mqtt_client.state.nozzles[1].nozzle_type == "hardened_steel"
+        assert mqtt_client.state.nozzles[1].nozzle_flow == "high_flow"
         assert mqtt_client.state.nozzles[1].nozzle_diameter == "0.6"
 
 

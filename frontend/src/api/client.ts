@@ -394,7 +394,8 @@ export interface AMSUnit {
 }
 
 export interface NozzleInfo {
-  nozzle_type: string;  // "stainless_steel" or "hardened_steel"
+  nozzle_type: string;  // canonical material: "stainless_steel" / "hardened_steel" / ...
+  nozzle_flow: string;  // parsed flow: "standard" / "high_flow" / "tpu_high_flow"
   nozzle_diameter: string;  // e.g., "0.4"
 }
 
@@ -3706,7 +3707,7 @@ export interface FilamentCalibrationOut {
   cali_idx: number | null;
   name: string;
   notes: string | null;
-  calibrated_on_printer_id: number | null;
+  nozzle_id: string | null;
   calibrated_by_user_id: number | null;
   created_at: string;
 }

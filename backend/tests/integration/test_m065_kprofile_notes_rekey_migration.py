@@ -42,13 +42,18 @@ async def engine_with_pre_m065():
                 """
             )
         )
-        # Pre-m065 kprofile_notes shape
+        # Pre-m065 kprofile_notes shape — note the inline FK on printer_id.
+        # In production this is what blocks SQLite from doing DROP COLUMN:
+        # the table's own schema references printer_id from the FK clause,
+        # so dropping it leaves the FK pointing at a phantom column.
+        # Reproducing the FK here makes sure the migration can't pass tests
+        # while still failing in real DBs.
         await conn.execute(
             text(
                 """
                 CREATE TABLE kprofile_notes (
                     id INTEGER PRIMARY KEY,
-                    printer_id INTEGER NOT NULL,
+                    printer_id INTEGER NOT NULL REFERENCES printers(id) ON DELETE CASCADE,
                     setting_id TEXT NOT NULL,
                     note TEXT NOT NULL DEFAULT '',
                     created_at TEXT,

@@ -82,12 +82,73 @@ class KProfile:
     setting_id: str | None = None
 
 
+# Mirror BS DevNozzleSystem.cpp:609-647 — canonical names from PrintConfig.hpp:303-319.
+# Long-form names the firmware emits on P1/A1/A1mini for older protocol versions.
+_NOZZLE_FULL_NAME_MAP: dict[str, str] = {
+    "undefine": "undefine",
+    "hardened_steel": "hardened_steel",
+    "stainless_steel": "stainless_steel",
+    "tungsten_carbide": "tungsten_carbide",
+    "brass": "brass",
+    "E3D": "E3D",
+}
+
+# 4-char-code material codes (positions 2-3).
+_NOZZLE_MATERIAL_CODE_MAP: dict[str, str] = {
+    "00": "stainless_steel",
+    "01": "hardened_steel",
+    "05": "tungsten_carbide",
+}
+
+# 4-char-code flow letters (position 1). S/X/A → standard, H/E → high_flow, U → tpu_high_flow.
+_NOZZLE_FLOW_LETTER_MAP: dict[str, str] = {
+    "S": "standard",
+    "H": "high_flow",
+    "A": "standard",
+    "X": "standard",
+    "E": "high_flow",
+    "U": "tpu_high_flow",
+}
+
+
+def _parse_nozzle_type(raw: str | None) -> tuple[str, str]:
+    """Decode the printer's nozzle_type into (material, flow).
+
+    Mirrors BS DevNozzleSystem.cpp::s_parse_nozzle_type. Three supported
+    formats: canonical long names ("stainless_steel"), 4-char codes
+    ("HS00"), and "N/A". Returns ("", "") when the value is empty or
+    unrecognized so callers can leave NozzleInfo defaults intact.
+    """
+    if not raw:
+        return "", ""
+    s = str(raw).strip()
+    if not s:
+        return "", ""
+    if s in _NOZZLE_FULL_NAME_MAP:
+        return _NOZZLE_FULL_NAME_MAP[s], ""
+    if s == "N/A":
+        return "undefine", ""
+    if len(s) >= 4:
+        flow = _NOZZLE_FLOW_LETTER_MAP.get(s[1:2], "")
+        material = _NOZZLE_MATERIAL_CODE_MAP.get(s[2:4], "")
+        return material, flow
+    return "", ""
+
+
 @dataclass
 class NozzleInfo:
-    """Nozzle hardware configuration."""
+    """Nozzle hardware configuration.
 
-    nozzle_type: str = ""  # "stainless_steel" or "hardened_steel"
-    nozzle_diameter: str = ""  # e.g., "0.4"
+    Stores the *decoded* values per BS — ``nozzle_type`` is the canonical
+    material name ("stainless_steel" / "hardened_steel" / ...), not the
+    raw 4-char code. ``nozzle_flow`` is the parsed flow class
+    ("standard" / "high_flow" / "tpu_high_flow"). Diameter stays as the
+    string the firmware reported.
+    """
+
+    nozzle_type: str = ""
+    nozzle_flow: str = ""
+    nozzle_diameter: str = ""
 
 
 @dataclass
@@ -456,6 +517,7 @@ class BambuMQTTClient:
         on_ams_change: Callable[[list], None] | None = None,
         on_layer_change: Callable[[int], None] | None = None,
         on_macro_complete: Callable[[str, str], None] | None = None,
+        on_kprofiles_changed: Callable[[], None] | None = None,
     ):
         self.ip_address = ip_address
         self.serial_number = serial_number
@@ -467,6 +529,14 @@ class BambuMQTTClient:
         self.on_ams_change = on_ams_change
         self.on_layer_change = on_layer_change
         self.on_macro_complete = on_macro_complete
+        # Fires when the printer's K-profile push contains content that
+        # differs from the last seen hash — covers MQTT (re)connect (first
+        # push fills empty hash), set/edit/delete from extrusion_cali_*
+        # commands (printer re-pushes the updated list), and calibration
+        # save. printer_manager wires it to a DB sync. Same broadcast
+        # twice in a row is a no-op.
+        self.on_kprofiles_changed = on_kprofiles_changed
+        self._last_kprofiles_hash: str | None = None
 
         self.state = PrinterState()
         self._client: mqtt.Client | None = None
@@ -2937,25 +3007,41 @@ class BambuMQTTClient:
 
         # Parse nozzle hardware info (single nozzle printers)
         if "nozzle_type" in data:
-            self.state.nozzles[0].nozzle_type = str(data["nozzle_type"])
+            material, flow = _parse_nozzle_type(str(data["nozzle_type"]))
+            if material:
+                self.state.nozzles[0].nozzle_type = material
+            if flow:
+                self.state.nozzles[0].nozzle_flow = flow
         if "nozzle_diameter" in data:
             self.state.nozzles[0].nozzle_diameter = str(data["nozzle_diameter"])
 
         # Parse nozzle hardware info (dual nozzle printers - H2D series)
         # Left nozzle
         if "left_nozzle_type" in data:
-            self.state.nozzles[0].nozzle_type = str(data["left_nozzle_type"])
+            material, flow = _parse_nozzle_type(str(data["left_nozzle_type"]))
+            if material:
+                self.state.nozzles[0].nozzle_type = material
+            if flow:
+                self.state.nozzles[0].nozzle_flow = flow
         if "left_nozzle_diameter" in data:
             self.state.nozzles[0].nozzle_diameter = str(data["left_nozzle_diameter"])
         # Right nozzle
         if "right_nozzle_type" in data:
-            self.state.nozzles[1].nozzle_type = str(data["right_nozzle_type"])
+            material, flow = _parse_nozzle_type(str(data["right_nozzle_type"]))
+            if material:
+                self.state.nozzles[1].nozzle_type = material
+            if flow:
+                self.state.nozzles[1].nozzle_flow = flow
         if "right_nozzle_diameter" in data:
             self.state.nozzles[1].nozzle_diameter = str(data["right_nozzle_diameter"])
 
         # Alternative format for dual nozzle (nozzle_type_2, etc.)
         if "nozzle_type_2" in data:
-            self.state.nozzles[1].nozzle_type = str(data["nozzle_type_2"])
+            material, flow = _parse_nozzle_type(str(data["nozzle_type_2"]))
+            if material:
+                self.state.nozzles[1].nozzle_type = material
+            if flow:
+                self.state.nozzles[1].nozzle_flow = flow
         if "nozzle_diameter_2" in data:
             self.state.nozzles[1].nozzle_diameter = str(data["nozzle_diameter_2"])
 
@@ -3004,7 +3090,11 @@ class BambuMQTTClient:
                     idx = nozzle.get("id", 0)
                     if idx < len(self.state.nozzles):
                         if "type" in nozzle and nozzle["type"]:
-                            self.state.nozzles[idx].nozzle_type = str(nozzle["type"])
+                            material, flow = _parse_nozzle_type(str(nozzle["type"]))
+                            if material:
+                                self.state.nozzles[idx].nozzle_type = material
+                            if flow:
+                                self.state.nozzles[idx].nozzle_flow = flow
                         if "diameter" in nozzle:
                             self.state.nozzles[idx].nozzle_diameter = str(nozzle["diameter"])
 
@@ -4152,6 +4242,44 @@ class BambuMQTTClient:
         self.state.extrusion_cali_results = results
         self.state.extrusion_cali_status = "completed"
 
+    @staticmethod
+    def _kprofiles_digest(profiles: list[KProfile]) -> str:
+        """Stable hash of the printer's K-profile list. Same set ↔ same hash,
+        regardless of MQTT push duplication. Includes ``slot_id`` so the
+        printer's own reorders also count as a change worth syncing to DB."""
+        import hashlib
+
+        payload = sorted(
+            (
+                p.slot_id,
+                p.extruder_id,
+                p.nozzle_id,
+                p.nozzle_diameter,
+                p.filament_id,
+                p.name,
+                p.k_value,
+                p.n_coef,
+                p.setting_id or "",
+            )
+            for p in profiles
+        )
+        return hashlib.md5(repr(payload).encode("utf-8")).hexdigest()
+
+    def _maybe_notify_kprofiles_changed(self, profiles: list[KProfile]) -> None:
+        """Fire ``on_kprofiles_changed`` only when the list actually differs
+        from the previous push. Saves the DB-sync round-trip on the periodic
+        broadcast Bambu firmware emits even when nothing changed."""
+        if not self.on_kprofiles_changed:
+            return
+        digest = self._kprofiles_digest(profiles)
+        if digest == self._last_kprofiles_hash:
+            return
+        self._last_kprofiles_hash = digest
+        try:
+            self.on_kprofiles_changed()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[%s] on_kprofiles_changed callback failed: %s", self.serial_number, e)
+
     def _handle_kprofile_response(self, data: dict):
         """Handle K-profile response from printer."""
         response_nozzle = data.get("nozzle_diameter")
@@ -4159,6 +4287,20 @@ class BambuMQTTClient:
         filaments = data.get("filaments", [])
         expected_nozzle = getattr(self, "_expected_kprofile_nozzle", None)
         has_pending_request = self._pending_kprofile_response is not None
+
+        # Dump the FULL raw printer-side payload BEFORE we interpret it —
+        # keys, casing, types are all firmware-dependent and a useful sanity
+        # check when behaviour drifts between models / firmware versions.
+        try:
+            import json as _json
+
+            logger.info(
+                "[%s] extrusion_cali_get raw payload: %s",
+                self.serial_number,
+                _json.dumps(data, ensure_ascii=False, default=str, indent=2),
+            )
+        except Exception as _e:  # noqa: BLE001
+            logger.warning("[%s] extrusion_cali_get raw dump failed: %s", self.serial_number, _e)
 
         # Log all incoming responses when we have a pending request (for debugging)
         if has_pending_request:
@@ -4202,6 +4344,7 @@ class BambuMQTTClient:
                     except (ValueError, TypeError):
                         pass  # Skip malformed K-profile entries; remaining profiles still usable
             self.state.kprofiles = profiles
+            self._maybe_notify_kprofiles_changed(profiles)
             return
 
         profiles = []
@@ -4231,6 +4374,7 @@ class BambuMQTTClient:
 
         self.state.kprofiles = profiles
         self._kprofile_response_data = profiles
+        self._maybe_notify_kprofiles_changed(profiles)
 
         # Signal that we received the response (only if we were waiting for one)
         # Use thread-safe method since MQTT callbacks run in a different thread

@@ -43,6 +43,21 @@ export function PrinterPartsTab({ data, onRefetch }: Props) {
   );
 }
 
+const NOZZLE_TYPE_LABELS: Record<string, string> = {
+  stainless_steel: 'printers.nozzleStainlessSteel',
+  hardened_steel: 'printers.nozzleHardenedSteel',
+  tungsten_carbide: 'printers.nozzleTungstenCarbide',
+  brass: 'printers.nozzleBrass',
+  E3D: 'printers.nozzleE3D',
+  undefine: 'printers.nozzleUndefined',
+};
+
+const NOZZLE_FLOW_LABELS: Record<string, string> = {
+  standard: 'printers.nozzleStandardFlow',
+  high_flow: 'printers.nozzleHighFlow',
+  tpu_high_flow: 'printers.nozzleTpuHighFlow',
+};
+
 function NozzleCard({ label, type, diameter, flowType }: {
   label: string | null;
   type: string | null;
@@ -50,12 +65,14 @@ function NozzleCard({ label, type, diameter, flowType }: {
   flowType: string | null;
 }) {
   const { t } = useTranslation();
+  const typeLabel = type ? (NOZZLE_TYPE_LABELS[type] ? t(NOZZLE_TYPE_LABELS[type]) : type) : '—';
+  const flowLabel = flowType ? (NOZZLE_FLOW_LABELS[flowType] ? t(NOZZLE_FLOW_LABELS[flowType]) : flowType) : '—';
   return (
     <div className="space-y-2">
       {label && <div className="text-white font-medium">{label}</div>}
-      <ReadOnlyRow label={t('printerSettings.parts.type')} value={type ?? '—'} />
+      <ReadOnlyRow label={t('printerSettings.parts.type')} value={typeLabel} />
       <ReadOnlyRow label={t('printerSettings.parts.diameter')} value={diameter != null ? String(diameter) : '—'} />
-      <ReadOnlyRow label={t('printerSettings.parts.flow')} value={flowType ?? '—'} />
+      <ReadOnlyRow label={t('printerSettings.parts.flow')} value={flowLabel} />
     </div>
   );
 }

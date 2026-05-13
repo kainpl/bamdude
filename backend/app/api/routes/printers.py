@@ -509,6 +509,7 @@ async def get_printer_status(
     nozzles = [
         NozzleInfoResponse(
             nozzle_type=n.nozzle_type,
+            nozzle_flow=getattr(n, "nozzle_flow", ""),
             nozzle_diameter=n.nozzle_diameter,
         )
         for n in (state.nozzles or [])

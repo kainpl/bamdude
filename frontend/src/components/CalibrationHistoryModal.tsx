@@ -157,6 +157,7 @@ function BamDudeRow({
         <div className="text-xs text-bambu-gray font-mono mt-0.5">
           {r.pa_k_value != null && `K = ${r.pa_k_value.toFixed(4)}  `}
           {r.flow_ratio != null && `flow = ${r.flow_ratio.toFixed(4)}  `}
+          {r.nozzle_id && `nozzle = ${r.nozzle_id}  `}
           {r.source} · {new Date(r.created_at).toLocaleDateString()}
         </div>
       </div>

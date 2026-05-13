@@ -52,6 +52,7 @@ async def upgrade(conn):
                         cali_idx INTEGER,
                         name VARCHAR(120) NOT NULL,
                         notes TEXT,
+                        nozzle_id VARCHAR(20),
                         calibrated_on_printer_id INTEGER REFERENCES printers(id) ON DELETE SET NULL,
                         calibrated_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
                         created_at TIMESTAMP NOT NULL DEFAULT now()
@@ -81,6 +82,7 @@ async def upgrade(conn):
                         cali_idx INTEGER,
                         name TEXT NOT NULL,
                         notes TEXT,
+                        nozzle_id TEXT,
                         calibrated_on_printer_id INTEGER REFERENCES printers(id) ON DELETE SET NULL,
                         calibrated_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
                         created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
