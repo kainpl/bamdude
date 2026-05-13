@@ -1,27 +1,24 @@
-"""K-value calibration profile for a Spoolman spool on a specific printer/nozzle combo.
+"""Thin link table between a Spoolman spool and a printer's K-profile cache row.
 
-Mirrors :class:`SpoolKProfile` (which keys on a local-DB spool) but the FK
-target is a Spoolman spool ID rather than a BamDude inventory row, so the
-profile follows the spool across BamDude installs that all point at the same
-Spoolman backend. Used by `auto_assign_spool` and the MQTT tray-change handler
-to apply the right cali_idx whenever a tagged spool lands in an AMS slot.
+After m064 this is a pure link, mirroring :class:`SpoolKProfile` but FK-keyed
+on a Spoolman spool ID rather than a local BamDude spool row, so the link
+travels with the spool across BamDude installs pointing at the same Spoolman
+backend. Actual K data lives on :class:`FilamentCalibration`.
 """
 
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint, func
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
 
 
 class SpoolmanKProfile(Base):
-    """K-value calibration profile for a Spoolman spool on a specific printer/nozzle combo."""
-
     __tablename__ = "spoolman_k_profile"
 
     __table_args__ = (
-        UniqueConstraint("spoolman_spool_id", "printer_id", "extruder", "nozzle_diameter"),
+        UniqueConstraint("spoolman_spool_id", "printer_id", "extruder", "filament_calibration_id"),
         CheckConstraint("extruder >= 0 AND extruder <= 1", name="ck_spoolman_kp_extruder_range"),
     )
 
@@ -29,15 +26,14 @@ class SpoolmanKProfile(Base):
     spoolman_spool_id: Mapped[int] = mapped_column(Integer, nullable=False)
     printer_id: Mapped[int] = mapped_column(ForeignKey("printers.id", ondelete="CASCADE"))
     extruder: Mapped[int] = mapped_column(Integer, default=0)
-    nozzle_diameter: Mapped[str] = mapped_column(String(10), default="0.4")
-    nozzle_type: Mapped[str | None] = mapped_column(String(50))
-    k_value: Mapped[float] = mapped_column(Float)
-    name: Mapped[str | None] = mapped_column(String(100))
-    cali_idx: Mapped[int | None] = mapped_column(Integer)
-    setting_id: Mapped[str | None] = mapped_column(String(50))
+    filament_calibration_id: Mapped[int] = mapped_column(
+        ForeignKey("filament_calibration.id", ondelete="CASCADE"), nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     printer: Mapped["Printer"] = relationship()  # noqa: F821
+    filament_calibration: Mapped["FilamentCalibration"] = relationship(lazy="selectin")
 
 
+from backend.app.models.filament_calibration import FilamentCalibration  # noqa: E402, F401
 from backend.app.models.printer import Printer  # noqa: E402, F401

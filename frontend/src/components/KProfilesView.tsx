@@ -153,10 +153,12 @@ interface KProfileModalProps {
   builtinFilaments?: { filament_id: string; name: string }[];  // Filament ID → name lookup
   isDualNozzle?: boolean;  // Whether this is a dual-nozzle printer
   initialNote?: string;  // Initial note value for the profile
-  initialNoteKey?: string | null;  // Key the note was stored under (for clearing)
+  initialNoteKey?: number | null;  // Stable filament_calibration_id the note is stored under (m065)
   onClose: () => void;
   onSave: () => void;
-  onSaveNote?: (settingId: string, note: string) => void;  // Callback to save note
+  // Callback to save note. Profile is null for newly-created profiles
+  // (the backend resolves via setting_id hint after the printer assigns one).
+  onSaveNote?: (profile: KProfile | null, settingIdHint: string | undefined, note: string) => void;
   hasPermission: (permission: Permission) => boolean;
 }
 
@@ -168,7 +170,6 @@ function KProfileModal({
   builtinFilaments = [],
   isDualNozzle = false,
   initialNote = '',
-  initialNoteKey = null,
   onClose,
   onSave,
   onSaveNote,
@@ -233,20 +234,11 @@ function KProfileModal({
     onSuccess: (result) => {
       console.log('[KProfile] Save success:', result);
       showToast(t('kProfiles.toast.profileSaved'));
-      // Save note if it changed (including clearing it)
+      // Save note if it changed (including clearing it). Parent resolves
+      // the editing profile to its stable filament_calibration_id via the
+      // listing endpoint's fc_id_by_cali_idx map (m065).
       if (onSaveNote && note !== initialNote) {
-        let profileKey: string;
-        if (note === '' && initialNoteKey) {
-          // Clearing note: use the same key it was stored under
-          profileKey = initialNoteKey;
-        } else if (profile && profile.slot_id > 0) {
-          // Editing: use setting_id if available, or composite key with slot_id
-          profileKey = profile.setting_id || `slot_${profile.slot_id}_${profile.filament_id}_${profile.extruder_id}`;
-        } else {
-          // New profile: use name as key (will be matched when profile is loaded)
-          profileKey = `name_${name}_${filamentId}`;
-        }
-        onSaveNote(profileKey, note);
+        onSaveNote(profile ?? null, profile?.setting_id ?? undefined, note);
       }
       // Show syncing indicator while printer processes the command
       setIsSyncing(true);
@@ -354,11 +346,10 @@ function KProfileModal({
     try {
       await api.setKProfilesBatch(printerId, batchPayload);
       showToast(t('kProfiles.toast.profilesSaved', { count: selectedExtruders.length }));
-      // Save note for new batch profiles
-      if (onSaveNote && note) {
-        const profileKey = `name_${name}_${filamentId}`;
-        onSaveNote(profileKey, note);
-      }
+      // Notes for freshly-created batch profiles can't attach reliably yet
+      // — the printer hasn't returned the new cali_idx/setting_id, so the
+      // backend has nothing to resolve. The user can attach a note after the
+      // next refetch picks up the new profile.
     } catch (error) {
       console.error('[KProfile] Failed to save batch:', error);
       showToast(t('kProfiles.toast.failedToSaveBatch'), 'error');
@@ -1081,44 +1072,44 @@ export function KProfilesView() {
     refetchProfiles();
   }, [selectedPrinter, selectedProfiles, filteredProfiles, showToast, refetchProfiles, getProfileKey, t]);
 
-  // Generate possible keys for a profile (for notes lookup)
-  // Returns array of keys to check: setting_id, slot-based, name-based
-  const getProfileKeys = useCallback((profile: KProfile): string[] => {
-    const keys: string[] = [];
-    if (profile.setting_id) {
-      keys.push(profile.setting_id);
-    }
-    // Slot-based key (for profiles without setting_id)
-    keys.push(`slot_${profile.slot_id}_${profile.filament_id}_${profile.extruder_id}`);
-    // Name-based key (for newly created profiles)
-    keys.push(`name_${profile.name}_${profile.filament_id}`);
-    return keys;
-  }, []);
+  // Resolve a profile to its stable filament_calibration.id via the map
+  // returned by the listing endpoint. Notes are keyed by fc_id since m065.
+  const getFcId = useCallback((profile: KProfile): number | null => {
+    const map = kprofiles?.fc_id_by_cali_idx;
+    if (!map) return null;
+    return map[profile.slot_id] ?? null;
+  }, [kprofiles]);
 
-  // Save note for a profile
-  const handleSaveNote = useCallback(async (profileKey: string, noteText: string) => {
+  // Save note for a profile. Sends fc_id when known, falls back to setting_id
+  // hint so the backend can resolve via the printer's live K-profile list.
+  const handleSaveNote = useCallback(async (
+    profile: KProfile | null,
+    profileSettingIdHint: string | undefined,
+    noteText: string,
+  ) => {
     if (!selectedPrinter) return;
     try {
-      await api.setKProfileNote(selectedPrinter, profileKey, noteText);
+      const fcId = profile ? getFcId(profile) : null;
+      await api.setKProfileNote(selectedPrinter, {
+        filament_calibration_id: fcId ?? undefined,
+        setting_id: profileSettingIdHint,
+        note: noteText,
+      });
       refetchNotes();
     } catch (err) {
       console.error('Failed to save note:', err);
       showToast(t('kProfiles.toast.failedToSaveNote'), 'error');
     }
-  }, [selectedPrinter, refetchNotes, showToast, t]);
+  }, [selectedPrinter, getFcId, refetchNotes, showToast, t]);
 
-  // Get note for a profile (checks all possible keys)
-  // Returns { note, key } so we know which key the note was stored under
-  const getNoteWithKey = useCallback((profile: KProfile): { note: string; key: string | null } => {
+  // Get note for a profile (looks up by stable filament_calibration_id).
+  const getNoteWithKey = useCallback((profile: KProfile): { note: string; key: number | null } => {
     if (!notesData?.notes) return { note: '', key: null };
-    const keys = getProfileKeys(profile);
-    for (const key of keys) {
-      if (notesData.notes[key]) {
-        return { note: notesData.notes[key], key };
-      }
-    }
-    return { note: '', key: null };
-  }, [notesData, getProfileKeys]);
+    const fcId = getFcId(profile);
+    if (fcId == null) return { note: '', key: null };
+    const note = notesData.notes[fcId];
+    return note ? { note, key: fcId } : { note: '', key: null };
+  }, [notesData, getFcId]);
 
   // Simple getter for display purposes
   const getNote = useCallback((profile: KProfile) => {

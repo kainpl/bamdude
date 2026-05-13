@@ -36,10 +36,18 @@ class KProfileCreate(BaseModel):
 
 
 class KProfilesResponse(BaseModel):
-    """Response containing K-profiles from a printer."""
+    """Response containing K-profiles from a printer.
+
+    ``fc_id_by_cali_idx`` maps each live ``cali_idx`` to our stable
+    ``filament_calibration.id`` so the frontend can look up locally-stored
+    notes (and any other per-FC metadata) without inventing a separate
+    identity. The route handler runs :func:`sync_printer_kprofiles_to_cache`
+    before building this map so it always covers every live profile.
+    """
 
     profiles: list[KProfile]
     nozzle_diameter: str  # Current nozzle filter
+    fc_id_by_cali_idx: dict[int, int] = {}
 
 
 class KProfileDelete(BaseModel):
@@ -54,13 +62,22 @@ class KProfileDelete(BaseModel):
 
 
 class KProfileNote(BaseModel):
-    """Schema for K-profile notes (stored locally, not on printer)."""
+    """Schema for K-profile notes (stored locally; keyed by our stable
+    ``filament_calibration.id`` since m065).
 
-    setting_id: str  # Unique identifier for the K-profile
-    note: str  # The note content
+    Backwards compat: clients still send ``setting_id`` as a hint. The backend
+    resolves it to the corresponding ``filament_calibration_id`` via the
+    printer's live K-profile list — see the route handler for the chain.
+    """
+
+    filament_calibration_id: int | None = None
+    setting_id: str | None = None
+    note: str
 
 
 class KProfileNoteResponse(BaseModel):
     """Response containing notes for K-profiles."""
 
-    notes: dict[str, str]  # mapping of setting_id -> note
+    # Keyed by filament_calibration_id (stable PK) since m065. Frontend maps
+    # via the cali_idx → fc_id lookup returned by the K-profile endpoint.
+    notes: dict[int, str]

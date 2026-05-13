@@ -59,7 +59,47 @@ async def get_kprofiles(
     # Request K-profiles from printer
     profiles = await client.get_kprofiles(nozzle_diameter=nozzle_diameter)
 
-    # Convert from MQTT dataclass to Pydantic schema
+    # Mirror live profiles into our cache so every visible cali_idx maps to a
+    # stable filament_calibration.id (Wave 7b sync wire-in). Idempotent.
+    from backend.app.models.filament_calibration import FilamentCalibration
+    from backend.app.services.calibration_service import sync_printer_kprofiles_to_cache
+
+    try:
+        await sync_printer_kprofiles_to_cache(db=db, printer_id=printer_id)
+    except Exception as e:  # pragma: no cover — best-effort
+        logger.warning("kprofile listing: sync_printer_kprofiles_to_cache failed: %s", e)
+
+    fc_id_by_cali_idx: dict[int, int] = {}
+    if profiles:
+        rows = (
+            (
+                await db.execute(
+                    select(FilamentCalibration).where(
+                        FilamentCalibration.printer_id == printer_id,
+                        FilamentCalibration.cali_idx.is_not(None),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        # Match by stable identity (name + filament_id + pa_k_value) so a
+        # printer-side reorder of cali_idx doesn't break the lookup.
+        for p in profiles:
+            try:
+                p_k = float(p.k_value)
+            except (TypeError, ValueError):
+                continue
+            for fc in rows:
+                if (
+                    fc.name == p.name
+                    and fc.filament_id == p.filament_id
+                    and fc.pa_k_value is not None
+                    and abs(fc.pa_k_value - p_k) < 1e-6
+                ):
+                    fc_id_by_cali_idx[int(p.slot_id)] = fc.id
+                    break
+
     return KProfilesResponse(
         profiles=[
             KProfile(
@@ -78,6 +118,7 @@ async def get_kprofiles(
             for p in profiles
         ],
         nozzle_diameter=nozzle_diameter,
+        fc_id_by_cali_idx=fc_id_by_cali_idx,
     )
 
 
@@ -308,25 +349,88 @@ async def get_kprofile_notes(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.KPROFILES_READ),
 ):
-    """Get all K-profile notes for a printer.
+    """Return all K-profile notes for a printer, keyed by stable
+    ``filament_calibration.id``.
 
-    Notes are stored locally since printers don't support notes.
-
-    Args:
-        printer_id: ID of the printer
+    Re-keyed in m065 — old ``setting_id`` mapping is gone (it was unstable
+    across restarts). Frontend joins this map with its
+    ``cali_idx → fc_id`` lookup from the K-profile endpoint.
     """
-    # Check printer exists
     result = await db.execute(select(Printer).where(Printer.id == printer_id))
     printer = result.scalar_one_or_none()
     if not printer:
         raise HTTPException(404, "Printer not found")
 
-    # Get all notes for this printer
-    result = await db.execute(select(KProfileNoteModel).where(KProfileNoteModel.printer_id == printer_id))
-    notes = result.scalars().all()
+    from backend.app.models.filament_calibration import FilamentCalibration
 
-    # Return as a dictionary mapping setting_id -> note
-    return KProfileNoteResponse(notes={note.setting_id: note.note for note in notes})
+    result = await db.execute(
+        select(KProfileNoteModel)
+        .join(FilamentCalibration, KProfileNoteModel.filament_calibration_id == FilamentCalibration.id)
+        .where(FilamentCalibration.printer_id == printer_id)
+    )
+    notes = result.scalars().all()
+    return KProfileNoteResponse(notes={n.filament_calibration_id: n.note for n in notes})
+
+
+async def _resolve_filament_calibration_id(
+    db: AsyncSession,
+    printer_id: int,
+    *,
+    explicit_fc_id: int | None,
+    setting_id_hint: str | None,
+) -> int | None:
+    """Resolve a note request to a ``filament_calibration.id`` for the printer.
+
+    Order: explicit fc_id wins. Otherwise look up the printer's live K-profile
+    with matching ``setting_id`` → match by stable identity (name + k_value +
+    filament_id) to an existing cache row. Returns ``None`` if neither path
+    resolves (caller emits 404).
+    """
+    from backend.app.models.filament_calibration import FilamentCalibration
+
+    if explicit_fc_id is not None:
+        fc = (
+            await db.execute(
+                select(FilamentCalibration).where(
+                    FilamentCalibration.id == explicit_fc_id,
+                    FilamentCalibration.printer_id == printer_id,
+                )
+            )
+        ).scalar_one_or_none()
+        return fc.id if fc else None
+
+    if not setting_id_hint:
+        return None
+
+    from backend.app.services.printer_manager import printer_manager
+
+    client = printer_manager.get_client(printer_id)
+    if not client or not client.state.connected:
+        return None
+
+    target = None
+    for kp in client.state.kprofiles or []:
+        if (kp.setting_id or "") == setting_id_hint:
+            target = kp
+            break
+    if target is None:
+        return None
+    try:
+        target_k = float(target.k_value)
+    except (TypeError, ValueError):
+        return None
+
+    fc = (
+        await db.execute(
+            select(FilamentCalibration).where(
+                FilamentCalibration.printer_id == printer_id,
+                FilamentCalibration.filament_id == target.filament_id,
+                FilamentCalibration.name == target.name,
+                FilamentCalibration.pa_k_value == target_k,
+            )
+        )
+    ).scalar_one_or_none()
+    return fc.id if fc else None
 
 
 @router.put("/notes", response_model=dict)
@@ -336,78 +440,65 @@ async def set_kprofile_note(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.KPROFILES_UPDATE),
 ):
-    """Set or update a note for a K-profile.
-
-    Args:
-        printer_id: ID of the printer
-        note_data: The note data (setting_id and note content)
-    """
-    # Check printer exists
+    """Save or delete a note attached to a calibration entry."""
     result = await db.execute(select(Printer).where(Printer.id == printer_id))
     printer = result.scalar_one_or_none()
     if not printer:
         raise HTTPException(404, "Printer not found")
 
-    # Find existing note or create new one
-    result = await db.execute(
-        select(KProfileNoteModel).where(
-            KProfileNoteModel.printer_id == printer_id,
-            KProfileNoteModel.setting_id == note_data.setting_id,
-        )
+    fc_id = await _resolve_filament_calibration_id(
+        db,
+        printer_id,
+        explicit_fc_id=note_data.filament_calibration_id,
+        setting_id_hint=note_data.setting_id,
     )
-    existing_note = result.scalar_one_or_none()
+    if fc_id is None:
+        raise HTTPException(404, "Calibration not found for this printer")
+
+    existing = (
+        await db.execute(select(KProfileNoteModel).where(KProfileNoteModel.filament_calibration_id == fc_id))
+    ).scalar_one_or_none()
 
     if note_data.note.strip():
-        # Save or update note
-        if existing_note:
-            existing_note.note = note_data.note
+        if existing:
+            existing.note = note_data.note
         else:
-            new_note = KProfileNoteModel(
-                printer_id=printer_id,
-                setting_id=note_data.setting_id,
-                note=note_data.note,
-            )
-            db.add(new_note)
+            db.add(KProfileNoteModel(filament_calibration_id=fc_id, note=note_data.note))
         await db.commit()
         return {"success": True, "message": "Note saved"}
-    else:
-        # Delete note if empty
-        if existing_note:
-            await db.delete(existing_note)
-            await db.commit()
-        return {"success": True, "message": "Note deleted"}
+
+    if existing:
+        await db.delete(existing)
+        await db.commit()
+    return {"success": True, "message": "Note deleted"}
 
 
-@router.delete("/notes/{setting_id}", response_model=dict)
+@router.delete("/notes/{filament_calibration_id}", response_model=dict)
 async def delete_kprofile_note(
     printer_id: int,
-    setting_id: str,
+    filament_calibration_id: int,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.KPROFILES_DELETE),
 ):
-    """Delete a note for a K-profile.
-
-    Args:
-        printer_id: ID of the printer
-        setting_id: The setting_id of the K-profile
-    """
-    # Check printer exists
+    """Delete the note for a specific calibration entry (keyed by stable PK)."""
     result = await db.execute(select(Printer).where(Printer.id == printer_id))
     printer = result.scalar_one_or_none()
     if not printer:
         raise HTTPException(404, "Printer not found")
 
-    # Find and delete the note
-    result = await db.execute(
-        select(KProfileNoteModel).where(
-            KProfileNoteModel.printer_id == printer_id,
-            KProfileNoteModel.setting_id == setting_id,
-        )
+    fc_id = await _resolve_filament_calibration_id(
+        db,
+        printer_id,
+        explicit_fc_id=filament_calibration_id,
+        setting_id_hint=None,
     )
-    existing_note = result.scalar_one_or_none()
+    if fc_id is None:
+        raise HTTPException(404, "Calibration not found for this printer")
 
-    if existing_note:
-        await db.delete(existing_note)
+    existing = (
+        await db.execute(select(KProfileNoteModel).where(KProfileNoteModel.filament_calibration_id == fc_id))
+    ).scalar_one_or_none()
+    if existing:
+        await db.delete(existing)
         await db.commit()
-
     return {"success": True, "message": "Note deleted"}

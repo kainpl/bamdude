@@ -315,7 +315,7 @@ async def submit_auto_result(
     response_model=list[FilamentCalibrationOut],
 )
 async def list_filament_calibrations(
-    printer_model: str | None = Query(default=None),
+    printer_id: int | None = Query(default=None),
     filament_id: str | None = Query(default=None),
     nozzle_diameter: float | None = Query(default=None),
     is_active: bool | None = Query(default=None),
@@ -323,8 +323,8 @@ async def list_filament_calibrations(
     _: User | None = RequirePermission(Permission.PRINTERS_READ),
 ) -> list[FilamentCalibrationOut]:
     q = select(FilamentCalibration)
-    if printer_model:
-        q = q.where(FilamentCalibration.printer_model == printer_model)
+    if printer_id is not None:
+        q = q.where(FilamentCalibration.printer_id == printer_id)
     if filament_id:
         q = q.where(FilamentCalibration.filament_id == filament_id)
     if nozzle_diameter is not None:
@@ -370,7 +370,7 @@ async def set_active_calibration(
         (
             await db.execute(
                 select(FilamentCalibration).where(
-                    FilamentCalibration.printer_model == row.printer_model,
+                    FilamentCalibration.printer_id == row.printer_id,
                     FilamentCalibration.filament_id == row.filament_id,
                     FilamentCalibration.nozzle_diameter == row.nozzle_diameter,
                     FilamentCalibration.nozzle_volume_type == row.nozzle_volume_type,

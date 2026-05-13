@@ -5434,9 +5434,15 @@ class BambuMQTTClient:
                 mqtt_ams_id = 254 + tray_id
                 mqtt_tray_id = 254 + tray_id
             else:
-                # Single external slot (X1C, P1S, A1): global tray_id=254
-                mqtt_ams_id = 254
-                mqtt_tray_id = 254
+                # Single-external (X1C / P1S / A1 / A1 mini / P1P):
+                # VIRTUAL_TRAY_MAIN_ID per BambuStudio DevDefs.h.
+                # Earlier code used 254 historically; firmware tolerated it
+                # but it's out-of-spec (BS DevCalib.cpp:188-200 routes 254
+                # to vt_slot[1] which only exists on H2D — non-H2D ack
+                # falls into the else-branch parser path and never updates
+                # the slot's local cali_idx cache).
+                mqtt_ams_id = 255
+                mqtt_tray_id = 255
             slot_id = 0
         elif ams_id <= 3:
             mqtt_ams_id = ams_id

@@ -2315,15 +2315,22 @@ export interface KProfileDelete {
 export interface KProfilesResponse {
   profiles: KProfile[];
   nozzle_diameter: string;
+  // Maps each live cali_idx → our stable filament_calibration.id so notes
+  // (keyed by fc_id since m065) survive printer reorders.
+  fc_id_by_cali_idx?: Record<number, number>;
 }
 
 export interface KProfileNote {
-  setting_id: string;
+  // Stable identity since m065. `setting_id` is still accepted as a hint —
+  // the backend resolves it to `filament_calibration_id` via the printer's
+  // live K-profile list.
+  filament_calibration_id?: number | null;
+  setting_id?: string | null;
   note: string;
 }
 
 export interface KProfileNotesResponse {
-  notes: Record<string, string>;  // setting_id -> note
+  notes: Record<number, string>;  // filament_calibration_id -> note
 }
 
 // Slot Preset Mapping
@@ -3683,7 +3690,7 @@ export interface CalibrationSessionOut {
 
 export interface FilamentCalibrationOut {
   id: number;
-  printer_model: string;
+  printer_id: number;
   filament_id: string;
   filament_setting_id: string | null;
   nozzle_diameter: number;
@@ -4156,7 +4163,7 @@ export const api = {
   getCalibrationAutoResults: (printerId: number) =>
     request<ExtrusionCaliResultOut[]>(`/printers/${printerId}/calibration/auto-results`),
   listFilamentCalibrations: (params: {
-    printer_model?: string;
+    printer_id?: number;
     filament_id?: string;
     nozzle_diameter?: number;
     is_active?: boolean;
@@ -5266,16 +5273,21 @@ export const api = {
       body: JSON.stringify(profiles),
     }),
 
-  // K-Profile Notes (stored locally, not on printer)
+  // K-Profile Notes — keyed by stable filament_calibration_id since m065.
+  // `settingId` is accepted as a hint when caller doesn't have the fc_id;
+  // backend resolves via the printer's live K-profile list.
   getKProfileNotes: (printerId: number) =>
     request<KProfileNotesResponse>(`/printers/${printerId}/kprofiles/notes`),
-  setKProfileNote: (printerId: number, settingId: string, note: string) =>
+  setKProfileNote: (
+    printerId: number,
+    payload: { filament_calibration_id?: number; setting_id?: string; note: string },
+  ) =>
     request<{ success: boolean; message: string }>(`/printers/${printerId}/kprofiles/notes`, {
       method: 'PUT',
-      body: JSON.stringify({ setting_id: settingId, note }),
+      body: JSON.stringify(payload),
     }),
-  deleteKProfileNote: (printerId: number, settingId: string) =>
-    request<{ success: boolean; message: string }>(`/printers/${printerId}/kprofiles/notes/${encodeURIComponent(settingId)}`, {
+  deleteKProfileNote: (printerId: number, filamentCalibrationId: number) =>
+    request<{ success: boolean; message: string }>(`/printers/${printerId}/kprofiles/notes/${filamentCalibrationId}`, {
       method: 'DELETE',
     }),
 

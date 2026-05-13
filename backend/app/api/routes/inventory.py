@@ -264,31 +264,45 @@ async def apply_spool_to_slot_via_mqtt(
         else:
             slot_extruder = state.ams_extruder_map.get(str(ams_id))
 
-    # Prefer exact extruder match, fall back to extruder-agnostic kp for the
-    # same nozzle. Hard-skip on mismatch silently drops valid stored profiles
-    # when the AMS-extruder mapping has shifted.
-    exact_kp = None
-    fallback_kp = None
-    for kp in spool.k_profiles:
-        if kp.printer_id != printer_id or kp.nozzle_diameter != nozzle_diameter:
+    # Find the right cache row by joining link → filament_calibration. Pick
+    # exact-extruder match first, fall back to extruder-agnostic same-nozzle.
+    # (Joined `filament_calibration` is eager-loaded via lazy="selectin".)
+    try:
+        nozzle_dia_float = float(nozzle_diameter)
+    except (TypeError, ValueError):
+        nozzle_dia_float = 0.4
+    exact_link = None
+    fallback_link = None
+    for link in spool.k_profiles:
+        if link.printer_id != printer_id:
             continue
-        if slot_extruder is not None and kp.extruder is not None and kp.extruder == slot_extruder:
-            exact_kp = kp
+        fc = link.filament_calibration
+        if not fc or abs(fc.nozzle_diameter - nozzle_dia_float) > 0.05:
+            continue
+        if slot_extruder is not None and link.extruder == slot_extruder:
+            exact_link = link
             break
-        if fallback_kp is None:
-            fallback_kp = kp
-    matching_kp = exact_kp or fallback_kp
+        if fallback_link is None:
+            fallback_link = link
+    matching_link = exact_link or fallback_link
+    matching_fc = matching_link.filament_calibration if matching_link else None
 
-    # Resolve the printer-side calibration entry by looking up the cali_idx
-    # in state.kprofiles. The printer keys its calibration table by
-    # (filament_id, cali_idx) — for the cali_idx to stick, the slot's
-    # filament_id must match the kp's. PFUS-prefix cloud user presets are
-    # rejected by the slicer in tray_info_idx; the printer-reported
-    # filament_id is typically a P-prefix local preset which is valid.
+    # Resolve preset realignment via the live printer K-profile (matched on
+    # stable identity, not stored cali_idx — printer may have reordered).
     printer_kp = None
-    if matching_kp and matching_kp.cali_idx is not None and state and getattr(state, "kprofiles", None):
+    if matching_fc and state and getattr(state, "kprofiles", None):
+        target_k = matching_fc.pa_k_value if matching_fc.pa_k_value is not None else matching_fc.flow_ratio
         for pkp in state.kprofiles:
-            if pkp.slot_id == matching_kp.cali_idx and pkp.nozzle_diameter == nozzle_diameter:
+            try:
+                pkp_k = float(pkp.k_value)
+            except (TypeError, ValueError):
+                continue
+            if (
+                pkp.name == matching_fc.name
+                and target_k is not None
+                and abs(pkp_k - float(target_k)) < 1e-6
+                and pkp.filament_id == matching_fc.filament_id
+            ):
                 printer_kp = pkp
                 break
 
@@ -297,7 +311,7 @@ async def apply_spool_to_slot_via_mqtt(
     if printer_kp and printer_kp.filament_id:
         effective_tray_info_idx = printer_kp.filament_id
     target_setting_id = (printer_kp.setting_id if printer_kp else None) or (
-        matching_kp.setting_id if matching_kp else None
+        matching_fc.filament_setting_id if matching_fc else None
     )
     if target_setting_id:
         effective_setting_id = target_setting_id
@@ -324,23 +338,29 @@ async def apply_spool_to_slot_via_mqtt(
         setting_id=effective_setting_id,
     )
 
-    # b. Push extrusion calibration if we have one. filament_id for cali_sel
-    # must match the preset under which the kp was registered. Priority:
-    # live printer kp > stored kp.setting_id > spool.slicer_filament >
-    # realigned tray_info_idx.
-    if matching_kp and matching_kp.cali_idx is not None:
-        if printer_kp and printer_kp.filament_id:
-            cali_filament_id = printer_kp.filament_id
-        elif matching_kp.setting_id:
-            cali_filament_id = normalize_slicer_filament(matching_kp.setting_id)[0] or matching_kp.setting_id
-        else:
-            cali_filament_id = spool.slicer_filament or effective_tray_info_idx
-        client.extrusion_cali_sel(
+    # b. Push extrusion calibration via the unified helper. The helper
+    # re-resolves cali_idx live (stable-identity match) and fires
+    # extrusion_cali_sel; stored cali_idx is just a hint.
+    from backend.app.services.calibration_service import (
+        apply_active_calibration_to_slot,
+        derive_effective_filament_id,
+    )
+
+    effective_filament_id = derive_effective_filament_id(
+        spool=spool, slot_tray_info_idx=effective_tray_info_idx or None
+    )
+    nozzle_vt = str(getattr(state, "nozzle_volume_type", "standard") or "standard")
+    if effective_filament_id:
+        await apply_active_calibration_to_slot(
+            db=db,
+            printer_id=printer_id,
             ams_id=ams_id,
-            tray_id=tray_id,
-            cali_idx=matching_kp.cali_idx,
-            filament_id=cali_filament_id,
-            nozzle_diameter=nozzle_diameter,
+            slot_id=tray_id,
+            filament_id=effective_filament_id,
+            nozzle_diameter=nozzle_dia_float,
+            nozzle_volume_type=nozzle_vt,
+            extruder_id=slot_extruder if slot_extruder is not None else 0,
+            spool_id=spool.id,
         )
 
     # Persist slot preset mapping for UI display (preset_name on hover card).
@@ -1037,28 +1057,118 @@ async def replace_k_profiles(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
-    """Replace all K-profiles for a spool (batch save)."""
-    # Verify spool exists
-    result = await db.execute(select(Spool).where(Spool.id == spool_id))
-    if not result.scalar_one_or_none():
+    """Replace all K-profile links for a spool (batch save).
+
+    Wire shape (``SpoolKProfileBase``) is unchanged for the PA tab. For each
+    incoming entry the backend resolves the printer's live ``cali_idx`` →
+    find-or-create a ``filament_calibration`` cache row → create the link.
+    """
+    if not (await db.execute(select(Spool).where(Spool.id == spool_id))).scalar_one_or_none():
         raise HTTPException(404, "Spool not found")
 
-    # Delete existing
     existing = await db.execute(select(SpoolKProfile).where(SpoolKProfile.spool_id == spool_id))
     for old in existing.scalars().all():
         await db.delete(old)
 
-    # Create new
-    new_profiles = []
+    new_links: list[SpoolKProfile] = []
     for p in profiles:
-        kp = SpoolKProfile(spool_id=spool_id, **p.model_dump())
-        db.add(kp)
-        new_profiles.append(kp)
+        fc = await _find_or_create_filament_calibration_for_link(db, p)
+        if fc is None:
+            continue
+        link = SpoolKProfile(
+            spool_id=spool_id,
+            printer_id=p.printer_id,
+            extruder=p.extruder,
+            filament_calibration_id=fc.id,
+        )
+        db.add(link)
+        new_links.append(link)
 
     await db.commit()
-    for kp in new_profiles:
-        await db.refresh(kp)
-    return new_profiles
+    for link in new_links:
+        await db.refresh(link)
+    return new_links
+
+
+async def _find_or_create_filament_calibration_for_link(db: AsyncSession, p: SpoolKProfileBase):
+    """Resolve a PA-tab entry to a ``filament_calibration`` cache row.
+
+    Strategy: pull full identity from the printer's live K-profile list by
+    the user-picked ``cali_idx`` (which is fresh at the moment of click).
+    Find existing cache row by stable combo + EXACT K, create if absent
+    (matches the m064 backfill pattern — new rows ship ``is_active=False``).
+    """
+    from backend.app.models.filament_calibration import FilamentCalibration
+    from backend.app.services.calibration_service import parse_nozzle_vol_type
+    from backend.app.services.printer_manager import printer_manager
+
+    client = printer_manager.get_client(p.printer_id)
+    if not client or not client.state.connected or p.cali_idx is None:
+        return None
+
+    target_kp = None
+    for kp in client.state.kprofiles or []:
+        try:
+            slot = int(kp.slot_id)
+        except (TypeError, ValueError):
+            continue
+        if slot == int(p.cali_idx):
+            target_kp = kp
+            break
+    if target_kp is None:
+        return None
+
+    try:
+        kp_k = float(target_kp.k_value)
+    except (TypeError, ValueError):
+        return None
+    try:
+        nozzle_dia = float(target_kp.nozzle_diameter or p.nozzle_diameter or 0.4)
+    except (TypeError, ValueError):
+        nozzle_dia = 0.4
+    nozzle_vt = parse_nozzle_vol_type(getattr(target_kp, "nozzle_id", None) or p.nozzle_type)
+    filament_id = target_kp.filament_id or ""
+    display_name = target_kp.name or p.name or f"{filament_id} K={kp_k:.4f}"
+
+    existing = (
+        (
+            await db.execute(
+                select(FilamentCalibration).where(
+                    FilamentCalibration.printer_id == p.printer_id,
+                    FilamentCalibration.filament_id == filament_id,
+                    FilamentCalibration.nozzle_diameter == nozzle_dia,
+                    FilamentCalibration.nozzle_volume_type == nozzle_vt,
+                    FilamentCalibration.extruder_id == p.extruder,
+                    FilamentCalibration.pa_k_value == kp_k,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    active = next((r for r in existing if r.is_active), None)
+    if active:
+        return active
+    if existing:
+        return existing[0]
+
+    new_row = FilamentCalibration(
+        printer_id=p.printer_id,
+        filament_id=filament_id,
+        filament_setting_id=target_kp.setting_id or p.setting_id,
+        nozzle_diameter=nozzle_dia,
+        nozzle_volume_type=nozzle_vt,
+        extruder_id=p.extruder,
+        pa_k_value=kp_k,
+        cali_mode="pa_line",
+        source="spool_link",
+        is_active=False,
+        cali_idx=int(target_kp.slot_id) if target_kp.slot_id is not None else None,
+        name=display_name,
+    )
+    db.add(new_row)
+    await db.flush()
+    return new_row
 
 
 # ── Spool Assignments ────────────────────────────────────────────────────────

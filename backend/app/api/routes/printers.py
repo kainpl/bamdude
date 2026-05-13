@@ -3026,11 +3026,13 @@ async def ams_unload_filament(
 
 
 async def _apply_pa_after_refresh(printer_id: int, ams_id: int, slot_id: int):
-    """Apply PA profile after RFID re-read completes.
+    """Apply active calibration after RFID re-read completes.
 
-    Waits for the printer to finish processing the RFID data, then selects
-    the K-profile via extrusion_cali_sel.  Does NOT re-send ams_set_filament_setting
-    because that would overwrite the RFID-provided filament data.
+    Sleeps 5 s for the printer to finish processing the RFID data, then defers
+    to :func:`apply_active_calibration_to_slot` which resolves the spool link
+    → cache row → live ``cali_idx``. Does NOT re-send
+    ``ams_set_filament_setting`` (that would overwrite RFID-provided
+    filament state, flipping the slicer's eye icon to a pen).
     """
     await asyncio.sleep(5)
     try:
@@ -3038,6 +3040,10 @@ async def _apply_pa_after_refresh(printer_id: int, ams_id: int, slot_id: int):
         from backend.app.core.database import async_session
         from backend.app.models.spool import Spool
         from backend.app.models.spool_assignment import SpoolAssignment as SA
+        from backend.app.services.calibration_service import (
+            apply_active_calibration_to_slot,
+            derive_effective_filament_id,
+        )
         from backend.app.services.spool_tag_matcher import is_bambu_tag
 
         client = printer_manager.get_client(printer_id)
@@ -3048,7 +3054,6 @@ async def _apply_pa_after_refresh(printer_id: int, ams_id: int, slot_id: int):
         if not state or not state.raw_data:
             return
 
-        # Find current tray data (should have RFID data by now)
         ams_data = state.raw_data.get("ams", {})
         ams_list = (
             ams_data.get("ams", []) if isinstance(ams_data, dict) else ams_data if isinstance(ams_data, list) else []
@@ -3074,74 +3079,52 @@ async def _apply_pa_after_refresh(printer_id: int, ams_id: int, slot_id: int):
                 .where(SA.printer_id == printer_id, SA.ams_id == ams_id, SA.tray_id == slot_id)
             )
             assignment = result.scalar_one_or_none()
-            if not assignment or not assignment.spool or not assignment.spool.k_profiles:
+            if not assignment or not assignment.spool:
                 return
-
             spool = assignment.spool
+
             nozzle_diameter = "0.4"
             if state.nozzles:
                 nd = state.nozzles[0].nozzle_diameter
                 if nd:
                     nozzle_diameter = nd
+            try:
+                nozzle_dia_float = float(nozzle_diameter)
+            except (TypeError, ValueError):
+                nozzle_dia_float = 0.4
+            nozzle_vt = str(getattr(state, "nozzle_volume_type", "standard") or "standard")
 
-            # Determine slot's extruder from ams_extruder_map
-            slot_extruder = None
+            slot_extruder = 0
             if state.ams_extruder_map:
                 if ams_id == 255:
-                    # External slots: ext-L (tray 0) → extruder 1, ext-R (tray 1) → extruder 0
-                    slot_extruder = 1 - slot_id  # 0→1, 1→0
+                    slot_extruder = 1 - slot_id
                 else:
-                    slot_extruder = state.ams_extruder_map.get(str(ams_id))
+                    slot_extruder = state.ams_extruder_map.get(str(ams_id)) or 0
 
-            matching_kp = None
-            for kp in spool.k_profiles:
-                if kp.printer_id == printer_id and kp.nozzle_diameter == nozzle_diameter:
-                    if slot_extruder is not None and kp.extruder_id is not None and kp.extruder_id != slot_extruder:
-                        continue
-                    matching_kp = kp
-                    break
-
-            if not matching_kp or matching_kp.cali_idx is None:
+            effective_filament_id = derive_effective_filament_id(spool=spool, slot_tray_info_idx=tray_info_idx or None)
+            if not effective_filament_id:
                 return
 
-            # The filament_id in extrusion_cali_sel must match the filament preset
-            # under which the K-profile was calibrated. Use spool.slicer_filament
-            # (the preset assigned in inventory), falling back to tray's RFID value.
-            kp_filament_id = spool.slicer_filament or tray_info_idx
-
-            logger.info(
-                "PA re-apply AMS%d-T%d: cali_idx=%d, filament_id=%s",
-                ams_id,
-                slot_id,
-                matching_kp.cali_idx,
-                kp_filament_id,
-            )
-
-            # 1. Select K-profile
-            # NOTE: Do NOT send ams_set_filament_setting here - it tells the firmware
-            # "this is a manual config" which destroys the RFID-detected spool state
-            # (changes eye icon to pen icon in slicer).
-            client.extrusion_cali_sel(
+            fired, fc = await apply_active_calibration_to_slot(
+                db=db,
+                printer_id=printer_id,
                 ams_id=ams_id,
-                tray_id=slot_id,
-                cali_idx=matching_kp.cali_idx,
-                filament_id=kp_filament_id,
-                nozzle_diameter=nozzle_diameter,
+                slot_id=slot_id,
+                filament_id=effective_filament_id,
+                nozzle_diameter=nozzle_dia_float,
+                nozzle_volume_type=nozzle_vt,
+                extruder_id=slot_extruder,
+                spool_id=spool.id,
             )
-
-            # NOTE: Do NOT send extrusion_cali_set here. extrusion_cali_sel already
-            # selected the correct profile by cali_idx. Sending extrusion_cali_set with
-            # the same cali_idx would MODIFY the existing profile's metadata (extruder_id,
-            # nozzle_id, name), corrupting it.
-
-            logger.info(
-                "Applied PA profile cali_idx=%d k=%.3f to printer %d AMS%d-T%d",
-                matching_kp.cali_idx,
-                matching_kp.k_value or 0,
-                printer_id,
-                ams_id,
-                slot_id,
-            )
+            if fired and fc:
+                logger.info(
+                    "Applied PA profile (k=%.3f, name=%r) to printer %d AMS%d-T%d after RFID refresh",
+                    fc.pa_k_value or 0,
+                    fc.name,
+                    printer_id,
+                    ams_id,
+                    slot_id,
+                )
     except Exception as e:
         logger.warning("Failed to apply PA profile after RFID re-read: %s", e)
 

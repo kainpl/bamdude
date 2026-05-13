@@ -5,15 +5,14 @@ import type { FilamentCalibrationOut, PACalibHistoryEntryOut } from '../api/clie
 
 export function useCalibrationHistory(
   printerId: number,
-  printerModel: string,
   enabled: boolean,
 ) {
   const qc = useQueryClient();
 
   const bamdudeQuery = useQuery<FilamentCalibrationOut[]>({
-    queryKey: ['filament-calibrations', printerModel],
-    queryFn: () => api.listFilamentCalibrations({ printer_model: printerModel }),
-    enabled: enabled && Boolean(printerModel),
+    queryKey: ['filament-calibrations', printerId],
+    queryFn: () => api.listFilamentCalibrations({ printer_id: printerId }),
+    enabled: enabled && Boolean(printerId),
     staleTime: 10_000,
   });
 
@@ -26,12 +25,12 @@ export function useCalibrationHistory(
 
   const setActiveMutation = useMutation({
     mutationFn: (caliId: number) => api.setActiveCalibration(caliId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['filament-calibrations', printerModel] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['filament-calibrations', printerId] }),
   });
 
   const deleteMutation = useMutation({
     mutationFn: (caliId: number) => api.deleteCalibration(caliId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['filament-calibrations', printerModel] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['filament-calibrations', printerId] }),
   });
 
   const refreshMutation = useMutation({

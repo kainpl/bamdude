@@ -6,6 +6,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy import select
 
 from backend.app.models.calibration_session import CalibrationSession
 from backend.app.services.bambu_mqtt import ExtrusionCaliResult
@@ -13,8 +14,12 @@ from backend.app.services.calibration_constants import CaliMethod, CaliMode
 from backend.app.services.calibration_service import (
     CalibFilamentInput,
     CalibrationService,
+    apply_active_calibration_to_slot,
+    derive_effective_filament_id,
+    parse_nozzle_vol_type,
     resolve_active_calibration,
     resolve_asset_path,
+    sync_printer_kprofiles_to_cache,
 )
 
 
@@ -507,10 +512,10 @@ async def test_cancel_session_running_auto_stops_print(
 async def test_resolve_returns_active_row(db_session, printer_factory):
     from backend.app.models.filament_calibration import FilamentCalibration
 
-    await printer_factory(model="P1S")
+    printer = await printer_factory(model="P1S")
     db_session.add(
         FilamentCalibration(
-            printer_model="P1S",
+            printer_id=printer.id,
             filament_id="GFG00",
             nozzle_diameter=0.4,
             nozzle_volume_type="standard",
@@ -527,7 +532,7 @@ async def test_resolve_returns_active_row(db_session, printer_factory):
 
     row = await resolve_active_calibration(
         db=db_session,
-        printer_model="P1S",
+        printer_id=printer.id,
         filament_id="GFG00",
         nozzle_dia=0.4,
         nozzle_vol_type="standard",
@@ -539,13 +544,321 @@ async def test_resolve_returns_active_row(db_session, printer_factory):
 
 @pytest.mark.asyncio
 async def test_resolve_no_match_returns_none(db_session, printer_factory):
-    await printer_factory(model="X1C")
+    printer = await printer_factory(model="X1C")
     row = await resolve_active_calibration(
         db=db_session,
-        printer_model="X1C",
+        printer_id=printer.id,
         filament_id="UNKNOWN",
         nozzle_dia=0.4,
         nozzle_vol_type="standard",
         extruder_id=0,
     )
     assert row is None
+
+
+# ---------- parse_nozzle_vol_type ----------
+
+
+def test_parse_nozzle_vol_type_known_prefixes():
+    assert parse_nozzle_vol_type("HS00-0.4") == "standard"
+    assert parse_nozzle_vol_type("HH00-0.4") == "high_flow"
+    assert parse_nozzle_vol_type("HU00-0.2") == "tpu_high_flow"
+    assert parse_nozzle_vol_type("HY00-0.8") == "hybrid"
+
+
+def test_parse_nozzle_vol_type_fallbacks():
+    assert parse_nozzle_vol_type(None) == "standard"
+    assert parse_nozzle_vol_type("") == "standard"
+    assert parse_nozzle_vol_type("XX99-0.4") == "standard"
+
+
+# ---------- derive_effective_filament_id ----------
+
+
+def test_derive_effective_filament_id_prefers_bambu_id():
+    spool = MagicMock(bambu_filament_id="GFG96", slicer_filament="GFSL05")
+    assert derive_effective_filament_id(spool=spool, slot_tray_info_idx="GFB99") == "GFG96"
+
+
+def test_derive_effective_filament_id_falls_back_to_slicer():
+    spool = MagicMock(bambu_filament_id=None, slicer_filament="GFSL05_07")
+    # normalize_slicer_filament strips version suffix and inverts S
+    assert derive_effective_filament_id(spool=spool, slot_tray_info_idx="GFB99") == "GFL05"
+
+
+def test_derive_effective_filament_id_falls_back_to_slot():
+    spool = MagicMock(bambu_filament_id=None, slicer_filament=None)
+    assert derive_effective_filament_id(spool=spool, slot_tray_info_idx="GFB99") == "GFB99"
+
+
+def test_derive_effective_filament_id_returns_none_when_nothing():
+    assert derive_effective_filament_id(spool=None, slot_tray_info_idx=None) is None
+
+
+# ---------- apply_active_calibration_to_slot ----------
+
+
+@pytest.mark.asyncio
+async def test_apply_resolves_combo_and_matches_live_kprofile(db_session, printer_factory):
+    """Live cali_idx differs from cached cali_idx — bind must use the LIVE one
+    after stable-identity match against client.state.kprofiles."""
+    from backend.app.models.filament_calibration import FilamentCalibration
+
+    printer = await printer_factory(model="X1C")
+    fc = FilamentCalibration(
+        printer_id=printer.id,
+        filament_id="GFG96",
+        nozzle_diameter=0.4,
+        nozzle_volume_type="standard",
+        extruder_id=0,
+        pa_k_value=0.025,
+        cali_mode="pa_line",
+        source="manual",
+        is_active=True,
+        cali_idx=3,
+        name="PETG-HF K=0.025",
+    )
+    db_session.add(fc)
+    await db_session.commit()
+
+    live_kp = MagicMock(
+        slot_id=5,
+        k_value="0.025000",
+        filament_id="GFG96",
+        extruder_id=0,
+        nozzle_diameter="0.4",
+    )
+    live_kp.name = "PETG-HF K=0.025"  # `name` is a MagicMock-reserved kwarg
+    client = MagicMock()
+    client.state.connected = True
+    client.state.kprofiles = [live_kp]
+    client.extrusion_cali_sel = MagicMock(return_value=(True, "0"))
+
+    with patch("backend.app.services.calibration_service.printer_manager") as pm:
+        pm.get_client.return_value = client
+        fired, row = await apply_active_calibration_to_slot(
+            db=db_session,
+            printer_id=printer.id,
+            ams_id=0,
+            slot_id=0,
+            filament_id="GFG96",
+            nozzle_diameter=0.4,
+        )
+
+    assert fired is True
+    assert row is not None and row.id == fc.id
+    args = client.extrusion_cali_sel.call_args.kwargs
+    assert args["cali_idx"] == 5  # live slot, NOT the stale cached cali_idx=3
+
+
+@pytest.mark.asyncio
+async def test_apply_returns_false_when_no_active_row(db_session, printer_factory):
+    printer = await printer_factory(model="X1C")
+    client = MagicMock()
+    client.state.connected = True
+    client.state.kprofiles = []
+
+    with patch("backend.app.services.calibration_service.printer_manager") as pm:
+        pm.get_client.return_value = client
+        fired, row = await apply_active_calibration_to_slot(
+            db=db_session,
+            printer_id=printer.id,
+            ams_id=0,
+            slot_id=0,
+            filament_id="GFG96",
+            nozzle_diameter=0.4,
+        )
+    assert fired is False
+    assert row is None
+
+
+@pytest.mark.asyncio
+async def test_apply_returns_false_when_cache_stale(db_session, printer_factory):
+    """Cache has a row, but printer's live list has nothing matching → no bind,
+    but the cache row is still returned so the caller knows."""
+    from backend.app.models.filament_calibration import FilamentCalibration
+
+    printer = await printer_factory(model="X1C")
+    fc = FilamentCalibration(
+        printer_id=printer.id,
+        filament_id="GFG96",
+        nozzle_diameter=0.4,
+        nozzle_volume_type="standard",
+        extruder_id=0,
+        pa_k_value=0.025,
+        cali_mode="pa_line",
+        source="manual",
+        is_active=True,
+        name="PETG-HF K=0.025",
+    )
+    db_session.add(fc)
+    await db_session.commit()
+
+    client = MagicMock()
+    client.state.connected = True
+    client.state.kprofiles = []
+
+    with patch("backend.app.services.calibration_service.printer_manager") as pm:
+        pm.get_client.return_value = client
+        fired, row = await apply_active_calibration_to_slot(
+            db=db_session,
+            printer_id=printer.id,
+            ams_id=0,
+            slot_id=0,
+            filament_id="GFG96",
+            nozzle_diameter=0.4,
+        )
+    assert fired is False
+    assert row is not None
+    assert row.id == fc.id
+
+
+@pytest.mark.asyncio
+async def test_apply_returns_false_when_client_disconnected(db_session, printer_factory):
+    printer = await printer_factory(model="X1C")
+    client = MagicMock()
+    client.state.connected = False
+
+    with patch("backend.app.services.calibration_service.printer_manager") as pm:
+        pm.get_client.return_value = client
+        fired, row = await apply_active_calibration_to_slot(
+            db=db_session,
+            printer_id=printer.id,
+            ams_id=0,
+            slot_id=0,
+            filament_id="GFG96",
+            nozzle_diameter=0.4,
+        )
+    assert fired is False
+    assert row is None
+
+
+# ---------- sync_printer_kprofiles_to_cache ----------
+
+
+@pytest.mark.asyncio
+async def test_sync_creates_new_cache_rows_inactive(db_session, printer_factory):
+    """Printer reports a profile we don't have cached → create row, is_active=False."""
+    from sqlalchemy import select
+
+    from backend.app.models.filament_calibration import FilamentCalibration
+
+    printer = await printer_factory(model="X1C")
+    live_kp = MagicMock(
+        slot_id=2,
+        k_value="0.025",
+        filament_id="GFG96",
+        extruder_id=0,
+        nozzle_diameter="0.4",
+        nozzle_id="HS00-0.4",
+        setting_id="GFSG96",
+    )
+    live_kp.name = "PETG-HF K=0.025"
+    client = MagicMock()
+    client.state.connected = True
+    client.state.kprofiles = [live_kp]
+
+    with patch("backend.app.services.calibration_service.printer_manager") as pm:
+        pm.get_client.return_value = client
+        touched = await sync_printer_kprofiles_to_cache(db=db_session, printer_id=printer.id)
+
+    assert touched == 1
+    rows = (
+        (await db_session.execute(select(FilamentCalibration).where(FilamentCalibration.printer_id == printer.id)))
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].is_active is False
+    assert rows[0].source == "printer_sync"
+    assert rows[0].cali_idx == 2
+    assert rows[0].pa_k_value == 0.025
+
+
+@pytest.mark.asyncio
+async def test_sync_refreshes_stale_cali_idx_on_existing_row(db_session, printer_factory):
+    """Existing cache row has stale cali_idx → sync updates it."""
+    from backend.app.models.filament_calibration import FilamentCalibration
+
+    printer = await printer_factory(model="X1C")
+    fc = FilamentCalibration(
+        printer_id=printer.id,
+        filament_id="GFG96",
+        nozzle_diameter=0.4,
+        nozzle_volume_type="standard",
+        extruder_id=0,
+        pa_k_value=0.025,
+        cali_mode="pa_line",
+        source="manual",
+        is_active=True,
+        cali_idx=2,
+        name="PETG-HF K=0.025",
+    )
+    db_session.add(fc)
+    await db_session.commit()
+
+    # Printer reordered — same identity, different slot
+    live_kp = MagicMock(
+        slot_id=7,
+        k_value="0.025",
+        filament_id="GFG96",
+        extruder_id=0,
+        nozzle_diameter="0.4",
+        nozzle_id="HS00-0.4",
+        setting_id="GFSG96",
+    )
+    live_kp.name = "PETG-HF K=0.025"
+    client = MagicMock()
+    client.state.connected = True
+    client.state.kprofiles = [live_kp]
+
+    with patch("backend.app.services.calibration_service.printer_manager") as pm:
+        pm.get_client.return_value = client
+        touched = await sync_printer_kprofiles_to_cache(db=db_session, printer_id=printer.id)
+
+    assert touched == 1
+    await db_session.refresh(fc)
+    assert fc.cali_idx == 7
+    assert fc.is_active is True  # sync doesn't touch is_active on existing rows
+
+
+@pytest.mark.asyncio
+async def test_sync_idempotent_when_already_in_sync(db_session, printer_factory):
+    """Cache + live agree → no touches."""
+    from backend.app.models.filament_calibration import FilamentCalibration
+
+    printer = await printer_factory(model="X1C")
+    fc = FilamentCalibration(
+        printer_id=printer.id,
+        filament_id="GFG96",
+        nozzle_diameter=0.4,
+        nozzle_volume_type="standard",
+        extruder_id=0,
+        pa_k_value=0.025,
+        cali_mode="pa_line",
+        source="manual",
+        is_active=True,
+        cali_idx=5,
+        name="PETG-HF K=0.025",
+    )
+    db_session.add(fc)
+    await db_session.commit()
+
+    live_kp = MagicMock(
+        slot_id=5,
+        k_value="0.025",
+        filament_id="GFG96",
+        extruder_id=0,
+        nozzle_diameter="0.4",
+        nozzle_id="HS00-0.4",
+        setting_id="GFSG96",
+    )
+    live_kp.name = "PETG-HF K=0.025"
+    client = MagicMock()
+    client.state.connected = True
+    client.state.kprofiles = [live_kp]
+
+    with patch("backend.app.services.calibration_service.printer_manager") as pm:
+        pm.get_client.return_value = client
+        touched = await sync_printer_kprofiles_to_cache(db=db_session, printer_id=printer.id)
+    assert touched == 0

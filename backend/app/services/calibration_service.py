@@ -15,6 +15,7 @@ re-sels before each non-cali print as belt-and-suspenders sync.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -24,7 +25,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.websocket import ws_manager
 from backend.app.models.calibration_session import CalibrationSession
 from backend.app.models.filament_calibration import FilamentCalibration
-from backend.app.models.printer import Printer
 from backend.app.services.calibration_constants import (
     CaliMethod,
     CaliMode,
@@ -35,6 +35,8 @@ from backend.app.services.calibration_constants import (
     generate_nozzle_id,
 )
 from backend.app.services.printer_manager import printer_manager
+
+logger = logging.getLogger(__name__)
 
 ASSET_ROOT = Path(__file__).resolve().parent.parent / "data" / "calib_assets"
 
@@ -450,15 +452,15 @@ class CalibrationService:
           4. MQTT extrusion_cali_sel → bind to AMS slot (so subsequent prints use it).
           5. session.status='saved'.
         """
-        printer = (await db.execute(select(Printer).where(Printer.id == session.printer_id))).scalar_one()
         fil = json.loads(session.filaments_json)[0]
 
-        # Flip existing active rows to false (preserves history)
+        # Flip existing active rows to false (preserves history). Scope is
+        # per-printer (m063) — calibrations don't share across instances.
         existing = (
             (
                 await db.execute(
                     select(FilamentCalibration).where(
-                        FilamentCalibration.printer_model == printer.model,
+                        FilamentCalibration.printer_id == session.printer_id,
                         FilamentCalibration.filament_id == fil["filament_id"],
                         FilamentCalibration.nozzle_diameter == session.nozzle_diameter,
                         FilamentCalibration.nozzle_volume_type == session.nozzle_volume_type,
@@ -478,7 +480,7 @@ class CalibrationService:
             await db.commit()
 
         new_row = FilamentCalibration(
-            printer_model=printer.model,
+            printer_id=session.printer_id,
             filament_id=fil["filament_id"],
             filament_setting_id=fil.get("setting_id") or None,
             nozzle_diameter=session.nozzle_diameter,
@@ -514,8 +516,29 @@ class CalibrationService:
                 filament_id=fil["filament_id"],
                 setting_id=fil.get("setting_id") or "",
                 name=payload.name,
-                cali_idx=new_row.cali_idx or -1,
+                cali_idx=new_row.cali_idx if new_row.cali_idx is not None else -1,
             )
+
+            # Q3 fix: MANUAL path doesn't ship cali_idx — printer auto-assigns
+            # one when extrusion_cali_set arrives with cali_idx=-1. Round-trip
+            # extrusion_cali_get to discover the assigned index, then bind.
+            # AUTO path already has cali_idx in PACalibResult so this is a
+            # no-op there.
+            if new_row.cali_idx is None:
+                try:
+                    entries = await client.get_kprofiles(str(session.nozzle_diameter))
+                    for kp in entries or []:
+                        if (
+                            kp.filament_id == fil["filament_id"]
+                            and kp.name == new_row.name
+                            and abs(float(kp.k_value or 0) - float(push_value or 0)) < 1e-6
+                        ):
+                            new_row.cali_idx = int(kp.slot_id)
+                            await db.commit()
+                            break
+                except Exception as e:
+                    logger.warning("save_result: cali_idx round-trip failed: %s", e)
+
             if new_row.cali_idx is not None:
                 client.extrusion_cali_sel(
                     ams_id=fil["ams_id"],
@@ -602,7 +625,7 @@ async def reconcile_session_status(db: AsyncSession, session: CalibrationSession
 async def resolve_active_calibration(
     *,
     db: AsyncSession,
-    printer_model: str,
+    printer_id: int,
     filament_id: str,
     nozzle_dia: float,
     nozzle_vol_type: str,
@@ -610,11 +633,14 @@ async def resolve_active_calibration(
 ) -> FilamentCalibration | None:
     """Pure SELECT for the dispatch hook. Returns active row for the combo,
     or None if no calibration exists.
+
+    Scope is per-printer-instance (m063) — two X1Cs in a farm don't share
+    calibration rows.
     """
     return (
         await db.execute(
             select(FilamentCalibration).where(
-                FilamentCalibration.printer_model == printer_model,
+                FilamentCalibration.printer_id == printer_id,
                 FilamentCalibration.filament_id == filament_id,
                 FilamentCalibration.nozzle_diameter == nozzle_dia,
                 FilamentCalibration.nozzle_volume_type == nozzle_vol_type,
@@ -623,3 +649,237 @@ async def resolve_active_calibration(
             )
         )
     ).scalar_one_or_none()
+
+
+_NOZZLE_PREFIX_TO_VOL_TYPE = {
+    "HS": "standard",
+    "HH": "high_flow",
+    "HU": "tpu_high_flow",
+    "HY": "hybrid",
+}
+
+
+def parse_nozzle_vol_type(nozzle_id: str | None) -> str:
+    """Bambu nozzle IDs encode the volume class in their first two chars
+    (``HS00-0.4`` = standard, ``HH00-0.4`` = high_flow, …). Unknown → standard."""
+    if not nozzle_id:
+        return "standard"
+    prefix = nozzle_id[:2] if len(nozzle_id) >= 2 else ""
+    return _NOZZLE_PREFIX_TO_VOL_TYPE.get(prefix, "standard")
+
+
+def derive_effective_filament_id(*, spool=None, slot_tray_info_idx: str | None = None) -> str | None:
+    """Pick the filament_id used for combo lookup.
+
+    Precedence: spool's RFID-tagged ``bambu_filament_id`` → derived from
+    ``slicer_filament`` → the slot's reported ``tray_info_idx``.
+    """
+    if spool is not None:
+        bambu_id = getattr(spool, "bambu_filament_id", None)
+        if bambu_id:
+            return bambu_id
+        slicer = getattr(spool, "slicer_filament", None)
+        if slicer:
+            from backend.app.utils.filament_ids import normalize_slicer_filament
+
+            tray_info_idx, _setting_id = normalize_slicer_filament(slicer)
+            if tray_info_idx:
+                return tray_info_idx
+    return slot_tray_info_idx or None
+
+
+async def apply_active_calibration_to_slot(
+    *,
+    db: AsyncSession,
+    printer_id: int,
+    ams_id: int,
+    slot_id: int,
+    filament_id: str,
+    nozzle_diameter: float,
+    nozzle_volume_type: str = "standard",
+    extruder_id: int = 0,
+    spool_id: int | None = None,
+) -> tuple[bool, FilamentCalibration | None]:
+    """Resolve the right calibration for a slot and fire ``extrusion_cali_sel``.
+
+    Resolution chain (each step falls through to the next when no match):
+      1. Explicit ``spool_k_profile`` link when ``spool_id`` given.
+      2. Active ``filament_calibration`` row by combo
+         (``printer_id``, ``filament_id``, ``nozzle``, ``vol_type``, ``extruder``).
+
+    With a cache row in hand:
+      A. Pull stable identity (``name`` + ``pa_k_value`` + ``filament_id``).
+      B. Re-match against ``client.state.kprofiles`` to find the LIVE
+         ``cali_idx`` — the printer may have reordered since the cache row was
+         written. Stored ``cali_idx`` is a hint only.
+      C. Fire ``extrusion_cali_sel`` with the live ``cali_idx``.
+
+    Returns ``(fired, cache_row)``. ``fired=True`` iff MQTT was published.
+    Stale cache (live list lacks the profile) returns ``(False, cache_row)``
+    so the caller can decide whether to fall back.
+    """
+    if not filament_id:
+        return False, None
+
+    client = printer_manager.get_client(printer_id)
+    if not client or not client.state.connected:
+        return False, None
+
+    cache_row: FilamentCalibration | None = None
+
+    if spool_id is not None:
+        from sqlalchemy.orm import selectinload
+
+        from backend.app.models.spool_k_profile import SpoolKProfile
+
+        link_rows = (
+            (
+                await db.execute(
+                    select(SpoolKProfile)
+                    .options(selectinload(SpoolKProfile.filament_calibration))
+                    .where(
+                        SpoolKProfile.spool_id == spool_id,
+                        SpoolKProfile.printer_id == printer_id,
+                        SpoolKProfile.extruder == extruder_id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for ln in link_rows:
+            fc = ln.filament_calibration
+            if fc and abs(fc.nozzle_diameter - nozzle_diameter) < 0.05:
+                cache_row = fc
+                break
+
+    if cache_row is None:
+        cache_row = await resolve_active_calibration(
+            db=db,
+            printer_id=printer_id,
+            filament_id=filament_id,
+            nozzle_dia=nozzle_diameter,
+            nozzle_vol_type=nozzle_volume_type,
+            extruder_id=extruder_id,
+        )
+    if cache_row is None:
+        return False, None
+
+    target_k = cache_row.pa_k_value if cache_row.pa_k_value is not None else cache_row.flow_ratio
+    if target_k is None or not cache_row.name:
+        return False, cache_row
+
+    live_match = None
+    for kp in client.state.kprofiles or []:
+        try:
+            kp_k = float(kp.k_value)
+        except (TypeError, ValueError):
+            continue
+        if kp.name == cache_row.name and abs(kp_k - float(target_k)) < 1e-6 and kp.filament_id == cache_row.filament_id:
+            live_match = kp
+            break
+    if live_match is None:
+        return False, cache_row
+
+    try:
+        client.extrusion_cali_sel(
+            ams_id=ams_id,
+            tray_id=slot_id,
+            cali_idx=int(live_match.slot_id),
+            filament_id=cache_row.filament_id,
+            nozzle_diameter=str(nozzle_diameter),
+        )
+        return True, cache_row
+    except Exception as e:
+        logger.warning(
+            "apply_active_calibration_to_slot failed printer=%s ams=%s slot=%s: %s",
+            printer_id,
+            ams_id,
+            slot_id,
+            e,
+        )
+        return False, cache_row
+
+
+async def sync_printer_kprofiles_to_cache(
+    *,
+    db: AsyncSession,
+    printer_id: int,
+) -> int:
+    """Mirror the printer's live K-profile list into our cache.
+
+    Idempotent. For each entry in ``client.state.kprofiles``, find or create a
+    ``filament_calibration`` row keyed by stable identity. Refreshes the
+    cached ``cali_idx`` on existing rows (printer reorders happen).
+
+    New rows ship as ``is_active=False`` so user-managed activation stays
+    explicit (matches the m064 backfill choice).
+
+    Returns the count of rows touched (created or refreshed).
+    """
+    client = printer_manager.get_client(printer_id)
+    if not client or not client.state.connected:
+        return 0
+    live = client.state.kprofiles or []
+    if not live:
+        return 0
+
+    touched = 0
+    for kp in live:
+        try:
+            kp_k = float(kp.k_value)
+        except (TypeError, ValueError):
+            continue
+        try:
+            kp_nozzle_dia = float(kp.nozzle_diameter or 0.4)
+        except (TypeError, ValueError):
+            kp_nozzle_dia = 0.4
+        vol_type = parse_nozzle_vol_type(getattr(kp, "nozzle_id", None) or getattr(kp, "nozzle_type", None))
+        extruder_id = int(getattr(kp, "extruder_id", 0) or 0)
+        kp_filament_id = getattr(kp, "filament_id", "") or ""
+        kp_name = getattr(kp, "name", "") or f"{kp_filament_id} K={kp_k:.4f}"
+        kp_setting_id = getattr(kp, "setting_id", None)
+        try:
+            kp_slot_id = int(getattr(kp, "slot_id", -1))
+        except (TypeError, ValueError):
+            kp_slot_id = None
+
+        existing = (
+            await db.execute(
+                select(FilamentCalibration).where(
+                    FilamentCalibration.printer_id == printer_id,
+                    FilamentCalibration.filament_id == kp_filament_id,
+                    FilamentCalibration.nozzle_diameter == kp_nozzle_dia,
+                    FilamentCalibration.nozzle_volume_type == vol_type,
+                    FilamentCalibration.extruder_id == extruder_id,
+                    FilamentCalibration.name == kp_name,
+                    FilamentCalibration.pa_k_value == kp_k,
+                )
+            )
+        ).scalar_one_or_none()
+
+        if existing is None:
+            db.add(
+                FilamentCalibration(
+                    printer_id=printer_id,
+                    filament_id=kp_filament_id,
+                    filament_setting_id=kp_setting_id,
+                    nozzle_diameter=kp_nozzle_dia,
+                    nozzle_volume_type=vol_type,
+                    extruder_id=extruder_id,
+                    pa_k_value=kp_k,
+                    cali_mode="pa_line",
+                    source="printer_sync",
+                    is_active=False,
+                    cali_idx=kp_slot_id,
+                    name=kp_name,
+                )
+            )
+            touched += 1
+        else:
+            if existing.cali_idx != kp_slot_id:
+                existing.cali_idx = kp_slot_id
+                touched += 1
+    if touched:
+        await db.commit()
+    return touched

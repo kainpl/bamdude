@@ -244,10 +244,10 @@ async def test_post_auto_result(async_client, printer_factory, db_session):
 
 @pytest.mark.asyncio
 async def test_list_filament_calibrations(async_client, printer_factory, db_session):
-    await printer_factory(model="P1S")
+    printer = await printer_factory(model="P1S")
     db_session.add(
         FilamentCalibration(
-            printer_model="P1S",
+            printer_id=printer.id,
             filament_id="GFG00",
             nozzle_diameter=0.4,
             nozzle_volume_type="standard",
@@ -262,16 +262,16 @@ async def test_list_filament_calibrations(async_client, printer_factory, db_sess
     )
     await db_session.commit()
 
-    r = await async_client.get("/api/v1/filament-calibrations?printer_model=P1S")
+    r = await async_client.get(f"/api/v1/filament-calibrations?printer_id={printer.id}")
     assert r.status_code == 200
     assert len(r.json()) == 1
 
 
 @pytest.mark.asyncio
 async def test_set_active_flips_others(async_client, printer_factory, db_session):
-    await printer_factory(model="P1S")
+    printer = await printer_factory(model="P1S")
     r1 = FilamentCalibration(
-        printer_model="P1S",
+        printer_id=printer.id,
         filament_id="GFG00",
         nozzle_diameter=0.4,
         nozzle_volume_type="standard",
@@ -284,7 +284,7 @@ async def test_set_active_flips_others(async_client, printer_factory, db_session
         name="r1",
     )
     r2 = FilamentCalibration(
-        printer_model="P1S",
+        printer_id=printer.id,
         filament_id="GFG00",
         nozzle_diameter=0.4,
         nozzle_volume_type="standard",
@@ -312,9 +312,9 @@ async def test_set_active_flips_others(async_client, printer_factory, db_session
 
 @pytest.mark.asyncio
 async def test_delete_calibration(async_client, printer_factory, db_session):
-    await printer_factory(model="P1S")
+    printer = await printer_factory(model="P1S")
     row = FilamentCalibration(
-        printer_model="P1S",
+        printer_id=printer.id,
         filament_id="GFG00",
         nozzle_diameter=0.4,
         nozzle_volume_type="standard",

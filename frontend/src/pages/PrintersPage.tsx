@@ -5399,7 +5399,6 @@ function PrinterCard({
         isOpen={calibrationHistoryOpen}
         onClose={() => setCalibrationHistoryOpen(false)}
         printerId={printer.id}
-        printerModel={printer.model ?? ''}
       />
 
       {/* Link Spool Modal */}

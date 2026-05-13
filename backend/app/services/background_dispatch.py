@@ -37,6 +37,124 @@ from backend.app.services.printer_manager import printer_manager
 logger = logging.getLogger(__name__)
 
 
+async def _apply_calibrations_for_print(
+    db,
+    printer_id: int,
+    ams_mapping: list[int] | None,
+    is_calibration: bool = False,
+) -> None:
+    """Pre-print bind hook. For every AMS slot the job will use, resolve the
+    active calibration and fire ``extrusion_cali_sel``.
+
+    Closes the silent-drift gap when prints start without going through the
+    spool-link / RFID paths (queued prints, scheduled prints, manual restarts).
+    Calibration prints skip this — their wizard's ``save_result`` runs its own
+    bind. Best-effort: failures are logged, never block ``start_print``.
+    """
+    if is_calibration:
+        return
+    client = printer_manager.get_client(printer_id)
+    if not client or not client.state.connected:
+        return
+
+    from backend.app.models.spool_assignment import SpoolAssignment as SA
+    from backend.app.services.calibration_service import (
+        apply_active_calibration_to_slot,
+        derive_effective_filament_id,
+    )
+
+    state = printer_manager.get_status(printer_id)
+    if not state:
+        return
+
+    nozzle_diameter = "0.4"
+    if state.nozzles:
+        nd = state.nozzles[0].nozzle_diameter
+        if nd:
+            nozzle_diameter = nd
+    try:
+        nozzle_dia_float = float(nozzle_diameter)
+    except (TypeError, ValueError):
+        nozzle_dia_float = 0.4
+    nozzle_vt = str(getattr(state, "nozzle_volume_type", "standard") or "standard")
+
+    ams_raw = (state.raw_data or {}).get("ams", [])
+    if isinstance(ams_raw, dict):
+        ams_raw = ams_raw.get("ams", [])
+    if not isinstance(ams_raw, list):
+        return
+
+    used_global: set[int] | None = None
+    if ams_mapping is not None:
+        used_global = {int(s) for s in ams_mapping if isinstance(s, int) and s >= 0}
+
+    from sqlalchemy.orm import selectinload as _sl
+
+    for unit in ams_raw:
+        if not isinstance(unit, dict):
+            continue
+        try:
+            ams_id = int(unit.get("id", -1))
+        except (TypeError, ValueError):
+            continue
+        if ams_id < 0:
+            continue
+        for tray in unit.get("tray", []) or []:
+            if not isinstance(tray, dict):
+                continue
+            try:
+                slot_id = int(tray.get("id", -1))
+            except (TypeError, ValueError):
+                continue
+            if slot_id < 0:
+                continue
+            global_slot = ams_id * 4 + slot_id
+            if used_global is not None and global_slot not in used_global:
+                continue
+            tray_info_idx = tray.get("tray_info_idx") or ""
+
+            slot_extruder = 0
+            if state.ams_extruder_map:
+                slot_extruder = state.ams_extruder_map.get(str(ams_id)) or 0
+
+            assignment_row = (
+                await db.execute(
+                    select(SA)
+                    .options(_sl(SA.spool))
+                    .where(
+                        SA.printer_id == printer_id,
+                        SA.ams_id == ams_id,
+                        SA.tray_id == slot_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            spool = assignment_row.spool if assignment_row else None
+
+            filament_id = derive_effective_filament_id(spool=spool, slot_tray_info_idx=tray_info_idx or None)
+            if not filament_id:
+                continue
+            try:
+                await apply_active_calibration_to_slot(
+                    db=db,
+                    printer_id=printer_id,
+                    ams_id=ams_id,
+                    slot_id=slot_id,
+                    filament_id=filament_id,
+                    nozzle_diameter=nozzle_dia_float,
+                    nozzle_volume_type=nozzle_vt,
+                    extruder_id=slot_extruder,
+                    spool_id=spool.id if spool else None,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Pre-print apply failed printer=%s ams=%s slot=%s: %s",
+                    printer_id,
+                    ams_id,
+                    slot_id,
+                    e,
+                )
+
+
 class DispatchJobCancelled(Exception):
     """Raised when a dispatch job is cancelled by the user."""
 
@@ -1003,6 +1121,12 @@ class BackgroundDispatchService:
                     await db.commit()
 
                 await self._set_active_message(job, f"Starting print on {printer_name}...")
+                await _apply_calibrations_for_print(
+                    db=db,
+                    printer_id=job.printer_id,
+                    ams_mapping=job.options.get("ams_mapping"),
+                    is_calibration=bool(job.options.get("is_calibration")),
+                )
                 started = printer_manager.start_print(
                     job.printer_id,
                     remote_filename,
@@ -1483,6 +1607,12 @@ class BackgroundDispatchService:
                     await db.commit()
 
                 await self._set_active_message(job, f"Starting print on {printer_name}...")
+                await _apply_calibrations_for_print(
+                    db=db,
+                    printer_id=job.printer_id,
+                    ams_mapping=job.options.get("ams_mapping"),
+                    is_calibration=bool(job.options.get("is_calibration")),
+                )
                 started = printer_manager.start_print(
                     job.printer_id,
                     remote_filename,

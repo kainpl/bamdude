@@ -9,7 +9,6 @@ interface Props {
   isOpen: boolean;
   onClose: () => void;
   printerId: number;
-  printerModel: string;
 }
 
 function groupByNozzle<T extends { nozzle_diameter: number; nozzle_volume_type: string }>(
@@ -24,9 +23,9 @@ function groupByNozzle<T extends { nozzle_diameter: number; nozzle_volume_type: 
   return groups;
 }
 
-export function CalibrationHistoryModal({ isOpen, onClose, printerId, printerModel }: Props) {
+export function CalibrationHistoryModal({ isOpen, onClose, printerId }: Props) {
   const { t } = useTranslation();
-  const h = useCalibrationHistory(printerId, printerModel, isOpen);
+  const h = useCalibrationHistory(printerId, isOpen);
   const [refreshDia, setRefreshDia] = useState<number>(0.4);
 
   if (!isOpen) return null;

@@ -1,31 +1,44 @@
+"""Thin link table between a local spool and a printer's K-profile cache row.
+
+After m064 this is a pure link: one row per ``(spool_id, printer_id, extruder)``
+combo, with the actual K data (k_value / name / cali_idx / setting_id) living
+on :class:`FilamentCalibration`. Many spools sharing the same printer-side
+profile collapse to one ``filament_calibration`` row plus N links.
+
+Multiple rows per (spool, printer, extruder) are allowed when the user has
+calibrations for different nozzles on the same printer/extruder pair — they
+are disambiguated by joining through ``filament_calibration.nozzle_diameter``.
+"""
+
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, func
+from sqlalchemy import DateTime, ForeignKey, Integer, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
 
 
 class SpoolKProfile(Base):
-    """K-value calibration profile for a spool on a specific printer/nozzle combo."""
-
     __tablename__ = "spool_k_profile"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     spool_id: Mapped[int] = mapped_column(ForeignKey("spool.id", ondelete="CASCADE"))
     printer_id: Mapped[int] = mapped_column(ForeignKey("printers.id", ondelete="CASCADE"))
     extruder: Mapped[int] = mapped_column(Integer, default=0)  # 0 or 1 (H2D)
-    nozzle_diameter: Mapped[str] = mapped_column(String(10), default="0.4")  # "0.4", "0.6"
-    nozzle_type: Mapped[str | None] = mapped_column(String(50))
-    k_value: Mapped[float] = mapped_column(Float)  # e.g. 0.020
-    name: Mapped[str | None] = mapped_column(String(100))  # Profile display name
-    cali_idx: Mapped[int | None] = mapped_column(Integer)  # Calibration index on printer
-    setting_id: Mapped[str | None] = mapped_column(String(50))  # Full setting ID
+    filament_calibration_id: Mapped[int] = mapped_column(
+        ForeignKey("filament_calibration.id", ondelete="CASCADE"), nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     spool: Mapped["Spool"] = relationship(back_populates="k_profiles")
     printer: Mapped["Printer"] = relationship()
+    # ``lazy="selectin"`` — auto-eager-load the joined cache row so existing
+    # ``selectinload(Spool.k_profiles)`` queries return enriched rows without
+    # a chained selectinload at every call site. (Pydantic's
+    # ``SpoolKProfileResponse._enrich_from_link`` validator reads this.)
+    filament_calibration: Mapped["FilamentCalibration"] = relationship(lazy="selectin")
 
 
+from backend.app.models.filament_calibration import FilamentCalibration  # noqa: E402, F401
 from backend.app.models.printer import Printer  # noqa: E402, F401
 from backend.app.models.spool import Spool  # noqa: E402, F401

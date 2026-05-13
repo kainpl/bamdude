@@ -1,6 +1,7 @@
 from datetime import datetime
+from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class SpoolBase(BaseModel):
@@ -83,6 +84,13 @@ class SpoolUpdate(BaseModel):
 
 
 class SpoolKProfileBase(BaseModel):
+    """Wire shape for the PA tab — frontend posts (printer_id, extruder,
+    nozzle_diameter, k_value, name, cali_idx, setting_id) and the backend
+    resolves cali_idx → find-or-create a ``filament_calibration`` row, then
+    creates the link row. This shape is unchanged for backwards compat with
+    the existing UI; the data is sourced from the printer's live K-profile
+    list (``extrusion_cali_get``) at fill time."""
+
     printer_id: int
     extruder: int = 0
     nozzle_diameter: str = "0.4"
@@ -93,13 +101,53 @@ class SpoolKProfileBase(BaseModel):
     setting_id: str | None = None
 
 
-class SpoolKProfileResponse(SpoolKProfileBase):
+class SpoolKProfileResponse(BaseModel):
+    """Response shape for the PA tab — same fields as the input, plus link
+    bookkeeping. The link row stores only ``filament_calibration_id`` after
+    m064; this validator pulls k_value/name/etc. off the joined cache row
+    so every existing caller building this from ORM (`from_attributes`) keeps
+    working unchanged."""
+
     id: int
     spool_id: int
+    printer_id: int
+    extruder: int = 0
+    nozzle_diameter: str = "0.4"
+    nozzle_type: str | None = None
+    k_value: float | None = None
+    name: str | None = None
+    cali_idx: int | None = None
+    setting_id: str | None = None
     created_at: datetime
 
     class Config:
         from_attributes = True
+
+    @model_validator(mode="before")
+    @classmethod
+    def _enrich_from_link(cls, data: Any) -> Any:
+        # Only enrich ORM-row inputs (from_attributes path). Dict / Pydantic
+        # objects coming over the wire are already fully shaped.
+        if isinstance(data, dict):
+            return data
+        fc = getattr(data, "filament_calibration", None)
+        if fc is None:
+            return data
+        # Build a dict that pydantic will validate. Pull link-side fields
+        # first, then layer filament_calibration values on top.
+        return {
+            "id": getattr(data, "id", None),
+            "spool_id": getattr(data, "spool_id", None) or getattr(data, "spoolman_spool_id", None),
+            "printer_id": getattr(data, "printer_id", None),
+            "extruder": getattr(data, "extruder", 0),
+            "created_at": getattr(data, "created_at", None),
+            "nozzle_diameter": str(fc.nozzle_diameter) if fc.nozzle_diameter is not None else "0.4",
+            "nozzle_type": fc.nozzle_volume_type,
+            "k_value": fc.pa_k_value if fc.pa_k_value is not None else fc.flow_ratio,
+            "name": fc.name,
+            "cali_idx": fc.cali_idx,
+            "setting_id": fc.filament_setting_id,
+        }
 
 
 class SpoolResponse(SpoolBase):

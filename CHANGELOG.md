@@ -8,6 +8,26 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **K-profiles now bind on every print start.** Before any queued / scheduled / manually-dispatched print, BamDude resolves the active calibration for each used AMS slot and fires `extrusion_cali_sel` against the printer's LIVE `cali_idx` (re-matched by stable identity, not by the cached number — the printer reorders slots when you delete a neighbour). Closes the silent-drift gap where the firmware would fall back to the default profile after RFID re-taps, slot reassignments, or restarts while your `SpoolAssignment` row was intact. The same helper now powers the post-RFID-refresh path, the tray-tag drift detect, the auto-spool tagger, and both inventory + Spoolman slot-assign endpoints — six call sites collapsed onto one.
+
+- **Calibration cache moved to per-printer-instance.** `filament_calibration` rows are keyed by `printer_id` (m063), not `printer_model`. Two X1Cs in the same farm can carry different K values for the same material without stepping on each other. The history modal's BamDude side now lists rows for that specific printer.
+
+- **Calibration cache mirrors the printer's live K-profile table.** Whenever BamDude reads `extrusion_cali_get` (manage dialog, save-result round-trip, apply-path cache miss) it syncs every visible profile into `filament_calibration` keyed by stable identity (`filament_id` + `name` + `pa_k_value`). New rows arrive `is_active=false` — you still explicitly promote one row per `(material, nozzle, extruder)` combo from the History modal; nothing auto-activates behind your back.
+
+- **K-profile notes survive printer restarts.** Notes are re-keyed to BamDude's own stable `filament_calibration.id` (m065). The old `setting_id` keying drifted across restarts and silently re-attached notes to the wrong profile (or to none). Existing notes are cleared as part of this migration — they were already unreliable and a clean slate beats fuzzy recovery.
+
+- **Spool ↔ K-profile links are now thin link rows.** `spool_k_profile` + `spoolman_k_profile` (m064) drop their copy of `k_value` / `name` / `cali_idx` / `setting_id` / `nozzle_type` / `nozzle_diameter` in favour of a single `filament_calibration_id` FK. One hundred generic-PETG spools that share the same calibration collapse to one cache row plus 100 links instead of 100 duplicated K rows. The PA tab UI is unchanged — the find-or-create runs on the backend.
+
+### Fixed
+
+- **Single-external slot (one bay AMS / direct-feed printers) now binds K-profiles correctly.** External tray ID was using `254`; it must be `255` per Bambu Studio's `VIRTUAL_TRAY_MAIN_ID`. With `254` the printer silently dropped every `extrusion_cali_sel` aimed at the single-external slot.
+
+- **Printer K-profile row listing on dual-extruder machines.** The handler was reading a non-existent `kp.extruder_id` attribute (correct field is `kp.extruder`); the extruder column showed empty for every row.
+
+- **MANUAL PA wizard finalization now captures the printer's assigned `cali_idx`.** When the wizard saves its result we round-trip `extrusion_cali_get` and stash the live slot index on the cache row, so the very next print binds without waiting for the printer to push an unprompted update.
+
 ### Added
 
 - **AMS Settings dialog (Bambu Studio parity).** Gear icon in the AMS panel header opens a per-printer modal. Toggle insertion / power-on RFID auto-read, remaining-capacity estimation, AMS filament backup, air-print detection (A1 series only). Calibrate an AMS unit (`M620 C<id>`). Switch A1 firmware between LITE and FULL. Reset connected-AMS ID sequence (H2D). All visibility gated per printer model — only the rows your printer actually supports show up. Backend gated by `printers:update`; every applied change recorded in the new `ams_setting_audit` table for forensic trace (migration m060). Strings sourced verbatim from BS source + Ukrainian translations from BS .po (some msgstr are still empty upstream — those remain English with `// TBD-uk` markers in the locale file).

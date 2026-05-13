@@ -92,7 +92,7 @@ class FilamentCalibrationOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
-    printer_model: str
+    printer_id: int
     filament_id: str
     filament_setting_id: str | None
     nozzle_diameter: float
