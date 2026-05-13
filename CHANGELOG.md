@@ -10,6 +10,16 @@ All notable changes to BamDude will be documented in this file.
 
 ---
 
+## [0.4.5b2] - 2026-05-13
+
+Hotfix on top of 0.4.5b1. Image: `ghcr.io/kainpl/bamdude:0.4.5b2` / `kainpl/bamdude:0.4.5b2`. Pin the exact tag — `:latest` still tracks 0.4.4.1.
+
+### Fixed
+
+- **Fresh installs of 0.4.5b1 failed to boot with `no such column: printer_model`.** `Base.metadata.create_all()` (which runs before the migration chain) creates `filament_calibration` in its post-m063 shape on a brand-new DB — m062 then tries `CREATE INDEX ON filament_calibration(printer_model, ...)` and SQLite raises. Existing installs (where m062 originally created the table with `printer_model`) were unaffected since the column was still there at that point in the chain. m062's two index-create statements are now guarded by `column_exists(printer_model)` — they no-op on fresh installs and m063 lays down the post-rename indexes a moment later. Same shape verified against m063 / m064 / m065 (already idempotent).
+
+---
+
 ## [0.4.5b1] - 2026-05-13
 
 First beta of the 0.4.5 cycle — a focused Filament Calibration / K-profile pass plus two adjacent dialog ports (AMS Settings, Printer Settings) from Bambu Studio. Image: `ghcr.io/kainpl/bamdude:0.4.5b1` / `kainpl/bamdude:0.4.5b1`. Pin the exact tag — `:latest` still tracks 0.4.4.1.
