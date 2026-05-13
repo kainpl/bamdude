@@ -21,7 +21,7 @@ Idempotent: CREATE TABLE IF NOT EXISTS + add_column helpers.
 from sqlalchemy import text
 
 from backend.app.core.db_dialect import is_postgres
-from backend.app.migrations.helpers import add_column, table_exists
+from backend.app.migrations.helpers import add_column, column_exists, table_exists
 
 version = 62
 name = "filament_calibration"
@@ -91,36 +91,43 @@ async def upgrade(conn):
                 )
             )
 
-    await conn.execute(
-        text(
-            "CREATE INDEX IF NOT EXISTS ix_filament_cali_lookup "
-            "ON filament_calibration(printer_model, filament_id, nozzle_diameter, nozzle_volume_type, extruder_id)"
+    # The lookup + partial-unique indexes below key on ``printer_model`` —
+    # the original m062 column. m063 supersedes that index with one keyed on
+    # ``printer_id``. On a FRESH install ``Base.metadata.create_all()`` creates
+    # ``filament_calibration`` with the post-m063 shape (no ``printer_model``);
+    # creating these old indexes would fail with "no such column". Skip them
+    # in that case — m063 lays down the post-rename versions next and the
+    # net result is identical.
+    if await column_exists(conn, "filament_calibration", "printer_model"):
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_filament_cali_lookup "
+                "ON filament_calibration(printer_model, filament_id, nozzle_diameter, nozzle_volume_type, extruder_id)"
+            )
         )
-    )
 
-    # Partial unique index — only one is_active row per combo
-    if is_postgres():
-        await conn.execute(
-            text(
-                """
-                CREATE UNIQUE INDEX IF NOT EXISTS ux_filament_cali_active
-                ON filament_calibration
-                  (printer_model, filament_id, nozzle_diameter, nozzle_volume_type, extruder_id)
-                WHERE is_active = TRUE
-                """
+        if is_postgres():
+            await conn.execute(
+                text(
+                    """
+                    CREATE UNIQUE INDEX IF NOT EXISTS ux_filament_cali_active
+                    ON filament_calibration
+                      (printer_model, filament_id, nozzle_diameter, nozzle_volume_type, extruder_id)
+                    WHERE is_active = TRUE
+                    """
+                )
             )
-        )
-    else:
-        await conn.execute(
-            text(
-                """
-                CREATE UNIQUE INDEX IF NOT EXISTS ux_filament_cali_active
-                ON filament_calibration
-                  (printer_model, filament_id, nozzle_diameter, nozzle_volume_type, extruder_id)
-                WHERE is_active = 1
-                """
+        else:
+            await conn.execute(
+                text(
+                    """
+                    CREATE UNIQUE INDEX IF NOT EXISTS ux_filament_cali_active
+                    ON filament_calibration
+                      (printer_model, filament_id, nozzle_diameter, nozzle_volume_type, extruder_id)
+                    WHERE is_active = 1
+                    """
+                )
             )
-        )
 
     # --- 2. calibration_session ----------------------------------------
     if not await table_exists(conn, "calibration_session"):
