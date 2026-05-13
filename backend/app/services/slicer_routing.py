@@ -97,9 +97,24 @@ async def any_sidecar_online(db: AsyncSession) -> bool:
     a connected sidecar for the Wave 2 slicing pipeline. Result cached
     30 s module-wide to keep the wizard's capability poll off the wire.
 
-    Returns False on any failure (network, non-2xx, unconfigured URL) —
-    "available" must be unambiguously true, never best-guess.
+    Honours the ``use_slicer_api`` master toggle — when the operator turns
+    that off in Settings, BamDude pretends no sidecar exists even if a
+    reachable URL is configured (matches the rest of the app: SliceModal
+    et al. hide their slicer UI behind the same flag). The toggle check
+    runs *before* the cache so flipping the switch in Settings shows up
+    in the wizard immediately rather than after the 30 s TTL.
+
+    Returns False on any failure (toggle off, network, non-2xx,
+    unconfigured URL) — "available" must be unambiguously true, never
+    best-guess.
     """
+    from backend.app.api.routes.settings import get_setting
+
+    use_api = await get_setting(db, "use_slicer_api")
+    # SettingsService stores bools as JSON strings; treat unset / falsy as off.
+    if str(use_api or "").lower() not in ("true", "1", "yes"):
+        return False
+
     global _any_sidecar_cache
     now = time.monotonic()
     if _any_sidecar_cache and (now - _any_sidecar_cache[0]) < _ANY_SIDECAR_TTL_SECONDS:

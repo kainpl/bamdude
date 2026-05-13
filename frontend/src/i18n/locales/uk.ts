@@ -4137,10 +4137,6 @@ export default {
       retractionTower: 'Retraction Вежа',
       retractionTowerDesc: 'Сходинки retraction-довжини щоб знайти мінімум без stringing.',
       notSupported: 'Не підтримується на цьому принтері',
-      requiresSlicer: 'Потрібен слайсер-сайдкар',
-      slicerBannerTitle: 'STL-режими вимкнуто',
-      slicerBannerBody:
-        'PA Line, PA Tower і вежі Temperature / Volumetric Speed / VFA / Retraction потребують підключеного слайсер-сайдкара (OrcaSlicer або Bambu Studio), щоб нарізати тестову геометрію під твій активний філаментний пресет. Налаштуй у Settings → Профілі → Slicer API, щоб увімкнути ці режими. PA Pattern, Flow Rate і Auto-режими працюють з коробки.',
     },
     autoSave: {
       heading: 'Перегляд результатів авто-калібровки',

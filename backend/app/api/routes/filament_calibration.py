@@ -40,7 +40,6 @@ from backend.app.services.calibration_service import (
 )
 from backend.app.services.printer_capabilities import compute_calibration_supports
 from backend.app.services.printer_manager import printer_manager
-from backend.app.services.slicer_routing import any_sidecar_online
 
 router = APIRouter(tags=["filament-calibration"])
 _service = CalibrationService()
@@ -93,14 +92,8 @@ async def get_capabilities(
     client = printer_manager.get_client(printer_id)
     if not client or not client.state.connected:
         raise HTTPException(404, "Printer not online")
-    sidecar_ok = await any_sidecar_online(db)
     return CalibCapabilities(
-        **compute_calibration_supports(
-            client.state,
-            printer.model,
-            getattr(client, "module_vers", {}),
-            slicer_sidecar_available=sidecar_ok,
-        )
+        **compute_calibration_supports(client.state, printer.model, getattr(client, "module_vers", {}))
     )
 
 

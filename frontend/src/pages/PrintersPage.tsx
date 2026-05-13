@@ -1374,6 +1374,7 @@ function PrinterCard({
   cameraViewMode = 'window',
   onOpenEmbeddedCamera,
   checkPrinterFirmware = true,
+  useSlicerApi = false,
   dryingPresets = DRYING_PRESETS,
   isSelected = false,
   onSelect,
@@ -1408,6 +1409,11 @@ function PrinterCard({
   cameraViewMode?: 'window' | 'embedded';
   onOpenEmbeddedCamera?: (printerId: number, printerName: string) => void;
   checkPrinterFirmware?: boolean;
+  // Master "Server-side slicing" toggle from Settings. When off, the Filament
+  // Calibration and Calibration History kebab entries are hidden — every
+  // calibration mode in this app needs the slicer pipeline (BS does the same
+  // — even PA Pattern + Flow Rate load geometry then run full slicing).
+  useSlicerApi?: boolean;
   dryingPresets?: Record<string, { n3f: number; n3s: number; n3f_hours: number; n3s_hours: number }>;
   isSelected?: boolean;
   // Modifier-aware select handler — receives the raw MouseEvent so the
@@ -2591,32 +2597,36 @@ function PrinterCard({
                     <Settings className="w-4 h-4" />
                     {t('printerSettings.menuItem')}
                   </button>
-                  <button
-                    className={`w-full px-4 py-2 text-left text-sm hover:bg-bambu-dark-tertiary flex items-center gap-2 ${
-                      !hasPermission('printers:update') ? 'opacity-50 cursor-not-allowed' : ''
-                    }`}
-                    onClick={() => {
-                      if (!hasPermission('printers:update')) return;
-                      setFilamentCaliOpen(true);
-                      setShowMenu(false);
-                    }}
-                  >
-                    <Droplet className="w-4 h-4" />
-                    {t('filamentCali.menuItem')}
-                  </button>
-                  <button
-                    className={`w-full px-4 py-2 text-left text-sm hover:bg-bambu-dark-tertiary flex items-center gap-2 ${
-                      !hasPermission('printers:update') ? 'opacity-50 cursor-not-allowed' : ''
-                    }`}
-                    onClick={() => {
-                      if (!hasPermission('printers:update')) return;
-                      setCalibrationHistoryOpen(true);
-                      setShowMenu(false);
-                    }}
-                  >
-                    <Droplet className="w-4 h-4" />
-                    {t('filamentCali.history.menuItem')}
-                  </button>
+                  {useSlicerApi && (
+                    <>
+                      <button
+                        className={`w-full px-4 py-2 text-left text-sm hover:bg-bambu-dark-tertiary flex items-center gap-2 ${
+                          !hasPermission('printers:update') ? 'opacity-50 cursor-not-allowed' : ''
+                        }`}
+                        onClick={() => {
+                          if (!hasPermission('printers:update')) return;
+                          setFilamentCaliOpen(true);
+                          setShowMenu(false);
+                        }}
+                      >
+                        <Droplet className="w-4 h-4" />
+                        {t('filamentCali.menuItem')}
+                      </button>
+                      <button
+                        className={`w-full px-4 py-2 text-left text-sm hover:bg-bambu-dark-tertiary flex items-center gap-2 ${
+                          !hasPermission('printers:update') ? 'opacity-50 cursor-not-allowed' : ''
+                        }`}
+                        onClick={() => {
+                          if (!hasPermission('printers:update')) return;
+                          setCalibrationHistoryOpen(true);
+                          setShowMenu(false);
+                        }}
+                      >
+                        <Droplet className="w-4 h-4" />
+                        {t('filamentCali.history.menuItem')}
+                      </button>
+                    </>
+                  )}
                   {hasMatchingMacros && (
                     <button
                       className={`w-full px-4 py-2 text-left text-sm hover:bg-bambu-dark-tertiary flex items-center gap-2 ${
@@ -7869,6 +7879,7 @@ export function PrintersPage() {
                     cameraViewMode={settings?.camera_view_mode || 'window'}
                     onOpenEmbeddedCamera={(id, name) => setEmbeddedCameraPrinters(prev => new Map(prev).set(id, { id, name }))}
                     checkPrinterFirmware={settings?.check_printer_firmware !== false}
+                    useSlicerApi={settings?.use_slicer_api ?? false}
                     dryingPresets={effectiveDryingPresets}
                     isSelected={selectedPrinterIds.has(printer.id)}
                     onSelect={handleSelectPrinter}
@@ -7912,6 +7923,7 @@ export function PrintersPage() {
               cameraViewMode={settings?.camera_view_mode || 'window'}
               onOpenEmbeddedCamera={(id, name) => setEmbeddedCameraPrinters(prev => new Map(prev).set(id, { id, name }))}
               checkPrinterFirmware={settings?.check_printer_firmware !== false}
+              useSlicerApi={settings?.use_slicer_api ?? false}
               dryingPresets={effectiveDryingPresets}
               isSelected={selectedPrinterIds.has(printer.id)}
               onSelect={handleSelectPrinter}
@@ -8036,6 +8048,7 @@ export function PrintersPage() {
                 cameraViewMode={settings?.camera_view_mode || 'window'}
                 onOpenEmbeddedCamera={(id, name) => setEmbeddedCameraPrinters(prev => new Map(prev).set(id, { id, name }))}
                 checkPrinterFirmware={settings?.check_printer_firmware !== false}
+                useSlicerApi={settings?.use_slicer_api ?? false}
                 dryingPresets={effectiveDryingPresets}
                 isSelected={selectedPrinterIds.has(expandedPrinter.id)}
                 onSelect={handleSelectPrinter}

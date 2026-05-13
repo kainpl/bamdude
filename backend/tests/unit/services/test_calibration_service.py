@@ -47,23 +47,20 @@ def mock_client():
 # ---------- Asset resolver ----------
 
 
-def test_resolve_asset_pa_pattern_is_ready_3mf():
-    """PA Pattern ships as a pre-sliced 3MF — no slicer needed."""
+def test_resolve_asset_pa_pattern():
+    """PA Pattern uses BS pa_pattern.3mf as scaffold (then sliced under
+    user's filament profile by the W2 slicer pipeline)."""
     asset = resolve_asset(CaliMode.PA_PATTERN)
     assert asset.path.name == "pa_pattern.3mf"
     assert asset.kind == "3mf"
-    assert asset.requires_slicing is False
-    assert asset.path.exists(), "BS-mirrored asset should be present in repo"
+    assert asset.path.exists()
 
 
 def test_resolve_asset_flow_pass1_and_pass2():
-    """Flow Rate uses two pre-sliced 3MFs (coarse + fine refinement)."""
     p1 = resolve_asset(CaliMode.FLOW_RATE, pass_n=1)
     p2 = resolve_asset(CaliMode.FLOW_RATE, pass_n=2)
     assert p1.path.name == "flowrate-test-pass1.3mf"
     assert p2.path.name == "flowrate-test-pass2.3mf"
-    assert p1.requires_slicing is False
-    assert p2.requires_slicing is False
 
 
 def test_resolve_asset_auto_pa_single_vs_dual():
@@ -71,37 +68,21 @@ def test_resolve_asset_auto_pa_single_vs_dual():
     dual = resolve_asset(CaliMode.AUTO_PA_LINE, extruder_count=2)
     assert single.path.name == "auto_pa_line_single.3mf"
     assert dual.path.name == "auto_pa_line_dual.3mf"
-    assert single.requires_slicing is False
-    assert dual.requires_slicing is False
 
 
-def test_resolve_asset_pa_line_requires_slicing():
-    """PA Line (and PA Tower) ship as STLs from BS — slicer pipeline needed."""
-    asset = resolve_asset(CaliMode.PA_LINE)
-    assert asset.kind == "stl"
-    assert asset.requires_slicing is True
-    assert asset.path.exists()
-
-
-def test_resolve_asset_tower_modes_require_slicing():
+def test_resolve_asset_stl_modes_exist():
+    """STL/STEP scaffold geometry is mirrored verbatim from BS resources/calib/."""
     for mode in (
+        CaliMode.PA_LINE,
         CaliMode.PA_TOWER,
         CaliMode.TEMP_TOWER,
         CaliMode.VFA_TOWER,
         CaliMode.RETRACTION_TOWER,
+        CaliMode.VOL_SPEED_TOWER,
     ):
         asset = resolve_asset(mode)
-        assert asset.kind == "stl", f"{mode}: expected STL"
-        assert asset.requires_slicing is True, f"{mode}: should require slicing"
+        assert asset.kind in ("stl", "step"), f"{mode}: expected STL/STEP"
         assert asset.path.exists(), f"{mode}: BS asset should be mirrored"
-
-
-def test_resolve_asset_vol_speed_is_step():
-    """VolSpeed ships as a STEP file from BS — needs slicing (and step→mesh)."""
-    asset = resolve_asset(CaliMode.VOL_SPEED_TOWER)
-    assert asset.path.name == "SpeedTestStructure.step"
-    assert asset.kind == "step"
-    assert asset.requires_slicing is True
 
 
 # ---------- start_calibration ----------
@@ -249,7 +230,7 @@ async def test_start_calibration_manual_enqueues_print(
     printer = await printer_factory(model="P1S")
     fake_asset_path = tmp_path / "pa_pattern.3mf"
     fake_asset_path.write_bytes(b"PK\x03\x04fake3mf")
-    fake_asset = CalibAsset(path=fake_asset_path, kind="3mf", requires_slicing=False)
+    fake_asset = CalibAsset(path=fake_asset_path, kind="3mf")
 
     with (
         patch("backend.app.services.calibration_service.printer_manager") as pm,
@@ -257,6 +238,7 @@ async def test_start_calibration_manual_enqueues_print(
             "backend.app.services.calibration_service.resolve_asset",
             return_value=fake_asset,
         ),
+        patch("backend.app.services.slicer_routing.any_sidecar_online", new=AsyncMock(return_value=True)),
         patch(
             "backend.app.services.background_dispatch.enqueue_calibration_print", new=AsyncMock(return_value=42)
         ) as enq,
@@ -279,23 +261,26 @@ async def test_start_calibration_manual_enqueues_print(
 
 
 @pytest.mark.asyncio
-async def test_start_calibration_manual_rejects_stl_mode_without_sidecar(
+async def test_start_calibration_manual_rejects_without_sidecar(
     service,
     db_session,
     printer_factory,
     mock_client,
 ):
-    """PA Line / Tower modes require slicing — must raise until W2 lands."""
+    """All manual modes need slicing → reject when sidecar is offline."""
     from backend.app.services.calibration_service import SlicerSidecarRequiredError
 
     printer = await printer_factory(model="P1S")
-    with patch("backend.app.services.calibration_service.printer_manager") as pm:
+    with (
+        patch("backend.app.services.calibration_service.printer_manager") as pm,
+        patch("backend.app.services.slicer_routing.any_sidecar_online", new=AsyncMock(return_value=False)),
+    ):
         pm.get_client.return_value = mock_client
         with pytest.raises(SlicerSidecarRequiredError):
             await service.start_calibration(
                 db=db_session,
                 printer_id=printer.id,
-                cali_mode=CaliMode.PA_LINE,
+                cali_mode=CaliMode.PA_PATTERN,
                 method=CaliMethod.MANUAL,
                 nozzle_diameter=0.4,
                 nozzle_volume_type="standard",

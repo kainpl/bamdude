@@ -91,29 +91,29 @@ async def broadcast_calibration_event(*, printer_id: int, event: str, payload: d
 
 
 # Calibration asset map — real Bambu Studio filenames mirrored under
-# ``backend/app/data/calib_assets/``. Each entry: (relative_path, kind,
-# requires_slicing). BS ships one geometry per mode; diameter is applied
-# at slice time for STL/STEP assets (Wave 2 — slicer-sidecar pipeline).
-_MODE_TO_ASSET: dict[CaliMode, tuple[str, str, bool]] = {
-    # Pre-sliced 3MFs — ship straight to printer, no slicer required.
-    CaliMode.PA_PATTERN: ("pressure_advance/pa_pattern.3mf", "3mf", False),
-    # STL — need a slicer sidecar to inject the active filament profile + per-mode g-code.
-    CaliMode.PA_LINE: ("pressure_advance/tower_with_seam.stl", "stl", True),
-    CaliMode.PA_TOWER: ("pressure_advance/tower.stl", "stl", True),
-    CaliMode.TEMP_TOWER: ("temperature_tower/temperature_tower.stl", "stl", True),
-    CaliMode.VFA_TOWER: ("vfa/VFA.stl", "stl", True),
-    CaliMode.RETRACTION_TOWER: ("retraction/retraction_tower.stl", "stl", True),
-    CaliMode.VOL_SPEED_TOWER: ("volumetric_speed/SpeedTestStructure.step", "step", True),
+# ``backend/app/data/calib_assets/``. Each entry: (relative_path, kind).
+# Every manual mode in BS — including PA Pattern, PA Tower, Flow Rate,
+# Auto PA — loads its geometry as a scaffold then runs full slicing with
+# the active filament profile (custom per-object overrides + per-mode
+# g-code injection). None of these ship as ready-to-print 3MFs.
+_MODE_TO_ASSET: dict[CaliMode, tuple[str, str]] = {
+    CaliMode.PA_PATTERN: ("pressure_advance/pa_pattern.3mf", "3mf"),
+    CaliMode.PA_LINE: ("pressure_advance/pressure_advance_test.stl", "stl"),
+    CaliMode.PA_TOWER: ("pressure_advance/tower.stl", "stl"),
+    CaliMode.TEMP_TOWER: ("temperature_tower/temperature_tower.stl", "stl"),
+    CaliMode.VFA_TOWER: ("vfa/VFA.stl", "stl"),
+    CaliMode.RETRACTION_TOWER: ("retraction/retraction_tower.stl", "stl"),
+    CaliMode.VOL_SPEED_TOWER: ("volumetric_speed/SpeedTestStructure.step", "step"),
 }
 
 
 @dataclass(frozen=True)
 class CalibAsset:
-    """Geometry + slicing hint for one calibration mode."""
+    """Scaffold geometry for one calibration mode — slicing is applied at
+    enqueue time (Wave 2 slicer-sidecar pipeline)."""
 
     path: Path
     kind: str  # "3mf" | "stl" | "step"
-    requires_slicing: bool
 
 
 def resolve_asset(cali_mode: CaliMode, *, extruder_count: int = 1, pass_n: int = 1) -> CalibAsset:
@@ -125,16 +125,16 @@ def resolve_asset(cali_mode: CaliMode, *, extruder_count: int = 1, pass_n: int =
     """
     if cali_mode == CaliMode.AUTO_PA_LINE:
         fname = "auto_pa_line_dual.3mf" if extruder_count >= 2 else "auto_pa_line_single.3mf"
-        return CalibAsset(ASSET_ROOT / "pressure_advance" / fname, "3mf", False)
+        return CalibAsset(ASSET_ROOT / "pressure_advance" / fname, "3mf")
     if cali_mode == CaliMode.FLOW_RATE:
         fname = "flowrate-test-pass2.3mf" if pass_n == 2 else "flowrate-test-pass1.3mf"
-        return CalibAsset(ASSET_ROOT / "filament_flow" / fname, "3mf", False)
+        return CalibAsset(ASSET_ROOT / "filament_flow" / fname, "3mf")
 
     mapping = _MODE_TO_ASSET.get(cali_mode)
     if mapping is None:
         raise ValueError(f"No asset mapping for cali_mode: {cali_mode}")
-    rel_path, kind, requires_slicing = mapping
-    return CalibAsset(ASSET_ROOT / rel_path, kind, requires_slicing)
+    rel_path, kind = mapping
+    return CalibAsset(ASSET_ROOT / rel_path, kind)
 
 
 @dataclass
@@ -254,17 +254,26 @@ class CalibrationService:
                 raise ValueError("MQTT publish failed")
         else:
             # MANUAL path: resolve geometry asset → enqueue as is_calibration print.
-            # STL/STEP-based modes need slicing through a connected sidecar — Wave 2
-            # of the calibration pipeline. Reject explicitly until that lands so
-            # the wizard surfaces a clear "not implemented yet" instead of a
-            # confusing "MQTT publish failed" further down the chain.
+            # Every manual calibration mode in BS — including PA Pattern and
+            # Flow Rate that we used to think were "pre-sliced 3MFs" — loads
+            # geometry then runs full slicing with the active filament profile
+            # (BS Plater.cpp::calib_flowrate / _calib_pa_pattern,
+            # CalibUtils.cpp PA / auto-PA paths). Until our Wave 2 slicer-
+            # sidecar pipeline lands, all manual modes need a sidecar; the
+            # entry points are hidden in the UI when ``use_slicer_api`` is off
+            # in Settings, and this server-side guard rejects direct API
+            # calls slipping through.
             from backend.app.services import background_dispatch  # late import to dodge cycle
+            from backend.app.services.slicer_routing import any_sidecar_online
+
+            if not await any_sidecar_online(db):
+                raise SlicerSidecarRequiredError(
+                    "Manual calibration requires a connected slicer sidecar; enable "
+                    "'Server-side slicing' under Settings → General → General and configure "
+                    "an OrcaSlicer / Bambu Studio API URL."
+                )
 
             asset = resolve_asset(cali_mode, pass_n=1)
-            if asset.requires_slicing:
-                raise SlicerSidecarRequiredError(
-                    f"{cali_mode.value} requires a slicer sidecar — Wave 2 of the calibration pipeline."
-                )
             if not asset.path.exists():
                 raise ValueError(f"calibration asset not available: {asset.path.name}")
             if not filaments:

@@ -10,11 +10,11 @@ All notable changes to BamDude will be documented in this file.
 
 ### Added
 
-- **Bambu Studio calibration assets mirrored into the repo.** `backend/app/data/calib_assets/` now ships with the 12 files BS uses for its own calibration wizard (5 pre-sliced 3MFs + 6 STLs + 1 STEP) — all mirrored verbatim from BS `resources/calib/` with full AGPL-3.0 attribution in `LICENSE.md`. **PA Pattern, Flow Rate (both passes), and Auto PA (single + dual) now work out of the box** — no copy-from-BS step on install.
+- **Bambu Studio calibration assets mirrored into the repo.** `backend/app/data/calib_assets/` ships with the 12 files BS uses for its own calibration wizard (3MFs / STLs / STEP) — all mirrored verbatim from BS `resources/calib/` with full AGPL-3.0 attribution in `LICENSE.md`. They're scaffold geometry: BS itself runs full slicing against the active filament profile through `Plater::calib_*` / `CalibUtils::*` for every mode (including the ones we initially thought were "pre-sliced"), so the slicing step is unavoidable. Wave 2 of the calibration roadmap wires our slicer sidecar to consume these scaffolds.
 
 ### Changed
 
-- **Calibration wizard mode gating split by geometry kind.** PA Pattern, Flow Rate, and the Auto paths ship as pre-sliced 3MFs and run unconditionally. PA Line, PA Tower, and the four manual towers (Temperature / Volumetric Speed / VFA / Retraction) use STL/STEP geometry that needs slicing against the active filament profile — these are now gated on a new `slicer_sidecar_available` capability flag (any of OrcaSlicer / Bambu Studio `/health` reachable in the last 30s). When no sidecar is connected the wizard disables those rows with an amber banner pointing at Settings → Slicer API; server-side `start_calibration` returns `409 {detail: "slicer_sidecar_required"}` for gated modes. The actual slicing pipeline lands in Wave 2 of the calibration roadmap — the gating is in place so modes light up automatically once it ships. `resolve_asset_path()` → `resolve_asset()` returns a `CalibAsset(path, kind, requires_slicing)` triple for callers to branch on.
+- **Filament Calibration + History kebab entries gated on the "Server-side slicing" master toggle.** When `use_slicer_api` is off in Settings → General → General, both entries are hidden on every printer card — every calibration mode (including PA Pattern, Flow Rate, Auto PA / Auto Flow Rate) needs the slicer pipeline once you cross the BS-parity threshold, so showing entry points that can't function would be misleading. Direct API calls slipping through hit a server-side 409 `{detail: "slicer_sidecar_required"}` from `start_calibration`. `resolve_asset_path()` → `resolve_asset()` returns a `CalibAsset(path, kind)` pair pointing at the BS-mirrored scaffold.
 
 ---
 

@@ -108,35 +108,34 @@ def compute_calibration_supports(
     state: PrinterState,
     printer_model: str | None,
     module_vers: dict,
-    *,
-    slicer_sidecar_available: bool = False,
 ) -> dict:
     """Per-model capability matrix for Filament Calibration wizard.
 
     auto_* gates: model must have lidar AND the printer state must report
-    support flag. ``pa_manual`` (PA Pattern) + ``flow_manual`` (Flow Rate)
-    ship as pre-sliced 3MFs — always available. Other manual / tower modes
-    use STL/STEP geometry that needs slicing through a connected sidecar,
-    so they gate on ``slicer_sidecar_available``. Dual-extruder for H2D
-    family.
+    support flag. Manual paths universally available. Tower modes universal
+    (just a print). Dual-extruder for H2D family.
+
+    Slicer-sidecar availability is checked at the *entry-point* layer
+    (Filament Calibration kebab entries are hidden when ``use_slicer_api``
+    is off in Settings) and again server-side in
+    ``CalibrationService.start_calibration`` for the manual / tower paths
+    — all of which need slicing once the W2 pipeline lands. No per-mode
+    gating here because the entire wizard surface is gated upstream.
     """
     m = _norm(printer_model)
     has_lidar = m in _LIDAR_MODELS
 
     return {
-        # Pre-sliced 3MF — always on
-        "pa_manual": True,  # PA Pattern (BS pa_pattern.3mf)
-        "flow_manual": True,  # Flow Rate (BS flowrate-test-pass1.3mf + pass2.3mf)
-        # STL/STEP geometry — slicer sidecar required (Wave 2 of the calibration pipeline)
-        "temp_tower": slicer_sidecar_available,
-        "vol_speed_tower": slicer_sidecar_available,
-        "vfa_tower": slicer_sidecar_available,
-        "retraction_tower": slicer_sidecar_available,
-        # Auto paths (lidar + push flag) — printer-side, no asset needed
+        # Manual paths
+        "pa_manual": True,
+        "flow_manual": True,
+        "temp_tower": True,
+        "vol_speed_tower": True,
+        "vfa_tower": True,
+        "retraction_tower": True,
+        # Auto paths (lidar + push flag) — printer-side, no asset / slice needed
         "pa_auto": has_lidar and bool(getattr(state, "is_support_pa_calibration", False)),
         "flow_auto": has_lidar and bool(getattr(state, "is_support_auto_flow_calibration", False)),
-        # Forwarded for UI tooltip ("STL modes need a connected slicer sidecar")
-        "slicer_sidecar_available": slicer_sidecar_available,
         # Layout
         "dual_extruder": m in _DUAL_EXTRUDER_MODELS,
         "extruders": _list_extruders(m),

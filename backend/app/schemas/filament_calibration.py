@@ -33,12 +33,6 @@ class CalibCapabilities(BaseModel):
     retraction_tower: bool
     pa_auto: bool
     flow_auto: bool
-    # When False, the STL/STEP-based modes (temp_tower / vol_speed_tower /
-    # vfa_tower / retraction_tower / future PA Line + PA Tower) are disabled
-    # in the wizard with a "Configure a slicer sidecar" tooltip. UI uses
-    # this flag to render the explanation; the per-mode booleans above are
-    # already ANDed with it on the server.
-    slicer_sidecar_available: bool = False
     dual_extruder: bool
     extruders: list[ExtruderInfo]
     nozzles: list[NozzleInfo]
