@@ -755,7 +755,7 @@ export interface ArchiveListParams {
   hide_failed?: boolean;
   hide_duplicates?: boolean;
   tag?: string;
-  file_type?: string;
+  kind?: string;
   sort_by?: string;
 }
 
@@ -4334,7 +4334,7 @@ export const api = {
     if (params.hide_failed) qs.set('hide_failed', 'true');
     if (params.hide_duplicates) qs.set('hide_duplicates', 'true');
     if (params.tag) qs.set('tag', params.tag);
-    if (params.file_type) qs.set('file_type', params.file_type);
+    if (params.kind) qs.set('kind', params.kind);
     if (params.sort_by) qs.set('sort_by', params.sort_by);
     return request<PaginatedArchiveResponse>(`/archives/?${qs}`);
   },

@@ -8,49 +8,59 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
-### Changed
+---
 
-- **K-profiles now bind on every print start.** Before any queued / scheduled / manually-dispatched print, BamDude resolves the active calibration for each used AMS slot and fires `extrusion_cali_sel` against the printer's LIVE `cali_idx` (re-matched by stable identity, not by the cached number — the printer reorders slots when you delete a neighbour). Closes the silent-drift gap where the firmware would fall back to the default profile after RFID re-taps, slot reassignments, or restarts while your `SpoolAssignment` row was intact. The same helper now powers the post-RFID-refresh path, the tray-tag drift detect, the auto-spool tagger, and both inventory + Spoolman slot-assign endpoints — six call sites collapsed onto one.
+## [0.4.5b1] - 2026-05-13
 
-- **Calibration cache moved to per-printer-instance.** `filament_calibration` rows are keyed by `printer_id` (m063), not `printer_model`. Two X1Cs in the same farm can carry different K values for the same material without stepping on each other. The history modal's BamDude side now lists rows for that specific printer.
-
-- **Calibration cache mirrors the printer's live K-profile table.** Whenever BamDude reads `extrusion_cali_get` (manage dialog, save-result round-trip, apply-path cache miss) it syncs every visible profile into `filament_calibration` keyed by stable identity (`filament_id` + `name` + `pa_k_value`). New rows arrive `is_active=false` — you still explicitly promote one row per `(material, nozzle, extruder)` combo from the History modal; nothing auto-activates behind your back.
-
-- **Sync now fires on MQTT events, not just on UI requests.** The cache reconciles on every MQTT (re)connect and again whenever the printer's profile list actually changes — filtered through a hash-diff on the live `kprofiles` list so we don't hammer the DB on every push_status broadcast. UI fetches are still fully consistent; you just don't have to open the manage dialog for the BamDude side to catch up after a reconnect / on-printer calibration save.
-
-- **`filament_calibration` carries the printer-side `nozzle_id`.** Every cache row now stores the raw 4-char nozzle identifier the firmware uses (`HS00-0.4`, `HH00-0.6`, …) so you can see exactly which physical nozzle each calibration was captured on. Manual-wizard saves stamp it from the session; printer-sync stamps it from `extrusion_cali_get`. On printers that don't ship a per-profile value (P1S, A1 mini), sync derives it from the live state via the device-level nozzle type so the column is filled regardless of model.
-
-- **`calibrated_on_printer_id` removed.** After m063 keyed `filament_calibration` on `printer_id`, the separate `calibrated_on_printer_id` column was always equal to it — pure duplicated state. m063 drops it; the set-active audit + delete audit now read `printer_id` directly. Printer-sync rows stamp `calibrated_by_user_id` with the first admin user's id as a placeholder ("came from the printer, not from a wizard session").
-
-- **K-profile notes survive printer restarts.** Notes are re-keyed to BamDude's own stable `filament_calibration.id` (m065). The old `setting_id` keying drifted across restarts and silently re-attached notes to the wrong profile (or to none). Existing notes are cleared as part of this migration — they were already unreliable and a clean slate beats fuzzy recovery.
-
-- **Spool ↔ K-profile links are now thin link rows.** `spool_k_profile` + `spoolman_k_profile` (m064) drop their copy of `k_value` / `name` / `cali_idx` / `setting_id` / `nozzle_type` / `nozzle_diameter` in favour of a single `filament_calibration_id` FK. One hundred generic-PETG spools that share the same calibration collapse to one cache row plus 100 links instead of 100 duplicated K rows. The PA tab UI is unchanged — the find-or-create runs on the backend.
-
-### Fixed
-
-- **Single-external slot (one bay AMS / direct-feed printers) now binds K-profiles correctly.** External tray ID was using `254`; it must be `255` per Bambu Studio's `VIRTUAL_TRAY_MAIN_ID`. With `254` the printer silently dropped every `extrusion_cali_sel` aimed at the single-external slot.
-
-- **Printer K-profile row listing on dual-extruder machines.** The handler was reading a non-existent `kp.extruder_id` attribute (correct field is `kp.extruder`); the extruder column showed empty for every row.
-
-- **MANUAL PA wizard finalization now captures the printer's assigned `cali_idx`.** When the wizard saves its result we round-trip `extrusion_cali_get` and stash the live slot index on the cache row, so the very next print binds without waiting for the printer to push an unprompted update.
-
-- **"Printer Parts" tab now shows nozzle hardware on P1S / A1 / A1 mini.** Those models push the nozzle type as a long name (`stainless_steel`, `hardened_steel`, …) instead of the X1-family 4-char code (`HS00`, `HH01`, …). Our parser only understood the 4-char form, so the Parts tab on those printers rendered the raw long string with an empty Flow row. The nozzle parser is now a one-to-one port of Bambu Studio's `DevNozzleSystem::s_parse_nozzle_type` — handles canonical long names (six categories: stainless / hardened / tungsten carbide / brass / E3D / undefined), the 4-char encoded form, and the literal `"N/A"` sentinel. Flow type (`standard` / `high_flow` / `tpu_high_flow`) is now stored separately on `NozzleInfo` and surfaced as its own field on `/printers/{id}/status` and the Printer Settings dialog response. Frontend translates canonical names into localised labels (new i18n keys for `nozzleBrass` / `nozzleE3D` / `nozzleUndefined` / `nozzleTpuHighFlow`).
-
-- **Configure-AMS-slot dialog now matches Generic PETG (and other Generic profiles).** Match was by name substring — works for "PLA Basic" but breaks for "Generic PETG" because the cloud-preset name doesn't contain the literal "GENERIC" string. Match is now by `filament_id` equality with cross-source normalisation (`GFS*` cloud preset id ↔ `GF*` slot id), with the old name-substring path kept as a final fallback for legacy edge cases.
-
-- **K-profiles page edit dialog showed wrong flow type.** When opening edit on an existing profile, the dropdown defaulted to "High Flow" regardless of the row's `nozzle_volume_type`. Two off-by-one defaults in the nozzle-type prefix derivation (`'HH00'` instead of `'HS00'`) plus an inverted ternary that flipped the badge label. Existing rows now open with the flow type they were saved with.
+First beta of the 0.4.5 cycle — a focused Filament Calibration / K-profile pass plus two adjacent dialog ports (AMS Settings, Printer Settings) from Bambu Studio. Image: `ghcr.io/kainpl/bamdude:0.4.5b1` / `kainpl/bamdude:0.4.5b1`. Pin the exact tag — `:latest` still tracks 0.4.4.1.
 
 ### Added
 
-- **AMS Settings dialog (Bambu Studio parity).** Gear icon in the AMS panel header opens a per-printer modal. Toggle insertion / power-on RFID auto-read, remaining-capacity estimation, AMS filament backup, air-print detection (A1 series only). Calibrate an AMS unit (`M620 C<id>`). Switch A1 firmware between LITE and FULL. Reset connected-AMS ID sequence (H2D). All visibility gated per printer model — only the rows your printer actually supports show up. Backend gated by `printers:update`; every applied change recorded in the new `ams_setting_audit` table for forensic trace (migration m060). Strings sourced verbatim from BS source + Ukrainian translations from BS .po (some msgstr are still empty upstream — those remain English with `// TBD-uk` markers in the locale file).
+- **Filament Calibration wizard (Bambu Studio parity).** Kebab → Filament Calibration on each printer card opens a guided modal: **Pressure Advance** (PA Line manual 50-line tower, PA Pattern, PA Tower, Auto PA on lidar-equipped X1 / X1E / H2D Pro), **Flow Rate** (9-block coarse → 7-block fine, plus Auto on X1 / H2D Pro), **Towers** (Temperature / Volumetric Speed / VFA / Retraction — print-and-finish, read by eye, enter in slicer). Results saved per `(printer_id, filament_id, nozzle_diameter, nozzle_volume_type, extruder_id)`; active row auto-binds via `extrusion_cali_sel`. Sibling kebab entry opens a History modal listing BamDude rows next to the printer's 16-slot table with refresh-from-printer. H2D dual-extruder: per-extruder tabs, manual one-at-a-time, auto batches both. Backend: `filament_calibration` / `calibration_session` / `calibration_audit` tables (m062), 4 MQTT publishers, 14 REST endpoints, concurrent-session guard, full audit trail, WS `calibration.*` events. Ships with empty `backend/app/data/calib_assets/` — copy BS `resources/calib/` 3MFs there before running manual + auto paths.
 
-- **Printer Settings dialog.** New kebab-menu item "Printer Settings" opens a tabbed modal (Print Options + Printer Parts) — Bambu Studio parity for ~15 toggles (AI detections with Low/Medium/High sensitivity, filament tangle, nozzle blob, FOD check, displacement, open-door check, purify-air-at-end, auto recovery, prompt sound, snapshot, build-plate detection, plate alignment). Read-only nozzle info on Parts tab. Gated by `printers:update`; per-model `supports.*` hides unsupported rows. Audit table `printer_setting_audit` (m061) records every applied change. Calibration stays under its own kebab item.
+- **AMS Settings dialog (Bambu Studio parity).** Gear icon on the AMS panel header opens a per-printer modal: insertion / power-on RFID auto-read, remaining-capacity estimation, AMS filament backup, air-print detection (A1), calibrate AMS (`M620 C<id>`), A1 firmware LITE ↔ FULL, H2D connected-AMS sequence reset. Visibility gated per model; every applied change written to `ams_setting_audit` (m060). en + uk strings sourced from BS; some uk msgstr are still empty upstream and stay English with `// TBD-uk` markers.
 
-- **Filament Calibration wizard (Bambu Studio parity).** New kebab-menu item "Filament Calibration" on each printer card opens a guided modal covering the full BS surface. **Pressure Advance:** PA Line (manual, 50-line tower), PA Pattern, PA Tower, Auto PA (X1 / X1E / H2D Pro lidar — auto-prefilled save dialog). **Flow Rate:** manual 9-block coarse → 7-block fine refinement, plus Auto Flow Rate on lidar-equipped X1 / H2D Pro. **Towers:** Temperature / Max Volumetric Speed / VFA / Retraction print-and-finish (read result with your eyes, enter in slicer). Results stored per `(printer_model, filament_id, nozzle_diameter, nozzle_volume_type, extruder_id)` with `is_active` enforced by a partial unique index. Active row auto-binds to the AMS slot via `extrusion_cali_sel` so any subsequent print (BamDude, Bambu Studio, printer screen) uses the calibrated value. **History modal** on a sibling kebab entry: BamDude rows (set-active / delete) plus printer-side 16-slot history with refresh-from-printer. **H2D dual-extruder**: per-extruder tabs in the preset page; manual mode calibrates one extruder per session, auto mode batches both via per-filament `extruder_id`. Backend: `filament_calibration` / `calibration_session` / `calibration_audit` tables (m062), 4 MQTT publishers, 14 REST endpoints, concurrent-session guard (409), full audit trail, lazy session-status reconciliation on GET, WS calibration.* events. Frontend: TanStack Query 5 + WS auto-advance, `bg-bambu-dark*` themed shell, full en + uk i18n. Ships with empty `backend/app/data/calib_assets/` — copy BS `resources/calib/` 3MFs there before exercising manual + auto paths end-to-end.
+- **Printer Settings dialog.** Kebab → Printer Settings opens a tabbed modal (Print Options + Printer Parts) mirroring ~15 BS toggles (AI detections with sensitivity, filament tangle, nozzle blob, FOD check, displacement, open-door check, air purify, auto recovery, prompt sound, snapshot, plate detect / align). Read-only nozzle info on Parts. Per-model `supports.*` hides unsupported rows; audited to `printer_setting_audit` (m061).
+
+### Changed
+
+- **K-profiles bind on every print start.** `background_dispatch` resolves the active calibration per used AMS slot and fires `extrusion_cali_sel` against the printer's LIVE `cali_idx` — re-matched by stable identity (`name` + `filament_id` + `pa_k_value`), not the cached number, since slots reorder when a neighbour is deleted. Closes silent-drift after RFID re-taps / slot reassignments / restarts. Six call sites (RFID refresh, tray-tag drift, auto-spool tagger, inventory + Spoolman slot-assign) collapsed onto one helper.
+
+- **Calibration cache per-printer-instance, not per-model (m063).** `filament_calibration` rows keyed by `printer_id`. Two X1Cs in a farm carry independent K values for the same material; the History modal scopes to that specific printer.
+
+- **Cache mirrors the printer's live K-profile list, event-driven.** Sync runs on every MQTT (re)connect and whenever the printer's list actually changes (hash-diff filtered so it doesn't hammer the DB on every `push_status`). New rows arrive `is_active=false` — you still explicitly promote one row per `(material, nozzle, extruder)` combo. UI fetches stay consistent; you don't have to open the manage dialog for BamDude to catch up after reconnect / on-printer save.
+
+- **Cache row carries printer-side `nozzle_id`.** Every row stores the raw 4-char identifier (`HS00-0.4`, `HH00-0.6`, …). P1S / A1 / A1 mini don't ship a per-profile value — BamDude derives it from the live nozzle hardware state so the column is filled regardless of model.
+
+- **K-profile notes survive printer restarts (m065).** Notes re-keyed to BamDude's stable `filament_calibration.id`. The old `setting_id` keying drifted across restarts and silently re-attached notes to the wrong profile. Existing notes are cleared as part of m065 — clean slate beats fuzzy recovery on data that was already unreliable.
+
+- **Spool ↔ K-profile thin link rows (m064).** `spool_k_profile` + `spoolman_k_profile` drop their copy of `k_value` / `name` / `cali_idx` / `setting_id` / `nozzle_type` / `nozzle_diameter` in favour of a single `filament_calibration_id` FK. One hundred PETG spools sharing the same calibration → one cache row + 100 links instead of 100 duplicated K rows. PA tab UI unchanged.
+
+- **`calibrated_on_printer_id` dropped.** After m063 keyed `filament_calibration` on `printer_id` the column was always equal to it — pure duplicated state. Audit code now reads `printer_id` directly; printer-sync rows stamp `calibrated_by_user_id` with the first admin user id as the "came from printer, not wizard" marker.
+
+- **Archive filter is now `All / Test / Regular` keyed on `is_calibration`.** The old `All files / Sliced GCODE / Source only` filter was meaningful when archive held arbitrary uploads — but archive has been print-history-only since 0.4.2. Query param renamed `file_type` → `kind ∈ {all, calibration, regular}`; localStorage key migrated.
 
 ### Fixed
 
-- **AMS humidity/temperature history modal** — missing i18n keys (Ukrainian users saw English fallbacks) + the dialog now follows the active theme background variant (warm/cool/oled/slate/forest), not just light/dark mode.
+- **"Printer Parts" tab shows nozzle hardware on P1S / A1 / A1 mini.** Those models push the nozzle as a canonical long name (`stainless_steel`, `hardened_steel`, …); our parser only understood the X1-family 4-char code (`HS00`, …) and rendered the long string raw with an empty Flow row. Parser is now a one-to-one port of BS `DevNozzleSystem::s_parse_nozzle_type` — long names (six categories: stainless / hardened / tungsten carbide / brass / E3D / undefined), 4-char codes, and the literal `"N/A"` sentinel. Flow class (`standard` / `high_flow` / `tpu_high_flow`) stored separately on `NozzleInfo` and surfaced on `/printers/{id}/status`.
+
+- **Configure-AMS-slot dialog matches Generic PETG (and other Generic profiles).** Match was by name substring — works for "PLA Basic" but breaks for "Generic PETG" because the cloud-preset name lacks the literal "GENERIC". Match is now by `filament_id` equality with `GFS*` cloud ↔ `GF*` slot normalisation; name substring kept as a legacy fallback.
+
+- **K-profiles edit dialog showed wrong flow type.** Three off-by-one defaults (`'HH00'` instead of `'HS00'` + an inverted ternary) made every existing row open as "High Flow". Existing rows now open with the flow type they were saved with.
+
+- **Single-external slot binds K-profiles correctly.** External tray ID was `254`; BS standard is `255` (`VIRTUAL_TRAY_MAIN_ID`). With `254` the printer silently dropped every `extrusion_cali_sel` aimed at the single-external slot.
+
+- **K-profile row listing on dual-extruder machines.** Handler read non-existent `kp.extruder_id` (correct field is `kp.extruder`) — extruder column was empty for every row.
+
+- **Manual PA wizard captures the printer's assigned `cali_idx` on save.** Wizard now round-trips `extrusion_cali_get` after save_result and stashes the live slot index, so the very next print binds without waiting for an unprompted firmware push.
+
+- **Sync mirrors `filament_setting_id` from the printer.** The printer regenerates `setting_id` on every `extrusion_cali_set`; sync used to update only `cali_idx` and `nozzle_id`, leaving DB drift untouched even when the live value differed. Now mirrored whenever the printer reports a non-empty value that differs from cache.
+
+- **Edit K-profile "Save" with no printer-relevant change no longer hits the printer.** Saving only a note — or clicking Save without changing anything — used to fire `extrusion_cali_set` and force the printer to regenerate `setting_id`. The form now diffs `name` / `k_value` / `filament_id` / `nozzle_id` / `nozzle_diameter` against the loaded profile; identical → note saved locally, no MQTT publish.
+
+- **`/printers/{id}/kprofiles/` writes audited.** Every add / edit / batch-add / delete writes a `calibration_audit` row (`action ∈ kprofile_{add, edit, batch_add, delete}`) with full payload + user id + success / error. Closes the trace gap where mutations from the K-profiles UI page were invisible to forensic queries.
+
+- **AMS humidity / temperature history modal** — missing uk i18n keys + dialog now follows the active theme background variant (warm / cool / oled / slate / forest).
 
 ---
 

@@ -928,6 +928,12 @@ async def sync_printer_kprofiles_to_cache(
             if not existing.nozzle_id and kp_nozzle_id:
                 existing.nozzle_id = kp_nozzle_id
                 row_touched = True
+            # Mirror filament_setting_id from the printer — the printer is the
+            # source of truth, so any drift (manual DB edit, stale cloud-preset
+            # id captured before re-tag) reconciles back to the live value.
+            if kp_setting_id and existing.filament_setting_id != kp_setting_id:
+                existing.filament_setting_id = kp_setting_id
+                row_touched = True
             if row_touched:
                 touched += 1
     if touched:

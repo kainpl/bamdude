@@ -2556,8 +2556,8 @@ export function ArchivesPage() {
   const [filterTag, setFilterTag] = useState<string | null>(() =>
     localStorage.getItem('archiveFilterTag')
   );
-  const [filterFileType, setFilterFileType] = useState<'all' | 'gcode' | 'source'>(() =>
-    (localStorage.getItem('archiveFilterFileType') as 'all' | 'gcode' | 'source') || 'all'
+  const [filterKind, setFilterKind] = useState<'all' | 'calibration' | 'regular'>(() =>
+    (localStorage.getItem('archiveFilterKind') as 'all' | 'calibration' | 'regular') || 'all'
   );
   const [showPurgeModal, setShowPurgeModal] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
@@ -2641,7 +2641,7 @@ export function ArchivesPage() {
     hide_failed: hideFailed || undefined,
     hide_duplicates: hideDuplicates || undefined,
     tag: filterTag || undefined,
-    file_type: filterFileType !== 'all' ? filterFileType : undefined,
+    kind: filterKind !== 'all' ? filterKind : undefined,
     sort_by: sortBy,
   };
 
@@ -2785,8 +2785,8 @@ export function ArchivesPage() {
   }, [filterTag]);
 
   useEffect(() => {
-    localStorage.setItem('archiveFilterFileType', filterFileType);
-  }, [filterFileType]);
+    localStorage.setItem('archiveFilterKind', filterKind);
+  }, [filterKind]);
 
   useEffect(() => {
     localStorage.setItem('archiveViewMode', viewMode);
@@ -2867,11 +2867,11 @@ export function ArchivesPage() {
     setHideFailed(false);
     setHideDuplicates(false);
     setFilterTag(null);
-    setFilterFileType('all');
+    setFilterKind('all');
     setPage(1);
   };
 
-  const hasTopFilters = search || filterPrinter || filterMaterial || filterFavorites || hideFailed || hideDuplicates || filterTag || filterFileType !== 'all';
+  const hasTopFilters = search || filterPrinter || filterMaterial || filterFavorites || hideFailed || hideDuplicates || filterTag || filterKind !== 'all';
 
   // Keyboard shortcuts. Archive uploads were removed in 0.4.2 (Audit-1):
   // archives are now strictly the print history of record — drag-drop +
@@ -3233,12 +3233,12 @@ export function ArchivesPage() {
               <FileCode className="w-4 h-4 text-bambu-gray hidden md:block flex-shrink-0" />
               <select
                 className="px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none w-full"
-                value={filterFileType}
-                onChange={(e) => { setFilterFileType(e.target.value as 'all' | 'gcode' | 'source'); setPage(1); }}
+                value={filterKind}
+                onChange={(e) => { setFilterKind(e.target.value as 'all' | 'calibration' | 'regular'); setPage(1); }}
               >
-                <option value="all">{t('archives.page.allFiles')}</option>
-                <option value="gcode">{t('archives.page.slicedGcode')}</option>
-                <option value="source">{t('archives.page.sourceOnly')}</option>
+                <option value="all">{t('archives.page.allPrints')}</option>
+                <option value="calibration">{t('archives.page.calibrationPrints')}</option>
+                <option value="regular">{t('archives.page.regularPrints')}</option>
               </select>
             </div>
             {collection !== 'favorites' && (

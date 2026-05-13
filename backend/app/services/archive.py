@@ -2175,7 +2175,7 @@ class ArchiveService:
         hide_failed: bool = False,
         hide_duplicates: bool = False,
         tag: str | None = None,
-        file_type: str | None = None,
+        kind: str | None = None,
         sort_by: str = "date-desc",
         limit: int | None = 50,
         offset: int = 0,
@@ -2268,23 +2268,13 @@ class ArchiveService:
         if tag:
             filters.append(PrintArchive.tags.ilike(f"%{tag}%"))
 
-        # File type filter
-        if file_type == "gcode":
-            filters.append(
-                or_(
-                    PrintArchive.filename.ilike("%.gcode%"),
-                    PrintArchive.total_layers.isnot(None),
-                    PrintArchive.print_time_seconds.isnot(None),
-                )
-            )
-        elif file_type == "source":
-            filters.append(
-                and_(
-                    ~PrintArchive.filename.ilike("%.gcode%"),
-                    PrintArchive.total_layers.is_(None),
-                    PrintArchive.print_time_seconds.is_(None),
-                )
-            )
+        # Calibration kind filter. Archive is print-history-only (m062+), so
+        # the old "gcode vs source-only" split lost meaning — every row has a
+        # print attached. Now we split on the calibration flag the wizard sets.
+        if kind == "calibration":
+            filters.append(PrintArchive.is_calibration.is_(True))
+        elif kind == "regular":
+            filters.append(PrintArchive.is_calibration.is_(False))
 
         # Hide duplicates: keep only first occurrence per content_hash
         if hide_duplicates:

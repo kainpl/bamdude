@@ -1,6 +1,7 @@
 """API routes for K-profile (pressure advance) management."""
 
 import asyncio
+import json as _json
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -10,6 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.models.calibration_audit import CalibrationAudit
+from backend.app.models.filament_calibration import FilamentCalibration
 from backend.app.models.kprofile_note import KProfileNote as KProfileNoteModel
 from backend.app.models.printer import Printer
 from backend.app.models.user import User
@@ -26,6 +29,80 @@ from backend.app.services.printer_manager import printer_manager
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/printers/{printer_id}/kprofiles", tags=["kprofiles"])
+
+
+async def _resolve_fc_id_for_audit(
+    db: AsyncSession,
+    *,
+    printer_id: int,
+    profile: KProfileCreate | KProfileDelete,
+) -> int | None:
+    """Best-effort link from an inbound K-profile payload to a `filament_calibration` row.
+
+    Used purely for the audit FK; never raises. Tries cali_idx first (set
+    on every existing-profile path), then falls back to the stable
+    identity used elsewhere (filament_id + name + pa_k_value).
+    """
+    cali_idx = getattr(profile, "slot_id", 0) or 0
+    if cali_idx > 0:
+        row_id = (
+            await db.execute(
+                select(FilamentCalibration.id).where(
+                    FilamentCalibration.printer_id == printer_id,
+                    FilamentCalibration.cali_idx == cali_idx,
+                )
+            )
+        ).scalar()
+        if row_id:
+            return row_id
+    name = getattr(profile, "name", None)
+    filament_id = getattr(profile, "filament_id", None)
+    k_value_raw = getattr(profile, "k_value", None)
+    if not (name and filament_id and k_value_raw is not None):
+        return None
+    try:
+        k_value = float(k_value_raw)
+    except (TypeError, ValueError):
+        return None
+    return (
+        await db.execute(
+            select(FilamentCalibration.id).where(
+                FilamentCalibration.printer_id == printer_id,
+                FilamentCalibration.filament_id == filament_id,
+                FilamentCalibration.name == name,
+                FilamentCalibration.pa_k_value == k_value,
+            )
+        )
+    ).scalar()
+
+
+async def _audit_kprofile(
+    db: AsyncSession,
+    *,
+    printer_id: int,
+    user: User | None,
+    action: str,
+    payload: dict,
+    filament_calibration_id: int | None,
+    result: str = "ok",
+    error: str | None = None,
+) -> None:
+    """Mirror filament_calibration.py::_audit but lighter — kprofile routes
+    never carry a calibration session_id or MQTT sequence_id."""
+    db.add(
+        CalibrationAudit(
+            printer_id=printer_id,
+            user_id=user.id if user else None,
+            session_id=None,
+            filament_calibration_id=filament_calibration_id,
+            action=action,
+            payload_json=_json.dumps(payload, default=str),
+            sequence_id=None,
+            result=result,
+            error_message=error,
+        )
+    )
+    await db.commit()
 
 
 @router.get("/", response_model=KProfilesResponse)
@@ -127,7 +204,7 @@ async def set_kprofile(
     printer_id: int,
     profile: KProfileCreate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.KPROFILES_UPDATE),
+    user: User | None = RequirePermission(Permission.KPROFILES_UPDATE),
 ):
     """Create or update a K-profile on the printer.
 
@@ -222,6 +299,18 @@ async def set_kprofile(
             slot_id=0,  # Always 0 for add (new profile)
         )
 
+    fc_id = await _resolve_fc_id_for_audit(db, printer_id=printer_id, profile=profile)
+    await _audit_kprofile(
+        db,
+        printer_id=printer_id,
+        user=user,
+        action="kprofile_edit" if is_edit else "kprofile_add",
+        payload=profile.model_dump(),
+        filament_calibration_id=fc_id,
+        result="ok" if success else "error",
+        error=None if success else "set_kprofile MQTT publish failed",
+    )
+
     if not success:
         raise HTTPException(500, "Failed to send K-profile command")
 
@@ -234,7 +323,7 @@ async def set_kprofiles_batch(
     printer_id: int,
     profiles: list[KProfileCreate],
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.KPROFILES_UPDATE),
+    user: User | None = RequirePermission(Permission.KPROFILES_UPDATE),
 ):
     """Create multiple K-profiles in a single command (for dual-nozzle).
 
@@ -286,6 +375,17 @@ async def set_kprofiles_batch(
 
     success = client.set_kprofiles_batch(profile_dicts, nozzle_diameter)
 
+    await _audit_kprofile(
+        db,
+        printer_id=printer_id,
+        user=user,
+        action="kprofile_batch_add",
+        payload={"profiles": [p.model_dump() for p in profiles]},
+        filament_calibration_id=None,
+        result="ok" if success else "error",
+        error=None if success else "set_kprofiles_batch MQTT publish failed",
+    )
+
     if not success:
         raise HTTPException(500, "Failed to send K-profiles batch command")
 
@@ -297,7 +397,7 @@ async def delete_kprofile(
     printer_id: int,
     profile: KProfileDelete,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.KPROFILES_DELETE),
+    user: User | None = RequirePermission(Permission.KPROFILES_DELETE),
 ):
     """Delete a K-profile from the printer.
 
@@ -332,6 +432,18 @@ async def delete_kprofile(
         nozzle_diameter=profile.nozzle_diameter,
         extruder_id=profile.extruder_id,
         setting_id=profile.setting_id,
+    )
+
+    fc_id = await _resolve_fc_id_for_audit(db, printer_id=printer_id, profile=profile)
+    await _audit_kprofile(
+        db,
+        printer_id=printer_id,
+        user=user,
+        action="kprofile_delete",
+        payload=profile.model_dump(),
+        filament_calibration_id=fc_id,
+        result="ok" if success else "error",
+        error=None if success else "delete_kprofile MQTT publish failed",
     )
 
     if not success:

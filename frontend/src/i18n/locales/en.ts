@@ -853,9 +853,9 @@ export default {
       // Filters
       allPrinters: 'All Printers',
       allMaterials: 'All Materials',
-      allFiles: 'All Files',
-      slicedGcode: 'Sliced (GCODE)',
-      sourceOnly: 'Source Only',
+      allPrints: 'All prints',
+      calibrationPrints: 'Calibration prints',
+      regularPrints: 'Regular prints',
       allTags: 'All Tags',
       favorites: 'Favorites',
       hideFailed: 'Hide Failed',
@@ -4655,6 +4655,7 @@ export default {
     toast: {
       profileSaved: 'K-profile saved',
       profilesSaved: 'K-profile saved to {{count}} extruders',
+      noteSaved: 'Note saved (no printer change)',
       selectAtLeastOneExtruder: 'Please select at least one extruder',
       profileDeleted: 'K-profile deleted',
       profilesDeleted: 'Deleted {{count}} profiles',

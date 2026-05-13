@@ -325,6 +325,29 @@ function KProfileModal({
         setting_id: profile?.setting_id,
         slot_id: profile?.slot_id ?? 0,
       };
+
+      // Editing path: skip the printer write when no printer-relevant field
+      // changed — saving the note alone shouldn't fire extrusion_cali_set
+      // (which the printer treats as a profile modification + persists to
+      // its own storage). Notes live in BamDude DB and propagate via the
+      // note endpoint only.
+      if (profile) {
+        const printerSideUnchanged =
+          name === (profile.name || '') &&
+          parseFloat(formattedKValue) === parseFloat(profile.k_value || '0') &&
+          filamentId === (profile.filament_id || '') &&
+          nozzleId === (profile.nozzle_id || '') &&
+          modalDiameter === (profile.nozzle_diameter || '');
+        if (printerSideUnchanged) {
+          if (onSaveNote && note !== initialNote) {
+            onSaveNote(profile, profile.setting_id ?? undefined, note);
+            showToast(t('kProfiles.toast.noteSaved'));
+          }
+          onSave();
+          return;
+        }
+      }
+
       console.log('[KProfile] Saving profile:', payload);
       saveMutation.mutate(payload);
       return;

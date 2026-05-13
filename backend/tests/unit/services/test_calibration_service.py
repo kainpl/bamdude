@@ -831,6 +831,7 @@ async def test_sync_idempotent_when_already_in_sync(db_session, printer_factory)
     fc = FilamentCalibration(
         printer_id=printer.id,
         filament_id="GFG96",
+        filament_setting_id="GFSG96",
         nozzle_diameter=0.4,
         nozzle_volume_type="standard",
         extruder_id=0,
