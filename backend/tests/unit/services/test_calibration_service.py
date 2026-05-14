@@ -90,8 +90,16 @@ def test_resolve_asset_stl_modes_exist():
 
 @pytest.mark.asyncio
 async def test_start_calibration_auto_pa(service, db_session, printer_factory, mock_client):
+    from backend.app.services.calibration_mode_registry import ModeState
+
     printer = await printer_factory(model="X1C")
-    with patch("backend.app.services.calibration_service.printer_manager") as pm:
+    with (
+        patch("backend.app.services.calibration_service.printer_manager") as pm,
+        patch(
+            "backend.app.services.calibration_service.get_mode_state",
+            return_value=ModeState.PRODUCTION,
+        ),
+    ):
         pm.get_client.return_value = mock_client
         session = await service.start_calibration(
             db=db_session,
@@ -128,8 +136,16 @@ async def test_start_calibration_auto_pa(service, db_session, printer_factory, m
 
 @pytest.mark.asyncio
 async def test_start_calibration_blocks_on_offline(service, db_session, printer_factory):
+    from backend.app.services.calibration_mode_registry import ModeState
+
     printer = await printer_factory(model="X1C")
-    with patch("backend.app.services.calibration_service.printer_manager") as pm:
+    with (
+        patch("backend.app.services.calibration_service.printer_manager") as pm,
+        patch(
+            "backend.app.services.calibration_service.get_mode_state",
+            return_value=ModeState.PRODUCTION,
+        ),
+    ):
         pm.get_client.return_value = None
         with pytest.raises(ValueError, match="not online"):
             await service.start_calibration(
@@ -152,9 +168,17 @@ async def test_start_calibration_concurrent_blocked(
     printer_factory,
     mock_client,
 ):
+    from backend.app.services.calibration_mode_registry import ModeState
+
     printer = await printer_factory(model="X1C")
     fil = CalibFilamentInput(0, 0, 0, "GFG00", "GFG00_60@BBL", 60, 220, 12.0)
-    with patch("backend.app.services.calibration_service.printer_manager") as pm:
+    with (
+        patch("backend.app.services.calibration_service.printer_manager") as pm,
+        patch(
+            "backend.app.services.calibration_service.get_mode_state",
+            return_value=ModeState.PRODUCTION,
+        ),
+    ):
         pm.get_client.return_value = mock_client
         await service.start_calibration(
             db=db_session,
@@ -184,8 +208,16 @@ async def test_start_calibration_concurrent_blocked(
 @pytest.mark.asyncio
 async def test_start_calibration_auto_flow_rate(service, db_session, printer_factory, mock_client):
     """Auto Flow Rate routes to flow_rate_cali_start with flow_rate populated."""
+    from backend.app.services.calibration_mode_registry import ModeState
+
     printer = await printer_factory(model="X1C")
-    with patch("backend.app.services.calibration_service.printer_manager") as pm:
+    with (
+        patch("backend.app.services.calibration_service.printer_manager") as pm,
+        patch(
+            "backend.app.services.calibration_service.get_mode_state",
+            return_value=ModeState.PRODUCTION,
+        ),
+    ):
         pm.get_client.return_value = mock_client
         session = await service.start_calibration(
             db=db_session,
@@ -232,11 +264,20 @@ async def test_start_calibration_manual_enqueues_print(
     fake_asset_path.write_bytes(b"PK\x03\x04fake3mf")
     fake_asset = CalibAsset(path=fake_asset_path, kind="3mf")
 
+    # Force PA_PATTERN into PRODUCTION state for this test so the W2
+    # lifecycle gate (which DISABLEs every mode by default until each
+    # phase ships) lets the manual-path code through.
+    from backend.app.services.calibration_mode_registry import ModeState
+
     with (
         patch("backend.app.services.calibration_service.printer_manager") as pm,
         patch(
             "backend.app.services.calibration_service.resolve_asset",
             return_value=fake_asset,
+        ),
+        patch(
+            "backend.app.services.calibration_service.get_mode_state",
+            return_value=ModeState.PRODUCTION,
         ),
         patch("backend.app.services.slicer_routing.any_sidecar_online", new=AsyncMock(return_value=True)),
         patch(
@@ -268,11 +309,16 @@ async def test_start_calibration_manual_rejects_without_sidecar(
     mock_client,
 ):
     """All manual modes need slicing → reject when sidecar is offline."""
+    from backend.app.services.calibration_mode_registry import ModeState
     from backend.app.services.calibration_service import SlicerSidecarRequiredError
 
     printer = await printer_factory(model="P1S")
     with (
         patch("backend.app.services.calibration_service.printer_manager") as pm,
+        patch(
+            "backend.app.services.calibration_service.get_mode_state",
+            return_value=ModeState.PRODUCTION,
+        ),
         patch("backend.app.services.slicer_routing.any_sidecar_online", new=AsyncMock(return_value=False)),
     ):
         pm.get_client.return_value = mock_client
@@ -281,6 +327,70 @@ async def test_start_calibration_manual_rejects_without_sidecar(
                 db=db_session,
                 printer_id=printer.id,
                 cali_mode=CaliMode.PA_PATTERN,
+                method=CaliMethod.MANUAL,
+                nozzle_diameter=0.4,
+                nozzle_volume_type="standard",
+                extruder_id=0,
+                filaments=[CalibFilamentInput(0, 0, 0, "GFG00", "GFG00_60@BBL", 60, 220, 12.0)],
+                user_id=None,
+            )
+
+
+@pytest.mark.asyncio
+async def test_start_calibration_rejects_disabled_mode(
+    service,
+    db_session,
+    printer_factory,
+    mock_client,
+):
+    """MODE_STATE DISABLED → CalibModeNotImplementedError before any other check."""
+    from backend.app.services.calibration_service import CalibModeNotImplementedError
+
+    printer = await printer_factory(model="P1S")
+    with patch("backend.app.services.calibration_service.printer_manager") as pm:
+        pm.get_client.return_value = mock_client
+        # Default MODE_STATE has every mode DISABLED in Phase 0, so no
+        # patch needed — pick any mode.
+        with pytest.raises(CalibModeNotImplementedError):
+            await service.start_calibration(
+                db=db_session,
+                printer_id=printer.id,
+                cali_mode=CaliMode.PA_TOWER,
+                method=CaliMethod.MANUAL,
+                nozzle_diameter=0.4,
+                nozzle_volume_type="standard",
+                extruder_id=0,
+                filaments=[CalibFilamentInput(0, 0, 0, "GFG00", "GFG00_60@BBL", 60, 220, 12.0)],
+                user_id=None,
+            )
+
+
+@pytest.mark.asyncio
+async def test_start_calibration_rejects_verification_mode(
+    service,
+    db_session,
+    printer_factory,
+    mock_client,
+):
+    """MODE_STATE VERIFICATION → CalibModeVerificationOnlyError; wizard must
+    route the request through ``POST .../calibration/slice-only`` instead."""
+    from backend.app.services.calibration_mode_registry import ModeState
+    from backend.app.services.calibration_service import CalibModeVerificationOnlyError
+
+    printer = await printer_factory(model="P1S")
+    with (
+        patch("backend.app.services.calibration_service.printer_manager") as pm,
+        patch(
+            "backend.app.services.calibration_service.get_mode_state",
+            return_value=ModeState.VERIFICATION,
+        ),
+    ):
+        pm.get_client.return_value = mock_client
+        with pytest.raises(CalibModeVerificationOnlyError):
+            await service.start_calibration(
+                db=db_session,
+                printer_id=printer.id,
+                cali_mode=CaliMode.PA_TOWER,
                 method=CaliMethod.MANUAL,
                 nozzle_diameter=0.4,
                 nozzle_volume_type="standard",

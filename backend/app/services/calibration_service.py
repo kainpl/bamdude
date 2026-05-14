@@ -14,14 +14,18 @@ re-sels before each non-cali print as belt-and-suspenders sync.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.core.database import async_session
 from backend.app.core.websocket import ws_manager
 from backend.app.models.calibration_session import CalibrationSession
 from backend.app.models.filament_calibration import FilamentCalibration
@@ -34,6 +38,7 @@ from backend.app.services.calibration_constants import (
     compute_pa_k,
     generate_nozzle_id,
 )
+from backend.app.services.calibration_mode_registry import ModeState, get_mode_state
 from backend.app.services.printer_manager import printer_manager
 
 logger = logging.getLogger(__name__)
@@ -46,6 +51,22 @@ class SlicerSidecarRequiredError(Exception):
     is wired up yet (Wave 2 placeholder). Routes translate this to 409 with
     error_code='slicer_sidecar_required' so the UI can show the right
     "Configure slicer API in Settings" hint."""
+
+
+class CalibModeNotImplementedError(Exception):
+    """Raised when ``start_calibration`` is asked to run a mode whose
+    ``MODE_STATE`` entry is ``DISABLED``. Routes translate this to 409 with
+    error_code='mode_not_implemented' so the UI keeps its grayed row in
+    sync — the frontend already gates the click, this is the server-side
+    belt-and-suspenders for API callers."""
+
+
+class CalibModeVerificationOnlyError(Exception):
+    """Raised when ``start_calibration`` is asked to dispatch a mode whose
+    ``MODE_STATE`` entry is ``VERIFICATION``. The wizard should route the
+    request to ``POST .../calibration/slice-only`` instead so the operator
+    gets the sliced 3MF as a download to validate locally. Routes
+    translate this to 409 with error_code='mode_verification_only'."""
 
 
 # Tower modes are print-and-finish — no save dialog, no filament_calibration
@@ -99,7 +120,7 @@ async def broadcast_calibration_event(*, printer_id: int, event: str, payload: d
 _MODE_TO_ASSET: dict[CaliMode, tuple[str, str]] = {
     CaliMode.PA_PATTERN: ("pressure_advance/pa_pattern.3mf", "3mf"),
     CaliMode.PA_LINE: ("pressure_advance/pressure_advance_test.stl", "stl"),
-    CaliMode.PA_TOWER: ("pressure_advance/tower.stl", "stl"),
+    CaliMode.PA_TOWER: ("pressure_advance/tower_with_seam.stl", "stl"),
     CaliMode.TEMP_TOWER: ("temperature_tower/temperature_tower.stl", "stl"),
     CaliMode.VFA_TOWER: ("vfa/VFA.stl", "stl"),
     CaliMode.RETRACTION_TOWER: ("retraction/retraction_tower.stl", "stl"),
@@ -176,6 +197,72 @@ class ManualResultOut:
     next_session_id: int | None = None
 
 
+async def _persist_calibration_slice_to_library(
+    *,
+    content: bytes,
+    filename: str,
+    user_id: int | None,
+    print_time_seconds: int | None,
+    filament_used_g: float | None,
+    filament_used_mm: float | None,
+) -> int:
+    """Save a sliced calibration .gcode.3mf as a LibraryFile row.
+
+    Production-mode calibration flow doesn't surface this file in the
+    library listing (it's an internal artefact), but the dispatcher
+    pipeline keys on ``PrintQueueItem.library_file_id`` so we need a
+    real LibraryFile row anyway. The file is written under the same
+    library-files dir as user uploads; the file manager's
+    ``source_type=sliced`` badge correctly tags it. A future cleanup
+    pass can sweep ``source_type=sliced`` files older than N days
+    whose owning calibration session is closed.
+
+    Returns the new ``LibraryFile.id``.
+    """
+    from backend.app.api.routes.library import get_library_files_dir, to_relative_path
+    from backend.app.models.library import LibraryFile
+    from backend.app.services.library_helpers import compute_file_tags
+
+    unique_name = f"{uuid.uuid4().hex}.gcode.3mf"
+    out_path = get_library_files_dir() / unique_name
+    out_path.write_bytes(content)
+
+    metadata: dict = {
+        "calibration_internal": True,
+    }
+    if print_time_seconds is not None:
+        metadata["print_time_seconds"] = print_time_seconds
+    if filament_used_g is not None:
+        metadata["filament_used_g"] = filament_used_g
+    if filament_used_mm is not None:
+        metadata["filament_used_mm"] = filament_used_mm
+
+    new_file = LibraryFile(
+        folder_id=None,
+        filename=filename,
+        file_path=to_relative_path(out_path),
+        file_type="gcode",
+        file_tags=compute_file_tags(
+            filename=filename,
+            file_type="gcode",
+            file_metadata=metadata,
+            source_type="sliced",
+            swap_compatible=False,
+        ),
+        file_size=len(content),
+        file_hash=hashlib.sha256(content).hexdigest(),
+        thumbnail_path=None,
+        file_metadata=metadata,
+        source_type="sliced",
+        created_by_id=user_id,
+    )
+    async with async_session() as db:
+        db.add(new_file)
+        await db.commit()
+        await db.refresh(new_file)
+        return new_file.id
+
+
 class CalibrationService:
     """Stateless orchestrator — all state lives in DB + PrinterState.
 
@@ -196,7 +283,34 @@ class CalibrationService:
         extruder_id: int,
         filaments: list[CalibFilamentInput],
         user_id: int | None,
+        user=None,  # User | None — needed for preset_resolver's cloud-permission gate
+        spec=None,  # dict | None — per-mode opaque spec (PA Tower start/end/step)
+        bundle=None,  # SliceBundleSpec | None — sidecar bundle path
+        printer_preset=None,  # PresetRef | None — manual-path triplet
+        process_preset=None,  # PresetRef | None
+        filament_presets=None,  # list[PresetRef] | None
+        slicer=None,  # Literal["orcaslicer","bambu_studio"] | None
+        bed_type=None,  # Literal[...] | None
+        print_options: dict | None = None,  # CalibPrintOptionsIn dict from route
+        swap_macros: dict | None = None,  # CalibSwapMacrosIn dict from route
     ) -> CalibrationSession:
+        # Per-mode lifecycle gate (W2). DISABLED rejects outright;
+        # VERIFICATION rejects start_calibration but the wizard can still
+        # call /slice-only to fetch the sliced 3MF for operator validation.
+        # See backend/app/services/calibration_mode_registry.py.
+        state = get_mode_state(cali_mode)
+        if state == ModeState.DISABLED:
+            raise CalibModeNotImplementedError(
+                f"Calibration mode '{cali_mode.value}' is not implemented in this build yet."
+            )
+        if state == ModeState.VERIFICATION:
+            raise CalibModeVerificationOnlyError(
+                f"Calibration mode '{cali_mode.value}' is in verification mode — "
+                f"download the sliced 3MF via /printers/{{id}}/calibration/slice-only "
+                f"and validate against your slicer's reference output before this "
+                f"mode can dispatch to the printer."
+            )
+
         # Concurrent guard — one active session per printer
         existing = (
             await db.execute(
@@ -253,18 +367,14 @@ class CalibrationService:
             if not ok:
                 raise ValueError("MQTT publish failed")
         else:
-            # MANUAL path: resolve geometry asset → enqueue as is_calibration print.
-            # Every manual calibration mode in BS — including PA Pattern and
-            # Flow Rate that we used to think were "pre-sliced 3MFs" — loads
-            # geometry then runs full slicing with the active filament profile
-            # (BS Plater.cpp::calib_flowrate / _calib_pa_pattern,
-            # CalibUtils.cpp PA / auto-PA paths). Until our Wave 2 slicer-
-            # sidecar pipeline lands, all manual modes need a sidecar; the
-            # entry points are hidden in the UI when ``use_slicer_api`` is off
-            # in Settings, and this server-side guard rejects direct API
-            # calls slipping through.
+            # MANUAL path: build the per-mode calibration 3MF, slice it
+            # through the configured sidecar, persist the sliced bytes as
+            # a ``LibraryFile``, then enqueue as is_calibration print
+            # pointing at that library_file_id. Same shape as the regular
+            # library "Slice → save → queue" flow, just driven by
+            # ``build_calibration_3mf`` instead of user-supplied source.
             from backend.app.services import background_dispatch  # late import to dodge cycle
-            from backend.app.services.slicer_routing import any_sidecar_online
+            from backend.app.services.slicer_routing import any_sidecar_online, resolve_sidecar_url
 
             if not await any_sidecar_online(db):
                 raise SlicerSidecarRequiredError(
@@ -272,39 +382,165 @@ class CalibrationService:
                     "'Server-side slicing' under Settings → General → General and configure "
                     "an OrcaSlicer / Bambu Studio API URL."
                 )
-
-            asset = resolve_asset(cali_mode, pass_n=1)
-            if not asset.path.exists():
-                raise ValueError(f"calibration asset not available: {asset.path.name}")
             if not filaments:
                 raise ValueError("manual calibration needs at least one filament")
+            # Preset-selection contract mirrors /slice-only: either bundle
+            # OR full PresetRef triplet must be present. The route's
+            # StartSessionIn validator already enforces this for non-AUTO
+            # methods, but re-check at the service level too so direct
+            # internal callers don't slip past.
+            if bundle is None and (printer_preset is None or process_preset is None or not filament_presets):
+                raise ValueError(
+                    "Manual calibration needs either 'bundle' or all of "
+                    "'printer_preset' + 'process_preset' + 'filament_presets'"
+                )
+
+            spec_with_bed = dict(spec or {})
+            if bed_type and "bed_type" not in spec_with_bed:
+                spec_with_bed["bed_type"] = bed_type
+            if bundle is not None and "target_printer_settings_id" not in spec_with_bed:
+                spec_with_bed["target_printer_settings_id"] = bundle.printer_name
+            if slicer and "slicer" not in spec_with_bed:
+                spec_with_bed["slicer"] = slicer
+
+            from backend.app.services.calib_3mf_builder import build_calibration_3mf
+
+            try:
+                bake_bytes = build_calibration_3mf(
+                    cali_mode=cali_mode,
+                    spec=spec_with_bed,
+                    extruder_count=1,
+                    pass_n=1,
+                )
+            except NotImplementedError as exc:
+                raise CalibModeNotImplementedError(
+                    f"Calibration builder not registered for '{cali_mode.value}': {exc}"
+                ) from exc
+
+            _, api_url = await resolve_sidecar_url(db, slicer_override=slicer)
+            if not api_url:
+                raise SlicerSidecarRequiredError("No slicer sidecar configured")
+
+            from backend.app.services.preset_resolver import resolve_preset_ref
+            from backend.app.services.slicer_api import (
+                SlicerApiError,
+                SlicerApiService,
+                SlicerApiUnavailableError,
+                SlicerInputError,
+            )
+
+            model_filename = f"calibration_{cali_mode.value}.3mf"
+            try:
+                async with SlicerApiService(base_url=api_url) as svc:
+                    if bundle is not None:
+                        slice_result = await svc.slice_with_bundle(
+                            model_bytes=bake_bytes,
+                            model_filename=model_filename,
+                            bundle_id=bundle.bundle_id,
+                            printer_name=bundle.printer_name,
+                            process_name=bundle.process_name,
+                            filament_names=bundle.filament_names,
+                            export_3mf=True,
+                        )
+                    else:
+                        printer_json = await resolve_preset_ref(db, user, printer_preset, "printer")
+                        process_json = await resolve_preset_ref(db, user, process_preset, "process")
+                        filament_jsons = [
+                            await resolve_preset_ref(db, user, ref, "filament") for ref in filament_presets
+                        ]
+                        slice_result = await svc.slice_with_profiles(
+                            model_bytes=bake_bytes,
+                            model_filename=model_filename,
+                            printer_profile_json=printer_json,
+                            process_profile_json=process_json,
+                            filament_profile_jsons=filament_jsons,
+                            export_3mf=True,
+                            bed_type=bed_type,
+                        )
+            except (SlicerInputError, SlicerApiUnavailableError, SlicerApiError) as exc:
+                raise ValueError(f"Slicer sidecar failed for calibration slice: {exc}") from exc
+
+            # Persist sliced bytes as a LibraryFile so the dispatcher
+            # picks it up like any other queued library item. Stored
+            # under a synthetic filename so it doesn't collide with
+            # operator uploads. ``source_type=sliced`` keeps the file
+            # manager's badging correct.
+            library_file_id = await _persist_calibration_slice_to_library(
+                content=slice_result.content,
+                filename=f"calibration_{cali_mode.value}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.gcode.3mf",
+                user_id=user_id,
+                print_time_seconds=slice_result.print_time_seconds,
+                filament_used_g=slice_result.filament_used_g,
+                filament_used_mm=slice_result.filament_used_mm,
+            )
+
+            # Order-of-creation matters: scheduler polls the queue and may
+            # pick up the item between INSERT and any post-INSERT update,
+            # reading whatever state the row had at SELECT time. So we
+            # create the session row FIRST (with print_queue_item_id NULL),
+            # then enqueue the item with calibration_session_id already
+            # set, then patch session.print_queue_item_id. The item is
+            # born with the back-reference in place — no race where
+            # scheduler sees a NULL calibration_session_id and produces
+            # an archive without the link.
+            session = CalibrationSession(
+                printer_id=printer_id,
+                user_id=user_id,
+                cali_mode=cali_mode.value,
+                method=method.value,
+                nozzle_diameter=nozzle_diameter,
+                nozzle_volume_type=nozzle_volume_type,
+                extruder_id=extruder_id,
+                filaments_json=json.dumps(filaments_payload),
+                status="running",
+                mqtt_sequence_id=sequence_id,
+                stage=1,
+                print_queue_item_id=None,
+            )
+            db.add(session)
+            await db.commit()
+            await db.refresh(session)
+
             print_queue_item_id = await background_dispatch.enqueue_calibration_print(
                 printer_id=printer_id,
-                asset_path=str(asset.path),
+                asset_path="",  # legacy field, no longer used — library_file_id is the truth
                 cali_mode=cali_mode.value,
                 user_id=user_id,
                 ams_id=filaments[0].ams_id,
                 slot_id=filaments[0].slot_id,
                 tray_id=filaments[0].tray_id,
+                library_file_id=library_file_id,
+                print_options=print_options,
+                swap_macros=swap_macros,
+                calibration_session_id=session.id,
             )
 
-        session = CalibrationSession(
-            printer_id=printer_id,
-            user_id=user_id,
-            cali_mode=cali_mode.value,
-            method=method.value,
-            nozzle_diameter=nozzle_diameter,
-            nozzle_volume_type=nozzle_volume_type,
-            extruder_id=extruder_id,
-            filaments_json=json.dumps(filaments_payload),
-            status="running",
-            mqtt_sequence_id=sequence_id,
-            stage=1,
-            print_queue_item_id=print_queue_item_id,
-        )
-        db.add(session)
-        await db.commit()
-        await db.refresh(session)
+            session.print_queue_item_id = print_queue_item_id
+            await db.commit()
+            await db.refresh(session)
+
+        # AUTO paths (AUTO_PA_LINE / FLOW_RATE) didn't enqueue a queue
+        # item — they kicked MQTT extrusion_cali_* directly. Persist
+        # their session row here. Manual path already created+linked
+        # the session in the elif branch above.
+        if "session" not in locals():
+            session = CalibrationSession(
+                printer_id=printer_id,
+                user_id=user_id,
+                cali_mode=cali_mode.value,
+                method=method.value,
+                nozzle_diameter=nozzle_diameter,
+                nozzle_volume_type=nozzle_volume_type,
+                extruder_id=extruder_id,
+                filaments_json=json.dumps(filaments_payload),
+                status="running",
+                mqtt_sequence_id=sequence_id,
+                stage=1,
+                print_queue_item_id=None,
+            )
+            db.add(session)
+            await db.commit()
+            await db.refresh(session)
         await broadcast_calibration_event(
             printer_id=printer_id,
             event="started",
@@ -619,14 +855,24 @@ class CalibrationService:
 
 
 async def reconcile_session_status(db: AsyncSession, session: CalibrationSession) -> bool:
-    """Lazy-flip running → awaiting_user_input | saved | failed.
+    """Lazy-flip running → awaiting_user_input | saved | failed | cancelled.
 
     Auto path: PrinterState.extrusion_cali_status reports "completed" once
     the printer pushes extrusion_cali_get_result → flip to
     awaiting_user_input.
 
-    Manual path: linked PrintQueueItem reaches "completed" / "failed" →
-    flip to awaiting_user_input (tower modes go straight to "saved").
+    Manual path: cascade through three signals in order:
+      1. ``PrintQueueItem.status`` — primary signal when scheduler /
+         on_print_complete wired it correctly.
+      2. ``PrintArchive.status`` (via queue_item.archive_id) — fallback
+         when the queue item is stuck at ``printing`` / ``pending`` but
+         the print itself has actually finished (the archive's status
+         is updated by on_print_complete even when the queue-item
+         status update races something else).
+      3. Cancelled / aborted dispatch — covered through queue_item or
+         archive's ``cancelled`` / ``aborted`` statuses → session goes
+         to ``cancelled`` so the wizard doesn't prompt for a save the
+         user can't make.
 
     Returns True if status changed. Best-effort; never raises.
     """
@@ -638,26 +884,68 @@ async def reconcile_session_status(db: AsyncSession, session: CalibrationSession
         if session.method == "auto":
             if client and getattr(client.state, "extrusion_cali_status", "idle") == "completed":
                 new_status = "saved" if is_tower_mode(session.cali_mode) else "awaiting_user_input"
-        elif session.print_queue_item_id is not None:
+        else:
+            from backend.app.models.archive import PrintArchive  # local import
             from backend.app.models.print_queue import PrintQueueItem  # local import
 
-            item = await db.get(PrintQueueItem, session.print_queue_item_id)
-            if item and item.status in {"completed", "failed"}:
-                if item.status == "failed":
-                    new_status = "failed"
-                else:
-                    new_status = "saved" if is_tower_mode(session.cali_mode) else "awaiting_user_input"
+            # Try both signals in parallel — whichever is terminal first
+            # decides the new session status. on_print_complete sets
+            # ``queue_item.status='completed'`` BEFORE flipping the
+            # archive (the archive update happens ~400 lines later in
+            # the same hook); auto-cleanup then DELETES the queue item.
+            # So during the on_print_complete window we have
+            # queue_item.status='completed' + archive.status='printing';
+            # after the hook finishes we have queue_item=gone +
+            # archive.status='completed'. Both paths need to terminate
+            # the session — pick whichever transitions first.
+            def _classify(state: str | None) -> str | None:
+                if state in {"cancelled", "aborted"}:
+                    return "cancelled"
+                if state == "failed":
+                    return "failed"
+                if state == "completed":
+                    return "saved" if is_tower_mode(session.cali_mode) else "awaiting_user_input"
+                return None
+
+            archive = (
+                await db.execute(
+                    select(PrintArchive)
+                    .where(PrintArchive.calibration_session_id == session.id)
+                    .order_by(PrintArchive.id.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if archive is not None:
+                new_status = _classify(archive.status)
+            if new_status is None and session.print_queue_item_id is not None:
+                item = await db.get(PrintQueueItem, session.print_queue_item_id)
+                if item is not None:
+                    new_status = _classify(item.status)
 
         if new_status and new_status != session.status:
             session.status = new_status
             await db.commit()
+            # commit() expires attributes by default; the caller (route)
+            # immediately serializes via pydantic.model_validate, which
+            # would trigger a lazy reload of e.g. updated_at and fail
+            # with MissingGreenlet outside the SQLAlchemy greenlet ctx.
+            # Refresh here so attribute access stays sync-safe.
+            await db.refresh(session)
+            event = (
+                "saved"
+                if new_status == "saved"
+                else (
+                    "failed" if new_status == "failed" else ("cancelled" if new_status == "cancelled" else "completed")
+                )
+            )
             await broadcast_calibration_event(
                 printer_id=session.printer_id,
-                event="saved" if new_status == "saved" else ("failed" if new_status == "failed" else "completed"),
+                event=event,
                 payload={"session_id": session.id},
             )
             return True
     except Exception:
+        logger.exception("reconcile_session_status failed for session %s", session.id)
         return False
     return False
 

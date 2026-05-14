@@ -119,3 +119,19 @@ def test_cali_supports_pa_auto_requires_lidar():
     s = compute_calibration_supports(state, "P1S", module_vers={})
     assert s["pa_auto"] is False
     assert s["flow_auto"] is False
+
+
+def test_cali_supports_mode_state_map_present():
+    """compute_calibration_supports projects MODE_STATE so the wizard can
+    render disabled / verification / production rows. Phase 0 invariant:
+    every value is the literal string 'disabled' until phases flip them."""
+    from backend.app.services.calibration_constants import CaliMode
+
+    s = compute_calibration_supports(PrinterState(), "X1C", module_vers={})
+    assert "mode_state" in s
+    assert isinstance(s["mode_state"], dict)
+    # Every CaliMode is covered
+    assert set(s["mode_state"].keys()) == {m.value for m in CaliMode}
+    # Values are plain strings, not enum instances (JSON-safe contract)
+    assert all(isinstance(v, str) for v in s["mode_state"].values())
+    assert all(v in ("disabled", "verification", "production") for v in s["mode_state"].values())

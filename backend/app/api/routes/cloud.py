@@ -696,7 +696,117 @@ async def get_filament_info(
                             except (ValueError, TypeError):
                                 k_value = None
 
-                        info = {"name": name, "k": k_value}
+                        info: dict = {"name": name, "k": k_value}
+
+                        # Derive bed / nozzle / max-volumetric-speed from the
+                        # cloud preset content so the calibration wizard's
+                        # production-mode form can auto-fill those values
+                        # (operator picks a filament preset → BS-shape
+                        # temperatures + speed appear without manual entry).
+                        # Bambu's preset JSON stores these as
+                        # ConfigOptionFloatsNullable / ConfigOptionInts —
+                        # list-valued, one entry per logical filament slot;
+                        # we surface the first non-null entry as the
+                        # canonical value for the calibration's single-slot
+                        # use case. The cloud also exposes these as
+                        # string-typed values for back-compat with older
+                        # GUIs; cast best-effort.
+                        def _first_numeric(value):
+                            # ``"nil"`` is Bambu's serialization sentinel for
+                            # nullable ConfigOption entries (BS Config.hpp
+                            # ``"nil"`` literal — "inherit from parent").
+                            # Treat it the same as None / "" so the caller
+                            # falls through to parent inheritance lookup.
+                            if value is None or value == "nil":
+                                return None
+                            if isinstance(value, list):
+                                for entry in value:
+                                    if entry is None or entry == "" or entry == "nil":
+                                        continue
+                                    try:
+                                        return float(entry)
+                                    except (ValueError, TypeError):
+                                        continue
+                                return None
+                            try:
+                                return float(value)
+                            except (ValueError, TypeError):
+                                return None
+
+                        # Bambu serializes nullable ConfigOption fields with
+                        # the literal string ``"nil"`` as a sentinel for
+                        # "inherit from parent" — see BS
+                        # ``ConfigOptionVectorBase`` in Config.hpp (search
+                        # `"nil"`). Cloud presets returned by
+                        # ``get_setting_detail`` carry only the delta
+                        # against ``base_id``; fields the operator left at
+                        # parent defaults come back as ``["nil"]`` (or
+                        # plain absent). Bed temp + max-vol-speed worked
+                        # because they're usually filament-specific
+                        # overrides; ``nozzle_temperature`` is more often
+                        # inherited from the base material preset (e.g.
+                        # ``Generic PETG-HF @BBL A1M`` keeps temps from
+                        # ``fdm_filament_pet`` parent).
+                        #
+                        # Walk the ``base_id`` chain until a non-nil value
+                        # surfaces. Each hop hits the cloud, so cap depth
+                        # at 5 (BS inheritance chains are at most 2-3 hops
+                        # in practice).
+                        async def _resolve_inherited_numeric(
+                            initial_setting: dict, initial_base_id: str | None, key: str, max_depth: int = 5
+                        ):
+                            """Walk the cloud preset inheritance chain to
+                            find a non-nil numeric value for ``key``.
+                            Stops at first concrete value, ``base_id ==
+                            None``, depth cap, or fetch failure."""
+                            val = _first_numeric(initial_setting.get(key))
+                            if val is not None:
+                                return val
+                            cur_base = initial_base_id
+                            for _ in range(max_depth):
+                                if not cur_base:
+                                    return None
+                                try:
+                                    parent_data = await cloud.get_setting_detail(cur_base)
+                                except Exception as e:
+                                    logger.debug(
+                                        "get_filament_info: parent fetch failed for %s: %s",
+                                        cur_base,
+                                        e,
+                                    )
+                                    return None
+                                parent_setting = parent_data.get("setting", {}) or {}
+                                val = _first_numeric(parent_setting.get(key))
+                                if val is not None:
+                                    return val
+                                cur_base = parent_data.get("base_id") or parent_setting.get("inherits")
+                            return None
+
+                        base_id = data.get("base_id") or setting.get("inherits")
+                        nozzle_temp = await _resolve_inherited_numeric(setting, base_id, "nozzle_temperature")
+                        bed_temp = _first_numeric(setting.get("hot_plate_temp") or setting.get("bed_temperature"))
+                        if bed_temp is None:
+                            bed_temp = await _resolve_inherited_numeric(setting, base_id, "hot_plate_temp")
+                        max_vol_speed = _first_numeric(setting.get("filament_max_volumetric_speed"))
+                        if max_vol_speed is None:
+                            max_vol_speed = await _resolve_inherited_numeric(
+                                setting, base_id, "filament_max_volumetric_speed"
+                            )
+                        if nozzle_temp is not None:
+                            info["nozzle_temperature"] = nozzle_temp
+                        else:
+                            temp_keys = sorted(k for k in setting if "temp" in k.lower() or "nozzle" in k.lower())
+                            logger.warning(
+                                "get_filament_info: setting_id=%s nozzle_temperature unresolved "
+                                "(base_id=%s); local temp/nozzle keys: %s",
+                                setting_id,
+                                base_id,
+                                temp_keys,
+                            )
+                        if bed_temp is not None:
+                            info["hot_plate_temp"] = bed_temp
+                        if max_vol_speed is not None:
+                            info["filament_max_volumetric_speed"] = max_vol_speed
                         _filament_cache[setting_id] = info
                         result[setting_id] = info
 

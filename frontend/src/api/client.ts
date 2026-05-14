@@ -3628,6 +3628,8 @@ export type CaliMethod = 'auto' | 'manual';
 
 export type NozzleVolumeType = 'standard' | 'high_flow' | 'tpu_high_flow' | 'hybrid';
 
+export type CalibModeState = 'disabled' | 'verification' | 'production';
+
 export interface CalibCapabilities {
   pa_manual: boolean;
   flow_manual: boolean;
@@ -3645,6 +3647,11 @@ export interface CalibCapabilities {
     type: string | null;
     flow_type: string | null;
   }>;
+  // Per-mode lifecycle state — key is CaliMode, value is one of
+  // 'disabled' / 'verification' / 'production'. Server mirrors the
+  // MODE_STATE registry; frontend ANDs this with the capability flags
+  // above to decide whether a row is interactive.
+  mode_state: Record<string, CalibModeState>;
 }
 
 export interface CalibFilamentIn {
@@ -3667,6 +3674,58 @@ export interface StartSessionIn {
   nozzle_volume_type: NozzleVolumeType;
   extruder_id?: number;
   filaments: CalibFilamentIn[];
+  // Preset / slicer fields (mirror CalibSliceOnlyIn). Required for
+  // manual modes that route through the slicer-sidecar pipeline
+  // (PA Tower and beyond); ignored by AUTO modes (AUTO_PA_LINE,
+  // FLOW_RATE fire MQTT directly).
+  spec?: Record<string, number | string | boolean>;
+  bundle?: SliceBundleSpec;
+  printer_preset?: PresetRef;
+  process_preset?: PresetRef;
+  filament_presets?: PresetRef[];
+  slicer?: 'orcaslicer' | 'bambu_studio';
+  bed_type?: BedType;
+  // Per-job dispatcher toggles. Same shape as PrintModal types' PrintOptions /
+  // SwapMacrosOptions — the calibration backend forwards both onto the
+  // resulting PrintQueueItem so the dispatcher fires swap macros / sets bed-
+  // levelling / etc. just like a regular library job.
+  print_options?: {
+    bed_levelling: boolean;
+    flow_cali: boolean;
+    layer_inspect: boolean;
+    timelapse: boolean;
+    mesh_mode_fast_check: boolean;
+    gcode_injection: boolean;
+  };
+  swap_macros?: {
+    execute: boolean;
+    events: Array<'swap_mode_start' | 'swap_mode_change_table'>;
+  };
+}
+
+export interface CalibBakeOnlyIn {
+  cali_mode: CaliMode;
+  spec?: Record<string, number | string | boolean>;
+  extruder_count?: number;
+  pass_n?: number;
+  bed_type?: BedType;
+}
+
+export interface CalibSliceOnlyIn {
+  cali_mode: CaliMode;
+  spec?: Record<string, number | string | boolean>;
+  extruder_count?: number;
+  pass_n?: number;
+  // Either bundle OR (printer_preset + process_preset + filament_presets).
+  // The server's validator rejects bodies that don't carry one shape or
+  // the other. See SliceRequest for the symmetric pattern in the main
+  // slice routes.
+  bundle?: SliceBundleSpec;
+  printer_preset?: PresetRef;
+  process_preset?: PresetRef;
+  filament_presets?: PresetRef[];
+  slicer?: 'orcaslicer' | 'bambu_studio';
+  bed_type?: BedType;
 }
 
 export interface CalibrationSessionOut {
@@ -4143,6 +4202,68 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+  bakeCalibrationForVerification: async (
+    printerId: number,
+    body: CalibBakeOnlyIn,
+  ): Promise<{ blob: Blob; filename: string }> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    const response = await fetch(`${API_BASE}/printers/${printerId}/calibration/bake-only`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      const message = typeof err === 'object' && err
+        ? (err.detail?.message ?? err.detail?.detail ?? err.detail ?? err.message ?? `HTTP ${response.status}`)
+        : `HTTP ${response.status}`;
+      throw new Error(String(message));
+    }
+    let filename = `calibration_${body.cali_mode}.bake.3mf`;
+    const dispo = response.headers.get('Content-Disposition');
+    if (dispo) {
+      const utf8Match = dispo.match(/filename\*=UTF-8''([^;]+)/i);
+      if (utf8Match) filename = decodeURIComponent(utf8Match[1]);
+      else {
+        const plain = dispo.match(/filename="?([^"]+)"?/);
+        if (plain) filename = plain[1];
+      }
+    }
+    const blob = await response.blob();
+    return { blob, filename };
+  },
+  sliceCalibrationForVerification: async (
+    printerId: number,
+    body: CalibSliceOnlyIn,
+  ): Promise<{ blob: Blob; filename: string }> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    const response = await fetch(`${API_BASE}/printers/${printerId}/calibration/slice-only`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      const message = typeof err === 'object' && err
+        ? (err.detail?.message ?? err.detail?.detail ?? err.detail ?? err.message ?? `HTTP ${response.status}`)
+        : `HTTP ${response.status}`;
+      throw new Error(String(message));
+    }
+    let filename = `calibration_${body.cali_mode}.gcode.3mf`;
+    const dispo = response.headers.get('Content-Disposition');
+    if (dispo) {
+      const utf8Match = dispo.match(/filename\*=UTF-8''([^;]+)/i);
+      if (utf8Match) filename = decodeURIComponent(utf8Match[1]);
+      else {
+        const plain = dispo.match(/filename="?([^"]+)"?/);
+        if (plain) filename = plain[1];
+      }
+    }
+    const blob = await response.blob();
+    return { blob, filename };
+  },
   getCalibrationSession: (sessionId: number) =>
     request<CalibrationSessionOut>(`/calibration/sessions/${sessionId}`),
   cancelCalibrationSession: (sessionId: number) =>
@@ -4155,6 +4276,15 @@ export const api = {
   listAwaitingSessions: (printerId: number) =>
     request<CalibrationSessionOut[]>(
       `/calibration/sessions?printer_id=${printerId}&status=awaiting_user_input`,
+    ),
+  // All sessions for a printer that are still "live" (running or
+  // awaiting user input). Used by the wizard's resume-banner to
+  // surface an in-progress calibration after a page reload — the
+  // operator sees "Resume / Discard" and the modal jumps straight
+  // to the right step.
+  listActiveSessions: (printerId: number) =>
+    request<CalibrationSessionOut[]>(
+      `/calibration/sessions?printer_id=${printerId}`,
     ),
   submitAutoResult: (sessionId: number, body: AutoResultIn) =>
     request<FilamentCalibrationOut[]>(`/calibration/sessions/${sessionId}/auto-result`, {
@@ -5066,7 +5196,22 @@ export const api = {
   getAllCloudFields: () =>
     request<Record<string, FieldDefinitionsResponse>>('/cloud/fields'),
   getFilamentInfo: (settingIds: string[]) =>
-    request<Record<string, { name: string; k: number | null }>>('/cloud/filament-info', {
+    request<
+      Record<
+        string,
+        {
+          name: string;
+          k: number | null;
+          // Optional fields populated for cloud-resolved presets — used by
+          // the calibration wizard to auto-fill bed / nozzle / max-vol-
+          // speed from the operator's picked filament preset instead of
+          // making them type the values manually.
+          nozzle_temperature?: number;
+          hot_plate_temp?: number;
+          filament_max_volumetric_speed?: number;
+        }
+      >
+    >('/cloud/filament-info', {
       method: 'POST',
       body: JSON.stringify(settingIds),
     }),

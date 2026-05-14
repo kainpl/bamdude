@@ -6,6 +6,7 @@ import { useToast } from '../contexts/ToastContext';
 import { useFilamentCalibration } from '../hooks/useFilamentCalibration';
 import { CalibrationStartPage } from './calibration/CalibrationStartPage';
 import { CalibrationPresetPage } from './calibration/CalibrationPresetPage';
+import { CalibrationVerifyDownloadPage } from './calibration/CalibrationVerifyDownloadPage';
 import { CalibrationRunningPage } from './calibration/CalibrationRunningPage';
 import { CalibrationManualSavePage } from './calibration/CalibrationManualSavePage';
 import { CalibrationCoarseSavePage } from './calibration/CalibrationCoarseSavePage';
@@ -70,7 +71,24 @@ export function FilamentCalibrationModal({ isOpen, onClose, printerId }: Props) 
               capabilities={cali.capabilities}
               onPick={(mode, method) => {
                 cali.setInput({ cali_mode: mode, method });
-                cali.setStep('preset');
+                // VERIFICATION-state modes (W2 sign-off pipeline) skip the
+                // AMS slot / temps preset step — nothing dispatches, the
+                // operator only picks a bundle + presets and downloads
+                // the sliced 3MF to compare against BS reference output.
+                const state = cali.capabilities?.mode_state?.[mode] ?? 'disabled';
+                cali.setStep(state === 'verification' ? 'verifyDownload' : 'preset');
+              }}
+            />
+          )}
+
+          {cali.step === 'verifyDownload' && cali.input.cali_mode && (
+            <CalibrationVerifyDownloadPage
+              printerId={printerId}
+              caliMode={cali.input.cali_mode}
+              onBack={() => cali.setStep('start')}
+              onDone={() => {
+                cali.setSessionId(null);
+                cali.setStep('start');
               }}
             />
           )}
@@ -96,6 +114,15 @@ export function FilamentCalibrationModal({ isOpen, onClose, printerId }: Props) 
                   nozzle_volume_type: preset.nozzle_volume_type,
                   extruder_id: preset.extruder_id,
                   filaments: preset.filaments,
+                  spec: preset.spec,
+                  bundle: preset.bundle,
+                  printer_preset: preset.printer_preset,
+                  process_preset: preset.process_preset,
+                  filament_presets: preset.filament_presets,
+                  slicer: preset.slicer,
+                  bed_type: preset.bed_type,
+                  print_options: preset.print_options,
+                  swap_macros: preset.swap_macros,
                 });
               }}
             />

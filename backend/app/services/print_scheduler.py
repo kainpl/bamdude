@@ -1573,6 +1573,14 @@ class PrintScheduler:
             "execute_swap_macros": item.execute_swap_macros,
             "swap_macro_events": swap_events,
             "gcode_injection": item.gcode_injection,
+            # Filament-calibration tagging — dispatcher's pre-print bind hook
+            # uses this to skip the ``extrusion_cali_sel`` re-bind (the
+            # calibration print itself is what determines the new K value),
+            # and the archive_print step forwards it to PrintArchive.is_calibration
+            # so the resulting row is correctly tagged as a calibration print
+            # in the archive listing (#filament-cal-archive-flag).
+            "is_calibration": item.is_calibration,
+            "calibration_session_id": item.calibration_session_id,
         }
 
         if archive:

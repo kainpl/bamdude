@@ -1514,6 +1514,8 @@ class ArchiveService:
         prefer_filename_for_name: bool = False,
         plate_index: int | None = None,
         dispatched_file: Path | None = None,
+        is_calibration: bool = False,
+        calibration_session_id: int | None = None,
     ) -> PrintArchive | None:
         """Archive a 3MF file with metadata.
 
@@ -1853,6 +1855,8 @@ class ArchiveService:
             project_id=project_id,
             subtask_id=subtask_id,
             library_file_id=library_file_id,
+            is_calibration=is_calibration,
+            calibration_session_id=calibration_session_id,
         )
 
         self.db.add(archive)

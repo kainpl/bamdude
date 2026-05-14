@@ -1,6 +1,11 @@
 import { useTranslation } from 'react-i18next';
 
-import type { CalibCapabilities, CaliMethod, CaliMode } from '../../api/client';
+import type {
+  CalibCapabilities,
+  CalibModeState,
+  CaliMethod,
+  CaliMode,
+} from '../../api/client';
 
 interface Props {
   capabilities: CalibCapabilities | undefined;
@@ -34,29 +39,65 @@ const TOWER_OPTIONS: OptionRow[] = [
   { mode: 'retraction_tower', method: 'manual', labelKey: 'retractionTower', descKey: 'retractionTowerDesc', capKey: 'retraction_tower' },
 ];
 
+function resolveModeState(
+  capabilities: CalibCapabilities | undefined,
+  mode: CaliMode,
+): CalibModeState {
+  // Auto-paths read by their CaliMode value: 'flow_rate' for both manual
+  // and auto flow rate (MQTT-side dispatch is gated on capability flag,
+  // not on a separate enum). Auto PA is 'auto_pa_line'. The server's
+  // mode_state map keys on CaliMode so both 'flow_rate' rows share the
+  // same lifecycle entry — disabling 'flow_rate' disables both.
+  return capabilities?.mode_state?.[mode] ?? 'disabled';
+}
+
 export function CalibrationStartPage({ capabilities, onPick }: Props) {
   const { t } = useTranslation();
 
   const renderRow = (r: OptionRow) => {
     const supported = capabilities ? Boolean(capabilities[r.capKey]) : false;
-    const disabled = !supported;
-    const reason = !supported ? t('filamentCali.start.notSupported') : '';
+    const state = resolveModeState(capabilities, r.mode);
+    // A row is interactive only when the per-printer capability flag AND
+    // the global mode_state agree it's usable. 'disabled' blocks the
+    // click outright; 'verification' lets the click through so the
+    // confirm page can render the "Download sliced 3MF" button.
+    const interactive = supported && state !== 'disabled';
+    const reason = !supported
+      ? t('filamentCali.start.notSupported')
+      : state === 'disabled'
+        ? t('filamentCali.start.notImplemented')
+        : '';
+    const pill =
+      state === 'verification' ? (
+        <span
+          className="text-[10px] font-semibold uppercase tracking-wide bg-yellow-500/20 text-yellow-300 px-1.5 py-0.5 rounded"
+          title={t('filamentCali.start.verificationModeTooltip')}
+        >
+          {t('filamentCali.start.verificationModePill')}
+        </span>
+      ) : null;
+
     return (
       <button
         key={`${r.mode}-${r.method}`}
         type="button"
-        onClick={() => !disabled && onPick(r.mode, r.method)}
-        disabled={disabled}
+        onClick={() => interactive && onPick(r.mode, r.method)}
+        disabled={!interactive}
         title={reason}
         className={`w-full text-left p-3 rounded-lg border transition-colors ${
-          disabled
+          !interactive
             ? 'border-bambu-dark-tertiary bg-bambu-dark opacity-50 cursor-not-allowed'
             : 'border-bambu-dark-tertiary bg-bambu-dark hover:border-bambu-green'
         }`}
       >
-        <div className="flex items-center justify-between">
-          <span className="font-medium text-white">{t(`filamentCali.start.${r.labelKey}`)}</span>
-          {disabled && <span className="text-xs text-bambu-gray">{reason}</span>}
+        <div className="flex items-center justify-between gap-2">
+          <span className="font-medium text-white flex items-center gap-2">
+            {t(`filamentCali.start.${r.labelKey}`)}
+            {pill}
+          </span>
+          {!interactive && reason && (
+            <span className="text-xs text-bambu-gray">{reason}</span>
+          )}
         </div>
         <p className="text-sm text-bambu-gray mt-1">{t(`filamentCali.start.${r.descKey}`)}</p>
       </button>

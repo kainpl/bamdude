@@ -13,6 +13,7 @@ response keeps it cheap to serialize and the frontend hides rows with
 from typing import TypedDict
 
 from backend.app.services.bambu_mqtt import PrinterState
+from backend.app.services.calibration_mode_registry import mode_state_map
 from backend.app.utils.printer_models import has_door_sensor
 
 
@@ -119,8 +120,14 @@ def compute_calibration_supports(
     (Filament Calibration kebab entries are hidden when ``use_slicer_api``
     is off in Settings) and again server-side in
     ``CalibrationService.start_calibration`` for the manual / tower paths
-    — all of which need slicing once the W2 pipeline lands. No per-mode
-    gating here because the entire wizard surface is gated upstream.
+    — all of which need slicing once the W2 pipeline lands.
+
+    Per-mode lifecycle state (``mode_state``) is projected from
+    ``calibration_mode_registry.MODE_STATE`` — the wizard reads it to
+    render disabled / verification / production rows. Capability booleans
+    (``pa_manual`` etc.) stay as-is for backwards compatibility; the
+    frontend ANDs them with ``mode_state`` to decide whether the row is
+    interactive.
     """
     m = _norm(printer_model)
     has_lidar = m in _LIDAR_MODELS
@@ -148,4 +155,5 @@ def compute_calibration_supports(
             }
             for i, n in enumerate(getattr(state, "nozzles", []) or [])
         ],
+        "mode_state": mode_state_map(),
     }

@@ -311,6 +311,18 @@ export function useWebSocket() {
         debouncedInvalidate('queues');
         if (message.printer_id !== undefined) {
           queryClient.invalidateQueries({ queryKey: ['queue', message.printer_id] });
+          // Calibration wizard's active-session list + bound session query
+          // need to refetch immediately after a print-complete so the
+          // running-step page picks up the lazy-reconciled status flip
+          // (running → awaiting_user_input / saved / failed / cancelled)
+          // without waiting for its own poll interval. Backend's
+          // ``broadcast_calibration_event`` also fires once reconcile
+          // runs, but invalidating here covers the case where the
+          // reconcile call itself races against this WS arrival.
+          queryClient.invalidateQueries({
+            queryKey: ['calibration', 'active', message.printer_id],
+          });
+          queryClient.invalidateQueries({ queryKey: ['calibration', 'session'] });
         }
         break;
 

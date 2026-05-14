@@ -4135,6 +4135,30 @@ export default {
       retractionTowerDesc:
         'Step through retraction lengths to find the minimum that stops stringing.',
       notSupported: 'Not supported on this printer',
+      notImplemented: 'Not yet implemented in this build',
+      verificationModePill: 'Verification',
+      verificationModeTooltip:
+        'This mode is in verification — confirming the page will offer a "Download sliced 3MF" button so you can compare against your slicer\'s reference output before BamDude wires it to the printer.',
+    },
+    verifyDownload: {
+      heading: 'Verification — download sliced 3MF',
+      intro:
+        "Verification mode runs the calibration through your slicer sidecar and returns the sliced .gcode.3mf as a download. Open it in Bambu Studio or OrcaSlicer and compare against your reference output before BamDude wires this mode to dispatch real prints.",
+      loadingPresets: 'Loading presets…',
+      specHeading: 'PA Tower parameters',
+      startK: 'Start K',
+      endK: 'End K',
+      stepK: 'K step',
+      layerHeight: 'Layer height (mm)',
+      nozzleDia: 'Nozzle diameter (mm)',
+      download: 'Download sliced 3MF',
+      downloading: 'Slicing…',
+      success: 'Downloaded {{filename}}',
+      bake: 'Download pre-slice 3MF',
+      baking: 'Baking…',
+      bakeTooltip:
+        "Returns the composed 3MF BEFORE it's handed to the slicer — useful for inspecting the per-layer M900 commands and per-object overrides that BamDude packs.",
+      bakeSuccess: 'Downloaded {{filename}}',
     },
     autoSave: {
       heading: 'Review auto-calibration results',
@@ -4192,6 +4216,7 @@ export default {
       maxVolSpeed: 'Max volumetric speed, mm³/s',
       selectFilament: 'Select a loaded spool',
       externalSpoolDisabled: 'External spool calibration is not supported in this plan',
+      externalSpool: 'External spool',
       noLoadedSlot: 'No loaded AMS slot — load a spool first',
       missingTemps: 'Set nozzle and bed temperature',
       customFilament: 'Custom filament — name:',
@@ -4207,7 +4232,7 @@ export default {
     manualSave: {
       heading: 'Pick the best-looking line',
       instruction:
-        'Look at the printed tower. Count lines bottom-to-top (line 0 is the first); pick the one with cleanest extrusion.',
+        'Look at the printed lines. Pick the line with the most even extrusion — no bulges at the ends, no thin spots in the middle.',
       lineIndex: 'Line index',
       computedK: 'Computed K value',
       name: 'Save as',
@@ -4215,6 +4240,14 @@ export default {
       notes: 'Notes',
       notesPlaceholder: 'Anything to remember about this calibration',
       syncToPrinter: 'Save to printer history (lets external prints use it)',
+      save: 'Save & finish',
+    },
+    paTowerSave: {
+      heading: 'Measure the best height on the tower',
+      instruction:
+        'Examine each corner of the printed tower and find the height (in mm) that yields the cleanest corners — no bulges, no gaps, smooth surface.\nPressure Advance is then computed as: K = Start + (Step × measured_height_mm).',
+      measuredHeight: 'Measured height (mm)',
+      formula: 'K',
       save: 'Save & finish',
     },
     coarseSave: {
@@ -4260,6 +4293,7 @@ export default {
     back: 'Back',
     next: 'Next',
     startCalibration: 'Start calibration',
+    startingCalibration: 'Starting…',
   },
 
   // Print modal

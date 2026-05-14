@@ -1381,6 +1381,13 @@ class BackgroundDispatchService:
                     source_content_hash=lib_file.file_hash,
                     applied_patches=applied_patches or None,
                     library_file_id=lib_file.id,
+                    # Tag the resulting archive row as a calibration print
+                    # when the queue item was an is_calibration job — keeps
+                    # archive.kind='calibration' filter in /archives in sync
+                    # with what the wizard fired off. Forwarded from
+                    # PrintQueueItem via print_scheduler's options dict.
+                    is_calibration=bool(job.options.get("is_calibration")),
+                    calibration_session_id=job.options.get("calibration_session_id"),
                     # Forward the requesting user so per-user stats filter sees this
                     # archive and the post-print notification has a recipient. Prior
                     # to upstream #276a1db3 all library-print archives landed with
@@ -1915,14 +1922,29 @@ async def enqueue_calibration_print(
     ams_id: int,
     slot_id: int,
     tray_id: int,
+    library_file_id: int | None = None,
+    print_options: dict | None = None,
+    swap_macros: dict | None = None,
+    calibration_session_id: int | None = None,
 ) -> int:
     """Enqueue a Filament Calibration print job (m062 / Plan 1).
 
     Creates a ``PrintQueueItem`` with ``is_calibration=True`` referencing a
-    local 3MF asset from ``backend/app/data/calib_assets/``. The dispatcher
-    pipeline picks it up like any other queued item — but the on_print_complete
-    hook routes the linked ``calibration_session`` to ``awaiting_user_input``
-    (or ``saved`` for tower modes) instead of producing a normal archive entry.
+    sliced ``.gcode.3mf`` LibraryFile produced by the calibration service.
+    The dispatcher pipeline picks it up like any other queued item — the
+    on_print_complete hook routes the linked ``calibration_session`` to
+    ``awaiting_user_input`` (or ``saved`` for tower modes) instead of
+    producing a normal archive entry.
+
+    ``print_options`` / ``swap_macros`` mirror PrintModal's
+    ``PrintOptions`` / ``SwapMacrosOptions``: operator-chosen toggles for
+    bed-levelling / flow-cali / layer-inspect / timelapse /
+    mesh-mode-fast-check / gcode-injection and the swap-macro event
+    list. The scheduler reads these off the queue item when building
+    dispatcher ``options``, so the same per-job behaviour you get for a
+    library print is available here too. ``None`` falls back to a
+    calibration-safe default (bed_levelling on, everything else off,
+    swap macros disabled).
 
     Returns the new ``PrintQueueItem.id``. Caller updates
     ``calibration_session_id`` separately once the session row exists.
@@ -1931,6 +1953,11 @@ async def enqueue_calibration_print(
 
     from backend.app.models.print_queue import PrintQueueItem
     from backend.app.models.printer_queue import PrinterQueue
+
+    opts = print_options or {}
+    swap = swap_macros or {}
+    swap_events = swap.get("events") or []
+    execute_swap = bool(swap.get("execute") and swap_events)
 
     async with async_session() as db:
         queue = (
@@ -1943,11 +1970,18 @@ async def enqueue_calibration_print(
             queue_id=queue.id,
             status="pending",
             is_calibration=True,
+            calibration_session_id=calibration_session_id,
+            library_file_id=library_file_id,
             created_by_id=user_id,
             ams_mapping=_json.dumps([tray_id]),
-            bed_levelling=False,
-            flow_cali=False,
-            layer_inspect=False,
+            bed_levelling=bool(opts.get("bed_levelling", True)),
+            flow_cali=bool(opts.get("flow_cali", False)),
+            layer_inspect=bool(opts.get("layer_inspect", False)),
+            timelapse=bool(opts.get("timelapse", False)),
+            mesh_mode_fast_check=bool(opts.get("mesh_mode_fast_check", True)),
+            gcode_injection=bool(opts.get("gcode_injection", False)),
+            execute_swap_macros=execute_swap,
+            swap_macro_events=_json.dumps(swap_events) if execute_swap else None,
         )
         db.add(item)
         await db.commit()

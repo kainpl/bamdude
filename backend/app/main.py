@@ -3959,6 +3959,44 @@ async def on_print_complete(printer_id: int, data: dict):
                 await db.commit()
                 logger.info("Updated queue item %s status to %s", queue_item.id, queue_status)
 
+                # Filament-calibration sessions: flip the linked
+                # ``calibration_session`` row to its post-print state
+                # (``awaiting_user_input`` for save-prompt modes,
+                # ``saved`` for tower modes, ``failed`` on print
+                # failure). Without this the wizard's polling sees a
+                # stale ``running`` status until the next manual
+                # GET /sessions/{id} kicks ``reconcile_session_status``,
+                # which can leave the modal showing "Calibration in
+                # progress…" long after the printer is done. The link
+                # lives on the session row (``session.print_queue_item_id``),
+                # not on the queue item — look up by that side. Done
+                # best-effort: failures here never block the
+                # ``on_print_complete`` happy path.
+                if queue_item.is_calibration:
+                    try:
+                        from backend.app.models.calibration_session import (
+                            CalibrationSession as _CaliSession,
+                        )
+                        from backend.app.services.calibration_service import (
+                            reconcile_session_status as _reconcile_cali,
+                        )
+
+                        _cali_session = (
+                            await db.execute(
+                                select(_CaliSession).where(
+                                    _CaliSession.print_queue_item_id == queue_item.id,
+                                    _CaliSession.status == "running",
+                                )
+                            )
+                        ).scalar_one_or_none()
+                        if _cali_session is not None:
+                            await _reconcile_cali(db, _cali_session)
+                    except Exception:
+                        logger.exception(
+                            "Failed to reconcile calibration session for queue_item %s",
+                            queue_item.id,
+                        )
+
                 # MQTT relay - publish queue job completed.
                 # Guarded by the `if queue_item:` scope because queue_item / queue_status
                 # are only defined there; on the external-print path below there's no

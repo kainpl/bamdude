@@ -9,8 +9,10 @@ audit-trail patterns.
 from __future__ import annotations
 
 import json as _json
+import logging
+import urllib.parse
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,25 +26,90 @@ from backend.app.models.printer import Printer
 from backend.app.models.user import User
 from backend.app.schemas.filament_calibration import (
     AutoResultIn,
+    CalibBakeOnlyIn,
     CalibCapabilities,
     CalibrationSessionOut,
+    CalibSliceOnlyIn,
     FilamentCalibrationOut,
     ManualResultIn,
     ManualResultOutSchema,
     PACalibHistoryEntryOut,
     StartSessionIn,
 )
+from backend.app.services.calib_3mf_builder import build_calibration_3mf
+from backend.app.services.calibration_mode_registry import ModeState, get_mode_state
 from backend.app.services.calibration_service import (
     CalibFilamentInput,
+    CalibModeNotImplementedError,
+    CalibModeVerificationOnlyError,
     CalibrationService,
     SlicerSidecarRequiredError,
     reconcile_session_status,
 )
+from backend.app.services.preset_resolver import resolve_preset_ref
 from backend.app.services.printer_capabilities import compute_calibration_supports
 from backend.app.services.printer_manager import printer_manager
+from backend.app.services.slicer_api import (
+    SlicerApiError,
+    SlicerApiService,
+    SlicerApiUnavailableError,
+    SlicerInputError,
+)
+from backend.app.services.slicer_routing import any_sidecar_online, resolve_sidecar_url
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["filament-calibration"])
 _service = CalibrationService()
+
+
+def _log_preset_compat(slot: str, ref, json_str: str) -> None:
+    """Dump compatibility-relevant fields from a resolved preset JSON,
+    plus the total key count and a sample of distinguishing keys so we
+    can tell whether the resolver returned a thin stub or a fully-
+    flattened preset.
+
+    BS / Orca CLI prioritises embedded ``project_settings.config`` keys
+    over ``--load-settings`` keys when both are present, so a thin stub
+    from the resolver effectively lets the embedded N1 / PLA defaults
+    win for everything the stub doesn't override. The total-key-count
+    log tells us at a glance if the cloud resolver is doing its job
+    (~300 keys = full preset, <20 = stub).
+    """
+    try:
+        data = _json.loads(json_str) if isinstance(json_str, str) else json_str
+    except (ValueError, TypeError):
+        logger.warning("slice_only/compat: %s preset (%r) is not valid JSON", slot, ref)
+        return
+    if not isinstance(data, dict):
+        logger.warning("slice_only/compat: %s preset (%r) JSON is not an object", slot, ref)
+        return
+    keys_of_interest = (
+        "name",
+        "type",
+        "from",
+        "inherits",
+        "printer_settings_id",
+        "printer_model",
+        "printer_variant",
+        "compatible_printers",
+        "compatible_printers_condition",
+        "compatible_prints",
+        "compatible_prints_condition",
+        "print_compatible_printers",
+        "filament_settings_id",
+        "print_settings_id",
+        "filament_type",
+        "nozzle_diameter",
+    )
+    snapshot = {k: data[k] for k in keys_of_interest if k in data}
+    logger.info(
+        "slice_only/compat: %s preset (ref=%r) total_keys=%d → %s",
+        slot,
+        ref,
+        len(data),
+        snapshot,
+    )
 
 
 async def _audit(
@@ -110,6 +177,7 @@ async def start_session(
     try:
         session = await _service.start_calibration(
             db=db,
+            user=user,
             printer_id=printer_id,
             cali_mode=body.cali_mode,
             method=body.method,
@@ -132,6 +200,15 @@ async def start_session(
                 for f in body.filaments
             ],
             user_id=user.id if user else None,
+            spec=body.spec,
+            bundle=body.bundle,
+            printer_preset=body.printer_preset,
+            process_preset=body.process_preset,
+            filament_presets=body.filament_presets,
+            slicer=body.slicer,
+            bed_type=body.bed_type,
+            print_options=body.print_options.model_dump(),
+            swap_macros=body.swap_macros.model_dump(),
         )
     except SlicerSidecarRequiredError as e:
         # Audit the rejected start so the trail still shows what the user tried.
@@ -150,6 +227,40 @@ async def start_session(
         raise HTTPException(
             409,
             detail={"detail": "slicer_sidecar_required", "message": str(e)},
+        )
+    except CalibModeNotImplementedError as e:
+        try:
+            await _audit(
+                db,
+                printer_id=printer_id,
+                user=user,
+                action="start_session",
+                payload=body.model_dump(),
+                result="error",
+                error=str(e),
+            )
+        except Exception:
+            pass
+        raise HTTPException(
+            409,
+            detail={"detail": "mode_not_implemented", "message": str(e)},
+        )
+    except CalibModeVerificationOnlyError as e:
+        try:
+            await _audit(
+                db,
+                printer_id=printer_id,
+                user=user,
+                action="start_session",
+                payload=body.model_dump(),
+                result="error",
+                error=str(e),
+            )
+        except Exception:
+            pass
+        raise HTTPException(
+            409,
+            detail={"detail": "mode_verification_only", "message": str(e)},
         )
     except ValueError as e:
         msg = str(e)
@@ -324,6 +435,306 @@ async def submit_auto_result(
         filament_calibration_id=rows[0].id if rows else None,
     )
     return [FilamentCalibrationOut.model_validate(r) for r in rows]
+
+
+# ---------- Slice-only (verification mode) ----------
+
+
+@router.post(
+    "/printers/{printer_id}/calibration/slice-only",
+    responses={
+        200: {
+            "content": {"model/3mf": {}},
+            "description": "Sliced calibration .gcode.3mf as an HTTP attachment.",
+        },
+        409: {"description": "Mode is not in VERIFICATION state, or sidecar offline."},
+    },
+)
+async def slice_calibration_for_verification(
+    printer_id: int,
+    body: CalibSliceOnlyIn = Body(...),
+    db: AsyncSession = Depends(get_db),
+    user: User | None = RequirePermission(Permission.PRINTERS_UPDATE),
+) -> Response:
+    """Bake + slice a calibration plate and return the sliced 3MF as a download.
+
+    Reachable only when the mode's ``MODE_STATE`` entry is
+    ``VERIFICATION`` — the entire purpose of this endpoint is to let the
+    operator validate per-mode output against BS / Orca reference 3MFs
+    before that mode flips to ``PRODUCTION`` and starts dispatching to
+    real printers.
+
+    Per-mode lifecycle:
+
+    - ``DISABLED`` → 409 ``mode_not_implemented``.
+    - ``VERIFICATION`` → run the slice, return bytes as attachment.
+    - ``PRODUCTION`` → 409 ``mode_verification_not_applicable`` with a
+      hint to use the standard wizard ``POST .../sessions`` flow.
+
+    See ``temp/w2-calibration-implementation-plan.md`` §0 for the
+    lifecycle contract.
+    """
+    printer = (await db.execute(select(Printer).where(Printer.id == printer_id))).scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    state = get_mode_state(body.cali_mode)
+    if state == ModeState.DISABLED:
+        await _audit(
+            db,
+            printer_id=printer_id,
+            user=user,
+            action="slice_only",
+            payload=body.model_dump(),
+            result="error",
+            error=f"mode_not_implemented:{body.cali_mode.value}",
+        )
+        raise HTTPException(
+            409,
+            detail={
+                "detail": "mode_not_implemented",
+                "message": f"Calibration mode '{body.cali_mode.value}' is not implemented in this build yet.",
+            },
+        )
+    if state == ModeState.PRODUCTION:
+        raise HTTPException(
+            409,
+            detail={
+                "detail": "mode_verification_not_applicable",
+                "message": (
+                    f"Calibration mode '{body.cali_mode.value}' is already in production — "
+                    "use the standard wizard (POST /printers/{id}/calibration/sessions) "
+                    "to enqueue a real print."
+                ),
+            },
+        )
+
+    if not await any_sidecar_online(db):
+        raise HTTPException(
+            409,
+            detail={
+                "detail": "slicer_sidecar_required",
+                "message": (
+                    "Calibration slicing requires a connected slicer sidecar; enable "
+                    "'Server-side slicing' under Settings → General → General and configure "
+                    "an OrcaSlicer / Bambu Studio API URL."
+                ),
+            },
+        )
+
+    # Bake the per-mode 3MF. Spec is passed through opaquely; per-mode
+    # builders validate against the schemas in
+    # backend/app/schemas/calibration_spec.py. We also fold body.bed_type
+    # into spec so the builder can pin the 3MF's ``curr_bed_type``
+    # (otherwise the scaffold's default "Cool Plate" fails PETG / TPU
+    # plate-compat validation).
+    spec_with_bed = dict(body.spec or {})
+    if body.bed_type and "bed_type" not in spec_with_bed:
+        spec_with_bed["bed_type"] = body.bed_type
+    # Inject target printer's settings_id so the writer can patch the
+    # scaffold's project_settings.config to match what's about to land
+    # via --load-settings / bundle resolution. Otherwise BS CLI's
+    # machine-switch guard (BambuStudio.cpp:2942) rejects with -16 when
+    # the scaffold's hard-coded N1 identity disagrees with the bundle's
+    # printer. Bundle path: name is right there in the body. PresetRef
+    # path: deferred until cloud flattener lands (Option 1) — for now
+    # the scaffold's N1 + cleared upward_compat list is permissive enough
+    # for most cloud presets to slide through.
+    if body.bundle is not None and "target_printer_settings_id" not in spec_with_bed:
+        spec_with_bed["target_printer_settings_id"] = body.bundle.printer_name
+    # Thread the slicer choice through so mode builders can swap
+    # slicer-specific overrides (e.g. PA Tower's brim_type — Orca
+    # supports brim_ears, BS does not and silently produces no brim).
+    if body.slicer and "slicer" not in spec_with_bed:
+        spec_with_bed["slicer"] = body.slicer
+    try:
+        model_bytes = build_calibration_3mf(
+            cali_mode=body.cali_mode,
+            spec=spec_with_bed,
+            extruder_count=body.extruder_count,
+            pass_n=body.pass_n,
+        )
+    except NotImplementedError as exc:
+        logger.warning("slice_only: builder not implemented for %s — %s", body.cali_mode.value, exc)
+        raise HTTPException(409, detail={"detail": "mode_not_implemented", "message": str(exc)})
+    except ValueError as exc:
+        logger.warning("slice_only: builder rejected spec for %s — %s", body.cali_mode.value, exc)
+        raise HTTPException(400, str(exc))
+
+    _, api_url = await resolve_sidecar_url(db, slicer_override=body.slicer)
+    if not api_url:
+        raise HTTPException(503, "No slicer sidecar configured")
+
+    model_filename = f"calibration_{body.cali_mode.value}.3mf"
+    try:
+        async with SlicerApiService(base_url=api_url) as svc:
+            if body.bundle is not None:
+                result = await svc.slice_with_bundle(
+                    model_bytes=model_bytes,
+                    model_filename=model_filename,
+                    bundle_id=body.bundle.bundle_id,
+                    printer_name=body.bundle.printer_name,
+                    process_name=body.bundle.process_name,
+                    filament_names=body.bundle.filament_names,
+                    export_3mf=True,
+                )
+            else:
+                # Manual path — resolve each PresetRef to the JSON the
+                # sidecar's --load-settings expects.
+                printer_json = await resolve_preset_ref(db, user, body.printer_preset, "printer")
+                process_json = await resolve_preset_ref(db, user, body.process_preset, "process")
+                filament_jsons = [await resolve_preset_ref(db, user, ref, "filament") for ref in body.filament_presets]
+                # Log compat-relevant fields from each JSON so when BS rejects
+                # the combo we can see what the resolver actually produced
+                # instead of blindly trusting bundle / standard inherits.
+                _log_preset_compat("printer", body.printer_preset, printer_json)
+                _log_preset_compat("process", body.process_preset, process_json)
+                for ref, j in zip(body.filament_presets, filament_jsons, strict=True):
+                    _log_preset_compat("filament", ref, j)
+                result = await svc.slice_with_profiles(
+                    model_bytes=model_bytes,
+                    model_filename=model_filename,
+                    printer_profile_json=printer_json,
+                    process_profile_json=process_json,
+                    filament_profile_jsons=filament_jsons,
+                    export_3mf=True,
+                    bed_type=body.bed_type,
+                )
+    except SlicerInputError as exc:
+        # Sidecar 4xx — the CLI rejected our input (incompat preset,
+        # malformed 3MF, missing required key). Full message includes
+        # CLI stderr — log to backend console so the operator doesn't
+        # have to copy from a frontend toast.
+        logger.error(
+            "slice_only: sidecar rejected input (mode=%s printer=%s url=%s): %s",
+            body.cali_mode.value,
+            body.bundle.printer_name if body.bundle else (body.printer_preset.id if body.printer_preset else "?"),
+            api_url,
+            exc,
+        )
+        raise HTTPException(400, f"Slicer rejected input: {exc}") from exc
+    except SlicerApiUnavailableError as exc:
+        logger.error("slice_only: sidecar unreachable at %s: %s", api_url, exc)
+        raise HTTPException(503, str(exc)) from exc
+    except SlicerApiError as exc:
+        logger.error("slice_only: sidecar error at %s (mode=%s): %s", api_url, body.cali_mode.value, exc)
+        raise HTTPException(502, str(exc)) from exc
+
+    await _audit(
+        db,
+        printer_id=printer_id,
+        user=user,
+        action="slice_only",
+        payload={
+            **body.model_dump(),
+            "bytes_in": len(model_bytes),
+            "bytes_out": len(result.content),
+            "print_time_seconds": result.print_time_seconds,
+            "filament_used_g": result.filament_used_g,
+        },
+    )
+
+    download_name = f"calibration_{body.cali_mode.value}.gcode.3mf"
+    quoted = urllib.parse.quote(download_name)
+    return Response(
+        content=result.content,
+        media_type="model/3mf",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quoted}",
+            "X-Print-Time-Seconds": str(result.print_time_seconds),
+            "X-Filament-Used-G": str(result.filament_used_g),
+        },
+    )
+
+
+@router.post(
+    "/printers/{printer_id}/calibration/bake-only",
+    responses={
+        200: {
+            "content": {"model/3mf": {}},
+            "description": "Composed calibration .3mf as an HTTP attachment.",
+        },
+        409: {"description": "Mode is not in VERIFICATION state."},
+    },
+)
+async def bake_calibration_3mf(
+    printer_id: int,
+    body: CalibBakeOnlyIn = Body(...),
+    db: AsyncSession = Depends(get_db),
+    user: User | None = RequirePermission(Permission.PRINTERS_UPDATE),
+) -> Response:
+    """Bake the calibration 3MF and return it without slicing.
+
+    Companion to ``slice-only``: same MODE_STATE gate, same per-mode
+    builder, same ``CalibrationSpec`` shape, but stops before
+    ``SlicerApiService`` is invoked. Operator gets the raw composed
+    ``.3mf`` so they can unzip it and inspect what BamDude actually
+    hands the sidecar — useful when sign-off diffs need to attribute
+    a discrepancy to either the bake step (BamDude) or the slice step
+    (BS / Orca).
+    """
+    printer = (await db.execute(select(Printer).where(Printer.id == printer_id))).scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    state = get_mode_state(body.cali_mode)
+    if state == ModeState.DISABLED:
+        await _audit(
+            db,
+            printer_id=printer_id,
+            user=user,
+            action="bake_only",
+            payload=body.model_dump(),
+            result="error",
+            error=f"mode_not_implemented:{body.cali_mode.value}",
+        )
+        raise HTTPException(
+            409,
+            detail={
+                "detail": "mode_not_implemented",
+                "message": f"Calibration mode '{body.cali_mode.value}' is not implemented in this build yet.",
+            },
+        )
+    # PRODUCTION-state modes also fall through here — there's no harm in
+    # letting the operator pull the baked 3MF for debugging once a mode
+    # is already wired to dispatch. No verification-only gate.
+
+    spec_with_bed = dict(body.spec or {})
+    if body.bed_type and "bed_type" not in spec_with_bed:
+        spec_with_bed["bed_type"] = body.bed_type
+    # No target_printer_settings_id branch here: ``CalibBakeOnlyIn`` has
+    # no ``bundle`` / preset fields. The bake-only artefact is for
+    # operator inspection only — nothing slices it through --load-settings,
+    # so the scaffold's N1 identity stays in place without consequence.
+    try:
+        model_bytes = build_calibration_3mf(
+            cali_mode=body.cali_mode,
+            spec=spec_with_bed,
+            extruder_count=body.extruder_count,
+            pass_n=body.pass_n,
+        )
+    except NotImplementedError as exc:
+        logger.warning("bake_only: builder not implemented for %s — %s", body.cali_mode.value, exc)
+        raise HTTPException(409, detail={"detail": "mode_not_implemented", "message": str(exc)})
+    except ValueError as exc:
+        logger.warning("bake_only: builder rejected spec for %s — %s", body.cali_mode.value, exc)
+        raise HTTPException(400, str(exc))
+
+    await _audit(
+        db,
+        printer_id=printer_id,
+        user=user,
+        action="bake_only",
+        payload={**body.model_dump(), "bytes_out": len(model_bytes)},
+    )
+
+    download_name = f"calibration_{body.cali_mode.value}.bake.3mf"
+    quoted = urllib.parse.quote(download_name)
+    return Response(
+        content=model_bytes,
+        media_type="model/3mf",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quoted}"},
+    )
 
 
 # ---------- filament_calibration CRUD ----------

@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client';
 import type {
   AutoResultEditIn,
+  BedType,
   CaliMethod,
   CaliMode,
   CalibCapabilities,
@@ -12,6 +13,8 @@ import type {
   FilamentCalibrationOut,
   ManualResultIn,
   NozzleVolumeType,
+  PresetRef,
+  SliceBundleSpec,
 } from '../api/client';
 
 const TOWER_MODES: CaliMode[] = [
@@ -39,6 +42,7 @@ function isTowerCaliMode(m: CaliMode | undefined): boolean {
 export type WizardStep =
   | 'start'
   | 'preset'
+  | 'verifyDownload'
   | 'running'
   | 'manualSave'
   | 'coarseSave'
@@ -97,6 +101,31 @@ interface WizardInput {
   nozzle_volume_type: NozzleVolumeType;
   extruder_id: number;
   filaments: CalibFilamentIn[];
+  // Preset / slicer overrides (mirror CalibSliceOnlyIn). Manual modes
+  // that route through the slicer sidecar (PA Tower + later phases)
+  // require either bundle OR full PresetRef triplet; AUTO modes ignore.
+  spec?: Record<string, number | string | boolean>;
+  bundle?: SliceBundleSpec;
+  printer_preset?: PresetRef;
+  process_preset?: PresetRef;
+  filament_presets?: PresetRef[];
+  slicer?: 'orcaslicer' | 'bambu_studio';
+  bed_type?: BedType;
+  // Per-job dispatcher toggles (mirror PrintModal types). Forwarded
+  // to PrintQueueItem so swap macros / bed-levelling / etc. run for
+  // the calibration print the same way they do for a library job.
+  print_options?: {
+    bed_levelling: boolean;
+    flow_cali: boolean;
+    layer_inspect: boolean;
+    timelapse: boolean;
+    mesh_mode_fast_check: boolean;
+    gcode_injection: boolean;
+  };
+  swap_macros?: {
+    execute: boolean;
+    events: Array<'swap_mode_start' | 'swap_mode_change_table'>;
+  };
 }
 
 export function useFilamentCalibration(printerId: number, enabled: boolean) {
@@ -114,18 +143,43 @@ export function useFilamentCalibration(printerId: number, enabled: boolean) {
     staleTime: 30_000,
   });
 
+  // "Active" sessions = running (printing) OR awaiting_user_input
+  // (print done, user picks the best line / saves K). Either one
+  // should surface in the resume banner after a modal reopen so the
+  // operator can rejoin the wizard mid-flow. Frontend filters on
+  // both statuses so we don't have to add a multi-status query
+  // param to the backend.
   const awaitingQuery = useQuery<CalibrationSessionOut[]>({
-    queryKey: ['calibration', 'awaiting', printerId],
-    queryFn: () => api.listAwaitingSessions(printerId),
+    queryKey: ['calibration', 'active', printerId],
+    queryFn: () => api.listActiveSessions(printerId),
     enabled,
     staleTime: 5_000,
+    select: (rows) =>
+      rows.filter((s) => s.status === 'running' || s.status === 'awaiting_user_input'),
   });
 
+  // ``getCalibrationSession`` triggers ``reconcile_session_status`` on
+  // the backend — running → awaiting_user_input | saved | failed when
+  // the linked PrintQueueItem flips to completed/failed. Without an
+  // active poll the wizard wouldn't see the flip after print finish
+  // (the WS calibration-event invalidates this query, but only when
+  // the reconciler has already run, which itself only runs on a
+  // GET — chicken-egg). Polling every 4 s while a session is bound
+  // unblocks the flip; staleTime=1s keeps it cheap when WS does
+  // arrive first.
   const sessionQuery = useQuery<CalibrationSessionOut>({
     queryKey: ['calibration', 'session', sessionId],
     queryFn: () => api.getCalibrationSession(sessionId!),
     enabled: sessionId != null,
     staleTime: 1_000,
+    refetchInterval: (query) => {
+      const s = query.state.data;
+      if (!s) return 4_000;
+      // Stop polling once we're past the running stage — save / fine
+      // / finish steps don't need server reconciliation, the user
+      // drives them through explicit submit mutations.
+      return s.status === 'running' || s.status === 'awaiting_user_input' ? 4_000 : false;
+    },
   });
 
   const startMutation = useMutation({
@@ -137,6 +191,15 @@ export function useFilamentCalibration(printerId: number, enabled: boolean) {
         nozzle_volume_type: body.nozzle_volume_type,
         extruder_id: body.extruder_id,
         filaments: body.filaments,
+        ...(body.spec ? { spec: body.spec } : {}),
+        ...(body.bundle ? { bundle: body.bundle } : {}),
+        ...(body.printer_preset ? { printer_preset: body.printer_preset } : {}),
+        ...(body.process_preset ? { process_preset: body.process_preset } : {}),
+        ...(body.filament_presets ? { filament_presets: body.filament_presets } : {}),
+        ...(body.slicer ? { slicer: body.slicer } : {}),
+        ...(body.bed_type ? { bed_type: body.bed_type } : {}),
+        ...(body.print_options ? { print_options: body.print_options } : {}),
+        ...(body.swap_macros ? { swap_macros: body.swap_macros } : {}),
       }),
     onSuccess: (session) => {
       setSessionId(session.id);
@@ -211,22 +274,41 @@ export function useFilamentCalibration(printerId: number, enabled: boolean) {
 
   // Auto-advance running → save/towerFinish when session flips to
   // awaiting_user_input (manual/auto) or saved (tower modes go straight there).
+  // Cancelled / failed sessions return the wizard to its start screen so
+  // the operator doesn't get stuck at an "in progress…" page that never
+  // resolves — they can kick off a fresh attempt or close the modal.
   useEffect(() => {
     const s = sessionQuery.data;
     if (!s) return;
     if (step !== 'running') return;
+    if (s.status === 'cancelled' || s.status === 'failed') {
+      setErrorMsg(
+        s.status === 'failed'
+          ? 'Calibration print failed — start a new attempt.'
+          : 'Calibration print was cancelled.',
+      );
+      setSessionId(null);
+      setStep('start');
+      qc.invalidateQueries({ queryKey: ['calibration', 'active', printerId] });
+      return;
+    }
     if (s.status !== 'awaiting_user_input' && s.status !== 'saved') return;
     const mode = s.cali_mode as CaliMode;
+    // When resuming from a prior session (user reopened the modal
+    // after a reload), ``input.method`` is undefined — fall back to
+    // the session's stored method so the save-step branch picks the
+    // right form (auto vs manual).
+    const method = input.method ?? (s.method as CaliMethod);
     setStep(
       computeNextStep('running', {
         cali_mode: mode,
-        method: input.method,
+        method,
         stage: s.stage,
         sessionStatus: s.status,
         isTowerMode: isTowerCaliMode(mode),
       }),
     );
-  }, [sessionQuery.data, step, input.method]);
+  }, [sessionQuery.data, step, input.method, qc, printerId]);
 
   const setInput = (patch: Partial<WizardInput>) =>
     setInputState((prev) => ({ ...prev, ...patch }));
