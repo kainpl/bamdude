@@ -136,6 +136,7 @@ def write_calibration_3mf(
     project_settings_patch: dict[str, str] | None = None,
     bed_type: str | None = None,
     build_transform_scale: tuple[float, float, float] | None = None,
+    build_transform_translate: tuple[float, float, float] | None = None,
     target_printer_settings_id: str | None = None,
     output_filename: str = "calibration.3mf",
 ) -> bytes:
@@ -178,6 +179,8 @@ def write_calibration_3mf(
             bed_type=bed_type,
             target_printer_settings_id=target_printer_settings_id,
             output_filename=output_filename,
+            build_transform_scale=build_transform_scale,
+            build_transform_translate=build_transform_translate,
         )
 
     raise ValueError(f"Unsupported geometry_kind: {geometry_kind!r}")
@@ -292,6 +295,8 @@ def _compose_from_3mf(
     bed_type: str | None,
     target_printer_settings_id: str | None,
     output_filename: str,
+    build_transform_scale: tuple[float, float, float] | None = None,
+    build_transform_translate: tuple[float, float, float] | None = None,
 ) -> bytes:
     """Copy the base 3MF through, overwriting our metadata files.
 
@@ -307,12 +312,23 @@ def _compose_from_3mf(
     upstream_model_settings: str | None = None
     upstream_project_settings: str | None = None
 
+    # If the caller didn't pass any per-Z custom-gcode items, keep
+    # whatever ``custom_gcode_per_layer.xml`` the scaffold shipped —
+    # blowing it away with an empty render would erase BS's pre-baked
+    # patterns (PA Pattern ships its entire comb-and-digit comb gcode
+    # inside this file, and overriding with an empty wrapper turns the
+    # output into a plain cube print). We only overwrite when the
+    # builder explicitly produces new entries (e.g. PA Tower's M900 K
+    # sweep).
+    overwrite_custom_gcode = bool(custom_gcodes)
+    needs_build_transform_patch = build_transform_scale is not None or build_transform_translate is not None
+
     with (
         zipfile.ZipFile(io.BytesIO(base_3mf_bytes), "r") as src,
         zipfile.ZipFile(out_buf, "w", zipfile.ZIP_DEFLATED) as dst,
     ):
         for name in src.namelist():
-            if name == "Metadata/custom_gcode_per_layer.xml":
+            if name == "Metadata/custom_gcode_per_layer.xml" and overwrite_custom_gcode:
                 continue
             if name == "Metadata/model_settings.config" and needs_model_settings_patch:
                 upstream_model_settings = src.read(name).decode("utf-8", errors="replace")
@@ -320,12 +336,24 @@ def _compose_from_3mf(
             if name == "Metadata/project_settings.config" and needs_project_patch:
                 upstream_project_settings = src.read(name).decode("utf-8", errors="replace")
                 continue
+            if name == "3D/3dmodel.model" and needs_build_transform_patch:
+                xml = src.read(name).decode("utf-8", errors="replace")
+                dst.writestr(
+                    name,
+                    _patch_top_level_model_transform(
+                        xml,
+                        scale=build_transform_scale,
+                        translate=build_transform_translate,
+                    ),
+                )
+                continue
             dst.writestr(name, src.read(name))
 
-        dst.writestr(
-            "Metadata/custom_gcode_per_layer.xml",
-            _render_custom_gcodes(custom_gcodes),
-        )
+        if overwrite_custom_gcode:
+            dst.writestr(
+                "Metadata/custom_gcode_per_layer.xml",
+                _render_custom_gcodes(custom_gcodes),
+            )
         if needs_model_settings_patch and upstream_model_settings is not None:
             dst.writestr(
                 "Metadata/model_settings.config",
@@ -454,18 +482,22 @@ def _stl_z_extent(stl_bytes: bytes) -> float:
 def _patch_top_level_model_transform(
     xml: str,
     scale: tuple[float, float, float] | None = None,
+    translate: tuple[float, float, float] | None = None,
 ) -> str:
-    """Patch the build ``<item>`` transform with caller-supplied scale.
+    """Patch the build ``<item>`` transform with caller-supplied
+    scale + translate.
 
     Pa_pattern's build item carries a 0.28× scale (the scaffold cube is
-    36×36×21 and BS scales it down to its final ~10×10×1 print). For
-    other meshes (PA Tower's 80×80×60 scaffold etc.) that scale is
-    wrong; the caller computes per-mode scale factors instead. ``scale=
-    None`` falls back to identity scale.
+    18×18×18 and BS scales it down to a small 5×5×0.85 print bed
+    placeholder). For other meshes (PA Tower's 80×80×60 scaffold etc.)
+    that scale is wrong; the caller computes per-mode scale factors
+    instead. ``scale=None`` falls back to identity scale.
 
-    The translate component is fixed at ``(90, 90, 0)`` — a centre that
-    fits every Bambu plate size; the operator re-arranges in BS / Orca
-    if they need to.
+    ``translate`` overrides the default centre ``(90, 90, 0)``. Per-mode
+    builders (PA Pattern) need the cube positioned in the upper-left
+    of the print region — anchored to the pattern's frame — so the
+    cube's perimeters don't overprint the pattern's V-walls or glyph
+    digits. PA Tower keeps the default centre.
 
     ``p:uuid`` attributes are stripped (irrelevant to slicing; brittle
     to inherit verbatim from the scaffold).
@@ -474,7 +506,11 @@ def _patch_top_level_model_transform(
         sx, sy, sz = 1.0, 1.0, 1.0
     else:
         sx, sy, sz = scale
-    transform = f"{sx} 0 0 0 {sy} 0 0 0 {sz} 90 90 0"
+    if translate is None:
+        tx, ty, tz = 90.0, 90.0, 0.0
+    else:
+        tx, ty, tz = translate
+    transform = f"{sx} 0 0 0 {sy} 0 0 0 {sz} {tx} {ty} {tz}"
     xml = re.sub(r'\s+p:uuid="[^"]*"', "", xml)
     xml = re.sub(
         r'(<item\b[^>]*?\stransform=")[^"]+(")',

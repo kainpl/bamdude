@@ -11,6 +11,7 @@ from backend.app.services.calibration_constants import CaliMode
 # in the same diff it registers the builder in ``calib_3mf_builder``.
 _REGISTERED: set[CaliMode] = {
     CaliMode.PA_TOWER,  # Phase 1
+    CaliMode.PA_PATTERN,  # Phase 2
 }
 
 

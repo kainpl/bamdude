@@ -299,6 +299,16 @@ export function CalibrationPresetPage({
   const [paStep, setPaStep] = useState<number>(0.002);
   const [paLayerHeight, setPaLayerHeight] = useState<number>(0.2);
 
+  // PA Pattern uses a denser (visually-readable) sweep at lower K
+  // ceiling — defaults mirror the BS-shipped pa_pattern.3mf scaffold
+  // (0.0 → 0.08 step 0.005, 17 K levels) since most filaments land
+  // around 0.02..0.06 K on Bambu printers. Operator can widen the
+  // range — backend regenerates the comb gcode accordingly.
+  const isPaPattern = caliMode === 'pa_pattern';
+  const [patternStart, setPatternStart] = useState<number>(0.0);
+  const [patternEnd, setPatternEnd] = useState<number>(0.08);
+  const [patternStep, setPatternStep] = useState<number>(0.005);
+
   const statusQuery = useQuery<PrinterStatus>({
     queryKey: ['printerStatus', printerId],
     queryFn: () => api.getPrinterStatus(printerId),
@@ -545,6 +555,14 @@ export function CalibrationPresetPage({
         nozzle_diameter: nozzleDia,
       };
     }
+    if (isPaPattern) {
+      extras.spec = {
+        start: patternStart,
+        end: patternEnd,
+        step: patternStep,
+        nozzle_diameter: nozzleDia,
+      };
+    }
     if (presetSource === 'bundle' && selectedBundle && bundlePrinterName && bundleProcessName && bundleFilamentName) {
       extras.bundle = {
         bundle_id: selectedBundle.id,
@@ -777,6 +795,52 @@ export function CalibrationPresetPage({
                     step="0.05"
                     value={paLayerHeight}
                     onChange={(e) => setPaLayerHeight(parseFloat(e.target.value) || 0.2)}
+                    className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
+                  />
+                </label>
+              </div>
+            </div>
+          )}
+
+          {isPaPattern && (
+            <div className="space-y-2 border border-bambu-dark-tertiary rounded p-3">
+              <h4 className="text-sm font-medium text-bambu-gray">
+                {t('filamentCali.verifyDownload.specHeading')}
+              </h4>
+              <div className="grid grid-cols-3 gap-2">
+                <label className="block">
+                  <span className="text-xs text-bambu-gray">
+                    {t('filamentCali.verifyDownload.startK')}
+                  </span>
+                  <input
+                    type="number"
+                    step="0.001"
+                    value={patternStart}
+                    onChange={(e) => setPatternStart(parseFloat(e.target.value) || 0)}
+                    className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs text-bambu-gray">
+                    {t('filamentCali.verifyDownload.endK')}
+                  </span>
+                  <input
+                    type="number"
+                    step="0.001"
+                    value={patternEnd}
+                    onChange={(e) => setPatternEnd(parseFloat(e.target.value) || 0)}
+                    className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs text-bambu-gray">
+                    {t('filamentCali.verifyDownload.stepK')}
+                  </span>
+                  <input
+                    type="number"
+                    step="0.001"
+                    value={patternStep}
+                    onChange={(e) => setPatternStep(parseFloat(e.target.value) || 0)}
                     className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
                   />
                 </label>

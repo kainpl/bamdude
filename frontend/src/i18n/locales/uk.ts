@@ -4153,6 +4153,8 @@ export default {
       stepK: 'Крок K',
       layerHeight: 'Висота шару (мм)',
       nozzleDia: 'Діаметр сопла (мм)',
+      paPatternFixedRangeNote:
+        'Verification-стадія використовує BS-зафіксований K-діапазон (0.0 → 0.08 крок 0.005), запечений у scaffold-3MF. Custom-діапазони підключаться у production-фазі.',
       download: 'Завантажити нарізаний 3MF',
       downloading: 'Слайсимо…',
       success: 'Завантажено {{filename}}',

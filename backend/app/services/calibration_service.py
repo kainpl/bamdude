@@ -448,6 +448,33 @@ class CalibrationService:
                         filament_jsons = [
                             await resolve_preset_ref(db, user, ref, "filament") for ref in filament_presets
                         ]
+                        # Apply per-mode preset overrides BEFORE handing off
+                        # to the sidecar. Mirrors what BS / Orca desktop
+                        # wizards do: `Plater::_calib_*` mutates the active
+                        # preset configs in-memory then slices. Without
+                        # this, the sidecar's `--load-settings` applies the
+                        # operator's preset and overrides anything we'd
+                        # embedded into the 3MF's project_settings.config.
+                        # See `calib_preset_overrides.py` for the per-mode
+                        # hardcode lists.
+                        from backend.app.services.calib_preset_overrides import (
+                            apply_pa_pattern_filament_overrides,
+                            apply_pa_pattern_printer_overrides,
+                            apply_pa_pattern_process_overrides,
+                            apply_pa_tower_filament_overrides,
+                            apply_pa_tower_process_overrides,
+                        )
+
+                        if cali_mode == CaliMode.PA_PATTERN:
+                            process_json = apply_pa_pattern_process_overrides(
+                                process_json, nozzle_diameter=nozzle_diameter
+                            )
+                            printer_json = apply_pa_pattern_printer_overrides(printer_json)
+                            filament_jsons = [apply_pa_pattern_filament_overrides(f) for f in filament_jsons]
+                        elif cali_mode == CaliMode.PA_TOWER:
+                            process_json = apply_pa_tower_process_overrides(process_json)
+                            filament_jsons = [apply_pa_tower_filament_overrides(f) for f in filament_jsons]
+
                         slice_result = await svc.slice_with_profiles(
                             model_bytes=bake_bytes,
                             model_filename=model_filename,

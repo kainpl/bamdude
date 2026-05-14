@@ -38,6 +38,13 @@ _EXPECTED_NON_DISABLED: dict[CaliMode, ModeState] = {
     # verification sign-off (gcode-features parity vs Orca-desktop +
     # clean BS-GUI import + live K-factor change on physical print).
     CaliMode.PA_TOWER: ModeState.PRODUCTION,
+    # Phase 2 (PA Pattern) — promoted to PRODUCTION 2026-05-14 after
+    # verification sign-off (sliced CONFIG_BLOCK confirms wall_loops=3,
+    # initial_layer_speed=30, line_width=nozzle*1.125 etc. land in the
+    # final gcode via calib_preset_overrides.apply_pa_pattern_*; cube
+    # repositioned to Orca's layout (51.63, 83.5, 0.4) so V walls have
+    # clear bed).
+    CaliMode.PA_PATTERN: ModeState.PRODUCTION,
 }
 
 

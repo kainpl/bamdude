@@ -58,7 +58,21 @@ MODE_STATE: dict[CaliMode, ModeState] = {
     # so the wizard's session-dispatch path (POST /calibration/sessions)
     # accepts PA Tower jobs end-to-end.
     CaliMode.PA_TOWER: ModeState.PRODUCTION,
-    CaliMode.PA_PATTERN: ModeState.DISABLED,
+    # Phase 2 — PRODUCTION (2026-05-14). Builder regenerates the
+    # pattern's custom_gcode_per_layer.xml on every call via a Python
+    # port of BS CalibPressureAdvancePattern::generate_custom_gcodes
+    # (Calib.cpp:506-656) — operator's start/end/step drive the K
+    # sweep instead of relying on the BS-shipped scaffold's pre-baked
+    # 0.0..0.08 step 0.005. Per-mode process+filament+printer preset
+    # overrides applied before sidecar slice via
+    # ``calib_preset_overrides.apply_pa_pattern_*`` (mirrors what BS
+    # Plater::_calib_pa_pattern does in-memory) — verified via the
+    # sliced CONFIG_BLOCK that ``wall_loops=3``,
+    # ``initial_layer_speed=30``, ``line_width=nozzle*1.125`` etc. land
+    # in the final gcode. Cube repositioned to Orca's project layout
+    # (translate (51.63, 83.5, 0.4), kept 0.278×0.278×0.047 scale →
+    # 5×5×0.85mm) so its perimeters don't overprint pattern V walls.
+    CaliMode.PA_PATTERN: ModeState.PRODUCTION,
     CaliMode.TEMP_TOWER: ModeState.DISABLED,
     CaliMode.RETRACTION_TOWER: ModeState.DISABLED,
     CaliMode.VFA_TOWER: ModeState.DISABLED,

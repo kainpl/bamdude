@@ -118,8 +118,10 @@ def test_stl_wrap_neutralises_build_item_transform():
         top = z.read("3D/3dmodel.model").decode("utf-8")
     # The pa_pattern original has 0.277... — we must NOT keep it
     assert "0.277777778" not in top
-    # Identity scale with central translate
-    assert '"1.0 0 0 0 1.0 0 0 0 1.0 90 90 0"' in top
+    # Identity scale with central translate. Python's f-string emits
+    # `90.0` for float-typed defaults; the writer accepts both int/float
+    # callers — the on-the-wire BS / Orca parser doesn't care which.
+    assert '"1.0 0 0 0 1.0 0 0 0 1.0 90.0 90.0 0.0"' in top
 
 
 def test_stl_wrap_honors_build_transform_scale():
@@ -133,7 +135,7 @@ def test_stl_wrap_honors_build_transform_scale():
     )
     with zipfile.ZipFile(io.BytesIO(out), "r") as z:
         top = z.read("3D/3dmodel.model").decode("utf-8")
-    assert '"0.0625 0 0 0 0.0625 0 0 0 0.85 90 90 0"' in top
+    assert '"0.0625 0 0 0 0.0625 0 0 0 0.85 90.0 90.0 0.0"' in top
 
 
 def test_stl_wrap_renames_cube_to_calibration_in_model_settings():

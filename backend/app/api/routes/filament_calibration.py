@@ -37,6 +37,7 @@ from backend.app.schemas.filament_calibration import (
     StartSessionIn,
 )
 from backend.app.services.calib_3mf_builder import build_calibration_3mf
+from backend.app.services.calibration_constants import CaliMode
 from backend.app.services.calibration_mode_registry import ModeState, get_mode_state
 from backend.app.services.calibration_service import (
     CalibFilamentInput,
@@ -584,6 +585,30 @@ async def slice_calibration_for_verification(
                 printer_json = await resolve_preset_ref(db, user, body.printer_preset, "printer")
                 process_json = await resolve_preset_ref(db, user, body.process_preset, "process")
                 filament_jsons = [await resolve_preset_ref(db, user, ref, "filament") for ref in body.filament_presets]
+                # Apply per-mode preset overrides — mirrors what
+                # start_calibration does on the production path. Without
+                # this the sidecar's --load-settings replays the
+                # operator's preset values and overrides anything we'd
+                # embedded into the 3MF's project_settings.config.
+                from backend.app.services.calib_preset_overrides import (
+                    apply_pa_pattern_filament_overrides,
+                    apply_pa_pattern_printer_overrides,
+                    apply_pa_pattern_process_overrides,
+                    apply_pa_tower_filament_overrides,
+                    apply_pa_tower_process_overrides,
+                )
+
+                nozzle_diameter = float(
+                    (body.spec or {}).get("nozzle_diameter", 0.4) if isinstance(body.spec, dict) else 0.4
+                )
+                if body.cali_mode == CaliMode.PA_PATTERN:
+                    process_json = apply_pa_pattern_process_overrides(process_json, nozzle_diameter=nozzle_diameter)
+                    printer_json = apply_pa_pattern_printer_overrides(printer_json)
+                    filament_jsons = [apply_pa_pattern_filament_overrides(f) for f in filament_jsons]
+                elif body.cali_mode == CaliMode.PA_TOWER:
+                    process_json = apply_pa_tower_process_overrides(process_json)
+                    filament_jsons = [apply_pa_tower_filament_overrides(f) for f in filament_jsons]
+
                 # Log compat-relevant fields from each JSON so when BS rejects
                 # the combo we can see what the resolver actually produced
                 # instead of blindly trusting bundle / standard inherits.

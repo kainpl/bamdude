@@ -1,0 +1,113 @@
+"""Unit tests for per-mode preset overrides applied before sidecar slice.
+
+Pins the format / key shapes so future preset format changes don't
+silently regress the patch.
+"""
+
+from __future__ import annotations
+
+import json
+
+from backend.app.services.calib_preset_overrides import (
+    apply_pa_pattern_filament_overrides,
+    apply_pa_pattern_printer_overrides,
+    apply_pa_pattern_process_overrides,
+    apply_pa_tower_filament_overrides,
+    apply_pa_tower_process_overrides,
+)
+
+
+def test_pa_pattern_process_overrides_pin_core_pa_pattern_hardcodes():
+    """Operator's preset may carry wall_loops=4 (BS default), but PA
+    Pattern wizard always forces 3. Likewise initial_layer_speed → 30,
+    brim_type → no_brim, print_sequence → by layer."""
+    preset = json.dumps({"wall_loops": "4", "initial_layer_speed": ["50"], "brim_type": "outer_only"})
+    out = json.loads(apply_pa_pattern_process_overrides(preset, nozzle_diameter=0.4))
+    assert out["wall_loops"] == "3"
+    assert out["skirt_loops"] == "0"
+    assert out["brim_type"] == "no_brim"
+    assert out["enable_wrapping_detection"] == "0"
+    assert out["print_sequence"] == "by layer"
+    assert out["initial_layer_speed"] == ["30"]
+
+
+def test_pa_pattern_process_overrides_compute_line_widths_from_nozzle():
+    out = json.loads(apply_pa_pattern_process_overrides("{}", nozzle_diameter=0.4))
+    assert out["line_width"] == "0.4500"
+    assert out["initial_layer_line_width"] == "0.5600"
+
+    out6 = json.loads(apply_pa_pattern_process_overrides("{}", nozzle_diameter=0.6))
+    assert out6["line_width"] == "0.6750"
+    assert out6["initial_layer_line_width"] == "0.8400"
+
+
+def test_pa_pattern_process_overrides_pin_layer_heights():
+    """SuggestedConfigCalibPAPattern.float_pairs hard-codes the layer
+    heights — needed because the Python pattern generator anchors its
+    pre-baked print_z entries to BS-default (0.25 first, 0.2 rest).
+    Patch the preset so slicer's layer planner uses the same Zs."""
+    out = json.loads(apply_pa_pattern_process_overrides("{}", nozzle_diameter=0.4))
+    assert out["initial_layer_print_height"] == "0.25"
+    assert out["layer_height"] == "0.2"
+
+
+def test_pa_pattern_filament_overrides_disable_retract_wipe_on_layer_change():
+    preset = json.dumps({"filament_retract_when_changing_layer": ["1"], "filament_wipe": ["1"]})
+    out = json.loads(apply_pa_pattern_filament_overrides(preset))
+    assert out["filament_retract_when_changing_layer"] == ["0"]
+    assert out["filament_wipe"] == ["0"]
+
+
+def test_pa_pattern_printer_overrides_disable_wipe_retract_resonance():
+    preset = json.dumps({"wipe": ["1"], "retract_when_changing_layer": ["1"], "resonance_avoidance": "1"})
+    out = json.loads(apply_pa_pattern_printer_overrides(preset))
+    assert out["wipe"] == ["0"]
+    assert out["retract_when_changing_layer"] == ["0"]
+    assert out["resonance_avoidance"] == "0"
+
+
+def test_pa_tower_filament_overrides_pin_slow_down_layer_time():
+    preset = json.dumps({"slow_down_layer_time": ["5"]})
+    out = json.loads(apply_pa_tower_filament_overrides(preset))
+    assert out["slow_down_layer_time"] == ["1"]
+
+
+def test_pa_tower_process_overrides_disable_wrapping_detection():
+    preset = json.dumps({"enable_wrapping_detection": "1"})
+    out = json.loads(apply_pa_tower_process_overrides(preset))
+    assert out["enable_wrapping_detection"] == "0"
+
+
+def test_overrides_passthrough_invalid_json():
+    """If a preset doesn't parse as JSON (e.g. wrapped stub), the
+    override is a no-op — pass-through so the sidecar gets to decide."""
+    junk = "not really json"
+    assert apply_pa_pattern_process_overrides(junk, nozzle_diameter=0.4) == junk
+    assert apply_pa_tower_filament_overrides(junk) == junk
+
+
+def test_pa_pattern_process_overrides_preserve_existing_unrelated_keys():
+    """Sidecar gets the full preset, not just our patched keys.
+    Anything outside our hardcode list must round-trip intact."""
+    preset = json.dumps(
+        {
+            "name": "0.20mm Standard @BBL A1M",
+            "from": "system",
+            "type": "process",
+            "wall_loops": "4",
+            "top_shell_layers": "4",
+            "bottom_shell_layers": "4",
+            "sparse_infill_density": "40%",
+        }
+    )
+    out = json.loads(apply_pa_pattern_process_overrides(preset, nozzle_diameter=0.4))
+    assert out["name"] == "0.20mm Standard @BBL A1M"
+    assert out["from"] == "system"
+    assert out["type"] == "process"
+    # We don't pin top/bottom shells or infill — preset's defaults
+    # keep the cube solid (which is what we want for PA Pattern).
+    assert out["top_shell_layers"] == "4"
+    assert out["bottom_shell_layers"] == "4"
+    assert out["sparse_infill_density"] == "40%"
+    # But our patched keys win.
+    assert out["wall_loops"] == "3"

@@ -23,6 +23,7 @@ from backend.app.services.calib_3mf_writer import (
     GeometryKind,
     write_calibration_3mf,
 )
+from backend.app.services.calib_pa_pattern import build_pa_pattern_3mf
 from backend.app.services.calib_pa_tower import build_pa_tower_3mf
 from backend.app.services.calibration_constants import CaliMode
 from backend.app.services.calibration_service import CalibAsset, resolve_asset
@@ -50,9 +51,12 @@ def _not_implemented(_asset: CalibAsset, _spec: dict) -> bytes:
 # VERIFICATION without also registering its builder will short-circuit
 # at runtime with NotImplementedError, which is the right loud failure.
 _BUILDERS: dict[CaliMode, ModeBuilder] = {
-    # Phase 1 — VERIFICATION (registered builder, awaiting sign-off).
+    # Phase 1 — PRODUCTION (shipped 2026-05-14).
     CaliMode.PA_TOWER: build_pa_tower_3mf,
-    CaliMode.PA_PATTERN: _not_implemented,
+    # Phase 2 — VERIFICATION (registered builder, awaiting sign-off).
+    # Uses BS-shipped pa_pattern.3mf scaffold as-is (K range hardcoded
+    # 0..0.08 step 0.005); custom ranges ship in production phase.
+    CaliMode.PA_PATTERN: build_pa_pattern_3mf,
     CaliMode.TEMP_TOWER: _not_implemented,
     CaliMode.RETRACTION_TOWER: _not_implemented,
     CaliMode.VFA_TOWER: _not_implemented,

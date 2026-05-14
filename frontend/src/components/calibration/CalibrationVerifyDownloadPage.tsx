@@ -170,6 +170,7 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
   const [isBaking, setIsBaking] = useState(false);
 
   const isPaTower = caliMode === 'pa_tower';
+  const isPaPattern = caliMode === 'pa_pattern';
 
   const triggerBlobDownload = (blob: Blob, filename: string) => {
     const url = URL.createObjectURL(blob);
@@ -182,11 +183,29 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
     URL.revokeObjectURL(url);
   };
 
+  // PA Pattern verification stage ignores start/end/step (the BS-shipped
+  // scaffold carries pre-baked K=0..0.08 step 0.005), but the builder
+  // needs nozzle_diameter to compute its line-width overrides. PA Tower
+  // uses every param. Other modes get undefined and lean on builder
+  // defaults.
+  const buildSpec = (): Record<string, string | number | boolean> | undefined => {
+    if (isPaTower) {
+      return {
+        start,
+        end,
+        step,
+        layer_height: layerHeight,
+        nozzle_diameter: nozzleDiameter,
+      };
+    }
+    if (isPaPattern) {
+      return { start, end, step, nozzle_diameter: nozzleDiameter };
+    }
+    return undefined;
+  };
+
   const onBakeOnly = async () => {
-    const spec = isPaTower
-      ? { start, end, step, layer_height: layerHeight, nozzle_diameter: nozzleDiameter }
-      : undefined;
-    const body: CalibBakeOnlyIn = { cali_mode: caliMode, spec, bed_type: bedType };
+    const body: CalibBakeOnlyIn = { cali_mode: caliMode, spec: buildSpec(), bed_type: bedType };
     setIsBaking(true);
     try {
       const { blob, filename } = await api.bakeCalibrationForVerification(printerId, body);
@@ -209,9 +228,7 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
 
   const onSubmit = async () => {
     let body: CalibSliceOnlyIn;
-    const spec = isPaTower
-      ? { start, end, step, layer_height: layerHeight, nozzle_diameter: nozzleDiameter }
-      : undefined;
+    const spec = buildSpec();
     if (presetSource === 'bundle') {
       if (!selectedBundle || !bundlePrinterName || !bundleProcessName || !bundleFilamentName) return;
       body = {
@@ -395,6 +412,56 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
               />
             </label>
             <label className="block col-span-2">
+              <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.nozzleDia')}</span>
+              <input
+                type="number"
+                step="0.1"
+                value={nozzleDiameter}
+                onChange={(e) => setNozzleDiameter(parseFloat(e.target.value) || 0.4)}
+                className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
+              />
+            </label>
+          </div>
+        </section>
+      )}
+
+      {isPaPattern && (
+        <section className="space-y-2 border border-bambu-dark-tertiary rounded p-3">
+          <h4 className="text-sm font-medium text-bambu-gray">
+            {t('filamentCali.verifyDownload.specHeading')}
+          </h4>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="block">
+              <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.startK')}</span>
+              <input
+                type="number"
+                step="0.001"
+                value={start}
+                onChange={(e) => setStart(parseFloat(e.target.value) || 0)}
+                className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.endK')}</span>
+              <input
+                type="number"
+                step="0.001"
+                value={end}
+                onChange={(e) => setEnd(parseFloat(e.target.value) || 0)}
+                className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.stepK')}</span>
+              <input
+                type="number"
+                step="0.001"
+                value={step}
+                onChange={(e) => setStep(parseFloat(e.target.value) || 0)}
+                className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
+              />
+            </label>
+            <label className="block">
               <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.nozzleDia')}</span>
               <input
                 type="number"

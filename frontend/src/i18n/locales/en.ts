@@ -4151,6 +4151,8 @@ export default {
       stepK: 'K step',
       layerHeight: 'Layer height (mm)',
       nozzleDia: 'Nozzle diameter (mm)',
+      paPatternFixedRangeNote:
+        'Verification stage uses the BS-shipped K sweep (0.0 → 0.08 step 0.005) baked into the scaffold. Custom ranges land in the production phase.',
       download: 'Download sliced 3MF',
       downloading: 'Slicing…',
       success: 'Downloaded {{filename}}',
