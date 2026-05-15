@@ -56,6 +56,13 @@ export function CalibrationStartPage({ capabilities, onPick }: Props) {
 
   const renderRow = (r: OptionRow) => {
     const supported = capabilities ? Boolean(capabilities[r.capKey]) : false;
+    // Auto modes need lidar hardware (X1 family / H2D Pro). On printers
+    // without lidar the rows just clutter the list — hide them entirely
+    // instead of greying them out. Manual modes always render so the
+    // operator can see what's available across the wizard.
+    if (r.method === 'auto' && !supported) {
+      return null;
+    }
     const state = resolveModeState(capabilities, r.mode);
     // A row is interactive only when the per-printer capability flag AND
     // the global mode_state agree it's usable. 'disabled' blocks the

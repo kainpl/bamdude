@@ -3997,6 +3997,43 @@ async def on_print_complete(printer_id: int, data: dict):
                             queue_item.id,
                         )
 
+                # Calibration LibraryFile cleanup: every calibration
+                # ``start`` writes a synthetic ``calibration_<mode>_<ts>.gcode.3mf``
+                # into ``library-files/`` so the dispatcher has a
+                # ``library_file_id`` to thread through (mirrors the
+                # regular library print flow). Once the print itself
+                # finishes — regardless of outcome (completed / failed /
+                # cancelled) — that file has served its purpose and
+                # should disappear: the archive carries its own copy of
+                # the sliced gcode + thumbnails under ``file_path``
+                # (chain-of-custody invariant from m009/m039), and the
+                # operator never needs to re-slice the same calibration
+                # sweep. Without this cleanup every test print left an
+                # orphan sliced 3MF in the library, indistinguishable
+                # from a user upload. Detach archive back-references
+                # to the same NULL the route-side trash paths produce,
+                # then unlink the disk file + delete the row.
+                if queue_item.is_calibration and queue_item.library_file_id is not None:
+                    try:
+                        from backend.app.models.library import LibraryFile as _CaliLibFile
+                        from backend.app.services.library_trash import library_trash_service
+
+                        _cali_lib_file = await db.get(_CaliLibFile, queue_item.library_file_id)
+                        if _cali_lib_file is not None:
+                            await library_trash_service.hard_delete_now(db, _cali_lib_file)
+                            logger.info(
+                                "Calibration cleanup: removed library file %s (%s status=%s)",
+                                queue_item.library_file_id,
+                                queue_item.id,
+                                queue_status,
+                            )
+                    except Exception:
+                        logger.exception(
+                            "Failed to clean up calibration LibraryFile %s for queue_item %s",
+                            queue_item.library_file_id,
+                            queue_item.id,
+                        )
+
                 # MQTT relay - publish queue job completed.
                 # Guarded by the `if queue_item:` scope because queue_item / queue_status
                 # are only defined there; on the external-print path below there's no

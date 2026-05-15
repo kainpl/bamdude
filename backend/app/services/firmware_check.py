@@ -32,7 +32,7 @@ from pathlib import Path
 import httpx
 from curl_cffi.requests import AsyncSession as CurlAsyncSession
 
-from backend.app.core.config import _data_dir
+from backend.app.core.config import APP_VERSION, _data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -139,14 +139,19 @@ class FirmwareCheckService:
         # bambulab.com is behind Cloudflare with TLS fingerprint blocking:
         # plain httpx → 403 (Cloudflare recognises Python's TLS handshake).
         # curl_cffi impersonates a real Chrome TLS stack → 200.
-        # Used for the Next.js page + data endpoint.
+        # Used for the Next.js page + data endpoint. The TLS impersonation
+        # here is a fingerprint workaround — the request itself still
+        # identifies as BamDude in headers below where applicable.
+        # (Cloudflare's check happens at the TLS layer, not the HTTP layer.)
         self._cf_client = CurlAsyncSession(timeout=30, impersonate="chrome120")
-        # Wiki (wiki.bambulab.com) doesn't have the same block — plain httpx
-        # works fine and is lighter. Also used for the CDN file download.
+        # Wiki (wiki.bambulab.com) has no TLS / UA-special handling —
+        # verified 2026-05-12 that ``BamDude/<ver>`` returns the same
+        # HTML as a Chrome UA. Honest UA per Bambu's 2026-05-12
+        # cloud-access policy.
         self._client = httpx.AsyncClient(
             timeout=30.0,
             headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                "User-Agent": f"BamDude/{APP_VERSION} (+https://github.com/kainpl/bamdude)",
             },
         )
 

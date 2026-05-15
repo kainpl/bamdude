@@ -541,13 +541,21 @@ class CalibrationService:
             except (SlicerInputError, SlicerApiUnavailableError, SlicerApiError) as exc:
                 raise ValueError(f"Slicer sidecar failed for calibration slice: {exc}") from exc
 
+            # Replace the slicer-generated placeholder-cube preview PNGs
+            # with our branded "PA Test" thumbnail so library /
+            # archive / preview UIs don't render a confusing 3mm
+            # corner cube.
+            from backend.app.services.calib_thumbnail import apply_calibration_thumbnail
+
+            sliced_content = apply_calibration_thumbnail(slice_result.content, cali_mode)
+
             # Persist sliced bytes as a LibraryFile so the dispatcher
             # picks it up like any other queued library item. Stored
             # under a synthetic filename so it doesn't collide with
             # operator uploads. ``source_type=sliced`` keeps the file
             # manager's badging correct.
             library_file_id = await _persist_calibration_slice_to_library(
-                content=slice_result.content,
+                content=sliced_content,
                 filename=f"calibration_{cali_mode.value}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.gcode.3mf",
                 user_id=user_id,
                 print_time_seconds=slice_result.print_time_seconds,
@@ -1308,17 +1316,27 @@ async def sync_printer_kprofiles_to_cache(
         except (TypeError, ValueError):
             kp_slot_id = None
 
+        # Match by combo only: (printer, filament_id, nozzle_dia, vol_type,
+        # extruder). ``name`` and ``pa_k_value`` are NOT part of the key —
+        # when the printer re-tunes the K for the same combo (operator
+        # re-runs the wizard, or edits the slot from the Profiles UI), the
+        # SAME row updates in place, including ``name`` and ``pa_k_value``.
+        # ``LIMIT 1`` + ``ORDER BY is_active DESC, id DESC`` is a
+        # deterministic single-row pick — not deduplication; legacy
+        # history-row data (multiple rows per combo from the
+        # name+pa_k_value-keyed era) gets resolved separately.
         existing = (
             await db.execute(
-                select(FilamentCalibration).where(
+                select(FilamentCalibration)
+                .where(
                     FilamentCalibration.printer_id == printer_id,
                     FilamentCalibration.filament_id == kp_filament_id,
                     FilamentCalibration.nozzle_diameter == kp_nozzle_dia,
                     FilamentCalibration.nozzle_volume_type == vol_type,
                     FilamentCalibration.extruder_id == extruder_id,
-                    FilamentCalibration.name == kp_name,
-                    FilamentCalibration.pa_k_value == kp_k,
                 )
+                .order_by(FilamentCalibration.is_active.desc(), FilamentCalibration.id.desc())
+                .limit(1)
             )
         ).scalar_one_or_none()
 
@@ -1344,6 +1362,16 @@ async def sync_printer_kprofiles_to_cache(
             touched += 1
         else:
             row_touched = False
+            # ``name`` and ``pa_k_value`` are no longer part of the match
+            # key, so mirror them from the printer the same way as the
+            # other live-derived fields. Operator edit in Profiles UI
+            # (slot rename, K re-tune) lands here.
+            if existing.name != kp_name:
+                existing.name = kp_name
+                row_touched = True
+            if existing.pa_k_value != kp_k:
+                existing.pa_k_value = kp_k
+                row_touched = True
             if existing.cali_idx != kp_slot_id:
                 existing.cali_idx = kp_slot_id
                 row_touched = True

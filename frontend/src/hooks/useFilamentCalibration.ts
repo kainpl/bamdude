@@ -322,6 +322,18 @@ export function useFilamentCalibration(printerId: number, enabled: boolean) {
   const setInput = (patch: Partial<WizardInput>) =>
     setInputState((prev) => ({ ...prev, ...patch }));
 
+  // Wipe every piece of wizard-local state so the next open starts on
+  // step 1 with no leftover input. Server-side state (active session,
+  // capabilities) re-fetches itself when the modal reopens — we don't
+  // touch those caches. Used by the modal's close handler.
+  const resetContext = () => {
+    setStep('start');
+    setInputState({ extruder_id: 0 });
+    setSessionId(null);
+    setSavedRows([]);
+    setErrorMsg(null);
+  };
+
   return useMemo(
     () => ({
       step,
@@ -342,6 +354,7 @@ export function useFilamentCalibration(printerId: number, enabled: boolean) {
       submitAutoResult: (body: { results: AutoResultEditIn[] }) =>
         submitAutoMutation.mutateAsync(body),
       cancelSession: () => cancelMutation.mutateAsync(),
+      resetContext,
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [

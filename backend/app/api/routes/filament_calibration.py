@@ -696,6 +696,15 @@ async def slice_calibration_for_verification(
         logger.error("slice_only: sidecar error at %s (mode=%s): %s", api_url, body.cali_mode.value, exc)
         raise HTTPException(502, str(exc)) from exc
 
+    # Replace the slicer-generated placeholder-cube preview with our
+    # branded "PA Test" thumbnail before the operator downloads it (so
+    # the BS / Orca preview pane shows "PA Test" instead of a 3 mm
+    # corner cube). Mirrors what the production-dispatch path does
+    # before persisting to LibraryFile.
+    from backend.app.services.calib_thumbnail import apply_calibration_thumbnail
+
+    patched_content = apply_calibration_thumbnail(result.content, body.cali_mode)
+
     await _audit(
         db,
         printer_id=printer_id,
@@ -704,7 +713,7 @@ async def slice_calibration_for_verification(
         payload={
             **body.model_dump(),
             "bytes_in": len(model_bytes),
-            "bytes_out": len(result.content),
+            "bytes_out": len(patched_content),
             "print_time_seconds": result.print_time_seconds,
             "filament_used_g": result.filament_used_g,
         },
@@ -713,7 +722,7 @@ async def slice_calibration_for_verification(
     download_name = f"calibration_{body.cali_mode.value}.gcode.3mf"
     quoted = urllib.parse.quote(download_name)
     return Response(
-        content=result.content,
+        content=patched_content,
         media_type="model/3mf",
         headers={
             "Content-Disposition": f"attachment; filename*=UTF-8''{quoted}",
@@ -795,6 +804,14 @@ async def bake_calibration_3mf(
     except ValueError as exc:
         logger.warning("bake_only: builder rejected spec for %s — %s", body.cali_mode.value, exc)
         raise HTTPException(400, str(exc))
+
+    # Bake-only returns the pre-slice scaffold 3MF — its embedded
+    # thumbnail is still the scaffold's placeholder-cube render. Patch
+    # it the same way the sliced paths do so the operator's BS / Orca
+    # preview shows "PA Test" branding even for the debug bake.
+    from backend.app.services.calib_thumbnail import apply_calibration_thumbnail
+
+    model_bytes = apply_calibration_thumbnail(model_bytes, body.cali_mode)
 
     await _audit(
         db,

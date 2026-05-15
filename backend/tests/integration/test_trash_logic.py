@@ -1,8 +1,11 @@
 """Integration tests for the post-0.5.x trash logic adjustments:
 
 * Dedup queries (library + archive) exclude trashed rows.
-* Library file hard-delete-from-trash is refused while active archives reference it.
-* `Empty trash` for the library skips pinned files and reports the count.
+* Library file hard-delete-from-trash detaches active archive refs
+  (``library_file_id = NULL``) and proceeds — operator intent on the
+  trash UI is "delete this forever", we honour it instead of 409-ing.
+* `Empty trash` for the library deletes every trashed file regardless
+  of archive references; ``skipped_pinned`` stays at 0.
 * Archive auto-purge soft-deletes (moves to archive trash); restore + hard-delete
   routes round-trip; sweeper hard-deletes after retention.
 """
@@ -107,10 +110,21 @@ async def test_archive_dedup_ignores_trashed(printer_factory, archive_factory, d
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_library_hard_delete_refused_while_active_archive_pins(
+async def test_library_hard_delete_detaches_active_archive_refs(
     async_client: AsyncClient, file_factory, archive_factory, printer_factory, db_session
 ):
-    """409 from DELETE /library/trash/{id} when an active archive references the file."""
+    """Hard-delete from trash detaches active archives instead of 409-ing.
+
+    Operator intent on the trash UI is "delete this forever"; we honour
+    it and blank ``PrintArchive.library_file_id`` in the same txn. The
+    archive row itself survives (its on-disk print history under
+    ``file_path`` is independent of the library back-reference) but the
+    pointer goes null.
+    """
+    from sqlalchemy import select as _select
+
+    from backend.app.models.archive import PrintArchive
+
     printer = await printer_factory()
     f = await file_factory()
     f.deleted_at = datetime.now(timezone.utc)
@@ -118,38 +132,41 @@ async def test_library_hard_delete_refused_while_active_archive_pins(
     await db_session.commit()
 
     resp = await async_client.delete(f"/api/v1/library/trash/{f.id}")
-    assert resp.status_code == 409, resp.text
-    detail = resp.json()["detail"]
-    assert detail["code"] == "library_file_pinned_by_archives"
-    assert detail["active_references"] >= 1
-
-    # Trash the referencing archive — now hard-delete is allowed.
-    archive.deleted_at = datetime.now(timezone.utc)
-    await db_session.commit()
-
-    resp = await async_client.delete(f"/api/v1/library/trash/{f.id}")
     assert resp.status_code == 200, resp.text
+
+    # Archive survives, library_file_id detached.
+    await db_session.refresh(archive)
+    assert archive.library_file_id is None
+    still_there = (await db_session.execute(_select(PrintArchive).where(PrintArchive.id == archive.id))).scalar_one()
+    assert still_there is not None
 
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_library_empty_trash_skips_pinned_and_reports_count(
+async def test_library_empty_trash_detaches_all_archive_refs(
     async_client: AsyncClient, file_factory, archive_factory, printer_factory, db_session
 ):
-    """Empty trash deletes unpinned, skips pinned, returns both counts."""
+    """Empty trash deletes every trashed file regardless of archive refs.
+
+    Each detach is part of the same transaction as the file delete;
+    archives keep their rows, lose their ``library_file_id`` pointer.
+    """
     printer = await printer_factory()
     pinned = await file_factory()
     free = await file_factory()
     pinned.deleted_at = datetime.now(timezone.utc)
     free.deleted_at = datetime.now(timezone.utc)
-    await archive_factory(printer.id, library_file_id=pinned.id)  # active archive pins it
+    pinned_archive = await archive_factory(printer.id, library_file_id=pinned.id)
     await db_session.commit()
 
     resp = await async_client.delete("/api/v1/library/trash")
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["deleted"] == 1
-    assert body["skipped_pinned"] == 1
+    assert body["deleted"] == 2
+    assert body["skipped_pinned"] == 0
+    # Archive survives, detached.
+    await db_session.refresh(pinned_archive)
+    assert pinned_archive.library_file_id is None
 
 
 # ============= Archive trash routes round-trip =============

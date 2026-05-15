@@ -82,7 +82,7 @@ async def _apply_calibrations_for_print(
     if isinstance(ams_raw, dict):
         ams_raw = ams_raw.get("ams", [])
     if not isinstance(ams_raw, list):
-        return
+        ams_raw = []
 
     used_global: set[int] | None = None
     if ams_mapping is not None:
@@ -151,6 +151,66 @@ async def _apply_calibrations_for_print(
                     printer_id,
                     ams_id,
                     slot_id,
+                    e,
+                )
+
+    # External slots are always available regardless of AMS presence (operator
+    # can mid-print swap to external on an AMS-equipped X1C, and no-AMS
+    # printers like A1 Mini only have external). ``vt_tray`` lists them:
+    # ``id=254`` for single-external (X1C / P1S / A1 / A1 Mini), ``id=255``
+    # for the second slot on H2D dual-external. ``ams_mapping`` doesn't
+    # carry external-slot info (the no-AMS branch in bambu_mqtt remaps it to
+    # ``[0]`` as a firmware placeholder), so we don't filter external slots
+    # by ``used_global`` — bind every populated vt slot and let the
+    # active-calibration resolver decide: explicit spool_k_profile link
+    # wins, else fallback to the per-(filament_id, nozzle, vol, extruder)
+    # active row, else no-op (silent — that's the contract).
+    vt_tray_raw = (state.raw_data or {}).get("vt_tray", []) or []
+    if isinstance(vt_tray_raw, list):
+        for vt in vt_tray_raw:
+            if not isinstance(vt, dict):
+                continue
+            try:
+                vt_id = int(vt.get("id", -1))
+            except (TypeError, ValueError):
+                continue
+            if vt_id not in (254, 255):
+                continue
+            ext_slot = vt_id - 254  # 254→0, 255→1
+            tray_info_idx = vt.get("tray_info_idx") or ""
+            assignment_row = (
+                await db.execute(
+                    select(SA)
+                    .options(_sl(SA.spool))
+                    .where(
+                        SA.printer_id == printer_id,
+                        SA.ams_id == 255,
+                        SA.tray_id == ext_slot,
+                    )
+                )
+            ).scalar_one_or_none()
+            spool = assignment_row.spool if assignment_row else None
+
+            filament_id = derive_effective_filament_id(spool=spool, slot_tray_info_idx=tray_info_idx or None)
+            if not filament_id:
+                continue
+            try:
+                await apply_active_calibration_to_slot(
+                    db=db,
+                    printer_id=printer_id,
+                    ams_id=255,
+                    slot_id=ext_slot,
+                    filament_id=filament_id,
+                    nozzle_diameter=nozzle_dia_float,
+                    nozzle_volume_type=nozzle_vt,
+                    extruder_id=0,
+                    spool_id=spool.id if spool else None,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Pre-print apply (external) failed printer=%s vt_slot=%s: %s",
+                    printer_id,
+                    ext_slot,
                     e,
                 )
 

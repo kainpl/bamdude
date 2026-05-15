@@ -36,6 +36,7 @@ from backend.app.schemas.cloud import (
     SlicerSettingUpdate,
 )
 from backend.app.services.bambu_cloud import (
+    _SLICER_API_VERSION,
     BambuCloudAuthError,
     BambuCloudError,
     BambuCloudService,
@@ -352,7 +353,7 @@ async def logout(
 
 @router.get("/settings", response_model=SlicerSettingsResponse)
 async def get_slicer_settings(
-    version: str = "02.04.00.70",
+    version: str = _SLICER_API_VERSION,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.CLOUD_AUTH),
 ):
@@ -454,7 +455,7 @@ async def get_setting_detail(
 
 @router.get("/filaments", response_model=list[SlicerSetting])
 async def get_filament_presets(
-    version: str = "02.04.00.70",
+    version: str = _SLICER_API_VERSION,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.INVENTORY_READ),
 ):

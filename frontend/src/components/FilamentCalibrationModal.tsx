@@ -37,13 +37,23 @@ export function FilamentCalibrationModal({ isOpen, onClose, printerId }: Props) 
 
   if (!isOpen) return null;
 
+  // Every close path (X button, "Calibrate another → Close", external
+  // ``onClose`` trigger) wipes wizard-local state so the next open
+  // always starts on step 1. The active-session resume banner still
+  // works — it reads from the server-side active-sessions query, not
+  // the cleared local state.
+  const handleClose = () => {
+    cali.resetContext();
+    onClose();
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
       <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl shadow-2xl w-full max-w-3xl mx-4 max-h-[90vh] overflow-y-auto">
         <div className="flex justify-between items-center p-4 border-b border-bambu-dark-tertiary">
           <h2 className="text-lg font-semibold text-white">{t('filamentCali.title')}</h2>
           <button
-            onClick={onClose}
+            onClick={handleClose}
             aria-label="Close"
             className="p-1 text-bambu-gray hover:text-white rounded transition-colors"
           >
@@ -168,7 +178,7 @@ export function FilamentCalibrationModal({ isOpen, onClose, printerId }: Props) 
           {cali.step === 'towerFinish' && cali.session && (
             <CalibrationTowerFinishPage
               session={cali.session}
-              onClose={onClose}
+              onClose={handleClose}
               onCalibrateAnother={() => {
                 cali.setSessionId(null);
                 cali.setStep('start');
@@ -183,7 +193,7 @@ export function FilamentCalibrationModal({ isOpen, onClose, printerId }: Props) 
                 cali.setSessionId(null);
                 cali.setStep('start');
               }}
-              onClose={onClose}
+              onClose={handleClose}
             />
           )}
         </div>

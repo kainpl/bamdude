@@ -1359,13 +1359,13 @@ export default {
       enabledFromEnv: 'Encryption enabled (key from environment)',
       enabledFromFile: 'Encryption enabled (key file)',
       enabledGenerated: 'Encryption enabled (auto-generated key)',
-      backupHint: 'BamDude generated a key on first start. Back up DATA_DIR/.mfa_encryption_key — without it, encrypted secrets cannot be decrypted on a new host.',
+      backupHint: 'BamDude generated a key on first start. Back up DATA_DIR/.mfa_encryption_key - without it, encrypted secrets cannot be decrypted on a new host.',
       allEncrypted: 'All MFA secrets are encrypted at rest.',
       legacyRowsWarning_one: '{{count}} secret is still stored as plaintext. It will be re-encrypted on next write.',
       legacyRowsWarning_other: '{{count}} secrets are still stored as plaintext. They will be re-encrypted on next write.',
       migrationErrorWarning_one: '{{count}} row was skipped during the last re-encryption migration. Check server logs.',
       migrationErrorWarning_other: '{{count}} rows were skipped during the last re-encryption migration. Check server logs.',
-      decryptionBrokenTitle: 'Decryption broken — recovery required',
+      decryptionBrokenTitle: 'Decryption broken - recovery required',
       decryptionBrokenError_one: '{{count}} encrypted secret cannot be decrypted with the current key. Restore the original key file or re-enroll affected users.',
       decryptionBrokenError_other: '{{count}} encrypted secrets cannot be decrypted with the current key. Restore the original key file or re-enroll affected users.',
       notConfigured: 'Encryption not configured',
@@ -2013,10 +2013,10 @@ export default {
         'A design is eligible when its newest print across all archive copies is older than this. Minimum 1 day.',
       lastRun: 'Last run',
       lastRunSummary: 'cleared {{archives}} archive(s), freed {{bytes}}',
-      lastRunCountUnknown: 'count was lost on restart — see logs',
+      lastRunCountUnknown: 'count was lost on restart - see logs',
       nextRun: 'Next run',
       nextRunHint:
-        'Runs at most once per 24 h after the previous successful run. After enabling for the first time the loop ticks every 15 min — first auto-run lands within 15 min, then drifts on the 24 h cycle. A manual "Run now" resets the timer.',
+        'Runs at most once per 24 h after the previous successful run. After enabling for the first time the loop ticks every 15 min - first auto-run lands within 15 min, then drifts on the 24 h cycle. A manual "Run now" resets the timer.',
       previewLabel: 'Currently eligible',
       previewEmpty: 'Nothing to clean up right now.',
       previewBody: '{{archives}} archive(s) in {{groups}} group(s) - {{bytes}} ready to free',
@@ -2074,7 +2074,7 @@ export default {
     checkNow: 'Check now',
     releaseNotes: 'Release Notes',
     updateViaDocker: 'Update via Docker Compose:',
-    updateViaHomeAssistant: 'BamDude is running as a Home Assistant addon. Updates are managed by the HA Supervisor — open Settings → Add-ons → BamDude → Update.',
+    updateViaHomeAssistant: 'BamDude is running as a Home Assistant addon. Updates are managed by the HA Supervisor - open Settings → Add-ons → BamDude → Update.',
     dockerImagePullTitle: 'Image-based install (typical)',
     dockerImagePullStable: 'Edit your docker-compose.yml image tag if pinned, then pull + recreate:',
     dockerImagePullBeta: 'Beta tags are not pulled by `:latest`. Edit your docker-compose.yml to pin the beta image tag, then pull + recreate:',
@@ -2929,7 +2929,7 @@ export default {
     noPresetsForSlot: 'No presets available',
     allPresetsRequired: 'All presets must be selected',
     bundle: 'Slicer bundle',
-    bundleNone: '— None (pick presets individually) —',
+    bundleNone: '- None (pick presets individually) -',
     bundleAllRequired: 'Bundle process and every filament slot must be picked',
     presetSource: 'Preset source',
     presetSourceManual: 'Manual',
@@ -3115,16 +3115,16 @@ export default {
     retentionLabel: 'Trash retention',
     retentionDescription: 'How long deleted files stay in the trash bin before the sweeper hard-deletes their bytes. 1–365 days. Files pinned by an active archive wait until the archive is also trashed.',
     enableLabel: 'Auto-purge old files',
-    enableDescription: 'Periodically moves idle library files into Trash. Files go to Trash first — they are not deleted immediately.',
+    enableDescription: 'Periodically moves idle library files into Trash. Files go to Trash first - they are not deleted immediately.',
     ageLabel: 'Auto-purge files older than',
     ageDescription: 'Minimum 7 days, maximum 10 years. Uses the same age rule as the manual Purge button.',
     days: 'days',
     includeNeverPrinted: 'Include files that have never been printed',
     saveFailed: 'Could not save auto-purge settings.',
     lastRunSummary: 'moved {{moved}} file(s) to trash',
-    lastRunCountUnknown: 'count was lost on restart — see logs',
+    lastRunCountUnknown: 'count was lost on restart - see logs',
     nextRunHint:
-      'Runs at most once per 24 h after the previous successful run. After enabling for the first time the loop ticks every 15 min — first auto-run lands within 15 min, then drifts on the 24 h cycle. A manual purge resets the timer.',
+      'Runs at most once per 24 h after the previous successful run. After enabling for the first time the loop ticks every 15 min - first auto-run lands within 15 min, then drifts on the 24 h cycle. A manual purge resets the timer.',
   },
 
   archivePurge: {
@@ -3132,20 +3132,20 @@ export default {
     headerTooltip: 'Run the stored-3MF cleanup now (frees disk; keeps history)',
     title: 'Cleanup stored 3MF files',
     description: 'Free disk by deleting 3MF bytes for designs whose newest print is older than the retention threshold. The archive row, thumbnail, and slicer-derived metadata stay so you can browse the print history; reprint / download / queue actions get disabled for affected rows.',
-    autoDisabledHint: 'Auto-mode is off in Settings — only manual runs from this dialog will fire.',
+    autoDisabledHint: 'Auto-mode is off in Settings - only manual runs from this dialog will fire.',
     ageLabel: 'Clear designs whose newest print is older than',
     days: 'days',
     ageHint: 'Designs whose newest print across all printers is older than this lose their 3MF bytes. Active prints, queued jobs, and library files are skipped.',
     resetToSettings: 'reset to {{days}}',
     effectsTitle: 'What happens when you click Run',
     effect1: 'For each design (grouped by source content hash) whose newest print is past retention: every 3MF copy on disk is deleted in one transaction.',
-    effect2: 'The archive row stays — thumbnail, print time, filament, energy, notes, tags all preserved for history and analytics.',
+    effect2: 'The archive row stays - thumbnail, print time, filament, energy, notes, tags all preserved for history and analytics.',
     effect3: 'Reprint / Schedule / Download buttons disable on affected rows because there is no 3MF to send.',
     effect4: 'Skipped: designs with an active print, a queued / paused job, or a library file that still exists. Reprinting any chain sibling resets the clock.',
     previewLoading: 'Computing what would be cleared…',
     previewFailed: 'Could not preview the cleanup.',
     previewSummary: '{{archives}} archive(s) across {{groups}} design group(s) · {{size}} would be freed',
-    previewEmpty: 'No designs are past retention right now — nothing would be cleared.',
+    previewEmpty: 'No designs are past retention right now - nothing would be cleared.',
     warning: 'This is irreversible. The 3MF bytes are deleted from disk; only the archive metadata remains. To get the file back you must reprint from the library (if it is still there) or re-upload.',
     confirmCta: 'Clear {{count}} archive(s)',
     purging: 'Clearing 3MFs…',
@@ -3244,7 +3244,7 @@ export default {
     linkToProject: 'Link to project',
     linkedToProject: 'Linked to a project (click to change)',
     linkedToNProjects: 'Linked to {{count}} project(s) (click to manage)',
-    noProjectsSelected: 'No projects selected — saving will unlink the file from every project.',
+    noProjectsSelected: 'No projects selected - saving will unlink the file from every project.',
     removeFromProject: 'Remove from {{name}}',
     project: 'Project',
     archive: 'Archive',
@@ -3774,7 +3774,7 @@ export default {
     unlinkConfirmTitle: 'Unassign spool from slot?',
     unlinkConfirmBody: 'The slot assignment will be removed. The spool stays in your Spoolman inventory.',
     noUnlinkedSpools: 'All Spoolman spools are already linked to a slot.',
-    spoolsPartiallyCreated: 'Created {{created}} of {{total}} spools — see logs for the rest.',
+    spoolsPartiallyCreated: 'Created {{created}} of {{total}} spools - see logs for the rest.',
     selectSpool: 'Select a spool to assign to this slot',
     assigned: 'Assigned',
     assigning: 'Assigning...',
@@ -3980,11 +3980,11 @@ export default {
           hint: 'Single label per page; sized for Brother PT/QL and Dymo small labels.'
         },
         averyL7160: {
-          label: 'Avery L7160 — A4 sheet (38.1 × 63.5 mm × 21)',
+          label: 'Avery L7160 - A4 sheet (38.1 × 63.5 mm × 21)',
           hint: 'EU sheet stock; 21 labels per A4 page.'
         },
         avery5160: {
-          label: 'Avery 5160 — US Letter sheet (25.4 × 66.7 mm × 30)',
+          label: 'Avery 5160 - US Letter sheet (25.4 × 66.7 mm × 30)',
           hint: 'US sheet stock; 30 labels per Letter page.'
         }
       }
@@ -4111,10 +4111,10 @@ export default {
       towerGroup: 'Towers',
       paLine: 'PA Line (manual)',
       paLineDesc:
-        'A flat one-layer block of stepped-K rows (slow / fast / slow extrusion in each), plus a numbered tab on the side. Pick the cleanest row — K = the number next to it. Visually similar to PA Pattern but with straight lines instead of V-shaped walls.',
+        'A flat one-layer block of stepped-K rows (slow / fast / slow extrusion in each), plus a numbered tab on the side. Pick the cleanest row - K = the number next to it. Visually similar to PA Pattern but with straight lines instead of V-shaped walls.',
       paPattern: 'PA Pattern (manual)',
       paPatternDesc:
-        'A flat one-layer comb of V-shaped walls at stepped K values, plus a numbered tab. Pick the cleanest column — K = the number next to it. The Bambu / Orca default for direct-drive printers.',
+        'A flat one-layer comb of V-shaped walls at stepped K values, plus a numbered tab. Pick the cleanest column - K = the number next to it. The Bambu / Orca default for direct-drive printers.',
       paTower: 'PA Tower (manual, tower)',
       paTowerDesc: 'A vertical tower with stepped PA.',
       paAuto: 'Auto PA (X1 lidar)',
@@ -4139,10 +4139,10 @@ export default {
       notImplemented: 'Not yet implemented in this build',
       verificationModePill: 'Verification',
       verificationModeTooltip:
-        'This mode is in verification — confirming the page will offer a "Download sliced 3MF" button so you can compare against your slicer\'s reference output before BamDude wires it to the printer.',
+        'This mode is in verification - confirming the page will offer a "Download sliced 3MF" button so you can compare against your slicer\'s reference output before BamDude wires it to the printer.',
     },
     verifyDownload: {
-      heading: 'Verification — download sliced 3MF',
+      heading: 'Verification - download sliced 3MF',
       intro:
         "Verification mode runs the calibration through your slicer sidecar and returns the sliced .gcode.3mf as a download. Open it in Bambu Studio or OrcaSlicer and compare against your reference output before BamDude wires this mode to dispatch real prints.",
       loadingPresets: 'Loading presets…',
@@ -4160,7 +4160,7 @@ export default {
       bake: 'Download pre-slice 3MF',
       baking: 'Baking…',
       bakeTooltip:
-        "Returns the composed 3MF BEFORE it's handed to the slicer — useful for inspecting the per-layer M900 commands and per-object overrides that BamDude packs.",
+        "Returns the composed 3MF BEFORE it's handed to the slicer - useful for inspecting the per-layer M900 commands and per-object overrides that BamDude packs.",
       bakeSuccess: 'Downloaded {{filename}}',
     },
     autoSave: {
@@ -4177,7 +4177,7 @@ export default {
       heading: 'Print complete',
       body: "Read the calibrated value off the printed tower visually, then enter it in your slicer's filament profile.",
       tip: {
-        generic: 'Most slicers carry these values per-filament — adjust there.',
+        generic: 'Most slicers carry these values per-filament - adjust there.',
         temp_tower:
           'Pick the temperature step with the cleanest extrusion and no stringing. Update Filament → Nozzle temperature.',
         vol_speed_tower:
@@ -4220,9 +4220,9 @@ export default {
       selectFilament: 'Select a loaded spool',
       externalSpoolDisabled: 'External spool calibration is not supported in this plan',
       externalSpool: 'External spool',
-      noLoadedSlot: 'No loaded AMS slot — load a spool first',
+      noLoadedSlot: 'No loaded AMS slot - load a spool first',
       missingTemps: 'Set nozzle and bed temperature',
-      customFilament: 'Custom filament — name:',
+      customFilament: 'Custom filament - name:',
       customFilamentPlaceholder: 'My PETG',
       paLinePrintNumbers: 'Print K-value labels next to each line',
     },
@@ -4236,13 +4236,13 @@ export default {
     manualSave: {
       heading: 'Pick the best-looking line',
       instruction:
-        'Look at the printed lines. Pick the line with the most even extrusion — no bulges at the ends, no thin spots in the middle.',
+        'Look at the printed lines. Pick the line with the most even extrusion - no bulges at the ends, no thin spots in the middle.',
       kInputInstruction:
-        'Find the row (PA Line) or column (PA Pattern) with the cleanest extrusion — no bulges where speed changes, no gaps in the corners. Read the K number printed next to it and enter it below.',
+        'Find the row (PA Line) or column (PA Pattern) with the cleanest extrusion - no bulges where speed changes, no gaps in the corners. Read the K number printed next to it and enter it below.',
       lineIndex: 'Line index',
       computedK: 'K value',
       name: 'Save as',
-      namePlaceholder: 'PLA Basic — PA 0.048',
+      namePlaceholder: 'PLA Basic - PA 0.048',
       notes: 'Notes',
       notesPlaceholder: 'Anything to remember about this calibration',
       syncToPrinter: 'Save to printer history (lets external prints use it)',
@@ -4251,7 +4251,7 @@ export default {
     paTowerSave: {
       heading: 'Measure the best height on the tower',
       instruction:
-        'Examine each corner of the printed tower and find the height (in mm) that yields the cleanest corners — no bulges, no gaps, smooth surface.\nPressure Advance is then computed as: K = Start + (Step × measured_height_mm).',
+        'Examine each corner of the printed tower and find the height (in mm) that yields the cleanest corners - no bulges, no gaps, smooth surface.\nPressure Advance is then computed as: K = Start + (Step × measured_height_mm).',
       measuredHeight: 'Measured height (mm)',
       formula: 'K',
       save: 'Save & finish',
@@ -4259,7 +4259,7 @@ export default {
     coarseSave: {
       heading: 'Pick the smoothest top surface',
       instruction:
-        'Inspect the top surface of each of the 9 blocks. Pick the one with the smoothest infill — no gaps, no ridges.',
+        'Inspect the top surface of each of the 9 blocks. Pick the one with the smoothest infill - no gaps, no ridges.',
       blockModifier: 'Best block',
       coarseRatio: 'Coarse flow ratio',
       skipFine: 'Skip fine calibration (use this value directly)',
@@ -4783,7 +4783,7 @@ export default {
     },
     tailscale: {
       title: 'Show Tailscale endpoint',
-      description: 'When on, surfaces the host\'s Tailscale IP and MagicDNS hostname so you can paste them into the slicer\'s Add Printer dialog. Cert trust is unchanged (slicer still validates against BBL CA — import bbl_ca.crt once).',
+      description: 'When on, surfaces the host\'s Tailscale IP and MagicDNS hostname so you can paste them into the slicer\'s Add Printer dialog. Cert trust is unchanged (slicer still validates against BBL CA - import bbl_ca.crt once).',
       pasteHint: 'Paste into the slicer\'s Add Printer dialog:',
       copyIp: 'Copy IP',
       copyHostname: 'Copy hostname',
@@ -4898,7 +4898,7 @@ export default {
     },
     buildVolumeLabel: 'Bed',
     buildVolumeUnit: 'mm',
-    buildVolumeTooltip: 'Build volume drawn under the preview — parsed from the 3MF (printable_area + printable_height) when present, otherwise the X1/P1/A1 default 256×256×256.',
+    buildVolumeTooltip: 'Build volume drawn under the preview - parsed from the 3MF (printable_area + printable_height) when present, otherwise the X1/P1/A1 default 256×256×256.',
     wireframeTitle: 'Toggle wireframe / X-ray view',
     exportPngTitle: 'Save current view as PNG',
     plates: 'Plates',
@@ -4926,7 +4926,7 @@ export default {
     }
   },
 
-  // GCode viewer toolbar — buttons + slider labels + loading-state
+  // GCode viewer toolbar - buttons + slider labels + loading-state
   // copy. Lives next to the GcodeViewer component (in-modal, embedded
   // in ModelViewerModal). Defaults are duplicated as ``defaultValue``
   // inside the component so a missing locale entry doesn't blank the
@@ -5100,13 +5100,13 @@ export default {
     enableSwitchbarHint: 'Enable "Show in Switchbar" in Settings > Smart Plugs'
   },
 
-  // Historical log archive panel — sits below LogViewer on /system page.
+  // Historical log archive panel - sits below LogViewer on /system page.
   // Live bamdude.log streams via LogViewer; this panel manages the
   // rotated daily archives produced by TimedRotatingFileHandler.
   logArchives: {
     title: 'Historical Logs',
     subtitle: 'Daily-rotated archives. Live bamdude.log is shown above.',
-    empty: 'No rotated log archives yet — daily rotation runs at midnight.',
+    empty: 'No rotated log archives yet - daily rotation runs at midnight.',
     filename: 'Filename',
     size: 'Size',
     modified: 'Modified',
@@ -5258,7 +5258,7 @@ export default {
     bedCooledAfterPrint: '(after print completes)',
     telegram: {
       perChatHintTitle: 'Telegram events are configured per chat.',
-      perChatHintBody: 'Quiet hours and which events each chat receives live on each Telegram chat row — the bot itself only stores token, on/off, and daily digest schedule.',
+      perChatHintBody: 'Quiet hours and which events each chat receives live on each Telegram chat row - the bot itself only stores token, on/off, and daily digest schedule.',
       openChatsPage: 'Open Telegram chats',
       eventsPerChatChip: 'events per chat',
     },
@@ -5600,7 +5600,7 @@ export default {
     dailyDigest: 'Daily Digest',
     dailyDigestOff: 'digest off',
     dailyDigestProviderTime: 'Sent daily at {{time}} (configured on the bot)',
-    dailyDigestProviderOff: 'Daily digest is disabled on the bot — this opt-in won\'t take effect until the bot\'s digest is enabled.',
+    dailyDigestProviderOff: 'Daily digest is disabled on the bot - this opt-in won\'t take effect until the bot\'s digest is enabled.',
     cancel: 'Cancel',
     save: 'Save',
     add: 'Add'
@@ -5690,7 +5690,7 @@ export default {
     description:
       'Per-(user, printer-model) PrintModal toggle defaults. Each user gets their own set; the modal pre-fills and persists automatically when they print.',
     add: 'Add profile',
-    empty: 'No saved profiles yet. Operators populate this list as they confirm prints in the PrintModal — you can also pre-seed entries here.',
+    empty: 'No saved profiles yet. Operators populate this list as they confirm prints in the PrintModal - you can also pre-seed entries here.',
     allOff: 'All toggles off',
     addTitle: 'Add saved profile',
     editTitle: 'Edit saved profile',
@@ -5704,7 +5704,7 @@ export default {
     confirmDelete: 'Delete the saved profile for {{user}} → {{model}}?',
     alreadyExists: 'A profile already exists for this user + model. Edit the existing one instead.',
     modelPlaceholder: 'e.g. P1S, X1C, A1',
-    noModelsAvailable: 'No printers configured yet — add a printer first to seed the model list.',
+    noModelsAvailable: 'No printers configured yet - add a printer first to seed the model list.',
     swapExecute: 'Run swap-mode macros during print',
     col: {
       user: 'User',
@@ -5726,7 +5726,7 @@ export default {
   forecast: {
     title: 'Forecast',
     noSpools: 'No active spools found. Add spools to your inventory to see forecast data.',
-    noUsageData: 'No usage data available — cannot project stock timeline.',
+    noUsageData: 'No usage data available - cannot project stock timeline.',
     // Table headers
     sku: 'SKU',
     material: 'Material',
@@ -5743,7 +5743,7 @@ export default {
     // Timeframe
     timeframe: 'Timeframe',
     // Chart
-    chartTitle: 'Projected Stock — Top 5 Materials',
+    chartTitle: 'Projected Stock - Top 5 Materials',
     dashedLinesROP: 'Dashed lines = reorder points',
     stockLevel: 'Stock Level',
     reorderPoint: 'Reorder Point',
@@ -5768,13 +5768,13 @@ export default {
     failedSaveSettings: 'Failed to save settings',
     globalLeadTimeSaved: 'Global lead time saved',
     globalLeadTime: 'Global lead time',
-    globalLeadTimeHint: 'Global lead time floor — used in reorder point calculation for all SKUs',
+    globalLeadTimeHint: 'Global lead time floor - used in reorder point calculation for all SKUs',
     skuLeadTimeOverride: 'SKU Lead Time Override',
     skuLeadTimeHint: '0 = use global lead time. Set >0 to override for this SKU.',
     safetyMarginLabel: 'Safety Margin',
     effectiveLeadTime: 'Effective Lead Time',
     effectiveLeadTimeHint: 'max(global {{global}}d, SKU {{sku}}d)',
-    reorderPointHint: 'd̄ × LT + safety margin — order when stock hits this level',
+    reorderPointHint: 'd̄ × LT + safety margin - order when stock hits this level',
     safetyMarginHint: 'Statistical safety stock (z=1.65 × σ × √LT) + user-defined buffer',
     safetyMarginHintDays: 'Buffer added on top of statistical safety stock.{{approx}}',
     safetyMarginHintDaysApprox: ' ≈ {{g}}g at current rate.',
@@ -5812,7 +5812,7 @@ export default {
     purchased: 'Purchased',
     received: 'Received',
     markPurchased: 'Mark as purchased',
-    markReceived: 'Mark as received — adds spools to Stock inventory',
+    markReceived: 'Mark as received - adds spools to Stock inventory',
     resetToPending: 'Reset to pending',
     remove: 'Remove',
     clearAll: 'Clear all',
@@ -5823,7 +5823,7 @@ export default {
     byDuration: 'By Duration',
     numberOfSpools: 'Number of spools',
     lastHowManyDays: 'Should last how many days?',
-    noUsageQty: 'No usage data — quantity set to 1.',
+    noUsageQty: 'No usage data - quantity set to 1.',
     noteOptional: 'Note (optional)',
     notePlaceholder: 'e.g. for project X, urgent…',
     addNSpools_one: 'Add {{count}} spool',

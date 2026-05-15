@@ -25,7 +25,15 @@ from urllib.parse import urlparse
 
 import httpx
 
+from backend.app.core.config import APP_VERSION
+
 logger = logging.getLogger(__name__)
+
+
+# Honest UA — see ``bambu_cloud._USER_AGENT`` for the same reasoning
+# (Bambu Lab 2026-05-12 cloud-access policy: modifying AGPL code is
+# allowed, impersonating official clients in cloud traffic is not).
+_USER_AGENT = f"BamDude/{APP_VERSION} (+https://github.com/kainpl/bamdude)"
 
 
 # API base: ``api.bambulab.com/v1/design-service`` — the same Bambu Cloud
@@ -43,11 +51,12 @@ MAKERWORLD_CDN_HOSTS = ("makerworld.bblmw.com", "public-cdn.bblmw.com")
 # Pr0zak/YASTL#52. The suffix check matches any regional S3 endpoint.
 _ALLOWED_DOWNLOAD_SUFFIXES = (".amazonaws.com",)
 
-# Browser-like headers. ``api.bambulab.com`` accepts minimal headers cleanly;
-# the Referer is kept so MakerWorld origin checks don't fail anywhere the
-# same client hits ``makerworld.com``.
+# Honest BamDude UA — no browser impersonation (Bambu's 2026-05-12
+# cloud-access policy). The Referer is kept because MakerWorld's CSRF /
+# origin-check middleware uses it functionally on some endpoints — that's
+# a real protocol requirement, not identity-faking.
 _CLIENT_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:147.0) Gecko/20100101 Firefox/147.0",
+    "User-Agent": _USER_AGENT,
     "Accept": "text/html,application/json,*/*",
     "Accept-Language": "en-US,en;q=0.9",
     "Referer": "https://makerworld.com/",

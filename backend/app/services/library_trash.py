@@ -469,10 +469,11 @@ class LibraryTrashService:
     async def _sweep(self, db: AsyncSession) -> int:
         """Hard-delete trashed rows whose retention window has elapsed.
 
-        Skips rows still referenced by active (non-trashed) archives — those
-        files are pinned until the referencing archives also trash out, since
-        otherwise a reprint of an active archive would lose its source 3MF
-        mid-flight.
+        Active archive back-references are detached (not respected as a
+        pin) — the archive carries its own ``file_path`` to disk-stored
+        gcode + thumbnails (chain-of-custody invariant from m009/m039),
+        so blanking ``library_file_id`` is safe. Same contract as the
+        user-triggered hard-delete + empty-trash paths.
         """
         retention = await self._read_retention(db)
         now = datetime.now(timezone.utc)
@@ -488,27 +489,11 @@ class LibraryTrashService:
         if not rows:
             return 0
 
-        # Filter out rows still referenced by active archives. They wait —
-        # either the user restores them, or the referencing archive itself
-        # trashes out and the next sweep tick picks them up.
-        eligible_rows: list[LibraryFile] = []
-        pinned = 0
-        for row in rows:
-            refs = await self._active_archive_refs(db, row.id)
-            if refs > 0:
-                pinned += 1
-                continue
-            eligible_rows.append(row)
-        if pinned:
-            logger.info("Library trash sweeper: %d row(s) pinned by active archive references — waiting", pinned)
-        if not eligible_rows:
-            return 0
-
         deleted = 0
-        for row in eligible_rows:
+        for row in rows:
             self._unlink_on_disk(row)
             deleted += 1
-        eligible_ids = [r.id for r in eligible_rows]
+        row_ids = [r.id for r in rows]
         # Detach archive rows BEFORE deleting library files. The FK column
         # ``print_archives.library_file_id`` is declared ``ON DELETE SET
         # NULL``, but SQLite ignores FK actions unless ``PRAGMA
@@ -520,9 +505,9 @@ class LibraryTrashService:
         # paths in ``api/routes/library.py`` already do the same thing —
         # this brings the sweeper + hard_delete_now in line with them.
         await db.execute(
-            update(PrintArchive).where(PrintArchive.library_file_id.in_(eligible_ids)).values(library_file_id=None)
+            update(PrintArchive).where(PrintArchive.library_file_id.in_(row_ids)).values(library_file_id=None)
         )
-        await db.execute(delete(LibraryFile).where(LibraryFile.id.in_(eligible_ids)))
+        await db.execute(delete(LibraryFile).where(LibraryFile.id.in_(row_ids)))
         await db.commit()
         logger.info("Library trash sweeper: hard-deleted %d row(s) past %d-day retention", deleted, retention)
         return deleted

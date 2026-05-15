@@ -9,10 +9,26 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
+from backend.app.core.config import APP_VERSION
+
 logger = logging.getLogger(__name__)
 
 BAMBU_API_BASE = "https://api.bambulab.com"
 BAMBU_API_BASE_CN = "https://api.bambulab.cn"
+
+# Honest UA — never impersonate Bambu Studio / a browser in cloud calls
+# (Bambu Lab's 2026-05-12 statement: modifying AGPL code is fine,
+# impersonating official clients in cloud traffic is not). The +URL in
+# parens makes the source unambiguous if Bambu ever audits the traffic.
+_USER_AGENT = f"BamDude/{APP_VERSION} (+https://github.com/kainpl/bamdude)"
+
+# Default ``version`` query param for ``/v1/iot-service/api/slicer/setting``.
+# The endpoint validates the XX.YY.ZZ.WW format only; any value within the
+# format gives the same 576 KB response. We send a neutral placeholder
+# instead of an actual Bambu Studio release so we're not claiming to be
+# a specific BS build. Routes/cloud.py imports this so the route-side
+# default stays in sync.
+_SLICER_API_VERSION = "1.0.0.0"
 
 
 class BambuCloudError(Exception):
@@ -74,7 +90,7 @@ class BambuCloudService:
         """Get headers for authenticated requests."""
         headers = {
             "Content-Type": "application/json",
-            "User-Agent": "Bambuddy/1.0",
+            "User-Agent": _USER_AGENT,
         }
         if self.access_token:
             headers["Authorization"] = f"Bearer {self.access_token}"
@@ -174,24 +190,26 @@ class BambuCloudService:
             code: 6-digit TOTP code from authenticator app
         """
         try:
-            # TFA endpoint is on bambulab.com, NOT api.bambulab.com
-            # Requires browser-like headers to bypass Cloudflare
+            # TFA endpoint is on bambulab.com, NOT api.bambulab.com.
+            # Earlier versions sent Chrome UA + Origin + Referer +
+            # Accept-Language headers under the assumption Cloudflare's
+            # WAF would block plain-UA traffic — verified 2026-05-12
+            # that ``BamDude/<ver>`` returns the expected HTTP 400
+            # application-level error (no Cloudflare interstitial), so
+            # the spoof was unnecessary. Removed in line with Bambu's
+            # 2026-05-12 cloud-access policy ("modifying AGPL code is
+            # allowed, impersonating official clients is not").
             tfa_url = "https://bambulab.com/api/sign-in/tfa"
             if "bambulab.cn" in self.base_url:
                 tfa_url = "https://bambulab.cn/api/sign-in/tfa"
 
-            browser_headers = {
-                "Content-Type": "application/json",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "application/json, text/plain, */*",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Origin": "https://bambulab.com",
-                "Referer": "https://bambulab.com/",
-            }
-
             response = await self._client.post(
                 tfa_url,
-                headers=browser_headers,
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/plain, */*",
+                    "User-Agent": _USER_AGENT,
+                },
                 json={
                     "tfaKey": tfa_key,
                     "tfaCode": code,
@@ -281,7 +299,7 @@ class BambuCloudService:
         except httpx.RequestError as e:
             raise BambuCloudError(f"Request failed: {e}")
 
-    async def get_slicer_settings(self, version: str = "02.04.00.70") -> dict:
+    async def get_slicer_settings(self, version: str = _SLICER_API_VERSION) -> dict:
         """
         Get all slicer settings (filament, printer, process presets).
 

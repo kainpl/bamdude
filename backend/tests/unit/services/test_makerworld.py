@@ -104,10 +104,13 @@ class TestGetDesign:
         assert url == "https://api.bambulab.com/v1/design-service/design/1"
 
     @pytest.mark.asyncio
-    async def test_sends_browser_like_headers(self, service):
-        """Post-refactor the client uses a minimal Firefox-ish header set.
-        The old ``x-bbl-*`` Bambu-app identification headers are gone —
-        ``api.bambulab.com`` accepts browser-like headers cleanly."""
+    async def test_sends_honest_bamdude_user_agent(self, service):
+        """MakerWorld calls identify as BamDude — no Firefox / Chrome
+        impersonation. Bambu's 2026-05-12 cloud-access statement requires
+        honest client identification. ``Referer`` stays because
+        MakerWorld's CSRF / origin-check middleware uses it functionally
+        on some endpoints (that's a real protocol requirement, not
+        identity-faking)."""
         resp = MagicMock()
         resp.status_code = 200
         resp.json.return_value = {"id": 1}
@@ -115,11 +118,15 @@ class TestGetDesign:
 
         await service.get_design(1)
         headers = service._client.get.call_args.kwargs["headers"]
-        assert "Firefox" in headers["User-Agent"]
-        assert headers["Accept-Language"].startswith("en-US")
+        assert headers["User-Agent"].startswith("BamDude/")
+        assert "kainpl/bamdude" in headers["User-Agent"]
+        # Browser-impersonation strings must not leak in.
+        assert "Mozilla" not in headers["User-Agent"]
+        assert "Firefox" not in headers["User-Agent"]
+        assert "Chrome" not in headers["User-Agent"]
+        # Referer is functional, stays.
         assert headers["Referer"] == "https://makerworld.com/"
-        assert "Accept" in headers
-        # The deprecated Bambu-identification headers must no longer be sent.
+        # The deprecated Bambu-identification headers must still be gone.
         for dead_header in (
             "x-bbl-client-type",
             "x-bbl-client-version",

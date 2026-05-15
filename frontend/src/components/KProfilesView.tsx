@@ -426,17 +426,18 @@ function KProfileModal({
           </div>
 
           <form onSubmit={handleSubmit} className="p-4 space-y-4">
-            {/* Profile Name - read-only when editing */}
+            {/* Profile Name — editable both on add and edit (BS-parity). Backend
+                handles rename through the same set_kprofile path: H2D in-place
+                via cali_idx, non-H2D via delete + re-add. */}
             <div>
               <label className="block text-sm text-bambu-gray mb-1">{t('kProfiles.modal.profileName')}</label>
               <input
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                disabled={!!profile}
-                className={`w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none ${profile ? 'opacity-60 cursor-not-allowed' : ''}`}
+                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                 placeholder={t('kProfiles.modal.profileNamePlaceholder')}
-                required={!profile}
+                required
               />
             </div>
 

@@ -218,8 +218,10 @@ class TestBambuCloudTOTPVerification:
             assert "Invalid response" in result["message"]
 
     @pytest.mark.asyncio
-    async def test_verify_totp_includes_browser_headers(self, cloud_service):
-        """TOTP verification should include browser-like headers to bypass Cloudflare."""
+    async def test_verify_totp_uses_honest_bamdude_user_agent(self, cloud_service):
+        """TOTP verification identifies as BamDude — no browser-impersonation
+        UA, no spoofed Origin/Referer/Accept-Language. Bambu's 2026-05-12
+        cloud-access statement requires honest client identification."""
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.text = '{"token": "test-token"}'
@@ -231,8 +233,13 @@ class TestBambuCloudTOTPVerification:
 
             await cloud_service.verify_totp("test-tfa-key", "123456")
 
-            # Check headers include User-Agent
             call_args = mock_post.call_args
             headers = call_args[1]["headers"]
-            assert "User-Agent" in headers
-            assert "Mozilla" in headers["User-Agent"]
+            assert headers["User-Agent"].startswith("BamDude/")
+            assert "kainpl/bamdude" in headers["User-Agent"]
+            # Browser-impersonation tokens must NOT leak in.
+            assert "Mozilla" not in headers["User-Agent"]
+            assert "Chrome" not in headers["User-Agent"]
+            assert "Origin" not in headers
+            assert "Referer" not in headers
+            assert "Accept-Language" not in headers
