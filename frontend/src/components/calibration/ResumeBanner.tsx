@@ -26,7 +26,11 @@ export function ResumeBanner({ session, onResume, onDiscard }: Props) {
           stage: session.stage === 2 ? 'fine' : 'coarse',
           date,
         })
-      : t('filamentCali.resume.bodyPaLine', { filament: '', date });
+      : t('filamentCali.resume.body', {
+          filament: '',
+          mode: t(`filamentCali.modeShort.${session.cali_mode}`, { defaultValue: session.cali_mode }),
+          date,
+        });
 
   return (
     <div className="p-3 bg-bambu-dark-tertiary border border-yellow-700/50 rounded-lg flex items-start gap-3">

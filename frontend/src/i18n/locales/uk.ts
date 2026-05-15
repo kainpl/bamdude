@@ -4282,11 +4282,22 @@ export default {
     },
     resume: {
       title: 'Незавершена калібровка',
-      bodyPaLine: '{{filament}} · PA Line · {{date}}',
+      body: '{{filament}} · {{mode}} · {{date}}',
       bodyFlow: '{{filament}} · Flow Rate ({{stage}}) · {{date}}',
       resume: 'Продовжити',
       discard: 'Скасувати',
       discardConfirm: 'Скасувати незавершену калібровку?',
+    },
+    modeShort: {
+      pa_line: 'PA Line',
+      pa_pattern: 'PA Pattern',
+      pa_tower: 'PA Tower',
+      auto_pa_line: 'Auto PA',
+      flow_rate: 'Flow Rate',
+      temp_tower: 'Temp Tower',
+      vfa_tower: 'VFA Tower',
+      retraction_tower: 'Retraction Tower',
+      vol_speed_tower: 'Volumetric Speed Tower',
     },
     err: {
       activeSession: 'На цьому принтері вже триває інша калібровка',
