@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.database import async_session
@@ -1289,6 +1289,16 @@ async def sync_printer_kprofiles_to_cache(
     # nozzle_id for printers that don't ship a per-profile value (P1S, A1 mini).
     state_nozzles = getattr(client.state, "nozzles", []) or []
 
+    # Hard-prune bookkeeping: snapshot every cache row for this printer.
+    # Each one the live-list walk below matches gets discarded from the
+    # set; whatever remains was deleted on the printer and gets hard-deleted
+    # from our cache after the loop. Printer is the source of truth.
+    stale_ids: set[int] = set(
+        (await db.execute(select(FilamentCalibration.id).where(FilamentCalibration.printer_id == printer_id)))
+        .scalars()
+        .all()
+    )
+
     touched = 0
     for kp in live:
         try:
@@ -1361,6 +1371,7 @@ async def sync_printer_kprofiles_to_cache(
             )
             touched += 1
         else:
+            stale_ids.discard(existing.id)
             row_touched = False
             # ``name`` and ``pa_k_value`` are no longer part of the match
             # key, so mirror them from the printer the same way as the
@@ -1388,6 +1399,32 @@ async def sync_printer_kprofiles_to_cache(
                 row_touched = True
             if row_touched:
                 touched += 1
+
+    # Hard prune. Whatever's left in ``stale_ids`` is a cache row the
+    # printer no longer carries — delete it and everything keyed to it.
+    # SQLite runs with foreign_keys=OFF, so the ON DELETE CASCADE /
+    # SET NULL declared on the dependent tables won't fire on their own —
+    # delete / null them explicitly so the behaviour is identical on
+    # SQLite and PostgreSQL. ``calibration_session`` is intentionally
+    # left untouched: it stays as calibration history even when the
+    # resulting K-profile is gone from the printer.
+    if stale_ids:
+        from backend.app.models.calibration_audit import CalibrationAudit
+        from backend.app.models.kprofile_note import KProfileNote
+        from backend.app.models.spool_k_profile import SpoolKProfile
+        from backend.app.models.spoolman_k_profile import SpoolmanKProfile
+
+        await db.execute(delete(KProfileNote).where(KProfileNote.filament_calibration_id.in_(stale_ids)))
+        await db.execute(delete(SpoolKProfile).where(SpoolKProfile.filament_calibration_id.in_(stale_ids)))
+        await db.execute(delete(SpoolmanKProfile).where(SpoolmanKProfile.filament_calibration_id.in_(stale_ids)))
+        await db.execute(
+            update(CalibrationAudit)
+            .where(CalibrationAudit.filament_calibration_id.in_(stale_ids))
+            .values(filament_calibration_id=None)
+        )
+        await db.execute(delete(FilamentCalibration).where(FilamentCalibration.id.in_(stale_ids)))
+        touched += len(stale_ids)
+
     if touched:
         await db.commit()
     return touched
