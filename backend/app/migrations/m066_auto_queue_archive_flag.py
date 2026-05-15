@@ -16,16 +16,14 @@ fired, and the deletion code historically relied on them:
     surviving ``print_queue.source_auto_item_id``. Historical completed
     auto-prints whose ``print_queue`` row was already auto-cleaned can't
     be recovered — that link is gone — they stay ``0``.
-  * Delete ``auto_queue_items`` rows for finished auto-prints. An auto
-    row is a pre-dispatch router — once its dispatched print is no
-    longer in flight it is dead weight. This covers both the dangling
-    orphans (``assigned_to_item_id`` points at a ``print_queue`` row
-    that no longer exists — the completed-print auto-cleanup deleted it
-    while ``foreign_keys=OFF``) AND rows whose ``print_queue`` item
-    still exists but has reached a terminal status
-    (``completed`` / ``failed`` / ``cancelled`` / ``skipped``). Only
-    rows whose dispatched item is still ``pending`` / ``printing`` —
-    or auto rows not yet dispatched at all — survive.
+  * Delete orphaned ``auto_queue_items`` whose ``assigned_to_item_id``
+    points at a ``print_queue`` row that no longer exists (the
+    completed-print auto-cleanup deleted it while ``foreign_keys=OFF``).
+    Auto rows whose ``print_queue`` item is still in a printer's queue
+    are kept — even terminal ones: when the operator deletes that queue
+    item the live lifecycle (``detach_print_queue_refs``) removes the
+    auto row with it, so the one-time cleanup stays consistent with the
+    forward behaviour and never deletes a row the user can still see.
 
 ``calibration_session`` orphans and the ``spool_k_profile`` orphan are
 intentionally left for manual cleanup — out of scope here.
@@ -63,20 +61,17 @@ async def upgrade(conn) -> None:
             )
         )
 
-        # Delete auto_queue_items for finished auto-prints — both the
-        # dangling orphans (print_queue row gone) and rows whose
-        # print_queue item still exists but has reached a terminal status.
-        # Rows still pending / printing — or never dispatched — survive.
+        # Delete orphaned auto_queue_items — assigned_to_item_id dangling
+        # because its print_queue row was deleted (completed-print
+        # auto-cleanup) while foreign_keys=OFF. Auto rows whose
+        # print_queue item still exists are kept: the operator deleting
+        # that queue item triggers detach_print_queue_refs, which removes
+        # the auto row in step with the live lifecycle.
         if await table_exists(conn, "auto_queue_items"):
             await conn.execute(
                 text(
                     "DELETE FROM auto_queue_items "
                     "WHERE assigned_to_item_id IS NOT NULL "
-                    "AND ("
-                    "  assigned_to_item_id NOT IN (SELECT id FROM print_queue)"
-                    "  OR assigned_to_item_id IN ("
-                    "    SELECT id FROM print_queue WHERE status NOT IN ('pending', 'printing')"
-                    "  )"
-                    ")"
+                    "AND assigned_to_item_id NOT IN (SELECT id FROM print_queue)"
                 )
             )
