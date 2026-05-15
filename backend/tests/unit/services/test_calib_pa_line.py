@@ -159,26 +159,43 @@ def test_pa_line_bake_line_width_scales_with_nozzle():
     assert data["initial_layer_line_width"] == "0.8400"
 
 
-def test_pa_line_bake_repositions_cube_to_corner():
-    """Build-item transform must shrink the scaffold cube to ~3mm and
-    park it at the front-left corner so its perimeters don't overprint
-    the pattern row stack centred on the bed."""
-    out = _bake(_spec())
+def test_pa_line_bake_anchors_cube_to_glyph_tab_corner():
+    """Build-item transform shrinks the scaffold cube to ~3mm and parks
+    it just to the right of the glyph tab's bottom edge — anchored to
+    the pattern's bbox so it tracks the centred layout for every bed
+    size."""
+    # 256×256 bed (default): pattern_x_span = 40+40+24 = 104 mm,
+    # pattern_y_span = 17*3.5 + 3.5 = 63 mm.
+    # pattern_left = (256 - 104) / 2 = 76 → pattern_right = 180.
+    # pattern_bottom_y = (256 - 63) / 2 = 96.5. Cube gap = 2.
+    # Cube translate = (180 + 2, 96.5, 0) = (182, 96.5, 0).
+    out = _bake(_spec(bed_size_x=256.0, bed_size_y=256.0))
     model_xml = _read_zip_entry(out, "3D/3dmodel.model")
-    # ``<item transform="sx 0 0 0 sy 0 0 0 sz tx ty tz"/>`` — pull out
-    # the 12-number affine.
     m = re.search(r'<item[^>]+transform="([^"]+)"', model_xml)
     assert m is not None
     nums = [float(t) for t in m.group(1).split()]
-    assert len(nums) == 12
     sx, sy, sz = nums[0], nums[4], nums[8]
     tx, ty, tz = nums[9], nums[10], nums[11]
     # Cube native is 18×18×18 mm → 3×3×0.2 target.
     assert sx == pytest.approx(3.0 / 18.0, abs=1e-6)
     assert sy == pytest.approx(3.0 / 18.0, abs=1e-6)
     assert sz == pytest.approx(0.2 / 18.0, abs=1e-6)
-    # Translate parks it at (5, 5, 0) — front-left corner.
-    assert (tx, ty, tz) == (5.0, 5.0, 0.0)
+    assert tx == pytest.approx(182.0, abs=1e-6)
+    assert ty == pytest.approx(96.5, abs=1e-6)
+    assert tz == pytest.approx(0.0, abs=1e-6)
+
+
+def test_pa_line_bake_cube_anchor_scales_with_bed():
+    """A1 mini 180×180: pattern centres → right edge at X=142, bottom at
+    Y=58.5. Cube parks at (144, 58.5)."""
+    out = _bake(_spec(bed_size_x=180.0, bed_size_y=180.0))
+    model_xml = _read_zip_entry(out, "3D/3dmodel.model")
+    m = re.search(r'<item[^>]+transform="([^"]+)"', model_xml)
+    assert m is not None
+    nums = [float(t) for t in m.group(1).split()]
+    tx, ty, _tz = nums[9], nums[10], nums[11]
+    assert tx == pytest.approx(144.0, abs=1e-6)
+    assert ty == pytest.approx(58.5, abs=1e-6)
 
 
 def test_pa_line_bake_strips_spec_keys_before_validation():

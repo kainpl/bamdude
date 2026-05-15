@@ -11,9 +11,6 @@ import type { CalibrationSessionOut, ManualResultIn } from '../../api/client';
 // Source: https://www.orcaslicer.com/wiki/calibration/pressure_advance_calib.html#tower-method
 const PA_TOWER_RANGE = { start: 0.0, step: 0.002, maxHeightMm: 50 };
 
-// PA Line wizard ships a fixed 50-line sweep at K=0..0.098 (step 0.002).
-const PA_LINE_RANGE = { start: 0.0, step: 0.002, count: 50 };
-
 interface Props {
   session: CalibrationSessionOut;
   onSave: (body: ManualResultIn) => Promise<unknown>;
@@ -25,8 +22,11 @@ export function CalibrationManualSavePage({ session, onSave, onBack, isSubmittin
   if (session.cali_mode === 'pa_tower') {
     return <PATowerSave onSave={onSave} onBack={onBack} isSubmitting={isSubmitting} />;
   }
-
-  return <PALineSave onSave={onSave} onBack={onBack} isSubmitting={isSubmitting} />;
+  // PA Pattern + PA Line both label every row/column with its K value
+  // right on the print — operator types the cleanest label directly.
+  // Avoids re-computing K from a row index when the wizard's start/
+  // end/step differs from the BS-hardcoded defaults.
+  return <PAManualKInput onSave={onSave} onBack={onBack} isSubmitting={isSubmitting} />;
 }
 
 function PATowerSave({ onSave, onBack, isSubmitting }: Omit<Props, 'session'>) {
@@ -87,36 +87,33 @@ function PATowerSave({ onSave, onBack, isSubmitting }: Omit<Props, 'session'>) {
   );
 }
 
-function PALineSave({ onSave, onBack, isSubmitting }: Omit<Props, 'session'>) {
+function PAManualKInput({ onSave, onBack, isSubmitting }: Omit<Props, 'session'>) {
   const { t } = useTranslation();
-  const [lineIdx, setLineIdx] = useState<number>(Math.floor(PA_LINE_RANGE.count / 2));
+  // Operator reads the K label off the printed row/column and types it
+  // directly. Default to the middle of the wizard's default sweep
+  // (0.0 → 0.08 step 0.005) so the input isn't empty on open.
+  const [k, setK] = useState<number>(0.04);
 
-  const k = PA_LINE_RANGE.start + lineIdx * PA_LINE_RANGE.step;
+  const canSave = Number.isFinite(k) && k >= 0;
 
   return (
     <div className="space-y-4">
       <h3 className="text-base font-semibold text-white">{t('filamentCali.manualSave.heading')}</h3>
-      <p className="text-sm text-bambu-gray">{t('filamentCali.manualSave.instruction')}</p>
+      <p className="text-sm text-bambu-gray whitespace-pre-line">
+        {t('filamentCali.manualSave.kInputInstruction')}
+      </p>
 
       <label className="block">
-        <span className="text-xs text-bambu-gray">{t('filamentCali.manualSave.lineIndex')}</span>
-        <select
-          value={lineIdx}
-          onChange={(e) => setLineIdx(parseInt(e.target.value, 10))}
+        <span className="text-xs text-bambu-gray">{t('filamentCali.manualSave.computedK')}</span>
+        <input
+          type="number"
+          min={0}
+          step={0.0001}
+          value={k}
+          onChange={(e) => setK(parseFloat(e.target.value))}
           className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
-        >
-          {Array.from({ length: PA_LINE_RANGE.count }, (_, i) => (
-            <option key={i} value={i}>
-              {i} (PA {(PA_LINE_RANGE.start + i * PA_LINE_RANGE.step).toFixed(4)})
-            </option>
-          ))}
-        </select>
+        />
       </label>
-
-      <div className="p-2 bg-bambu-dark rounded text-sm">
-        <span className="text-bambu-gray">{t('filamentCali.manualSave.computedK')}: </span>
-        <span className="text-white font-mono">{k.toFixed(4)}</span>
-      </div>
 
       <div className="flex justify-between pt-2 border-t border-bambu-dark-tertiary">
         <button
@@ -128,8 +125,8 @@ function PALineSave({ onSave, onBack, isSubmitting }: Omit<Props, 'session'>) {
         </button>
         <button
           type="button"
-          onClick={() => onSave({ best_line_index: lineIdx })}
-          disabled={isSubmitting}
+          onClick={() => onSave({ pa_k_value: k })}
+          disabled={isSubmitting || !canSave}
           className="px-4 py-2 rounded bg-bambu-green text-white text-sm font-medium disabled:opacity-40"
         >
           {t('filamentCali.manualSave.save')}

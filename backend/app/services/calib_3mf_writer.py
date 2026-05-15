@@ -137,6 +137,7 @@ def write_calibration_3mf(
     bed_type: str | None = None,
     build_transform_scale: tuple[float, float, float] | None = None,
     build_transform_translate: tuple[float, float, float] | None = None,
+    printable: bool | None = None,
     target_printer_settings_id: str | None = None,
     output_filename: str = "calibration.3mf",
 ) -> bytes:
@@ -181,6 +182,7 @@ def write_calibration_3mf(
             output_filename=output_filename,
             build_transform_scale=build_transform_scale,
             build_transform_translate=build_transform_translate,
+            printable=printable,
         )
 
     raise ValueError(f"Unsupported geometry_kind: {geometry_kind!r}")
@@ -297,6 +299,7 @@ def _compose_from_3mf(
     output_filename: str,
     build_transform_scale: tuple[float, float, float] | None = None,
     build_transform_translate: tuple[float, float, float] | None = None,
+    printable: bool | None = None,
 ) -> bytes:
     """Copy the base 3MF through, overwriting our metadata files.
 
@@ -321,7 +324,9 @@ def _compose_from_3mf(
     # builder explicitly produces new entries (e.g. PA Tower's M900 K
     # sweep).
     overwrite_custom_gcode = bool(custom_gcodes)
-    needs_build_transform_patch = build_transform_scale is not None or build_transform_translate is not None
+    needs_build_transform_patch = (
+        build_transform_scale is not None or build_transform_translate is not None or printable is not None
+    )
 
     with (
         zipfile.ZipFile(io.BytesIO(base_3mf_bytes), "r") as src,
@@ -344,6 +349,7 @@ def _compose_from_3mf(
                         xml,
                         scale=build_transform_scale,
                         translate=build_transform_translate,
+                        printable=printable,
                     ),
                 )
                 continue
@@ -483,6 +489,7 @@ def _patch_top_level_model_transform(
     xml: str,
     scale: tuple[float, float, float] | None = None,
     translate: tuple[float, float, float] | None = None,
+    printable: bool | None = None,
 ) -> str:
     """Patch the build ``<item>`` transform with caller-supplied
     scale + translate.
@@ -498,6 +505,12 @@ def _patch_top_level_model_transform(
     of the print region — anchored to the pattern's frame — so the
     cube's perimeters don't overprint the pattern's V-walls or glyph
     digits. PA Tower keeps the default centre.
+
+    ``printable`` — flip the BS ``printable`` attribute on the build
+    item (BS reads it at ``bbs_3mf.cpp:4035``). ``False`` marks the
+    object non-printable so the slicer keeps the geometry for plate
+    bbox math but skips perimeters/infill. Used by PA Line's cube
+    placeholder. ``None`` leaves the existing attribute untouched.
 
     ``p:uuid`` attributes are stripped (irrelevant to slicing; brittle
     to inherit verbatim from the scaffold).
@@ -517,6 +530,23 @@ def _patch_top_level_model_transform(
         rf"\g<1>{transform}\g<2>",
         xml,
     )
+    if printable is not None:
+        flag = "1" if printable else "0"
+        if re.search(r'<item\b[^>]*\sprintable="[^"]*"', xml):
+            xml = re.sub(
+                r'(<item\b[^>]*?\sprintable=")[^"]+(")',
+                rf"\g<1>{flag}\g<2>",
+                xml,
+            )
+        else:
+            # Inject ``printable="..."`` just before the self-closing
+            # slash (or closing ``>`` when not self-closed).
+            xml = re.sub(
+                r"(<item\b[^>]*?)(\s*/?>)",
+                rf'\g<1> printable="{flag}"\g<2>',
+                xml,
+                count=1,
+            )
     return xml
 
 

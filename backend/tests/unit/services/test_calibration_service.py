@@ -271,17 +271,43 @@ async def test_start_calibration_manual_enqueues_print(
     mock_client,
     tmp_path,
 ):
+    """W2 manual path: bake the per-mode 3MF → slice through sidecar →
+    persist sliced bytes as a LibraryFile → enqueue via
+    ``background_dispatch.enqueue_calibration_print`` with the right
+    library_file_id + back-reference to the calibration session.
+
+    All external boundaries mocked: the sidecar (``SlicerApiService``),
+    preset resolution (``resolve_preset_ref``), the slicer routing
+    health check, and the dispatcher's enqueue. Anything inside our
+    service boundary (mode registry, build_calibration_3mf, session row
+    creation, atomic order of session + queue item creation) runs for
+    real so the test fails loudly when that wiring drifts."""
+    from backend.app.schemas.slicer import PresetRef
+    from backend.app.services.calibration_mode_registry import ModeState
     from backend.app.services.calibration_service import CalibAsset
+    from backend.app.services.slicer_api import SliceResult
 
     printer = await printer_factory(model="P1S")
     fake_asset_path = tmp_path / "pa_pattern.3mf"
     fake_asset_path.write_bytes(b"PK\x03\x04fake3mf")
     fake_asset = CalibAsset(path=fake_asset_path, kind="3mf")
 
-    # Force PA_PATTERN into PRODUCTION state for this test so the W2
-    # lifecycle gate (which DISABLEs every mode by default until each
-    # phase ships) lets the manual-path code through.
-    from backend.app.services.calibration_mode_registry import ModeState
+    # Stand in for SlicerApiService's async context manager: ``async with
+    # SlicerApiService(base_url=...) as svc`` → svc.slice_with_profiles
+    # returns SliceResult.
+    fake_slice_result = SliceResult(
+        content=b"sliced gcode 3mf bytes",
+        print_time_seconds=600,
+        filament_used_g=5.0,
+        filament_used_mm=1500.0,
+    )
+    svc_mock = MagicMock()
+    svc_mock.slice_with_profiles = AsyncMock(return_value=fake_slice_result)
+    svc_ctx_mock = MagicMock()
+    svc_ctx_mock.__aenter__ = AsyncMock(return_value=svc_mock)
+    svc_ctx_mock.__aexit__ = AsyncMock(return_value=None)
+
+    preset_ref = PresetRef(source="standard", id="dummy")
 
     with (
         patch("backend.app.services.calibration_service.printer_manager") as pm,
@@ -293,9 +319,32 @@ async def test_start_calibration_manual_enqueues_print(
             "backend.app.services.calibration_service.get_mode_state",
             return_value=ModeState.PRODUCTION,
         ),
-        patch("backend.app.services.slicer_routing.any_sidecar_online", new=AsyncMock(return_value=True)),
+        # build_calibration_3mf is imported inside start_calibration —
+        # patch at the source module, not the importing one.
         patch(
-            "backend.app.services.background_dispatch.enqueue_calibration_print", new=AsyncMock(return_value=42)
+            "backend.app.services.calib_3mf_builder.build_calibration_3mf",
+            return_value=b"baked 3mf bytes",
+        ),
+        patch(
+            "backend.app.services.slicer_routing.any_sidecar_online",
+            new=AsyncMock(return_value=True),
+        ),
+        patch(
+            "backend.app.services.slicer_routing.resolve_sidecar_url",
+            new=AsyncMock(return_value=("orcaslicer", "http://localhost:3001")),
+        ),
+        patch(
+            "backend.app.services.preset_resolver.resolve_preset_ref",
+            new=AsyncMock(return_value='{"name":"dummy","type":"printer"}'),
+        ),
+        patch("backend.app.services.slicer_api.SlicerApiService", return_value=svc_ctx_mock),
+        patch(
+            "backend.app.services.calibration_service._persist_calibration_slice_to_library",
+            new=AsyncMock(return_value=99),
+        ) as persist,
+        patch(
+            "backend.app.services.background_dispatch.enqueue_calibration_print",
+            new=AsyncMock(return_value=42),
         ) as enq,
     ):
         pm.get_client.return_value = mock_client
@@ -309,10 +358,19 @@ async def test_start_calibration_manual_enqueues_print(
             extruder_id=0,
             filaments=[CalibFilamentInput(0, 0, 0, "GFG00", "GFG00_60@BBL", 60, 220, 12.0)],
             user_id=None,
+            printer_preset=preset_ref,
+            process_preset=preset_ref,
+            filament_presets=[preset_ref],
         )
     assert session.method == "manual"
     assert session.print_queue_item_id == 42
     enq.assert_called_once()
+    # Library file came from the persisted sliced bytes — the dispatcher
+    # received that id, not the bake bytes directly.
+    persist.assert_awaited_once()
+    enqueue_kwargs = enq.call_args.kwargs
+    assert enqueue_kwargs["library_file_id"] == 99
+    assert enqueue_kwargs["calibration_session_id"] == session.id
 
 
 @pytest.mark.asyncio

@@ -382,6 +382,7 @@ async def submit_manual_result(
             db=db,
             session_id=session_id,
             best_line_index=body.best_line_index,
+            pa_k_value=body.pa_k_value,
             coarse_modifier=body.coarse_modifier,
             skip_fine=body.skip_fine,
             fine_modifier=body.fine_modifier,
@@ -548,6 +549,45 @@ async def slice_calibration_for_verification(
     # supports brim_ears, BS does not and silently produces no brim).
     if body.slicer and "slicer" not in spec_with_bed:
         spec_with_bed["slicer"] = body.slicer
+
+    # PA Line needs the actual printer's bed bbox to centre its
+    # pattern (absolute machine coords) on the operator's plate. The
+    # builder defaults to 256×256 which leaves an A1 mini (180×180)
+    # print stuck in the upper-right quadrant. Resolve the printer
+    # preset once here so we can pass the bbox in via spec; we re-use
+    # the same JSON for the sidecar call below to avoid a double
+    # round-trip. Bundle path: the printer JSON lives inside the
+    # sidecar's bundle and isn't easily reachable without a separate
+    # API call — falls back to the builder's 256 default, which is
+    # right for X1/A1/P1S/H2D but off-centre for A1 mini.
+    pre_resolved_printer_json: str | None = None
+    if body.cali_mode == CaliMode.PA_LINE:
+        from backend.app.models.printer import Printer as PrinterModel
+        from backend.app.services.calib_pa_line import (
+            bed_bbox_for_model,
+            parse_bed_bbox_from_printer_json,
+        )
+
+        bed_bbox: tuple[float, float, float, float] | None = None
+        # Try the resolved cloud / local preset JSON first — it carries
+        # ``printable_area`` when the operator picked a custom printer
+        # preset that overrode the field.
+        if body.bundle is None and body.printer_preset is not None:
+            pre_resolved_printer_json = await resolve_preset_ref(db, user, body.printer_preset, "printer")
+            bed_bbox = parse_bed_bbox_from_printer_json(pre_resolved_printer_json)
+        # Cloud presets are deltas against ``base_id`` — ``printable_area``
+        # almost always lives in the parent and isn't in the delta.
+        # Fall back to the printer's registered model from our DB.
+        if bed_bbox is None:
+            printer_row = await db.get(PrinterModel, printer_id)
+            bed_bbox = bed_bbox_for_model(printer_row.model if printer_row else None)
+        if bed_bbox is not None:
+            origin_x, origin_y, size_x, size_y = bed_bbox
+            spec_with_bed.setdefault("bed_origin_x", origin_x)
+            spec_with_bed.setdefault("bed_origin_y", origin_y)
+            spec_with_bed.setdefault("bed_size_x", size_x)
+            spec_with_bed.setdefault("bed_size_y", size_y)
+
     try:
         model_bytes = build_calibration_3mf(
             cali_mode=body.cali_mode,
@@ -581,8 +621,12 @@ async def slice_calibration_for_verification(
                 )
             else:
                 # Manual path — resolve each PresetRef to the JSON the
-                # sidecar's --load-settings expects.
-                printer_json = await resolve_preset_ref(db, user, body.printer_preset, "printer")
+                # sidecar's --load-settings expects. PA Line already
+                # resolved the printer JSON above (to read printable_area
+                # for pattern centring); reuse it instead of double-calling.
+                printer_json = pre_resolved_printer_json or await resolve_preset_ref(
+                    db, user, body.printer_preset, "printer"
+                )
                 process_json = await resolve_preset_ref(db, user, body.process_preset, "process")
                 filament_jsons = [await resolve_preset_ref(db, user, ref, "filament") for ref in body.filament_presets]
                 # Apply per-mode preset overrides — mirrors what

@@ -79,17 +79,16 @@ MODE_STATE: dict[CaliMode, ModeState] = {
     CaliMode.VOL_SPEED_TOWER: ModeState.DISABLED,
     CaliMode.FLOW_RATE: ModeState.DISABLED,
     CaliMode.AUTO_PA_LINE: ModeState.DISABLED,
-    # Phase 9 — VERIFICATION (2026-05-15). Builder is a Python port of
-    # CalibPressureAdvanceLine::print_pa_lines (Calib.cpp:415-490) — emits
-    # the full prime-line + N-row pattern + filled glyph box + per-row K
-    # labels as ONE custom_gcode entry on a single layer. The shared
-    # pa_pattern.3mf cube placeholder (shrunk + parked in the front-left
-    # corner) provides the layer boundary the slicer injects against.
-    # Pinned at VERIFICATION until the side-by-side diff against BS PA
-    # Line wizard output is signed off; PA Line was previously documented
-    # as "permanently DISABLED, use PA Pattern instead" but the port
-    # turned out to fit the existing primitives without a sidecar fork.
-    CaliMode.PA_LINE: ModeState.VERIFICATION,
+    # Phase 9 — PRODUCTION (2026-05-15). Operator verified the slice in
+    # OrcaSlicer: pattern centres on the printer's real bed bbox (model
+    # → bbox fallback for cloud-preset deltas without ``printable_area``),
+    # 3×3×0.2 mm cube placeholder anchors to the right edge of the
+    # glyph tab at its bottom row (tracks the centred layout for every
+    # bed size). PA Line was previously documented as "permanently
+    # DISABLED, use PA Pattern instead" but the port turned out to fit
+    # the existing primitives (draw_digit / draw_number / draw_line /
+    # draw_box) without a sidecar fork.
+    CaliMode.PA_LINE: ModeState.PRODUCTION,
 }
 
 

@@ -45,11 +45,10 @@ _EXPECTED_NON_DISABLED: dict[CaliMode, ModeState] = {
     # repositioned to Orca's layout (51.63, 83.5, 0.4) so V walls have
     # clear bed).
     CaliMode.PA_PATTERN: ModeState.PRODUCTION,
-    # Phase 9 (PA Line) — flipped to VERIFICATION 2026-05-15. The
-    # Python port of CalibPressureAdvanceLine::print_pa_lines compiles
-    # the full pattern into one custom_gcode entry; awaiting operator
-    # side-by-side diff against BS-desktop output before PRODUCTION.
-    CaliMode.PA_LINE: ModeState.VERIFICATION,
+    # Phase 9 (PA Line) — flipped to PRODUCTION 2026-05-15 after
+    # OrcaSlicer-verified output (centring on real bed bbox via
+    # printer-model fallback + cube anchored to glyph-tab corner).
+    CaliMode.PA_LINE: ModeState.PRODUCTION,
 }
 
 

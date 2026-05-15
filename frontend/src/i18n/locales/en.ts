@@ -4237,8 +4237,10 @@ export default {
       heading: 'Pick the best-looking line',
       instruction:
         'Look at the printed lines. Pick the line with the most even extrusion — no bulges at the ends, no thin spots in the middle.',
+      kInputInstruction:
+        'Find the row (PA Line) or column (PA Pattern) with the cleanest extrusion — no bulges where speed changes, no gaps in the corners. Read the K number printed next to it and enter it below.',
       lineIndex: 'Line index',
-      computedK: 'Computed K value',
+      computedK: 'K value',
       name: 'Save as',
       namePlaceholder: 'PLA Basic — PA 0.048',
       notes: 'Notes',

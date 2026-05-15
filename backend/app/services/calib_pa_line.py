@@ -28,6 +28,7 @@ size) or defaults to BS-shipped wizard values.
 
 from __future__ import annotations
 
+import json
 import logging
 
 from backend.app.schemas.calibration_spec import PALineSpec
@@ -37,7 +38,11 @@ from backend.app.services.calib_3mf_writer import (
     write_calibration_3mf,
 )
 from backend.app.services.calib_pa_line_generator import (
+    GLYPH_BOX_WIDTH_MM,
     HEIGHT_LAYER,
+    LENGTH_LONG_BASE,
+    LENGTH_SHORT,
+    SPACE_Y,
     PALineParams,
     generate_pa_line_layer,
     num_lines_for_range,
@@ -131,20 +136,44 @@ def build_pa_line_3mf(asset: CalibAsset, spec_dict: dict) -> bytes:
     ]
 
     # Cube placeholder: BS-shipped pa_pattern scaffold's cube is 18×18×18 mm,
-    # which we shrink to ~3×3×0.2 mm and park near the front-left bed
-    # corner so its perimeters don't intersect the centred row stack.
-    # 3 mm is wide enough for the slicer to lay one perimeter at any
-    # nozzle ≤ 0.6 mm without the CLI rejecting the geometry.
+    # which we shrink to 3×3×0.2 mm. 3 mm is wide enough for the slicer to
+    # lay one perimeter at any nozzle ≤ 0.6 mm without the CLI rejecting
+    # the geometry, narrow enough to be visually inert.
     cube_native_size = 18.0
     cube_target_xy = 3.0
     cube_target_z = HEIGHT_LAYER
     scale_xy = cube_target_xy / cube_native_size
     scale_z = cube_target_z / cube_native_size
 
-    # Park the cube at (5, 5) — clear of the pattern's row stack (which
-    # starts mid-bed) on every Bambu plate ≥ 180×180 mm.
-    cube_translate = (5.0, 5.0, 0.0)
+    # Park the cube just to the right of the glyph tab's bottom edge —
+    # always inside the bed bbox for the centred pattern, never collides
+    # with row segments / labels. The pattern bbox math here mirrors
+    # ``generate_pa_line_layer``'s centring; if the generator shifts the
+    # layout we recompute the anchor the same way and the cube stays
+    # locked to the visible bottom-right corner of the tab.
+    length_long = LENGTH_LONG_BASE + min(bed_size_x - 120.0, 0.0)
+    pattern_x_span = LENGTH_SHORT * 2.0 + length_long
+    if spec.print_numbers:
+        pattern_x_span += GLYPH_BOX_WIDTH_MM
+    pattern_y_span = count * SPACE_Y + (SPACE_Y if spec.print_numbers else 0.0)
 
+    pattern_left_x = bed_origin_x + (bed_size_x - pattern_x_span) / 2.0
+    pattern_right_x = pattern_left_x + pattern_x_span
+    pattern_bottom_y = bed_origin_y + (bed_size_y - pattern_y_span) / 2.0
+
+    cube_gap_x = 2.0  # small gap so cube perimeter doesn't touch tab edge
+    cube_translate = (
+        pattern_right_x + cube_gap_x,
+        pattern_bottom_y,
+        0.0,
+    )
+
+    # Cube stays printable: tried ``printable=false`` + ``extruder=0`` to
+    # skip the cube in the slice, but the sidecar then rejects the
+    # plate with ``-50 plate is empty / no object fully inside`` (the
+    # plate-bbox check counts only printable objects). Leave the tiny
+    # 3×3×0.2 mm corner cube in the print — it's cheap and visually
+    # off to the side.
     object_overrides: list[ObjectOverride] = []
 
     logger.debug(
@@ -216,4 +245,98 @@ def _project_settings_patch(*, nozzle_diameter: float) -> dict[str, str]:
     }
 
 
-__all__ = ["build_pa_line_3mf", "_project_settings_patch"]
+# Fallback bed bbox per printer model — used when the resolved cloud
+# preset JSON is a delta (most fields, including ``printable_area``,
+# inherit from the unflattened parent). Keys match
+# ``backend/app/utils/printer_models.normalize_printer_model`` output.
+# All Bambu plates are origin-at-(0,0) rectangles.
+_BED_BBOX_BY_MODEL: dict[str, tuple[float, float, float, float]] = {
+    # 180 mm plate
+    "A1 Mini": (0.0, 0.0, 180.0, 180.0),
+    # 256 mm plate (most of the lineup)
+    "A1": (0.0, 0.0, 256.0, 256.0),
+    "P1P": (0.0, 0.0, 256.0, 256.0),
+    "P1S": (0.0, 0.0, 256.0, 256.0),
+    "P2S": (0.0, 0.0, 256.0, 256.0),
+    "X1": (0.0, 0.0, 256.0, 256.0),
+    "X1C": (0.0, 0.0, 256.0, 256.0),
+    "X1E": (0.0, 0.0, 256.0, 256.0),
+    "X2D": (0.0, 0.0, 256.0, 256.0),
+    # 350 × 320 mm plate (H2D family, per BS resources/printers/H2D.json)
+    "H2D": (0.0, 0.0, 350.0, 320.0),
+    "H2D Pro": (0.0, 0.0, 350.0, 320.0),
+    "H2C": (0.0, 0.0, 350.0, 320.0),
+    "H2S": (0.0, 0.0, 350.0, 320.0),
+}
+
+
+def bed_bbox_for_model(model: str | None) -> tuple[float, float, float, float] | None:
+    """Lookup the bed bbox for a Bambu printer model name.
+
+    Returns ``(origin_x, origin_y, size_x, size_y)`` for known models,
+    ``None`` for unknown names so callers can fall back to a default.
+    """
+    if not model:
+        return None
+    from backend.app.utils.printer_models import normalize_printer_model
+
+    normalized = normalize_printer_model(model)
+    if normalized is None:
+        return None
+    return _BED_BBOX_BY_MODEL.get(normalized)
+
+
+def parse_bed_bbox_from_printer_json(printer_json: str) -> tuple[float, float, float, float] | None:
+    """Read ``printable_area`` from a resolved printer preset JSON.
+
+    Returns ``(origin_x, origin_y, size_x, size_y)`` of the bed bbox in mm,
+    or ``None`` if the field is missing or unparseable. Used by the
+    PA Line builder to centre the pattern on the operator's actual plate
+    rather than the hardcoded 256×256 default (PA Line generates absolute
+    machine coords; without the real bbox the pattern lands off-centre on
+    any non-256mm plate — e.g. A1 mini 180×180 ends up in the upper-right
+    quadrant).
+
+    BS preset format mirrors ``threemf_capabilities.py:95`` —
+    ``printable_area: ["0x0", "256x0", "256x256", "0x256"]``. Polygon is
+    assumed rectangular; we take min/max of all vertex coords.
+    """
+    if not printer_json:
+        return None
+    try:
+        data = json.loads(printer_json)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    polygon = data.get("printable_area") or []
+    if not isinstance(polygon, list) or len(polygon) < 3:
+        return None
+    xs: list[float] = []
+    ys: list[float] = []
+    for vertex in polygon:
+        if not isinstance(vertex, str) or "x" not in vertex:
+            continue
+        parts = vertex.split("x")
+        if len(parts) != 2:
+            continue
+        try:
+            xs.append(float(parts[0]))
+            ys.append(float(parts[1]))
+        except ValueError:
+            continue
+    if len(xs) < 3 or len(ys) < 3:
+        return None
+    origin_x, origin_y = min(xs), min(ys)
+    size_x, size_y = max(xs) - origin_x, max(ys) - origin_y
+    if size_x <= 0 or size_y <= 0:
+        return None
+    return (origin_x, origin_y, size_x, size_y)
+
+
+__all__ = [
+    "build_pa_line_3mf",
+    "_project_settings_patch",
+    "parse_bed_bbox_from_printer_json",
+    "bed_bbox_for_model",
+]

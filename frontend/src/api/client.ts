@@ -3773,6 +3773,7 @@ export interface FilamentCalibrationOut {
 
 export interface ManualResultIn {
   best_line_index?: number;
+  pa_k_value?: number;
   coarse_modifier?: number;
   skip_fine?: boolean;
   fine_modifier?: number;

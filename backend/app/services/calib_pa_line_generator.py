@@ -67,6 +67,10 @@ SPACE_Y = 3.5  # m_space_y
 LENGTH_SHORT = 20.0  # m_length_short
 LENGTH_LONG_BASE = 40.0  # m_length_long base value before bed-clamp
 
+# Glyph box width (BS Calib.cpp:482 — ``number_spacing * 8 = 3.0 * 8 = 24`` mm).
+# number_spacing = digit_segment_len (2.0) + digit_gap_len (1.0).
+GLYPH_BOX_WIDTH_MM = 24.0
+
 # BS-default speeds (Calib.cpp:2841 — derived from preset, but PA Line wizard
 # defaults to outer_wall_speed * 60 fast / fast/4 slow). Sidecar preset wins
 # at slice time; these are fallbacks the generator uses when the spec doesn't
@@ -168,8 +172,28 @@ def generate_pa_line_layer(params: PALineParams) -> str:
     # plates (≥ 180×180 mm) this collapses to the constant 40.
     length_long = LENGTH_LONG_BASE + min(p.bed_size_x - 120.0, 0.0)
 
-    start_x = p.bed_origin_x + (p.bed_size_x - LENGTH_SHORT * 2.0 - length_long - 20.0) / 2.0
-    start_y = p.bed_origin_y + (p.bed_size_y - count * SPACE_Y) / 2.0
+    # True bbox-centred placement: BS's own formula
+    # ``start_x = bed_min_x + (bed_w - LENGTH_SHORT*2 - length_long - 20) / 2``
+    # only centres the 80-mm row-segment block and treats the glyph
+    # box's 24 mm as an unaccounted "+20" pad on the right, which
+    # off-centres the visual by ~4 mm. We compute the full visible
+    # bbox (prime line + row segments + glyph box) and centre that
+    # span on the bed instead — so the operator's eye lands on the
+    # middle of the plate.
+    pattern_x_span = LENGTH_SHORT * 2.0 + length_long
+    if p.draw_numbers:
+        pattern_x_span += GLYPH_BOX_WIDTH_MM
+
+    # Y span: the prime line walks from start_y up to start_y +
+    # count*SPACE_Y (top of stack), and when glyph box is drawn it
+    # extends one SPACE_Y below start_y. So total Y span is
+    # count*SPACE_Y + (SPACE_Y if drawing numbers else 0); start_y
+    # sits SPACE_Y above the bottom of the visible bbox.
+    pattern_y_span = count * SPACE_Y + (SPACE_Y if p.draw_numbers else 0.0)
+    y_offset_below = SPACE_Y if p.draw_numbers else 0.0
+
+    start_x = p.bed_origin_x + (p.bed_size_x - pattern_x_span) / 2.0
+    start_y = p.bed_origin_y + (p.bed_size_y - pattern_y_span) / 2.0 + y_offset_below
 
     epm = _e_per_mm(LINE_WIDTH, HEIGHT_LAYER, p.filament_diameter, p.filament_flow_ratio)
     number_epm = _e_per_mm(NUMBER_LINE_WIDTH, HEIGHT_LAYER, p.filament_diameter, p.filament_flow_ratio)

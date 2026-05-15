@@ -205,7 +205,7 @@ export function useFilamentCalibration(printerId: number, enabled: boolean) {
       setSessionId(session.id);
       setStep('running');
       setErrorMsg(null);
-      qc.invalidateQueries({ queryKey: ['calibration', 'awaiting', printerId] });
+      qc.invalidateQueries({ queryKey: ['calibration', 'active', printerId] });
     },
     onError: (e: Error) => setErrorMsg(e.message),
   });
@@ -224,7 +224,7 @@ export function useFilamentCalibration(printerId: number, enabled: boolean) {
         setStep('finish');
       }
       qc.invalidateQueries({ queryKey: ['filament-calibrations'] });
-      qc.invalidateQueries({ queryKey: ['calibration', 'awaiting', printerId] });
+      qc.invalidateQueries({ queryKey: ['calibration', 'active', printerId] });
     },
     onError: (e: Error) => setErrorMsg(e.message),
   });
@@ -238,7 +238,7 @@ export function useFilamentCalibration(printerId: number, enabled: boolean) {
       setSavedRows(rows);
       setStep('finish');
       qc.invalidateQueries({ queryKey: ['filament-calibrations'] });
-      qc.invalidateQueries({ queryKey: ['calibration', 'awaiting', printerId] });
+      qc.invalidateQueries({ queryKey: ['calibration', 'active', printerId] });
     },
     onError: (e: Error) => setErrorMsg(e.message),
   });
@@ -247,9 +247,18 @@ export function useFilamentCalibration(printerId: number, enabled: boolean) {
     mutationFn: () =>
       sessionId != null ? api.cancelCalibrationSession(sessionId) : Promise.resolve(),
     onSuccess: () => {
+      // Reset every piece of wizard context: session + step + input
+      // + per-session error/saved-rows + the cached "active session"
+      // query data. Without the optimistic ``setQueryData([])`` the
+      // resume banner re-renders the just-cancelled session until the
+      // refetch returns, which looks like nothing happened on-click.
       setSessionId(null);
       setStep('start');
-      qc.invalidateQueries({ queryKey: ['calibration', 'awaiting', printerId] });
+      setInputState({ extruder_id: 0 });
+      setSavedRows([]);
+      setErrorMsg(null);
+      qc.setQueryData(['calibration', 'active', printerId], []);
+      qc.invalidateQueries({ queryKey: ['calibration', 'active', printerId] });
     },
     onError: (e: Error) => setErrorMsg(e.message),
   });

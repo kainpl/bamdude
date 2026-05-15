@@ -412,6 +412,39 @@ class CalibrationService:
                 spec_with_bed["slicer"] = slicer
 
             from backend.app.services.calib_3mf_builder import build_calibration_3mf
+            from backend.app.services.preset_resolver import resolve_preset_ref
+
+            # PA Line wants the printer's real bed bbox so the pattern
+            # centres on the operator's actual plate. Resolve the
+            # printer preset once here and pass the bbox via spec; the
+            # JSON is reused below so the sidecar block doesn't pay for
+            # a second resolve. Bundle path can't see preset JSON until
+            # the sidecar materialises it, so it falls back to the
+            # builder's 256 default — fine for X1/A1/P1S/H2D, off-centre
+            # for A1 mini until bundle introspection is added.
+            pre_resolved_printer_json: str | None = None
+            if cali_mode == CaliMode.PA_LINE:
+                from backend.app.models.printer import Printer as PrinterModel
+                from backend.app.services.calib_pa_line import (
+                    bed_bbox_for_model,
+                    parse_bed_bbox_from_printer_json,
+                )
+
+                bed_bbox: tuple[float, float, float, float] | None = None
+                if bundle is None and printer_preset is not None:
+                    pre_resolved_printer_json = await resolve_preset_ref(db, user, printer_preset, "printer")
+                    bed_bbox = parse_bed_bbox_from_printer_json(pre_resolved_printer_json)
+                # Cloud preset deltas drop ``printable_area`` — fall back
+                # to the printer's registered model from our DB.
+                if bed_bbox is None:
+                    printer_row = await db.get(PrinterModel, printer_id)
+                    bed_bbox = bed_bbox_for_model(printer_row.model if printer_row else None)
+                if bed_bbox is not None:
+                    origin_x, origin_y, size_x, size_y = bed_bbox
+                    spec_with_bed.setdefault("bed_origin_x", origin_x)
+                    spec_with_bed.setdefault("bed_origin_y", origin_y)
+                    spec_with_bed.setdefault("bed_size_x", size_x)
+                    spec_with_bed.setdefault("bed_size_y", size_y)
 
             try:
                 bake_bytes = build_calibration_3mf(
@@ -429,7 +462,6 @@ class CalibrationService:
             if not api_url:
                 raise SlicerSidecarRequiredError("No slicer sidecar configured")
 
-            from backend.app.services.preset_resolver import resolve_preset_ref
             from backend.app.services.slicer_api import (
                 SlicerApiError,
                 SlicerApiService,
@@ -451,7 +483,12 @@ class CalibrationService:
                             export_3mf=True,
                         )
                     else:
-                        printer_json = await resolve_preset_ref(db, user, printer_preset, "printer")
+                        # Reuse the printer JSON resolved above for PA
+                        # Line's bed-bbox lookup; falls through to a
+                        # fresh resolve for other modes.
+                        printer_json = pre_resolved_printer_json or await resolve_preset_ref(
+                            db, user, printer_preset, "printer"
+                        )
                         process_json = await resolve_preset_ref(db, user, process_preset, "process")
                         filament_jsons = [
                             await resolve_preset_ref(db, user, ref, "filament") for ref in filament_presets
@@ -598,6 +635,7 @@ class CalibrationService:
         db: AsyncSession,
         session_id: int,
         best_line_index: int | None = None,
+        pa_k_value: float | None = None,
         coarse_modifier: int | None = None,
         skip_fine: bool = False,
         fine_modifier: int | None = None,
@@ -609,9 +647,23 @@ class CalibrationService:
         cm = CaliMode(s.cali_mode)
 
         if cm in (CaliMode.PA_LINE, CaliMode.PA_PATTERN, CaliMode.PA_TOWER):
-            if best_line_index is None:
-                raise ValueError("best_line_index required for PA mode")
-            k = compute_pa_k(best_line_index)
+            # Two save paths:
+            # - ``pa_k_value``: operator reads the K label off the print
+            #   (PA Line + PA Pattern) and types it directly — the
+            #   cleanest path because it works for any custom start/
+            #   end/step the operator picked.
+            # - ``best_line_index``: PA Tower's measured-height-in-mm
+            #   input, plugged into the Orca-wiki formula
+            #   ``K = compute_pa_k(idx) = PA_LINE_RANGE.start +
+            #   idx * PA_LINE_RANGE.step``. Compute_pa_k still uses BS's
+            #   hardcoded 0.0/0.002 — fine for PA Tower since BS's PA
+            #   Tower wizard ships that as its default range too.
+            if pa_k_value is not None:
+                k = pa_k_value
+            elif best_line_index is not None:
+                k = compute_pa_k(best_line_index)
+            else:
+                raise ValueError("pa_k_value or best_line_index required for PA mode")
             row = await self.save_result(
                 db=db,
                 session=s,

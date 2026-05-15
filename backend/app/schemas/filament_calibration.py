@@ -279,6 +279,13 @@ class CalibBakeOnlyIn(BaseModel):
 
 class ManualResultIn(BaseModel):
     best_line_index: int | None = None
+    # Direct K value for PA Line / PA Pattern manual save — the operator
+    # reads the printed K label next to the cleanest row/column and
+    # types it in. Avoids re-computing K from a row index when the
+    # operator's sweep range doesn't match BS's hardcoded defaults.
+    # PA Tower still uses ``best_line_index`` as a measured-height-in-mm
+    # input (per Orca-wiki ``K = Start + Step × height_mm`` formula).
+    pa_k_value: float | None = None
     coarse_modifier: int | None = None
     skip_fine: bool = False
     fine_modifier: int | None = None
