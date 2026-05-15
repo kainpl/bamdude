@@ -166,11 +166,20 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
   const [layerHeight, setLayerHeight] = useState<number>(0.2);
   const [nozzleDiameter, setNozzleDiameter] = useState<number>(0.4);
 
+  // PA Line uses its own sweep range (mirrors PA Pattern's 0.0/0.08/0.005
+  // — BS DDE default 0.1 is too aggressive for direct-drive Bambu
+  // printers in practice). Operator can widen via the inputs.
+  const [paLineStart, setPaLineStart] = useState<number>(0.0);
+  const [paLineEnd, setPaLineEnd] = useState<number>(0.08);
+  const [paLineStep, setPaLineStep] = useState<number>(0.005);
+  const [paLinePrintNumbers, setPaLinePrintNumbers] = useState<boolean>(true);
+
   const [isDownloading, setIsDownloading] = useState(false);
   const [isBaking, setIsBaking] = useState(false);
 
   const isPaTower = caliMode === 'pa_tower';
   const isPaPattern = caliMode === 'pa_pattern';
+  const isPaLine = caliMode === 'pa_line';
 
   const triggerBlobDownload = (blob: Blob, filename: string) => {
     const url = URL.createObjectURL(blob);
@@ -201,6 +210,15 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
     if (isPaPattern) {
       return { start, end, step, nozzle_diameter: nozzleDiameter };
     }
+    if (isPaLine) {
+      return {
+        start: paLineStart,
+        end: paLineEnd,
+        step: paLineStep,
+        print_numbers: paLinePrintNumbers,
+        nozzle_diameter: nozzleDiameter,
+      };
+    }
     return undefined;
   };
 
@@ -218,10 +236,16 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
     }
   };
 
+  // PA Line uses its own start/end/step state; PA Tower / PA Pattern
+  // share the shared start/end/step inputs.
+  const effectiveEnd = isPaLine ? paLineEnd : end;
+  const effectiveStart = isPaLine ? paLineStart : start;
+  const effectiveStep = isPaLine ? paLineStep : step;
+
   const canSubmit =
     !isDownloading &&
-    end > start &&
-    step > 0 &&
+    effectiveEnd > effectiveStart &&
+    effectiveStep > 0 &&
     (presetSource === 'bundle'
       ? !!selectedBundle && !!bundlePrinterName && !!bundleProcessName && !!bundleFilamentName
       : !!printerRef && !!processRef && !!filamentRef);
@@ -475,6 +499,65 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
         </section>
       )}
 
+      {isPaLine && (
+        <section className="space-y-2 border border-bambu-dark-tertiary rounded p-3">
+          <h4 className="text-sm font-medium text-bambu-gray">
+            {t('filamentCali.verifyDownload.specHeading')}
+          </h4>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="block">
+              <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.startK')}</span>
+              <input
+                type="number"
+                step="0.001"
+                value={paLineStart}
+                onChange={(e) => setPaLineStart(parseFloat(e.target.value) || 0)}
+                className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.endK')}</span>
+              <input
+                type="number"
+                step="0.001"
+                value={paLineEnd}
+                onChange={(e) => setPaLineEnd(parseFloat(e.target.value) || 0)}
+                className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.stepK')}</span>
+              <input
+                type="number"
+                step="0.001"
+                value={paLineStep}
+                onChange={(e) => setPaLineStep(parseFloat(e.target.value) || 0)}
+                className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.nozzleDia')}</span>
+              <input
+                type="number"
+                step="0.1"
+                value={nozzleDiameter}
+                onChange={(e) => setNozzleDiameter(parseFloat(e.target.value) || 0.4)}
+                className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
+              />
+            </label>
+          </div>
+          <label className="flex items-center gap-2 text-xs text-bambu-gray cursor-pointer">
+            <input
+              type="checkbox"
+              checked={paLinePrintNumbers}
+              onChange={(e) => setPaLinePrintNumbers(e.target.checked)}
+              className="accent-bambu-green"
+            />
+            {t('filamentCali.preset.paLinePrintNumbers')}
+          </label>
+        </section>
+      )}
+
       <div className="flex justify-between items-center pt-2 border-t border-bambu-dark-tertiary gap-2">
         <button
           type="button"
@@ -487,7 +570,7 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
           <button
             type="button"
             onClick={onBakeOnly}
-            disabled={isBaking || isDownloading || (isPaTower && (end <= start || step <= 0))}
+            disabled={isBaking || isDownloading || effectiveEnd <= effectiveStart || effectiveStep <= 0}
             title={t('filamentCali.verifyDownload.bakeTooltip')}
             className="px-3 py-2 rounded border border-bambu-dark-tertiary text-bambu-gray text-sm font-medium hover:text-white hover:border-bambu-gray disabled:opacity-40 disabled:cursor-not-allowed"
           >

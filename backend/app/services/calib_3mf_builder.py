@@ -23,6 +23,7 @@ from backend.app.services.calib_3mf_writer import (
     GeometryKind,
     write_calibration_3mf,
 )
+from backend.app.services.calib_pa_line import build_pa_line_3mf
 from backend.app.services.calib_pa_pattern import build_pa_pattern_3mf
 from backend.app.services.calib_pa_tower import build_pa_tower_3mf
 from backend.app.services.calibration_constants import CaliMode
@@ -53,10 +54,12 @@ def _not_implemented(_asset: CalibAsset, _spec: dict) -> bytes:
 _BUILDERS: dict[CaliMode, ModeBuilder] = {
     # Phase 1 — PRODUCTION (shipped 2026-05-14).
     CaliMode.PA_TOWER: build_pa_tower_3mf,
-    # Phase 2 — VERIFICATION (registered builder, awaiting sign-off).
-    # Uses BS-shipped pa_pattern.3mf scaffold as-is (K range hardcoded
-    # 0..0.08 step 0.005); custom ranges ship in production phase.
+    # Phase 2 — PRODUCTION (shipped 2026-05-15).
     CaliMode.PA_PATTERN: build_pa_pattern_3mf,
+    # Phase 9 — VERIFICATION: builder lands first so operators can
+    # download + diff against BS-desktop output before we flip to
+    # production. Python port of CalibPressureAdvanceLine::print_pa_lines.
+    CaliMode.PA_LINE: build_pa_line_3mf,
     CaliMode.TEMP_TOWER: _not_implemented,
     CaliMode.RETRACTION_TOWER: _not_implemented,
     CaliMode.VFA_TOWER: _not_implemented,
@@ -65,7 +68,6 @@ _BUILDERS: dict[CaliMode, ModeBuilder] = {
     # Auto modes don't slice — they fire MQTT. The dispatcher returning
     # NotImplementedError here is correct: there's nothing to bake.
     CaliMode.AUTO_PA_LINE: _not_implemented,
-    CaliMode.PA_LINE: _not_implemented,
 }
 
 

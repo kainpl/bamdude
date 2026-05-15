@@ -12,6 +12,7 @@ from backend.app.services.calibration_constants import CaliMode
 _REGISTERED: set[CaliMode] = {
     CaliMode.PA_TOWER,  # Phase 1
     CaliMode.PA_PATTERN,  # Phase 2
+    CaliMode.PA_LINE,  # Phase 9 (verification)
 }
 
 

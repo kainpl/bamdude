@@ -99,6 +99,28 @@ class PAPatternSpec(BaseModel):
         return self
 
 
+class PALineSpec(BaseModel):
+    """PA Line sweeps a single K range across a horizontal row stack.
+
+    BS PA Line wizard's DDE default is start=0.0 / end=0.1 / step=0.002,
+    but Bambu printers all run DDE and 0.1 is too aggressive in practice —
+    we surface PA Pattern's tighter defaults (0.0 → 0.08 step 0.005) so
+    the operator gets a usable result without having to retune. The
+    operator can widen the range from the wizard UI.
+    """
+
+    start: float = Field(..., ge=0)
+    end: float = Field(..., gt=0)
+    step: float = Field(..., gt=0)
+    print_numbers: bool = True
+
+    @model_validator(mode="after")
+    def _end_after_start(self) -> PALineSpec:
+        if self.end <= self.start:
+            raise ValueError("end must be greater than start")
+        return self
+
+
 class AutoPASpec(BaseModel):
     """Auto-PA / Auto-Flow run printer-side over MQTT — no slicing knobs.
 
@@ -111,4 +133,4 @@ class AutoPASpec(BaseModel):
 # the per-mode shape in ``calib_3mf_builder``. Field on the wire is
 # ``kind`` so the JSON contract stays explicit about which spec the body
 # decodes to.
-CalibrationSpec = CalibTowerSpec | FlowRateSpec | PAPatternSpec | AutoPASpec
+CalibrationSpec = CalibTowerSpec | FlowRateSpec | PAPatternSpec | PALineSpec | AutoPASpec

@@ -309,6 +309,16 @@ export function CalibrationPresetPage({
   const [patternEnd, setPatternEnd] = useState<number>(0.08);
   const [patternStep, setPatternStep] = useState<number>(0.005);
 
+  // PA Line — BS DDE defaults are 0.0/0.1/0.002 (51 rows) but 0.1 is too
+  // aggressive for direct-drive Bambu printers in practice. We use the
+  // same defaults as PA Pattern (0.0/0.08/0.005 = 17 rows) so operators
+  // get a tighter sweep out of the box; widen via the inputs if needed.
+  const isPaLine = caliMode === 'pa_line';
+  const [paLineStart, setPaLineStart] = useState<number>(0.0);
+  const [paLineEnd, setPaLineEnd] = useState<number>(0.08);
+  const [paLineStep, setPaLineStep] = useState<number>(0.005);
+  const [paLinePrintNumbers, setPaLinePrintNumbers] = useState<boolean>(true);
+
   const statusQuery = useQuery<PrinterStatus>({
     queryKey: ['printerStatus', printerId],
     queryFn: () => api.getPrinterStatus(printerId),
@@ -560,6 +570,15 @@ export function CalibrationPresetPage({
         start: patternStart,
         end: patternEnd,
         step: patternStep,
+        nozzle_diameter: nozzleDia,
+      };
+    }
+    if (isPaLine) {
+      extras.spec = {
+        start: paLineStart,
+        end: paLineEnd,
+        step: paLineStep,
+        print_numbers: paLinePrintNumbers,
         nozzle_diameter: nozzleDia,
       };
     }
@@ -845,6 +864,61 @@ export function CalibrationPresetPage({
                   />
                 </label>
               </div>
+            </div>
+          )}
+
+          {isPaLine && (
+            <div className="space-y-2 border border-bambu-dark-tertiary rounded p-3">
+              <h4 className="text-sm font-medium text-bambu-gray">
+                {t('filamentCali.verifyDownload.specHeading')}
+              </h4>
+              <div className="grid grid-cols-3 gap-2">
+                <label className="block">
+                  <span className="text-xs text-bambu-gray">
+                    {t('filamentCali.verifyDownload.startK')}
+                  </span>
+                  <input
+                    type="number"
+                    step="0.001"
+                    value={paLineStart}
+                    onChange={(e) => setPaLineStart(parseFloat(e.target.value) || 0)}
+                    className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs text-bambu-gray">
+                    {t('filamentCali.verifyDownload.endK')}
+                  </span>
+                  <input
+                    type="number"
+                    step="0.001"
+                    value={paLineEnd}
+                    onChange={(e) => setPaLineEnd(parseFloat(e.target.value) || 0)}
+                    className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs text-bambu-gray">
+                    {t('filamentCali.verifyDownload.stepK')}
+                  </span>
+                  <input
+                    type="number"
+                    step="0.001"
+                    value={paLineStep}
+                    onChange={(e) => setPaLineStep(parseFloat(e.target.value) || 0)}
+                    className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
+                  />
+                </label>
+              </div>
+              <label className="flex items-center gap-2 text-xs text-bambu-gray cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={paLinePrintNumbers}
+                  onChange={(e) => setPaLinePrintNumbers(e.target.checked)}
+                  className="accent-bambu-green"
+                />
+                {t('filamentCali.preset.paLinePrintNumbers')}
+              </label>
             </div>
           )}
         </section>

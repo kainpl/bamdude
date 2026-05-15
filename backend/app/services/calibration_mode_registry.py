@@ -79,10 +79,17 @@ MODE_STATE: dict[CaliMode, ModeState] = {
     CaliMode.VOL_SPEED_TOWER: ModeState.DISABLED,
     CaliMode.FLOW_RATE: ModeState.DISABLED,
     CaliMode.AUTO_PA_LINE: ModeState.DISABLED,
-    # PA_LINE is documented as permanently DISABLED — BS engine-side path
-    # generation (GCode.cpp:2514/2658/2817/2843) can't be expressed through
-    # custom_gcode_per_layer.xml. Operators are pointed at PA Pattern.
-    CaliMode.PA_LINE: ModeState.DISABLED,
+    # Phase 9 — VERIFICATION (2026-05-15). Builder is a Python port of
+    # CalibPressureAdvanceLine::print_pa_lines (Calib.cpp:415-490) — emits
+    # the full prime-line + N-row pattern + filled glyph box + per-row K
+    # labels as ONE custom_gcode entry on a single layer. The shared
+    # pa_pattern.3mf cube placeholder (shrunk + parked in the front-left
+    # corner) provides the layer boundary the slicer injects against.
+    # Pinned at VERIFICATION until the side-by-side diff against BS PA
+    # Line wizard output is signed off; PA Line was previously documented
+    # as "permanently DISABLED, use PA Pattern instead" but the port
+    # turned out to fit the existing primitives without a sidecar fork.
+    CaliMode.PA_LINE: ModeState.VERIFICATION,
 }
 
 

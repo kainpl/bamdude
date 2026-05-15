@@ -591,6 +591,9 @@ async def slice_calibration_for_verification(
                 # operator's preset values and overrides anything we'd
                 # embedded into the 3MF's project_settings.config.
                 from backend.app.services.calib_preset_overrides import (
+                    apply_pa_line_filament_overrides,
+                    apply_pa_line_printer_overrides,
+                    apply_pa_line_process_overrides,
                     apply_pa_pattern_filament_overrides,
                     apply_pa_pattern_printer_overrides,
                     apply_pa_pattern_process_overrides,
@@ -608,6 +611,10 @@ async def slice_calibration_for_verification(
                 elif body.cali_mode == CaliMode.PA_TOWER:
                     process_json = apply_pa_tower_process_overrides(process_json)
                     filament_jsons = [apply_pa_tower_filament_overrides(f) for f in filament_jsons]
+                elif body.cali_mode == CaliMode.PA_LINE:
+                    process_json = apply_pa_line_process_overrides(process_json, nozzle_diameter=nozzle_diameter)
+                    printer_json = apply_pa_line_printer_overrides(printer_json)
+                    filament_jsons = [apply_pa_line_filament_overrides(f) for f in filament_jsons]
 
                 # Log compat-relevant fields from each JSON so when BS rejects
                 # the combo we can see what the resolver actually produced

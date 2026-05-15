@@ -131,6 +131,80 @@ def apply_pa_tower_filament_overrides(filament_json: str) -> str:
     return json.dumps(data)
 
 
+def apply_pa_line_process_overrides(process_json: str, *, nozzle_diameter: float) -> str:
+    """Patch a process-preset JSON with PA Line hardcodes.
+
+    BS's PA Line wizard doesn't run a dedicated ``Plater::_calib_pa_line``
+    routine — the engine emits the pattern in place of slicing — so
+    there's no upstream override list to port verbatim. We pin a tight
+    set of values that make the placeholder cube minimal (one wall, no
+    infill / shells) and keep the pattern G1 trail unbroken by
+    layer-change scarring (retract/wipe disabled). Mirrors PA Pattern's
+    approach.
+    """
+    try:
+        data = json.loads(process_json)
+    except (ValueError, TypeError):
+        logger.warning("apply_pa_line_process_overrides: input not valid JSON; passing through")
+        return process_json
+    if not isinstance(data, dict):
+        return process_json
+
+    _set(data, "wall_loops", "1")
+    _set(data, "skirt_loops", "0")
+    _set(data, "brim_type", "no_brim")
+    _set(data, "top_shell_layers", "0")
+    _set(data, "bottom_shell_layers", "0")
+    _set(data, "sparse_infill_density", "0%")
+    _set(data, "enable_wrapping_detection", "0")
+    _set(data, "print_sequence", "by layer")
+    _set(data, "initial_layer_speed", ["30"])
+    _set(data, "line_width", f"{nozzle_diameter * 1.125:.4f}")
+    _set(data, "initial_layer_line_width", f"{nozzle_diameter * 1.4:.4f}")
+    _set(data, "initial_layer_print_height", "0.2")
+    _set(data, "layer_height", "0.2")
+
+    return json.dumps(data)
+
+
+def apply_pa_line_filament_overrides(filament_json: str) -> str:
+    """Disable retract/wipe-on-layer-change for PA Line.
+
+    Pattern's slow→fast→slow extrusion sequence is laid down as one
+    continuous G1 chain; any retract or wipe move between segments
+    would create gaps the operator reads as PA artefacts.
+    """
+    try:
+        data = json.loads(filament_json)
+    except (ValueError, TypeError):
+        return filament_json
+    if not isinstance(data, dict):
+        return filament_json
+
+    _set(data, "filament_retract_when_changing_layer", ["0"])
+    _set(data, "filament_wipe", ["0"])
+    return json.dumps(data)
+
+
+def apply_pa_line_printer_overrides(printer_json: str) -> str:
+    """Mute resonance avoidance + retract/wipe-on-layer-change for PA Line.
+
+    Same rationale as the PA Pattern printer overrides — anything that
+    fires between extrusion segments smears the K-band readout.
+    """
+    try:
+        data = json.loads(printer_json)
+    except (ValueError, TypeError):
+        return printer_json
+    if not isinstance(data, dict):
+        return printer_json
+
+    _set(data, "wipe", ["0"])
+    _set(data, "retract_when_changing_layer", ["0"])
+    _set(data, "resonance_avoidance", "0")
+    return json.dumps(data)
+
+
 def apply_pa_tower_process_overrides(process_json: str) -> str:
     """Patch a process-preset JSON with PA Tower hardcodes
     (`Plater.cpp:12812`). `enable_wrapping_detection=0` is the only

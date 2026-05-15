@@ -9,6 +9,9 @@ from __future__ import annotations
 import json
 
 from backend.app.services.calib_preset_overrides import (
+    apply_pa_line_filament_overrides,
+    apply_pa_line_printer_overrides,
+    apply_pa_line_process_overrides,
     apply_pa_pattern_filament_overrides,
     apply_pa_pattern_printer_overrides,
     apply_pa_pattern_process_overrides,
@@ -84,6 +87,50 @@ def test_overrides_passthrough_invalid_json():
     junk = "not really json"
     assert apply_pa_pattern_process_overrides(junk, nozzle_diameter=0.4) == junk
     assert apply_pa_tower_filament_overrides(junk) == junk
+
+
+def test_pa_line_process_overrides_pin_wall_and_shell_zero():
+    """PA Line cube placeholder must print as a 1-wall corner anchor —
+    no shells, no infill, no skirt."""
+    preset = json.dumps({"wall_loops": "4", "top_shell_layers": "4", "sparse_infill_density": "40%"})
+    out = json.loads(apply_pa_line_process_overrides(preset, nozzle_diameter=0.4))
+    assert out["wall_loops"] == "1"
+    assert out["top_shell_layers"] == "0"
+    assert out["bottom_shell_layers"] == "0"
+    assert out["sparse_infill_density"] == "0%"
+    assert out["skirt_loops"] == "0"
+    assert out["brim_type"] == "no_brim"
+    assert out["enable_wrapping_detection"] == "0"
+    assert out["initial_layer_print_height"] == "0.2"
+    assert out["layer_height"] == "0.2"
+
+
+def test_pa_line_process_overrides_line_width_scales_with_nozzle():
+    out = json.loads(apply_pa_line_process_overrides("{}", nozzle_diameter=0.6))
+    assert out["line_width"] == "0.6750"
+    assert out["initial_layer_line_width"] == "0.8400"
+
+
+def test_pa_line_filament_overrides_disable_retract_wipe_on_layer_change():
+    preset = json.dumps({"filament_retract_when_changing_layer": ["1"], "filament_wipe": ["1"]})
+    out = json.loads(apply_pa_line_filament_overrides(preset))
+    assert out["filament_retract_when_changing_layer"] == ["0"]
+    assert out["filament_wipe"] == ["0"]
+
+
+def test_pa_line_printer_overrides_disable_wipe_retract_resonance():
+    preset = json.dumps({"wipe": ["1"], "retract_when_changing_layer": ["1"], "resonance_avoidance": "1"})
+    out = json.loads(apply_pa_line_printer_overrides(preset))
+    assert out["wipe"] == ["0"]
+    assert out["retract_when_changing_layer"] == ["0"]
+    assert out["resonance_avoidance"] == "0"
+
+
+def test_pa_line_overrides_passthrough_invalid_json():
+    junk = "not really json"
+    assert apply_pa_line_process_overrides(junk, nozzle_diameter=0.4) == junk
+    assert apply_pa_line_filament_overrides(junk) == junk
+    assert apply_pa_line_printer_overrides(junk) == junk
 
 
 def test_pa_pattern_process_overrides_preserve_existing_unrelated_keys():

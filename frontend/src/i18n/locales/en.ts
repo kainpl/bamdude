@@ -4223,6 +4223,7 @@ export default {
       missingTemps: 'Set nozzle and bed temperature',
       customFilament: 'Custom filament — name:',
       customFilamentPlaceholder: 'My PETG',
+      paLinePrintNumbers: 'Print K-value labels next to each line',
     },
     running: {
       heading: 'Calibrating…',

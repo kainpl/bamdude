@@ -38,6 +38,16 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from enum import Enum
+
+
+class DigitMode(str, Enum):
+    """Direction the digit glyphs grow. Pattern stacks them vertically
+    (Bottom_To_Top), PA Line lays them left-to-right next to each line."""
+
+    BOTTOM_TO_TOP = "bottom_to_top"
+    LEFT_TO_RIGHT = "left_to_right"
+
 
 # Constants — verbatim from BS Calib.hpp/Calib.cpp.
 M_ENCROACHMENT = 1.0 / 3.0  # CalibPressureAdvance::m_encroachment
@@ -200,36 +210,59 @@ def _draw_digit(
     c: str,
     line_width: float,
     e_per_mm: float,
+    mode: DigitMode = DigitMode.BOTTOM_TO_TOP,
 ) -> str:
-    """BS ``CalibPressureAdvance::draw_digit`` — 7-segment-like glyph
-    drawing in Bottom_To_Top orientation (only mode the pattern uses).
+    """BS ``CalibPressureAdvance::draw_digit`` — 7-segment-like glyph.
 
-    Layout (BS Calib.cpp:64-81):
+    Two layouts mirror BS Calib.cpp:64-101:
+
+    Bottom_To_Top (PA Pattern):
 
         1-------2-------5
         |       |       |
         |       |       |
         0-------3-------4
 
-    Numbers 0-9 trace specific point sequences. Decimal point drops a
-    tiny stub from p4_5 leftward.
+    Left_To_Right (PA Line):
+
+        0-------1
+        |       |
+        3-------2
+        |       |
+        4-------5
+
+    The trace point-sequence per digit (0-9 + '.') is identical between
+    modes — only the point-layout differs.
     """
     seg = DIGIT_SEGMENT_LEN
     gap = line_width / 2.0
     de = e_per_mm * seg
     two_de = de * 2.0
 
-    p0 = Vec2(startx, starty)
-    p0_5 = Vec2(startx, starty + seg / 2.0)
-    p1 = Vec2(startx, starty + seg)
-    p2 = Vec2(startx + seg, starty + seg)
-    p3 = Vec2(startx + seg, starty)
-    p4 = Vec2(startx + seg * 2, starty)
-    p4_5 = Vec2(startx + seg * 2, starty + seg / 2.0)
-    p5 = Vec2(startx + seg * 2, starty + seg)
-    gap_p0_toward_p3 = p0.offset(gap, 0)
-    gap_p2_toward_p3 = p2.offset(0, gap)
-    dot_direction = Vec2(-seg / 2.0, 0)
+    if mode == DigitMode.BOTTOM_TO_TOP:
+        p0 = Vec2(startx, starty)
+        p0_5 = Vec2(startx, starty + seg / 2.0)
+        p1 = Vec2(startx, starty + seg)
+        p2 = Vec2(startx + seg, starty + seg)
+        p3 = Vec2(startx + seg, starty)
+        p4 = Vec2(startx + seg * 2, starty)
+        p4_5 = Vec2(startx + seg * 2, starty + seg / 2.0)
+        p5 = Vec2(startx + seg * 2, starty + seg)
+        gap_p0_toward_p3 = p0.offset(gap, 0)
+        gap_p2_toward_p3 = p2.offset(0, gap)
+        dot_direction = Vec2(-seg / 2.0, 0)
+    else:
+        p0 = Vec2(startx, starty)
+        p0_5 = Vec2(startx + seg / 2.0, starty)
+        p1 = Vec2(startx + seg, starty)
+        p2 = Vec2(startx + seg, starty - seg)
+        p3 = Vec2(startx, starty - seg)
+        p4 = Vec2(startx, starty - seg * 2)
+        p4_5 = Vec2(startx + seg / 2.0, starty - seg * 2)
+        p5 = Vec2(startx + seg, starty - seg * 2)
+        gap_p0_toward_p3 = p0.offset(0, -gap)
+        gap_p2_toward_p3 = p2.offset(-gap, 0)
+        dot_direction = Vec2(0, seg / 2.0)
 
     out = ""
     if c == "0":
@@ -312,15 +345,22 @@ def _draw_number(
     line_width: float,
     e_per_mm: float,
     speed_mm_min: float,
+    mode: DigitMode = DigitMode.BOTTOM_TO_TOP,
 ) -> str:
-    """BS ``CalibPressureAdvance::draw_number`` in Bottom_To_Top mode —
-    stack each digit vertically by ``number_spacing``."""
+    """BS ``CalibPressureAdvance::draw_number``.
+
+    Bottom_To_Top stacks digits vertically by ``number_spacing``
+    (PA Pattern). Left_To_Right walks them along X (PA Line).
+    """
     s_number = _convert_number_to_string(value)
     out = writer.set_speed(speed_mm_min)
     for i, ch in enumerate(s_number):
         if i > MAX_NUMBER_LEN:
             break
-        out += _draw_digit(writer, startx, starty + i * _number_spacing(), ch, line_width, e_per_mm)
+        if mode == DigitMode.BOTTOM_TO_TOP:
+            out += _draw_digit(writer, startx, starty + i * _number_spacing(), ch, line_width, e_per_mm, mode)
+        else:
+            out += _draw_digit(writer, startx + i * _number_spacing(), starty, ch, line_width, e_per_mm, mode)
     return out
 
 

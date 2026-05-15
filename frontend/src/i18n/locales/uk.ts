@@ -4225,6 +4225,7 @@ export default {
       missingTemps: 'Вкажи температури сопла і столу',
       customFilament: 'Власний філамент — назва:',
       customFilamentPlaceholder: 'Мій PETG',
+      paLinePrintNumbers: 'Друкувати K-мітки біля кожної лінії',
     },
     running: {
       heading: 'Калібровка триває…',

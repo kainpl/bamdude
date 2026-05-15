@@ -119,7 +119,15 @@ async def broadcast_calibration_event(*, printer_id: int, event: str, payload: d
 # g-code injection). None of these ship as ready-to-print 3MFs.
 _MODE_TO_ASSET: dict[CaliMode, tuple[str, str]] = {
     CaliMode.PA_PATTERN: ("pressure_advance/pa_pattern.3mf", "3mf"),
-    CaliMode.PA_LINE: ("pressure_advance/pressure_advance_test.stl", "stl"),
+    # PA Line reuses the PA Pattern scaffold (cube placeholder + 4 layer
+    # boundaries). The pattern itself is emitted as ``custom_gcode`` on
+    # the first layer; the underlying mesh just gives the slicer a layer
+    # to inject against. BS's ``pressure_advance_test.stl`` is a flat
+    # 68×14×0.2 mm sheet whose centre would overlap our pattern row
+    # stack — easier to share the cube scaffold and position it in a
+    # corner via ``build_transform_translate`` (mirrors what we do for
+    # PA Pattern's cube).
+    CaliMode.PA_LINE: ("pressure_advance/pa_pattern.3mf", "3mf"),
     CaliMode.PA_TOWER: ("pressure_advance/tower_with_seam.stl", "stl"),
     CaliMode.TEMP_TOWER: ("temperature_tower/temperature_tower.stl", "stl"),
     CaliMode.VFA_TOWER: ("vfa/VFA.stl", "stl"),
@@ -458,6 +466,9 @@ class CalibrationService:
                         # See `calib_preset_overrides.py` for the per-mode
                         # hardcode lists.
                         from backend.app.services.calib_preset_overrides import (
+                            apply_pa_line_filament_overrides,
+                            apply_pa_line_printer_overrides,
+                            apply_pa_line_process_overrides,
                             apply_pa_pattern_filament_overrides,
                             apply_pa_pattern_printer_overrides,
                             apply_pa_pattern_process_overrides,
@@ -474,6 +485,12 @@ class CalibrationService:
                         elif cali_mode == CaliMode.PA_TOWER:
                             process_json = apply_pa_tower_process_overrides(process_json)
                             filament_jsons = [apply_pa_tower_filament_overrides(f) for f in filament_jsons]
+                        elif cali_mode == CaliMode.PA_LINE:
+                            process_json = apply_pa_line_process_overrides(
+                                process_json, nozzle_diameter=nozzle_diameter
+                            )
+                            printer_json = apply_pa_line_printer_overrides(printer_json)
+                            filament_jsons = [apply_pa_line_filament_overrides(f) for f in filament_jsons]
 
                         slice_result = await svc.slice_with_profiles(
                             model_bytes=bake_bytes,
