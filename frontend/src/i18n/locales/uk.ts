@@ -4112,11 +4112,12 @@ export default {
       paGroup: 'Pressure Advance',
       flowGroup: 'Flow Rate',
       towerGroup: 'Тестові вежі',
-      paLine: 'PA Line (manual, 50 ліній)',
+      paLine: 'PA Line (manual)',
       paLineDesc:
-        'Друкуємо вежу з 50 ліній, кожна з різним PA. По завершенню обираєш найчистішу.',
-      paPattern: 'PA Pattern (manual, сітка)',
-      paPatternDesc: 'Сітка PA-значень плоско — зручно для bowden.',
+        'Плаский одношаровий блок зі сходинковими K-рядками (у кожному slow / fast / slow витискання) + цифровий tab збоку. Обери найчистіший рядок — K = цифра поряд. Зовні аналог PA Pattern, лише замість V-стінок — прямі лінії.',
+      paPattern: 'PA Pattern (manual)',
+      paPatternDesc:
+        'Плаский одношаровий гребінь V-стінок зі сходинковими K + цифровий tab. Обери найчистішу колонку — K = цифра поряд. Дефолтний тест Bambu / Orca для direct-drive принтерів.',
       paTower: 'PA Tower (manual, вежа)',
       paTowerDesc: 'Вертикальна вежа з поступовою зміною PA.',
       paAuto: 'Auto PA (лідар X1)',

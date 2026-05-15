@@ -4109,11 +4109,12 @@ export default {
       paGroup: 'Pressure Advance',
       flowGroup: 'Flow Rate',
       towerGroup: 'Towers',
-      paLine: 'PA Line (manual, 50 lines)',
+      paLine: 'PA Line (manual)',
       paLineDesc:
-        'Print a tower of 50 lines, each with a different Pressure Advance value. Pick the cleanest line at the end.',
-      paPattern: 'PA Pattern (manual, grid)',
-      paPatternDesc: 'A grid of PA values printed flat — easier on bowden setups.',
+        'A flat one-layer block of stepped-K rows (slow / fast / slow extrusion in each), plus a numbered tab on the side. Pick the cleanest row — K = the number next to it. Visually similar to PA Pattern but with straight lines instead of V-shaped walls.',
+      paPattern: 'PA Pattern (manual)',
+      paPatternDesc:
+        'A flat one-layer comb of V-shaped walls at stepped K values, plus a numbered tab. Pick the cleanest column — K = the number next to it. The Bambu / Orca default for direct-drive printers.',
       paTower: 'PA Tower (manual, tower)',
       paTowerDesc: 'A vertical tower with stepped PA.',
       paAuto: 'Auto PA (X1 lidar)',
