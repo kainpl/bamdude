@@ -239,14 +239,33 @@ async def set_kprofile(
     if not client or not client.state.connected:
         raise HTTPException(400, "Printer not connected")
 
-    # Detect dual-nozzle families by serial number prefix.
-    # H2 series: legacy "094"; post-2026 H2C batches ship with "31B8B" (#1105).
-    # X2D series: "20P9" (#988).
-    is_h2d = printer.serial_number.startswith(("094", "20P9", "31B8B"))
-
-    if is_edit and is_h2d:
-        # H2D in-place edit: use cali_idx with slot_id=0 and empty setting_id
-        logger.info("[API] H2D in-place edit: cali_idx=%s", profile.slot_id)
+    if is_edit:
+        # BS-parity in-place edit. CaliHistoryDialog.cpp:474-493 ("Edit"
+        # button) builds a PACalibResult with the row's existing cali_idx +
+        # setting_id and ships it through CalibUtils::set_PA_calib_result —
+        # no delete, no model-specific branching. DeviceManager.cpp:1864
+        # (command_set_pa_calibration) sends a single extrusion_cali_set
+        # with cali_idx + setting_id preserved, and DevCalib.cpp:151
+        # (ExtrusionCalibSetParse) treats it as an in-place tray update on
+        # every printer model. Earlier BamDude code did delete + 0.5s sleep
+        # + add on non-H2D — empirical guess from the pre-fork era that
+        # never matched what BS actually does. Drop it.
+        logger.info("[API] In-place edit: cali_idx=%s", profile.slot_id)
+        success = client.set_kprofile(
+            filament_id=profile.filament_id,
+            name=profile.name,
+            k_value=profile.k_value,
+            nozzle_diameter=profile.nozzle_diameter,
+            nozzle_id=profile.nozzle_id,
+            extruder_id=profile.extruder_id,
+            setting_id=profile.setting_id,  # preserve — BS does the same
+            slot_id=profile.slot_id,
+            cali_idx=profile.slot_id,
+        )
+    else:
+        # New profile: cali_idx=-1 (set_kprofile derives it from slot_id=0)
+        # lets the firmware assign a fresh slot; a fresh random setting_id
+        # is generated inside set_kprofile.
         success = client.set_kprofile(
             filament_id=profile.filament_id,
             name=profile.name,
@@ -256,47 +275,6 @@ async def set_kprofile(
             extruder_id=profile.extruder_id,
             setting_id=None,
             slot_id=0,
-            cali_idx=profile.slot_id,  # Pass the original slot for in-place edit
-        )
-    elif is_edit:
-        # Non-H2D edit: use delete + add approach
-        logger.info("[API] Edit: deleting existing profile slot_id=%s", profile.slot_id)
-        delete_success = client.delete_kprofile(
-            cali_idx=profile.slot_id,
-            filament_id=profile.filament_id,
-            nozzle_id=profile.nozzle_id,
-            nozzle_diameter=profile.nozzle_diameter,
-            extruder_id=profile.extruder_id,
-            setting_id=profile.setting_id,
-        )
-        if not delete_success:
-            raise HTTPException(500, "Failed to delete existing K-profile for edit")
-
-        # Wait for printer to process the delete before adding
-        await asyncio.sleep(0.5)
-        logger.info("[API] Edit: delete complete, now adding updated profile")
-
-        success = client.set_kprofile(
-            filament_id=profile.filament_id,
-            name=profile.name,
-            k_value=profile.k_value,
-            nozzle_diameter=profile.nozzle_diameter,
-            nozzle_id=profile.nozzle_id,
-            extruder_id=profile.extruder_id,
-            setting_id=None,  # Generate new setting_id for add
-            slot_id=0,  # Always 0 for add (new profile)
-        )
-    else:
-        # New profile: add with slot_id=0
-        success = client.set_kprofile(
-            filament_id=profile.filament_id,
-            name=profile.name,
-            k_value=profile.k_value,
-            nozzle_diameter=profile.nozzle_diameter,
-            nozzle_id=profile.nozzle_id,
-            extruder_id=profile.extruder_id,
-            setting_id=None,  # Generate new setting_id for add
-            slot_id=0,  # Always 0 for add (new profile)
         )
 
     fc_id = await _resolve_fc_id_for_audit(db, printer_id=printer_id, profile=profile)
