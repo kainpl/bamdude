@@ -675,10 +675,11 @@ async def delete_queue_item(
         raise HTTPException(400, "Cannot delete item that is currently printing")
 
     queue_id = item.queue_id
+
+    from backend.app.services.queue_counters import detach_print_queue_refs, update_queue_counters
+
+    await detach_print_queue_refs(db, [item.id])
     await db.delete(item)
-
-    from backend.app.services.queue_counters import update_queue_counters
-
     await update_queue_counters(db, queue_id)
     await db.commit()
 

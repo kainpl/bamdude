@@ -1006,6 +1006,7 @@ class BackgroundDispatchService:
                         q_item.archive_id = archive.id
                         archive.queue_id = q_item.queue_id
                         archive.batch_id = q_item.batch_id
+                        archive.from_auto_queue = q_item.source_auto_item_id is not None
 
                 # Print Now (no queue item): attribute the new archive to the
                 # printer's default queue so GET /printer-queues/ counters
@@ -1495,6 +1496,7 @@ class BackgroundDispatchService:
                         q_item.archive_id = archive.id
                         archive.queue_id = q_item.queue_id
                         archive.batch_id = q_item.batch_id
+                        archive.from_auto_queue = q_item.source_auto_item_id is not None
 
                 # For non-queue dispatches (Print Now qty=1), attribute the
                 # archive to the printer's default queue so GET /printer-queues/

@@ -120,6 +120,10 @@ class ArchiveResponse(BaseModel):
     # queue) but no ``batch_id``.
     queue_id: int | None = None
     batch_id: str | None = None
+    # True when the AutoQueueScheduler dispatched this print. The source
+    # auto_queue_items row is gone once the print finished, so this flag
+    # is what the auto-queue stats view counts on.
+    from_auto_queue: bool = False
     # Verbose diagnostic text for failures — the "hover to see why" twin of
     # ``failure_reason`` (short cause code).
     error_message: str | None = None

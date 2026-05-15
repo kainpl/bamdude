@@ -10,7 +10,7 @@ Only ``pending_count`` and ``skipped_count`` stay cached on
 import logging
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.archive import PrintArchive
@@ -141,3 +141,46 @@ async def set_queue_idle(db: AsyncSession, queue_id: int) -> None:
         queue.status = "idle"
     queue.current_item_id = None
     queue.last_activity_at = datetime.now(timezone.utc)
+
+
+async def detach_print_queue_refs(db: AsyncSession, item_ids: list[int]) -> None:
+    """Clean up rows referencing ``print_queue`` items about to be deleted.
+
+    SQLite runs with ``foreign_keys=OFF`` so the ``ON DELETE`` clauses on
+    these FKs never fire — do the cleanup explicitly (also keeps the
+    behaviour identical on PostgreSQL). Call this immediately before
+    deleting the ``PrintQueueItem`` row(s).
+
+      * ``auto_queue_items`` — the pre-dispatch *router* row. Once its
+        dispatched ``print_queue`` item is gone it carries nothing, so
+        delete it. The archive keeps ``from_auto_queue=True`` as the
+        lasting record (auto-queue stats count that, not this row).
+      * ``calibration_session`` — calibration *history*; keep the row,
+        just null its ``print_queue_item_id`` link.
+    """
+    if not item_ids:
+        return
+
+    from backend.app.models.auto_queue import AutoQueueItem
+    from backend.app.models.calibration_session import CalibrationSession
+
+    auto_ids = (
+        (
+            await db.execute(
+                select(PrintQueueItem.source_auto_item_id).where(
+                    PrintQueueItem.id.in_(item_ids),
+                    PrintQueueItem.source_auto_item_id.is_not(None),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if auto_ids:
+        await db.execute(delete(AutoQueueItem).where(AutoQueueItem.id.in_(auto_ids)))
+
+    await db.execute(
+        update(CalibrationSession)
+        .where(CalibrationSession.print_queue_item_id.in_(item_ids))
+        .values(print_queue_item_id=None)
+    )

@@ -379,6 +379,14 @@ async def delete_user(
     if delete_items:
         # Delete all items created by this user
         await db.execute(delete(PrintArchive).where(PrintArchive.created_by_id == user_id))
+        # Detach print_queue back-references before the bulk delete — SQLite
+        # foreign_keys=OFF means ON DELETE clauses won't fire on their own.
+        from backend.app.services.queue_counters import detach_print_queue_refs
+
+        _pq_ids = (
+            (await db.execute(select(PrintQueueItem.id).where(PrintQueueItem.created_by_id == user_id))).scalars().all()
+        )
+        await detach_print_queue_refs(db, list(_pq_ids))
         await db.execute(delete(PrintQueueItem).where(PrintQueueItem.created_by_id == user_id))
         await db.execute(delete(LibraryFile).where(LibraryFile.created_by_id == user_id))
     else:

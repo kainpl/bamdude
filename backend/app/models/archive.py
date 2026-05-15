@@ -141,6 +141,15 @@ class PrintArchive(Base):
     is_calibration: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     calibration_session_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # True when this print was dispatched by the AutoQueueScheduler
+    # (auto_queue_items → print_queue). Set by background_dispatch at
+    # archive creation from the queue item's source_auto_item_id. The
+    # auto_queue_items row is deleted once its print finishes, so this
+    # flag is the lasting record — it lets the auto-queue view compute
+    # archive-backed completed/failed totals the same way per-printer
+    # queues do.
+    from_auto_queue: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
     @classmethod
     def active(cls) -> "Select[tuple[PrintArchive]]":
         """Select statement that excludes trashed archives.

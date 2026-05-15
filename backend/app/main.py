@@ -4058,6 +4058,9 @@ async def on_print_complete(printer_id: int, data: dict):
                     _completed_item_id = queue_item.id
                     _completed_archive_id = queue_item.archive_id
                     _completed_queue_id = queue_item.queue_id
+                    from backend.app.services.queue_counters import detach_print_queue_refs
+
+                    await detach_print_queue_refs(db, [queue_item.id])
                     await db.delete(queue_item)
                     await db.commit()
                     logger.info(
