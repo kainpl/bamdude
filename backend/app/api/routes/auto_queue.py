@@ -47,6 +47,7 @@ from backend.app.schemas.auto_queue import (
     AutoQueueItemResponse,
     AutoQueueItemUpdate,
     AutoQueueReorder,
+    AutoQueueStatsResponse,
 )
 from backend.app.services.auto_queue_eligibility import find_eligible_printer
 from backend.app.services.auto_queue_threemf import extract_auto_queue_requirements
@@ -339,6 +340,36 @@ async def list_auto_queue(
     stmt = stmt.order_by(AutoQueueItem.position)
     result = await db.execute(stmt)
     return [_to_response(item) for item in result.scalars().all()]
+
+
+@router.get("/stats", response_model=AutoQueueStatsResponse)
+async def auto_queue_stats(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.QUEUE_READ),
+):
+    """Archive-backed totals for auto-queue dispatched prints.
+
+    The ``auto_queue_items`` row is deleted once its print finishes
+    (it's a pre-dispatch router), so the lasting record is
+    ``print_archives.from_auto_queue``. Mirrors the per-printer queue
+    card footer: ``cancelled`` folds in ``aborted`` / ``stopped``.
+
+    Declared before ``/{item_id}`` so the literal path wins over the
+    int path-param.
+    """
+    result = await db.execute(
+        select(PrintArchive.status, func.count())
+        .where(PrintArchive.from_auto_queue.is_(True))
+        .group_by(PrintArchive.status)
+    )
+    by_status = {row[0]: int(row[1] or 0) for row in result.all()}
+    cancelled = by_status.get("cancelled", 0) + by_status.get("aborted", 0) + by_status.get("stopped", 0)
+    return AutoQueueStatsResponse(
+        completed_count=by_status.get("completed", 0),
+        failed_count=by_status.get("failed", 0),
+        cancelled_count=cancelled,
+        total_count=sum(by_status.values()),
+    )
 
 
 @router.get("/{item_id}", response_model=AutoQueueItemResponse)

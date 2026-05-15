@@ -37,6 +37,16 @@ export function AutoQueuePanel() {
     refetchInterval: 15000,
   });
 
+  // Archive-backed terminal totals — the auto_queue_items row is deleted
+  // once its print finishes, so completed/failed/cancelled history lives
+  // on print_archives.from_auto_queue. Mirrors the per-printer queue card
+  // footer.
+  const { data: stats } = useQuery({
+    queryKey: ['auto-queue', 'stats'],
+    queryFn: () => api.getAutoQueueStats(),
+    refetchInterval: 15000,
+  });
+
   const cancelMutation = useMutation({
     mutationFn: (id: number) => api.removeFromAutoQueue(id),
     onSuccess: () => {
@@ -226,6 +236,20 @@ export function AutoQueuePanel() {
           );
         })}
       </div>
+      )}
+
+      {/* Archive-backed totals — mirrors the per-printer queue card footer.
+          Only rendered once at least one auto-queue print has finished. */}
+      {stats && stats.total_count > 0 && (
+        <div className="text-xs text-bambu-gray pt-2 mt-3 border-t border-bambu-dark-tertiary">
+          {t('autoQueue.stats.done', { count: stats.completed_count })}
+          {stats.failed_count > 0 && (
+            <>{' · '}{t('autoQueue.stats.failed', { count: stats.failed_count })}</>
+          )}
+          {stats.cancelled_count > 0 && (
+            <>{' · '}{t('autoQueue.stats.cancelled', { count: stats.cancelled_count })}</>
+          )}
+        </div>
       )}
     </div>
       {(isDraggingFile || isDropUploading) && (

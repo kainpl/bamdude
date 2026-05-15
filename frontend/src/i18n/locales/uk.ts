@@ -1128,7 +1128,12 @@ export default {
     batchCancelled: 'Скасовано {{count}} елементів партії',
     emptyHint: 'Перетягніть нарізаний файл сюди, щоб надіслати через авто-чергу.',
     dropToAuto: 'Відпустіть, щоб додати в авто-чергу',
-    dropToAutoHint: 'Принтер вибирає роутер у момент диспатчу.'
+    dropToAutoHint: 'Принтер вибирає роутер у момент диспатчу.',
+    stats: {
+      done: 'Готово: {{count}}',
+      failed: 'Невдалих: {{count}}',
+      cancelled: 'Скасовано: {{count}}'
+    }
   },
 
   // Statistics page

@@ -163,3 +163,17 @@ class AutoQueueBatchActionResponse(BaseModel):
 
     affected: int
     batch_id: str
+
+
+class AutoQueueStatsResponse(BaseModel):
+    """Archive-backed terminal totals for auto-queue dispatched prints.
+
+    Mirrors the per-printer queue card footer (``get_queue_terminal_counts``)
+    — counts ``print_archives`` rows flagged ``from_auto_queue``. ``cancelled``
+    folds in the ``aborted`` / ``stopped`` failure family.
+    """
+
+    completed_count: int
+    failed_count: int
+    cancelled_count: int
+    total_count: int

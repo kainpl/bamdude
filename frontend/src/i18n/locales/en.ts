@@ -1120,7 +1120,12 @@ export default {
     batchCancelled: '{{count}} batch items cancelled',
     emptyHint: 'Drop a sliced file here to route it via auto-queue.',
     dropToAuto: 'Drop to add to auto-queue',
-    dropToAutoHint: 'Router picks the printer at dispatch time.'
+    dropToAutoHint: 'Router picks the printer at dispatch time.',
+    stats: {
+      done: '{{count}} done',
+      failed: '{{count}} failed',
+      cancelled: '{{count}} cancelled'
+    }
   },
 
   // Statistics page

@@ -2215,6 +2215,13 @@ export interface AutoQueueItem {
   assigned_printer_name?: string | null;
 }
 
+export interface AutoQueueStats {
+  completed_count: number;
+  failed_count: number;
+  cancelled_count: number;
+  total_count: number;
+}
+
 export interface AutoQueueItemCreate {
   archive_id?: number | null;
   library_file_id?: number | null;
@@ -5367,6 +5374,7 @@ export const api = {
     const qs = params.toString();
     return request<AutoQueueItem[]>(`/auto-queue/${qs ? `?${qs}` : ''}`);
   },
+  getAutoQueueStats: () => request<AutoQueueStats>('/auto-queue/stats'),
   getAutoQueueItem: (id: number) => request<AutoQueueItem>(`/auto-queue/${id}`),
   addToAutoQueue: (data: AutoQueueItemCreate) =>
     request<AutoQueueItem>('/auto-queue/', {
