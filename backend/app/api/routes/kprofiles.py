@@ -409,7 +409,6 @@ async def delete_kprofile(
         nozzle_id=profile.nozzle_id,
         nozzle_diameter=profile.nozzle_diameter,
         extruder_id=profile.extruder_id,
-        setting_id=profile.setting_id,
     )
 
     fc_id = await _resolve_fc_id_for_audit(db, printer_id=printer_id, profile=profile)

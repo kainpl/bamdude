@@ -4051,14 +4051,26 @@ class TestZombieSessionDetection:
         assert mqtt_client._last_ams_cmd_time > 0  # still pending
 
 
-class TestDeleteKProfileDualNozzleDetection:
-    """Regression guard: dual-nozzle detection by serial prefix (#988).
+class TestDeleteKProfileBSParity:
+    """``delete_kprofile`` emits one fixed BS-parity ``extrusion_cali_del``
+    shape for every printer model — no serial-prefix branch.
 
-    ``delete_kprofile`` branches on serial-prefix-derived dual-nozzle status.
-    H2D family serials start with "094"; X2D serials start with "20P9".
-    Non-dual families (X1C "00M", P1S "01P", P2S "22E", A1 "039", etc.)
-    must take the single-nozzle branch.
+    BambuStudio ``command_delete_pa_calibration`` (DeviceManager.cpp:1905)
+    sends ``extruder_id`` · ``nozzle_id`` · ``filament_id`` · ``cali_idx`` ·
+    ``nozzle_diameter`` and never ``setting_id``. The old code branched on
+    serial prefix and leaked ``setting_id`` into the non-dual branch — both
+    empirical guesses that diverged from upstream.
     """
+
+    _BS_FIELDS = {
+        "command",
+        "sequence_id",
+        "extruder_id",
+        "nozzle_id",
+        "filament_id",
+        "cali_idx",
+        "nozzle_diameter",
+    }
 
     def _make_client(self, serial: str):
         from unittest.mock import MagicMock
@@ -4077,53 +4089,27 @@ class TestDeleteKProfileDualNozzleDetection:
     def _published(self, client):
         return json.loads(client._client.publish.call_args[0][1])["print"]
 
-    def test_h2d_serial_uses_dual_nozzle_format(self):
-        client = self._make_client("09400A000000001")
+    @pytest.mark.parametrize(
+        "serial",
+        [
+            "09400A000000001",  # H2D
+            "20P90A000000001",  # X2D
+            "31B8BP000000001",  # H2C (post-2026 batch)
+            "22E00A000000001",  # P2S
+            "00M00A000000001",  # X1C
+        ],
+    )
+    def test_delete_emits_identical_bs_shape_for_every_model(self, serial):
+        client = self._make_client(serial)
         client.delete_kprofile(cali_idx=1, filament_id="GFA00", nozzle_id="HH00-0.4")
         cmd = self._published(client)
-        # Dual-nozzle command omits setting_id.
-        assert "setting_id" not in cmd
+        # Exact BS field set — no setting_id, no model-specific extras.
+        assert set(cmd.keys()) == self._BS_FIELDS
+        assert cmd["command"] == "extrusion_cali_del"
+        assert cmd["cali_idx"] == 1
+        assert cmd["filament_id"] == "GFA00"
+        assert cmd["nozzle_id"] == "HH00-0.4"
         assert cmd["extruder_id"] == 0
-
-    def test_x2d_serial_uses_dual_nozzle_format(self):
-        """X2D prefix "20P9" must take the same dual-nozzle branch as H2D (#988)."""
-        client = self._make_client("20P90A000000001")
-        client.delete_kprofile(cali_idx=1, filament_id="GFA00", nozzle_id="HH00-0.4")
-        cmd = self._published(client)
-        assert "setting_id" not in cmd
-        assert cmd["extruder_id"] == 0
-
-    def test_h2c_new_prefix_uses_dual_nozzle_format(self):
-        """Post-2026 H2C batches ship with '31B8B' prefix instead of '094' (#1105)."""
-        client = self._make_client("31B8BP000000001")
-        client.delete_kprofile(cali_idx=1, filament_id="GFA00", nozzle_id="HH00-0.4")
-        cmd = self._published(client)
-        assert "setting_id" not in cmd
-        assert cmd["extruder_id"] == 0
-
-    def test_p2s_serial_uses_single_nozzle_format(self):
-        """P2S is single-nozzle — must NOT take the dual-nozzle branch."""
-        client = self._make_client("22E00A000000001")
-        client.delete_kprofile(
-            cali_idx=1,
-            filament_id="GFA00",
-            nozzle_id="HH00-0.4",
-            setting_id="PFB123",
-        )
-        cmd = self._published(client)
-        # Single-nozzle command includes setting_id.
-        assert cmd["setting_id"] == "PFB123"
-
-    def test_x1c_serial_uses_single_nozzle_format(self):
-        client = self._make_client("00M00A000000001")
-        client.delete_kprofile(
-            cali_idx=1,
-            filament_id="GFA00",
-            nozzle_id="HH00-0.4",
-            setting_id="PFB123",
-        )
-        cmd = self._published(client)
-        assert cmd["setting_id"] == "PFB123"
 
 
 class TestForceReconnectRouting:

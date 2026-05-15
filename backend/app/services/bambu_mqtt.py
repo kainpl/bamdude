@@ -4602,9 +4602,21 @@ class BambuMQTTClient:
         nozzle_id: str,
         nozzle_diameter: str = "0.4",
         extruder_id: int = 0,
-        setting_id: str | None = None,
     ) -> bool:
         """Delete a K-profile from the printer.
+
+        Single BS-parity ``extrusion_cali_del`` shape for every printer
+        model. BambuStudio ``MachineObject::command_delete_pa_calibration``
+        (DeviceManager.cpp:1905) sends one fixed payload —
+        ``extruder_id`` · ``nozzle_id`` · ``filament_id`` · ``cali_idx`` ·
+        ``nozzle_diameter`` — with no model branch and no ``setting_id``.
+        The old code had an ``is_dual_nozzle`` serial-prefix branch and
+        leaked ``setting_id`` into the non-dual branch; both were empirical
+        guesses that diverged from upstream.
+
+        (BS also appends ``nozzle_pos`` / ``nozzle_sn`` when an H2D nozzle
+        rack is present — BamDude doesn't wire the nozzle-rack feature
+        anywhere yet, so those are intentionally omitted.)
 
         Args:
             cali_idx: The calibration index (slot_id) of the profile to delete
@@ -4612,7 +4624,6 @@ class BambuMQTTClient:
             nozzle_id: Nozzle identifier (e.g., "HH00-0.4")
             nozzle_diameter: Nozzle diameter (e.g., "0.4")
             extruder_id: Extruder ID (0 or 1 for dual nozzle)
-            setting_id: Unique setting identifier (for X1C series)
 
         Returns:
             True if command was sent, False otherwise
@@ -4623,44 +4634,20 @@ class BambuMQTTClient:
 
         self._sequence_id += 1
 
-        # Detect printer type by serial number prefix.
-        # Dual-nozzle families: H2 family — legacy "094" + post-2026 H2C
-        # batches "31B8B" (#1105); X2D — "20P9" (#988).
-        is_dual_nozzle = self.serial_number.startswith(("094", "20P9", "31B8B"))
-
-        if is_dual_nozzle:
-            # H2D format: uses extruder_id, nozzle_id, nozzle_diameter
-            command = {
-                "print": {
-                    "command": "extrusion_cali_del",
-                    "sequence_id": str(self._sequence_id),
-                    "extruder_id": extruder_id,
-                    "nozzle_id": nozzle_id,
-                    "filament_id": filament_id,
-                    "cali_idx": cali_idx,
-                    "nozzle_diameter": nozzle_diameter,
-                }
+        command = {
+            "print": {
+                "command": "extrusion_cali_del",
+                "sequence_id": str(self._sequence_id),
+                "extruder_id": extruder_id,
+                "nozzle_id": nozzle_id,
+                "filament_id": filament_id,
+                "cali_idx": cali_idx,
+                "nozzle_diameter": nozzle_diameter,
             }
-        else:
-            # X1C/P1/A1 format: include all fields like the set command
-            # The delete command structure should match what set uses
-            command = {
-                "print": {
-                    "command": "extrusion_cali_del",
-                    "sequence_id": str(self._sequence_id),
-                    "filament_id": filament_id,
-                    "cali_idx": cali_idx,
-                    "setting_id": setting_id if setting_id else "",
-                    "nozzle_diameter": nozzle_diameter,
-                    "nozzle_id": nozzle_id,
-                    "extruder_id": extruder_id,
-                }
-            }
+        }
 
         command_json = json.dumps(command)
-        logger.info(
-            f"[{self.serial_number}] Deleting K-profile: cali_idx={cali_idx}, filament={filament_id}, setting_id={setting_id}, dual={is_dual_nozzle}"
-        )
+        logger.info(f"[{self.serial_number}] Deleting K-profile: cali_idx={cali_idx}, filament={filament_id}")
         logger.debug("[%s] K-profile DELETE command: %s", self.serial_number, command_json)
         # Use QoS 1 for reliable delivery (at least once)
         self._client.publish(self.topic_publish, command_json, qos=1)
