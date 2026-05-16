@@ -524,15 +524,24 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
         {queue.status === 'printing' && currentPrintName && status && (
           <div className="p-3 rounded-lg bg-bambu-dark">
             <div className="flex items-start gap-3">
-              {currentThumbnail ? (
-                <img
-                  src={withStreamToken(currentThumbnail)}
-                  alt=""
-                  className="w-20 h-20 rounded-lg object-cover flex-shrink-0 bg-bambu-dark-tertiary"
-                />
-              ) : (
-                <div className="w-20 h-20 rounded-lg bg-bambu-dark-tertiary flex-shrink-0" />
-              )}
+              <div className="relative w-20 h-20 flex-shrink-0">
+                {currentThumbnail ? (
+                  <img
+                    src={withStreamToken(currentThumbnail)}
+                    alt=""
+                    className="w-full h-full rounded-lg object-cover bg-bambu-dark-tertiary"
+                  />
+                ) : (
+                  <div className="w-full h-full rounded-lg bg-bambu-dark-tertiary" />
+                )}
+                {/* Paused overlay — large translucent pause glyph over a
+                    dimmed preview, matching the printer card. */}
+                {status.state === 'PAUSE' && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/35 rounded-lg pointer-events-none">
+                    <Pause className="w-12 h-12 text-status-warning drop-shadow-md opacity-50" fill="currentColor" />
+                  </div>
+                )}
+              </div>
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-1.5 mb-1">
                   <p className="text-sm text-bambu-gray">{t('queueCard.currentPrint')}</p>
@@ -554,7 +563,7 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
                     <div className="flex items-center gap-2">
                       <div className="flex-1 bg-bambu-dark-tertiary rounded-full h-2">
                         <div
-                          className="bg-blue-400 h-2 rounded-full transition-all"
+                          className={`${status.state === 'PAUSE' ? 'bg-status-warning' : 'bg-blue-400'} h-2 rounded-full transition-all`}
                           style={{ width: `${status.progress || 0}%` }}
                         />
                       </div>

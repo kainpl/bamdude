@@ -8,6 +8,18 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **Paused print is now obvious at a glance in the printer and queue cards.** When a print is paused, every print preview — the expanded *and* compact printer cards, plus the current-print thumbnail on the queue card — gets a translucent pause glyph over a dimmed image, so a paused print reads instantly when scanning a grid, not just from the small header chip. The queue card's progress bar also recolours to amber while paused (it stayed blue before). The overlay sits on the cover image (theme-independent content) and uses the same amber `status-warning` as the pause chip, so it needs no separate light/dark treatment.
+
+- **Pause chip drops the useless "Unknown" text.** An unclassified pause (no HMS code, no internal hint) used to render the chip with the literal backend label `⏸ Unknown · 14m`. When the normalised `pause_reason` is `unknown` the chip now shows the localised generic word instead (`Paused` / `Призупинено`) followed by the elapsed counter. A recognised cause (door open, filament runout, AI defect, …) still spells itself out.
+
+### Fixed
+
+- **Queue-completed notification now fires when the last *queued* print finishes.** The `queue_completed` event was wired into the `on_print_complete` handler's `else` branch — the path taken by external / direct-dispatch prints, which never consume a queue item and so can never empty the queue. As a result the notification only ever fired (when it fired at all) after an external print, never when a queue actually drained. The emptiness check + `notification_service.on_queue_completed` call moved into the `if queue_item:` branch where a finished queue item is what triggers it.
+
+- **"Power off when done" now actually powers the printer off after a successful queued print.** The auto-off handler (smart-plug power-off after cooldown) sat in the same misplaced `else` branch of `on_print_complete` — so for the feature's primary case (a queue item finishing normally) it never ran, and for external prints it raised `AttributeError` on `queue_item.auto_off_after` (`queue_item` is `None` there, swallowed by the outer handler). `print_scheduler._power_off_if_needed` only covers the pre-dispatch failure / cancel paths, never a clean completion — so a queue item with `auto_off_after` set simply left the printer on. Block moved into the `if queue_item:` branch, ahead of the completed-item auto-cleanup (the cleanup `DELETE`s the row, which would expire `queue_item` before `auto_off_after` could be read). Fires on any outcome (completed / failed / cancelled), matching the scheduler's failure-path behaviour; no double power-off since the scheduler paths and `on_print_complete` are mutually exclusive.
+
 ## [0.4.5b3] - 2026-05-16
 
 Third beta of the 0.4.5 cycle. The Filament Calibration wizard's Wave 1/2 lands — PA Tower, PA Pattern and PA Line now run end-to-end as real calibration prints (Python ports of the BambuStudio generators), with per-mode preset overrides applied through the slicer sidecar. Plus a K-profile data-layer pass (external-spool pre-print bind, in-place sync, BS-parity edit/delete, hard-prune of printer-side deletes), per-printer queue pause that works mid-print, an auto-queue lifecycle + stats cleanup, and honest client identification on every Bambu Lab / MakerWorld call. Image: `ghcr.io/kainpl/bamdude:0.4.5b3` / `kainpl/bamdude:0.4.5b3`. Pin the exact tag — `:latest` still tracks 0.4.4.1.

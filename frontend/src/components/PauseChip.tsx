@@ -22,12 +22,13 @@ import { useTranslation } from 'react-i18next';
  */
 interface PauseChipProps {
   state: string | null | undefined;
+  pauseReason: string | null | undefined;
   pauseReasonLabel: string | null | undefined;
   pauseStartedAt: number | null | undefined;
   size?: 'sm' | 'xs';
 }
 
-export function PauseChip({ state, pauseReasonLabel, pauseStartedAt, size = 'sm' }: PauseChipProps) {
+export function PauseChip({ state, pauseReason, pauseReasonLabel, pauseStartedAt, size = 'sm' }: PauseChipProps) {
   const { t } = useTranslation();
   const [now, setNow] = useState(() => Date.now() / 1000);
 
@@ -48,7 +49,12 @@ export function PauseChip({ state, pauseReasonLabel, pauseStartedAt, size = 'sm'
         ? `${Math.floor(elapsed / 60)}m`
         : `${Math.floor(elapsed / 3600)}h ${Math.floor((elapsed % 3600) / 60)}m`;
 
-  const reason = pauseReasonLabel || t('printers.status.paused', 'Paused');
+  // An unclassified pause carries the literal "Unknown" backend label —
+  // useless copy. Fall back to the localised generic "Paused" word so the
+  // chip still reads naturally; a recognised cause spells itself out.
+  const isUnknown = pauseReason === 'unknown';
+  const genericLabel = t('printers.status.paused', 'Paused');
+  const reason = isUnknown ? genericLabel : pauseReasonLabel || genericLabel;
   const padding = size === 'xs' ? 'px-1.5 py-0.5' : 'px-2 py-0.5';
   const text = size === 'xs' ? 'text-[10px]' : 'text-xs';
   const icon = size === 'xs' ? 'w-2.5 h-2.5' : 'w-3 h-3';

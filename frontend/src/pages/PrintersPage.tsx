@@ -813,7 +813,7 @@ function getAmsLabel(amsId: number | string, trayCount: number): string {
 
 // isBambuLabSpool moved to ../utils/amsHelpers (upstream PR #1241).
 
-function CoverImage({ url, printName }: { url: string | null; printName?: string }) {
+function CoverImage({ url, printName, paused }: { url: string | null; printName?: string; paused?: boolean }) {
   const { t } = useTranslation();
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState(false);
@@ -836,7 +836,7 @@ function CoverImage({ url, printName }: { url: string | null; printName?: string
   return (
     <>
       <div
-        className={`w-20 h-20 flex-shrink-0 rounded-lg overflow-hidden bg-bambu-dark-tertiary flex items-center justify-center ${cacheBustedUrl && loaded ? 'cursor-pointer' : ''}`}
+        className={`relative w-20 h-20 flex-shrink-0 rounded-lg overflow-hidden bg-bambu-dark-tertiary flex items-center justify-center ${cacheBustedUrl && loaded ? 'cursor-pointer' : ''}`}
         onClick={() => cacheBustedUrl && loaded && setShowOverlay(true)}
       >
         {cacheBustedUrl && !error ? (
@@ -852,6 +852,15 @@ function CoverImage({ url, printName }: { url: string | null; printName?: string
           </>
         ) : (
           <Box className="w-8 h-8 text-bambu-gray" />
+        )}
+        {/* Paused overlay — a large translucent pause glyph dimming the
+            preview. The amber/dark treatment sits on the cover image
+            (theme-independent content), so it needs no light/dark variant;
+            ``status-warning`` is the same amber as the PauseChip. */}
+        {paused && cacheBustedUrl && !error && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/35 pointer-events-none">
+            <Pause className="w-12 h-12 text-status-warning drop-shadow-md opacity-50" fill="currentColor" />
+          </div>
         )}
       </div>
 
@@ -2407,11 +2416,20 @@ function PrinterCard({
             <div className="flex items-center gap-3 min-w-0 flex-1">
               {/* Printer Model Image (or print preview in compact mode) */}
               {cardSize === 1 && status?.cover_url && (status.state === 'RUNNING' || status.state === 'PAUSE') ? (
-                <img
-                  src={withStreamToken(status.cover_url)}
-                  alt={status.subtask_name || t('printers.printPreview')}
-                  className={`object-cover rounded-lg bg-bambu-dark flex-shrink-0 ${getImageSize()}`}
-                />
+                <div className={`relative flex-shrink-0 ${getImageSize()}`}>
+                  <img
+                    src={withStreamToken(status.cover_url)}
+                    alt={status.subtask_name || t('printers.printPreview')}
+                    className="object-cover rounded-lg bg-bambu-dark w-full h-full"
+                  />
+                  {/* Paused overlay — scaled-down twin of the expanded-card
+                      glyph; the compact preview is small but still readable. */}
+                  {status.state === 'PAUSE' && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-black/35 rounded-lg pointer-events-none">
+                      <Pause className="w-6 h-6 text-status-warning drop-shadow-md opacity-50" fill="currentColor" />
+                    </div>
+                  )}
+                </div>
               ) : (
                 <img
                   src={getPrinterImage(printer.model)}
@@ -2428,6 +2446,7 @@ function PrinterCard({
                       modes so the cause is immediately scannable across a grid. */}
                   <PauseChip
                     state={status?.state}
+                    pauseReason={status?.pause_reason}
                     pauseReasonLabel={status?.pause_reason_label}
                     pauseStartedAt={status?.pause_started_at}
                     size={viewMode === 'compact' ? 'xs' : 'sm'}
@@ -3022,6 +3041,7 @@ function PrinterCard({
                     <CoverImage
                       url={(status.state === 'RUNNING' || status.state === 'PAUSE') ? status.cover_url : null}
                       printName={(status.state === 'RUNNING' || status.state === 'PAUSE') ? (formatPrintName(status.subtask_name || status.current_print, status.gcode_file, t, activePlateLabel) || undefined) : undefined}
+                      paused={status.state === 'PAUSE'}
                     />
                     {/* Print Info */}
                     <div className="flex-1 min-w-0">

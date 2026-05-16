@@ -4050,6 +4050,37 @@ async def on_print_complete(printer_id: int, data: dict):
                 except Exception:
                     pass  # Don't fail if MQTT fails
 
+                # Power off the printer when the operator ticked "power off
+                # when done" on this queue item. Must precede the
+                # completed-item auto-cleanup below — that delete expires
+                # ``queue_item``, so ``auto_off_after`` has to be read first.
+                if queue_item.auto_off_after:
+                    result = await db.execute(select(SmartPlug).where(SmartPlug.printer_id == printer_id))
+                    plugs = list(result.scalars().all())
+                    enabled_plugs = [p for p in plugs if p.enabled]
+                    if enabled_plugs:
+                        logger.info("Auto-off requested for printer %s, waiting for cooldown...", printer_id)
+
+                        async def cooldown_and_poweroff(pid: int, plug_ids: list[int]):
+                            # Wait for nozzle to cool down
+                            await printer_manager.wait_for_cooldown(pid, target_temp=50.0, timeout=600)
+                            # Re-fetch plugs in new session and turn off each one
+                            async with async_session() as new_db:
+                                for plug_id in plug_ids:
+                                    result = await new_db.execute(select(SmartPlug).where(SmartPlug.id == plug_id))
+                                    p = result.scalar_one_or_none()
+                                    if p and p.enabled:
+                                        service = await smart_plug_manager.get_service_for_plug(p, new_db)
+                                        success = await service.turn_off(p)
+                                        if success:
+                                            logger.info("Powered off printer %s via smart plug '%s'", pid, p.name)
+                                        else:
+                                            logger.warning(
+                                                "Failed to power off printer %s via smart plug '%s'", pid, p.name
+                                            )
+
+                        asyncio.create_task(cooldown_and_poweroff(printer_id, [p.id for p in enabled_plugs]))
+
                 # Auto-cleanup: completed queue items now live on via their
                 # linked archive (counters re-computed from print_archives
                 # post-m019). Failed / cancelled / skipped stay put so the
@@ -4069,6 +4100,36 @@ async def on_print_complete(printer_id: int, data: dict):
                         _completed_archive_id,
                         _completed_queue_id,
                     )
+
+                # Queue may now be empty — fire the queue-completed
+                # notification. Must live in the ``if queue_item:`` branch:
+                # only a finished *queue* item can empty the queue (an
+                # external print never consumes a queue item, so the old
+                # placement in the ``else`` branch never fired here).
+                try:
+                    from sqlalchemy import func as sa_func
+
+                    count_result = await db.execute(
+                        select(sa_func.count(PrintQueueItem.id)).where(PrintQueueItem.status == "pending")
+                    )
+                    pending_count = count_result.scalar() or 0
+
+                    if pending_count == 0:
+                        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+                        completed_result = await db.execute(
+                            select(sa_func.count(PrintQueueItem.id)).where(
+                                PrintQueueItem.status.in_(["completed", "failed", "skipped"]),
+                                PrintQueueItem.completed_at >= today_start,
+                            )
+                        )
+                        completed_count = completed_result.scalar() or 1
+
+                        await notification_service.on_queue_completed(
+                            completed_count=completed_count,
+                            db=db,
+                        )
+                except Exception:
+                    pass  # Don't fail if notification fails
             else:
                 # No queue_item was printing → this was an external or
                 # direct-dispatch print.  Still flip queue.status back to
@@ -4112,60 +4173,6 @@ async def on_print_complete(printer_id: int, data: dict):
                     if lib_id is not None:
                         await _bump_library_file_usage(db, lib_id)
                         await db.commit()
-
-                # Check if queue is now empty and send notification
-                try:
-                    from sqlalchemy import func as sa_func
-
-                    count_result = await db.execute(
-                        select(sa_func.count(PrintQueueItem.id)).where(PrintQueueItem.status == "pending")
-                    )
-                    pending_count = count_result.scalar() or 0
-
-                    if pending_count == 0:
-                        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-                        completed_result = await db.execute(
-                            select(sa_func.count(PrintQueueItem.id)).where(
-                                PrintQueueItem.status.in_(["completed", "failed", "skipped"]),
-                                PrintQueueItem.completed_at >= today_start,
-                            )
-                        )
-                        completed_count = completed_result.scalar() or 1
-
-                        await notification_service.on_queue_completed(
-                            completed_count=completed_count,
-                            db=db,
-                        )
-                except Exception:
-                    pass  # Don't fail if notification fails
-
-                # Handle auto_off_after - power off printer if requested (after cooldown)
-                if queue_item.auto_off_after:
-                    result = await db.execute(select(SmartPlug).where(SmartPlug.printer_id == printer_id))
-                    plugs = list(result.scalars().all())
-                    enabled_plugs = [p for p in plugs if p.enabled]
-                    if enabled_plugs:
-                        logger.info("Auto-off requested for printer %s, waiting for cooldown...", printer_id)
-
-                        async def cooldown_and_poweroff(pid: int, plug_ids: list[int]):
-                            # Wait for nozzle to cool down
-                            await printer_manager.wait_for_cooldown(pid, target_temp=50.0, timeout=600)
-                            # Re-fetch plugs in new session and turn off each one
-                            async with async_session() as new_db:
-                                for plug_id in plug_ids:
-                                    result = await new_db.execute(select(SmartPlug).where(SmartPlug.id == plug_id))
-                                    p = result.scalar_one_or_none()
-                                    if p and p.enabled:
-                                        service = await smart_plug_manager.get_service_for_plug(p, new_db)
-                                        success = await service.turn_off(p)
-                                        if success:
-                                            logger.info("Powered off printer %s via smart plug '%s'", pid, p.name)
-                                        else:
-                                            logger.warning(
-                                                "Failed to power off printer %s via smart plug '%s'", pid, p.name
-                                            )
-
-                        asyncio.create_task(cooldown_and_poweroff(printer_id, [p.id for p in enabled_plugs]))
     except Exception as e:
         logging.getLogger(__name__).warning(f"Queue item update failed: {e}")
 
