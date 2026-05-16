@@ -215,6 +215,23 @@ export function PrintModal({
     queryFn: api.getPrinters,
   });
 
+  // Per-printer queues — needed to drop printers with a paused queue from
+  // the add-to-queue picker (a paused queue refuses new items; the backend
+  // would 409 anyway). Only fetched / used in add-to-queue mode.
+  const { data: queues } = useQuery({
+    queryKey: ['queues'],
+    queryFn: api.getQueues,
+    enabled: mode === 'add-to-queue',
+  });
+
+  const availablePrinters = useMemo(() => {
+    if (mode !== 'add-to-queue' || !printers) return printers;
+    const pausedPrinterIds = new Set(
+      (queues ?? []).filter((q) => q.is_paused).map((q) => q.printer_id),
+    );
+    return printers.filter((p) => !pausedPrinterIds.has(p.id));
+  }, [mode, printers, queues]);
+
   // Per-(user, printer-model) saved PrintModal toggles. Preference is keyed
   // by the model string; selecting any printer of the same model loads the
   // same row. In auto mode the model comes from the AutoMode panel directly.
@@ -961,7 +978,7 @@ export function PrintModal({
             {/* Printer selection with per-printer mapping - hidden when printer is pre-selected via props */}
             {!isAutoMode && !initialSelectedPrinterIds?.length && (
               <PrinterSelector
-                printers={printers || []}
+                printers={availablePrinters || []}
                 selectedPrinterIds={selectedPrinters}
                 onMultiSelect={setSelectedPrinters}
                 isLoading={loadingPrinters}
