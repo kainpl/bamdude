@@ -2020,11 +2020,25 @@ function ArchiveListRow({
             </button>
           )}
           {archive.thumbnail_path ? (
-            <img
-              src={api.getArchiveThumbnail(archive.id)}
-              alt=""
-              className="w-10 h-10 object-contain rounded"
-            />
+            <div className="relative group/thumb">
+              <img
+                src={api.getArchiveThumbnail(archive.id)}
+                alt=""
+                className="w-10 h-10 object-contain rounded"
+              />
+              {/* Hover preview — popup's top-left corner anchors at the
+                  thumbnail's bottom-right 1/3 point, then extends down +
+                  right. Mirrors the library list view. */}
+              <div className="absolute top-2/3 left-2/3 z-50 hidden group-hover/thumb:block">
+                <div className="w-48 h-48 rounded-lg bg-bambu-dark-secondary border border-bambu-dark-tertiary shadow-xl overflow-hidden">
+                  <img
+                    src={api.getArchiveThumbnail(archive.id)}
+                    alt={archive.print_name || archive.filename}
+                    className="w-full h-full object-contain"
+                  />
+                </div>
+              </div>
+            </div>
           ) : (
             <div className="w-10 h-10 bg-bambu-dark rounded flex items-center justify-center">
               <Image className="w-5 h-5 text-bambu-dark-tertiary" />
