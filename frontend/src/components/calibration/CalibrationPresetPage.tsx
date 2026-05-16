@@ -28,12 +28,14 @@ import type {
 } from '../../api/client';
 import {
   BundleStringDropdown,
-  matchesOwnerFilter,
-  type OwnerFilter,
   PresetDropdown,
   PresetSourceControl,
-  TIER_ORDER,
 } from '../preset-picker/PresetTripletPicker';
+import {
+  TIER_ORDER,
+  matchesOwnerFilter,
+  type OwnerFilter,
+} from '../preset-picker/presetPickerUtils';
 import { BedTypePicker } from '../preset-picker/BedTypePicker';
 import { SlicerPicker, type SlicerKind } from '../preset-picker/SlicerPicker';
 

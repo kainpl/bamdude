@@ -22,13 +22,15 @@ import type { PlateFilament } from '../types/plates';
 import { normalizeColorForCompare, colorsAreSimilar } from '../utils/amsHelpers';
 import {
   BundleStringDropdown,
-  matchesOwnerFilter,
-  type OwnerFilter,
   PresetDropdown,
   PresetSourceControl,
-  type Slot,
-  TIER_ORDER as SLICE_MODAL_TIER_ORDER,
 } from './preset-picker/PresetTripletPicker';
+import {
+  TIER_ORDER as SLICE_MODAL_TIER_ORDER,
+  matchesOwnerFilter,
+  type OwnerFilter,
+  type Slot,
+} from './preset-picker/presetPickerUtils';
 import { BedTypePicker } from './preset-picker/BedTypePicker';
 import { SlicerPicker, type SlicerKind } from './preset-picker/SlicerPicker';
 
