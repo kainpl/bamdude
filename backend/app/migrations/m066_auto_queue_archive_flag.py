@@ -12,10 +12,16 @@ Also repairs two pre-existing data issues. SQLite runs with
 ``foreign_keys=OFF`` so the ``ON DELETE`` clauses on these FKs never
 fired, and the deletion code historically relied on them:
 
-  * Backfill ``from_auto_queue=1`` for archives still traceable via a
-    surviving ``print_queue.source_auto_item_id``. Historical completed
-    auto-prints whose ``print_queue`` row was already auto-cleaned can't
-    be recovered — that link is gone — they stay ``0``.
+  * Backfill ``from_auto_queue=1`` for archives produced by an
+    auto-queue print, found via a surviving ``print_queue`` row whose
+    ``source_auto_item_id`` is set. Restricted to non-``pending`` rows:
+    ``print_queue.archive_id`` points at the *produced* archive only
+    from dispatch onward — on a still-``pending`` row it isn't that
+    archive yet, so a pending row would flag the wrong one. Completed
+    auto-prints are unreachable: their ``print_queue`` row — the only
+    place the auto-queue link ever lived — is deleted on completion, so
+    backfill is best-effort for history and the flag is authoritative
+    only for prints dispatched under the new code.
   * Delete orphaned ``auto_queue_items`` whose ``assigned_to_item_id``
     points at a ``print_queue`` row that no longer exists (the
     completed-print auto-cleanup deleted it while ``foreign_keys=OFF``).
@@ -47,16 +53,21 @@ async def upgrade(conn) -> None:
 
     await add_column(conn, "print_archives", "from_auto_queue BOOLEAN NOT NULL DEFAULT 0")
 
-    # Backfill: archives still reachable via a surviving print_queue row
-    # that carries source_auto_item_id (in-flight + failed/cancelled items
-    # that weren't auto-cleaned).
+    # Backfill: archives produced by an auto-queue print, found via a
+    # surviving print_queue row with source_auto_item_id. Non-pending
+    # only — print_queue.archive_id points at the produced archive just
+    # from dispatch onward; on a pending row it isn't that archive yet.
+    # Completed auto-prints lost their print_queue row (deleted on
+    # completion), so they're unreachable — backfill is best-effort.
     if await table_exists(conn, "print_queue"):
         await conn.execute(
             text(
                 "UPDATE print_archives SET from_auto_queue = 1 "
                 "WHERE id IN ("
                 "  SELECT archive_id FROM print_queue "
-                "  WHERE source_auto_item_id IS NOT NULL AND archive_id IS NOT NULL"
+                "  WHERE source_auto_item_id IS NOT NULL "
+                "  AND archive_id IS NOT NULL "
+                "  AND status <> 'pending'"
                 ")"
             )
         )
