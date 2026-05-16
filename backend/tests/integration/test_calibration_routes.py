@@ -12,6 +12,7 @@ from backend.app.models.calibration_audit import CalibrationAudit
 from backend.app.models.calibration_session import CalibrationSession
 from backend.app.models.filament_calibration import FilamentCalibration
 from backend.app.services.bambu_mqtt import ExtrusionCaliResult, PACalibHistoryEntry
+from backend.app.services.calibration_mode_registry import ModeState
 
 
 def _mock_client(*, online: bool = True, pa_auto: bool = True):
@@ -58,6 +59,10 @@ async def test_post_session_auto(async_client, printer_factory):
     with (
         patch("backend.app.api.routes.filament_calibration.printer_manager") as pm,
         patch("backend.app.services.calibration_service.printer_manager") as pm2,
+        # Mode-gating (DISABLED/VERIFICATION → 409) has its own coverage in
+        # test_calibration_mode_registry.py; here we exercise the auto
+        # session-start route mechanics regardless of the live registry.
+        patch("backend.app.services.calibration_service.get_mode_state", return_value=ModeState.PRODUCTION),
     ):
         pm.get_client.return_value = _mock_client()
         pm2.get_client.return_value = _mock_client()
@@ -114,6 +119,7 @@ async def test_post_session_concurrent_409(async_client, printer_factory):
     with (
         patch("backend.app.api.routes.filament_calibration.printer_manager") as pm,
         patch("backend.app.services.calibration_service.printer_manager") as pm2,
+        patch("backend.app.services.calibration_service.get_mode_state", return_value=ModeState.PRODUCTION),
     ):
         pm.get_client.return_value = _mock_client()
         pm2.get_client.return_value = _mock_client()
@@ -399,6 +405,7 @@ async def test_audit_row_written_on_start_session(async_client, printer_factory,
     with (
         patch("backend.app.api.routes.filament_calibration.printer_manager") as pm,
         patch("backend.app.services.calibration_service.printer_manager") as pm2,
+        patch("backend.app.services.calibration_service.get_mode_state", return_value=ModeState.PRODUCTION),
     ):
         pm.get_client.return_value = _mock_client()
         pm2.get_client.return_value = _mock_client()
