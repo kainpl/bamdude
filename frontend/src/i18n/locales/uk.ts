@@ -313,6 +313,7 @@ export default {
     noMacros: 'Немає макросів для цього принтера',
     calibration: {
       menuItem: 'Калібрування',
+      requiresIdle: 'Доступно лише коли принтер онлайн і не друкує',
       title: 'Калібрування принтера',
       start: 'Розпочати',
       bedLeveling: 'Калібрування столу',

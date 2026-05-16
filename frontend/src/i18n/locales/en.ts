@@ -305,6 +305,7 @@ export default {
     noMacros: 'No macros available for this printer',
     calibration: {
       menuItem: 'Calibration',
+      requiresIdle: 'Available only when the printer is online and not printing',
       title: 'Printer Calibration',
       start: 'Start',
       bedLeveling: 'Auto Bed Leveling',

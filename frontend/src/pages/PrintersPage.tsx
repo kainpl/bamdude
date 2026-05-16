@@ -1738,6 +1738,10 @@ function PrinterCard({
   // Plate-clear status pill + button (#939, ported from upstream b046c2ca).
   const requirePlateClear = printer.require_plate_clear;
   const isPrintingOrPaused = status?.state === 'RUNNING' || status?.state === 'PAUSE';
+  // Calibration flows physically drive the printer (run a print / send
+  // commands), so both calibration kebab entries are gated on the printer
+  // being online and not mid-print.
+  const calibrationAvailable = isConnected === true && !isPrintingOrPaused;
   const needsPlateClear = requirePlateClear && status?.awaiting_plate_clear === true;
   // Share the same queue query PrinterQueueWidget already uses — react-query
   // dedupes, zero extra network. We only need to know whether the widget will
@@ -2573,10 +2577,11 @@ function PrinterCard({
                   {/* Calibration & Macros */}
                   <button
                     className={`w-full px-4 py-2 text-left text-sm hover:bg-bambu-dark-tertiary flex items-center gap-2 ${
-                      !hasPermission('printers:control') ? 'opacity-50 cursor-not-allowed' : ''
+                      !hasPermission('printers:control') || !calibrationAvailable ? 'opacity-50 cursor-not-allowed' : ''
                     }`}
+                    title={calibrationAvailable ? undefined : t('printers.calibration.requiresIdle')}
                     onClick={() => {
-                      if (!hasPermission('printers:control')) return;
+                      if (!hasPermission('printers:control') || !calibrationAvailable) return;
                       setShowCalibration(true);
                       setShowMenu(false);
                     }}
@@ -2601,10 +2606,11 @@ function PrinterCard({
                     <>
                       <button
                         className={`w-full px-4 py-2 text-left text-sm hover:bg-bambu-dark-tertiary flex items-center gap-2 ${
-                          !hasPermission('printers:update') ? 'opacity-50 cursor-not-allowed' : ''
+                          !hasPermission('printers:update') || !calibrationAvailable ? 'opacity-50 cursor-not-allowed' : ''
                         }`}
+                        title={calibrationAvailable ? undefined : t('printers.calibration.requiresIdle')}
                         onClick={() => {
-                          if (!hasPermission('printers:update')) return;
+                          if (!hasPermission('printers:update') || !calibrationAvailable) return;
                           setFilamentCaliOpen(true);
                           setShowMenu(false);
                         }}
