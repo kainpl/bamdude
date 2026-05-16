@@ -8,6 +8,10 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.5b3] - 2026-05-16
+
+Third beta of the 0.4.5 cycle. The Filament Calibration wizard's Wave 1/2 lands — PA Tower, PA Pattern and PA Line now run end-to-end as real calibration prints (Python ports of the BambuStudio generators), with per-mode preset overrides applied through the slicer sidecar. Plus a K-profile data-layer pass (external-spool pre-print bind, in-place sync, BS-parity edit/delete, hard-prune of printer-side deletes), per-printer queue pause that works mid-print, an auto-queue lifecycle + stats cleanup, and honest client identification on every Bambu Lab / MakerWorld call. Image: `ghcr.io/kainpl/bamdude:0.4.5b3` / `kainpl/bamdude:0.4.5b3`. Pin the exact tag — `:latest` still tracks 0.4.4.1.
+
 ### Added
 
 - **Add-to-queue dialog hides printers whose queue is paused.** Paired with the queue pause feature — a paused queue refuses new items, so the "Add to queue" modal's printer picker now drops any printer whose queue is paused (the backend would `409` the add anyway). Only the add-to-queue mode filters; reprint / edit-queue-item are untouched.
