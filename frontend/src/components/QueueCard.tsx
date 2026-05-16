@@ -154,7 +154,7 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
 
   // Pause/Resume queue mutation
   const toggleQueueMutation = useMutation({
-    mutationFn: (newStatus: 'idle' | 'paused') => api.updateQueue(queue.id, { status: newStatus }),
+    mutationFn: (data: { status?: 'idle' | 'paused'; is_paused?: boolean }) => api.updateQueue(queue.id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['queues'] });
       queryClient.invalidateQueries({ queryKey: ['queue', queue.printer_id] });
@@ -428,12 +428,24 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
   const currentPrintName = status?.subtask_name || status?.current_print;
   const currentThumbnail = status?.cover_url;
 
+  // A queue is "halted" (dispatching nothing) for two distinct reasons:
+  // the operator paused it (is_paused), or it auto-paused / faulted
+  // (status paused/error). The single Pause/Resume control surfaces both.
+  const queueHalted = queue.is_paused || queue.status === 'paused' || queue.status === 'error';
+
   const handlePauseResume = () => {
     if (!hasPermission('queue:update_all')) return;
-    if (queue.status === 'idle') {
-      toggleQueueMutation.mutate('paused');
-    } else if (queue.status === 'paused' || queue.status === 'error') {
-      toggleQueueMutation.mutate('idle');
+    if (queueHalted) {
+      // Resume: clear the operator pause; if the queue also carries a
+      // status-level paused/error state, reset that to idle too.
+      toggleQueueMutation.mutate(
+        queue.status === 'paused' || queue.status === 'error'
+          ? { is_paused: false, status: 'idle' }
+          : { is_paused: false },
+      );
+    } else {
+      // Pause — allowed in any status, including while printing.
+      toggleQueueMutation.mutate({ is_paused: true });
     }
   };
 
@@ -463,26 +475,29 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
           </h3>
           <div className="flex items-center gap-2 flex-shrink-0">
             <StatusBadge status={queue.status} t={t} />
-            {(queue.status === 'idle' || queue.status === 'paused' || queue.status === 'error') && (
-              <button
-                onClick={handlePauseResume}
-                disabled={toggleQueueMutation.isPending || !hasPermission('queue:update_all')}
-                className="p-1 rounded hover:bg-bambu-dark-tertiary transition-colors disabled:opacity-50"
-                title={
-                  queue.status === 'idle'
-                    ? t('queueCard.pauseQueue')
-                    : t('queueCard.resumeQueue')
-                }
-              >
-                {toggleQueueMutation.isPending ? (
-                  <Loader2 className="w-4 h-4 text-bambu-gray animate-spin" />
-                ) : queue.status === 'idle' ? (
-                  <Pause className="w-4 h-4 text-bambu-gray" />
-                ) : (
-                  <Play className="w-4 h-4 text-bambu-gray" />
-                )}
-              </button>
+            {queue.is_paused && (
+              <span className="px-1.5 py-0.5 rounded text-[10px] leading-tight bg-yellow-400/20 text-yellow-400 flex items-center gap-1">
+                <Pause className="w-2.5 h-2.5" />
+                {t('queueCard.pausedPill')}
+              </span>
             )}
+            {/* Queue pause/resume — available in every state, including
+                while a print is running. Pausing leaves the running print
+                alone; only the next dispatch + new-item adds are gated. */}
+            <button
+              onClick={handlePauseResume}
+              disabled={toggleQueueMutation.isPending || !hasPermission('queue:update_all')}
+              className="p-1 rounded hover:bg-bambu-dark-tertiary transition-colors disabled:opacity-50"
+              title={queueHalted ? t('queueCard.resumeQueue') : t('queueCard.pauseQueue')}
+            >
+              {toggleQueueMutation.isPending ? (
+                <Loader2 className="w-4 h-4 text-bambu-gray animate-spin" />
+              ) : queueHalted ? (
+                <Play className="w-4 h-4 text-bambu-gray" />
+              ) : (
+                <Pause className="w-4 h-4 text-bambu-gray" />
+              )}
+            </button>
           </div>
         </div>
 
@@ -494,7 +509,7 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
             <button
               onClick={() => {
                 if (hasPermission('queue:update_all')) {
-                  toggleQueueMutation.mutate('idle');
+                  toggleQueueMutation.mutate({ status: 'idle' });
                 }
               }}
               disabled={toggleQueueMutation.isPending || !hasPermission('queue:update_all')}

@@ -154,6 +154,8 @@ async def find_eligible_printer(
         .where(func.lower(Printer.model) == normalized_model.lower())
         .where(Printer.is_active.is_(True))
         .where(PrinterQueue.auto_distribute_eligible.is_(True))
+        # An operator-paused queue refuses new work — auto-queue included.
+        .where(PrinterQueue.is_paused.is_(False))
     )
     if item.target_location:
         query = query.where(Printer.location == item.target_location)

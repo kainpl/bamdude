@@ -14,6 +14,7 @@ class PrinterQueueResponse(BaseModel):
     printer_model: str | None = None
     printer_location: str | None = None
     status: str  # idle, printing, paused, error
+    is_paused: bool = False  # operator-controlled queue pause, orthogonal to status
     last_activity_at: datetime | None
     current_item_id: int | None
     pending_count: int
@@ -32,3 +33,4 @@ class PrinterQueueUpdate(BaseModel):
     """Update schema for a printer queue (pause/resume)."""
 
     status: str | None = None  # idle, paused
+    is_paused: bool | None = None  # operator queue pause — allowed in any status

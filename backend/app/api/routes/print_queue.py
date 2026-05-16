@@ -334,6 +334,10 @@ async def add_to_queue(
     if not queue:
         raise HTTPException(400, "Queue not found")
 
+    # A paused queue refuses new items — pause means "queue closed".
+    if queue.is_paused:
+        raise HTTPException(409, "Queue is paused — resume it before adding items")
+
     # Validate archive exists (if provided) and get it for filament extraction
     archive = None
     if data.archive_id:

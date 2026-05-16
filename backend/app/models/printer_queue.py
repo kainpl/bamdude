@@ -16,8 +16,17 @@ class PrinterQueue(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     printer_id: Mapped[int] = mapped_column(Integer, ForeignKey("printers.id", ondelete="CASCADE"), unique=True)
 
-    # Queue status: idle, printing, paused, error
+    # Queue status: idle, printing, paused, error — tracks what the printer
+    # is doing; the scheduler reads status='printing' as the authoritative
+    # busy marker.
     status: Mapped[str] = mapped_column(String(20), default="idle")
+
+    # Operator-controlled pause, orthogonal to ``status``. When True the
+    # scheduler dispatches nothing from this queue and the auto-queue won't
+    # route new prints here; a print already running keeps going, and new
+    # items can't be added. A queue can be ``status='printing'`` and
+    # ``is_paused=True`` simultaneously (pause taken mid-print).
+    is_paused: Mapped[bool] = mapped_column(default=False, nullable=False)
 
     # Activity tracking
     last_activity_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

@@ -29,6 +29,7 @@ def _to_response(queue: PrinterQueue, terminal_counts: dict[str, int]) -> Printe
         printer_model=queue.printer.model if queue.printer else None,
         printer_location=queue.printer.location if queue.printer else None,
         status=queue.status,
+        is_paused=queue.is_paused,
         last_activity_at=queue.last_activity_at,
         current_item_id=queue.current_item_id,
         pending_count=queue.pending_count,
@@ -140,6 +141,13 @@ async def update_queue(
             raise HTTPException(400, "Cannot pause queue while printing. Stop the print first.")
         queue.status = data.status
         queue.current_item_id = None
+        queue.last_activity_at = datetime.now(timezone.utc)
+
+    # is_paused is orthogonal to status: allowed in any state, including
+    # while the queue is 'printing'. The running print is untouched — only
+    # the next dispatch (and new-item adds) are gated.
+    if data.is_paused is not None:
+        queue.is_paused = data.is_paused
         queue.last_activity_at = datetime.now(timezone.utc)
 
     await db.commit()

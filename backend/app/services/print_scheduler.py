@@ -217,6 +217,14 @@ class PrintScheduler:
                     skip_reasons[f"queue_{item.queue.status}"] = skip_reasons.get(f"queue_{item.queue.status}", 0) + 1
                     continue
 
+                # Skip items in operator-paused queues. is_paused is
+                # orthogonal to status — a queue can be 'printing' and
+                # paused at once: the running print finishes, the next
+                # item just doesn't dispatch until the queue is resumed.
+                if item.queue and item.queue.is_paused:
+                    skip_reasons["queue_is_paused"] = skip_reasons.get("queue_is_paused", 0) + 1
+                    continue
+
                 # Get printer_id from queue
                 printer_id = item.queue.printer_id if item.queue else None
                 if not printer_id:

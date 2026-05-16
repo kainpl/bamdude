@@ -2128,6 +2128,7 @@ export interface PrinterQueue {
   printer_model?: string | null;
   printer_location?: string | null;
   status: 'idle' | 'printing' | 'paused' | 'error';
+  is_paused: boolean;
   last_activity_at: string | null;
   current_item_id: number | null;
   pending_count: number;
@@ -5403,7 +5404,7 @@ export const api = {
   // Printer Queues (queue-level operations)
   getQueues: () =>
     request<PrinterQueue[]>('/queues/'),
-  updateQueue: (queueId: number, data: { status: 'idle' | 'paused' }) =>
+  updateQueue: (queueId: number, data: { status?: 'idle' | 'paused'; is_paused?: boolean }) =>
     request<PrinterQueue>(`/queues/${queueId}`, {
       method: 'PATCH',
       body: JSON.stringify(data),
