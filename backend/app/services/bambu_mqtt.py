@@ -23,6 +23,45 @@ import paho.mqtt.client as mqtt
 
 logger = logging.getLogger(__name__)
 
+
+def _install_paho_suback_guard() -> None:
+    """Guard paho's SUBACK handler against malformed (sub-2-byte) packets.
+
+    A Bambu printer's broker occasionally delivers a truncated SUBACK whose
+    body is shorter than the 2-byte packet identifier. paho-mqtt's
+    ``_handle_suback`` then builds a ``struct`` format with a negative count
+    (``f"!H{len-2}s"`` → ``"!H-1s"``) and ``struct.unpack`` raises
+    ``struct.error: bad char in struct format`` on paho's network thread —
+    killing that thread until BamDude's stale-connection watchdog reconnects
+    ~70 s later. This wrapper drops the malformed SUBACK instead (equivalent
+    to "no SUBACK arrived", which the subscribe path already tolerates) so
+    the paho loop thread survives. Idempotent; best-effort — a paho API
+    change just leaves the original behaviour in place.
+    """
+    try:
+        original = mqtt.Client._handle_suback
+    except AttributeError:
+        return
+    if getattr(original, "_bamdude_guarded", False):
+        return
+
+    def _guarded_handle_suback(self):  # type: ignore[no-untyped-def]
+        packet = self._in_packet.get("packet", b"")
+        if len(packet) < 2:
+            logger.warning(
+                "Dropping malformed SUBACK (%d-byte body, need >=2) — paho would "
+                "otherwise crash its network thread on this packet",
+                len(packet),
+            )
+            return None
+        return original(self)
+
+    _guarded_handle_suback._bamdude_guarded = True  # type: ignore[attr-defined]
+    mqtt.Client._handle_suback = _guarded_handle_suback
+
+
+_install_paho_suback_guard()
+
 # AMS module name prefixes used in get_version responses.
 # The numeric suffix after '/' is the AMS unit ID as reported in push_status.
 #   "ams/<id>"  – original AMS (X1C, X1E, P1S, …)
