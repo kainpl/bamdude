@@ -205,6 +205,92 @@ def apply_pa_line_printer_overrides(printer_json: str) -> str:
     return json.dumps(data)
 
 
+def apply_vol_speed_process_overrides(process_json: str) -> str:
+    """Patch a process-preset JSON with Volumetric Speed Tower hardcodes.
+
+    Process-level subset of BS/Orca ``calib_max_vol_speed`` — see
+    ``temp/vol-speed-calibration-bs-orca-analysis.md`` §4.1. The
+    object-level overrides (wall_loops, shells, brim, line width, layer
+    height, …) are applied at the per-object metadata layer by the 3MF
+    writer; only the process-preset keys need re-applying here so the
+    sidecar's ``--load-settings`` doesn't clobber them.
+    """
+    try:
+        data = json.loads(process_json)
+    except (ValueError, TypeError):
+        logger.warning("apply_vol_speed_process_overrides: input not valid JSON; passing through")
+        return process_json
+    if not isinstance(data, dict):
+        return process_json
+
+    _set(data, "spiral_mode", "1")
+    _set(data, "timelapse_type", "0")  # tlTraditional
+    _set(data, "max_volumetric_extrusion_rate_slope", "0")
+    _set(data, "enable_wrapping_detection", "0")
+    # Spiral/vase mode is incompatible with supports — BS's GUI cascade
+    # force-disables ``enable_support`` when spiral_mode flips on; the CLI
+    # path doesn't run that cascade, so the operator's preset keeps
+    # supports on and the slicer rejects with exit -18. Disable explicitly.
+    _set(data, "enable_support", "0")
+    return json.dumps(data)
+
+
+def apply_vol_speed_filament_overrides(filament_json: str) -> str:
+    """Patch a filament-preset JSON with Volumetric Speed Tower hardcodes.
+
+    ``filament_max_volumetric_speed=200`` inflates the cap so it never
+    clips the sweep; ``slow_down_layer_time=0`` kills the min-layer-time
+    slowdown that would otherwise mask the speed ramp. Both are
+    per-filament list options — keep the ``[str]`` shape.
+    """
+    try:
+        data = json.loads(filament_json)
+    except (ValueError, TypeError):
+        return filament_json
+    if not isinstance(data, dict):
+        return filament_json
+
+    _set(data, "filament_max_volumetric_speed", ["200"])
+    _set(data, "slow_down_layer_time", ["0"])
+    return json.dumps(data)
+
+
+def apply_vol_speed_printer_overrides(printer_json: str, *, nozzle_diameter: float) -> str:
+    """Patch a printer-preset JSON with Volumetric Speed Tower hardcodes.
+
+    ``resonance_avoidance=0`` (Orca). ``max_layer_height`` is bumped up
+    to the mode's layer height (``nozzle*0.8``) when smaller — verbatim
+    from BS ``Plater.cpp:17623-17627`` (the mode's layer height would
+    otherwise be an illegal value the slicer rejects).
+    """
+    try:
+        data = json.loads(printer_json)
+    except (ValueError, TypeError):
+        return printer_json
+    if not isinstance(data, dict):
+        return printer_json
+
+    layer_height = nozzle_diameter * 0.8
+    mlh = data.get("max_layer_height")
+    if isinstance(mlh, list) and mlh:
+        # Bump each per-extruder entry to >= the mode's layer height.
+        bumped: list[str] = []
+        for v in mlh:
+            try:
+                bumped.append(f"{max(float(v), layer_height):.4f}")
+            except (ValueError, TypeError):
+                bumped.append(f"{layer_height:.4f}")
+        _set(data, "max_layer_height", bumped)
+    else:
+        # Cloud-delta presets usually don't carry ``max_layer_height``
+        # (it's inherited from the base printer), so a bump-if-present
+        # check would silently no-op and leave the mode's tall layer
+        # height (nozzle*0.8) illegal. Set it outright.
+        _set(data, "max_layer_height", [f"{layer_height:.4f}"])
+    _set(data, "resonance_avoidance", "0")
+    return json.dumps(data)
+
+
 def apply_pa_tower_process_overrides(process_json: str) -> str:
     """Patch a process-preset JSON with PA Tower hardcodes
     (`Plater.cpp:12812`). `enable_wrapping_detection=0` is the only

@@ -236,15 +236,12 @@ export function CalibrationPresetPage({
     [presetsQuery.data, printerModel],
   );
 
+  // Bundles are hidden from the calibration preset picker for now: the
+  // source stays 'manual' and PresetSourceControl receives an empty bundle
+  // list, so the Manual/Bundle toggle never renders. Default owner filter
+  // is 'custom' ("My presets"), matching the model-slicing picker.
   const [presetSource, setPresetSource] = useState<PresetSource>('manual');
-  const [ownerFilter, setOwnerFilter] = useState<OwnerFilter>('all');
-
-  const [didInitMode, setDidInitMode] = useState(false);
-  useEffect(() => {
-    if (didInitMode || bundlesQuery.isPending) return;
-    if (bundles.length > 0) setPresetSource('bundle');
-    setDidInitMode(true);
-  }, [didInitMode, bundlesQuery.isPending, bundles.length]);
+  const [ownerFilter, setOwnerFilter] = useState<OwnerFilter>('custom');
 
   const [printerRef, setPrinterRef] = useState<PresetRef | null>(null);
   const [processRef, setProcessRef] = useState<PresetRef | null>(null);
@@ -320,6 +317,14 @@ export function CalibrationPresetPage({
   const [paLineEnd, setPaLineEnd] = useState<number>(0.08);
   const [paLineStep, setPaLineStep] = useState<number>(0.005);
   const [paLinePrintNumbers, setPaLinePrintNumbers] = useState<boolean>(true);
+
+  // Volumetric Speed Tower — start/end/step in mm³/s. Defaults mirror
+  // the verification page (5 → 20 step 0.5, the Orca-desktop reference
+  // sweep). The tower height is derived server-side as (end−start+1)/step.
+  const isVolSpeed = caliMode === 'vol_speed_tower';
+  const [volStart, setVolStart] = useState<number>(5);
+  const [volEnd, setVolEnd] = useState<number>(20);
+  const [volStep, setVolStep] = useState<number>(0.5);
 
   const statusQuery = useQuery<PrinterStatus>({
     queryKey: ['printerStatus', printerId],
@@ -584,6 +589,14 @@ export function CalibrationPresetPage({
         nozzle_diameter: nozzleDia,
       };
     }
+    if (isVolSpeed) {
+      extras.spec = {
+        start: volStart,
+        end: volEnd,
+        step: volStep,
+        nozzle_diameter: nozzleDia,
+      };
+    }
     if (presetSource === 'bundle' && selectedBundle && bundlePrinterName && bundleProcessName && bundleFilamentName) {
       extras.bundle = {
         bundle_id: selectedBundle.id,
@@ -703,7 +716,7 @@ export function CalibrationPresetPage({
             onModeChange={setPresetSource}
             ownerFilter={ownerFilter}
             onOwnerFilterChange={setOwnerFilter}
-            bundles={bundles}
+            bundles={[]}
             selectedBundleId={bundleId}
             onBundleChange={setBundleId}
           />
@@ -921,6 +934,52 @@ export function CalibrationPresetPage({
                 />
                 {t('filamentCali.preset.paLinePrintNumbers')}
               </label>
+            </div>
+          )}
+
+          {isVolSpeed && (
+            <div className="space-y-2 border border-bambu-dark-tertiary rounded p-3">
+              <h4 className="text-sm font-medium text-bambu-gray">
+                {t('filamentCali.verifyDownload.specHeading')}
+              </h4>
+              <div className="grid grid-cols-3 gap-2">
+                <label className="block">
+                  <span className="text-xs text-bambu-gray">
+                    {t('filamentCali.verifyDownload.startVol')}
+                  </span>
+                  <input
+                    type="number"
+                    step="0.5"
+                    value={volStart}
+                    onChange={(e) => setVolStart(parseFloat(e.target.value) || 0)}
+                    className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs text-bambu-gray">
+                    {t('filamentCali.verifyDownload.endVol')}
+                  </span>
+                  <input
+                    type="number"
+                    step="0.5"
+                    value={volEnd}
+                    onChange={(e) => setVolEnd(parseFloat(e.target.value) || 0)}
+                    className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs text-bambu-gray">
+                    {t('filamentCali.verifyDownload.stepVol')}
+                  </span>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={volStep}
+                    onChange={(e) => setVolStep(parseFloat(e.target.value) || 0)}
+                    className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
+                  />
+                </label>
+              </div>
             </div>
           )}
         </section>

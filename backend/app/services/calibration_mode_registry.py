@@ -76,7 +76,17 @@ MODE_STATE: dict[CaliMode, ModeState] = {
     CaliMode.TEMP_TOWER: ModeState.DISABLED,
     CaliMode.RETRACTION_TOWER: ModeState.DISABLED,
     CaliMode.VFA_TOWER: ModeState.DISABLED,
-    CaliMode.VOL_SPEED_TOWER: ModeState.DISABLED,
+    # Phase 6 — PRODUCTION (2026-05-17). The builder bakes the tower
+    # geometry + 4-level overrides; the per-layer outer-wall speed ramp
+    # is rewritten into the sliced g-code by calib_vol_speed_patcher (the
+    # sidecar can't apply it — Calib_Vol_speed_Tower is a GUI-only Print
+    # flag, never carried in the 3MF; a vanilla CLI slice yields a flat
+    # 200 mm/s tower). Verification signed off: re-sliced output (Orca +
+    # BS backends) patched to ramp law 26.05+2.604·z mm/s vs Orca-desktop
+    # reference 26.03+2.604·z — match within integer-mm/s rounding noise.
+    # BOTH slice paths patch — /slice-only and the start_calibration
+    # dispatch path (calibration_service.py) — so dispatched towers ramp.
+    CaliMode.VOL_SPEED_TOWER: ModeState.PRODUCTION,
     CaliMode.FLOW_RATE: ModeState.DISABLED,
     CaliMode.AUTO_PA_LINE: ModeState.DISABLED,
     # Phase 9 — PRODUCTION (2026-05-15). Operator verified the slice in

@@ -49,6 +49,11 @@ _EXPECTED_NON_DISABLED: dict[CaliMode, ModeState] = {
     # OrcaSlicer-verified output (centring on real bed bbox via
     # printer-model fallback + cube anchored to glyph-tab corner).
     CaliMode.PA_LINE: ModeState.PRODUCTION,
+    # Phase 6 (Vol Speed Tower) — promoted to PRODUCTION 2026-05-17.
+    # Geometry + 4-level overrides bake into the 3MF; the per-layer
+    # outer-wall speed ramp is applied post-slice by
+    # calib_vol_speed_patcher on both the dispatch and /slice-only paths.
+    CaliMode.VOL_SPEED_TOWER: ModeState.PRODUCTION,
 }
 
 

@@ -550,18 +550,19 @@ async def slice_calibration_for_verification(
     if body.slicer and "slicer" not in spec_with_bed:
         spec_with_bed["slicer"] = body.slicer
 
-    # PA Line needs the actual printer's bed bbox to centre its
-    # pattern (absolute machine coords) on the operator's plate. The
-    # builder defaults to 256×256 which leaves an A1 mini (180×180)
-    # print stuck in the upper-right quadrant. Resolve the printer
-    # preset once here so we can pass the bbox in via spec; we re-use
-    # the same JSON for the sidecar call below to avoid a double
+    # PA Line and Vol Speed Tower both need the printer's real bed
+    # size. PA Line centres its pattern on the plate (absolute machine
+    # coords); Vol Speed X-fits the tower to bed width. Both builders
+    # default to 256 mm — fine for X1/A1/P1S, but on an A1 mini
+    # (180 mm) PA Line ends up in the upper-right quadrant and the Vol
+    # Speed tower slices ~246 mm wide and overflows the plate. Resolve
+    # the printer preset once here and pass the bbox via spec; we
+    # re-use the same JSON for the sidecar call below to avoid a double
     # round-trip. Bundle path: the printer JSON lives inside the
     # sidecar's bundle and isn't easily reachable without a separate
-    # API call — falls back to the builder's 256 default, which is
-    # right for X1/A1/P1S/H2D but off-centre for A1 mini.
+    # API call — falls back to the builder's 256 default.
     pre_resolved_printer_json: str | None = None
-    if body.cali_mode == CaliMode.PA_LINE:
+    if body.cali_mode in (CaliMode.PA_LINE, CaliMode.VOL_SPEED_TOWER):
         from backend.app.models.printer import Printer as PrinterModel
         from backend.app.services.calib_pa_line import (
             bed_bbox_for_model,
@@ -607,6 +608,11 @@ async def slice_calibration_for_verification(
         raise HTTPException(503, "No slicer sidecar configured")
 
     model_filename = f"calibration_{body.cali_mode.value}.3mf"
+    # Hoisted out of the manual branch so the Vol-Speed patcher can read
+    # it regardless of which slice path (manual / bundle) ran.
+    nozzle_diameter: float = float(
+        (body.spec or {}).get("nozzle_diameter", 0.4) if isinstance(body.spec, dict) else 0.4
+    )
     try:
         async with SlicerApiService(base_url=api_url) as svc:
             if body.bundle is not None:
@@ -643,11 +649,11 @@ async def slice_calibration_for_verification(
                     apply_pa_pattern_process_overrides,
                     apply_pa_tower_filament_overrides,
                     apply_pa_tower_process_overrides,
+                    apply_vol_speed_filament_overrides,
+                    apply_vol_speed_printer_overrides,
+                    apply_vol_speed_process_overrides,
                 )
 
-                nozzle_diameter = float(
-                    (body.spec or {}).get("nozzle_diameter", 0.4) if isinstance(body.spec, dict) else 0.4
-                )
                 if body.cali_mode == CaliMode.PA_PATTERN:
                     process_json = apply_pa_pattern_process_overrides(process_json, nozzle_diameter=nozzle_diameter)
                     printer_json = apply_pa_pattern_printer_overrides(printer_json)
@@ -659,6 +665,10 @@ async def slice_calibration_for_verification(
                     process_json = apply_pa_line_process_overrides(process_json, nozzle_diameter=nozzle_diameter)
                     printer_json = apply_pa_line_printer_overrides(printer_json)
                     filament_jsons = [apply_pa_line_filament_overrides(f) for f in filament_jsons]
+                elif body.cali_mode == CaliMode.VOL_SPEED_TOWER:
+                    process_json = apply_vol_speed_process_overrides(process_json)
+                    printer_json = apply_vol_speed_printer_overrides(printer_json, nozzle_diameter=nozzle_diameter)
+                    filament_jsons = [apply_vol_speed_filament_overrides(f) for f in filament_jsons]
 
                 # Log compat-relevant fields from each JSON so when BS rejects
                 # the combo we can see what the resolver actually produced
@@ -696,6 +706,27 @@ async def slice_calibration_for_verification(
         logger.error("slice_only: sidecar error at %s (mode=%s): %s", api_url, body.cali_mode.value, exc)
         raise HTTPException(502, str(exc)) from exc
 
+    # Vol Speed: the sidecar can't apply the per-layer feedrate ramp
+    # (Calib_Vol_speed_Tower is a GUI-only Print flag, never carried in
+    # the 3MF), so rewrite each layer's outer-wall feedrate ourselves —
+    # see calib_vol_speed_patcher. The patcher reads the slicer-resolved
+    # filament_flow_ratio straight from the sliced 3MF.
+    sliced_content = result.content
+    if body.cali_mode == CaliMode.VOL_SPEED_TOWER:
+        from backend.app.services.calib_vol_speed_patcher import patch_vol_speed_ramp
+
+        _spec = body.spec if isinstance(body.spec, dict) else {}
+        try:
+            sliced_content = patch_vol_speed_ramp(
+                sliced_content,
+                start=float(_spec["start"]),
+                step=float(_spec["step"]),
+                nozzle_diameter=nozzle_diameter,
+            )
+        except (KeyError, ValueError) as exc:
+            logger.error("slice_only: vol_speed ramp patch failed (mode=%s): %s", body.cali_mode.value, exc)
+            raise HTTPException(500, f"Vol Speed ramp patch failed: {exc}") from exc
+
     # Replace the slicer-generated placeholder-cube preview with our
     # branded "PA Test" thumbnail before the operator downloads it (so
     # the BS / Orca preview pane shows "PA Test" instead of a 3 mm
@@ -703,7 +734,7 @@ async def slice_calibration_for_verification(
     # before persisting to LibraryFile.
     from backend.app.services.calib_thumbnail import apply_calibration_thumbnail
 
-    patched_content = apply_calibration_thumbnail(result.content, body.cali_mode)
+    patched_content = apply_calibration_thumbnail(sliced_content, body.cali_mode)
 
     await _audit(
         db,

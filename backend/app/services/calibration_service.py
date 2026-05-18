@@ -159,6 +159,16 @@ def resolve_asset(cali_mode: CaliMode, *, extruder_count: int = 1, pass_n: int =
         fname = "flowrate-test-pass2.3mf" if pass_n == 2 else "flowrate-test-pass1.3mf"
         return CalibAsset(ASSET_ROOT / "filament_flow" / fname, "3mf")
 
+    if cali_mode == CaliMode.VOL_SPEED_TOWER:
+        # Prefer a pre-converted STL when one is shipped — trimesh's STEP
+        # loader needs the optional ``cascadio`` CAD backend, which slim
+        # deployments don't have. The STEP stays as the source-of-truth
+        # fallback (used when the STL hasn't been generated).
+        stl_path = ASSET_ROOT / "volumetric_speed" / "SpeedTestStructure.stl"
+        if stl_path.exists():
+            return CalibAsset(stl_path, "stl")
+        return CalibAsset(ASSET_ROOT / "volumetric_speed" / "SpeedTestStructure.step", "step")
+
     mapping = _MODE_TO_ASSET.get(cali_mode)
     if mapping is None:
         raise ValueError(f"No asset mapping for cali_mode: {cali_mode}")
@@ -414,16 +424,17 @@ class CalibrationService:
             from backend.app.services.calib_3mf_builder import build_calibration_3mf
             from backend.app.services.preset_resolver import resolve_preset_ref
 
-            # PA Line wants the printer's real bed bbox so the pattern
-            # centres on the operator's actual plate. Resolve the
-            # printer preset once here and pass the bbox via spec; the
-            # JSON is reused below so the sidecar block doesn't pay for
-            # a second resolve. Bundle path can't see preset JSON until
-            # the sidecar materialises it, so it falls back to the
-            # builder's 256 default — fine for X1/A1/P1S/H2D, off-centre
-            # for A1 mini until bundle introspection is added.
+            # PA Line and Vol Speed Tower both need the printer's real
+            # bed size — PA Line centres its pattern on the plate, Vol
+            # Speed X-fits the tower to bed width. Resolve the printer
+            # preset once here and pass the bbox via spec; the JSON is
+            # reused below so the sidecar block doesn't pay for a second
+            # resolve. Bundle path can't see preset JSON until the
+            # sidecar materialises it, so it falls back to the builder's
+            # 256 default — fine for X1/A1/P1S, overflows an A1 mini
+            # (180 mm) bed until bundle introspection is added.
             pre_resolved_printer_json: str | None = None
-            if cali_mode == CaliMode.PA_LINE:
+            if cali_mode in (CaliMode.PA_LINE, CaliMode.VOL_SPEED_TOWER):
                 from backend.app.models.printer import Printer as PrinterModel
                 from backend.app.services.calib_pa_line import (
                     bed_bbox_for_model,
@@ -511,6 +522,9 @@ class CalibrationService:
                             apply_pa_pattern_process_overrides,
                             apply_pa_tower_filament_overrides,
                             apply_pa_tower_process_overrides,
+                            apply_vol_speed_filament_overrides,
+                            apply_vol_speed_printer_overrides,
+                            apply_vol_speed_process_overrides,
                         )
 
                         if cali_mode == CaliMode.PA_PATTERN:
@@ -528,6 +542,12 @@ class CalibrationService:
                             )
                             printer_json = apply_pa_line_printer_overrides(printer_json)
                             filament_jsons = [apply_pa_line_filament_overrides(f) for f in filament_jsons]
+                        elif cali_mode == CaliMode.VOL_SPEED_TOWER:
+                            process_json = apply_vol_speed_process_overrides(process_json)
+                            printer_json = apply_vol_speed_printer_overrides(
+                                printer_json, nozzle_diameter=nozzle_diameter
+                            )
+                            filament_jsons = [apply_vol_speed_filament_overrides(f) for f in filament_jsons]
 
                         slice_result = await svc.slice_with_profiles(
                             model_bytes=bake_bytes,
@@ -541,13 +561,31 @@ class CalibrationService:
             except (SlicerInputError, SlicerApiUnavailableError, SlicerApiError) as exc:
                 raise ValueError(f"Slicer sidecar failed for calibration slice: {exc}") from exc
 
+            # Vol Speed: the sidecar can't apply the per-layer feedrate
+            # ramp (Calib_Vol_speed_Tower is a GUI-only Print flag, never
+            # carried in the 3MF), so rewrite each layer's outer-wall
+            # feedrate ourselves — same patch the /slice-only path runs.
+            slice_bytes = slice_result.content
+            if cali_mode == CaliMode.VOL_SPEED_TOWER:
+                from backend.app.services.calib_vol_speed_patcher import patch_vol_speed_ramp
+
+                try:
+                    slice_bytes = patch_vol_speed_ramp(
+                        slice_bytes,
+                        start=float(spec_with_bed["start"]),
+                        step=float(spec_with_bed["step"]),
+                        nozzle_diameter=nozzle_diameter,
+                    )
+                except (KeyError, ValueError) as exc:
+                    raise ValueError(f"Vol Speed ramp patch failed: {exc}") from exc
+
             # Replace the slicer-generated placeholder-cube preview PNGs
             # with our branded "PA Test" thumbnail so library /
             # archive / preview UIs don't render a confusing 3mm
             # corner cube.
             from backend.app.services.calib_thumbnail import apply_calibration_thumbnail
 
-            sliced_content = apply_calibration_thumbnail(slice_result.content, cali_mode)
+            sliced_content = apply_calibration_thumbnail(slice_bytes, cali_mode)
 
             # Persist sliced bytes as a LibraryFile so the dispatcher
             # picks it up like any other queued library item. Stored

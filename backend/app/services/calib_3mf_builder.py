@@ -26,6 +26,7 @@ from backend.app.services.calib_3mf_writer import (
 from backend.app.services.calib_pa_line import build_pa_line_3mf
 from backend.app.services.calib_pa_pattern import build_pa_pattern_3mf
 from backend.app.services.calib_pa_tower import build_pa_tower_3mf
+from backend.app.services.calib_vol_speed import build_vol_speed_3mf
 from backend.app.services.calibration_constants import CaliMode
 from backend.app.services.calibration_service import CalibAsset, resolve_asset
 
@@ -63,7 +64,9 @@ _BUILDERS: dict[CaliMode, ModeBuilder] = {
     CaliMode.TEMP_TOWER: _not_implemented,
     CaliMode.RETRACTION_TOWER: _not_implemented,
     CaliMode.VFA_TOWER: _not_implemented,
-    CaliMode.VOL_SPEED_TOWER: _not_implemented,
+    # Phase 6 — VERIFICATION: builder bakes geometry + overrides; the
+    # per-layer speed ramp is applied post-slice (calib_vol_speed_patcher).
+    CaliMode.VOL_SPEED_TOWER: build_vol_speed_3mf,
     CaliMode.FLOW_RATE: _not_implemented,
     # Auto modes don't slice — they fire MQTT. The dispatcher returning
     # NotImplementedError here is correct: there's nothing to bake.

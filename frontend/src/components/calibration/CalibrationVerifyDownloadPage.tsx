@@ -176,12 +176,19 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
   const [paLineStep, setPaLineStep] = useState<number>(0.005);
   const [paLinePrintNumbers, setPaLinePrintNumbers] = useState<boolean>(true);
 
+  // Vol Speed Tower sweep — volumetric flow in mm³/s. BS/Orca dialog
+  // defaults are 5 / 20 / 0.5 (calib_dlg.cpp).
+  const [volStart, setVolStart] = useState<number>(5);
+  const [volEnd, setVolEnd] = useState<number>(20);
+  const [volStep, setVolStep] = useState<number>(0.5);
+
   const [isDownloading, setIsDownloading] = useState(false);
   const [isBaking, setIsBaking] = useState(false);
 
   const isPaTower = caliMode === 'pa_tower';
   const isPaPattern = caliMode === 'pa_pattern';
   const isPaLine = caliMode === 'pa_line';
+  const isVolSpeed = caliMode === 'vol_speed_tower';
 
   const triggerBlobDownload = (blob: Blob, filename: string) => {
     const url = URL.createObjectURL(blob);
@@ -221,6 +228,9 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
         nozzle_diameter: nozzleDiameter,
       };
     }
+    if (isVolSpeed) {
+      return { start: volStart, end: volEnd, step: volStep, nozzle_diameter: nozzleDiameter };
+    }
     return undefined;
   };
 
@@ -240,9 +250,9 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
 
   // PA Line uses its own start/end/step state; PA Tower / PA Pattern
   // share the shared start/end/step inputs.
-  const effectiveEnd = isPaLine ? paLineEnd : end;
-  const effectiveStart = isPaLine ? paLineStart : start;
-  const effectiveStep = isPaLine ? paLineStep : step;
+  const effectiveEnd = isVolSpeed ? volEnd : isPaLine ? paLineEnd : end;
+  const effectiveStart = isVolSpeed ? volStart : isPaLine ? paLineStart : start;
+  const effectiveStep = isVolSpeed ? volStep : isPaLine ? paLineStep : step;
 
   const canSubmit =
     !isDownloading &&
@@ -438,6 +448,56 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
               />
             </label>
             <label className="block col-span-2">
+              <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.nozzleDia')}</span>
+              <input
+                type="number"
+                step="0.1"
+                value={nozzleDiameter}
+                onChange={(e) => setNozzleDiameter(parseFloat(e.target.value) || 0.4)}
+                className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
+              />
+            </label>
+          </div>
+        </section>
+      )}
+
+      {isVolSpeed && (
+        <section className="space-y-2 border border-bambu-dark-tertiary rounded p-3">
+          <h4 className="text-sm font-medium text-bambu-gray">
+            {t('filamentCali.verifyDownload.specHeading')}
+          </h4>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="block">
+              <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.startVol')}</span>
+              <input
+                type="number"
+                step="0.5"
+                value={volStart}
+                onChange={(e) => setVolStart(parseFloat(e.target.value) || 0)}
+                className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.endVol')}</span>
+              <input
+                type="number"
+                step="0.5"
+                value={volEnd}
+                onChange={(e) => setVolEnd(parseFloat(e.target.value) || 0)}
+                className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.stepVol')}</span>
+              <input
+                type="number"
+                step="0.1"
+                value={volStep}
+                onChange={(e) => setVolStep(parseFloat(e.target.value) || 0)}
+                className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
+              />
+            </label>
+            <label className="block">
               <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.nozzleDia')}</span>
               <input
                 type="number"
