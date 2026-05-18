@@ -81,15 +81,23 @@ async def cb_camera_snapshot(callback: CallbackQuery, tg_chat: TelegramChat | No
 
 
 @router.callback_query(F.data.startswith("action:speed:"))
-async def cb_speed_menu(callback: CallbackQuery, tg_chat: TelegramChat | None = None) -> None:
-    """Show speed mode selection."""
+async def cb_speed_menu(
+    callback: CallbackQuery, tg_chat: TelegramChat | None = None, printer_id: int | None = None
+) -> None:
+    """Show speed mode selection.
+
+    ``printer_id`` is parsed from ``callback.data`` when invoked directly as
+    a callback handler; ``cb_speed_set`` passes it explicitly since
+    ``CallbackQuery`` is a frozen model and ``data`` can't be rewritten.
+    """
     lang = await get_language()
 
     if not has_perm(tg_chat, "printers:control"):
         await callback.answer(t(lang, NS, "auth.no_permission"), show_alert=True)
         return
 
-    printer_id = int(callback.data.split(":")[2])
+    if printer_id is None:
+        printer_id = int(callback.data.split(":")[2])
     await callback.answer()
 
     printers = await get_printers_data()
@@ -148,8 +156,7 @@ async def cb_speed_set(callback: CallbackQuery, tg_chat: TelegramChat | None = N
     await callback.answer(f"\u2705 {t(lang, NS, 'speed.set_ok', mode=mode_label)}")
 
     # Refresh speed menu
-    callback.data = f"action:speed:{printer_id}"
-    await cb_speed_menu(callback, tg_chat)
+    await cb_speed_menu(callback, tg_chat, printer_id=printer_id)
 
 
 # === Clear plate ===

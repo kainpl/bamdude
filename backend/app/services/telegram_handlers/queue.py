@@ -161,12 +161,20 @@ async def cb_noop(callback: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data.startswith("queue:detail:"))
-async def cb_queue_detail(callback: CallbackQuery, tg_chat: TelegramChat | None = None) -> None:
-    """Show queue item detail."""
+async def cb_queue_detail(
+    callback: CallbackQuery, tg_chat: TelegramChat | None = None, item_id: int | None = None
+) -> None:
+    """Show queue item detail.
+
+    ``item_id`` is parsed from ``callback.data`` when invoked directly as a
+    callback handler; ``cb_queue_move`` passes it explicitly since
+    ``CallbackQuery`` is a frozen model and ``data`` can't be rewritten.
+    """
     lang = await get_language()
     await callback.answer()
 
-    item_id = int(callback.data.split(":")[2])
+    if item_id is None:
+        item_id = int(callback.data.split(":")[2])
 
     from sqlalchemy import select
 
@@ -302,8 +310,7 @@ async def cb_queue_move(callback: CallbackQuery, tg_chat: TelegramChat | None = 
             await callback.answer()
 
     # Refresh detail
-    callback.data = f"queue:detail:{item_id}"
-    await cb_queue_detail(callback, tg_chat)
+    await cb_queue_detail(callback, tg_chat, item_id=item_id)
 
 
 @router.callback_query(F.data.startswith("queue:cancel:"))

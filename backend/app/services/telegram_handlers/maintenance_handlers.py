@@ -17,15 +17,24 @@ router = Router()
 
 
 @router.callback_query(F.data.startswith("maint:list:"))
-async def cb_maintenance_list(callback: CallbackQuery, tg_chat: TelegramChat | None = None) -> None:
-    """Show maintenance items for a printer."""
+async def cb_maintenance_list(
+    callback: CallbackQuery, tg_chat: TelegramChat | None = None, printer_id: int | None = None
+) -> None:
+    """Show maintenance items for a printer.
+
+    ``printer_id`` is parsed from ``callback.data`` when invoked directly as
+    a callback handler; other handlers (e.g. ``cb_maintenance_done``) pass it
+    explicitly since ``CallbackQuery`` is a frozen model and ``data`` can't
+    be rewritten to re-route through this handler.
+    """
     lang = await get_language()
 
     if not has_perm(tg_chat, "maintenance:read"):
         await callback.answer(t(lang, NS, "auth.no_permission"), show_alert=True)
         return
 
-    printer_id = int(callback.data.split(":")[2])
+    if printer_id is None:
+        printer_id = int(callback.data.split(":")[2])
     await callback.answer()
 
     from backend.app.api.routes.maintenance import _get_printer_maintenance_internal, ensure_default_types
@@ -126,6 +135,9 @@ async def cb_maintenance_done(callback: CallbackQuery, tg_chat: TelegramChat | N
     parts = callback.data.split(":")
     item_id = int(parts[2])
     printer_id = int(parts[3])
+    # A trailing ":n" means the press came from a maintenance-due
+    # notification (not the in-bot list) — see notification_service.
+    from_notification = len(parts) > 4 and parts[4] == "n"
 
     from datetime import datetime, timezone
 
@@ -173,5 +185,42 @@ async def cb_maintenance_done(callback: CallbackQuery, tg_chat: TelegramChat | N
 
     await callback.answer(f"\u2705 {t(lang, NS, 'maintenance.done_ok')}")
 
-    callback.data = f"maint:list:{printer_id}"
-    await cb_maintenance_list(callback, tg_chat)
+    if from_notification:
+        # The DB write succeeded \u2014 clear the just-handled button from the
+        # notification so it can't be pressed again. When it was the last
+        # outstanding button, drop the whole notification message.
+        await _strip_notification_button(callback)
+        return
+
+    await cb_maintenance_list(callback, tg_chat, printer_id=printer_id)
+
+
+async def _strip_notification_button(callback: CallbackQuery) -> None:
+    """Remove the pressed button from a maintenance-due notification.
+
+    Filters out every button whose ``callback_data`` matches the press. If
+    no buttons remain (the usual case \u2014 a maintenance-due notification
+    carries only "done" buttons) the message is deleted outright. Edit /
+    delete failures are swallowed: the DB row is already saved and the
+    operator saw the confirmation toast, so this is purely cosmetic, and
+    Telegram refuses to edit / delete messages older than 48 h.
+    """
+    msg = callback.message
+    if msg is None:
+        return
+
+    remaining: list[list[InlineKeyboardButton]] = []
+    markup = msg.reply_markup
+    if markup and markup.inline_keyboard:
+        for row in markup.inline_keyboard:
+            kept = [b for b in row if b.callback_data != callback.data]
+            if kept:
+                remaining.append(kept)
+
+    try:
+        if remaining:
+            await msg.edit_reply_markup(reply_markup=InlineKeyboardMarkup(inline_keyboard=remaining))
+        else:
+            await msg.delete()
+    except Exception:
+        pass

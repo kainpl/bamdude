@@ -930,7 +930,12 @@ class NotificationService:
                                     [
                                         InlineKeyboardButton(
                                             text=f"\u2705 {item['name']}",
-                                            callback_data=f"maint:done:{item_id}:{printer_id}",
+                                            # Trailing ":n" marks the notification
+                                            # context \u2014 cb_maintenance_done then
+                                            # strips the pressed button (and deletes
+                                            # the whole message once none remain)
+                                            # instead of redrawing the in-bot list.
+                                            callback_data=f"maint:done:{item_id}:{printer_id}:n",
                                         )
                                     ]
                                 )
