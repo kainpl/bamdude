@@ -390,6 +390,11 @@ class PrinterManager:
 
     async def connect_printer(self, printer: Printer) -> bool:
         """Connect to a printer."""
+        # Capture the outgoing client (if any) before tearing it down — its
+        # print-lifecycle flags are carried onto the replacement so a print
+        # that finished during a stale window is still recognised as
+        # complete. See BambuMQTTClient.carry_print_lifecycle_from.
+        prior_client = self._clients.get(printer.id)
         if printer.id in self._clients:
             self.disconnect_printer(printer.id)
 
@@ -437,6 +442,11 @@ class PrinterManager:
             on_macro_complete=on_macro_complete,
             on_kprofiles_changed=on_kprofiles_changed,
         )
+
+        # Carry print-tracking state across the client recreation so a
+        # mid-print stale reconnect doesn't lose completion detection.
+        if prior_client is not None:
+            client.carry_print_lifecycle_from(prior_client)
 
         client.connect()
         self._clients[printer_id] = client

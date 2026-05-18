@@ -1188,6 +1188,7 @@ class BackgroundDispatchService:
                     ams_mapping=job.options.get("ams_mapping"),
                     is_calibration=bool(job.options.get("is_calibration")),
                 )
+                await self._ensure_live_connection_before_start(printer, printer_name)
                 started = printer_manager.start_print(
                     job.printer_id,
                     remote_filename,
@@ -1682,6 +1683,7 @@ class BackgroundDispatchService:
                     ams_mapping=job.options.get("ams_mapping"),
                     is_calibration=bool(job.options.get("is_calibration")),
                 )
+                await self._ensure_live_connection_before_start(printer, printer_name)
                 started = printer_manager.start_print(
                     job.printer_id,
                     remote_filename,
@@ -1903,6 +1905,32 @@ class BackgroundDispatchService:
                 f"(state still {pre_state}, gcode_file {current_gcode_file!r})"
             )
         return False
+
+    @staticmethod
+    async def _ensure_live_connection_before_start(printer, printer_name: str) -> None:
+        """Guarantee a live MQTT connection immediately before the start command.
+
+        The upload + 3MF-patch + archive-write steps that precede
+        ``start_print`` can take long enough for a printer to go stale in
+        between — notably the P1S, whose firmware silently stops publishing
+        MQTT while the TCP socket stays alive, so it reconnects far more
+        often than an A1 mini. If the connection has gone stale by the time
+        the print command is issued, ``start_print`` fails synchronously
+        (the ``connected`` flag is False) — the job errors out and only
+        "works on the second try" once the connection has recovered.
+        Re-probing here (``is_connected`` runs the staleness check) and
+        forcing a full reconnect when needed closes that window. Best-effort:
+        a failed reconnect simply falls through to ``start_print``, which
+        then fails through the existing SD-cleanup + rollback path.
+        """
+        if printer_manager.is_connected(printer.id):
+            return
+        logger.info(
+            "Dispatch: %s MQTT not live just before start_print — forcing reconnect",
+            printer_name,
+        )
+        if not await printer_manager.connect_printer(printer):
+            logger.warning("Dispatch: %s reconnect before start_print failed", printer_name)
 
     @staticmethod
     async def _cleanup_sd_card_file(

@@ -2516,7 +2516,19 @@ async def clear_plate(
     if not printer_manager.is_connected(printer_id):
         raise HTTPException(400, "Printer not connected")
 
+    # A stale-window reconnect (the ensure_fresh_connection call above)
+    # recreates the MQTT client with a fresh PrinterState — gcode_state
+    # stays at the "unknown" placeholder until the printer's first status
+    # push lands ~1s later. Without this wait, clear-plate reads the
+    # placeholder and 400s right after a reconnect even though the printer
+    # is actually FINISH/FAILED. Poll briefly for the first real push; the
+    # loop exits immediately when the state is already populated.
     state = printer_manager.get_status(printer_id)
+    for _ in range(50):  # 50 × 100 ms = 5 s ceiling
+        if state and state.state != "unknown":
+            break
+        await asyncio.sleep(0.1)
+        state = printer_manager.get_status(printer_id)
     # Accept the ACK in IDLE too — after an Auto Off power cycle the printer
     # boots straight into IDLE, and the awaiting_plate_clear gate (persisted
     # from before the cycle) still needs releasing.

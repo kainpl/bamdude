@@ -661,6 +661,29 @@ class BambuMQTTClient:
         self._last_ams_cmd_time: float = 0.0  # monotonic time of last published command
         self._ams_cmd_unanswered: int = 0  # consecutive commands with no response
 
+    def carry_print_lifecycle_from(self, prior: "BambuMQTTClient") -> None:
+        """Inherit in-flight print-tracking state from a prior client instance.
+
+        ``printer_manager.connect_printer`` destroys and recreates the client
+        on every (re)connect — including the stale-watchdog reconnect, which on
+        a P1S fires often because its firmware stops publishing while the TCP
+        socket stays alive. A fresh client has ``_was_running=False`` and
+        ``_previous_gcode_state=None``, so a print that finishes *during* the
+        stale window arrives as ``FINISH`` with no tracked RUNNING history:
+        ``should_trigger_completion`` cannot fire and the print is silently
+        never completed (no archive close, no notification, the queue item
+        stays stuck at "printing"). Copying the print-lifecycle flags onto the
+        replacement client lets completion detection — and timelapse / usage
+        accounting — survive a mid-print reconnect.
+        """
+        self._previous_gcode_state = prior._previous_gcode_state
+        self._previous_gcode_file = prior._previous_gcode_file
+        self._was_running = prior._was_running
+        self._completion_triggered = prior._completion_triggered
+        self._timelapse_during_print = prior._timelapse_during_print
+        self._last_valid_progress = prior._last_valid_progress
+        self._last_valid_layer_num = prior._last_valid_layer_num
+
     @property
     def topic_subscribe(self) -> str:
         return f"device/{self.serial_number}/report"
