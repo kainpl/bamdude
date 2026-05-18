@@ -4157,6 +4157,9 @@ export default {
       startK: 'Start K',
       endK: 'End K',
       stepK: 'K step',
+      startVol: 'Start (mm³/s)',
+      endVol: 'End (mm³/s)',
+      stepVol: 'Step (mm³/s)',
       layerHeight: 'Layer height (mm)',
       nozzleDia: 'Nozzle diameter (mm)',
       paPatternFixedRangeNote:
@@ -5230,6 +5233,8 @@ export default {
     jobFailedDescription: 'Job failed to start',
     queueComplete: 'Queue Complete',
     queueCompleteDescription: 'All queue jobs finished',
+    printerQueueComplete: "Printer's Queue Complete",
+    printerQueueCompleteDescription: "A single printer finished its own queue",
     // Quiet hours
     quietHours: 'Quiet Hours',
     noNotificationsDuring: 'No notifications during these hours',

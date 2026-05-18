@@ -4159,6 +4159,9 @@ export default {
       startK: 'Початковий K',
       endK: 'Кінцевий K',
       stepK: 'Крок K',
+      startVol: 'Початок (мм³/с)',
+      endVol: 'Кінець (мм³/с)',
+      stepVol: 'Крок (мм³/с)',
       layerHeight: 'Висота шару (мм)',
       nozzleDia: 'Діаметр сопла (мм)',
       paPatternFixedRangeNote:
@@ -5232,6 +5235,8 @@ export default {
     jobFailedDescription: 'Завдання не вдалося запустити',
     queueComplete: 'Чергу завершено',
     queueCompleteDescription: 'Усі завдання черги завершені',
+    printerQueueComplete: 'Чергу принтера завершено',
+    printerQueueCompleteDescription: 'Окремий принтер завершив свою чергу',
     // Quiet hours
     quietHours: 'Тихі години',
     noNotificationsDuring: 'Без сповіщень протягом цих годин',

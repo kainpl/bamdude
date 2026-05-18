@@ -96,7 +96,8 @@ class NotificationProvider(Base):
     on_queue_job_waiting = Column(Boolean, default=True)  # Job waiting for filament or printer
     on_queue_job_skipped = Column(Boolean, default=True)  # Job skipped (previous print failed)
     on_queue_job_failed = Column(Boolean, default=True)  # Job failed to start
-    on_queue_completed = Column(Boolean, default=False)  # All pending jobs finished
+    on_queue_completed = Column(Boolean, default=False)  # All pending jobs finished (every printer)
+    on_printer_queue_completed = Column(Boolean, default=True)  # A single printer's queue drained
 
     # Event triggers - Stock forecasting (upstream #1184). Scaffold only — no
     # backend trigger fires these today; ForecastPanel renders alerts client-

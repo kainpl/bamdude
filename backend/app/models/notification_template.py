@@ -171,6 +171,12 @@ DEFAULT_TEMPLATES = [
         "body_template": "All {completed_count} queued jobs have finished",
     },
     {
+        "event_type": "printer_queue_completed",
+        "name": "Printer Queue Completed",
+        "title_template": "Queue Complete",
+        "body_template": "{printer}: queue finished — all jobs done",
+    },
+    {
         "event_type": "user_created",
         "name": "Welcome Email",
         "title_template": "Welcome to {app_name}",

@@ -2393,6 +2393,7 @@ export interface NotificationProvider {
   on_queue_job_skipped: boolean;
   on_queue_job_failed: boolean;
   on_queue_completed: boolean;
+  on_printer_queue_completed: boolean;
   // Stock forecasting (scaffold, upstream #1184)
   on_stock_reorder_alert: boolean;
   on_stock_break_alert: boolean;
@@ -2453,6 +2454,7 @@ export interface NotificationProviderCreate {
   on_queue_job_skipped?: boolean;
   on_queue_job_failed?: boolean;
   on_queue_completed?: boolean;
+  on_printer_queue_completed?: boolean;
   // Stock forecasting (scaffold)
   on_stock_reorder_alert?: boolean;
   on_stock_break_alert?: boolean;
@@ -2506,6 +2508,7 @@ export interface NotificationProviderUpdate {
   on_queue_job_skipped?: boolean;
   on_queue_job_failed?: boolean;
   on_queue_completed?: boolean;
+  on_printer_queue_completed?: boolean;
   // Stock forecasting (scaffold)
   on_stock_reorder_alert?: boolean;
   on_stock_break_alert?: boolean;

@@ -59,6 +59,7 @@ _TELEGRAM_FORCED_TRUE_FIELDS = (
     "on_queue_job_skipped",
     "on_queue_job_failed",
     "on_queue_completed",
+    "on_printer_queue_completed",
     "on_stock_reorder_alert",
     "on_stock_break_alert",
 )
@@ -116,6 +117,7 @@ def _provider_to_dict(provider: NotificationProvider) -> dict:
         "on_queue_job_skipped": provider.on_queue_job_skipped,
         "on_queue_job_failed": provider.on_queue_job_failed,
         "on_queue_completed": provider.on_queue_completed,
+        "on_printer_queue_completed": provider.on_printer_queue_completed,
         # Stock forecasting (upstream #1184; scaffold — no backend trigger)
         "on_stock_reorder_alert": provider.on_stock_reorder_alert,
         "on_stock_break_alert": provider.on_stock_break_alert,
@@ -198,6 +200,7 @@ async def create_notification_provider(
         on_queue_job_skipped=provider_data.on_queue_job_skipped,
         on_queue_job_failed=provider_data.on_queue_job_failed,
         on_queue_completed=provider_data.on_queue_completed,
+        on_printer_queue_completed=provider_data.on_printer_queue_completed,
         # Stock forecasting (scaffold)
         on_stock_reorder_alert=provider_data.on_stock_reorder_alert,
         on_stock_break_alert=provider_data.on_stock_break_alert,

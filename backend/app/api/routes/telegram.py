@@ -99,6 +99,7 @@ EVENT_CATEGORIES = {
             "queue_job_skipped",
             "queue_job_failed",
             "queue_completed",
+            "printer_queue_completed",
         ],
     },
 }
@@ -129,6 +130,7 @@ EVENT_LABELS = {
     "queue_job_skipped": "Queue job skipped",
     "queue_job_failed": "Queue job failed",
     "queue_completed": "Queue completed",
+    "printer_queue_completed": "Printer queue completed",
 }
 
 

@@ -157,6 +157,7 @@ export function AddTelegramChatModal({ chat, onClose }: AddTelegramChatModalProp
     queue_job_skipped: 'notifications.jobSkipped',
     queue_job_failed: 'notifications.jobFailed',
     queue_completed: 'notifications.queueComplete',
+    printer_queue_completed: 'notifications.printerQueueComplete',
   };
   const CATEGORY_KEYS: Record<string, string> = {
     'Print Lifecycle': 'notifications.printEvents',

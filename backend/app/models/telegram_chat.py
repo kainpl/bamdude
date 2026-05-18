@@ -20,6 +20,7 @@ DEFAULT_NOTIFY_EVENTS = [
     "queue_job_waiting",
     "queue_job_skipped",
     "queue_job_failed",
+    "printer_queue_completed",
 ]
 
 # All available notification event types
@@ -54,6 +55,7 @@ ALL_NOTIFY_EVENTS = [
     "queue_job_skipped",
     "queue_job_failed",
     "queue_completed",
+    "printer_queue_completed",
     # Stock forecasting (upstream #1184; scaffold — toggles UI-only today)
     "stock_reorder_alert",
     "stock_break_alert",

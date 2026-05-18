@@ -1742,7 +1742,6 @@ export function ProjectDetailPage() {
                   <CurrentPrintInfoCard
                     key={item.id}
                     item={item}
-                    accentColor={project.color}
                     timeFormat={timeFormat}
                     t={t}
                   />
@@ -1843,7 +1842,6 @@ export function ProjectDetailPage() {
 
 interface CurrentPrintInfoCardProps {
   item: PrintQueueItem;
-  accentColor: string | null;
   timeFormat: TimeFormat;
   t: TFunction;
 }
@@ -1853,11 +1851,10 @@ interface CurrentPrintInfoCardProps {
  * layout of QueueCard's live-print block (thumbnail + name + progress +
  * ETA/layer) but renders nothing interactive — no pause/stop/etc. buttons,
  * since this panel exists solely to surface which of the project's jobs
- * are live on which printer. The progress-bar fill uses the project's
- * ``color`` when set so the operator can eyeball project identity
- * alongside sibling project cards.
+ * are live on which printer. The progress bar uses the same green / amber
+ * (paused) fill as the printers and queue pages.
  */
-function CurrentPrintInfoCard({ item, accentColor, timeFormat, t }: CurrentPrintInfoCardProps) {
+function CurrentPrintInfoCard({ item, timeFormat, t }: CurrentPrintInfoCardProps) {
   const { data: status } = useQuery({
     queryKey: ['printerStatus', item.printer_id],
     queryFn: () => api.getPrinterStatus(item.printer_id!),
@@ -1874,7 +1871,6 @@ function CurrentPrintInfoCard({ item, accentColor, timeFormat, t }: CurrentPrint
   const thumbnail = status?.cover_url;
   const isLive = status?.state === 'RUNNING' || status?.state === 'PAUSE';
   const progress = status?.progress ?? 0;
-  const fillColor = accentColor || '#60a5fa'; // fallback: QueueCard's blue-400
 
   return (
     <div className="p-3 rounded-lg bg-bambu-dark">
@@ -1907,8 +1903,8 @@ function CurrentPrintInfoCard({ item, accentColor, timeFormat, t }: CurrentPrint
               <div className="flex items-center gap-2">
                 <div className="flex-1 bg-bambu-dark-tertiary rounded-full h-2 overflow-hidden">
                   <div
-                    className="h-2 rounded-full transition-all"
-                    style={{ width: `${progress}%`, backgroundColor: fillColor }}
+                    className={`${status?.state === 'PAUSE' ? 'bg-status-warning' : 'bg-bambu-green'} h-2 rounded-full transition-all`}
+                    style={{ width: `${progress}%` }}
                   />
                 </div>
                 <span className="text-sm text-white font-medium flex-shrink-0">
@@ -1938,7 +1934,7 @@ function CurrentPrintInfoCard({ item, accentColor, timeFormat, t }: CurrentPrint
           ) : (
             <div className="flex items-center gap-2">
               <div className="flex-1 bg-bambu-dark-tertiary rounded-full h-2">
-                <div className="h-2 rounded-full" style={{ width: '0%', backgroundColor: fillColor }} />
+                <div className="bg-bambu-green h-2 rounded-full" style={{ width: '0%' }} />
               </div>
               <span className="text-sm text-white font-medium flex-shrink-0">0%</span>
             </div>

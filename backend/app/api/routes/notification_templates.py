@@ -42,6 +42,7 @@ EVENT_NAMES = {
     "queue_job_skipped": "Queue Job Skipped",
     "queue_job_failed": "Queue Job Failed",
     "queue_completed": "Queue Completed",
+    "printer_queue_completed": "Printer Queue Completed",
     # User management
     "user_created": "Welcome Email",
     "password_reset": "Password Reset",

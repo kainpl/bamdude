@@ -119,6 +119,11 @@
     "title_template": "Чергу завершено",
     "body_template": "Усі {completed_count} завдань з черги виконано"
   },
+  "printer_queue_completed": {
+    "name": "Чергу принтера завершено",
+    "title_template": "Чергу завершено",
+    "body_template": "{printer}: чергу завершено — усі завдання виконано"
+  },
   "user_created": {
     "name": "Лист привітання",
     "title_template": "Ласкаво просимо до {app_name}",

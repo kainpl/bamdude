@@ -2091,6 +2091,30 @@ class NotificationService:
         title, message = await self._build_message_from_template(db, "queue_completed", variables)
         await self._send_to_providers(providers, title, message, db, "queue_completed", variables=variables)
 
+    async def on_printer_queue_completed(
+        self,
+        printer_id: int,
+        printer_name: str,
+        db: AsyncSession,
+    ):
+        """Handle a single printer's queue draining (no pending items left).
+
+        Distinct from ``on_queue_completed``, which is global ("every printer
+        idle"). This fires per-printer the moment one printer finishes its own
+        queue, so a paused / manual-start item on another printer can't
+        suppress it.
+        """
+        providers = await self._get_providers_for_event(db, "on_printer_queue_completed", printer_id)
+        if not providers:
+            return
+
+        variables = {"printer": printer_name}
+
+        title, message = await self._build_message_from_template(db, "printer_queue_completed", variables)
+        await self._send_to_providers(
+            providers, title, message, db, "printer_queue_completed", printer_id, printer_name, variables=variables
+        )
+
     # ==================== Inventory Stock Alerts ====================
     #
     # Scaffold only — no backend trigger fires these today. ForecastPanel

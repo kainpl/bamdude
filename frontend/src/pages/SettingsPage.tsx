@@ -4179,6 +4179,7 @@ export function SettingsPage() {
                   queue_job_skipped: { group: 'queue', channel: 'all' },
                   queue_job_failed: { group: 'queue', channel: 'all' },
                   queue_completed: { group: 'queue', channel: 'all' },
+                  printer_queue_completed: { group: 'queue', channel: 'all' },
                   // Per-user "owner emails" — sent only via SMTP to job owner.
                   user_print_start: { group: 'userEmail', channel: 'email' },
                   user_print_complete: { group: 'userEmail', channel: 'email' },

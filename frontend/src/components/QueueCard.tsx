@@ -563,7 +563,7 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
                     <div className="flex items-center gap-2">
                       <div className="flex-1 bg-bambu-dark-tertiary rounded-full h-2">
                         <div
-                          className={`${status.state === 'PAUSE' ? 'bg-status-warning' : 'bg-blue-400'} h-2 rounded-full transition-all`}
+                          className={`${status.state === 'PAUSE' ? 'bg-status-warning' : 'bg-bambu-green'} h-2 rounded-full transition-all`}
                           style={{ width: `${status.progress || 0}%` }}
                         />
                       </div>
@@ -594,7 +594,7 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
                 ) : (
                   <div className="flex items-center gap-2">
                     <div className="flex-1 bg-bambu-dark-tertiary rounded-full h-2">
-                      <div className="bg-blue-400 h-2 rounded-full" style={{ width: '0%' }} />
+                      <div className="bg-bambu-green h-2 rounded-full" style={{ width: '0%' }} />
                     </div>
                     <span className="text-sm text-white font-medium flex-shrink-0">0%</span>
                   </div>

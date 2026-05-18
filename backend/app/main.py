@@ -4130,6 +4130,29 @@ async def on_print_complete(printer_id: int, data: dict):
                         )
                 except Exception:
                     pass  # Don't fail if notification fails
+
+                # Per-printer: this printer's own queue just drained → fire
+                # the printer-scoped notification. Unlike the global event
+                # above, a paused / manual-start queue on another printer
+                # can't suppress it (the global pending_count never hits 0).
+                try:
+                    from sqlalchemy import func as sa_func
+
+                    printer_pending = await db.execute(
+                        select(sa_func.count(PrintQueueItem.id)).where(
+                            PrintQueueItem.queue_id == printer_id,
+                            PrintQueueItem.status == "pending",
+                        )
+                    )
+                    if (printer_pending.scalar() or 0) == 0:
+                        _pi = printer_manager.get_printer(printer_id)
+                        await notification_service.on_printer_queue_completed(
+                            printer_id=printer_id,
+                            printer_name=_pi.name if _pi else f"Printer #{printer_id}",
+                            db=db,
+                        )
+                except Exception:
+                    pass  # Don't fail if notification fails
             else:
                 # No queue_item was printing → this was an external or
                 # direct-dispatch print.  Still flip queue.status back to

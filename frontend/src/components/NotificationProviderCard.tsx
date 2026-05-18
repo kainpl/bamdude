@@ -699,6 +699,17 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                                         onChange={(checked) => updateMutation.mutate({on_queue_completed: checked})}
                                     />
                                 </div>
+
+                                <div className="flex items-center justify-between">
+                                    <div>
+                                        <p className="text-sm text-white">{t('notifications.printerQueueComplete')}</p>
+                                        <p className="text-xs text-bambu-gray">{t('notifications.printerQueueCompleteDescription')}</p>
+                                    </div>
+                                    <Toggle
+                                        checked={provider.on_printer_queue_completed ?? true}
+                                        onChange={(checked) => updateMutation.mutate({on_printer_queue_completed: checked})}
+                                    />
+                                </div>
                             </div>
                             </>)}
                             {/* /isTelegram event-toggles wrapper */}

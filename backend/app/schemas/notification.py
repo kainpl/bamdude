@@ -73,7 +73,8 @@ class NotificationProviderBase(BaseModel):
     on_queue_job_waiting: bool = Field(default=True, description="Notify when job is waiting for filament or printer")
     on_queue_job_skipped: bool = Field(default=True, description="Notify when job is skipped")
     on_queue_job_failed: bool = Field(default=True, description="Notify when job fails to start")
-    on_queue_completed: bool = Field(default=False, description="Notify when all queue jobs finish")
+    on_queue_completed: bool = Field(default=False, description="Notify when every printer's queue is empty")
+    on_printer_queue_completed: bool = Field(default=True, description="Notify when a single printer's queue drains")
 
     # Event triggers - Stock forecasting (scaffold, upstream #1184)
     on_stock_reorder_alert: bool = Field(default=False, description="Notify when an SKU crosses its reorder point")
@@ -162,6 +163,7 @@ class NotificationProviderUpdate(BaseModel):
     on_queue_job_skipped: bool | None = None
     on_queue_job_failed: bool | None = None
     on_queue_completed: bool | None = None
+    on_printer_queue_completed: bool | None = None
 
     # Event triggers - Stock forecasting
     on_stock_reorder_alert: bool | None = None
