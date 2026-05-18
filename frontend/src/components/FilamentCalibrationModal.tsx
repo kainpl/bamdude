@@ -116,6 +116,9 @@ export function FilamentCalibrationModal({ isOpen, onClose, printerId }: Props) 
                   nozzle_volume_type: preset.nozzle_volume_type,
                   extruder_id: preset.extruder_id,
                   filaments: preset.filaments,
+                  // Kept so the tower finish-page calculator has the
+                  // operator's start/step — CalibrationSessionOut omits it.
+                  spec: preset.spec,
                 });
                 await cali.startSession({
                   cali_mode: cali.input.cali_mode!,
@@ -178,6 +181,7 @@ export function FilamentCalibrationModal({ isOpen, onClose, printerId }: Props) 
           {cali.step === 'towerFinish' && cali.session && (
             <CalibrationTowerFinishPage
               session={cali.session}
+              spec={cali.input.spec}
               onClose={handleClose}
               onCalibrateAnother={() => {
                 cali.setSessionId(null);

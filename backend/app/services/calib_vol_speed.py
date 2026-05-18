@@ -15,7 +15,7 @@ and NOT produced by the sidecar** — BS/Orca apply it engine-side
 ``set_calib_params`` and which is never carried in the 3MF. A vanilla
 CLI / sidecar slice therefore yields a flat-speed tower; BamDude
 re-creates the ramp by post-patching the sliced g-code — see
-``calib_vol_speed_patcher.py`` and
+``calib_speed_ramp_patcher.py`` and
 ``temp/vol-speed-calibration-bs-orca-analysis.md`` §7.
 """
 
@@ -145,7 +145,7 @@ def build_vol_speed_3mf(asset: CalibAsset, spec_dict: dict) -> bytes:
     # Overrides — by config LEVEL, Orca values (our sign-off reference).
     # See temp/vol-speed-calibration-bs-orca-analysis.md §4.1. The
     # per-layer outer-wall speed ramp is NOT set here — it is rewritten
-    # into the sliced g-code afterwards by calib_vol_speed_patcher.
+    # into the sliced g-code afterwards by calib_speed_ramp_patcher.
     object_overrides = [
         ObjectOverride(
             object_id=WRAPPED_OBJECT_ID,

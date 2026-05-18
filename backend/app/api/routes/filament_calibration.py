@@ -386,6 +386,7 @@ async def submit_manual_result(
             coarse_modifier=body.coarse_modifier,
             skip_fine=body.skip_fine,
             fine_modifier=body.fine_modifier,
+            tower_result=body.tower_result,
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -649,6 +650,9 @@ async def slice_calibration_for_verification(
                     apply_pa_pattern_process_overrides,
                     apply_pa_tower_filament_overrides,
                     apply_pa_tower_process_overrides,
+                    apply_vfa_filament_overrides,
+                    apply_vfa_printer_overrides,
+                    apply_vfa_process_overrides,
                     apply_vol_speed_filament_overrides,
                     apply_vol_speed_printer_overrides,
                     apply_vol_speed_process_overrides,
@@ -669,6 +673,10 @@ async def slice_calibration_for_verification(
                     process_json = apply_vol_speed_process_overrides(process_json)
                     printer_json = apply_vol_speed_printer_overrides(printer_json, nozzle_diameter=nozzle_diameter)
                     filament_jsons = [apply_vol_speed_filament_overrides(f) for f in filament_jsons]
+                elif body.cali_mode == CaliMode.VFA_TOWER:
+                    process_json = apply_vfa_process_overrides(process_json)
+                    printer_json = apply_vfa_printer_overrides(printer_json)
+                    filament_jsons = [apply_vfa_filament_overrides(f) for f in filament_jsons]
 
                 # Log compat-relevant fields from each JSON so when BS rejects
                 # the combo we can see what the resolver actually produced
@@ -706,26 +714,32 @@ async def slice_calibration_for_verification(
         logger.error("slice_only: sidecar error at %s (mode=%s): %s", api_url, body.cali_mode.value, exc)
         raise HTTPException(502, str(exc)) from exc
 
-    # Vol Speed: the sidecar can't apply the per-layer feedrate ramp
-    # (Calib_Vol_speed_Tower is a GUI-only Print flag, never carried in
-    # the 3MF), so rewrite each layer's outer-wall feedrate ourselves —
-    # see calib_vol_speed_patcher. The patcher reads the slicer-resolved
-    # filament_flow_ratio straight from the sliced 3MF.
+    # Vol Speed / VFA: the sidecar can't apply the per-layer outer-wall
+    # speed ramp (Calib_Vol_speed_Tower / Calib_VFA_Tower are GUI-only
+    # Print flags, never carried in the 3MF), so rewrite each layer's
+    # feedrate ourselves — see calib_speed_ramp_patcher.
     sliced_content = result.content
-    if body.cali_mode == CaliMode.VOL_SPEED_TOWER:
-        from backend.app.services.calib_vol_speed_patcher import patch_vol_speed_ramp
+    if body.cali_mode in (CaliMode.VOL_SPEED_TOWER, CaliMode.VFA_TOWER):
+        from backend.app.services.calib_speed_ramp_patcher import patch_vfa_ramp, patch_vol_speed_ramp
 
         _spec = body.spec if isinstance(body.spec, dict) else {}
         try:
-            sliced_content = patch_vol_speed_ramp(
-                sliced_content,
-                start=float(_spec["start"]),
-                step=float(_spec["step"]),
-                nozzle_diameter=nozzle_diameter,
-            )
+            if body.cali_mode == CaliMode.VOL_SPEED_TOWER:
+                sliced_content = patch_vol_speed_ramp(
+                    sliced_content,
+                    start=float(_spec["start"]),
+                    step=float(_spec["step"]),
+                    nozzle_diameter=nozzle_diameter,
+                )
+            else:
+                sliced_content = patch_vfa_ramp(
+                    sliced_content,
+                    start=float(_spec["start"]),
+                    step=float(_spec["step"]),
+                )
         except (KeyError, ValueError) as exc:
-            logger.error("slice_only: vol_speed ramp patch failed (mode=%s): %s", body.cali_mode.value, exc)
-            raise HTTPException(500, f"Vol Speed ramp patch failed: {exc}") from exc
+            logger.error("slice_only: speed-ramp patch failed (mode=%s): %s", body.cali_mode.value, exc)
+            raise HTTPException(500, f"Speed-ramp patch failed: {exc}") from exc
 
     # Replace the slicer-generated placeholder-cube preview with our
     # branded "PA Test" thumbnail before the operator downloads it (so

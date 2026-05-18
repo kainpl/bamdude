@@ -4160,6 +4160,9 @@ export default {
       startVol: 'Start (mm³/s)',
       endVol: 'End (mm³/s)',
       stepVol: 'Step (mm³/s)',
+      startSpeed: 'Start (mm/s)',
+      endSpeed: 'End (mm/s)',
+      stepSpeed: 'Step (mm/s)',
       layerHeight: 'Layer height (mm)',
       nozzleDia: 'Nozzle diameter (mm)',
       paPatternFixedRangeNote:
@@ -4197,6 +4200,12 @@ export default {
         retraction_tower:
           'Pick the retraction step with no oozing. Update Filament → Retraction length.',
       },
+      calcHeading: 'Calculate the result',
+      measuredHeight: 'Measured failure height (mm)',
+      formula: 'Formula',
+      result: 'Result',
+      saveResult: 'Save result',
+      savedConfirm: 'Saved to calibration history',
     },
     history: {
       menuItem: 'Calibration History',

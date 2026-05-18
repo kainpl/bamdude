@@ -4162,6 +4162,9 @@ export default {
       startVol: 'Початок (мм³/с)',
       endVol: 'Кінець (мм³/с)',
       stepVol: 'Крок (мм³/с)',
+      startSpeed: 'Початок (мм/с)',
+      endSpeed: 'Кінець (мм/с)',
+      stepSpeed: 'Крок (мм/с)',
       layerHeight: 'Висота шару (мм)',
       nozzleDia: 'Діаметр сопла (мм)',
       paPatternFixedRangeNote:
@@ -4199,6 +4202,12 @@ export default {
         retraction_tower:
           'Обери retraction-сходинку без oozing. Внеси в Filament → Retraction length.',
       },
+      calcHeading: 'Обчислити результат',
+      measuredHeight: 'Виміряна висота дефекту (мм)',
+      formula: 'Формула',
+      result: 'Результат',
+      saveResult: 'Зберегти результат',
+      savedConfirm: 'Збережено в історію калібрувань',
     },
     history: {
       menuItem: 'Історія калібровок',

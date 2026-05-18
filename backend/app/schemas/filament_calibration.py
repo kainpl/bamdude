@@ -289,6 +289,10 @@ class ManualResultIn(BaseModel):
     coarse_modifier: int | None = None
     skip_fine: bool = False
     fine_modifier: int | None = None
+    # Operator's calculated tower-test result for tower modes — VFA mm/s,
+    # Vol Speed mm³/s. Computed by the finish-page calculator from the
+    # measured failure height; persisted as ``filament_calibration.tower_result``.
+    tower_result: float | None = None
 
 
 class AutoResultEditIn(BaseModel):
@@ -319,6 +323,7 @@ class FilamentCalibrationOut(BaseModel):
     pa_k_value: float | None
     pa_n_coef: float | None
     flow_ratio: float | None
+    tower_result: float | None
     confidence: int | None
     cali_mode: str
     source: str

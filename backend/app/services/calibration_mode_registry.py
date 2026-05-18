@@ -75,10 +75,22 @@ MODE_STATE: dict[CaliMode, ModeState] = {
     CaliMode.PA_PATTERN: ModeState.PRODUCTION,
     CaliMode.TEMP_TOWER: ModeState.DISABLED,
     CaliMode.RETRACTION_TOWER: ModeState.DISABLED,
-    CaliMode.VFA_TOWER: ModeState.DISABLED,
+    # Phase 5 — PRODUCTION (2026-05-18). The builder bakes the tower
+    # geometry + 4-level overrides; the per-layer outer-wall speed ramp is
+    # rewritten into the sliced g-code by calib_speed_ramp_patcher
+    # (patch_vfa_ramp) — the sidecar can't apply it (Calib_VFA_Tower is a
+    # GUI-only Print flag, never carried in the 3MF). VFA shares the
+    # Vol Speed patcher mechanism, banded per 5 mm; it uses the *precise*
+    # patcher (running float-sum of the nominal layer height) so the
+    # floor-banded ramp bit-matches the engine at every 5 mm boundary.
+    # Verification signed off: re-sliced output matched the Orca-desktop
+    # reference with 0 feedrate mismatches on all 425 layers, both Orca
+    # and BS sidecar backends. BOTH slice paths patch — /slice-only and
+    # the start_calibration dispatch path (calibration_service.py).
+    CaliMode.VFA_TOWER: ModeState.PRODUCTION,
     # Phase 6 — PRODUCTION (2026-05-17). The builder bakes the tower
     # geometry + 4-level overrides; the per-layer outer-wall speed ramp
-    # is rewritten into the sliced g-code by calib_vol_speed_patcher (the
+    # is rewritten into the sliced g-code by calib_speed_ramp_patcher (the
     # sidecar can't apply it — Calib_Vol_speed_Tower is a GUI-only Print
     # flag, never carried in the 3MF; a vanilla CLI slice yields a flat
     # 200 mm/s tower). Verification signed off: re-sliced output (Orca +

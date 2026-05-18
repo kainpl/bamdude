@@ -45,6 +45,9 @@ class FilamentCalibration(Base):
     pa_n_coef: Mapped[float | None] = mapped_column(Float, nullable=True)
     flow_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
     confidence: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Result for tower modes (m069): VFA → mm/s, Vol Speed → mm³/s, Temp → °C,
+    # Retraction → mm — unit implied by ``cali_mode``. NULL for PA / Flow rows.
+    tower_result: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     # Provenance
     cali_mode: Mapped[str] = mapped_column(String(30), nullable=False)

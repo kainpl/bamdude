@@ -3770,6 +3770,9 @@ export interface FilamentCalibrationOut {
   pa_k_value: number | null;
   pa_n_coef: number | null;
   flow_ratio: number | null;
+  // Tower-test result — VFA mm/s, Vol Speed mm³/s, Temp °C, Retraction mm
+  // (unit implied by cali_mode). NULL for PA / Flow rows.
+  tower_result: number | null;
   confidence: number | null;
   cali_mode: string;
   source: string;
@@ -3788,6 +3791,9 @@ export interface ManualResultIn {
   coarse_modifier?: number;
   skip_fine?: boolean;
   fine_modifier?: number;
+  // Operator's calculated tower-test result (tower modes only) — VFA mm/s,
+  // Vol Speed mm³/s. Computed by the finish-page calculator.
+  tower_result?: number;
 }
 
 export interface ManualResultOut {

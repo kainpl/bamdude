@@ -326,6 +326,14 @@ export function CalibrationPresetPage({
   const [volEnd, setVolEnd] = useState<number>(20);
   const [volStep, setVolStep] = useState<number>(0.5);
 
+  // VFA Tower — start/end/step in mm/s (linear speed, no volumetric
+  // transform). Defaults mirror the BS/Orca VFA_Test_Dlg (40 → 200 step
+  // 10) and the verification page. Tower height is derived server-side.
+  const isVfa = caliMode === 'vfa_tower';
+  const [vfaStart, setVfaStart] = useState<number>(40);
+  const [vfaEnd, setVfaEnd] = useState<number>(200);
+  const [vfaStep, setVfaStep] = useState<number>(10);
+
   const statusQuery = useQuery<PrinterStatus>({
     queryKey: ['printerStatus', printerId],
     queryFn: () => api.getPrinterStatus(printerId),
@@ -594,6 +602,14 @@ export function CalibrationPresetPage({
         start: volStart,
         end: volEnd,
         step: volStep,
+        nozzle_diameter: nozzleDia,
+      };
+    }
+    if (isVfa) {
+      extras.spec = {
+        start: vfaStart,
+        end: vfaEnd,
+        step: vfaStep,
         nozzle_diameter: nozzleDia,
       };
     }
@@ -976,6 +992,52 @@ export function CalibrationPresetPage({
                     step="0.1"
                     value={volStep}
                     onChange={(e) => setVolStep(parseFloat(e.target.value) || 0)}
+                    className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
+                  />
+                </label>
+              </div>
+            </div>
+          )}
+
+          {isVfa && (
+            <div className="space-y-2 border border-bambu-dark-tertiary rounded p-3">
+              <h4 className="text-sm font-medium text-bambu-gray">
+                {t('filamentCali.verifyDownload.specHeading')}
+              </h4>
+              <div className="grid grid-cols-3 gap-2">
+                <label className="block">
+                  <span className="text-xs text-bambu-gray">
+                    {t('filamentCali.verifyDownload.startSpeed')}
+                  </span>
+                  <input
+                    type="number"
+                    step="1"
+                    value={vfaStart}
+                    onChange={(e) => setVfaStart(parseFloat(e.target.value) || 0)}
+                    className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs text-bambu-gray">
+                    {t('filamentCali.verifyDownload.endSpeed')}
+                  </span>
+                  <input
+                    type="number"
+                    step="1"
+                    value={vfaEnd}
+                    onChange={(e) => setVfaEnd(parseFloat(e.target.value) || 0)}
+                    className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs text-bambu-gray">
+                    {t('filamentCali.verifyDownload.stepSpeed')}
+                  </span>
+                  <input
+                    type="number"
+                    step="1"
+                    value={vfaStep}
+                    onChange={(e) => setVfaStep(parseFloat(e.target.value) || 0)}
                     className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
                   />
                 </label>

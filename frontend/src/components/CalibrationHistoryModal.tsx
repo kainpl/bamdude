@@ -11,6 +11,15 @@ interface Props {
   printerId: number;
 }
 
+// Result unit per tower mode — implied by cali_mode (the DB stores a bare
+// Float). Kept in sync with CalibrationTowerFinishPage's unit map.
+const TOWER_UNITS: Record<string, string> = {
+  vfa_tower: 'mm/s',
+  vol_speed_tower: 'mm³/s',
+  temp_tower: '°C',
+  retraction_tower: 'mm',
+};
+
 function groupByNozzle<T extends { nozzle_diameter: number; nozzle_volume_type: string }>(
   rows: T[],
 ) {
@@ -157,6 +166,8 @@ function BamDudeRow({
         <div className="text-xs text-bambu-gray font-mono mt-0.5">
           {r.pa_k_value != null && `K = ${r.pa_k_value.toFixed(4)}  `}
           {r.flow_ratio != null && `flow = ${r.flow_ratio.toFixed(4)}  `}
+          {r.tower_result != null &&
+            `${r.tower_result}${TOWER_UNITS[r.cali_mode] ? ` ${TOWER_UNITS[r.cali_mode]}` : ''}  `}
           {r.nozzle_id && `nozzle = ${r.nozzle_id}  `}
           {r.source} · {new Date(r.created_at).toLocaleDateString()}
         </div>

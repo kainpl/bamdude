@@ -52,8 +52,15 @@ _EXPECTED_NON_DISABLED: dict[CaliMode, ModeState] = {
     # Phase 6 (Vol Speed Tower) — promoted to PRODUCTION 2026-05-17.
     # Geometry + 4-level overrides bake into the 3MF; the per-layer
     # outer-wall speed ramp is applied post-slice by
-    # calib_vol_speed_patcher on both the dispatch and /slice-only paths.
+    # calib_speed_ramp_patcher on both the dispatch and /slice-only paths.
     CaliMode.VOL_SPEED_TOWER: ModeState.PRODUCTION,
+    # Phase 5 (VFA Tower) — promoted to PRODUCTION 2026-05-18. Geometry +
+    # 4-level overrides bake into the 3MF; the per-layer outer-wall speed
+    # ramp (banded per 5 mm) is applied post-slice by the *precise* patcher
+    # calib_speed_ramp_patcher.patch_vfa_ramp on both the dispatch and
+    # /slice-only paths. Verification signed off: re-sliced output matched
+    # the Orca-desktop reference 0 feedrate mismatches on all 425 layers.
+    CaliMode.VFA_TOWER: ModeState.PRODUCTION,
 }
 
 

@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import select
 
 from backend.app.models.calibration_session import CalibrationSession
+from backend.app.models.filament_calibration import FilamentCalibration
 from backend.app.services.bambu_mqtt import ExtrusionCaliResult
 from backend.app.services.calibration_constants import CaliMethod, CaliMode
 from backend.app.services.calibration_service import (
@@ -650,6 +651,107 @@ async def test_submit_manual_flow_fine_saves_combined(
     assert len(out.saved_rows) == 1
     # 1.05 * (100+2)/100 = 1.071
     assert abs(out.saved_rows[0].flow_ratio - 1.071) < 1e-9
+
+
+# ---------- submit_manual_result — tower modes ----------
+
+
+def _tower_session(printer_id: int, *, cali_mode: str = "vfa_tower", status: str = "saved") -> CalibrationSession:
+    """A tower-mode calibration session ready for a manual result.
+
+    Tower prints land the session at ``saved`` (the on-complete handler
+    flips it straight there) — the operator records the measured result
+    from the finish page afterwards.
+    """
+    return CalibrationSession(
+        printer_id=printer_id,
+        user_id=None,
+        cali_mode=cali_mode,
+        method="manual",
+        nozzle_diameter=0.4,
+        nozzle_volume_type="standard",
+        extruder_id=0,
+        filaments_json=json.dumps(
+            [{"ams_id": 0, "slot_id": 0, "tray_id": 0, "filament_id": "GFG00", "setting_id": ""}]
+        ),
+        status=status,
+        stage=1,
+    )
+
+
+@pytest.mark.asyncio
+async def test_submit_manual_tower_saves_inert_row(service, db_session, printer_factory, mock_client):
+    """A VFA tower result lands as an is_active=False filament_calibration
+    row — tower_result set, pa_k_value / flow_ratio NULL, no MQTT push."""
+    printer = await printer_factory(model="P1S")
+    s = _tower_session(printer.id)
+    db_session.add(s)
+    await db_session.commit()
+    await db_session.refresh(s)
+
+    with patch("backend.app.services.calibration_service.printer_manager") as pm:
+        pm.get_client.return_value = mock_client
+        out = await service.submit_manual_result(db=db_session, session_id=s.id, tower_result=130.0)
+
+    assert len(out.saved_rows) == 1
+    row = out.saved_rows[0]
+    assert row.tower_result == 130.0
+    assert row.pa_k_value is None
+    assert row.flow_ratio is None
+    assert row.is_active is False
+    assert row.cali_mode == "vfa_tower"
+    assert row.source == "manual"
+    # A tower row is an inert farm record — nothing is pushed to the printer.
+    mock_client.extrusion_cali_set.assert_not_called()
+    mock_client.extrusion_cali_sel.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_submit_manual_tower_requires_tower_result(service, db_session, printer_factory):
+    """Tower modes need a tower_result — without one, submit raises."""
+    printer = await printer_factory(model="P1S")
+    s = _tower_session(printer.id, cali_mode="vol_speed_tower")
+    db_session.add(s)
+    await db_session.commit()
+    await db_session.refresh(s)
+
+    with pytest.raises(ValueError, match="tower_result required"):
+        await service.submit_manual_result(db=db_session, session_id=s.id)
+
+
+@pytest.mark.asyncio
+async def test_submit_manual_tower_keeps_pa_row_active(service, db_session, printer_factory, mock_client):
+    """Saving a tower result must NOT deactivate the combo's active PA row.
+
+    The tower row is inert (is_active=False) — it never touches the
+    partial-unique active index, so the K-profile row stays in force.
+    """
+    printer = await printer_factory(model="P1S")
+    pa_row = FilamentCalibration(
+        printer_id=printer.id,
+        filament_id="GFG00",
+        nozzle_diameter=0.4,
+        nozzle_volume_type="standard",
+        extruder_id=0,
+        pa_k_value=0.025,
+        cali_mode="pa_tower",
+        source="manual",
+        is_active=True,
+        name="pa_tower K=0.0250",
+    )
+    db_session.add(pa_row)
+    s = _tower_session(printer.id)
+    db_session.add(s)
+    await db_session.commit()
+    await db_session.refresh(pa_row)
+    await db_session.refresh(s)
+
+    with patch("backend.app.services.calibration_service.printer_manager") as pm:
+        pm.get_client.return_value = mock_client
+        await service.submit_manual_result(db=db_session, session_id=s.id, tower_result=14.5)
+
+    await db_session.refresh(pa_row)
+    assert pa_row.is_active is True
 
 
 # ---------- submit_auto_result ----------

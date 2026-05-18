@@ -291,6 +291,79 @@ def apply_vol_speed_printer_overrides(printer_json: str, *, nozzle_diameter: flo
     return json.dumps(data)
 
 
+def apply_vfa_process_overrides(process_json: str) -> str:
+    """Patch a process-preset JSON with VFA Tower hardcodes.
+
+    Process-level subset of BS/Orca ``calib_VFA`` — see
+    ``temp/vfa-calibration-bs-orca-analysis.md`` §4.1. Object-level
+    overrides (wall_loops, shells, brim, …) are applied at the per-object
+    metadata layer by the 3MF writer; only the process-preset keys need
+    re-applying here so the sidecar's ``--load-settings`` doesn't clobber
+    them. ``enable_support=0`` because spiral/vase mode rejects supports
+    (slicer exit -18) — the CLI path doesn't run BS's GUI cascade.
+    """
+    try:
+        data = json.loads(process_json)
+    except (ValueError, TypeError):
+        logger.warning("apply_vfa_process_overrides: input not valid JSON; passing through")
+        return process_json
+    if not isinstance(data, dict):
+        return process_json
+
+    _set(data, "spiral_mode", "1")
+    _set(data, "timelapse_type", "0")  # tlTraditional
+    _set(data, "enable_wrapping_detection", "0")
+    _set(data, "enable_height_slowdown", "0")
+    _set(data, "enable_support", "0")
+    # Orca calib_VFA sets bottom_shell_layers at the *process* level
+    # (Plater.cpp:13266). The 3MF writer also bakes it as a per-object
+    # override, but mirroring it here keeps the sliced
+    # project_settings.config diff-clean against the Orca-desktop reference.
+    _set(data, "bottom_shell_layers", "1")
+    return json.dumps(data)
+
+
+def apply_vfa_filament_overrides(filament_json: str) -> str:
+    """Patch a filament-preset JSON with VFA Tower hardcodes.
+
+    ``slow_down_layer_time=0`` kills the min-layer-time slowdown that
+    would mask the speed ramp — a per-filament list option, keep the
+    ``[str]`` shape. ``filament_max_volumetric_speed`` is deliberately
+    **not** overridden: Orca's ``calib_VFA`` leaves it at the chosen
+    filament preset's real value (BS inflates it to 200, but the
+    operator's actual volumetric cap matters for the non-ramped parts of
+    the slice — bottom shell, etc. — and our patcher already owns the
+    outer-wall feedrate).
+    """
+    try:
+        data = json.loads(filament_json)
+    except (ValueError, TypeError):
+        return filament_json
+    if not isinstance(data, dict):
+        return filament_json
+
+    _set(data, "slow_down_layer_time", ["0"])
+    return json.dumps(data)
+
+
+def apply_vfa_printer_overrides(printer_json: str) -> str:
+    """Patch a printer-preset JSON with VFA Tower hardcodes.
+
+    ``resonance_avoidance=0`` (Orca ``calib_VFA``) — resonance avoidance
+    would actively fight the VFA test. Unlike Vol Speed, VFA keeps the
+    preset's layer height, so there is no ``max_layer_height`` bump.
+    """
+    try:
+        data = json.loads(printer_json)
+    except (ValueError, TypeError):
+        return printer_json
+    if not isinstance(data, dict):
+        return printer_json
+
+    _set(data, "resonance_avoidance", "0")
+    return json.dumps(data)
+
+
 def apply_pa_tower_process_overrides(process_json: str) -> str:
     """Patch a process-preset JSON with PA Tower hardcodes
     (`Plater.cpp:12812`). `enable_wrapping_detection=0` is the only

@@ -69,9 +69,13 @@ class CalibModeVerificationOnlyError(Exception):
     translate this to 409 with error_code='mode_verification_only'."""
 
 
-# Tower modes are print-and-finish — no save dialog, no filament_calibration
-# row. The dispatch on-complete handler flips the session straight to
-# "saved" instead of "awaiting_user_input".
+# Tower modes are print-and-eyeball — no slicer-applied result, so the
+# dispatch on-complete handler flips the session straight to "saved"
+# instead of "awaiting_user_input". The operator may still record a
+# measured result afterwards: the finish-page calculator posts it back
+# through ``submit_manual_result`` → ``save_tower_result``, which writes an
+# inert ``filament_calibration`` row (``is_active=False``, no MQTT) as a
+# farm record.
 TOWER_MODES = frozenset(
     {
         CaliMode.TEMP_TOWER,
@@ -522,6 +526,9 @@ class CalibrationService:
                             apply_pa_pattern_process_overrides,
                             apply_pa_tower_filament_overrides,
                             apply_pa_tower_process_overrides,
+                            apply_vfa_filament_overrides,
+                            apply_vfa_printer_overrides,
+                            apply_vfa_process_overrides,
                             apply_vol_speed_filament_overrides,
                             apply_vol_speed_printer_overrides,
                             apply_vol_speed_process_overrides,
@@ -548,6 +555,10 @@ class CalibrationService:
                                 printer_json, nozzle_diameter=nozzle_diameter
                             )
                             filament_jsons = [apply_vol_speed_filament_overrides(f) for f in filament_jsons]
+                        elif cali_mode == CaliMode.VFA_TOWER:
+                            process_json = apply_vfa_process_overrides(process_json)
+                            printer_json = apply_vfa_printer_overrides(printer_json)
+                            filament_jsons = [apply_vfa_filament_overrides(f) for f in filament_jsons]
 
                         slice_result = await svc.slice_with_profiles(
                             model_bytes=bake_bytes,
@@ -567,7 +578,7 @@ class CalibrationService:
             # feedrate ourselves — same patch the /slice-only path runs.
             slice_bytes = slice_result.content
             if cali_mode == CaliMode.VOL_SPEED_TOWER:
-                from backend.app.services.calib_vol_speed_patcher import patch_vol_speed_ramp
+                from backend.app.services.calib_speed_ramp_patcher import patch_vol_speed_ramp
 
                 try:
                     slice_bytes = patch_vol_speed_ramp(
@@ -578,6 +589,21 @@ class CalibrationService:
                     )
                 except (KeyError, ValueError) as exc:
                     raise ValueError(f"Vol Speed ramp patch failed: {exc}") from exc
+            elif cali_mode == CaliMode.VFA_TOWER:
+                # VFA shares the engine-side speed-ramp trap (Calib_VFA_Tower
+                # is a GUI-only Print flag); rewrite the banded outer-wall
+                # feedrate with the precise patcher — same patch /slice-only
+                # runs. start/step are linear mm/s — no volumetric transform.
+                from backend.app.services.calib_speed_ramp_patcher import patch_vfa_ramp
+
+                try:
+                    slice_bytes = patch_vfa_ramp(
+                        slice_bytes,
+                        start=float(spec_with_bed["start"]),
+                        step=float(spec_with_bed["step"]),
+                    )
+                except (KeyError, ValueError) as exc:
+                    raise ValueError(f"VFA ramp patch failed: {exc}") from exc
 
             # Replace the slicer-generated placeholder-cube preview PNGs
             # with our branded "PA Test" thumbnail so library /
@@ -685,12 +711,18 @@ class CalibrationService:
         coarse_modifier: int | None = None,
         skip_fine: bool = False,
         fine_modifier: int | None = None,
+        tower_result: float | None = None,
     ) -> ManualResultOut:
         s = (await db.execute(select(CalibrationSession).where(CalibrationSession.id == session_id))).scalar_one()
-        if s.status != "awaiting_user_input":
-            raise ValueError(f"session not awaiting input (status={s.status})")
-
         cm = CaliMode(s.cali_mode)
+
+        # PA / Flow saves happen at the "awaiting_user_input" step. Tower
+        # sessions land at "saved" (on-complete handler), and the operator
+        # records the measured result from the finish page afterwards — so
+        # tower modes are also allowed through from "saved".
+        _tower = is_tower_mode(cm)
+        if s.status != "awaiting_user_input" and not (_tower and s.status == "saved"):
+            raise ValueError(f"session not awaiting input (status={s.status})")
 
         if cm in (CaliMode.PA_LINE, CaliMode.PA_PATTERN, CaliMode.PA_TOWER):
             # Two save paths:
@@ -758,7 +790,58 @@ class CalibrationService:
             )
             return ManualResultOut(saved_rows=[row])
 
+        if _tower:
+            if tower_result is None:
+                raise ValueError(f"tower_result required for mode {cm}")
+            row = await self.save_tower_result(db=db, session=s, tower_result=tower_result)
+            return ManualResultOut(saved_rows=[row])
+
         raise ValueError(f"submit_manual_result unsupported for mode {cm}")
+
+    async def save_tower_result(
+        self,
+        *,
+        db: AsyncSession,
+        session: CalibrationSession,
+        tower_result: float,
+    ) -> FilamentCalibration:
+        """Persist a tower-test result as an inert ``filament_calibration`` row.
+
+        Tower modes (VFA, Vol Speed; later Temp, Retraction) are
+        print-and-eyeball: the value is a slicer-side setting with no
+        printer runtime knob, so there is nothing to push or auto-bind.
+        The row is kept purely as a farm record — written ``is_active=False``
+        (so it never collides with the partial-unique active index, and
+        never deactivates the combo's PA / Flow K-profile row), with no MQTT
+        and no ``cali_idx`` binding. ``pa_k_value`` / ``flow_ratio`` stay
+        NULL; ``tower_result`` carries the value, unit implied by ``cali_mode``.
+        """
+        fil = json.loads(session.filaments_json)[0]
+        new_row = FilamentCalibration(
+            printer_id=session.printer_id,
+            filament_id=fil["filament_id"],
+            filament_setting_id=fil.get("setting_id") or None,
+            nozzle_diameter=session.nozzle_diameter,
+            nozzle_volume_type=session.nozzle_volume_type,
+            extruder_id=session.extruder_id,
+            tower_result=tower_result,
+            cali_mode=session.cali_mode,
+            source="manual",
+            is_active=False,
+            name=f"{session.cali_mode} {tower_result:g}",
+            nozzle_id=generate_nozzle_id(NozzleVolumeType(session.nozzle_volume_type), session.nozzle_diameter),
+            calibrated_by_user_id=session.user_id,
+        )
+        db.add(new_row)
+        session.status = "saved"
+        await db.commit()
+        await db.refresh(new_row)
+        await broadcast_calibration_event(
+            printer_id=session.printer_id,
+            event="saved",
+            payload={"session_id": session.id, "filament_calibration_id": new_row.id},
+        )
+        return new_row
 
     async def _start_flow_rate_stage2(
         self,

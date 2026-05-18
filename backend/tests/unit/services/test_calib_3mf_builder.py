@@ -14,6 +14,7 @@ _REGISTERED: set[CaliMode] = {
     CaliMode.PA_PATTERN,  # Phase 2
     CaliMode.PA_LINE,  # Phase 9 (verification)
     CaliMode.VOL_SPEED_TOWER,  # Phase 6 (production)
+    CaliMode.VFA_TOWER,  # Phase 5 (verification)
 }
 
 
