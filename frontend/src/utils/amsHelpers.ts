@@ -195,8 +195,20 @@ export function autoMatchFilament(
   req: { type?: string; color?: string; nozzle_id?: number | null },
   loadedFilaments: { globalTrayId: number; type?: string; color?: string; extruderId?: number }[],
   usedTrayIds: Set<number>,
+  preferredTrayId?: number | null,
 ): typeof loadedFilaments[number] | undefined {
   const nozzleFilaments = filterFilamentsByNozzle(loadedFilaments, req.nozzle_id);
+
+  // One-colour print: prefer the spool already loaded in the extruder
+  // (tray_now) over an AMS swap. Type still gates. See matchLoadedExtruderTray.
+  if (preferredTrayId != null) {
+    const extruderTray = matchLoadedExtruderTray(
+      req,
+      nozzleFilaments.filter((f) => !usedTrayIds.has(f.globalTrayId)),
+      preferredTrayId,
+    );
+    if (extruderTray) return extruderTray;
+  }
 
   const exactMatch = nozzleFilaments.find(
     (f) =>
@@ -219,6 +231,32 @@ export function autoMatchFilament(
           (f) => !usedTrayIds.has(f.globalTrayId) && filamentTypesCompatible(f.type, req.type)
         );
   return exactMatch ?? similarMatch ?? typeOnlyMatch;
+}
+
+/**
+ * For a single-filament (one-colour) print, return the spool currently
+ * loaded into the extruder (`tray_now`) when it is among the available
+ * candidates and type-compatible with the requirement.
+ *
+ * Rationale: for a one-colour job the operator treats colour as cosmetic
+ * and would rather print from whatever spool is already loaded than trigger
+ * an AMS swap. Callers use this ahead of the colour-match cascade so the
+ * auto-mapping defaults to the loaded slot instead of slot 0. Type still
+ * gates — a PETG job won't match a PLA loaded slot, and the caller then
+ * falls back to normal type/colour matching.
+ *
+ * `candidates` must already be filtered to free + correct-nozzle trays.
+ * `trayNow` 255 is the Bambu sentinel for "nothing loaded" and is ignored.
+ */
+export function matchLoadedExtruderTray<T extends { globalTrayId: number; type?: string }>(
+  req: { type?: string },
+  candidates: T[],
+  trayNow: number | null | undefined,
+): T | undefined {
+  if (trayNow == null || trayNow === 255) return undefined;
+  return candidates.find(
+    (f) => f.globalTrayId === trayNow && filamentTypesCompatible(f.type, req.type),
+  );
 }
 
 /**

@@ -11,6 +11,7 @@ import {
 import {
   normalizeColorForCompare,
   colorsAreSimilar,
+  matchLoadedExtruderTray,
 } from '../utils/amsHelpers';
 
 /**
@@ -88,7 +89,8 @@ export interface UseMultiPrinterFilamentMappingResult {
 function computeMatchDetails(
   filamentReqs: FilamentRequirement[] | undefined,
   loadedFilaments: LoadedFilament[],
-  manualMappings: Record<number, number>
+  manualMappings: Record<number, number>,
+  trayNow: number | null | undefined
 ): { exactMatches: number; typeOnlyMatches: number; missingTypes: number; totalSlots: number; status: PrinterMatchStatus } {
   if (!filamentReqs || filamentReqs.length === 0) {
     return { exactMatches: 0, typeOnlyMatches: 0, missingTypes: 0, totalSlots: 0, status: 'full' };
@@ -98,6 +100,8 @@ function computeMatchDetails(
   let typeOnlyMatches = 0;
   let missingTypes = 0;
   const usedTrayIds = new Set<number>(Object.values(manualMappings));
+  // One-colour print: the loaded-in-extruder tray is the auto default.
+  const isSingleFilament = filamentReqs.length === 1;
 
   for (const req of filamentReqs) {
     const slotId = req.slot_id || 0;
@@ -133,6 +137,9 @@ function computeMatchDetails(
       }
     }
 
+    const extruderTray = isSingleFilament
+      ? matchLoadedExtruderTray(req, candidates, trayNow)
+      : undefined;
     const exactMatch = candidates.find(
       (f) =>
         f.type?.toUpperCase() === req.type?.toUpperCase() &&
@@ -151,18 +158,23 @@ function computeMatchDetails(
         : candidates.find(
             (f) => f.type?.toUpperCase() === req.type?.toUpperCase()
           );
-    const loaded = exactMatch ?? similarMatch ?? typeOnlyMatch;
+    const loaded = extruderTray ?? exactMatch ?? similarMatch ?? typeOnlyMatch;
 
     if (loaded) {
       usedTrayIds.add(loaded.globalTrayId);
     }
 
-    if (exactMatch || similarMatch) {
-      exactMatches++;
-    } else if (typeOnlyMatch) {
-      typeOnlyMatches++;
-    } else {
+    // Classify the actually-picked tray: type is always compatible, so it
+    // counts as an exact match when the colour also matches, else type-only.
+    if (!loaded) {
       missingTypes++;
+    } else if (
+      normalizeColorForCompare(loaded.color) === normalizeColorForCompare(req.color) ||
+      colorsAreSimilar(loaded.color, req.color)
+    ) {
+      exactMatches++;
+    } else {
+      typeOnlyMatches++;
     }
   }
 
@@ -192,6 +204,8 @@ function computeMappingWithOverrides(
 
   const usedTrayIds = new Set<number>(Object.values(manualMappings));
   const comparisons: { slot_id: number; globalTrayId: number }[] = [];
+  // One-colour print: the loaded-in-extruder tray is the auto default.
+  const isSingleFilament = filamentReqs.filaments.length === 1;
 
   for (const req of filamentReqs.filaments) {
     const slotId = req.slot_id || 0;
@@ -211,6 +225,9 @@ function computeMappingWithOverrides(
       }
     }
 
+    const extruderTray = isSingleFilament
+      ? matchLoadedExtruderTray(req, candidates, printerStatus?.tray_now)
+      : undefined;
     const exactMatch = candidates.find(
       (f) =>
         f.type?.toUpperCase() === req.type?.toUpperCase() &&
@@ -229,7 +246,7 @@ function computeMappingWithOverrides(
         : candidates.find(
             (f) => f.type?.toUpperCase() === req.type?.toUpperCase()
           );
-    const loaded = exactMatch ?? similarMatch ?? typeOnlyMatch;
+    const loaded = extruderTray ?? exactMatch ?? similarMatch ?? typeOnlyMatch;
 
     if (loaded) {
       usedTrayIds.add(loaded.globalTrayId);
@@ -310,7 +327,8 @@ export function useMultiPrinterFilamentMapping(
       const matchDetails = computeMatchDetails(
         filamentReqs?.filaments,
         loadedFilaments,
-        effectiveMappings
+        effectiveMappings,
+        printerStatus?.tray_now
       );
 
       return {

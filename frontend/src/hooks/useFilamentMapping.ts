@@ -6,6 +6,7 @@ import {
   colorsAreSimilar,
   formatSlotLabel,
   getGlobalTrayId,
+  matchLoadedExtruderTray,
 } from '../utils/amsHelpers';
 import type { PrinterStatus } from '../api/client';
 
@@ -112,6 +113,10 @@ export function computeAmsMapping(
   // doesn't apply when it's installed (upstream #1162).
   const ftsActive = printerStatus?.fila_switch?.installed === true;
 
+  // One-colour print: default the auto-mapping to the spool already loaded
+  // in the extruder (tray_now) rather than slot 0. See matchLoadedExtruderTray.
+  const isSingleFilament = filamentReqs.filaments.length === 1;
+
   // Track which trays have been assigned to avoid duplicates
   const usedTrayIds = new Set<number>();
 
@@ -128,6 +133,10 @@ export function computeAmsMapping(
     if (req.nozzle_id != null && !ftsActive) {
       available = available.filter((f) => f.extruderId === req.nozzle_id);
     }
+
+    const extruderTray = isSingleFilament
+      ? matchLoadedExtruderTray(req, available, printerStatus?.tray_now)
+      : undefined;
 
     let idxMatch: LoadedFilament | undefined;
     let exactMatch: LoadedFilament | undefined;
@@ -183,7 +192,7 @@ export function computeAmsMapping(
       }
     }
 
-    const loaded = idxMatch || exactMatch || similarMatch || typeOnlyMatch || undefined;
+    const loaded = extruderTray || idxMatch || exactMatch || similarMatch || typeOnlyMatch || undefined;
 
     // Mark this tray as used so it won't be assigned to another slot
     if (loaded) {
@@ -319,6 +328,10 @@ export function useFilamentMapping(
   const filamentComparison = useMemo(() => {
     if (!filamentReqs?.filaments || filamentReqs.filaments.length === 0) return [];
 
+    // One-colour print: default the auto-mapping to the spool already loaded
+    // in the extruder (tray_now) rather than slot 0. See matchLoadedExtruderTray.
+    const isSingleFilament = filamentReqs.filaments.length === 1;
+
     // Track which trays have been assigned to avoid duplicates
     // First, mark all manually assigned trays as used
     const usedTrayIds = new Set<number>(Object.values(manualMappings));
@@ -372,6 +385,10 @@ export function useFilamentMapping(
       if (req.nozzle_id != null && !ftsActive) {
         available = available.filter((f) => f.extruderId === req.nozzle_id);
       }
+
+      const extruderTray = isSingleFilament
+        ? matchLoadedExtruderTray(req, available, printerStatus?.tray_now)
+        : undefined;
 
       let idxMatch: LoadedFilament | undefined;
       let exactMatch: LoadedFilament | undefined;
@@ -427,7 +444,7 @@ export function useFilamentMapping(
         }
       }
 
-      const loaded = idxMatch || exactMatch || similarMatch || typeOnlyMatch || undefined;
+      const loaded = extruderTray || idxMatch || exactMatch || similarMatch || typeOnlyMatch || undefined;
 
       // Mark this tray as used so it won't be assigned to another slot
       if (loaded) {
@@ -435,19 +452,20 @@ export function useFilamentMapping(
       }
 
       const hasFilament = !!loaded;
+      // Every match path (cascade tiers + extruderTray) requires a
+      // type-compatible tray, so anything loaded is a type match.
       const typeMatch = hasFilament;
-      // idxMatch is always considered a color match (same spool = same color)
-      const colorMatch = !!idxMatch || !!exactMatch || !!similarMatch;
+      // idxMatch is always a colour match (same spool = same colour);
+      // otherwise compare the picked tray's colour directly — covers
+      // extruderTray, which is chosen on type alone.
+      const colorMatch =
+        hasFilament &&
+        (!!idxMatch ||
+          normalizeColorForCompare(loaded?.color) === normalizeColorForCompare(req.color) ||
+          colorsAreSimilar(loaded?.color, req.color));
 
-      // Status: match (tray_info_idx, type+color, or similar color), type_only (type ok, color very different), mismatch (type not found)
-      let status: FilamentStatus;
-      if (idxMatch || exactMatch || similarMatch) {
-        status = 'match';
-      } else if (typeOnlyMatch) {
-        status = 'type_only';
-      } else {
-        status = 'mismatch';
-      }
+      // Status: match (type+colour), type_only (type ok, colour off), mismatch (type not found)
+      const status: FilamentStatus = !hasFilament ? 'mismatch' : colorMatch ? 'match' : 'type_only';
 
       return {
         ...req,
@@ -459,7 +477,7 @@ export function useFilamentMapping(
         isManual: false,
       };
     });
-  }, [filamentReqs, loadedFilaments, manualMappings, ftsActive]);
+  }, [filamentReqs, loadedFilaments, manualMappings, ftsActive, printerStatus]);
 
   // Build AMS mapping from matched filaments
   // Format: array matching 3MF filament slot structure

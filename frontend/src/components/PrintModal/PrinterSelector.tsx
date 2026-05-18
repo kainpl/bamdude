@@ -94,7 +94,14 @@ function InlineMappingEditor({
       isManual = true;
     } else {
       const usedTrayIds = new Set<number>(Object.values(printerResult.config.manualMappings));
-      loaded = autoMatchFilament(req, printerResult.loadedFilaments, usedTrayIds) as LoadedFilament | undefined;
+      // One-colour print: default to the spool already loaded in the extruder.
+      const preferredTrayId = filamentReqs.length === 1 ? printerResult.status?.tray_now : undefined;
+      loaded = autoMatchFilament(
+        req,
+        printerResult.loadedFilaments,
+        usedTrayIds,
+        preferredTrayId,
+      ) as LoadedFilament | undefined;
     }
 
     // Determine status
