@@ -4166,6 +4166,9 @@ export default {
       startTemp: 'Start temp (°C)',
       endTemp: 'End temp (°C)',
       tempHint: 'Temperature descends 5 °C every 10 mm band. Start must be ≥ End + 5.',
+      startLength: 'Start length (mm)',
+      endLength: 'End length (mm)',
+      stepLength: 'Step (mm)',
       layerHeight: 'Layer height (mm)',
       nozzleDia: 'Nozzle diameter (mm)',
       paPatternFixedRangeNote:

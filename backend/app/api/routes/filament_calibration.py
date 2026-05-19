@@ -650,6 +650,8 @@ async def slice_calibration_for_verification(
                     apply_pa_pattern_process_overrides,
                     apply_pa_tower_filament_overrides,
                     apply_pa_tower_process_overrides,
+                    apply_retraction_printer_overrides,
+                    apply_retraction_process_overrides,
                     apply_temp_filament_overrides,
                     apply_temp_printer_overrides,
                     apply_temp_process_overrides,
@@ -685,6 +687,9 @@ async def slice_calibration_for_verification(
                     printer_json = apply_temp_printer_overrides(printer_json)
                     _temp_start = int(round(float(spec_with_bed.get("start", 0))))
                     filament_jsons = [apply_temp_filament_overrides(f, start_temp=_temp_start) for f in filament_jsons]
+                elif body.cali_mode == CaliMode.RETRACTION_TOWER:
+                    process_json = apply_retraction_process_overrides(process_json)
+                    printer_json = apply_retraction_printer_overrides(printer_json)
 
                 # Log compat-relevant fields from each JSON so when BS rejects
                 # the combo we can see what the resolver actually produced
@@ -727,8 +732,14 @@ async def slice_calibration_for_verification(
     # rewrite the outer-wall feedrate (Vol Speed / VFA) or insert the M104
     # temperature ramp (Temp) ourselves; see calib_speed_ramp_patcher.
     sliced_content = result.content
-    if body.cali_mode in (CaliMode.VOL_SPEED_TOWER, CaliMode.VFA_TOWER, CaliMode.TEMP_TOWER):
+    if body.cali_mode in (
+        CaliMode.VOL_SPEED_TOWER,
+        CaliMode.VFA_TOWER,
+        CaliMode.TEMP_TOWER,
+        CaliMode.RETRACTION_TOWER,
+    ):
         from backend.app.services.calib_speed_ramp_patcher import (
+            patch_retraction_tower,
             patch_temp_tower,
             patch_vfa_ramp,
             patch_vol_speed_ramp,
@@ -745,6 +756,12 @@ async def slice_calibration_for_verification(
                 )
             elif body.cali_mode == CaliMode.VFA_TOWER:
                 sliced_content = patch_vfa_ramp(
+                    sliced_content,
+                    start=float(_spec["start"]),
+                    step=float(_spec["step"]),
+                )
+            elif body.cali_mode == CaliMode.RETRACTION_TOWER:
+                sliced_content = patch_retraction_tower(
                     sliced_content,
                     start=float(_spec["start"]),
                     step=float(_spec["step"]),

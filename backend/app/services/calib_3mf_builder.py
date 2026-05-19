@@ -26,6 +26,7 @@ from backend.app.services.calib_3mf_writer import (
 from backend.app.services.calib_pa_line import build_pa_line_3mf
 from backend.app.services.calib_pa_pattern import build_pa_pattern_3mf
 from backend.app.services.calib_pa_tower import build_pa_tower_3mf
+from backend.app.services.calib_retraction import build_retraction_3mf
 from backend.app.services.calib_temp import build_temp_3mf
 from backend.app.services.calib_vfa import build_vfa_3mf
 from backend.app.services.calib_vol_speed import build_vol_speed_3mf
@@ -67,7 +68,12 @@ _BUILDERS: dict[CaliMode, ModeBuilder] = {
     # overrides; the per-layer M104 ramp is inserted post-slice
     # (calib_speed_ramp_patcher.patch_temp_tower).
     CaliMode.TEMP_TOWER: build_temp_3mf,
-    CaliMode.RETRACTION_TOWER: _not_implemented,
+    # Phase 4 — VERIFICATION: builder bakes the Z-trimmed tower + overrides.
+    # The per-layer retraction-length ramp patcher is intentionally NOT
+    # wired yet — a vanilla sidecar slice holds the preset's constant
+    # retraction length, the baseline an operator inspects before the
+    # patcher is written (see calib_retraction module docstring).
+    CaliMode.RETRACTION_TOWER: build_retraction_3mf,
     # Phase 5 — VERIFICATION: builder bakes geometry + overrides; the
     # per-layer speed ramp is applied post-slice (calib_speed_ramp_patcher).
     CaliMode.VFA_TOWER: build_vfa_3mf,

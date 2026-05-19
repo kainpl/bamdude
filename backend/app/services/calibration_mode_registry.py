@@ -85,7 +85,20 @@ MODE_STATE: dict[CaliMode, ModeState] = {
     # boundary across all 250 layers; supports force-disabled. BOTH slice
     # paths patch — /slice-only and the start_calibration dispatch path.
     CaliMode.TEMP_TOWER: ModeState.PRODUCTION,
-    CaliMode.RETRACTION_TOWER: ModeState.DISABLED,
+    # Phase 4 — PRODUCTION (2026-05-19). The builder mesh-cuts the
+    # two-pillar tower (per body, capped) + bakes the overrides; the
+    # per-layer retraction-length ramp (engine-side
+    # ``Calib_Retraction_tower`` mutates the GCodeWriter's
+    # ``retraction_length``, never carried in the 3MF) is re-created
+    # post-slice by calib_speed_ramp_patcher (patch_retraction_tower) —
+    # it scales every retraction move so each layer's total retraction
+    # becomes ``start + floor(max(0, print_z - 0.4)) * step`` mm.
+    # Verification signed off: re-sliced output matched the Orca-desktop
+    # reference (engine ``; Calib_Retraction_tower`` comments) with 0
+    # mismatches on all 107 layers, both Orca and BS sidecar backends —
+    # including the uneven float-accumulated band boundaries. BOTH slice
+    # paths patch — /slice-only and the start_calibration dispatch path.
+    CaliMode.RETRACTION_TOWER: ModeState.PRODUCTION,
     # Phase 5 — PRODUCTION (2026-05-18). The builder bakes the tower
     # geometry + 4-level overrides; the per-layer outer-wall speed ramp is
     # rewritten into the sliced g-code by calib_speed_ramp_patcher

@@ -480,6 +480,16 @@ class SlicerApiService:
                 except (asyncio.CancelledError, Exception):
                     pass  # Polling errors must not fail the slice.
 
+        if response.status_code >= 400:
+            # The toast-facing message is capped at 500 chars by
+            # _format_sidecar_error, which buries the real CLI cause when
+            # the slicer dumps a long stdout. Log the full body here so
+            # the backend console always has the un-truncated failure.
+            logger.error(
+                "slicer sidecar %d body (full): %s",
+                response.status_code,
+                response.text[:8000],
+            )
         if response.status_code >= 500:
             raise SlicerApiServerError(f"Slicer CLI failed ({response.status_code}): {_format_sidecar_error(response)}")
         if response.status_code >= 400:
@@ -571,6 +581,16 @@ class SlicerApiService:
                 except (asyncio.CancelledError, Exception):
                     pass
 
+        if response.status_code >= 400:
+            # The toast-facing message is capped at 500 chars by
+            # _format_sidecar_error, which buries the real CLI cause when
+            # the slicer dumps a long stdout. Log the full body here so
+            # the backend console always has the un-truncated failure.
+            logger.error(
+                "slicer sidecar %d body (full): %s",
+                response.status_code,
+                response.text[:8000],
+            )
         if response.status_code >= 500:
             raise SlicerApiServerError(f"Slicer CLI failed ({response.status_code}): {_format_sidecar_error(response)}")
         if response.status_code >= 400:
@@ -647,6 +667,16 @@ class SlicerApiService:
                 except (asyncio.CancelledError, Exception):
                     pass
 
+        if response.status_code >= 400:
+            # The toast-facing message is capped at 500 chars by
+            # _format_sidecar_error, which buries the real CLI cause when
+            # the slicer dumps a long stdout. Log the full body here so
+            # the backend console always has the un-truncated failure.
+            logger.error(
+                "slicer sidecar %d body (full): %s",
+                response.status_code,
+                response.text[:8000],
+            )
         if response.status_code >= 500:
             raise SlicerApiServerError(f"Slicer CLI failed ({response.status_code}): {_format_sidecar_error(response)}")
         if response.status_code >= 400:

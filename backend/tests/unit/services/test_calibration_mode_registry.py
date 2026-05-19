@@ -69,6 +69,14 @@ _EXPECTED_NON_DISABLED: dict[CaliMode, ModeState] = {
     # re-sliced output carried the M104 ramp bit-identical to the
     # reference at every band boundary across all 250 layers.
     CaliMode.TEMP_TOWER: ModeState.PRODUCTION,
+    # Phase 4 (Retraction Tower) — promoted to PRODUCTION 2026-05-19. The
+    # builder mesh-cuts the two-pillar tower + bakes overrides; the
+    # per-layer retraction-length ramp is re-created post-slice by
+    # calib_speed_ramp_patcher.patch_retraction_tower (scales every
+    # retraction move) on both the dispatch and /slice-only paths.
+    # Verification signed off: re-sliced output matched the Orca-desktop
+    # engine reference with 0 mismatches on all 107 layers, both backends.
+    CaliMode.RETRACTION_TOWER: ModeState.PRODUCTION,
 }
 
 

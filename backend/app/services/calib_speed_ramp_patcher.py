@@ -1,15 +1,17 @@
 """Post-slice per-layer g-code patchers for the calibration towers —
-Volumetric Speed (W2 Phase 6), VFA (W2 Phase 5) and Temp (W2 Phase 3).
+Volumetric Speed (W2 Phase 6), VFA (W2 Phase 5), Temp (W2 Phase 3) and
+Retraction (W2 Phase 4).
 
 The speed towers ramp the outer-wall *feedrate*; the Temp tower ramps the
-nozzle *temperature*. BS/Orca produce these engine-side (the
-``Calib_Vol_speed_Tower`` / ``Calib_VFA_Tower`` / ``Calib_Temp_Tower``
+nozzle *temperature*; the Retraction tower ramps the *retraction length*.
+BS/Orca produce these engine-side (the ``Calib_Vol_speed_Tower`` /
+``Calib_VFA_Tower`` / ``Calib_Temp_Tower`` / ``Calib_Retraction_tower``
 cases in ``GCode.cpp``), but those branches fire only when
 ``Print::calib_mode()`` is set — a GUI-only in-memory flag that is **not
 carried in the 3MF**. A vanilla CLI / sidecar slice therefore produces a
 flat tower; BamDude re-creates the ramp post-slice.
 
-Two shapes of per-layer edit:
+Three shapes of per-layer edit:
 
 - **Rewrite** — Vol Speed / VFA mutate ``m_calib_config`` and emit no
   g-code line, so the slicer's existing bare ``G1 F`` per layer is
@@ -17,6 +19,10 @@ Two shapes of per-layer edit:
 - **Insert** — Temp's engine case actually appends an ``M104`` line, so
   the slicer (with ``calib_mode`` unset) emits *no* per-layer temperature
   command; the patcher *inserts* one per layer (:func:`patch_temp_tower`).
+- **Scale** — Retraction's engine case mutates the GCodeWriter's
+  ``retraction_length`` — the value behind *every* ``G1 E`` retraction
+  move, not a single line. The patcher *scales* every retraction move in
+  a layer by ``length(z) / preset_length`` (:func:`patch_retraction_tower`).
 
 BamDude re-creates the ramp by rewriting the per-layer feedrate in the
 sliced g-code. In spiral/vase mode the whole layer is one outer-wall
@@ -59,6 +65,7 @@ import logging
 import math
 import re
 import zipfile
+from collections import Counter
 from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
@@ -368,4 +375,149 @@ def patch_temp_tower(threemf_bytes: bytes, *, start: float) -> bytes:
         threemf_bytes,
         lambda t: _patch_gcode_insert_temp(t, lambda z: start - math.floor(z / 10.001) * 5.0),
         label="temp",
+    )
+
+
+# -- Retraction tower -----------------------------------------------------
+
+# A retraction move: a G0/G1 carrying an E word. The E-only deretract and
+# the F feedrate never trip the axis test (F is not X/Y/Z).
+_G_MOVE = re.compile(r"^G[01](?= |$)")
+_E_WORD = re.compile(r"(?<= )E(-?[0-9]*\.?[0-9]+)")
+_AXIS_WORD = re.compile(r"(?<= )[XYZ]-?[0-9.]")
+# End of the printable body — past here is filament / machine end g-code,
+# whose retraction moves (e.g. ``G1 E-0.8 ; retract``) must NOT be scaled.
+_END_GCODE_MARKERS = ("; filament end gcode", "; MACHINE_END_GCODE_START", "; EXECUTABLE_BLOCK_END")
+
+
+def _fmt_e(value: float) -> str:
+    """Format a scaled E value the way the slicer writes them — up to 5
+    decimal places, trailing zeros stripped, a bare ``0`` when zeroed."""
+    s = f"{value:.5f}"
+    if "." in s:
+        s = s.rstrip("0").rstrip(".")
+    return "0" if s in ("", "-", "-0") else s
+
+
+def _scale_retraction_line(line: str, factor: float) -> str | None:
+    """Scale the E word of a retraction / deretraction move by ``factor``.
+
+    Returns the rewritten line, or ``None`` when the line is not a
+    retraction move. In Bambu's relative-E (``M83``) g-code:
+
+    - **negative E** — a retract, pure (``G1 E-x``) or wipe-while-retract
+      (``G1 X.. Y.. E-x``); both are scaled.
+    - **E-only positive** — a deretract (``G1 E+x``); scaled.
+    - **positive E with an X/Y/Z word** — real wall extrusion; left alone.
+    """
+    stripped = line.rstrip("\r\n")
+    eol = line[len(stripped) :]
+    code, sep, comment = stripped.partition(";")
+    code_r = code.rstrip()
+    if not _G_MOVE.match(code_r):
+        return None
+    m = _E_WORD.search(code_r)
+    if not m:
+        return None
+    e = float(m.group(1))
+    if e == 0.0:
+        return None
+    if e > 0 and _AXIS_WORD.search(code_r):
+        return None  # real extrusion move — never touched
+    new_code = code[: m.start(1)] + _fmt_e(e * factor) + code[m.end(1) :]
+    return new_code + sep + comment + eol
+
+
+def _measure_retraction_length(lines: list[str], start_idx: int, end_idx: int) -> float | None:
+    """The slice's one constant preset retraction length, measured from
+    the g-code: the most common E-only positive (deretract) move in the
+    printable body. Measured rather than read from the config so it is
+    immune to printer/filament preset-precedence (a filament
+    ``filament_retraction_length`` overrides the printer value)."""
+    vals: list[float] = []
+    for i in range(start_idx, end_idx):
+        code = lines[i].split(";", 1)[0].rstrip()
+        if not _G_MOVE.match(code):
+            continue
+        m = _E_WORD.search(code)
+        if not m:
+            continue
+        e = float(m.group(1))
+        if e > 0 and not _AXIS_WORD.search(code):
+            vals.append(round(e, 5))
+    if not vals:
+        return None
+    return Counter(vals).most_common(1)[0][0]
+
+
+def _patch_gcode_retraction(text: str, start: float, step: float) -> tuple[str, int]:
+    """Scale every retraction move so each layer's retraction length is
+    ``start + floor(max(0, print_z - 0.4)) * step`` mm.
+
+    Verbatim from the ``Calib_Retraction_tower`` g-code case — banded,
+    1 mm per band. ``print_z`` is the **precise** running float-sum of the
+    per-layer layer height (the band boundary z = 1.4, 2.4, … lands on the
+    0.2 mm layer grid, so the rounded ``; Z_HEIGHT`` comment would flip a
+    band). Every retraction move in a layer is scaled by
+    ``length(z) / preset_length`` — structure-agnostic, so it handles both
+    BS's and Orca's differing wipe-while-retract splits, and keeps each
+    retract/deretract balanced because the factor is constant per layer.
+    """
+    lines = text.splitlines(keepends=True)
+    n = len(lines)
+
+    first = next((i for i, ln in enumerate(lines) if ln.startswith("; CHANGE_LAYER")), None)
+    if first is None:
+        return text, 0
+    body_end = n
+    for i in range(first, n):
+        s = lines[i].lstrip()
+        if any(s.startswith(mk) for mk in _END_GCODE_MARKERS):
+            body_end = i
+            break
+
+    retract_len = _measure_retraction_length(lines, first, body_end)
+    if not retract_len or retract_len <= 0:
+        return text, 0
+
+    accum_z = 0.0
+    factor = 0.0
+    patched = 0
+    for i in range(first, body_end):
+        line = lines[i]
+        if line.startswith("; CHANGE_LAYER"):
+            continue
+        ml = _LAYER_HEIGHT.match(line)
+        if ml:
+            # Running float-sum of the nominal layer height — bit-matches
+            # the engine's print_z accumulation (see _patch_gcode_precise).
+            accum_z += round(float(ml.group(1)), 3)
+            length = start + math.floor(max(0.0, accum_z - 0.4)) * step
+            factor = length / retract_len
+            continue
+        new = _scale_retraction_line(line, factor)
+        if new is not None:
+            lines[i] = new
+            patched += 1
+    return "".join(lines), patched
+
+
+def patch_retraction_tower(threemf_bytes: bytes, *, start: float, step: float) -> bytes:
+    """Rewrite a sliced Retraction-tower 3MF so each layer's retraction
+    length follows the BS/Orca ``Calib_Retraction_tower`` ramp.
+
+    Unlike the speed towers (rewrite one ``G1 F``) and Temp (insert one
+    ``M104``), the retraction engine case mutates the GCodeWriter's
+    ``retraction_length`` — the value behind *every* ``G1 E`` retraction
+    move. A vanilla slice holds them all at the preset's one constant
+    length; this patcher scales every retraction (pure retract + wipe-
+    while-retract) and every deretraction so each layer's total retraction
+    becomes ``start + floor(max(0, print_z - 0.4)) * step`` mm.
+
+    ``start`` / ``step`` are the operator's retraction sweep in mm.
+    """
+    return _apply_gcode_patch(
+        threemf_bytes,
+        lambda t: _patch_gcode_retraction(t, start, step),
+        label="retraction",
     )

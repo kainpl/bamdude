@@ -430,6 +430,60 @@ def apply_temp_printer_overrides(printer_json: str) -> str:
     return json.dumps(data)
 
 
+def apply_retraction_process_overrides(process_json: str) -> str:
+    """Patch a process-preset JSON with Retraction Tower hardcodes.
+
+    Process-level subset of BS/Orca ``calib_retraction`` — see
+    ``temp/retraction-tower-calibration-bs-orca-analysis.md`` §4.1.
+    ``enable_support=0`` is forced for the same reason as VFA / Temp: the
+    sidecar CLI has no GUI cascade to keep supports off. ``layer_height``
+    / ``initial_layer_print_height`` are pinned to 0.2 mm because the
+    retraction-length ramp bands by 1 mm of print Z (``floor(z - 0.4)``);
+    these are process-level keys — putting them in the per-object
+    metadata makes StaticPrintConfigs init reject the config (exit -100).
+    """
+    try:
+        data = json.loads(process_json)
+    except (ValueError, TypeError):
+        logger.warning("apply_retraction_process_overrides: input not valid JSON; passing through")
+        return process_json
+    if not isinstance(data, dict):
+        return process_json
+
+    _set(data, "enable_wrapping_detection", "0")
+    _set(data, "enable_support", "0")
+    _set(data, "layer_height", "0.2")
+    _set(data, "initial_layer_print_height", "0.2")
+    return json.dumps(data)
+
+
+def apply_retraction_printer_overrides(printer_json: str) -> str:
+    """Patch a printer-preset JSON with Retraction Tower hardcodes.
+
+    ``use_firmware_retraction=0`` (Orca ``calib_retraction``) is the
+    critical one — it forces slicer-side ``G1 E`` retraction moves rather
+    than firmware ``G10``/``G11``, so the per-layer retraction ramp is
+    post-patchable. ``resonance_avoidance=0`` joins the BS+Orca union, and
+    every ``max_layer_height`` entry below the 0.2 mm calibration layer
+    height is bumped up so the slicer accepts the forced layer height.
+    """
+    try:
+        data = json.loads(printer_json)
+    except (ValueError, TypeError):
+        return printer_json
+    if not isinstance(data, dict):
+        return printer_json
+
+    _set(data, "use_firmware_retraction", "0")
+    _set(data, "resonance_avoidance", "0")
+    mlh = data.get("max_layer_height")
+    if isinstance(mlh, list) and mlh:
+        bumped = [str(max(0.2, float(v))) if str(v).strip() else v for v in mlh]
+        if bumped != mlh:
+            _set(data, "max_layer_height", bumped)
+    return json.dumps(data)
+
+
 def apply_pa_tower_process_overrides(process_json: str) -> str:
     """Patch a process-preset JSON with PA Tower hardcodes
     (`Plater.cpp:12812`). `enable_wrapping_detection=0` is the only

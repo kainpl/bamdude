@@ -17,6 +17,8 @@ from backend.app.services.calib_preset_overrides import (
     apply_pa_pattern_process_overrides,
     apply_pa_tower_filament_overrides,
     apply_pa_tower_process_overrides,
+    apply_retraction_printer_overrides,
+    apply_retraction_process_overrides,
     apply_temp_filament_overrides,
     apply_temp_printer_overrides,
     apply_temp_process_overrides,
@@ -109,6 +111,40 @@ def test_temp_printer_overrides_disable_resonance_avoidance():
     preset = json.dumps({"resonance_avoidance": "1"})
     out = json.loads(apply_temp_printer_overrides(preset))
     assert out["resonance_avoidance"] == "0"
+
+
+def test_retraction_process_overrides_disable_wrapping_and_support():
+    preset = json.dumps({"enable_wrapping_detection": "1", "enable_support": "1"})
+    out = json.loads(apply_retraction_process_overrides(preset))
+    assert out["enable_wrapping_detection"] == "0"
+    assert out["enable_support"] == "0"
+
+
+def test_retraction_process_overrides_pin_layer_heights():
+    """layer_height / initial_layer_print_height are process-level keys —
+    pinned to 0.2 mm because the ramp bands by 1 mm of print Z. They must
+    NOT be carried as per-object metadata (StaticPrintConfigs exit -100)."""
+    preset = json.dumps({"layer_height": "0.28", "initial_layer_print_height": "0.32"})
+    out = json.loads(apply_retraction_process_overrides(preset))
+    assert out["layer_height"] == "0.2"
+    assert out["initial_layer_print_height"] == "0.2"
+
+
+def test_retraction_printer_overrides_force_slicer_retraction():
+    """use_firmware_retraction must be off so retraction is slicer-side
+    G1 E moves the patcher can rewrite, not firmware G10/G11."""
+    preset = json.dumps({"use_firmware_retraction": "1", "resonance_avoidance": "1"})
+    out = json.loads(apply_retraction_printer_overrides(preset))
+    assert out["use_firmware_retraction"] == "0"
+    assert out["resonance_avoidance"] == "0"
+
+
+def test_retraction_printer_overrides_bump_low_max_layer_height():
+    """max_layer_height entries below the 0.2 mm calibration layer height
+    are bumped up so the slicer accepts the forced layer height."""
+    preset = json.dumps({"max_layer_height": ["0.12", "0.25"]})
+    out = json.loads(apply_retraction_printer_overrides(preset))
+    assert out["max_layer_height"] == ["0.2", "0.25"]
 
 
 def test_overrides_passthrough_invalid_json():

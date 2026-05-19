@@ -446,13 +446,23 @@ def _load_stl_mesh(stl_bytes: bytes):
     import numpy as np
     import trimesh
 
-    mesh = trimesh.load(io.BytesIO(stl_bytes), file_type="stl", process=False)
+    # process=True + merge_vertices welds the per-triangle duplicate
+    # vertices STL stores. An STL has no vertex sharing — every triangle
+    # carries its own 3 copies. The slicer's STL importer welds them, but
+    # the 3MF .model importer reads explicit indices and does NOT (the
+    # format assumes the author already de-duplicated). Emitting an
+    # un-welded mesh into .model therefore yields a soup of disconnected
+    # triangles ("unclosed triangles" → broken slice). Welding here makes
+    # .model a properly indexed mesh — exactly what the slicer derives
+    # from the STL itself.
+    mesh = trimesh.load(io.BytesIO(stl_bytes), file_type="stl", process=True)
     if isinstance(mesh, trimesh.Scene):
         mesh = trimesh.util.concatenate(mesh.dump())
     if not isinstance(mesh, trimesh.Trimesh):
         raise ValueError("STL input did not decode to a usable mesh")
     if mesh.is_empty:
         raise ValueError("STL decoded to an empty mesh")
+    mesh.merge_vertices()
     bounds = mesh.bounds
     cx = (bounds[0, 0] + bounds[1, 0]) / 2.0
     cy = (bounds[0, 1] + bounds[1, 1]) / 2.0

@@ -90,6 +90,13 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 - HMS error monitoring with history
 - Print success rates, filament usage, cost analytics
 
+### Filament Calibration
+- **In-app calibration wizard (Bambu Studio parity)** — runs the calibration tests from inside BamDude; no Bambu Studio desktop needed
+- **Pressure Advance** — PA Line, PA Pattern, PA Tower; measured K saved to the printer's 16-slot K-profile history over MQTT and auto-bound to the AMS slot
+- **Towers** — Temperature, Volumetric Speed, VFA and Retraction; print-and-eyeball with a finish-step result calculator
+- Calibration scaffold sliced against your own printer / process / filament presets through the OrcaSlicer or Bambu Studio sidecar, then printed via the normal dispatch pipeline
+- Per-`(printer, filament, nozzle, extruder)` result cache, H2D dual-extruder per-extruder tabs, Calibration History modal
+
 ### Scheduling & Automation
 - Per-printer queues with status tracking (idle/printing/paused/error)
 - Auto error-pause on print failure (queue stops, user decides next step)

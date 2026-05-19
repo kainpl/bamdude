@@ -4168,6 +4168,9 @@ export default {
       startTemp: 'Початкова темп. (°C)',
       endTemp: 'Кінцева темп. (°C)',
       tempHint: 'Температура спадає на 5 °C кожні 10 мм бенду. Початок має бути ≥ Кінець + 5.',
+      startLength: 'Початкова довжина (мм)',
+      endLength: 'Кінцева довжина (мм)',
+      stepLength: 'Крок (мм)',
       layerHeight: 'Висота шару (мм)',
       nozzleDia: 'Діаметр сопла (мм)',
       paPatternFixedRangeNote:

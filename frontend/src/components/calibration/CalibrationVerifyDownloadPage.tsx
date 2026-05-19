@@ -195,6 +195,12 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
   const [tempStart, setTempStart] = useState<number>(230);
   const [tempEnd, setTempEnd] = useState<number>(190);
 
+  // Retraction Tower sweep — retraction length in mm. BS/Orca dialog
+  // defaults are 0 / 2 / 0.1 (calib_dlg.cpp Retraction_Test_Dlg).
+  const [retractStart, setRetractStart] = useState<number>(0);
+  const [retractEnd, setRetractEnd] = useState<number>(2);
+  const [retractStep, setRetractStep] = useState<number>(0.1);
+
   const [isDownloading, setIsDownloading] = useState(false);
   const [isBaking, setIsBaking] = useState(false);
 
@@ -204,6 +210,7 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
   const isVolSpeed = caliMode === 'vol_speed_tower';
   const isVfa = caliMode === 'vfa_tower';
   const isTemp = caliMode === 'temp_tower';
+  const isRetraction = caliMode === 'retraction_tower';
 
   // Temp Tower: seed the start/end defaults from the selected filament's
   // type (BS picks them off its filament-type radio; we have a preset
@@ -272,6 +279,9 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
     if (isTemp) {
       return { start: tempStart, end: tempEnd, nozzle_diameter: nozzleDiameter };
     }
+    if (isRetraction) {
+      return { start: retractStart, end: retractEnd, step: retractStep, nozzle_diameter: nozzleDiameter };
+    }
     return undefined;
   };
 
@@ -289,11 +299,35 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
     }
   };
 
-  // PA Line / Vol Speed / VFA use their own start/end/step state;
-  // PA Tower / PA Pattern share the shared start/end/step inputs.
-  const effectiveEnd = isVfa ? vfaEnd : isVolSpeed ? volEnd : isPaLine ? paLineEnd : end;
-  const effectiveStart = isVfa ? vfaStart : isVolSpeed ? volStart : isPaLine ? paLineStart : start;
-  const effectiveStep = isVfa ? vfaStep : isVolSpeed ? volStep : isPaLine ? paLineStep : step;
+  // PA Line / Vol Speed / VFA / Retraction use their own start/end/step
+  // state; PA Tower / PA Pattern share the shared start/end/step inputs.
+  const effectiveEnd = isRetraction
+    ? retractEnd
+    : isVfa
+      ? vfaEnd
+      : isVolSpeed
+        ? volEnd
+        : isPaLine
+          ? paLineEnd
+          : end;
+  const effectiveStart = isRetraction
+    ? retractStart
+    : isVfa
+      ? vfaStart
+      : isVolSpeed
+        ? volStart
+        : isPaLine
+          ? paLineStart
+          : start;
+  const effectiveStep = isRetraction
+    ? retractStep
+    : isVfa
+      ? vfaStep
+      : isVolSpeed
+        ? volStep
+        : isPaLine
+          ? paLineStep
+          : step;
 
   // Temp Tower is the odd one out: temperature descends (start > end) and
   // there is no step. Mirror the BS Temp_Calibration_Dlg validation.
@@ -625,6 +659,46 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
             </label>
           </div>
           <p className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.tempHint')}</p>
+        </section>
+      )}
+
+      {isRetraction && (
+        <section className="space-y-2 border border-bambu-dark-tertiary rounded p-3">
+          <h4 className="text-sm font-medium text-bambu-gray">
+            {t('filamentCali.verifyDownload.specHeading')}
+          </h4>
+          <div className="grid grid-cols-3 gap-2">
+            <label className="block">
+              <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.startLength')}</span>
+              <input
+                type="number"
+                step="0.1"
+                value={retractStart}
+                onChange={(e) => setRetractStart(parseFloat(e.target.value) || 0)}
+                className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.endLength')}</span>
+              <input
+                type="number"
+                step="0.1"
+                value={retractEnd}
+                onChange={(e) => setRetractEnd(parseFloat(e.target.value) || 0)}
+                className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.stepLength')}</span>
+              <input
+                type="number"
+                step="0.05"
+                value={retractStep}
+                onChange={(e) => setRetractStep(parseFloat(e.target.value) || 0)}
+                className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
+              />
+            </label>
+          </div>
         </section>
       )}
 

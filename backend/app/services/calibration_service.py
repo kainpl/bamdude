@@ -526,6 +526,8 @@ class CalibrationService:
                             apply_pa_pattern_process_overrides,
                             apply_pa_tower_filament_overrides,
                             apply_pa_tower_process_overrides,
+                            apply_retraction_printer_overrides,
+                            apply_retraction_process_overrides,
                             apply_temp_filament_overrides,
                             apply_temp_printer_overrides,
                             apply_temp_process_overrides,
@@ -569,6 +571,9 @@ class CalibrationService:
                             filament_jsons = [
                                 apply_temp_filament_overrides(f, start_temp=_temp_start) for f in filament_jsons
                             ]
+                        elif cali_mode == CaliMode.RETRACTION_TOWER:
+                            process_json = apply_retraction_process_overrides(process_json)
+                            printer_json = apply_retraction_printer_overrides(printer_json)
 
                         slice_result = await svc.slice_with_profiles(
                             model_bytes=bake_bytes,
@@ -624,6 +629,22 @@ class CalibrationService:
                     slice_bytes = patch_temp_tower(slice_bytes, start=float(spec_with_bed["start"]))
                 except (KeyError, ValueError) as exc:
                     raise ValueError(f"Temp ramp patch failed: {exc}") from exc
+            elif cali_mode == CaliMode.RETRACTION_TOWER:
+                # Retraction shares the engine-side ramp trap
+                # (Calib_Retraction_tower mutates the GCodeWriter's
+                # retraction_length); scale every retraction move so each
+                # layer's total retraction follows the band ramp — same
+                # patch /slice-only runs.
+                from backend.app.services.calib_speed_ramp_patcher import patch_retraction_tower
+
+                try:
+                    slice_bytes = patch_retraction_tower(
+                        slice_bytes,
+                        start=float(spec_with_bed["start"]),
+                        step=float(spec_with_bed["step"]),
+                    )
+                except (KeyError, ValueError) as exc:
+                    raise ValueError(f"Retraction ramp patch failed: {exc}") from exc
 
             # Replace the slicer-generated placeholder-cube preview PNGs
             # with our branded "PA Test" thumbnail so library /

@@ -49,15 +49,28 @@ def z_cut(
     the geometry so the per-Z custom-gcode list has nothing to land on
     above the requested ``end`` value.
 
+    The cut is done **per connected body** with capping on:
+
+    - ``process=True`` welds the per-triangle duplicate vertices STL
+      stores, so ``slice_plane`` has the edge connectivity it needs — a
+      cut of an unwelded triangle soup comes back holed.
+    - trimesh's ``cap=False`` returns an *open* shell (verified: even a
+      primitive box loses its bottom face), which the slicer then prints
+      as mid-air gaps. ``cap=True`` is required for a watertight result.
+    - Capping triangulates the cut face via a polygon enclosure tree,
+      which drags in the optional ``rtree`` package once a single cut
+      crosses more than one disjoint contour. Splitting into bodies
+      first means every body's cut is a single contour, so capping
+      stays rtree-free. Bodies wholly below the plane pass through
+      untouched; bodies wholly above are dropped.
+
     Output is the same format as the input (so the rest of the pipeline
-    doesn't have to know we cut anything). ``max_z_mm`` is exclusive at
-    the cut plane — the slicer's "keep below" semantics match trimesh's
-    default for slice_plane.
+    doesn't have to know we cut anything).
     """
     import trimesh
 
     try:
-        mesh = trimesh.load(io.BytesIO(mesh_bytes), file_type=source_fmt, process=False)
+        mesh = trimesh.load(io.BytesIO(mesh_bytes), file_type=source_fmt, process=True)
     except Exception as exc:
         raise GeometryError(f"z_cut: failed to load {source_fmt}: {exc}") from exc
 
@@ -65,15 +78,30 @@ def z_cut(
         mesh = trimesh.util.concatenate(mesh.dump())
     if not isinstance(mesh, trimesh.Trimesh) or mesh.is_empty:
         raise GeometryError("z_cut: input did not decode to a non-empty mesh")
+    mesh.merge_vertices()
 
-    plane_origin = (0.0, 0.0, float(max_z_mm))
+    max_z = float(max_z_mm)
+    plane_origin = (0.0, 0.0, max_z)
     plane_normal = (0.0, 0.0, -1.0)  # keep everything below
+
+    kept: list = []
     try:
-        cut = mesh.slice_plane(plane_origin, plane_normal, cap=True)
+        for body in mesh.split(only_watertight=False):
+            z_lo, z_hi = float(body.bounds[0, 2]), float(body.bounds[1, 2])
+            if z_hi <= max_z:
+                kept.append(body)  # wholly below the cut — pass through
+            elif z_lo >= max_z:
+                continue  # wholly above the cut — drop
+            else:
+                piece = body.slice_plane(plane_origin, plane_normal, cap=True)
+                if piece is not None and not piece.is_empty:
+                    kept.append(piece)
     except Exception as exc:
         raise GeometryError(f"z_cut: slice_plane failed: {exc}") from exc
-    if cut is None or cut.is_empty:
+
+    if not kept:
         raise GeometryError(f"z_cut: result empty (max_z={max_z_mm} below mesh bounds?)")
+    cut = trimesh.util.concatenate(kept) if len(kept) > 1 else kept[0]
 
     out = io.BytesIO()
     cut.export(out, file_type=source_fmt)

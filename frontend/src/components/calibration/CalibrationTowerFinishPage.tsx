@@ -35,12 +35,14 @@ export function CalibrationTowerFinishPage({ session, spec, onClose, onCalibrate
   const unit = TOWER_UNITS[mode] ?? '';
   const isVfa = mode === 'vfa_tower';
   const isTemp = mode === 'temp_tower';
+  const isRetraction = mode === 'retraction_tower';
   // Temp Tower has no `step` — the band is fixed at 10 mm / 5 °C.
   const canCalc = start !== undefined && (isTemp || step !== undefined);
 
   // Per-mode height → result:
   // - Temp: descends, banded 10 mm / 5 °C → start − floor(h/10)·5
   // - VFA: banded every 5 mm → start + floor(h/5)·step
+  // - Retraction: banded 1 mm / step, 1.4 mm base → start + floor(max(0, h−0.4))·step
   // - Vol Speed: continuous → start + h·step
   const h = Math.max(0, heightMm);
   const result = !canCalc
@@ -49,7 +51,9 @@ export function CalibrationTowerFinishPage({ session, spec, onClose, onCalibrate
       ? start! - Math.floor(h / 10) * 5
       : isVfa
         ? start! + Math.floor(h / 5) * step!
-        : start! + h * step!;
+        : isRetraction
+          ? start! + Math.floor(Math.max(0, h - 0.4)) * step!
+          : start! + h * step!;
 
   const saveMutation = useMutation({
     mutationFn: () => {
@@ -103,7 +107,9 @@ export function CalibrationTowerFinishPage({ session, spec, onClose, onCalibrate
                   ? `${start} − ⌊${h} / 10⌋ × 5`
                   : isVfa
                     ? `${start} + ⌊${h} / 5⌋ × ${step}`
-                    : `${start} + ${h} × ${step}`}
+                    : isRetraction
+                      ? `${start} + ⌊max(0, ${h} − 0.4)⌋ × ${step}`
+                      : `${start} + ${h} × ${step}`}
               </span>
             </div>
             <div>

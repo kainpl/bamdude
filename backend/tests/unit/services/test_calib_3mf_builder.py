@@ -19,6 +19,7 @@ _REGISTERED: set[CaliMode] = {
     CaliMode.VOL_SPEED_TOWER,  # Phase 6 (production)
     CaliMode.VFA_TOWER,  # Phase 5 (production)
     CaliMode.TEMP_TOWER,  # Phase 3 (production)
+    CaliMode.RETRACTION_TOWER,  # Phase 4 (verification)
 }
 
 
@@ -49,3 +50,19 @@ def test_temp_tower_rejects_ascending_range():
     """Temp descends — start must be >= end + 5 (BS dialog rule)."""
     with pytest.raises(ValueError):
         build_calibration_3mf(cali_mode=CaliMode.TEMP_TOWER, spec={"start": 190, "end": 230})
+
+
+def test_retraction_tower_builds_valid_3mf():
+    """The Retraction Tower builder Z-trims the tower and bakes a 3MF."""
+    out = build_calibration_3mf(cali_mode=CaliMode.RETRACTION_TOWER, spec={"start": 0, "end": 2, "step": 0.1})
+    assert isinstance(out, bytes) and len(out) > 0
+    with zipfile.ZipFile(io.BytesIO(out)) as z:
+        names = z.namelist()
+    assert any(n.endswith(".model") for n in names)
+
+
+def test_retraction_tower_rejects_too_wide_sweep():
+    """A sweep needing a tower taller than the 80.4 mm scaffold is rejected."""
+    with pytest.raises(ValueError):
+        # height = 1.4 + (end-start)/step = 1.4 + 100/0.1 = 1001.4 mm.
+        build_calibration_3mf(cali_mode=CaliMode.RETRACTION_TOWER, spec={"start": 0, "end": 100, "step": 0.1})
