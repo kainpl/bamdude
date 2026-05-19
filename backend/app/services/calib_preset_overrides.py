@@ -364,6 +364,72 @@ def apply_vfa_printer_overrides(printer_json: str) -> str:
     return json.dumps(data)
 
 
+def apply_temp_process_overrides(process_json: str) -> str:
+    """Patch a process-preset JSON with Temp Tower hardcodes.
+
+    Process-level subset of BS ``calib_temp`` — see
+    ``temp/temp-tower-calibration-bs-orca-analysis.md`` §4.1. BS sets no
+    ``wall_loops`` / infill / shell overrides: the Temp tower prints as a
+    normal solid tower on the operator's process preset.
+
+    ``enable_support=0`` is **not** a BS ``calib_temp`` hardcode — BS/Orca
+    rely on their GUI cascade to keep supports off the (self-supporting)
+    temperature tower. The sidecar CLI has no cascade, so an operator
+    process preset with supports enabled would otherwise wrap the tower
+    in support material; force it off here (same lesson as VFA).
+    """
+    try:
+        data = json.loads(process_json)
+    except (ValueError, TypeError):
+        logger.warning("apply_temp_process_overrides: input not valid JSON; passing through")
+        return process_json
+    if not isinstance(data, dict):
+        return process_json
+
+    _set(data, "enable_wrapping_detection", "0")
+    _set(data, "enable_support", "0")
+    return json.dumps(data)
+
+
+def apply_temp_filament_overrides(filament_json: str, *, start_temp: int) -> str:
+    """Patch a filament-preset JSON with Temp Tower hardcodes.
+
+    BS ``calib_temp`` sets both ``nozzle_temperature_initial_layer`` and
+    ``nozzle_temperature`` to the sweep ``start`` (the hot end). The
+    descending per-layer ramp is inserted post-slice by
+    ``calib_speed_ramp_patcher.patch_temp_tower`` — these keys only fix
+    the constant temperature the slice starts from. Both are per-extruder
+    list options, so keep the ``[str]`` shape.
+    """
+    try:
+        data = json.loads(filament_json)
+    except (ValueError, TypeError):
+        return filament_json
+    if not isinstance(data, dict):
+        return filament_json
+
+    _set(data, "nozzle_temperature_initial_layer", [str(start_temp)])
+    _set(data, "nozzle_temperature", [str(start_temp)])
+    return json.dumps(data)
+
+
+def apply_temp_printer_overrides(printer_json: str) -> str:
+    """Patch a printer-preset JSON with Temp Tower hardcodes.
+
+    ``resonance_avoidance=0`` (Orca ``calib_temp``) — taken as part of the
+    BS+Orca override union; harmless for a temperature test.
+    """
+    try:
+        data = json.loads(printer_json)
+    except (ValueError, TypeError):
+        return printer_json
+    if not isinstance(data, dict):
+        return printer_json
+
+    _set(data, "resonance_avoidance", "0")
+    return json.dumps(data)
+
+
 def apply_pa_tower_process_overrides(process_json: str) -> str:
     """Patch a process-preset JSON with PA Tower hardcodes
     (`Plater.cpp:12812`). `enable_wrapping_detection=0` is the only

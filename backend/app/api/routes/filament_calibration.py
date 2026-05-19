@@ -650,6 +650,9 @@ async def slice_calibration_for_verification(
                     apply_pa_pattern_process_overrides,
                     apply_pa_tower_filament_overrides,
                     apply_pa_tower_process_overrides,
+                    apply_temp_filament_overrides,
+                    apply_temp_printer_overrides,
+                    apply_temp_process_overrides,
                     apply_vfa_filament_overrides,
                     apply_vfa_printer_overrides,
                     apply_vfa_process_overrides,
@@ -677,6 +680,11 @@ async def slice_calibration_for_verification(
                     process_json = apply_vfa_process_overrides(process_json)
                     printer_json = apply_vfa_printer_overrides(printer_json)
                     filament_jsons = [apply_vfa_filament_overrides(f) for f in filament_jsons]
+                elif body.cali_mode == CaliMode.TEMP_TOWER:
+                    process_json = apply_temp_process_overrides(process_json)
+                    printer_json = apply_temp_printer_overrides(printer_json)
+                    _temp_start = int(round(float(spec_with_bed.get("start", 0))))
+                    filament_jsons = [apply_temp_filament_overrides(f, start_temp=_temp_start) for f in filament_jsons]
 
                 # Log compat-relevant fields from each JSON so when BS rejects
                 # the combo we can see what the resolver actually produced
@@ -714,13 +722,17 @@ async def slice_calibration_for_verification(
         logger.error("slice_only: sidecar error at %s (mode=%s): %s", api_url, body.cali_mode.value, exc)
         raise HTTPException(502, str(exc)) from exc
 
-    # Vol Speed / VFA: the sidecar can't apply the per-layer outer-wall
-    # speed ramp (Calib_Vol_speed_Tower / Calib_VFA_Tower are GUI-only
-    # Print flags, never carried in the 3MF), so rewrite each layer's
-    # feedrate ourselves — see calib_speed_ramp_patcher.
+    # Tower modes: the sidecar can't apply the per-layer ramp
+    # (Calib_*_Tower are GUI-only Print flags, never carried in the 3MF) —
+    # rewrite the outer-wall feedrate (Vol Speed / VFA) or insert the M104
+    # temperature ramp (Temp) ourselves; see calib_speed_ramp_patcher.
     sliced_content = result.content
-    if body.cali_mode in (CaliMode.VOL_SPEED_TOWER, CaliMode.VFA_TOWER):
-        from backend.app.services.calib_speed_ramp_patcher import patch_vfa_ramp, patch_vol_speed_ramp
+    if body.cali_mode in (CaliMode.VOL_SPEED_TOWER, CaliMode.VFA_TOWER, CaliMode.TEMP_TOWER):
+        from backend.app.services.calib_speed_ramp_patcher import (
+            patch_temp_tower,
+            patch_vfa_ramp,
+            patch_vol_speed_ramp,
+        )
 
         _spec = body.spec if isinstance(body.spec, dict) else {}
         try:
@@ -731,15 +743,17 @@ async def slice_calibration_for_verification(
                     step=float(_spec["step"]),
                     nozzle_diameter=nozzle_diameter,
                 )
-            else:
+            elif body.cali_mode == CaliMode.VFA_TOWER:
                 sliced_content = patch_vfa_ramp(
                     sliced_content,
                     start=float(_spec["start"]),
                     step=float(_spec["step"]),
                 )
+            else:
+                sliced_content = patch_temp_tower(sliced_content, start=float(_spec["start"]))
         except (KeyError, ValueError) as exc:
-            logger.error("slice_only: speed-ramp patch failed (mode=%s): %s", body.cali_mode.value, exc)
-            raise HTTPException(500, f"Speed-ramp patch failed: {exc}") from exc
+            logger.error("slice_only: tower ramp patch failed (mode=%s): %s", body.cali_mode.value, exc)
+            raise HTTPException(500, f"Tower ramp patch failed: {exc}") from exc
 
     # Replace the slicer-generated placeholder-cube preview with our
     # branded "PA Test" thumbnail before the operator downloads it (so

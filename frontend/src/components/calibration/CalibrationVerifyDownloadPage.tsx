@@ -13,6 +13,7 @@ import type {
   UnifiedPresetsResponse,
 } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
+import { tempDefaultsForFilament } from '../../utils/calibrationTemp';
 import {
   BundleStringDropdown,
   PresetDropdown,
@@ -188,6 +189,12 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
   const [vfaEnd, setVfaEnd] = useState<number>(200);
   const [vfaStep, setVfaStep] = useState<number>(10);
 
+  // Temp Tower sweep — nozzle temperature in °C, descending (start > end).
+  // No step: BS fixes the band at 10 mm / 5 °C. Defaults are the BS
+  // Temp_Calibration_Dlg PLA preset (230 → 190).
+  const [tempStart, setTempStart] = useState<number>(230);
+  const [tempEnd, setTempEnd] = useState<number>(190);
+
   const [isDownloading, setIsDownloading] = useState(false);
   const [isBaking, setIsBaking] = useState(false);
 
@@ -196,6 +203,27 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
   const isPaLine = caliMode === 'pa_line';
   const isVolSpeed = caliMode === 'vol_speed_tower';
   const isVfa = caliMode === 'vfa_tower';
+  const isTemp = caliMode === 'temp_tower';
+
+  // Temp Tower: seed the start/end defaults from the selected filament's
+  // type (BS picks them off its filament-type radio; we have a preset
+  // picker instead, so derive the type from the picked preset). Re-runs
+  // whenever the filament selection changes — a later manual edit of the
+  // inputs survives until the operator picks a different filament.
+  useEffect(() => {
+    if (!isTemp) return;
+    let filDesc = '';
+    if (presetSource === 'bundle') {
+      filDesc = bundleFilamentName ?? '';
+    } else if (presets && filamentRef) {
+      const p = presets[filamentRef.source]?.filament.find((x) => x.id === filamentRef.id);
+      if (p) filDesc = `${p.filament_type ?? ''} ${p.name}`;
+    }
+    if (!filDesc.trim()) return;
+    const d = tempDefaultsForFilament(filDesc);
+    setTempStart(d.start);
+    setTempEnd(d.end);
+  }, [isTemp, presetSource, filamentRef, bundleFilamentName, presets]);
 
   const triggerBlobDownload = (blob: Blob, filename: string) => {
     const url = URL.createObjectURL(blob);
@@ -241,6 +269,9 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
     if (isVfa) {
       return { start: vfaStart, end: vfaEnd, step: vfaStep, nozzle_diameter: nozzleDiameter };
     }
+    if (isTemp) {
+      return { start: tempStart, end: tempEnd, nozzle_diameter: nozzleDiameter };
+    }
     return undefined;
   };
 
@@ -264,10 +295,15 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
   const effectiveStart = isVfa ? vfaStart : isVolSpeed ? volStart : isPaLine ? paLineStart : start;
   const effectiveStep = isVfa ? vfaStep : isVolSpeed ? volStep : isPaLine ? paLineStep : step;
 
+  // Temp Tower is the odd one out: temperature descends (start > end) and
+  // there is no step. Mirror the BS Temp_Calibration_Dlg validation.
+  const specValid = isTemp
+    ? tempStart <= 350 && tempEnd >= 180 && tempStart >= tempEnd + 5
+    : effectiveEnd > effectiveStart && effectiveStep > 0;
+
   const canSubmit =
     !isDownloading &&
-    effectiveEnd > effectiveStart &&
-    effectiveStep > 0 &&
+    specValid &&
     (presetSource === 'bundle'
       ? !!selectedBundle && !!bundlePrinterName && !!bundleProcessName && !!bundleFilamentName
       : !!printerRef && !!processRef && !!filamentRef);
@@ -561,6 +597,37 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
         </section>
       )}
 
+      {isTemp && (
+        <section className="space-y-2 border border-bambu-dark-tertiary rounded p-3">
+          <h4 className="text-sm font-medium text-bambu-gray">
+            {t('filamentCali.verifyDownload.specHeading')}
+          </h4>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="block">
+              <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.startTemp')}</span>
+              <input
+                type="number"
+                step="5"
+                value={tempStart}
+                onChange={(e) => setTempStart(parseFloat(e.target.value) || 0)}
+                className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.endTemp')}</span>
+              <input
+                type="number"
+                step="5"
+                value={tempEnd}
+                onChange={(e) => setTempEnd(parseFloat(e.target.value) || 0)}
+                className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
+              />
+            </label>
+          </div>
+          <p className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.tempHint')}</p>
+        </section>
+      )}
+
       {isPaPattern && (
         <section className="space-y-2 border border-bambu-dark-tertiary rounded p-3">
           <h4 className="text-sm font-medium text-bambu-gray">
@@ -682,7 +749,7 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
           <button
             type="button"
             onClick={onBakeOnly}
-            disabled={isBaking || isDownloading || effectiveEnd <= effectiveStart || effectiveStep <= 0}
+            disabled={isBaking || isDownloading || !specValid}
             title={t('filamentCali.verifyDownload.bakeTooltip')}
             className="px-3 py-2 rounded border border-bambu-dark-tertiary text-bambu-gray text-sm font-medium hover:text-white hover:border-bambu-gray disabled:opacity-40 disabled:cursor-not-allowed"
           >

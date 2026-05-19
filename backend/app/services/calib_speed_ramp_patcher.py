@@ -1,13 +1,22 @@
-"""Post-slice per-layer feedrate-ramp patchers for the speed calibration
-towers — Volumetric Speed (W2 Phase 6) and VFA (W2 Phase 5).
+"""Post-slice per-layer g-code patchers for the calibration towers —
+Volumetric Speed (W2 Phase 6), VFA (W2 Phase 5) and Temp (W2 Phase 3).
 
-Both modes ramp the outer-wall speed up the tower. BS/Orca produce that
-ramp engine-side (the ``Calib_Vol_speed_Tower`` / ``Calib_VFA_Tower``
-cases in ``GCode.cpp`` mutate ``m_calib_config["outer_wall_speed"]`` per
-layer), but those branches fire only when ``Print::calib_mode()`` is set
-— a GUI-only in-memory flag that is **not carried in the 3MF**. A vanilla
-CLI / sidecar slice therefore produces a flat-speed tower, useless for
-calibration (verified for Vol Speed against two sidecar backends).
+The speed towers ramp the outer-wall *feedrate*; the Temp tower ramps the
+nozzle *temperature*. BS/Orca produce these engine-side (the
+``Calib_Vol_speed_Tower`` / ``Calib_VFA_Tower`` / ``Calib_Temp_Tower``
+cases in ``GCode.cpp``), but those branches fire only when
+``Print::calib_mode()`` is set — a GUI-only in-memory flag that is **not
+carried in the 3MF**. A vanilla CLI / sidecar slice therefore produces a
+flat tower; BamDude re-creates the ramp post-slice.
+
+Two shapes of per-layer edit:
+
+- **Rewrite** — Vol Speed / VFA mutate ``m_calib_config`` and emit no
+  g-code line, so the slicer's existing bare ``G1 F`` per layer is
+  *rewritten* (:func:`patch_vol_speed_ramp`, :func:`patch_vfa_ramp`).
+- **Insert** — Temp's engine case actually appends an ``M104`` line, so
+  the slicer (with ``calib_mode`` unset) emits *no* per-layer temperature
+  command; the patcher *inserts* one per layer (:func:`patch_temp_tower`).
 
 BamDude re-creates the ramp by rewriting the per-layer feedrate in the
 sliced g-code. In spiral/vase mode the whole layer is one outer-wall
@@ -182,15 +191,17 @@ def _patch_gcode_precise(text: str, speed_fn: Callable[[float], float]) -> tuple
     return "".join(lines), patched
 
 
-def _apply_feedrate_patch(
+def _apply_gcode_patch(
     threemf_bytes: bytes,
     gcode_patch: Callable[[str], tuple[str, int]],
     label: str,
 ) -> bytes:
     """Run ``gcode_patch`` over the 3MF's plate g-code and repack.
 
-    Returns the repacked 3MF bytes (g-code entry rewritten, ``.gcode.md5``
-    sidecar recomputed); all other entries are copied verbatim.
+    ``gcode_patch`` takes the g-code text and returns
+    ``(patched_text, layers_touched)``. Returns the repacked 3MF bytes
+    (g-code entry rewritten, ``.gcode.md5`` sidecar recomputed); all other
+    entries are copied verbatim.
     """
     src = zipfile.ZipFile(io.BytesIO(threemf_bytes))
     if _GCODE_ENTRY not in src.namelist():
@@ -200,8 +211,8 @@ def _apply_feedrate_patch(
     patched_text, layers = gcode_patch(gcode_text)
     if layers == 0:
         raise ValueError(
-            f"{label} patcher: no layer feedrate lines rewritten — sliced g-code "
-            "structure not recognised (expected '; CHANGE_LAYER' + bare 'G1 F')."
+            f"{label} patcher: no layers patched — sliced g-code structure "
+            "not recognised (expected '; CHANGE_LAYER' layer blocks)."
         )
     patched_gcode = patched_text.encode("utf-8")
     new_md5 = hashlib.md5(patched_gcode).hexdigest().upper()
@@ -240,7 +251,7 @@ def patch_layer_feedrate(
     For a new mode, try this first; switch to the precise variant only if a
     verification slice-diff shows a boundary mismatch.
     """
-    return _apply_feedrate_patch(threemf_bytes, lambda t: _patch_gcode(t, speed_fn), label)
+    return _apply_gcode_patch(threemf_bytes, lambda t: _patch_gcode(t, speed_fn), label)
 
 
 def patch_layer_feedrate_precise(
@@ -255,7 +266,7 @@ def patch_layer_feedrate_precise(
     :func:`_patch_gcode_precise`. Needed for ``floor``-banded ramps whose
     band boundary the rounded ``Z_HEIGHT`` comment would otherwise shift.
     """
-    return _apply_feedrate_patch(threemf_bytes, lambda t: _patch_gcode_precise(t, speed_fn), label)
+    return _apply_gcode_patch(threemf_bytes, lambda t: _patch_gcode_precise(t, speed_fn), label)
 
 
 def patch_vol_speed_ramp(
@@ -313,4 +324,48 @@ def patch_vfa_ramp(threemf_bytes: bytes, *, start: float, step: float) -> bytes:
         threemf_bytes,
         lambda z: start + math.floor(z / 5.0) * step,
         label="vfa",
+    )
+
+
+def _patch_gcode_insert_temp(text: str, temp_fn: Callable[[float], float]) -> tuple[str, int]:
+    """Insert one ``M104`` per layer via ``temp_fn(print_z) -> °C``.
+
+    Unlike the speed patchers this does not rewrite an existing line — the
+    sliced g-code (``calib_mode`` unset) carries no per-layer temperature
+    command — so an ``M104 S<temp>`` line is *inserted* right after each
+    layer's ``; Z_HEIGHT`` comment. Returns ``(patched_text, layers)``.
+    """
+    lines = text.splitlines(keepends=True)
+    out: list[str] = []
+    pending = False
+    inserted = 0
+    for line in lines:
+        out.append(line)
+        if line.startswith("; CHANGE_LAYER"):
+            pending = True
+            continue
+        if pending:
+            mz = _Z_HEIGHT.match(line)
+            if mz:
+                temp = round(temp_fn(float(mz.group(1))))
+                eol = line[len(line.rstrip("\r\n")) :] or "\n"
+                out.append(f"M104 S{temp} ; calib temp{eol}")
+                inserted += 1
+                pending = False
+    return "".join(out), inserted
+
+
+def patch_temp_tower(threemf_bytes: bytes, *, start: float) -> bytes:
+    """Insert the per-layer nozzle-temperature ramp into a sliced Temp 3MF.
+
+    Mirrors the ``Calib_Temp_Tower`` g-code case:
+    ``temp(z) = start - floor(print_z / 10.001)·5`` °C — banded, 10 mm per
+    band, 5 °C step, descending. The ``10.001`` divisor (verbatim from BS)
+    shifts every band boundary off the layer grid, so the rounded
+    ``; Z_HEIGHT`` comment is exact enough — no precise variant needed.
+    """
+    return _apply_gcode_patch(
+        threemf_bytes,
+        lambda t: _patch_gcode_insert_temp(t, lambda z: start - math.floor(z / 10.001) * 5.0),
+        label="temp",
     )

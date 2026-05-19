@@ -526,6 +526,9 @@ class CalibrationService:
                             apply_pa_pattern_process_overrides,
                             apply_pa_tower_filament_overrides,
                             apply_pa_tower_process_overrides,
+                            apply_temp_filament_overrides,
+                            apply_temp_printer_overrides,
+                            apply_temp_process_overrides,
                             apply_vfa_filament_overrides,
                             apply_vfa_printer_overrides,
                             apply_vfa_process_overrides,
@@ -559,6 +562,13 @@ class CalibrationService:
                             process_json = apply_vfa_process_overrides(process_json)
                             printer_json = apply_vfa_printer_overrides(printer_json)
                             filament_jsons = [apply_vfa_filament_overrides(f) for f in filament_jsons]
+                        elif cali_mode == CaliMode.TEMP_TOWER:
+                            process_json = apply_temp_process_overrides(process_json)
+                            printer_json = apply_temp_printer_overrides(printer_json)
+                            _temp_start = int(round(float(spec_with_bed.get("start", 0))))
+                            filament_jsons = [
+                                apply_temp_filament_overrides(f, start_temp=_temp_start) for f in filament_jsons
+                            ]
 
                         slice_result = await svc.slice_with_profiles(
                             model_bytes=bake_bytes,
@@ -604,6 +614,16 @@ class CalibrationService:
                     )
                 except (KeyError, ValueError) as exc:
                     raise ValueError(f"VFA ramp patch failed: {exc}") from exc
+            elif cali_mode == CaliMode.TEMP_TOWER:
+                # Temp shares the engine-side ramp trap (Calib_Temp_Tower is
+                # a GUI-only Print flag); insert the per-layer M104
+                # temperature ramp — same patch /slice-only runs.
+                from backend.app.services.calib_speed_ramp_patcher import patch_temp_tower
+
+                try:
+                    slice_bytes = patch_temp_tower(slice_bytes, start=float(spec_with_bed["start"]))
+                except (KeyError, ValueError) as exc:
+                    raise ValueError(f"Temp ramp patch failed: {exc}") from exc
 
             # Replace the slicer-generated placeholder-cube preview PNGs
             # with our branded "PA Test" thumbnail so library /

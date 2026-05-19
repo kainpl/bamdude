@@ -422,13 +422,13 @@ async def test_start_calibration_rejects_disabled_mode(
     printer = await printer_factory(model="P1S")
     with patch("backend.app.services.calibration_service.printer_manager") as pm:
         pm.get_client.return_value = mock_client
-        # PA_TOWER + PA_PATTERN + PA_LINE have shipped; pick a mode that
-        # is still DISABLED at the current point in the W2 rollout.
+        # Pick a mode still DISABLED at the current point in the W2
+        # rollout — Retraction Tower's builder has not landed yet.
         with pytest.raises(CalibModeNotImplementedError):
             await service.start_calibration(
                 db=db_session,
                 printer_id=printer.id,
-                cali_mode=CaliMode.TEMP_TOWER,
+                cali_mode=CaliMode.RETRACTION_TOWER,
                 method=CaliMethod.MANUAL,
                 nozzle_diameter=0.4,
                 nozzle_volume_type="standard",

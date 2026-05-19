@@ -34,17 +34,22 @@ export function CalibrationTowerFinishPage({ session, spec, onClose, onCalibrate
   const mode = session.cali_mode;
   const unit = TOWER_UNITS[mode] ?? '';
   const isVfa = mode === 'vfa_tower';
-  const canCalc = start !== undefined && step !== undefined;
+  const isTemp = mode === 'temp_tower';
+  // Temp Tower has no `step` — the band is fixed at 10 mm / 5 °C.
+  const canCalc = start !== undefined && (isTemp || step !== undefined);
 
-  // VFA bands the speed every 5 mm: result = start + floor(h/5)·step.
-  // Other tower modes (Vol Speed; later Temp / Retraction) ramp
-  // continuously: result = start + h·step.
+  // Per-mode height → result:
+  // - Temp: descends, banded 10 mm / 5 °C → start − floor(h/10)·5
+  // - VFA: banded every 5 mm → start + floor(h/5)·step
+  // - Vol Speed: continuous → start + h·step
   const h = Math.max(0, heightMm);
   const result = !canCalc
     ? undefined
-    : isVfa
-      ? start! + Math.floor(h / 5) * step!
-      : start! + h * step!;
+    : isTemp
+      ? start! - Math.floor(h / 10) * 5
+      : isVfa
+        ? start! + Math.floor(h / 5) * step!
+        : start! + h * step!;
 
   const saveMutation = useMutation({
     mutationFn: () => {
@@ -94,9 +99,11 @@ export function CalibrationTowerFinishPage({ session, spec, onClose, onCalibrate
             <div>
               <span className="text-bambu-gray">{t('filamentCali.towerFinish.formula')}: </span>
               <span className="text-white font-mono">
-                {isVfa
-                  ? `${start} + ⌊${h} / 5⌋ × ${step}`
-                  : `${start} + ${h} × ${step}`}
+                {isTemp
+                  ? `${start} − ⌊${h} / 10⌋ × 5`
+                  : isVfa
+                    ? `${start} + ⌊${h} / 5⌋ × ${step}`
+                    : `${start} + ${h} × ${step}`}
               </span>
             </div>
             <div>

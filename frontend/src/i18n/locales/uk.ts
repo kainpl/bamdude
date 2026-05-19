@@ -4165,6 +4165,9 @@ export default {
       startSpeed: 'Початок (мм/с)',
       endSpeed: 'Кінець (мм/с)',
       stepSpeed: 'Крок (мм/с)',
+      startTemp: 'Початкова темп. (°C)',
+      endTemp: 'Кінцева темп. (°C)',
+      tempHint: 'Температура спадає на 5 °C кожні 10 мм бенду. Початок має бути ≥ Кінець + 5.',
       layerHeight: 'Висота шару (мм)',
       nozzleDia: 'Діаметр сопла (мм)',
       paPatternFixedRangeNote:

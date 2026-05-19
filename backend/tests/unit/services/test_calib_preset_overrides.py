@@ -17,6 +17,9 @@ from backend.app.services.calib_preset_overrides import (
     apply_pa_pattern_process_overrides,
     apply_pa_tower_filament_overrides,
     apply_pa_tower_process_overrides,
+    apply_temp_filament_overrides,
+    apply_temp_printer_overrides,
+    apply_temp_process_overrides,
 )
 
 
@@ -79,6 +82,33 @@ def test_pa_tower_process_overrides_disable_wrapping_detection():
     preset = json.dumps({"enable_wrapping_detection": "1"})
     out = json.loads(apply_pa_tower_process_overrides(preset))
     assert out["enable_wrapping_detection"] == "0"
+
+
+def test_temp_process_overrides_force_disable_support():
+    """Temp Tower must force supports off — a sidecar CLI slice has no GUI
+    cascade, so an operator process preset with supports enabled would
+    otherwise wrap the self-supporting tower in support material."""
+    preset = json.dumps({"enable_support": "1", "enable_wrapping_detection": "1", "wall_loops": "4"})
+    out = json.loads(apply_temp_process_overrides(preset))
+    assert out["enable_support"] == "0"
+    assert out["enable_wrapping_detection"] == "0"
+    # Unrelated keys (the operator's process preset) are left intact.
+    assert out["wall_loops"] == "4"
+
+
+def test_temp_filament_overrides_pin_start_temp():
+    """Both nozzle-temperature keys are pinned to the sweep start (hot end);
+    the descending per-layer ramp is inserted post-slice, not here."""
+    preset = json.dumps({"nozzle_temperature": ["220"], "nozzle_temperature_initial_layer": ["220"]})
+    out = json.loads(apply_temp_filament_overrides(preset, start_temp=250))
+    assert out["nozzle_temperature"] == ["250"]
+    assert out["nozzle_temperature_initial_layer"] == ["250"]
+
+
+def test_temp_printer_overrides_disable_resonance_avoidance():
+    preset = json.dumps({"resonance_avoidance": "1"})
+    out = json.loads(apply_temp_printer_overrides(preset))
+    assert out["resonance_avoidance"] == "0"
 
 
 def test_overrides_passthrough_invalid_json():

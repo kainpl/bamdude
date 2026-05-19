@@ -26,6 +26,7 @@ from backend.app.services.calib_3mf_writer import (
 from backend.app.services.calib_pa_line import build_pa_line_3mf
 from backend.app.services.calib_pa_pattern import build_pa_pattern_3mf
 from backend.app.services.calib_pa_tower import build_pa_tower_3mf
+from backend.app.services.calib_temp import build_temp_3mf
 from backend.app.services.calib_vfa import build_vfa_3mf
 from backend.app.services.calib_vol_speed import build_vol_speed_3mf
 from backend.app.services.calibration_constants import CaliMode
@@ -62,7 +63,10 @@ _BUILDERS: dict[CaliMode, ModeBuilder] = {
     # download + diff against BS-desktop output before we flip to
     # production. Python port of CalibPressureAdvanceLine::print_pa_lines.
     CaliMode.PA_LINE: build_pa_line_3mf,
-    CaliMode.TEMP_TOWER: _not_implemented,
+    # Phase 3 — VERIFICATION: builder bakes the two-plane-cut tower slab +
+    # overrides; the per-layer M104 ramp is inserted post-slice
+    # (calib_speed_ramp_patcher.patch_temp_tower).
+    CaliMode.TEMP_TOWER: build_temp_3mf,
     CaliMode.RETRACTION_TOWER: _not_implemented,
     # Phase 5 — VERIFICATION: builder bakes geometry + overrides; the
     # per-layer speed ramp is applied post-slice (calib_speed_ramp_patcher).

@@ -61,6 +61,14 @@ _EXPECTED_NON_DISABLED: dict[CaliMode, ModeState] = {
     # /slice-only paths. Verification signed off: re-sliced output matched
     # the Orca-desktop reference 0 feedrate mismatches on all 425 layers.
     CaliMode.VFA_TOWER: ModeState.PRODUCTION,
+    # Phase 3 (Temp Tower) — promoted to PRODUCTION 2026-05-19. The builder
+    # bakes the temperature tower (two-plane mesh cut to the operator's
+    # [start, end] slab) + 4-level overrides; the per-layer M104 ramp is
+    # inserted post-slice by calib_speed_ramp_patcher.patch_temp_tower on
+    # both the dispatch and /slice-only paths. Verification signed off:
+    # re-sliced output carried the M104 ramp bit-identical to the
+    # reference at every band boundary across all 250 layers.
+    CaliMode.TEMP_TOWER: ModeState.PRODUCTION,
 }
 
 

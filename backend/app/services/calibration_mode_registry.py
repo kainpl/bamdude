@@ -73,7 +73,18 @@ MODE_STATE: dict[CaliMode, ModeState] = {
     # (translate (51.63, 83.5, 0.4), kept 0.278×0.278×0.047 scale →
     # 5×5×0.85mm) so its perimeters don't overprint pattern V walls.
     CaliMode.PA_PATTERN: ModeState.PRODUCTION,
-    CaliMode.TEMP_TOWER: ModeState.DISABLED,
+    # Phase 3 — PRODUCTION (2026-05-19). The builder bakes the temperature
+    # tower (a two-plane mesh cut to the operator's [start, end] slab — the
+    # tower carries embossed band numbers so it can't be Z-scaled) + the
+    # 4-level overrides; the per-layer M104 ramp is then *inserted* into
+    # the sliced g-code by calib_speed_ramp_patcher.patch_temp_tower (the
+    # sidecar can't apply it — Calib_Temp_Tower is a GUI-only Print flag,
+    # never carried in the 3MF). Verification signed off: re-sliced output
+    # (both BS + Orca sidecar backends) carried the M104 ramp
+    # 250→245→240→235→230 °C bit-identical to the reference at every band
+    # boundary across all 250 layers; supports force-disabled. BOTH slice
+    # paths patch — /slice-only and the start_calibration dispatch path.
+    CaliMode.TEMP_TOWER: ModeState.PRODUCTION,
     CaliMode.RETRACTION_TOWER: ModeState.DISABLED,
     # Phase 5 — PRODUCTION (2026-05-18). The builder bakes the tower
     # geometry + 4-level overrides; the per-layer outer-wall speed ramp is

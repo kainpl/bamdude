@@ -61,6 +61,30 @@ class CalibTowerSpec(BaseModel):
         return self
 
 
+class CalibTempSpec(BaseModel):
+    """Temp Tower sweep — start / end nozzle temperature in °C.
+
+    Temp Tower cannot reuse :class:`CalibTowerSpec`: the temperature
+    *descends* up the tower (``start > end``), which that class's
+    ``_end_after_start`` validator forbids. There is also no ``step`` —
+    BS fixes the band geometry at 10 mm / 5 °C.
+
+    This schema is the loosest superset; the BS ``Temp_Calibration_Dlg``
+    rules (``start <= 350``, ``end >= 180``, ``start >= end + 5``) are
+    enforced in ``calib_temp.build_temp_3mf`` as plain ``ValueError``s, so
+    the slice-only route surfaces them as ``409 mode rejected`` — same
+    pattern as ``build_vfa_3mf``.
+    """
+
+    start: float = Field(..., description="Bottom-band nozzle temperature °C (the hotter end)")
+    end: float = Field(..., description="Top-band nozzle temperature °C (cooler); must be <= start - 5")
+    nozzle_diameter: float = Field(
+        default=0.4,
+        gt=0,
+        description="Nozzle diameter in mm; threaded through to per-print overrides",
+    )
+
+
 class FlowRateSpec(BaseModel):
     """Flow Rate has two passes — coarse (9 blocks) and fine (7 blocks).
 

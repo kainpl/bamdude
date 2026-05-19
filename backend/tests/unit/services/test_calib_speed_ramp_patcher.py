@@ -16,7 +16,9 @@ import pytest
 
 from backend.app.services.calib_speed_ramp_patcher import (
     _patch_gcode,
+    _patch_gcode_insert_temp,
     _patch_gcode_precise,
+    patch_temp_tower,
     patch_vfa_ramp,
 )
 
@@ -154,3 +156,57 @@ def test_patch_vfa_ramp_rejects_3mf_without_gcode():
     threemf = _make_3mf("", with_gcode=False)
     with pytest.raises(ValueError, match="no Metadata/plate_1.gcode"):
         patch_vfa_ramp(threemf, start=40, step=10)
+
+
+# ---------- _patch_gcode_insert_temp / patch_temp_tower ----------
+
+
+def test_patch_gcode_insert_temp_inserts_m104_per_layer():
+    """One M104 is inserted right after each layer's Z_HEIGHT comment."""
+    gcode = (
+        "; CHANGE_LAYER\n; Z_HEIGHT: 2\nG1 X1\n"
+        "; CHANGE_LAYER\n; Z_HEIGHT: 12\nG1 X1\n"
+        "; CHANGE_LAYER\n; Z_HEIGHT: 25\nG1 X1\n"
+    )
+    temp_fn = lambda z: 230 - math.floor(z / 10.001) * 5  # noqa: E731
+    patched, count = _patch_gcode_insert_temp(gcode, temp_fn)
+    assert count == 3
+    # z=2 → band 0 → 230; z=12 → band 1 → 225; z=25 → band 2 → 220.
+    assert "M104 S230 ; calib temp\n" in patched
+    assert "M104 S225 ; calib temp\n" in patched
+    assert "M104 S220 ; calib temp\n" in patched
+    # The M104 sits immediately after the Z_HEIGHT line it belongs to.
+    lines = patched.splitlines()
+    assert lines[lines.index("; Z_HEIGHT: 2") + 1] == "M104 S230 ; calib temp"
+
+
+def test_patch_gcode_insert_temp_10001_divisor_keeps_z10_in_band0():
+    """The 10.001 divisor (verbatim from BS) keeps a layer at z=10.0 in
+    band 0 — the band boundary sits just above the 10 mm grid line."""
+    gcode = "; CHANGE_LAYER\n; Z_HEIGHT: 10.0\nG1 X1\n; CHANGE_LAYER\n; Z_HEIGHT: 10.2\nG1 X1\n"
+    patched, count = _patch_gcode_insert_temp(gcode, lambda z: 230 - math.floor(z / 10.001) * 5)
+    assert count == 2
+    assert "M104 S230 ; calib temp\n" in patched  # z=10.0 → band 0
+    assert "M104 S225 ; calib temp\n" in patched  # z=10.2 → band 1
+
+
+def test_patch_temp_tower_inserts_ramp_and_recomputes_md5():
+    threemf = _make_3mf(_build_layers(60))  # 60 × 0.2 mm → z up to 12 mm
+    out = patch_temp_tower(threemf, start=230)
+
+    with zipfile.ZipFile(io.BytesIO(out)) as z:
+        gcode = z.read("Metadata/plate_1.gcode").decode()
+        md5 = z.read("Metadata/plate_1.gcode.md5").decode()
+
+    # One M104 inserted per layer block.
+    assert gcode.count("; calib temp") == 60
+    # Bands below 10.001 mm hold the start temp; above it, start − 5.
+    assert "M104 S230 ; calib temp" in gcode
+    assert "M104 S225 ; calib temp" in gcode
+    assert md5 == hashlib.md5(gcode.encode()).hexdigest().upper()
+
+
+def test_patch_temp_tower_rejects_unrecognised_gcode():
+    threemf = _make_3mf("; just a comment\nG1 X1 Y1\n")
+    with pytest.raises(ValueError, match="temp patcher"):
+        patch_temp_tower(threemf, start=230)

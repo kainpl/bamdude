@@ -38,6 +38,7 @@ import {
 } from '../preset-picker/presetPickerUtils';
 import { BedTypePicker } from '../preset-picker/BedTypePicker';
 import { SlicerPicker, type SlicerKind } from '../preset-picker/SlicerPicker';
+import { tempDefaultsForFilament } from '../../utils/calibrationTemp';
 
 type PresetSource = 'manual' | 'bundle';
 
@@ -163,6 +164,7 @@ interface LoadedSlot {
   tray_id: number;
   filament_id: string;
   filament_setting_id: string | null;
+  filament_type: string | null;
   label: string;
 }
 
@@ -334,6 +336,14 @@ export function CalibrationPresetPage({
   const [vfaEnd, setVfaEnd] = useState<number>(200);
   const [vfaStep, setVfaStep] = useState<number>(10);
 
+  // Temp Tower — start/end nozzle temperature in °C, descending
+  // (start > end). No step: BS fixes the band at 10 mm / 5 °C. Defaults
+  // are the BS Temp_Calibration_Dlg PLA preset; the effect below re-seeds
+  // them from the selected filament's type.
+  const isTemp = caliMode === 'temp_tower';
+  const [tempStart, setTempStart] = useState<number>(230);
+  const [tempEnd, setTempEnd] = useState<number>(190);
+
   const statusQuery = useQuery<PrinterStatus>({
     queryKey: ['printerStatus', printerId],
     queryFn: () => api.getPrinterStatus(printerId),
@@ -396,6 +406,18 @@ export function CalibrationPresetPage({
 
   const current = perExtruder[activeExtruder] ?? DEFAULT_PER_EXTRUDER;
 
+  // Temp Tower: seed start/end from the selected AMS slot's filament type
+  // (BS reads it off a filament-type radio; here it comes from the loaded
+  // spool). Re-seeds when the slot changes; a later manual edit survives
+  // until the operator picks a different slot.
+  const selectedSlot = current.selectedSlot;
+  useEffect(() => {
+    if (!isTemp || !selectedSlot) return;
+    const d = tempDefaultsForFilament(`${selectedSlot.filament_type ?? ''} ${selectedSlot.label}`);
+    setTempStart(d.start);
+    setTempEnd(d.end);
+  }, [isTemp, selectedSlot]);
+
   const patchCurrent = (p: Partial<PerExtruderState>) =>
     setPerExtruder((prev) => ({
       ...prev,
@@ -418,6 +440,7 @@ export function CalibrationPresetPage({
           tray_id: globalTrayId,
           filament_id: tray.tray_info_idx,
           filament_setting_id: null,
+          filament_type: tray.tray_type,
           label,
         });
       }
@@ -438,6 +461,7 @@ export function CalibrationPresetPage({
         tray_id: 254,
         filament_id: tray.tray_info_idx,
         filament_setting_id: null,
+        filament_type: tray.tray_type,
         label,
       });
     }
@@ -610,6 +634,13 @@ export function CalibrationPresetPage({
         start: vfaStart,
         end: vfaEnd,
         step: vfaStep,
+        nozzle_diameter: nozzleDia,
+      };
+    }
+    if (isTemp) {
+      extras.spec = {
+        start: tempStart,
+        end: tempEnd,
         nozzle_diameter: nozzleDia,
       };
     }
@@ -1042,6 +1073,41 @@ export function CalibrationPresetPage({
                   />
                 </label>
               </div>
+            </div>
+          )}
+
+          {isTemp && (
+            <div className="space-y-2 border border-bambu-dark-tertiary rounded p-3">
+              <h4 className="text-sm font-medium text-bambu-gray">
+                {t('filamentCali.verifyDownload.specHeading')}
+              </h4>
+              <div className="grid grid-cols-2 gap-2">
+                <label className="block">
+                  <span className="text-xs text-bambu-gray">
+                    {t('filamentCali.verifyDownload.startTemp')}
+                  </span>
+                  <input
+                    type="number"
+                    step="5"
+                    value={tempStart}
+                    onChange={(e) => setTempStart(parseFloat(e.target.value) || 0)}
+                    className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs text-bambu-gray">
+                    {t('filamentCali.verifyDownload.endTemp')}
+                  </span>
+                  <input
+                    type="number"
+                    step="5"
+                    value={tempEnd}
+                    onChange={(e) => setTempEnd(parseFloat(e.target.value) || 0)}
+                    className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
+                  />
+                </label>
+              </div>
+              <p className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.tempHint')}</p>
             </div>
           )}
         </section>
