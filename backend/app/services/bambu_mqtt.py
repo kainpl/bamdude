@@ -557,6 +557,7 @@ class BambuMQTTClient:
         on_layer_change: Callable[[int], None] | None = None,
         on_macro_complete: Callable[[str, str], None] | None = None,
         on_kprofiles_changed: Callable[[], None] | None = None,
+        on_first_status: Callable[[str, str], None] | None = None,
     ):
         self.ip_address = ip_address
         self.serial_number = serial_number
@@ -576,6 +577,11 @@ class BambuMQTTClient:
         # twice in a row is a no-op.
         self.on_kprofiles_changed = on_kprofiles_changed
         self._last_kprofiles_hash: str | None = None
+        # Fires once, on the first full MQTT status after a fresh connect,
+        # so the startup print-reconciliation sweep can close any archive
+        # left at 'printing' by a print that finished while BamDude was
+        # stopped. printer_manager wires it to reconcile_printer_prints.
+        self.on_first_status = on_first_status
 
         self.state = PrinterState()
         self._client: mqtt.Client | None = None
@@ -587,6 +593,7 @@ class BambuMQTTClient:
         self._timelapse_during_print: bool = False  # Track if timelapse was active during this print
         self._last_valid_progress: float = 0.0  # Last non-zero progress (firmware resets on cancel)
         self._last_valid_layer_num: int = 0  # Last non-zero layer (firmware resets on cancel)
+        self._startup_reconcile_done: bool = False  # one-shot guard for reconcile_printer_prints
         self._is_dual_nozzle: bool = False  # Set when device.extruder.info has >= 2 entries
         self._message_log: deque[MQTTLogEntry] = deque(maxlen=100)
         self._logging_enabled: bool = False
@@ -683,6 +690,9 @@ class BambuMQTTClient:
         self._timelapse_during_print = prior._timelapse_during_print
         self._last_valid_progress = prior._last_valid_progress
         self._last_valid_layer_num = prior._last_valid_layer_num
+        # A stale-watchdog reconnect must not re-fire the startup sweep —
+        # carrying the flag keeps it a genuine once-per-fresh-start event.
+        self._startup_reconcile_done = prior._startup_reconcile_done
 
     @property
     def topic_subscribe(self) -> str:
@@ -2246,6 +2256,17 @@ class BambuMQTTClient:
                 self.state.current_print = data["subtask_name"]
         if "subtask_id" in data:
             self.state.subtask_id = data["subtask_id"]
+
+        # One-shot startup print reconciliation — the first full status
+        # after a fresh connect. A print that finished while BamDude was
+        # stopped arrives here with no RUNNING history, so live completion
+        # detection cannot fire; the reconcile sweep closes it instead. A
+        # stale-watchdog reconnect carries _startup_reconcile_done=True via
+        # carry_print_lifecycle_from, so this never double-fires.
+        if not self._startup_reconcile_done and "gcode_state" in data and "gcode_file" in data and self.on_first_status:
+            self._startup_reconcile_done = True
+            self.on_first_status(self.state.state, self.state.gcode_file or "")
+
         if "mc_percent" in data:
             # Save last non-zero progress for usage tracking (firmware resets to 0 on cancel)
             if self.state.progress > 0:

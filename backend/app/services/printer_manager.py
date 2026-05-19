@@ -429,6 +429,14 @@ class PrinterManager:
             # list actually changed (connect / set / edit / delete / save).
             self._schedule_async(_sync_kprofiles_for_printer(printer_id))
 
+        def on_first_status(live_state: str, live_file: str):
+            # First full status after a fresh connect — run the startup
+            # print-reconciliation sweep so a print that finished while
+            # BamDude was stopped gets its archive closed and queue advanced.
+            from backend.app.services.print_reconciliation import reconcile_printer_prints
+
+            self._schedule_async(reconcile_printer_prints(printer_id, live_state, live_file))
+
         client = BambuMQTTClient(
             ip_address=printer.ip_address,
             serial_number=printer.serial_number,
@@ -441,6 +449,7 @@ class PrinterManager:
             on_layer_change=on_layer_change,
             on_macro_complete=on_macro_complete,
             on_kprofiles_changed=on_kprofiles_changed,
+            on_first_status=on_first_status,
         )
 
         # Carry print-tracking state across the client recreation so a

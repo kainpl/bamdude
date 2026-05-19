@@ -2643,11 +2643,11 @@ async def on_print_start(printer_id: int, data: dict):
             # Divergence from upstream Bambuddy v0.2.3 #972 "revive" path: they
             # KEEP stale-cancel AND add a subtask_id-match revive. BamDude keeps
             # neither — we skip stale-cancel entirely, so there's nothing to
-            # revive. Trade-off: an orphan row from a crash-mid-print without
-            # a matching on_print_start later stays "printing" in DB until
-            # manually cleaned up. Addressing that is a separate feature (a
-            # targeted startup sweep comparing DB printing-rows against live
-            # MQTT state), not a stale-cancel-by-age heuristic.
+            # revive. An orphan row from a print that finished while BamDude was
+            # stopped is closed by the startup sweep in
+            # services/print_reconciliation.py, which runs on the first MQTT
+            # status after a fresh connect — not by a stale-cancel-by-age
+            # heuristic here.
             logger.info(
                 "Adopting existing printing archive %s for %s (re-trigger of live print)",
                 existing_archive.id,
