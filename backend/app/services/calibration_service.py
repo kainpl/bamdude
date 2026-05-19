@@ -462,6 +462,12 @@ class CalibrationService:
                     spec_with_bed.setdefault("bed_size_y", size_y)
 
             try:
+                # NB stage-2 dispatch for Flow Rate's fine pass is wired
+                # via `/slice-only` (the route plumbs `body.pass_n`); the
+                # printer-dispatch path here always slices pass 1 today.
+                # When stage-2 dispatch lands (Wave 5 — see
+                # `_start_flow_rate_stage2`), derive pass_n from the
+                # newly-created stage-2 session instead of hardcoding 1.
                 bake_bytes = build_calibration_3mf(
                     cali_mode=cali_mode,
                     spec=spec_with_bed,

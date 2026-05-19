@@ -123,7 +123,16 @@ MODE_STATE: dict[CaliMode, ModeState] = {
     # BOTH slice paths patch — /slice-only and the start_calibration
     # dispatch path (calibration_service.py) — so dispatched towers ramp.
     CaliMode.VOL_SPEED_TOWER: ModeState.PRODUCTION,
-    CaliMode.FLOW_RATE: ModeState.DISABLED,
+    # Phase 7 — VERIFICATION (W2). The builder loads the pass_n-selected
+    # asset (flowrate-test-pass{1,2}.3mf), parses block names from
+    # 3D/3dmodel.model, and bakes per-object print_flow_ratio overrides
+    # parsed from each block's flowrate_<mod> name (BS-faithful, byte-
+    # identical scaffolds). No post-slice patcher (BS has no
+    # Calib_Flow_Rate engine case). The two-stage flow (coarse 9 / fine
+    # 10) reuses the existing session machine: stage=2 + parent_session_id
+    # + coarse_ratio. Promote to PRODUCTION after sign-off matrix rows
+    # 7a + 7b — see temp/flow-rate-calibration-bs-orca-analysis.md.
+    CaliMode.FLOW_RATE: ModeState.VERIFICATION,
     CaliMode.AUTO_PA_LINE: ModeState.DISABLED,
     # Phase 9 — PRODUCTION (2026-05-15). Operator verified the slice in
     # OrcaSlicer: pattern centres on the printer's real bed bbox (model

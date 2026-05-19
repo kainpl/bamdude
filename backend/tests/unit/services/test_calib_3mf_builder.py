@@ -19,7 +19,8 @@ _REGISTERED: set[CaliMode] = {
     CaliMode.VOL_SPEED_TOWER,  # Phase 6 (production)
     CaliMode.VFA_TOWER,  # Phase 5 (production)
     CaliMode.TEMP_TOWER,  # Phase 3 (production)
-    CaliMode.RETRACTION_TOWER,  # Phase 4 (verification)
+    CaliMode.RETRACTION_TOWER,  # Phase 4 (production)
+    CaliMode.FLOW_RATE,  # Phase 7 (verification)
 }
 
 
@@ -66,3 +67,19 @@ def test_retraction_tower_rejects_too_wide_sweep():
     with pytest.raises(ValueError):
         # height = 1.4 + (end-start)/step = 1.4 + 100/0.1 = 1001.4 mm.
         build_calibration_3mf(cali_mode=CaliMode.RETRACTION_TOWER, spec={"start": 0, "end": 100, "step": 0.1})
+
+
+def test_flow_rate_pass1_builds_valid_3mf():
+    out = build_calibration_3mf(cali_mode=CaliMode.FLOW_RATE, spec={"nozzle_diameter": 0.4}, pass_n=1)
+    assert isinstance(out, bytes) and len(out) > 0
+    with zipfile.ZipFile(io.BytesIO(out)) as z:
+        names = z.namelist()
+    assert any(n.endswith(".model") for n in names)
+    # The 3MF carries the synthesised model_settings + the patched project.
+    assert "Metadata/model_settings.config" in names
+    assert "Metadata/project_settings.config" in names
+
+
+def test_flow_rate_pass2_builds_valid_3mf():
+    out = build_calibration_3mf(cali_mode=CaliMode.FLOW_RATE, spec={"nozzle_diameter": 0.4}, pass_n=2)
+    assert isinstance(out, bytes) and len(out) > 0

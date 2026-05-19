@@ -15,8 +15,10 @@ PA_LINE_RANGE: tuple[float, float, float, int] = (0.0, 0.1, 0.002, 50)
 
 # BS flowrate-test-pass1.3mf: 9 blocks
 FLOW_RATE_COARSE_MODIFIERS: tuple[int, ...] = (-20, -15, -10, -5, 0, 5, 10, 15, 20)
-# BS flowrate-test-pass2.3mf: 7 refined blocks
-FLOW_RATE_FINE_MODIFIERS: tuple[int, ...] = (-5, -2, 0, 2, 5, 10, 15)
+# BS flowrate-test-pass2.3mf: 10 blocks, all DOWNWARD from the coarse pick.
+# Verified against the shipped pass2.3mf object names (flowrate_m9..m1, _0)
+# and BS's CalibrationWizardSavePage.cpp:1847-1851 (`for i in 0..9: -9 + i`).
+FLOW_RATE_FINE_MODIFIERS: tuple[int, ...] = (-9, -8, -7, -6, -5, -4, -3, -2, -1, 0)
 
 
 class CaliMode(str, Enum):

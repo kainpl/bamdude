@@ -114,17 +114,29 @@ class CustomGcodeItem:
 class ObjectOverride:
     """One ``<object>`` block in ``Metadata/model_settings.config``.
 
-    For STL-wrapped 3MFs, ``object_id`` should be
-    :data:`WRAPPED_OBJECT_ID` — the scaffold puts a single object at
-    that id. For 3MF pass-through the caller must use whatever id the
-    upstream 3MF declared.
+    Address the target object **either** by ``object_id`` (the 3MF
+    integer id — what every single-object W2 mode uses with
+    :data:`WRAPPED_OBJECT_ID`) **or** by ``object_name`` (the value of
+    the first ``<metadata key="name" value="X"/>`` inside the
+    ``<object>``). The name path exists for multi-object scaffolds like
+    Flow Rate's ``flowrate-test-pass{1,2}.3mf`` where every block has a
+    stable identifying name (``flowrate_m5``, ``flowrate_0``, etc.).
+    Exactly one of the two must be set.
 
     ``config`` is a flat string-keyed map of slicer parameters to
-    override (e.g. ``{"seam_position": "rear"}``).
+    override (e.g. ``{"print_flow_ratio": "0.95"}``).
     """
 
-    object_id: int
+    object_id: int | None = None
+    object_name: str | None = None
     config: dict[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if (self.object_id is None) == (self.object_name is None):
+            raise ValueError(
+                "ObjectOverride requires exactly one of object_id or object_name "
+                f"(got object_id={self.object_id!r}, object_name={self.object_name!r})"
+            )
 
 
 def write_calibration_3mf(
@@ -314,6 +326,14 @@ def _compose_from_3mf(
 
     upstream_model_settings: str | None = None
     upstream_project_settings: str | None = None
+    # Some BS-shipped per-mode 3MFs (Flow Rate's flowrate-test-pass{1,2}.3mf)
+    # are bare-geometry — they ship only ``3D/3dmodel.model`` + a thumbnail
+    # + rels + content-types, with no ``Metadata/{model,project}_settings.config``.
+    # We synthesise the missing files from the geometry-side ``<object id=N
+    # name=X>`` enumeration (model_settings) and from the pa_pattern scaffold
+    # (project_settings) so the per-object overrides + process patch land in
+    # the output 3MF the same way they do for fully-populated scaffolds.
+    upstream_top_model: str | None = None
 
     # If the caller didn't pass any per-Z custom-gcode items, keep
     # whatever ``custom_gcode_per_layer.xml`` the scaffold shipped —
@@ -341,17 +361,20 @@ def _compose_from_3mf(
             if name == "Metadata/project_settings.config" and needs_project_patch:
                 upstream_project_settings = src.read(name).decode("utf-8", errors="replace")
                 continue
-            if name == "3D/3dmodel.model" and needs_build_transform_patch:
-                xml = src.read(name).decode("utf-8", errors="replace")
-                dst.writestr(
-                    name,
-                    _patch_top_level_model_transform(
-                        xml,
-                        scale=build_transform_scale,
-                        translate=build_transform_translate,
-                        printable=printable,
-                    ),
-                )
+            if name == "3D/3dmodel.model":
+                upstream_top_model = src.read(name).decode("utf-8", errors="replace")
+                if needs_build_transform_patch:
+                    dst.writestr(
+                        name,
+                        _patch_top_level_model_transform(
+                            upstream_top_model,
+                            scale=build_transform_scale,
+                            translate=build_transform_translate,
+                            printable=printable,
+                        ),
+                    )
+                else:
+                    dst.writestr(name, upstream_top_model)
                 continue
             dst.writestr(name, src.read(name))
 
@@ -360,12 +383,29 @@ def _compose_from_3mf(
                 "Metadata/custom_gcode_per_layer.xml",
                 _render_custom_gcodes(custom_gcodes),
             )
-        if needs_model_settings_patch and upstream_model_settings is not None:
+        if needs_model_settings_patch:
+            if upstream_model_settings is None:
+                # Scaffold shipped no model_settings.config (Flow Rate's bare
+                # multi-object 3MFs). Synthesise a minimal one from the
+                # geometry-side <object id=N name=X> enumeration so the same
+                # per-object override patcher path applies uniformly.
+                upstream_model_settings = _synthesise_model_settings_from_top_model(upstream_top_model or "")
+            # Use the same patcher as the STL path — BS only honours
+            # per-object <metadata> entries that appear BEFORE the first
+            # <part>, which _patch_model_settings_for_calibration handles.
+            # (The older _merge_model_settings_overrides inserted AFTER
+            # </part>, which BS silently ignored on load.)
             dst.writestr(
                 "Metadata/model_settings.config",
-                _merge_model_settings_overrides(upstream_model_settings, object_overrides),
+                _patch_model_settings_for_calibration(upstream_model_settings, object_overrides),
             )
-        if needs_project_patch and upstream_project_settings is not None:
+        if needs_project_patch:
+            if upstream_project_settings is None:
+                # Scaffold shipped no project_settings.config (Flow Rate
+                # again). Use pa_pattern's project_settings.config as the
+                # well-tested BS-default base — same source the STL path
+                # already relies on.
+                upstream_project_settings = _read_pa_pattern_project_settings()
             dst.writestr(
                 "Metadata/project_settings.config",
                 _patch_project_settings_for_calibration(
@@ -583,12 +623,37 @@ def _patch_model_settings_for_calibration(
     )
     if not overrides:
         return xml
+
+    # Resolve any object_name overrides to ids by walking the <object>
+    # blocks once and picking each block's FIRST name-metadata (the part's
+    # name comes later inside <part>...</part> and is intentionally ignored).
+    id_by_name: dict[str, int] = {}
+    if any(ov.object_name is not None for ov in overrides):
+        for m in re.finditer(
+            r'<object id="(\d+)">(.*?)(?:</object>|<object id=)',
+            xml,
+            flags=re.DOTALL,
+        ):
+            inner = m.group(2)
+            name_m = re.search(r'<metadata key="name" value="([^"]+)"/>', inner)
+            if name_m:
+                id_by_name[name_m.group(1)] = int(m.group(1))
+
     for ov in overrides:
-        marker_open = f'<object id="{ov.object_id}">'
+        if ov.object_id is not None:
+            target_id = ov.object_id
+        else:
+            assert ov.object_name is not None
+            if ov.object_name not in id_by_name:
+                raise ValueError(
+                    f"calib_3mf_writer: object_name={ov.object_name!r} not in scaffold (known: {sorted(id_by_name)})"
+                )
+            target_id = id_by_name[ov.object_name]
+        marker_open = f'<object id="{target_id}">'
         if marker_open not in xml:
             logger.warning(
                 "calib_3mf_writer: object id %d not in upstream model_settings; skipping %d overrides",
-                ov.object_id,
+                target_id,
                 len(ov.config),
             )
             continue
@@ -778,6 +843,47 @@ def _render_custom_gcodes(items: list[CustomGcodeItem]) -> bytes:
     lines.append("</plate>")
     lines.append("</custom_gcodes_per_layer>")
     return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def _synthesise_model_settings_from_top_model(top_model_xml: str) -> str:
+    """Build a minimal ``Metadata/model_settings.config`` from the
+    top-level ``3D/3dmodel.model`` of a bare-geometry 3MF scaffold.
+
+    Bambu's Flow Rate scaffolds (``flowrate-test-pass{1,2}.3mf``) ship
+    only the geometry file + thumbnail + rels + content-types — no
+    ``Metadata/model_settings.config``. We need one to carry the
+    per-object ``print_flow_ratio`` overrides, so reconstruct a minimal
+    skeleton from the ``<object id="N" name="X">`` entries inside the
+    geometry file. The result is then patched the same way as any other
+    scaffold's model_settings.config (per-object metadata inserted
+    BEFORE the first ``<part>``, which BS actually honours).
+    """
+    rows: list[str] = ['<?xml version="1.0" encoding="UTF-8"?>', "<config>"]
+    for m in re.finditer(r'<object\s+id="(\d+)"[^>]*\bname="([^"]+)"', top_model_xml):
+        oid = m.group(1)
+        oname = xml_escape(m.group(2), {'"': "&quot;"})
+        rows.append(f'  <object id="{oid}">')
+        rows.append(f'    <metadata key="name" value="{oname}"/>')
+        rows.append('    <metadata key="extruder" value="1"/>')
+        rows.append(f'    <part id="{oid}" subtype="normal_part">')
+        rows.append(f'      <metadata key="name" value="{oname}"/>')
+        rows.append("    </part>")
+        rows.append("  </object>")
+    rows.append("</config>")
+    return "\n".join(rows) + "\n"
+
+
+def _read_pa_pattern_project_settings() -> str:
+    """Read the pa_pattern.3mf scaffold's ``Metadata/project_settings.config``
+    as a well-tested BS-default base. Used when the per-mode scaffold
+    ships without its own project_settings.config (Flow Rate)."""
+    if not _SCAFFOLD_PATH.exists():
+        raise FileNotFoundError(
+            f"calib_3mf_writer: pa_pattern.3mf not found at {_SCAFFOLD_PATH} — "
+            "needed as the default project_settings.config base for bare 3MF scaffolds."
+        )
+    with zipfile.ZipFile(_SCAFFOLD_PATH) as z:
+        return z.read("Metadata/project_settings.config").decode("utf-8")
 
 
 def _merge_model_settings_overrides(

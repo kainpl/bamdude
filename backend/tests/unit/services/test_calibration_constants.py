@@ -23,7 +23,9 @@ def test_pa_line_range_constants():
 
 def test_flow_rate_modifiers():
     assert FLOW_RATE_COARSE_MODIFIERS == (-20, -15, -10, -5, 0, 5, 10, 15, 20)
-    assert FLOW_RATE_FINE_MODIFIERS == (-5, -2, 0, 2, 5, 10, 15)
+    # BS pass2.3mf: 10 blocks downward from the coarse pick — see
+    # flowrate_m9..m1, flowrate_0 (BS CalibrationWizardSavePage.cpp:1847).
+    assert FLOW_RATE_FINE_MODIFIERS == (-9, -8, -7, -6, -5, -4, -3, -2, -1, 0)
 
 
 def test_nozzle_id_standard_0_4():
@@ -55,8 +57,10 @@ def test_compute_flow_ratio_coarse():
 
 
 def test_compute_flow_ratio_fine():
+    # Modifier ∈ FLOW_RATE_FINE_MODIFIERS = (-9..0); fine = coarse·(100+m)/100.
     assert abs(compute_flow_ratio_fine(1.0, 0) - 1.0) < 1e-9
-    assert abs(compute_flow_ratio_fine(1.05, 5) - 1.1025) < 1e-9
+    assert abs(compute_flow_ratio_fine(1.05, -5) - 0.9975) < 1e-9
+    assert abs(compute_flow_ratio_fine(1.2, -9) - 1.092) < 1e-9
 
 
 def test_cali_mode_enum():

@@ -652,11 +652,11 @@ async def test_submit_manual_flow_fine_saves_combined(
         out = await service.submit_manual_result(
             db=db_session,
             session_id=stage2.id,
-            fine_modifier=2,
+            fine_modifier=-2,
         )
     assert len(out.saved_rows) == 1
-    # 1.05 * (100+2)/100 = 1.071
-    assert abs(out.saved_rows[0].flow_ratio - 1.071) < 1e-9
+    # 1.05 * (100-2)/100 = 1.029
+    assert abs(out.saved_rows[0].flow_ratio - 1.029) < 1e-9
 
 
 # ---------- submit_manual_result — tower modes ----------

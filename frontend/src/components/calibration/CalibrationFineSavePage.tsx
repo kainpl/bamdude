@@ -3,8 +3,10 @@ import { useTranslation } from 'react-i18next';
 
 import type { CalibrationSessionOut, ManualResultIn } from '../../api/client';
 
-// Must match backend FLOW_RATE_FINE_MODIFIERS.
-const FINE_MODS = [-5, -2, 0, 2, 5, 10, 15];
+// Must match backend FLOW_RATE_FINE_MODIFIERS and the actual 10 blocks
+// inside flowrate-test-pass2.3mf (flowrate_m9..m1 + flowrate_0). BS's fine
+// pass refines downward only — see CalibrationWizardSavePage.cpp:1847-1851.
+const FINE_MODS = [-9, -8, -7, -6, -5, -4, -3, -2, -1, 0];
 
 interface Props {
   session: CalibrationSessionOut;

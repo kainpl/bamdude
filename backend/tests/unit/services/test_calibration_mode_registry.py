@@ -77,6 +77,11 @@ _EXPECTED_NON_DISABLED: dict[CaliMode, ModeState] = {
     # Verification signed off: re-sliced output matched the Orca-desktop
     # engine reference with 0 mismatches on all 107 layers, both backends.
     CaliMode.RETRACTION_TOWER: ModeState.PRODUCTION,
+    # Phase 7 (Flow Rate) — VERIFICATION. Two-pass (coarse 9 / fine 10)
+    # geometry-only test; the builder bakes per-object print_flow_ratio
+    # overrides parsed from each block's flowrate_<mod> name, no patcher.
+    # Promotes once sign-off rows 7a + 7b match the Orca-desktop reference.
+    CaliMode.FLOW_RATE: ModeState.VERIFICATION,
 }
 
 

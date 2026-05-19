@@ -23,6 +23,7 @@ from backend.app.services.calib_3mf_writer import (
     GeometryKind,
     write_calibration_3mf,
 )
+from backend.app.services.calib_flow_rate import build_flow_rate_3mf
 from backend.app.services.calib_pa_line import build_pa_line_3mf
 from backend.app.services.calib_pa_pattern import build_pa_pattern_3mf
 from backend.app.services.calib_pa_tower import build_pa_tower_3mf
@@ -80,7 +81,11 @@ _BUILDERS: dict[CaliMode, ModeBuilder] = {
     # Phase 6 — PRODUCTION: builder bakes geometry + overrides; the
     # per-layer speed ramp is applied post-slice (calib_speed_ramp_patcher).
     CaliMode.VOL_SPEED_TOWER: build_vol_speed_3mf,
-    CaliMode.FLOW_RATE: _not_implemented,
+    # Phase 7 — VERIFICATION: builder loads pass1/pass2 by `pass_n`-selected
+    # asset, parses block names from 3D/3dmodel.model, bakes per-object
+    # print_flow_ratio overrides + the BS Plater::calib_flowrate override
+    # union. No post-slice patcher (BS has no Calib_Flow_Rate engine case).
+    CaliMode.FLOW_RATE: build_flow_rate_3mf,
     # Auto modes don't slice — they fire MQTT. The dispatcher returning
     # NotImplementedError here is correct: there's nothing to bake.
     CaliMode.AUTO_PA_LINE: _not_implemented,

@@ -350,3 +350,88 @@ def test_writer_rejects_unknown_geometry_kind():
             geometry_bytes=b"unused",
             geometry_kind="step",  # type: ignore[arg-type]
         )
+
+
+# ---------- ObjectOverride.object_name (W2 Phase 7 — Flow Rate) ----------
+
+
+_FR_SCAFFOLD = """\
+<config>
+  <object id="2">
+    <metadata key="name" value="flowrate_m5"/>
+    <metadata key="extruder" value="1"/>
+    <part id="1" subtype="normal_part">
+      <metadata key="name" value="flowrate_m5"/>
+    </part>
+  </object>
+  <object id="3">
+    <metadata key="name" value="flowrate_0"/>
+    <metadata key="extruder" value="1"/>
+    <part id="2" subtype="normal_part">
+      <metadata key="name" value="flowrate_0"/>
+    </part>
+  </object>
+</config>
+"""
+
+
+def test_patch_model_settings_object_name_match_writes_into_correct_block():
+    from backend.app.services.calib_3mf_writer import (
+        ObjectOverride,
+        _patch_model_settings_for_calibration,
+    )
+
+    out = _patch_model_settings_for_calibration(
+        _FR_SCAFFOLD,
+        [
+            ObjectOverride(object_name="flowrate_m5", config={"print_flow_ratio": "0.95"}),
+            ObjectOverride(object_name="flowrate_0", config={"print_flow_ratio": "1.0"}),
+        ],
+    )
+    obj2 = out[out.index('<object id="2">') : out.index('<object id="3">')]
+    obj3 = out[out.index('<object id="3">') :]
+    assert '<metadata key="print_flow_ratio" value="0.95"/>' in obj2
+    assert '<metadata key="print_flow_ratio" value="1.0"/>' in obj3
+    # No cross-contamination between blocks.
+    assert '<metadata key="print_flow_ratio" value="1.0"/>' not in obj2
+    assert '<metadata key="print_flow_ratio" value="0.95"/>' not in obj3
+
+
+def test_patch_model_settings_object_name_unknown_raises():
+    import pytest
+
+    from backend.app.services.calib_3mf_writer import (
+        ObjectOverride,
+        _patch_model_settings_for_calibration,
+    )
+
+    with pytest.raises(ValueError, match="flowrate_xyz"):
+        _patch_model_settings_for_calibration(
+            _FR_SCAFFOLD,
+            [ObjectOverride(object_name="flowrate_xyz", config={"k": "v"})],
+        )
+
+
+def test_patch_model_settings_object_id_path_still_works():
+    from backend.app.services.calib_3mf_writer import (
+        ObjectOverride,
+        _patch_model_settings_for_calibration,
+    )
+
+    out = _patch_model_settings_for_calibration(
+        _FR_SCAFFOLD,
+        [ObjectOverride(object_id=2, config={"wall_loops": "3"})],
+    )
+    obj2 = out[out.index('<object id="2">') : out.index('<object id="3">')]
+    assert '<metadata key="wall_loops" value="3"/>' in obj2
+
+
+def test_object_override_requires_exactly_one_of_id_or_name():
+    import pytest
+
+    from backend.app.services.calib_3mf_writer import ObjectOverride
+
+    with pytest.raises(ValueError):
+        ObjectOverride()  # neither
+    with pytest.raises(ValueError):
+        ObjectOverride(object_id=2, object_name="flowrate_0")  # both
