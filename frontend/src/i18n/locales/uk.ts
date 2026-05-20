@@ -4024,6 +4024,11 @@ export default {
       searchPlaceholder: 'Пошук за назвою, брендом або #ID',
       filterByMaterial: 'Матеріал:',
       allMaterials: 'Усі',
+      sortBy: {
+        label: 'Сорт:',
+        id: 'За ID',
+        color: 'За кольором',
+      },
       pickSpools: 'Оберіть, для яких котушок друкувати наліпки:',
       selectVisible: 'Обрати всі видимі ({{count}})',
       deselectVisible: 'Зняти видимі',
@@ -4032,9 +4037,13 @@ export default {
       noMatches: 'Жодна котушка не відповідає поточному пошуку чи фільтру.',
       error: 'Не вдалося згенерувати наліпки: {{msg}}',
       templates: {
-        ams: {
-          label: 'AMS-тримач (30 × 15 мм)',
-          hint: 'Одна наліпка на сторінку; підходить для популярного AMS-тримача наліпок філаменту.'
+        amsHolderSmall: {
+          label: 'AMS-тримач — малий (74 × 33 мм)',
+          hint: 'Одна наліпка на сторінку; відповідає STL друкованої наліпки з MakerWorld model 752566 (AMS Filament Label Holder).'
+        },
+        amsHolderLarge: {
+          label: 'AMS-тримач — великий (75 × 55 мм)',
+          hint: 'Одна наліпка на сторінку; під картонну вставку AMS Filament Label Holder. Достатньо місця для зразка кольору, бренду, матеріалу, ID та QR-коду.'
         },
         box40x30: {
           label: 'Наліпка на коробку (40 × 30 мм)',

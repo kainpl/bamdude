@@ -1,9 +1,14 @@
 """PDF spool label rendering (B.1 — port of upstream Bambuddy #809).
 
-Five fixed templates:
+Six fixed templates:
 
-- ``ams_30x15``  — 30×15 mm single label, fits the popular Makerworld AMS
-  Filament Label Holder (model 752566). One label per page.
+- ``ams_holder_74x33`` — 74×33 mm single label, matches the printable
+  label STL bundled with the Makerworld AMS Filament Label Holder
+  (model 752566). Smaller variant — the visible window in the holder.
+  One label per page.
+- ``ams_holder_75x55`` — 75×55 mm single label, fits the cardstock-
+  insert variant of the same holder. Roomier — swatch + QR + full
+  text column. One label per page.
 - ``box_40x30``  — 40×30 mm single label, common DK/Brother roll size and a
   good fit for filament-bag/storage-bin labels (#809 follow-up). Roomy
   layout — swatch, QR, full text column with hex code.
@@ -11,6 +16,11 @@ Five fixed templates:
   generic small labels. One label per page.
 - ``avery_5160`` — US Letter sheet, 25.4×66.7 mm × 30 per sheet.
 - ``avery_l7160`` — A4 sheet, 38.1×63.5 mm × 21 per sheet.
+
+The legacy ``ams_30x15`` preset (#809) was incorrect — the original
+30×15 mm dimension didn't fit any documented variant of model 752566.
+Replaced by the two ``ams_holder_*`` presets above (upstream Bambuddy
+#1426 / commit 1677efb2).
 
 The renderer is decoupled from the Spool model: callers build a ``LabelData``
 list from whatever source (local DB, Spoolman, future) so the same code path
@@ -41,7 +51,14 @@ from reportlab.lib.pagesizes import A4, letter
 from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas as rl_canvas
 
-TemplateName = Literal["ams_30x15", "box_40x30", "box_62x29", "avery_5160", "avery_l7160"]
+TemplateName = Literal[
+    "ams_holder_74x33",
+    "ams_holder_75x55",
+    "box_40x30",
+    "box_62x29",
+    "avery_5160",
+    "avery_l7160",
+]
 
 
 @dataclass
@@ -372,7 +389,8 @@ def _draw_label_roomy(
 
 # (label_w_mm, label_h_mm) for single-label-per-page templates.
 _SINGLE_LABEL_SIZES_MM: dict[str, tuple[float, float]] = {
-    "ams_30x15": (30.0, 15.0),
+    "ams_holder_74x33": (74.0, 33.0),
+    "ams_holder_75x55": (75.0, 55.0),
     "box_40x30": (40.0, 30.0),
     "box_62x29": (62.0, 29.0),
 }

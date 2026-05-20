@@ -31,6 +31,13 @@ def generate_stl_thumbnail(
     Returns:
         Path to the generated thumbnail, or None on failure
     """
+    # Callers historically pass either Path or str; coerce so the
+    # ``thumbnails_dir / thumb_filename`` join at the end of this
+    # function can't fail with the str-divided-by-str TypeError
+    # (upstream Bambuddy #1299).
+    stl_path = Path(stl_path)
+    thumbnails_dir = Path(thumbnails_dir)
+
     try:
         import matplotlib
         import trimesh

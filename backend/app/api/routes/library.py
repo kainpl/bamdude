@@ -167,6 +167,55 @@ def calculate_file_hash(file_path: Path) -> str:
     return sha256_hash.hexdigest()
 
 
+def validate_print_file_upload(filename: str, content: bytes) -> None:
+    """Reject obviously-unprintable uploads early so the printer doesn't see them.
+
+    Bambu printers in network mode only parse ``.gcode.3mf`` zip
+    containers — raw ``.gcode`` and corrupt / non-zip ``.3mf`` uploads
+    cascade into a confusing "Printing stopped because the printer was
+    unable to parse the 3mf file" rejection 30 seconds after the user
+    clicks Print. The background dispatcher appends ``.3mf`` to a raw-
+    gcode filename when constructing the FTP destination, which is how
+    the printer ends up with a file named ``.gcode.3mf`` whose body is
+    raw gcode — exactly the shape that triggers the firmware parse
+    failure. Catching both classes here gives an actionable error at
+    upload time (upstream Bambuddy #1401).
+
+    Compares the filename suffix rather than ``os.path.splitext`` —
+    compound extensions like ``.gcode.3mf`` show up as just ``.3mf``
+    after ``splitext``; the same zip-magic-byte check fires for both
+    single-``.3mf`` and ``.gcode.3mf`` uploads.
+
+    Raises ``HTTPException(400, ...)`` with a human-readable message
+    on rejection; returns ``None`` for valid (or irrelevant — e.g.
+    STL, image) uploads.
+    """
+    lower_filename = filename.lower()
+    is_3mf_upload = lower_filename.endswith(".3mf")
+    is_raw_gcode_upload = lower_filename.endswith(".gcode") and not lower_filename.endswith(".gcode.3mf")
+
+    if is_raw_gcode_upload:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Raw .gcode files can't be printed on Bambu printers in network mode — "
+                "they need a .gcode.3mf zip container (gcode plus metadata). Re-export from "
+                "your slicer and make sure the file ends in '.gcode.3mf', not just '.gcode'. "
+                "If your OS hides extensions, double-check the file with the extension visible."
+            ),
+        )
+
+    if is_3mf_upload and not content.startswith(b"PK\x03\x04"):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "This .3mf file isn't a valid ZIP container. 3MF files are ZIP archives — "
+                "either the file is corrupted or it's raw gcode renamed to .3mf. Re-export "
+                "from your slicer using its 'Export Plate Sliced File' action."
+            ),
+        )
+
+
 def _resolve_upload_destination(target_folder: LibraryFolder | None, filename: str) -> tuple[Path, bool]:
     """Resolve the on-disk destination for an uploaded file.
 
@@ -1713,6 +1762,29 @@ def _sanitize_project_settings_sentinels(zip_bytes: bytes) -> bytes:
         return zip_bytes
 
 
+def _patch_process_bed_type(process_json: str, bed_type: str) -> str:
+    """Overwrite ``curr_bed_type`` in a process-profile JSON before
+    forwarding to the slicer sidecar.
+
+    The slicer CLI reads the build-plate type from the process profile's
+    ``curr_bed_type`` field. When the user picks a non-default plate in
+    the SliceModal (upstream Bambuddy #1337), we patch the resolved JSON
+    in place rather than asking them to clone the preset just to switch
+    a plate. Returns the original string unchanged when the JSON can't
+    be parsed or isn't a dict — the slicer will then run with whatever
+    the preset originally specified, which is the safe fall-back path.
+    """
+    try:
+        profile = json.loads(process_json)
+    except json.JSONDecodeError:
+        logger.warning("Bed-type override skipped: process profile is not valid JSON")
+        return process_json
+    if not isinstance(profile, dict):
+        return process_json
+    profile["curr_bed_type"] = bed_type
+    return json.dumps(profile)
+
+
 async def _run_slicer_with_fallback(
     db: AsyncSession,
     *,
@@ -1769,6 +1841,21 @@ async def _run_slicer_with_fallback(
         for ref in request.filament_presets:
             assert ref is not None, "schema validator guarantees filament list is non-None"
             filament_jsons.append(await resolve_preset_ref(db, user, ref, "filament"))
+
+        # Bed-type override (upstream Bambuddy #1337): patch
+        # ``curr_bed_type`` onto the resolved process JSON so the slicer's
+        # config pass picks up the user's pick instead of whatever the
+        # process preset defaults to. Without this, slicing an STL of
+        # ABS onto a process preset whose default is "Cool Plate" fails
+        # with ``Plate 1: Cool Plate does not support filament 1``. The
+        # ``bedType`` form field we already send to the sidecar is a
+        # belt-and-suspenders second path — JSON patch wins because it
+        # lands the value before the slicer reads it, regardless of
+        # whether the sidecar fork honours ``bedType`` on its side.
+        # Bundle mode skipped (the sidecar materialises presets from
+        # disk; ``bedType`` form field is the only override there).
+        if request.bed_type:
+            presets["process"] = _patch_process_bed_type(presets["process"], request.bed_type)
 
     # Slicer routing — per-request override on the SliceRequest wins over
     # the global preferred_slicer setting; per-install URL setting wins
@@ -2314,13 +2401,19 @@ async def upload_file(
             if not target_folder:
                 raise HTTPException(status_code=404, detail="Folder not found")
 
-        # Writable external folders write through to the mount so the file is
-        # visible outside BamDude (upstream #1112); everything else lands under
-        # the internal library dir with a UUID-scoped filename.
+        # Writable external folders write through to the mount so the
+        # file is visible outside BamDude (upstream #1112); everything
+        # else lands under the internal library dir with a UUID-scoped
+        # filename. Resolved BEFORE the content validation below so
+        # folder-permission rejections (403 read-only, 400 missing
+        # path, 409 collision) still surface before any "bad file
+        # format" 400 — preserves existing error ordering / tests.
         file_path, is_external_upload = _resolve_upload_destination(target_folder, filename)
 
-        # Save file
+        # Read upload now so the validation can sniff magic bytes; the
+        # file is written to disk only after the checks pass (#1401).
         content = await file.read()
+        validate_print_file_upload(filename, content)
         with open(file_path, "wb") as f:
             f.write(content)
 

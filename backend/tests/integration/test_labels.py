@@ -69,7 +69,7 @@ class TestInventoryLabels:
             "/api/v1/inventory/labels",
             json={
                 "spools": [{"id": a.id}, {"id": 999_999}],
-                "template": "ams_30x15",
+                "template": "ams_holder_74x33",
             },
         )
         assert resp.status_code == 404
@@ -80,7 +80,7 @@ class TestInventoryLabels:
     async def test_422_on_empty_list(self, async_client: AsyncClient):
         resp = await async_client.post(
             "/api/v1/inventory/labels",
-            json={"spools": [], "template": "ams_30x15"},
+            json={"spools": [], "template": "ams_holder_74x33"},
         )
         # Pydantic min_length=1 fails the body before route runs.
         assert resp.status_code == 422

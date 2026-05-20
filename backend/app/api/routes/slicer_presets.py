@@ -589,6 +589,28 @@ async def import_slicer_bundle(
         async with SlicerApiService(base_url=api_url) as svc:
             bundle = await svc.import_bundle(zip_bytes, filename=filename)
     except SlicerApiError as exc:
+        # Log the sidecar's actual reject reason at WARNING. The FE-only
+        # toast leaves us blind during triage — the access log only carries
+        # the bare status code, and a 400 / 502 / 503 from this path is
+        # always unexpected (non-bbscfg upload, sidecar disk write failure,
+        # sidecar offline, …). Logging here means the next reporter's
+        # support bundle contains the answer (upstream Bambuddy #1312).
+        if isinstance(exc, SlicerInputError):
+            logger.warning(
+                "Bundle import rejected by sidecar (%s, %d bytes): %s",
+                filename,
+                len(zip_bytes),
+                exc,
+            )
+        elif isinstance(exc, SlicerApiUnavailableError):
+            logger.warning("Bundle import: sidecar unreachable (%s): %s", api_url, exc)
+        else:
+            logger.warning(
+                "Bundle import: sidecar error (%s, %d bytes): %s",
+                filename,
+                len(zip_bytes),
+                exc,
+            )
         raise _map_sidecar_error_to_http(exc) from exc
     return _bundle_summary_to_dict(bundle)
 

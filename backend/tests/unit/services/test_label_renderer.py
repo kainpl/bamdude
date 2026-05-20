@@ -6,7 +6,14 @@ import pytest
 
 from backend.app.services.label_renderer import LabelData, render_labels
 
-ALL_TEMPLATES = ("ams_30x15", "box_40x30", "box_62x29", "avery_5160", "avery_l7160")
+ALL_TEMPLATES = (
+    "ams_holder_74x33",
+    "ams_holder_75x55",
+    "box_40x30",
+    "box_62x29",
+    "avery_5160",
+    "avery_l7160",
+)
 
 
 def _sample(spool_id: int = 1, **overrides) -> LabelData:
@@ -58,7 +65,7 @@ def test_missing_optional_fields_does_not_crash():
             deeplink_url="https://example.test/inventory?spool=42",
         )
     ]
-    pdf = render_labels("ams_30x15", data)
+    pdf = render_labels("ams_holder_74x33", data)
     assert pdf.startswith(b"%PDF")
 
 
@@ -74,7 +81,7 @@ def test_long_strings_are_truncated_not_overflowed():
     long_brand = "A" * 200
     long_name = "B" * 300
     data = [_sample(brand=long_brand, name=long_name)]
-    pdf = render_labels("ams_30x15", data)
+    pdf = render_labels("ams_holder_74x33", data)
     assert pdf.startswith(b"%PDF")
 
 
@@ -121,8 +128,13 @@ def _render_uncompressed(template, data):
     from backend.app.services.label_renderer import _draw_label  # noqa: PLC0415
 
     # Mirror the page-size choice from render_labels but force pageCompression=0.
-    if template in ("ams_30x15", "box_40x30", "box_62x29"):
-        sizes = {"ams_30x15": (30.0, 15.0), "box_40x30": (40.0, 30.0), "box_62x29": (62.0, 29.0)}
+    if template in ("ams_holder_74x33", "ams_holder_75x55", "box_40x30", "box_62x29"):
+        sizes = {
+            "ams_holder_74x33": (74.0, 33.0),
+            "ams_holder_75x55": (75.0, 55.0),
+            "box_40x30": (40.0, 30.0),
+            "box_62x29": (62.0, 29.0),
+        }
         w_mm, h_mm = sizes[template]
         page_w, page_h = w_mm * _mm, h_mm * _mm
         buf = _io.BytesIO()

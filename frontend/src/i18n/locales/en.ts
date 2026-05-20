@@ -4020,6 +4020,11 @@ export default {
       searchPlaceholder: 'Search name, brand, or #ID',
       filterByMaterial: 'Material:',
       allMaterials: 'All',
+      sortBy: {
+        label: 'Sort:',
+        id: 'By ID',
+        color: 'By colour',
+      },
       pickSpools: 'Pick which spools to print labels for:',
       selectVisible: 'Select all visible ({{count}})',
       deselectVisible: 'Deselect visible',
@@ -4028,9 +4033,13 @@ export default {
       noMatches: 'No spools match the current search or filter.',
       error: 'Could not generate labels: {{msg}}',
       templates: {
-        ams: {
-          label: 'AMS holder (30 × 15 mm)',
-          hint: 'Single label per page; fits the popular AMS filament label holder.'
+        amsHolderSmall: {
+          label: 'AMS holder — small (74 × 33 mm)',
+          hint: 'Single label per page; matches the printable label STL from MakerWorld model 752566 (AMS Filament Label Holder).'
+        },
+        amsHolderLarge: {
+          label: 'AMS holder — large (75 × 55 mm)',
+          hint: 'Single label per page; fits the cardstock-insert variant of the AMS Filament Label Holder. Roomy enough for swatch, brand, material, ID, and QR code.'
         },
         box40x30: {
           label: 'Box label (40 × 30 mm)',

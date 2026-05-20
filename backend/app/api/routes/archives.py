@@ -3367,6 +3367,12 @@ async def upload_source_3mf(
     source_path = source_dir / source_filename
 
     content = await file.read()
+    # #1401: validate zip header on source 3MF uploads — source files
+    # are uploaded for reprint and slicing, so an invalid one breaks
+    # the same downstream paths as a bad sliced file.
+    from backend.app.api.routes.library import validate_print_file_upload
+
+    validate_print_file_upload(file.filename, content)
     source_path.write_bytes(content)
 
     # Update archive with source path (relative to base_dir)
@@ -3566,6 +3572,12 @@ async def upload_source_3mf_by_name(
     source_path = source_dir / source_filename
 
     content = await file.read()
+    # #1401: same zip-header check as the other upload routes — the
+    # match-by-name endpoint is used by slicer post-processing scripts,
+    # so a misconfigured script is exactly how a bad 3MF would slip in.
+    from backend.app.api.routes.library import validate_print_file_upload
+
+    validate_print_file_upload(file.filename, content)
     source_path.write_bytes(content)
 
     # Update archive with source path

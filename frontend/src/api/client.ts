@@ -129,6 +129,25 @@ export function withStreamToken(url: string): string {
   return `${url}${sep}token=${encodeURIComponent(streamToken)}`;
 }
 
+/**
+ * Sanitize + extension-normalise a filename intended to be served as the
+ * tail segment of a slicer-token download URL (``…/dl/<token>/<filename>``).
+ *
+ * Two reasons:
+ * 1. The slicer (BambuStudio / OrcaSlicer) routes the request based on the
+ *    final ``.3mf`` extension — extensionless library names (e.g. an STL
+ *    or a user-renamed display name) silently fail to open.
+ * 2. URL path separators and fragment characters in the display name
+ *    (``/``, ``\``, ``?``, ``#``) confuse both URL parsing and the
+ *    slicer's own filename handling, so strip them out before encoding.
+ *
+ * Mirrors upstream Bambuddy #1416 / commit feb44a9d.
+ */
+function buildSlicerUrlFilename(filename: string): string {
+  const safe = filename.replace(/[/\\?#]/g, '_');
+  return safe.toLowerCase().endsWith('.3mf') ? safe : `${safe}.3mf`;
+}
+
 function parseContentDispositionFilename(header: string | null): string | null {
   if (!header) return null;
   // RFC 5987: filename*=utf-8''percent-encoded-name
@@ -2969,7 +2988,13 @@ export interface InventorySpool {
 }
 
 // Spool label printing (B.1).
-export type SpoolLabelTemplate = 'ams_30x15' | 'box_40x30' | 'box_62x29' | 'avery_5160' | 'avery_l7160';
+export type SpoolLabelTemplate =
+  | 'ams_holder_74x33'
+  | 'ams_holder_75x55'
+  | 'box_40x30'
+  | 'box_62x29'
+  | 'avery_5160'
+  | 'avery_l7160';
 
 export interface SpoolLabelEntry {
   id: number;
@@ -5111,10 +5136,8 @@ export const api = {
   },
   createArchiveSlicerToken: (archiveId: number) =>
     request<{ token: string }>(`/archives/${archiveId}/slicer-token`, { method: 'POST' }),
-  getArchiveSlicerDownloadUrl: (archiveId: number, token: string, filename: string) => {
-    const safe = filename.replace(/[/\\?#]/g, '_');
-    return `${API_BASE}/archives/${archiveId}/dl/${token}/${encodeURIComponent(safe.endsWith('.3mf') ? safe : safe + '.3mf')}`;
-  },
+  getArchiveSlicerDownloadUrl: (archiveId: number, token: string, filename: string) =>
+    `${API_BASE}/archives/${archiveId}/dl/${token}/${encodeURIComponent(buildSlicerUrlFilename(filename))}`,
   getArchivePlates: (archiveId: number) =>
     request<ArchivePlatesResponse>(`/archives/${archiveId}/plates`),
   getArchiveFilamentRequirements: (archiveId: number, plateId?: number, requestId?: string) => {
@@ -6635,7 +6658,7 @@ export const api = {
   createLibrarySlicerToken: (fileId: number) =>
     request<{ token: string }>(`/library/files/${fileId}/slicer-token`, { method: 'POST' }),
   getLibrarySlicerDownloadUrl: (fileId: number, token: string, filename: string) =>
-    `${API_BASE}/library/files/${fileId}/dl/${token}/${encodeURIComponent(filename)}`,
+    `${API_BASE}/library/files/${fileId}/dl/${token}/${encodeURIComponent(buildSlicerUrlFilename(filename))}`,
   downloadLibraryFile: async (id: number, filename?: string): Promise<void> => {
     const headers: Record<string, string> = {};
     if (authToken) {
