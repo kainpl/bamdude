@@ -94,6 +94,7 @@ BamDude is a hard fork of [Bambuddy](https://github.com/maziggy/bambuddy) focuse
 - **In-app calibration wizard (Bambu Studio parity)** — runs the calibration tests from inside BamDude; no Bambu Studio desktop needed
 - **Pressure Advance** — PA Line, PA Pattern, PA Tower; measured K saved to the printer's 16-slot K-profile history over MQTT and auto-bound to the AMS slot
 - **Towers** — Temperature, Volumetric Speed, VFA and Retraction; print-and-eyeball with a finish-step result calculator
+- **Flow Rate** — two-pass test (9-block coarse → 10-block fine, end-to-end auto-dispatch); pass-1 baseline auto-prefilled from your filament preset's `filament_flow_ratio`, override-able to a fresh 1.0 without editing the slicer profile
 - Calibration scaffold sliced against your own printer / process / filament presets through the OrcaSlicer or Bambu Studio sidecar, then printed via the normal dispatch pipeline
 - Per-`(printer, filament, nozzle, extruder)` result cache, H2D dual-extruder per-extruder tabs, Calibration History modal
 

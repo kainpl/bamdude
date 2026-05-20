@@ -77,11 +77,15 @@ _EXPECTED_NON_DISABLED: dict[CaliMode, ModeState] = {
     # Verification signed off: re-sliced output matched the Orca-desktop
     # engine reference with 0 mismatches on all 107 layers, both backends.
     CaliMode.RETRACTION_TOWER: ModeState.PRODUCTION,
-    # Phase 7 (Flow Rate) — VERIFICATION. Two-pass (coarse 9 / fine 10)
-    # geometry-only test; the builder bakes per-object print_flow_ratio
-    # overrides parsed from each block's flowrate_<mod> name, no patcher.
-    # Promotes once sign-off rows 7a + 7b match the Orca-desktop reference.
-    CaliMode.FLOW_RATE: ModeState.VERIFICATION,
+    # Phase 7 (Flow Rate) — promoted to PRODUCTION 2026-05-20. Two-pass
+    # (coarse 9 / fine 10) geometry-only test; per-object print_flow_ratio
+    # overrides parsed from each block's flowrate_<mod> name (no patcher).
+    # Wave-5 wires stage-2 dispatch end-to-end: parent session's
+    # dispatch_args_json + coarse_ratio feed _start_flow_rate_stage2 →
+    # _run_calibration_print(pass_n=2, baseline_flow_ratio=coarse_ratio).
+    # Verification signed off against the Orca-desktop reference: every
+    # flow-rate-relevant CONFIG_BLOCK key matched on both passes.
+    CaliMode.FLOW_RATE: ModeState.PRODUCTION,
 }
 
 
