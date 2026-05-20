@@ -16,9 +16,13 @@ from backend.app.models.api_key import APIKey
 from backend.app.models.archive import PrintArchive
 from backend.app.models.group import Group
 from backend.app.models.library import LibraryFile
+from backend.app.models.long_lived_token import LongLivedToken
+from backend.app.models.oidc_provider import UserOIDCLink
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.settings import Settings
 from backend.app.models.user import User
+from backend.app.models.user_otp_code import UserOTPCode
+from backend.app.models.user_totp import UserTOTP
 from backend.app.schemas.auth import ChangePasswordRequest, GroupBrief, UserCreate, UserResponse, UserUpdate
 from backend.app.services.email_service import (
     create_welcome_email_from_template,
@@ -408,6 +412,25 @@ async def delete_user(
     # path it depends on. Postgres would already cascade, but the explicit
     # DELETE keeps the two backends behaviour-identical (#1182).
     await db.execute(delete(APIKey).where(APIKey.user_id == user_id))
+
+    # Drop OIDC links, MFA state, and long-lived camera-stream tokens
+    # owned by this user. Same SQLite/FK pattern as APIKey above. Without
+    # these, deleting an SSO user on SQLite leaves:
+    #   - UserOIDCLink: the OIDC callback finds the orphan link, fails to
+    #     resolve the (now missing) user, and falls through to
+    #     "account_inactive" instead of triggering auto-create. The user
+    #     can't re-login via SSO until the orphan link is cleared.
+    #   - UserTOTP: MFA secrets persist in the DB after the owning user
+    #     is gone.
+    #   - UserOTPCode: pending email OTP codes linger.
+    #   - LongLivedToken: per-user camera-stream tokens whose secret_hash
+    #     is still valid — ``verify()`` would happily match them by
+    #     lookup_prefix even though the user is gone.
+    # Same fix upstream Bambuddy shipped in #1285 / commit 4d8dbc83.
+    await db.execute(delete(UserOIDCLink).where(UserOIDCLink.user_id == user_id))
+    await db.execute(delete(UserTOTP).where(UserTOTP.user_id == user_id))
+    await db.execute(delete(UserOTPCode).where(UserOTPCode.user_id == user_id))
+    await db.execute(delete(LongLivedToken).where(LongLivedToken.user_id == user_id))
 
     await db.delete(user)
     await db.commit()
