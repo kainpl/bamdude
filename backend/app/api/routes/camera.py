@@ -36,6 +36,7 @@ from backend.app.services.camera_fanout import (
     iter_subscriber,
     shutdown_broadcaster,
 )
+from backend.app.services.camera_profiles import get_camera_profile
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/printers", tags=["camera"])
@@ -292,11 +293,13 @@ async def _read_ffmpeg_stderr(process: asyncio.subprocess.Process) -> str | None
         return None
 
 
-# Max consecutive RTSP reconnections before giving up.
-# Some printer firmwares (notably P2S) drop RTSP sessions after a few seconds,
-# so we transparently respawn ffmpeg to keep the MJPEG stream alive.
-_RTSP_MAX_RECONNECTS = 30
-_RTSP_RECONNECT_DELAY = 0.2  # seconds between respawns
+# Per-model RTSP / ffmpeg tuning knobs live in
+# ``backend.app.services.camera_profiles`` so adding the next quirky model
+# is a config entry, not another module-level constant scattered here.
+# The previously-global ``profile.rtsp_reconnect_max`` / ``profile.rtsp_reconnect_delay``
+# are now ``profile.rtsp_reconnect_max`` / ``profile.rtsp_reconnect_delay``
+# with the same defaults — every existing model sees zero behaviour
+# change. Upstream Bambuddy #1395 / commit 67cb5275.
 
 
 async def generate_rtsp_mjpeg_stream(
@@ -321,6 +324,11 @@ async def generate_rtsp_mjpeg_stream(
 
     port = get_camera_port(model)
 
+    # Per-model ffmpeg tuning (probesize / analyzeduration / reconnect
+    # cadence). Default profile preserves the historical X1 / H2 fast-
+    # startup values; P2S firmware 01.02.00.00 needs a bigger probesize.
+    profile = get_camera_profile(model)
+
     # Use a local TLS proxy so Python's OpenSSL handles TLS instead of
     # ffmpeg's GnuTLS.  This fixes P2S (and potentially other models)
     # dropping the RTSP session after a few seconds due to GnuTLS's
@@ -342,13 +350,14 @@ async def generate_rtsp_mjpeg_stream(
         "-max_delay",
         "500000",  # 0.5 seconds max delay
         "-probesize",
-        "32",  # Minimal probing for faster startup
+        str(profile.probesize),
         "-analyzeduration",
-        "0",  # Skip format analysis for faster startup
+        str(profile.analyzeduration),
         "-fflags",
         "nobuffer",  # Reduce internal buffering
         "-flags",
         "low_delay",  # Minimize decode latency
+        *profile.extra_ffmpeg_input_args,
         "-i",
         camera_url,
         "-f",
@@ -383,7 +392,7 @@ async def generate_rtsp_mjpeg_stream(
     got_any_frames = False
 
     try:
-        while reconnect_count <= _RTSP_MAX_RECONNECTS:
+        while reconnect_count <= profile.rtsp_reconnect_max:
             # Check for client disconnect before (re)connecting
             if disconnect_event and disconnect_event.is_set():
                 break
@@ -392,11 +401,11 @@ async def generate_rtsp_mjpeg_stream(
                 logger.info(
                     "RTSP reconnecting (%d/%d) for %s (stream_id=%s)",
                     reconnect_count,
-                    _RTSP_MAX_RECONNECTS,
+                    profile.rtsp_reconnect_max,
                     ip_address,
                     stream_id,
                 )
-                await asyncio.sleep(_RTSP_RECONNECT_DELAY)
+                await asyncio.sleep(profile.rtsp_reconnect_delay)
                 if disconnect_event and disconnect_event.is_set():
                     break
 
@@ -524,10 +533,10 @@ async def generate_rtsp_mjpeg_stream(
             # Normal exit (shouldn't reach here, but be safe)
             break
 
-        if reconnect_count > _RTSP_MAX_RECONNECTS:
+        if reconnect_count > profile.rtsp_reconnect_max:
             logger.error(
                 "RTSP max reconnects (%d) reached for %s (stream_id=%s)",
-                _RTSP_MAX_RECONNECTS,
+                profile.rtsp_reconnect_max,
                 ip_address,
                 stream_id,
             )
