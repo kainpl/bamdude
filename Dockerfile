@@ -28,6 +28,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     iproute2 \
     libcap2-bin \
     openssh-client \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Allow binding to privileged ports (e.g. 990/FTPS) as non-root user.

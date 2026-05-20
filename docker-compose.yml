@@ -47,6 +47,13 @@ services:
       # If uncommented, the entrypoint chowns the host directory to
       # PUID:PGID on first start so the container user can write to it.
       #- ./virtual_printer:/app/data/virtual_printer
+      #
+      # Using a self-signed certificate (e.g. for a local Home Assistant
+      # instance reachable over HTTPS). Drop your .crt files into the host
+      # directory you mount here; the entrypoint installs them into the
+      # system trust store on container startup. Enable trust-store loading
+      # with USE_SYSTEM_TRUST_STORE=true in the environment block below.
+      #- /path/to/certs:/usr/local/share/ca-certificates
     environment:
       - TZ=${TZ:-Europe/Kyiv}
       # User/group the container drops to after the entrypoint normalises
@@ -72,6 +79,14 @@ services:
       # access to encrypted secrets. Pin explicitly here for multi-host /
       # multi-worker deployments where the key file is not shared.
       #- MFA_ENCRYPTION_KEY=
+      #
+      # Self-signed certificate trust — set any non-empty value to make the
+      # entrypoint install certificates mounted under
+      # /usr/local/share/ca-certificates into the container's system trust
+      # store. See the volumes block above for the mount example. Typical
+      # use case: a local Home Assistant instance with a self-signed cert
+      # that BamDude needs to talk to over HTTPS.
+      #- USE_SYSTEM_TRUST_STORE=true
     restart: unless-stopped
 
 volumes:

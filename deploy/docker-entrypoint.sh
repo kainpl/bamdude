@@ -31,6 +31,45 @@ set -eu
 PUID="${PUID:-1000}"
 PGID="${PGID:-1000}"
 
+# Opt-in support for self-signed CA certificates (upstream Bambuddy
+# #1431 / commit 26f4dad8). Users set ``USE_SYSTEM_TRUST_STORE`` to
+# any non-empty value to make BamDude trust certificates the user has
+# mounted into ``/usr/local/share/ca-certificates``. Typical use case:
+# Home Assistant running with a self-signed cert that BamDude needs to
+# talk to over HTTPS without TLS verification disabled. Errors loudly
+# if the variable is set without any mounted certificate files — the
+# user's intent was to add trust, and silently ignoring an empty mount
+# would just look like the flag didn't work.
+if [ -n "${USE_SYSTEM_TRUST_STORE:-}" ]; then
+    echo "[entrypoint] USE_SYSTEM_TRUST_STORE is set"
+    if [ "$(id -u)" -ne 0 ]; then
+        echo "[entrypoint] error: USE_SYSTEM_TRUST_STORE is set but not running as root; cannot update trust store"
+        exit 1
+    fi
+    # Check if we have any certificates to process. Error if directory is empty.
+    if ls -1 /usr/local/share/ca-certificates/*.crt >/dev/null 2>&1; then
+        echo "[entrypoint] .crt files found in /usr/local/share/ca-certificates"
+    else
+        echo "[entrypoint] no .crt files in /usr/local/share/ca-certificates"
+        exit 1
+    fi
+    if command -v update-ca-certificates >/dev/null 2>&1; then
+        echo "[entrypoint] update-ca-certificates found; updating system trust store"
+        if update-ca-certificates --fresh ; then
+            echo "[entrypoint] update-ca-certificates succeeded; exporting SSL_CERT_DIR=/etc/ssl/certs"
+            export SSL_CERT_DIR="/etc/ssl/certs"
+        else
+            echo "[entrypoint] error: update-ca-certificates failed"
+            exit 1
+        fi
+    else
+        echo "[entrypoint] error: update-ca-certificates not found; cannot update trust store"
+        exit 1
+    fi
+else
+    echo "[entrypoint] USE_SYSTEM_TRUST_STORE not set; skipping system trust store update"
+fi
+
 # If we're not root, we can't chown anything. Exec the original command
 # and trust that the user has set up host-side ownership themselves.
 if [ "$(id -u)" -ne 0 ]; then
