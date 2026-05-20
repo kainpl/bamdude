@@ -1182,6 +1182,30 @@ export interface APIKeyUpdate {
   expires_at?: string | null;
 }
 
+// Camera diagnostic result (#1395 follow-up). Returned by
+// POST /printers/{id}/camera/diagnose; the frontend modal renders one
+// row per stage and looks up the summary code in i18n for the user-
+// facing remediation hint.
+export interface CameraDiagnoseStage {
+  name: 'tcp_reachable' | 'first_frame' | 'live_stream_active';
+  status: 'ok' | 'failed' | 'skipped';
+  duration_ms: number;
+  code: string | null;
+}
+
+export interface CameraDiagnoseResult {
+  printer_id: number;
+  protocol: 'rtsp' | 'chamber_image';
+  port: number;
+  // 'default' = historical X1/H2 tuning. Anything else = this model has
+  // an override entry in backend/app/services/camera_profiles.py.
+  profile: string;
+  overall_status: 'ok' | 'failed';
+  stages: CameraDiagnoseStage[];
+  // i18n key under `camera.diagnose.summary.*`.
+  summary_code: string;
+}
+
 // Long-lived camera-stream tokens (#1108)
 export interface LongLivedToken {
   id: number;
@@ -6084,11 +6108,23 @@ export const api = {
     request<{ success: boolean; message?: string; error?: string }>(`/printers/${printerId}/camera/test`),
   getCameraStatus: (printerId: number) =>
     request<{ active: boolean; stalled: boolean }>(`/printers/${printerId}/camera/status`),
+  // Camera diagnostic (#1395 follow-up) — staged check the operator
+  // can run inline to self-diagnose "connection lost" before opening a
+  // ticket. The modal renders one row per stage and looks up the
+  // summary_code in i18n.
+  diagnoseCamera: (printerId: number) =>
+    request<CameraDiagnoseResult>(`/printers/${printerId}/camera/diagnose`, { method: 'POST' }),
 
   // Plate Detection - Multi-reference calibration (stores up to 5 references per printer)
   checkPlateEmpty: (printerId: number, options?: { useExternal?: boolean; includeDebugImage?: boolean }) => {
     const params = new URLSearchParams();
-    params.set('use_external', String(options?.useExternal ?? false));
+    // #1359: only forward use_external when the caller explicitly sets
+    // it. Omitted → backend derives the default from the printer's
+    // external_camera_enabled setting so calibration and runtime checks
+    // use the same camera.
+    if (options?.useExternal !== undefined) {
+      params.set('use_external', String(options.useExternal));
+    }
     params.set('include_debug_image', String(options?.includeDebugImage ?? false));
     return request<PlateDetectionResult>(
       `/printers/${printerId}/camera/check-plate?${params.toString()}`
@@ -6102,7 +6138,11 @@ export const api = {
   calibratePlateDetection: (printerId: number, options?: { label?: string; useExternal?: boolean }) => {
     const params = new URLSearchParams();
     if (options?.label) params.set('label', options.label);
-    params.set('use_external', String(options?.useExternal ?? false));
+    // #1359: only forward use_external when explicitly set; backend
+    // defaults from printer.external_camera_enabled otherwise.
+    if (options?.useExternal !== undefined) {
+      params.set('use_external', String(options.useExternal));
+    }
     return request<CalibrationResult & { index: number }>(
       `/printers/${printerId}/camera/plate-detection/calibrate?${params.toString()}`,
       { method: 'POST' }

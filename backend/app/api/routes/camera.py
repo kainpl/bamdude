@@ -945,6 +945,43 @@ async def test_camera(
     return result
 
 
+@router.post("/{printer_id}/camera/diagnose")
+async def diagnose_camera_route(
+    printer_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.CAMERA_VIEW),
+):
+    """Run staged diagnostics for a printer's camera path.
+
+    Returns a structured result the frontend renders inline so users
+    can self-diagnose "connection lost" before opening a ticket. See
+    ``services/camera_diagnose.py`` for stage details and the live-
+    stream shortcut. Upstream Bambuddy #1395 follow-up / commit
+    ``134847a3``.
+    """
+    import time
+
+    from backend.app.services.camera_diagnose import diagnose_camera
+
+    printer = await get_printer_or_404(printer_id, db)
+
+    # Look up live-stream evidence so the diagnostic can short-circuit
+    # instead of fighting a viewer for the printer's single camera slot.
+    has_live = is_stream_active(printer_id)
+    last_ts = _last_frame_times.get(printer_id) if has_live else None
+    live_age = (time.time() - last_ts) if (has_live and last_ts) else None
+
+    result = await diagnose_camera(
+        ip_address=printer.ip_address,
+        access_code=printer.access_code,
+        model=printer.model,
+        printer_id=printer_id,
+        has_live_stream=has_live,
+        live_frame_age_seconds=live_age,
+    )
+    return result.to_dict()
+
+
 @router.get("/{printer_id}/camera/status")
 async def camera_status(
     printer_id: int,
@@ -1040,7 +1077,7 @@ async def test_external_camera(
 async def check_plate_empty(
     printer_id: int,
     plate_type: str | None = None,
-    use_external: bool = False,
+    use_external: bool | None = None,
     include_debug_image: bool = False,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.CAMERA_VIEW),
@@ -1055,7 +1092,13 @@ async def check_plate_empty(
     Args:
         printer_id: Printer ID
         plate_type: Type of build plate (e.g., "High Temp Plate") for calibration lookup
-        use_external: If True, prefer external camera over built-in
+        use_external: If True, prefer external camera over built-in. When
+            omitted (None), defaults to the printer's
+            ``external_camera_enabled`` setting — mirroring the runtime
+            auto-check at print start (``main.py``). Without this default
+            the UI's manual check would always use the built-in camera,
+            mismatching the reference saved during calibration (upstream
+            Bambuddy #1359 / commit 29379e3b).
         include_debug_image: If True, return URL to annotated debug image
 
     Returns:
@@ -1075,6 +1118,16 @@ async def check_plate_empty(
 
     # Check printer exists first (before OpenCV check)
     printer = await get_printer_or_404(printer_id, db)
+
+    # #1359: when the caller doesn't pin a value, default to the printer's
+    # external-camera config so the UI's manual check captures from the
+    # same source the runtime auto-check uses at print start. Without this
+    # the manual check would always use the built-in camera and never
+    # match the reference saved during calibration.
+    if use_external is None:
+        use_external = bool(
+            printer.external_camera_enabled and printer.external_camera_url and printer.external_camera_type
+        )
 
     if not is_plate_detection_available():
         raise HTTPException(
@@ -1150,7 +1203,7 @@ async def check_plate_empty(
 async def calibrate_plate_detection(
     printer_id: int,
     label: str | None = None,
-    use_external: bool = False,
+    use_external: bool | None = None,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.CAMERA_VIEW),
 ):
@@ -1167,7 +1220,11 @@ async def calibrate_plate_detection(
     Args:
         printer_id: Printer ID
         label: Optional label for this reference (e.g., "High Temp Plate", "Wham Bam")
-        use_external: If True, prefer external camera over built-in
+        use_external: If True, prefer external camera over built-in. When
+            omitted (None), defaults to the printer's
+            ``external_camera_enabled`` setting so calibration captures
+            from the same source the runtime auto-check uses at print
+            start (upstream Bambuddy #1359 / commit 29379e3b).
 
     Returns:
         Dict with:
@@ -1183,6 +1240,14 @@ async def calibrate_plate_detection(
 
     # Check printer exists first (before OpenCV check)
     printer = await get_printer_or_404(printer_id, db)
+
+    # #1359: default to the printer's external-camera config when the
+    # caller doesn't pin a value, so the reference saved here uses the
+    # same camera the runtime auto-check captures from at print start.
+    if use_external is None:
+        use_external = bool(
+            printer.external_camera_enabled and printer.external_camera_url and printer.external_camera_type
+        )
 
     if not is_plate_detection_available():
         raise HTTPException(
