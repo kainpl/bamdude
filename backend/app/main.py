@@ -1615,9 +1615,12 @@ async def on_ams_change(printer_id: int, ams_data: list):
             if sync_mode and sync_mode != "auto":
                 return  # Only sync on auto mode
 
-            # Check if weight sync is disabled
-            disable_weight_sync_str = await get_setting(db, "spoolman_disable_weight_sync")
-            disable_weight_sync = disable_weight_sync_str and disable_weight_sync_str.lower() == "true"
+            # ``spoolman_disable_weight_sync`` is deprecated (#1119) — weight
+            # is now always owned by per-print 3MF tracking (mirrors the
+            # internal Filament Inventory). The AMS auto-sync path below still
+            # refreshes spool metadata + slot assignments, but never writes
+            # ``remaining_weight``. The setting is still readable in the
+            # settings UI for backwards compat, but has no runtime effect.
 
             # Get Spoolman URL
             spoolman_url = await get_setting(db, "spoolman_url")
@@ -1698,10 +1701,13 @@ async def on_ams_change(printer_id: int, ams_data: list):
 
                     try:
                         inv_remaining = inventory_weights.get((ams_id, tray.tray_id))
+                        # Per-print tracking is the only weight writer (#1119).
+                        # AMS auto-sync still maintains spool metadata / slot
+                        # assignments but no longer touches remaining_weight.
                         result = await client.sync_ams_tray(
                             tray,
                             printer_name,
-                            disable_weight_sync=disable_weight_sync,
+                            disable_weight_sync=True,
                             cached_spools=cached_spools,
                             inventory_remaining=inv_remaining,
                         )

@@ -177,9 +177,12 @@ async def sync_printer_ams(
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
     """Sync AMS data from a specific printer to Spoolman."""
-    # Check if Spoolman is enabled and connected
+    # Check if Spoolman is enabled and connected.
+    # ``disable_weight_sync`` is deprecated (#1119): weight is now always
+    # owned by per-print 3MF tracking, so the manual sync below forces
+    # ``disable_weight_sync=True`` regardless of the stored setting.
     sm = await get_spoolman_settings(db)
-    enabled, url, disable_weight_sync = sm["enabled"], sm["url"], sm["disable_weight_sync"]
+    enabled, url = sm["enabled"], sm["url"]
     if not enabled:
         raise HTTPException(status_code=400, detail="Spoolman integration is not enabled")
 
@@ -315,10 +318,12 @@ async def sync_printer_ams(
 
             try:
                 inv_remaining = inv_weights.get((ams_id, tray.tray_id))
+                # Per-print tracking owns weight updates (#1119); manual sync
+                # only refreshes spool metadata + slot assignments here.
                 sync_result = await client.sync_ams_tray(
                     tray,
                     printer.name,
-                    disable_weight_sync=disable_weight_sync,
+                    disable_weight_sync=True,
                     cached_spools=cached_spools,
                     inventory_remaining=inv_remaining,
                     spoolman_spool_id_hint=hint,
@@ -393,9 +398,12 @@ async def sync_all_printers(
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
     """Sync AMS data from all connected printers to Spoolman."""
-    # Check if Spoolman is enabled
+    # Check if Spoolman is enabled.
+    # ``disable_weight_sync`` is deprecated (#1119): weight is now always
+    # owned by per-print 3MF tracking, so this manual sync-all path forces
+    # ``disable_weight_sync=True`` regardless of the stored setting.
     sm = await get_spoolman_settings(db)
-    enabled, url, disable_weight_sync = sm["enabled"], sm["url"], sm["disable_weight_sync"]
+    enabled, url = sm["enabled"], sm["url"]
     if not enabled:
         raise HTTPException(status_code=400, detail="Spoolman integration is not enabled")
 
@@ -514,10 +522,12 @@ async def sync_all_printers(
 
                 try:
                     inv_remaining = inventory_weights.get((printer.id, ams_id, tray.tray_id))
+                    # Per-print tracking owns weight updates (#1119); manual
+                    # sync-all only refreshes spool metadata + slot assignments.
                     sync_result = await client.sync_ams_tray(
                         tray,
                         printer.name,
-                        disable_weight_sync=disable_weight_sync,
+                        disable_weight_sync=True,
                         cached_spools=cached_spools,
                         inventory_remaining=inv_remaining,
                         spoolman_spool_id_hint=hint,

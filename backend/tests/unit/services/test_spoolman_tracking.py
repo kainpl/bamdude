@@ -217,3 +217,52 @@ class TestStorePrintData:
         tracking = db.add.call_args.args[0]
         assert tracking.slot_to_tray == [1, -1, -1, -1]
         db.execute.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_tracking_runs_when_weight_sync_flag_is_false(self):
+        """Regression for D.5 (upstream #1119): per-print tracking is the only
+        weight writer for Spoolman, so ``store_print_data`` must run regardless
+        of the deprecated ``spoolman_disable_weight_sync`` flag. The legacy
+        gate (`weight_sync_disabled? → run tracking : skip`) silently dropped
+        every print on the default-False setting, including non-Bambu spools
+        the AMS auto-sync couldn't weigh."""
+        db = AsyncMock()
+        delete_result = MagicMock()
+        db.execute = AsyncMock(side_effect=[delete_result])
+        db.add = MagicMock()
+        db.commit = AsyncMock()
+
+        printer_manager = MagicMock()
+        printer_manager.get_status.return_value = SimpleNamespace(
+            raw_data={"ams": [{"id": 0, "tray": [{"id": 0, "tray_type": "PLA"}]}]}
+        )
+
+        mock_settings = MagicMock()
+        mock_path = MagicMock()
+        mock_path.exists.return_value = True
+        mock_settings.base_dir.__truediv__.return_value = mock_path
+
+        # Single get_setting call: only ``spoolman_enabled`` is read now.
+        # If the legacy code path is reintroduced, this side_effect list will
+        # raise StopIteration on the second call and fail the test.
+        with (
+            patch("backend.app.services.spoolman_tracking.app_settings", mock_settings),
+            patch("backend.app.api.routes.settings.get_setting", AsyncMock(side_effect=["true"])),
+            patch(
+                "backend.app.utils.threemf_tools.extract_filament_usage_from_3mf",
+                return_value=[{"slot_id": 0, "used_g": 5.0, "type": "PLA", "color": "#FF0000"}],
+            ),
+            patch("backend.app.utils.threemf_tools.extract_layer_filament_usage_from_3mf", return_value=None),
+            patch("backend.app.utils.threemf_tools.extract_filament_properties_from_3mf", return_value={}),
+        ):
+            await store_print_data(
+                printer_id=1,
+                archive_id=15,
+                file_path="archives/test.3mf",
+                db=db,
+                printer_manager=printer_manager,
+                ams_mapping=[0, -1, -1, -1],
+            )
+
+        # The deprecated weight-sync gate is gone: tracking row was stored.
+        db.add.assert_called_once()
