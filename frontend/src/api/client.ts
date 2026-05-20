@@ -224,6 +224,18 @@ function formatErrorDetail(detail: unknown, status: number): string {
       })
       .filter(Boolean);
     if (messages.length) return messages.join('\n');
+    // Fall back to JSON.stringify when the mapped/filtered array is empty —
+    // e.g. a Pydantic 422 with all entries dropped after prefix-strip, or a
+    // bespoke endpoint returning an array of unrecognised objects. Better
+    // to leak structured detail than collapse to bare "HTTP 422".
+    // Upstream Bambuddy #1303 / commit d0818327.
+    if (detail.length) {
+      try {
+        return JSON.stringify(detail);
+      } catch {
+        // fall through
+      }
+    }
   }
   if (detail && typeof detail === 'object') {
     const d = detail as Record<string, unknown>;

@@ -3,6 +3,7 @@ import { Loader2, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshC
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, macrosApi } from '../api/client';
+import { checkPasswordComplexity, isPasswordValid } from '../utils/password';
 import { useAuth } from '../contexts/AuthContext';
 import { formatDateOnly, type DateFormat } from '../utils/date';
 import { getCurrencySymbol, SUPPORTED_CURRENCIES } from '../utils/currency';
@@ -878,8 +879,9 @@ export function SettingsPage() {
         showToast(t('settings.toast.passwordsDoNotMatch'), 'error');
         return;
       }
-      if (userFormData.password.length < 6) {
-        showToast(t('settings.toast.passwordTooShort'), 'error');
+      const passwordError = checkPasswordComplexity(userFormData.password);
+      if (passwordError) {
+        showToast(t(passwordError), 'error');
         return;
       }
     }
@@ -899,8 +901,9 @@ export function SettingsPage() {
         showToast(t('settings.toast.passwordsDoNotMatch'), 'error');
         return;
       }
-      if (userFormData.password.length < 6) {
-        showToast(t('settings.toast.passwordTooShort'), 'error');
+      const passwordError = checkPasswordComplexity(userFormData.password);
+      if (passwordError) {
+        showToast(t(passwordError), 'error');
         return;
       }
     }
@@ -5655,7 +5658,7 @@ export function SettingsPage() {
                 </Button>
                 <Button
                   onClick={handleCreateUser}
-                  disabled={createUserMutation.isPending || !userFormData.username || !userFormData.password || userFormData.password !== userFormData.confirmPassword || userFormData.password.length < 6}
+                  disabled={createUserMutation.isPending || !userFormData.username || !userFormData.password || userFormData.password !== userFormData.confirmPassword || !isPasswordValid(userFormData.password)}
                 >
                   {createUserMutation.isPending ? (
                     <>
@@ -5866,7 +5869,7 @@ export function SettingsPage() {
                     updateUserMutation.isPending ||
                     !userFormData.username ||
                     (advancedAuthStatus?.advanced_auth_enabled && !userFormData.email) ||
-                    Boolean(!advancedAuthStatus?.advanced_auth_enabled && userFormData.password && (userFormData.password !== userFormData.confirmPassword || userFormData.password.length < 6))
+                    Boolean(!advancedAuthStatus?.advanced_auth_enabled && userFormData.password && (userFormData.password !== userFormData.confirmPassword || !isPasswordValid(userFormData.password)))
                   }
                 >
                   {updateUserMutation.isPending ? (
