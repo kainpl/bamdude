@@ -27,6 +27,7 @@ from backend.app.core.permissions import Permission
 from backend.app.models.local_preset import LocalPreset
 from backend.app.models.user import User
 from backend.app.schemas.slicer_presets import (
+    FilamentPresetInfo,
     UnifiedPreset,
     UnifiedPresetsBySlot,
     UnifiedPresetsResponse,
@@ -384,6 +385,44 @@ async def list_unified_presets(
         standard=UnifiedPresetsBySlot(**standard),
         cloud_status=cloud_status,
     )
+
+
+@router.get("/filament-preset/info", response_model=FilamentPresetInfo)
+async def get_filament_preset_info(
+    source: str,
+    id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = Depends(require_permission(Permission.PRINTERS_READ)),
+) -> FilamentPresetInfo:
+    """Resolve a filament preset's flow-rate-relevant metadata on demand.
+
+    The ``/slicer/presets`` listing is thin (id + name + filament_type +
+    colour) — for cloud / standard sources the listing doesn't expose
+    ``filament_flow_ratio`` because resolving every entry to its full JSON
+    on every modal open would hit Bambu Cloud N times. This endpoint
+    resolves a single picked preset via :func:`resolve_preset_ref` and
+    returns the flow-rate fields the Flow Rate verify-download page
+    needs to auto-prefill the pass-1 baseline. Per-call cost = one
+    cloud-detail fetch (cloud), one DB read (local), or no I/O
+    (standard's stub). Frontend caches the result per ``(source, id)``.
+    """
+    from backend.app.schemas.slicer import PresetRef
+    from backend.app.services.preset_resolver import resolve_preset_ref
+
+    if source not in ("cloud", "local", "standard"):
+        raise HTTPException(400, f"Invalid source {source!r}")
+    ref = PresetRef(source=source, id=id)  # type: ignore[arg-type]
+    try:
+        content = await resolve_preset_ref(db, user, ref, slot="filament")
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001 — never break the modal on a resolve failure
+        logger.warning("filament-preset/info resolve failed for %s/%s: %s", source, id, e)
+        return FilamentPresetInfo()
+
+    flow_ratio = _parse_filament_flow_ratio(content)
+    filament_type, _ = _parse_filament_metadata(content)
+    return FilamentPresetInfo(flow_ratio=flow_ratio, filament_type=filament_type)
 
 
 # Per-slicer health cache: ``{(kind, url): (timestamp, payload)}``. 30 s TTL

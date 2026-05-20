@@ -226,19 +226,35 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
   const isRetraction = caliMode === 'retraction_tower';
   const isFlowRate = caliMode === 'flow_rate';
 
-  // Flow Rate pass 1: auto-prefill the baseline from the picked filament
-  // preset's stored filament_flow_ratio when available (local-preset
-  // tier exposes it; cloud / bundle deltas don't, so the operator types
-  // it). Pass 2 doesn't auto-prefill — the operator has to enter their
-  // measured pass-1 result.
+  // Flow Rate pass 1: resolve the picked filament preset's stored
+  // filament_flow_ratio on demand. The /slicer/presets listing is thin
+  // for cloud / standard tiers (no full JSON resolution per entry), so
+  // the listing's UnifiedPreset.filament_flow_ratio is null for them;
+  // this query fetches the missing piece via /slicer/filament-preset/info,
+  // which resolves the full preset just like the slicer dispatch path
+  // does. Cached per (source, id). Pass 2 doesn't auto-prefill — the
+  // operator has to type their measured pass-1 result.
+  const filamentInfoQuery = useQuery({
+    queryKey: ['filament-preset-info', filamentRef?.source, filamentRef?.id],
+    queryFn: () => api.getFilamentPresetInfo(filamentRef!),
+    enabled: isFlowRate && flowPassN === 1 && presetSource === 'manual' && !!filamentRef,
+    staleTime: 60_000,
+  });
+
   useEffect(() => {
     if (!isFlowRate || flowPassN !== 1) return;
     if (presetSource !== 'manual' || !filamentRef) return;
-    const p = presets?.[filamentRef.source]?.filament.find((x) => x.id === filamentRef.id);
-    if (p && typeof p.filament_flow_ratio === 'number' && p.filament_flow_ratio > 0) {
-      setBaselineFlowRatioInput(String(p.filament_flow_ratio));
+    // Prefer the listing's cached value (free, no network) when present;
+    // fall back to the on-demand resolver for cloud / standard presets.
+    const listingRatio = presets?.[filamentRef.source]?.filament.find(
+      (x) => x.id === filamentRef.id,
+    )?.filament_flow_ratio;
+    const resolvedRatio = filamentInfoQuery.data?.flow_ratio ?? null;
+    const ratio = (typeof listingRatio === 'number' ? listingRatio : null) ?? resolvedRatio;
+    if (typeof ratio === 'number' && ratio > 0) {
+      setBaselineFlowRatioInput(String(ratio));
     }
-  }, [isFlowRate, flowPassN, presetSource, filamentRef, presets]);
+  }, [isFlowRate, flowPassN, presetSource, filamentRef, presets, filamentInfoQuery.data]);
 
   // Temp Tower: seed the start/end defaults from the selected filament's
   // type (BS picks them off its filament-type radio; we have a preset

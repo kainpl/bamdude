@@ -1623,6 +1623,15 @@ export interface SlicerHealth {
 // GET /api/v1/slicer/presets — unified listing across cloud / local / standard.
 export type SlicerCloudStatus = 'ok' | 'not_authenticated' | 'expired' | 'unreachable';
 
+// On-demand resolution of one filament preset's flow-rate-relevant
+// metadata — returned by GET /slicer/filament-preset/info. The /slicer/
+// presets listing is thin for cloud / standard tiers; this fills in the
+// fields the Flow Rate verify-download page needs to auto-prefill.
+export interface FilamentPresetInfo {
+  flow_ratio: number | null;
+  filament_type: string | null;
+}
+
 export interface UnifiedPreset {
   id: string;
   name: string;
@@ -6708,6 +6717,15 @@ export const api = {
   // routes/slicer_presets.py for the priority + dedup rules.
   getSlicerPresets: () =>
     request<UnifiedPresetsResponse>('/slicer/presets'),
+  // Resolve one filament preset's flow-rate-relevant metadata on demand.
+  // The unified listing exposes filament_flow_ratio only for local presets
+  // (cloud / standard listings are thin); the Flow Rate verify-download
+  // page calls this when a filament is picked to auto-prefill the
+  // pass-1 baseline.
+  getFilamentPresetInfo: (ref: PresetRef) =>
+    request<FilamentPresetInfo>(
+      `/slicer/filament-preset/info?source=${encodeURIComponent(ref.source)}&id=${encodeURIComponent(ref.id)}`,
+    ),
   // Per-request progress proxy used by the SliceModal's filament-discovery
   // preview slice (the sidecar's CORS allowlist + same-origin policy stop
   // the browser from hitting /slice/progress/{id} directly).

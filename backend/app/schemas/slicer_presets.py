@@ -55,6 +55,21 @@ class UnifiedPresetsBySlot(BaseModel):
     filament: list[UnifiedPreset] = []
 
 
+class FilamentPresetInfo(BaseModel):
+    """Flow-rate-relevant metadata for one filament preset.
+
+    Returned by ``GET /slicer/filament-preset/info`` — Flow Rate's
+    verify-download page calls this on filament pick to auto-prefill
+    the pass-1 baseline input with the operator's stored
+    ``filament_flow_ratio``. Heavier than the listing (full preset
+    resolution via :func:`resolve_preset_ref`), so fetched on-demand
+    rather than baked into every entry of ``/slicer/presets``.
+    """
+
+    flow_ratio: float | None = None
+    filament_type: str | None = None
+
+
 class UnifiedPresetsResponse(BaseModel):
     """Each tier carries only the names that didn't appear in a higher tier.
 
