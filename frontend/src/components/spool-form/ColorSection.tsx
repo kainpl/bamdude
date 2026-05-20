@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Search, Clock, ChevronDown, ChevronUp } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { ColorSectionProps, CatalogDisplayColor } from './types';
@@ -18,14 +18,42 @@ export function ColorSection({
   // Current hex without # prefix
   const currentHex = formData.rgba.replace('#', '').substring(0, 6);
 
+  // Draft state for the manual hex input. Decoupled from ``formData.rgba``
+  // so mid-typing values (1–5 chars) don't trigger the immediate auto-pad-
+  // to-6 that used to drop every keystroke past the first (upstream
+  // Bambuddy #1407). The draft is committed to ``formData.rgba`` once it
+  // reaches 6 chars, or on blur (where shorter drafts are padded with
+  // ``0`` so the backend never sees a malformed rgba — preserves the
+  // #1055 invariant). The ``useEffect`` re-syncs the draft whenever an
+  // external action (color picker, swatch click, edit-mode load) changes
+  // ``currentHex``.
+  const [hexDraft, setHexDraft] = useState(currentHex);
+  useEffect(() => {
+    setHexDraft(currentHex);
+  }, [currentHex]);
+
   const isSelected = (hex: string) => {
     return currentHex.toUpperCase() === hex.toUpperCase();
   };
 
-  const selectColor = (hex: string, name: string) => {
+  const selectColor = (
+    hex: string,
+    name: string,
+    catalogExtras?: { extraColors?: string | null; effectType?: string | null },
+  ) => {
     // Store as RRGGBBAA (with FF alpha)
     updateField('rgba', hex.toUpperCase() + 'FF');
     updateField('color_name', name);
+    // #1340: catalog swatches are complete presets — picking one writes
+    // BOTH the gradient and effect from the entry, so a solid catalog
+    // preset clears any existing gradient/effect on the spool. Recent
+    // colors and the hardcoded-fallback palette stay as plain hex
+    // pickers (no ``catalogExtras`` → don't touch the fields), since
+    // those swatches aren't full presets.
+    if (catalogExtras) {
+      updateField('extra_colors', catalogExtras.extraColors ?? '');
+      updateField('effect_type', catalogExtras.effectType ?? '');
+    }
     onColorUsed({ name, hex });
   };
 
@@ -60,6 +88,10 @@ export function ColorSection({
           hex: c.hex_color.replace('#', '').substring(0, 6),
           manufacturer: c.manufacturer,
           material: typeof c.material === 'string' ? c.material : undefined,
+          // #1340: propagate gradient + effect so the catalog click
+          // applies the full preset look, not just hex + name.
+          extra_colors: c.extra_colors ?? null,
+          effect_type: c.effect_type ?? null,
         }));
       }
     }
@@ -79,6 +111,10 @@ export function ColorSection({
           hex: c.hex_color.replace('#', '').substring(0, 6),
           manufacturer: c.manufacturer,
           material: typeof c.material === 'string' ? c.material : undefined,
+          // #1340: propagate gradient + effect so the catalog click
+          // applies the full preset look, not just hex + name.
+          extra_colors: c.extra_colors ?? null,
+          effect_type: c.effect_type ?? null,
         }));
       }
       // Try without trailing "+" (e.g. "PLA Silk+" -> "PLA Silk")
@@ -111,6 +147,10 @@ export function ColorSection({
           hex: c.hex_color.replace('#', '').substring(0, 6),
           manufacturer: c.manufacturer,
           material: typeof c.material === 'string' ? c.material : undefined,
+          // #1340: propagate gradient + effect so the catalog click
+          // applies the full preset look, not just hex + name.
+          extra_colors: c.extra_colors ?? null,
+          effect_type: c.effect_type ?? null,
         }));
       }
     }
@@ -201,7 +241,10 @@ export function ColorSection({
               <button
                 key={`${color.hex}-${color.name}-${color.manufacturer ?? ''}`}
                 type="button"
-                onClick={() => selectColor(color.hex, color.name)}
+                onClick={() => selectColor(color.hex, color.name, {
+                  extraColors: color.extra_colors ?? null,
+                  effectType: color.effect_type ?? null,
+                })}
                 className={`w-6 h-6 rounded border-2 transition-all hover:scale-110 hover:z-20 relative group ${
                   isSelected(color.hex)
                     ? 'border-bambu-green ring-1 ring-bambu-green/30 scale-110'
@@ -296,20 +339,36 @@ export function ColorSection({
                 type="text"
                 className="w-full pl-7 pr-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm font-mono uppercase focus:outline-none focus:border-bambu-green"
                 placeholder="RRGGBB"
-                value={currentHex.toUpperCase()}
+                value={hexDraft.toUpperCase()}
                 onChange={(e) => {
-                  const val = e.target.value.replace('#', '').replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
-                  if (val.length > 8) return;
-                  // Normalize to a valid 8-char RRGGBBAA on every keystroke so
-                  // the backend never receives a malformed rgba (upstream #1055).
-                  // 8-char paste passes through; 7-char drops the stray typo;
-                  // anything shorter is right-padded with '0' to a full RGB
-                  // triplet and given FF alpha. Prior logic emitted 3/5/7-char
-                  // strings mid-typing that PATCH would accept and later 500
-                  // the list endpoint on response serialization.
-                  const rgba =
-                    val.length === 8 ? val : val.length === 7 ? val.substring(0, 6) + 'FF' : val.padEnd(6, '0') + 'FF';
-                  updateField('rgba', rgba);
+                  // Sanitize: drop ``#``, non-hex chars, uppercase. 7/8-char
+                  // pastes (with an alpha byte) truncate to the leading RGB
+                  // — Bambu filaments are opaque, so we never expose an alpha
+                  // affordance and discarding pasted alpha is fine. The draft
+                  // can hold 0–6 chars freely while the user types; we only
+                  // commit to ``formData.rgba`` (and through to the backend)
+                  // once the value is a complete 6-char hex, which keeps the
+                  // #1055 invariant intact without re-introducing the
+                  // mid-keystroke truncation that broke typing in #1407.
+                  const sanitized = e.target.value
+                    .replace('#', '')
+                    .replace(/[^0-9A-Fa-f]/g, '')
+                    .toUpperCase();
+                  const next = sanitized.length > 6 ? sanitized.substring(0, 6) : sanitized;
+                  setHexDraft(next);
+                  if (next.length === 6) {
+                    updateField('rgba', next + 'FF');
+                  }
+                }}
+                onBlur={() => {
+                  // User left the field with a partial value — pad to 6 chars
+                  // and commit so the form state always carries a valid rgba
+                  // when submitted.
+                  if (hexDraft.length > 0 && hexDraft.length < 6) {
+                    const padded = hexDraft.padEnd(6, '0');
+                    setHexDraft(padded);
+                    updateField('rgba', padded + 'FF');
+                  }
                 }}
               />
             </div>

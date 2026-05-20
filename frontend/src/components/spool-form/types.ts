@@ -7,6 +7,12 @@ export interface CatalogDisplayColor {
   hex: string;
   manufacturer?: string;
   material?: string;
+  // #1340: catalog presets carry the full visual look — gradient stops
+  // and/or visual effect (sparkle / wood / marble / glow / matte). Without
+  // these the catalog-swatch click silently degraded a multi-color preset
+  // to a flat solid swatch.
+  extra_colors?: string | null;
+  effect_type?: string | null;
 }
 
 // Form data structure
@@ -137,7 +143,18 @@ export interface FilamentSectionProps extends SectionProps {
 export interface ColorSectionProps extends SectionProps {
   recentColors: ColorPreset[];
   onColorUsed: (color: ColorPreset) => void;
-  catalogColors: { manufacturer: string; color_name: string; hex_color: string; material: string | null }[];
+  catalogColors: {
+    manufacturer: string;
+    color_name: string;
+    hex_color: string;
+    material: string | null;
+    // #1340: optional gradient stops + visual effect carried alongside
+    // the base hex so picking a catalog swatch applies the full preset
+    // look. Backward-compatible (older callers don't set them); falls
+    // through to a plain hex pick when absent.
+    extra_colors?: string | null;
+    effect_type?: string | null;
+  }[];
 }
 
 // Additional section props
