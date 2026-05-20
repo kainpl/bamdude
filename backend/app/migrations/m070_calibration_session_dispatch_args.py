@@ -1,4 +1,4 @@
-"""Add ``dispatch_args_json`` to ``calibration_sessions``.
+"""Add ``dispatch_args_json`` to ``calibration_session``.
 
 Flow Rate is a two-pass calibration: pass 1 (coarse, 9 blocks) prints,
 the operator picks the smoothest block in the ``coarseSave`` step, and
@@ -28,4 +28,4 @@ name = "calibration_session_dispatch_args"
 
 
 async def upgrade(conn):
-    await add_column(conn, "calibration_sessions", "dispatch_args_json TEXT")
+    await add_column(conn, "calibration_session", "dispatch_args_json TEXT")
