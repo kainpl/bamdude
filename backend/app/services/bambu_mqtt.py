@@ -2081,13 +2081,25 @@ class BambuMQTTClient:
         # Check tray_exist_bits to clear empty slots (Issue #147)
         # New AMS models don't send empty tray data - they just update tray_exist_bits
         # Each bit in tray_exist_bits represents a slot: bit=0 means empty, bit=1 means has spool
-        # Skip when power_on_flag=False: printer shutdown sends all-zero bits which would
-        # wipe all slot data and cause auto-unlink to remove spool assignments (#765)
+        # Skip ONLY the printer-shutdown pattern: all-zero bits paired with
+        # ``power_on_flag=False`` (#765). On shutdown that combination would
+        # wipe all slot data and cause auto-unlink to remove spool
+        # assignments. Non-zero bits with ``power_on_flag=False`` are valid
+        # AMS state from an idle printer — some X1C firmware (e.g.
+        # 01.08.02.00) reports ``power_on_flag=False`` between prints while
+        # the AMS keeps reporting its actual slot inventory; the update MUST
+        # be applied so spool removal is detected without requiring a
+        # manual reconnect (upstream Bambuddy #1365 / commit 7aa5ff01).
         tray_exist_bits_str = ams_data.get("tray_exist_bits") if isinstance(ams_data, dict) else None
         power_on = ams_data.get("power_on_flag", True) if isinstance(ams_data, dict) else True
-        if tray_exist_bits_str and power_on:
+        if tray_exist_bits_str:
             try:
                 tray_exist_bits = int(tray_exist_bits_str, 16)
+            except (ValueError, TypeError) as e:
+                logger.debug("[%s] Could not parse tray_exist_bits: %s", self.serial_number, e)
+                tray_exist_bits = None
+
+            if tray_exist_bits is not None and not (tray_exist_bits == 0 and not power_on):
                 for ams_unit in merged_ams:
                     ams_id_raw = ams_unit.get("id")
                     if ams_id_raw is None:
@@ -2105,22 +2117,37 @@ class BambuMQTTClient:
                         tray_id = int(tray_id_raw) if isinstance(tray_id_raw, str) else tray_id_raw
                         global_bit = ams_id * 4 + tray_id
                         slot_exists = (tray_exist_bits >> global_bit) & 1
-                        if not slot_exists and tray.get("tray_type"):
-                            # Slot is marked empty but has data - clear it
-                            logger.debug(
-                                f"[{self.serial_number}] Clearing empty slot: AMS {ams_id} slot {tray_id} "
-                                f"(tray_exist_bits bit {global_bit} = 0)"
-                            )
-                            tray["tray_type"] = ""
-                            tray["tray_sub_brands"] = ""
-                            tray["tray_color"] = ""
-                            tray["tray_id_name"] = ""
-                            tray["tag_uid"] = "0000000000000000"
-                            tray["tray_uuid"] = "00000000000000000000000000000000"
-                            tray["tray_info_idx"] = ""
-                            tray["remain"] = 0
-            except (ValueError, TypeError) as e:
-                logger.debug("[%s] Could not parse tray_exist_bits: %s", self.serial_number, e)
+                        if not slot_exists:
+                            # #1322 follow-up: the bitmask is BambuStudio's
+                            # canonical "no spool" signal, and works across
+                            # every firmware variant (P1S, A1 Mini, post-
+                            # restart, post-Reset-Slot, steady-state).
+                            # Promote to state=9 (firmware's explicit
+                            # "no spool" code) so downstream readers — the
+                            # API serializer, ``inventory.py``'s
+                            # ``tray_state in {9, 10}`` short-circuit, the
+                            # AMS card — see one canonical signal instead
+                            # of guessing from payload shape. Int (not
+                            # "9") to match the downstream ``==``
+                            # comparison (upstream Bambuddy e2df0fc6).
+                            tray["state"] = 9
+                            if tray.get("tray_type"):
+                                # Stale data from before the slot went
+                                # empty — clear it so the AMS view doesn't
+                                # render a colour/material that's no
+                                # longer there.
+                                logger.debug(
+                                    f"[{self.serial_number}] Clearing empty slot: AMS {ams_id} slot {tray_id} "
+                                    f"(tray_exist_bits bit {global_bit} = 0)"
+                                )
+                                tray["tray_type"] = ""
+                                tray["tray_sub_brands"] = ""
+                                tray["tray_color"] = ""
+                                tray["tray_id_name"] = ""
+                                tray["tag_uid"] = "0000000000000000"
+                                tray["tray_uuid"] = "00000000000000000000000000000000"
+                                tray["tray_info_idx"] = ""
+                                tray["remain"] = 0
 
         self.state.raw_data["ams"] = merged_ams
 

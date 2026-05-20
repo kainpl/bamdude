@@ -1020,6 +1020,24 @@ def printer_state_to_dict(state: PrinterState, printer_id: int | None = None, mo
                 if k_value is None and cali_idx is not None and cali_idx in kprofile_map:
                     k_value = kprofile_map[cali_idx]
 
+                # P1S / A1 Mini physically-empty-slot signal (#1322
+                # follow-up): for a truly empty slot the firmware sends
+                # only ``{"id": N}`` — no state, no tray_type, no anything
+                # else. Treat that as the firmware's "no spool" indicator
+                # (state=9) so the assign-spool path in inventory.py can
+                # short-circuit a MQTT publish the firmware would silently
+                # drop anyway. The post-"Reset Slot" A1 Mini BMCU case
+                # sends a populated payload (state=3, tray_type="") —
+                # different shape, doesn't match this guard, still
+                # attempts the MQTT push per the #1322 root fix. Steady-
+                # state populated-payload empty signal is handled at the
+                # MQTT-merge layer in ``bambu_mqtt`` via
+                # ``tray_exist_bits``; this stays as belt-and-suspenders
+                # for paths that skip that merge.
+                state_val = tray.get("state")
+                if state_val is None and len(tray) == 1 and "id" in tray:
+                    state_val = 9
+
                 trays.append(
                     {
                         "id": int(tray.get("id", 0)),
@@ -1037,7 +1055,7 @@ def printer_state_to_dict(state: PrinterState, printer_id: int | None = None, mo
                         "nozzle_temp_max": tray.get("nozzle_temp_max"),
                         "drying_temp": tray.get("drying_temp"),
                         "drying_time": tray.get("drying_time"),
-                        "state": tray.get("state"),
+                        "state": state_val,
                     }
                 )
             # Prefer humidity_raw (actual percentage) over humidity (index 1-5)
