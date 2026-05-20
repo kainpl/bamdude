@@ -129,6 +129,7 @@ class GitBackupService:
                 "message": f"Unknown Git provider: {provider!r}",
                 "repo_name": None,
                 "permissions": None,
+                "is_private": None,
             } | {"detail": str(e)}
 
         client = await self._get_client()
@@ -142,6 +143,7 @@ class GitBackupService:
                 "message": f"Connection failed: {error_type}",
                 "repo_name": None,
                 "permissions": None,
+                "is_private": None,
             }
 
     async def _test_connection_legacy_github(self, repo_url: str, token: str) -> dict:  # pragma: no cover
@@ -334,6 +336,39 @@ class GitBackupService:
 
                 if not config.enabled:
                     return {"success": False, "message": "Backup is disabled", "log_id": None}
+
+                # Defense in depth: re-verify the repo is still private before
+                # each push. The save endpoint already enforces this on every
+                # config change, but a user can flip the repo from private to
+                # public in the provider's UI between configuration and the
+                # next scheduled run. Backups carry MQTT credentials, HA /
+                # Prometheus tokens, the Bambu Cloud email, and the printer
+                # access codes (via K-profiles) — failing closed is the only
+                # safe behaviour. Upstream Bambuddy commit 48a7024b.
+                privacy_check = await self.test_connection(
+                    config.repository_url, config.access_token, provider=config.provider
+                )
+                if not privacy_check.get("success") or privacy_check.get("is_private") is not True:
+                    visibility_note = (
+                        "the target repository is no longer private"
+                        if privacy_check.get("is_private") is False
+                        else "could not confirm the target repository is private"
+                    )
+                    abort_message = (
+                        f"Backup aborted: {visibility_note}. BamDude backups carry credentials "
+                        "and are refused for any non-private target. Make the repository private "
+                        "to resume scheduled backups."
+                    )
+                    log = GitBackupLog(
+                        config_id=config_id, status="failed", trigger=trigger, error_message=abort_message
+                    )
+                    log.completed_at = datetime.now(timezone.utc)
+                    db.add(log)
+                    config.last_backup_at = datetime.now(timezone.utc)
+                    config.last_backup_status = "failed"
+                    config.last_backup_message = abort_message
+                    await db.commit()
+                    return {"success": False, "message": abort_message, "log_id": log.id}
 
                 # Create log entry
                 log = GitBackupLog(config_id=config_id, status="running", trigger=trigger)

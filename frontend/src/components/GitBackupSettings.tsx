@@ -158,6 +158,14 @@ export function GitBackupSettings() {
   // Test connection state
   const [testLoading, setTestLoading] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  // Inline save-error banner — the "repository is not private" rejection
+  // returned by POST/PATCH /config carries the full list of credentials at
+  // risk (~250 chars) which clips badly in a toast. Render it inline above
+  // the test-result block instead. Cleared on success, on the next save
+  // attempt, and when the user edits URL / token / provider (the three
+  // fields whose changes invalidate the privacy check). Upstream Bambuddy
+  // commit 48a7024b.
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   // Auto-save debounce
   const autoSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -293,10 +301,13 @@ export function GitBackupSettings() {
         });
         showToast(t('backup.settingsSaved'));
       }
+      setSaveError(null);
       queryClient.invalidateQueries({ queryKey: ['git-backup-config'] });
       queryClient.invalidateQueries({ queryKey: ['git-backup-status'] });
     } catch (error) {
-      showToast(t('backup.failedToSave', { message: (error as Error).message }), 'error');
+      const message = (error as Error).message;
+      setSaveError(message);
+      showToast(t('backup.failedToSave', { message }), 'error');
     }
   }, [config?.has_token, repoUrl, accessToken, branch, scheduleEnabled, scheduleType, backupKProfiles, backupCloudProfiles, backupSettings, backupSpools, backupArchives, enabled, provider, apiBaseUrl, queryClient, showToast, t]);
 
@@ -342,6 +353,7 @@ export function GitBackupSettings() {
   const saveConfigMutation = useMutation({
     mutationFn: (data: GitBackupConfigCreate) => api.saveGitBackupConfig(data),
     onSuccess: () => {
+      setSaveError(null);
       queryClient.invalidateQueries({ queryKey: ['git-backup-config'] });
       queryClient.invalidateQueries({ queryKey: ['git-backup-status'] });
       showToast(t('backup.gitBackupEnabled', { provider: providerName }));
@@ -349,6 +361,7 @@ export function GitBackupSettings() {
       isInitializedRef.current = true;
     },
     onError: (error: Error) => {
+      setSaveError(error.message);
       showToast(t('backup.failedToSave', { message: error.message }), 'error');
     },
   });
@@ -488,7 +501,7 @@ export function GitBackupSettings() {
                         name="provider"
                         value="github"
                         checked={provider === 'github'}
-                        onChange={() => { setProvider('github'); setTestResult(null); }}
+                        onChange={() => { setProvider('github'); setTestResult(null); setSaveError(null); }}
                         className="w-4 h-4 text-bambu-green focus:ring-bambu-green bg-bambu-dark border-bambu-dark-tertiary"
                       />
                       <GitHubIcon className="w-4 h-4 text-white" />
@@ -500,7 +513,7 @@ export function GitBackupSettings() {
                         name="provider"
                         value="gitlab"
                         checked={provider === 'gitlab'}
-                        onChange={() => { setProvider('gitlab'); setTestResult(null); }}
+                        onChange={() => { setProvider('gitlab'); setTestResult(null); setSaveError(null); }}
                         className="w-4 h-4 text-bambu-green focus:ring-bambu-green bg-bambu-dark border-bambu-dark-tertiary"
                       />
                       <GitLabIcon className="w-4 h-4 text-white" />
@@ -512,7 +525,7 @@ export function GitBackupSettings() {
                         name="provider"
                         value="gitea"
                         checked={provider === 'gitea'}
-                        onChange={() => { setProvider('gitea'); setTestResult(null); }}
+                        onChange={() => { setProvider('gitea'); setTestResult(null); setSaveError(null); }}
                         className="w-4 h-4 text-bambu-green focus:ring-bambu-green bg-bambu-dark border-bambu-dark-tertiary"
                       />
                       <GitHubIcon className="w-4 h-4 text-white" />
@@ -524,7 +537,7 @@ export function GitBackupSettings() {
                         name="provider"
                         value="forgejo"
                         checked={provider === 'forgejo'}
-                        onChange={() => { setProvider('forgejo'); setTestResult(null); }}
+                        onChange={() => { setProvider('forgejo'); setTestResult(null); setSaveError(null); }}
                         className="w-4 h-4 text-bambu-green focus:ring-bambu-green bg-bambu-dark border-bambu-dark-tertiary"
                       />
                       <GitHubIcon className="w-4 h-4 text-white" />
@@ -560,7 +573,7 @@ export function GitBackupSettings() {
                   <input
                     type="text"
                     value={repoUrl}
-                    onChange={(e) => { setRepoUrl(e.target.value); setTestResult(null); }}
+                    onChange={(e) => { setRepoUrl(e.target.value); setTestResult(null); setSaveError(null); }}
                     placeholder={
                       provider === 'github'
                         ? 'https://github.com/username/repo'
@@ -580,7 +593,7 @@ export function GitBackupSettings() {
                   <input
                     type="password"
                     value={accessToken}
-                    onChange={(e) => { setAccessToken(e.target.value); setTestResult(null); }}
+                    onChange={(e) => { setAccessToken(e.target.value); setTestResult(null); setSaveError(null); }}
                     placeholder={
                       config?.has_token
                         ? t('backup.enterNewToken')
@@ -747,6 +760,14 @@ export function GitBackupSettings() {
                       {t('backup.next')} {formatRelativeTime(status.next_scheduled_run, 'system', t)}
                     </span>
                   )}
+                </div>
+              )}
+
+              {/* Save error banner — full message, whitespace preserved so
+                  the "repository must be private" credentials list reads. */}
+              {saveError && (
+                <div className="text-sm bg-red-500/10 border border-red-500/40 rounded-lg px-3 py-2 text-red-300 whitespace-pre-wrap">
+                  {saveError}
                 </div>
               )}
 

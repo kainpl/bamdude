@@ -4,6 +4,33 @@ import pytest
 from httpx import AsyncClient
 
 
+@pytest.fixture(autouse=True)
+def _stub_privacy_gate(monkeypatch):
+    """Bypass the live privacy-gate test_connection in config-mutation tests.
+
+    POST/PATCH ``/git-backup/config`` now runs an internal test_connection
+    against the supplied URL/token and refuses non-private repos. These
+    integration tests use synthetic URLs/tokens which would always 404, so
+    the gate would reject every create/update with 400 ("Cannot verify
+    repository"). Stub the service-level test_connection to return a
+    private-repo success so the existing config-shape assertions continue
+    to cover what they were built to cover. Privacy-gate behaviour itself
+    is covered by ``test_git_backup_privacy_gate.py``.
+    """
+    from backend.app.services import git_backup as svc
+
+    async def _stub(repo_url, token, provider="github", api_base_url=None):  # noqa: ARG001
+        return {
+            "success": True,
+            "message": "Connection successful",
+            "repo_name": "test/repo",
+            "permissions": {"push": True},
+            "is_private": True,
+        }
+
+    monkeypatch.setattr(svc.git_backup_service, "test_connection", _stub)
+
+
 class TestGitBackupConfigAPI:
     """Integration tests for /api/v1/git-backup endpoints."""
 

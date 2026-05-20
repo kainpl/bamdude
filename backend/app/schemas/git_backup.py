@@ -207,6 +207,11 @@ class GitTestConnectionResponse(BaseModel):
     message: str
     repo_name: str | None = None
     permissions: dict | None = None
+    # True iff the provider's API confirms the repo is private. False means
+    # public / internal-visibility (GitLab). None means the connection test
+    # never reached the visibility-bearing field — fail-closed when used as
+    # a privacy gate.
+    is_private: bool | None = None
 
 
 class GitBackupTriggerResponse(BaseModel):
