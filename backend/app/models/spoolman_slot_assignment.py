@@ -31,7 +31,16 @@ class SpoolmanSlotAssignment(Base):
 
     __table_args__ = (
         UniqueConstraint("printer_id", "ams_id", "tray_id", name="uq_spoolman_slot_assignment"),
-        CheckConstraint("(ams_id >= 0 AND ams_id <= 7) OR ams_id = 255", name="ck_spoolman_slot_ams_id_range"),
+        # 0-7: standard AMS units. 128-191: AMS-HT (H2C / H2D — each AMS-HT
+        # unit uses its own ams_id in that range, single tray per unit).
+        # 255: external / virtual tray. Matches the value range the internal
+        # ``spool_assignment`` table already accepts. Widened in m074 to fix
+        # upstream Bambuddy #1274 — AMS-HT slot links were dying with
+        # ``CHECK constraint failed: ck_spoolman_slot_ams_id_range``.
+        CheckConstraint(
+            "(ams_id >= 0 AND ams_id <= 7) OR (ams_id >= 128 AND ams_id <= 191) OR ams_id = 255",
+            name="ck_spoolman_slot_ams_id_range",
+        ),
         CheckConstraint("tray_id >= 0 AND tray_id <= 3", name="ck_spoolman_slot_tray_id_range"),
     )
 
