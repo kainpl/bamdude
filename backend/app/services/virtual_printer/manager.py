@@ -163,6 +163,19 @@ class VirtualPrinterInstance:
         # Pending files for MQTT correlation
         self._pending_files: dict[str, Path] = {}
 
+        # Slicer-side print options captured from the MQTT ``project_file``
+        # command, keyed by filename. Used by ``_add_to_print_queue`` so the
+        # queue item inherits the user's slicer-chosen timelapse /
+        # bed_leveling / flow_cali / layer_inspect / use_ams toggles
+        # rather than falling back to the model's column defaults
+        # (upstream Bambuddy #1403). FTP completes a few hundred ms
+        # before the slicer's MQTT ``project_file`` arrives, so the
+        # queue-add path waits briefly on the event below before
+        # reading the dict. Events are popped along with the options
+        # so the dict stays bounded.
+        self._slicer_print_options: dict[str, dict] = {}
+        self._slicer_print_options_events: dict[str, asyncio.Event] = {}
+
         # Per-instance services
         self._proxy: SlicerProxyManager | None = None
         self._ftp: VirtualPrinterFTPServer | None = None
@@ -234,13 +247,40 @@ class VirtualPrinterInstance:
         else:
             await self._save_to_library(file_path, source_ip)
 
-        # Reset MQTT status back to IDLE
+        # Signal job completion to the slicer. Send-flow slicers don't
+        # watch the post-upload state and would be happy with anything;
+        # the Print flow (intended for proxy-mode VPs, but users
+        # sometimes click it against queue / auto_queue / file_manager
+        # modes too — upstream Bambuddy #1280) watches the gcode_state
+        # cycle and only releases its in-flight-job lock when it sees
+        # ``FINISH``. Going ``PREPARE → IDLE`` wedges the slicer's UI
+        # at "Downloading...(0%)" and blocks the next dispatch with
+        # "busy with another print job". ``PREPARE → FINISH`` satisfies
+        # both flows. ``prepare_percent=100`` also unfreezes the
+        # slicer's "Downloading X%" progress bar (it ticks against the
+        # same field during the upload window).
         if self._mqtt and file_path.suffix.lower() == ".3mf":
-            self._mqtt.set_gcode_state("IDLE")
+            self._mqtt.set_gcode_state("FINISH", filename=file_path.name, prepare_percent="100")
 
     async def on_print_command(self, filename: str, data: dict) -> None:
-        """Handle print command from MQTT."""
+        """Handle print command from MQTT.
+
+        Captures the slicer's ``project_file`` options (``timelapse``,
+        ``bed_leveling``, ``flow_cali``, ``layer_inspect``, ``use_ams``)
+        so the VP-queue path can inherit them when adding the item to
+        the queue, rather than falling back to the model's column
+        defaults (upstream Bambuddy #1403). Only ``print_queue`` mode
+        consumes the capture; other modes ignore the print command, so
+        we skip the stash there to keep the dict from accumulating one
+        entry per print over the VP's uptime.
+        """
         logger.info("[VP %s] Print command for: %s", self.name, filename)
+        if self.mode != "print_queue":
+            return
+        self._slicer_print_options[filename] = dict(data)
+        event = self._slicer_print_options_events.get(filename)
+        if event:
+            event.set()
 
     async def _save_to_library(self, file_path: Path, source_ip: str):  # noqa: ARG002
         """Save file to the File Manager library.
@@ -447,6 +487,30 @@ class VirtualPrinterInstance:
                 pass
             return
 
+        # Wait briefly for the slicer's MQTT ``project_file`` command so
+        # the queue item can inherit the slicer-side print options the
+        # user picked (timelapse, bed_leveling, etc.). Slicers send the
+        # FTP upload first and the MQTT command immediately after, so
+        # the typical lag is a few hundred ms; 2 s is conservative
+        # without making every VP-queue add visibly slow. Falls back to
+        # the model's column defaults if MQTT doesn't arrive in time
+        # (legacy behaviour for users on a slicer that doesn't send a
+        # print command — upstream Bambuddy #1403). The wait is skipped
+        # when there's no MQTT server attached — covers unit tests that
+        # invoke ``_add_to_print_queue`` directly without going through
+        # ``on_print_command``, so they don't pay the 2 s tax.
+        slicer_opts = self._slicer_print_options.pop(file_path.name, None)
+        if slicer_opts is None and self._mqtt is not None:
+            event = asyncio.Event()
+            self._slicer_print_options_events[file_path.name] = event
+            try:
+                await asyncio.wait_for(event.wait(), timeout=2.0)
+                slicer_opts = self._slicer_print_options.pop(file_path.name, None)
+            except asyncio.TimeoutError:
+                slicer_opts = None
+            finally:
+                self._slicer_print_options_events.pop(file_path.name, None)
+
         try:
             # Step 1: save to library (handles file copy + metadata extraction
             # + cleanup of source temp + WS broadcast). Returns the persisted
@@ -478,6 +542,21 @@ class VirtualPrinterInstance:
                     return
 
                 plate_id = self._extract_plate_id_from_metadata(library_file.file_metadata)
+
+                # Slicer-side options take precedence over the model's
+                # column defaults so the queue item carries the user's
+                # in-slicer toggles. MQTT field naming differs from our
+                # column names — slicer sends ``bed_leveling`` (single L)
+                # while the column / settings key uses ``bed_levelling``
+                # (double L). Both bool and int (0/1) shapes appear in
+                # the wild depending on firmware family — coerce via
+                # ``bool()`` so ``0`` / ``False`` and ``1`` / ``True``
+                # both work (upstream Bambuddy #1403).
+                def _slicer_opt(key: str, column_default: bool) -> bool:
+                    if slicer_opts is not None and key in slicer_opts:
+                        return bool(slicer_opts[key])
+                    return column_default
+
                 queue_item = PrintQueueItem(
                     queue_id=queue.id,
                     library_file_id=library_file.id,
@@ -486,6 +565,11 @@ class VirtualPrinterInstance:
                     position=1,
                     status="pending",
                     manual_start=not self.auto_dispatch,
+                    bed_levelling=_slicer_opt("bed_leveling", True),
+                    flow_cali=_slicer_opt("flow_cali", True),
+                    layer_inspect=_slicer_opt("layer_inspect", False),
+                    timelapse=_slicer_opt("timelapse", False),
+                    use_ams=_slicer_opt("use_ams", True),
                 )
                 db.add(queue_item)
                 await db.commit()

@@ -49,6 +49,26 @@ logger = logging.getLogger(__name__)
 
 REFRESH_INTERVAL_SECONDS = 30.0
 
+# Top-level push_status fields that Bambu firmware sends in FULL pushall
+# responses (on ``pushall`` request / printer reconnect) but typically OMITS
+# from ~1 Hz incremental push_status updates. Without preserving these
+# fields across incremental updates, the bridge cache would lose AMS info
+# (and friends) between pushalls — slicers reading the cache would see a
+# stripped-down state and the fix would only re-appear on a manual printer
+# power-cycle (upstream Bambuddy #1371). Mirrors the same set the printer-
+# side merge in ``bambu_mqtt.py`` already does for BamDude's internal
+# raw_data, with a few more entries that the slicer cares about (``net``,
+# ``ipcam``, ``lights_report``).
+_SLICER_VISIBLE_STICKY_KEYS: tuple[str, ...] = (
+    "ams",
+    "vt_tray",
+    "ams_extruder_map",
+    "mapping",
+    "net",
+    "ipcam",
+    "lights_report",
+)
+
 
 def _ip_to_uint32_le(ip_str: str) -> int:
     """Encode dotted-quad IPv4 as little-endian uint32 (Bambu MQTT's ``net.info[].ip`` shape)."""
@@ -56,6 +76,110 @@ def _ip_to_uint32_le(ip_str: str) -> int:
     if len(parts) != 4 or any(p < 0 or p > 255 for p in parts):
         raise ValueError(f"invalid IPv4: {ip_str!r}")
     return parts[0] | (parts[1] << 8) | (parts[2] << 16) | (parts[3] << 24)
+
+
+def _merge_ams_dict(prev_ams: dict, new_ams: dict) -> dict:
+    """Merge a new ``ams`` blob from an incremental push onto the previous one.
+
+    Bambu firmware sends three shapes for the ``ams`` field on push_status:
+
+    1. Full pushall (after a printer reconnect or explicit pushall request):
+       ``{ams: [{id, tray: [{id, tray_type, ...}, ...]}, ...], ams_status, ams_exist_bits, ...}``
+       — every unit + every tray populated.
+
+    2. Status-only incremental: ``{ams_status: 1}`` or ``{humidity: 30}`` —
+       no ``ams`` array at all.
+
+    3. Tray-targeted incremental during a print: ``{ams: [{id: 0, tray:
+       [{id: 0, state: 11}]}]}`` — only the units / trays whose state
+       changed.
+
+    Replacing the cached ``ams`` wholesale on shapes (2) and (3) is what
+    made the slicer "lose" AMS between pushalls and tripped the symptom
+    in upstream Bambuddy #1387 on P1S / A1 firmware: the slicer would see
+    a stripped ``ams_status``-only blob and fall back to its "no AMS"
+    default render. This merge mirrors the deep-merge logic in
+    ``bambu_mqtt.py::_handle_ams_data`` at the bridge layer so the
+    slicer-facing cache always carries the latest known coherent state.
+
+    Strategy:
+
+    - Shallow-merge top-level scalars: keys in ``new`` win; keys only in
+      ``prev`` are preserved.
+    - For the ``ams`` array (list of units): match by ``id``. Units only
+      in ``prev`` survive. Units in ``new`` overlay onto their ``prev``
+      counterpart; same recursion applies to each unit's ``tray`` array
+      by tray ``id``.
+    """
+    merged = dict(prev_ams)
+    for k, v in new_ams.items():
+        if k != "ams":
+            merged[k] = v
+
+    prev_units = prev_ams.get("ams") if isinstance(prev_ams.get("ams"), list) else []
+    new_units = new_ams.get("ams") if isinstance(new_ams.get("ams"), list) else None
+    if new_units is None:
+        # Shape (2): no ``ams`` array in the incremental — keep prev's units.
+        if prev_units:
+            merged["ams"] = prev_units
+        return merged
+
+    prev_by_id = {u.get("id"): u for u in prev_units if isinstance(u, dict) and u.get("id") is not None}
+    merged_units: list = []
+    seen_ids: set = set()
+    for new_unit in new_units:
+        if not isinstance(new_unit, dict):
+            merged_units.append(new_unit)
+            continue
+        uid = new_unit.get("id")
+        prev_unit = prev_by_id.get(uid) if uid is not None else None
+        if prev_unit is None:
+            merged_units.append(new_unit)
+            if uid is not None:
+                seen_ids.add(uid)
+            continue
+        # Shallow-merge unit fields; preserve prev's trays not present in new.
+        merged_unit = dict(prev_unit)
+        for k, v in new_unit.items():
+            if k != "tray":
+                merged_unit[k] = v
+        new_trays = new_unit.get("tray") if isinstance(new_unit.get("tray"), list) else None
+        if new_trays is None:
+            # Unit-level partial — keep prev's tray list intact.
+            pass
+        else:
+            prev_trays = prev_unit.get("tray") if isinstance(prev_unit.get("tray"), list) else []
+            prev_trays_by_id = {t.get("id"): t for t in prev_trays if isinstance(t, dict) and t.get("id") is not None}
+            merged_trays: list = []
+            seen_tray_ids: set = set()
+            for new_tray in new_trays:
+                if not isinstance(new_tray, dict):
+                    merged_trays.append(new_tray)
+                    continue
+                tid = new_tray.get("id")
+                prev_tray = prev_trays_by_id.get(tid) if tid is not None else None
+                if prev_tray is None:
+                    merged_trays.append(new_tray)
+                else:
+                    merged_tray = dict(prev_tray)
+                    merged_tray.update(new_tray)
+                    merged_trays.append(merged_tray)
+                if tid is not None:
+                    seen_tray_ids.add(tid)
+            # Preserve prev trays not mentioned in the incremental.
+            for tid, prev_tray in prev_trays_by_id.items():
+                if tid not in seen_tray_ids:
+                    merged_trays.append(prev_tray)
+            merged_unit["tray"] = merged_trays
+        merged_units.append(merged_unit)
+        if uid is not None:
+            seen_ids.add(uid)
+    # Preserve prev units not mentioned in the incremental.
+    for uid, prev_unit in prev_by_id.items():
+        if uid not in seen_ids:
+            merged_units.append(prev_unit)
+    merged["ams"] = merged_units
+    return merged
 
 
 class MQTTBridge:
@@ -273,7 +397,52 @@ class MQTTBridge:
                                 entry["ip"] = self._vp_ip_uint32_le
             # Defensive deep copy on store so the cache is fully decoupled
             # from the freshly-parsed tree and from any reader's reference.
-            self._latest_print_state = copy.deepcopy(print_data)
+            new_state = copy.deepcopy(print_data)
+            # Bambu firmware sends two kinds of push_status: full pushall
+            # responses (on ``pushall`` requests / printer reconnect) which
+            # include AMS, vt_tray, net, etc. — and ~1 Hz incremental
+            # updates with just the fields that changed (typically temps,
+            # fan, wifi). Without preserving sticky fields from the
+            # previous cache, the first incremental push after a pushall
+            # would wipe AMS info from the bridge cache, and slicers
+            # reading the cache between pushalls would see a stripped
+            # printer state with no AMS visible until the next pushall
+            # (upstream Bambuddy #1371).
+            #
+            # P1S / A1 firmware (01.09.01.00 etc.) sends a second shape
+            # too: ``ams`` key present in the incremental but the inner
+            # ``ams.ams`` array stripped (``{ams_status: 1, humidity: 2}``
+            # rather than ``{ams: [...], ams_status: 1}``). The
+            # "key present? leave it" check above read that as "no need
+            # to preserve" and the cache got overwritten with the
+            # stripped blob → slicer's next 1 Hz read saw ``ams`` with no
+            # unit list → BambuStudio fell back to its "no AMS" default
+            # render (upstream Bambuddy #1387). The ``ams``-specific
+            # deep-merge below mirrors what ``bambu_mqtt._handle_ams_data``
+            # already does for our internal raw_data — units / trays
+            # matched by ``id``, prev fields surviving when the
+            # incremental doesn't mention them.
+            prev = self._latest_print_state
+            if prev is not None:
+                for sticky_key in _SLICER_VISIBLE_STICKY_KEYS:
+                    if sticky_key not in new_state:
+                        if sticky_key in prev:
+                            new_state[sticky_key] = prev[sticky_key]
+                        continue
+                    # Key IS in new_state — but firmware sends partial
+                    # blobs (status-only / tray-targeted) under the same
+                    # key on incremental updates, which would overwrite
+                    # the cached full blob and break the slicer's AMS
+                    # render. For ``ams`` specifically the deep-merge
+                    # mirrors what BamDude already does internally in
+                    # ``_handle_ams_data``.
+                    if (
+                        sticky_key == "ams"
+                        and isinstance(new_state.get("ams"), dict)
+                        and isinstance(prev.get("ams"), dict)
+                    ):
+                        new_state["ams"] = _merge_ams_dict(prev["ams"], new_state["ams"])
+            self._latest_print_state = new_state
             return
 
         # info.get_version responses → cache the module list so the synthetic
