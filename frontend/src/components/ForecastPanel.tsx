@@ -130,7 +130,12 @@ function computeHistoryRate(records: SpoolUsageRecord[]): { rate: number; stdDev
 }
 
 function computeDeltaRate(spools: InventorySpool[]): number | null {
-  const totalUsed = spools.reduce((s, sp) => s + sp.weight_used, 0);
+  // Resettable counter (#1390): baseline absorbs "Reset usage to 0" so the
+  // delta rate represents only post-reset consumption, not lifetime.
+  const totalUsed = spools.reduce(
+    (s, sp) => s + Math.max(0, sp.weight_used - (sp.weight_used_baseline ?? 0)),
+    0,
+  );
   if (totalUsed === 0) return null;
   const now = Date.now();
   const oldestMs = spools.reduce((min, sp) => {
@@ -228,7 +233,13 @@ export function ForecastPanel({ spools }: { spools: InventorySpool[] }) {
 
       const totalRemainingG = group.spools.reduce((s, sp) => s + Math.max(0, sp.label_weight - sp.weight_used), 0);
       const totalLabelG = group.spools.reduce((s, sp) => s + sp.label_weight, 0);
-      const totalUsedG = group.spools.reduce((s, sp) => s + sp.weight_used, 0);
+      // Per-SKU consumed totals follow the same baseline-aware convention
+      // as InventoryPage's "Total Consumed" — so the per-SKU "Used" column
+      // matches the dashboard's resettable counter (#1390).
+      const totalUsedG = group.spools.reduce(
+        (s, sp) => s + Math.max(0, sp.weight_used - (sp.weight_used_baseline ?? 0)),
+        0,
+      );
 
       const groupHistory: SpoolUsageRecord[] = [];
       for (const s of group.spools) groupHistory.push(...(usageBySpoolId.get(s.id) ?? []));
@@ -1012,7 +1023,10 @@ function ForecastRow({
                                 </div>
                               </td>
                               <td className="px-4 py-2">
-                                <span className="text-sm text-bambu-gray">{Math.round(s.weight_used)}g</span>
+                                {/* Per-spool "consumed" stays consistent with the
+                                    dashboard's "Total Consumed" — baseline-aware
+                                    so "Reset usage to 0" zeroes this cell too (#1390). */}
+                                <span className="text-sm text-bambu-gray">{Math.round(Math.max(0, s.weight_used - (s.weight_used_baseline ?? 0)))}g</span>
                               </td>
                               <td className="px-4 py-2">
                                 <span className="text-sm text-bambu-gray">{s.label_weight}g</span>

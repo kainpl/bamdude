@@ -577,6 +577,23 @@ class SpoolmanClient:
         )
         return response.json()
 
+    async def reset_spool_usage(self, spool_id: int) -> dict:
+        """Reset a spool's ``used_weight`` to 0 in Spoolman.
+
+        Used by the per-spool / bulk "Reset usage to 0" actions on the
+        Inventory page so the "Total Consumed" stat can be cleared
+        without touching the rest of the spool's data. Spoolman keeps
+        ``remaining_weight`` as a separate field, so remaining is
+        preserved (upstream Bambuddy #1390).
+        """
+        response = await self._request_spool(
+            "PATCH",
+            spool_id,
+            json_body={"used_weight": 0},
+            operation="reset-usage",
+        )
+        return response.json()
+
     async def update_spool_full(
         self,
         spool_id: int,
