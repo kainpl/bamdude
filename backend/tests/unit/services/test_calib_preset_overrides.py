@@ -224,3 +224,20 @@ def test_pa_pattern_process_overrides_preserve_existing_unrelated_keys():
     assert out["sparse_infill_density"] == "40%"
     # But our patched keys win.
     assert out["wall_loops"] == "3"
+
+
+def test_flow_rate_process_overrides_pin_nozzle_derived_layer_height():
+    """Flow Rate pins layer_height = nozzle/2 and the BS process keys."""
+    from backend.app.services.calib_preset_overrides import apply_flow_rate_process_overrides
+
+    preset = json.dumps({"layer_height": "0.16", "enable_support": "1", "enable_wrapping_detection": "1"})
+    out = json.loads(apply_flow_rate_process_overrides(preset, nozzle_diameter=0.4))
+    assert out["layer_height"] == "0.2"
+    assert out["initial_layer_print_height"] == "0.2"
+    assert out["reduce_crossing_wall"] == "1"
+    assert out["enable_wrapping_detection"] == "0"
+    assert out["enable_support"] == "0"
+
+    out6 = json.loads(apply_flow_rate_process_overrides("{}", nozzle_diameter=0.6))
+    assert out6["layer_height"] == "0.3"
+    assert out6["initial_layer_print_height"] == "0.3"

@@ -457,6 +457,39 @@ def apply_retraction_process_overrides(process_json: str) -> str:
     return json.dumps(data)
 
 
+def apply_flow_rate_process_overrides(process_json: str, *, nozzle_diameter: float = 0.4) -> str:
+    """Patch a process-preset JSON with Flow Rate hardcodes.
+
+    Process-level subset of BS ``Plater::calib_flowrate`` — see
+    ``temp/flow-rate-calibration-bs-orca-analysis.md`` §2.6. BS sets four
+    process-level keys: nozzle-derived ``layer_height`` /
+    ``initial_layer_print_height``, ``reduce_crossing_wall``, and
+    ``enable_wrapping_detection=0``. ``enable_support=0`` is forced for
+    the same reason as VFA / Temp / Retraction: the sidecar CLI has no
+    GUI cascade to keep supports off the per-block flow patches.
+
+    The 3MF itself carries the same values in
+    ``project_settings.config`` (builder's project patch); patching the
+    ``--load-settings`` process JSON keeps the two consistent regardless
+    of which side the slicer favours.
+    """
+    try:
+        data = json.loads(process_json)
+    except (ValueError, TypeError):
+        logger.warning("apply_flow_rate_process_overrides: input not valid JSON; passing through")
+        return process_json
+    if not isinstance(data, dict):
+        return process_json
+
+    layer_height = f"{nozzle_diameter / 2.0:g}"
+    _set(data, "layer_height", layer_height)
+    _set(data, "initial_layer_print_height", layer_height)
+    _set(data, "reduce_crossing_wall", "1")
+    _set(data, "enable_wrapping_detection", "0")
+    _set(data, "enable_support", "0")
+    return json.dumps(data)
+
+
 def apply_retraction_printer_overrides(printer_json: str) -> str:
     """Patch a printer-preset JSON with Retraction Tower hardcodes.
 
