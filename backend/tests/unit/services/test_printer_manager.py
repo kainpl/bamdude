@@ -13,6 +13,7 @@ from backend.app.services.printer_manager import (
     get_derived_status_name,
     has_stg_cur_idle_bug,
     init_printer_connections,
+    is_bed_slinger,
     parse_plate_id,
     printer_state_to_dict,
     supports_chamber_temp,
@@ -1272,6 +1273,38 @@ class TestHasStgCurIdleBug:
     def test_empty_model_returns_false(self):
         """Verify empty model returns False."""
         assert has_stg_cur_idle_bug("") is False
+
+
+class TestIsBedSlinger:
+    """Tests for is_bed_slinger — pins the bed-jog Z-direction-flip classification.
+
+    Used by ``POST /printers/{id}/bed-jog`` to decide whether to invert the
+    signed distance before emitting G-code. Misclassification on a bed-slinger
+    drives the toolhead straight into the bed — upstream Bambuddy #1334 / commit
+    a2c9eef8.
+    """
+
+    def test_a1_family_is_bed_slinger(self):
+        """A1, A1 Mini and their internal codes N1 / N2S all classify as bed-slingers."""
+        assert is_bed_slinger("A1") is True
+        assert is_bed_slinger("A1 Mini") is True
+        assert is_bed_slinger("A1MINI") is True
+        assert is_bed_slinger("A1-MINI") is True
+        assert is_bed_slinger("N1") is True
+        assert is_bed_slinger("N2S") is True
+
+    def test_classification_is_case_insensitive(self):
+        assert is_bed_slinger("a1") is True
+        assert is_bed_slinger("a1 mini") is True
+
+    def test_bed_on_z_models_return_false(self):
+        """Every bed-on-Z model must NOT be classified as a bed-slinger."""
+        for model in ("X1C", "X1", "X1E", "P1S", "P1P", "H2D", "H2C", "H2S", "P2S"):
+            assert is_bed_slinger(model) is False, f"{model} should NOT be a bed-slinger"
+
+    def test_none_and_empty_safe(self):
+        assert is_bed_slinger(None) is False
+        assert is_bed_slinger("") is False
 
 
 class TestInitPrinterConnections:

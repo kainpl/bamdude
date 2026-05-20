@@ -40,6 +40,7 @@ from backend.app.services.printer_manager import (
     find_ams_unit,
     first_drying_blocking_reason,
     get_derived_status_name,
+    is_bed_slinger,
     printer_manager,
     resolve_plate_id,
     supports_chamber_temp,
@@ -2630,18 +2631,34 @@ async def set_print_speed(
 async def bed_jog(
     printer_id: int,
     distance: float = Query(
-        ..., description="Relative Z distance in mm (positive = bed down / nozzle further away, negative = bed up)"
+        ...,
+        description=(
+            "Signed nozzle-bed gap adjustment in mm. Negative = decrease gap "
+            '("up" arrow in the UI: bed up on bed-on-Z models, toolhead down '
+            "on A1 bed-slingers). Positive = increase gap. The backend "
+            "translates this into the right G-code Z sign per printer model."
+        ),
     ),
     force: bool = Query(False, description="If true, bypass soft endstops via M211 (for use when Z is not homed)"),
     _=RequirePermission(Permission.PRINTERS_CONTROL),
     db: AsyncSession = Depends(get_db),
 ):
-    """Move the build plate along the Z axis by a relative distance.
+    """Adjust the nozzle-bed gap by a relative distance.
 
     Emits a short G-code sequence via MQTT. When ``force`` is true the soft
     endstops are disabled for the duration of the move, matching the
     "ignore and move anyway" option Bambu Studio offers when the printer
     is not homed.
+
+    Direction handling: on bed-on-Z printers (X1 / P1 / H2 family) the bed
+    is the Z-axis, and Bambu's home convention puts Z=0 at the top with
+    Z+ moving the bed down — so a frontend "Up" (decrease gap) maps
+    naturally to ``G1 Z-``. On bed-slingers (A1 / A1 Mini) the Z-axis is
+    the *toolhead*, and ``G1 Z-`` instead drives the nozzle DOWN into the
+    bed. We invert the signed distance here for bed-slingers so the UI
+    contract ("Up arrow = decrease gap = negative distance") stays
+    consistent regardless of which physical part moves. Upstream Bambuddy
+    #1334 / commit a2c9eef8 — safety-critical.
     """
     if distance == 0 or abs(distance) > 200:
         raise HTTPException(400, "Distance must be non-zero and <= 200 mm")
@@ -2655,10 +2672,13 @@ async def bed_jog(
     if not client:
         raise HTTPException(400, "Printer not connected")
 
+    # Model-aware direction flip — see docstring for the physics.
+    z_distance = -distance if is_bed_slinger(printer.model) else distance
+
     lines = []
     if force:
         lines.append("M211 S0")
-    lines += ["G91", f"G1 Z{distance:.2f} F600", "G90"]
+    lines += ["G91", f"G1 Z{z_distance:.2f} F600", "G90"]
     if force:
         lines.append("M211 S1")
 
