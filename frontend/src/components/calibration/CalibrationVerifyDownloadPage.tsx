@@ -205,6 +205,14 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
   // pass 2 = 10-block fine (-9..0% step 1). The operator picks which to
   // verify and the page slices that one.
   const [flowPassN, setFlowPassN] = useState<1 | 2>(1);
+  // The baseline the per-block modifiers ride on top of. For pass 1 it
+  // should be the filament preset's current filament_flow_ratio (the
+  // operator may also test from a fresh 1.0 instead of editing the
+  // preset). For pass 2 it should be the result the operator picked
+  // from pass 1. The route applies this as a filament-side override so
+  // the slice physically prints at that baseline regardless of what's
+  // stored in the picked filament preset.
+  const [baselineFlowRatio, setBaselineFlowRatio] = useState<number>(1.0);
 
   const [isDownloading, setIsDownloading] = useState(false);
   const [isBaking, setIsBaking] = useState(false);
@@ -291,8 +299,11 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
     if (isFlowRate) {
       // Per-block flow_ratio modifiers are baked into the BS-shipped 3MFs
       // (flowrate_<mod> object names); the builder only needs nozzle_diameter
-      // for the geometry scale + nozzle/2 layer height.
-      return { nozzle_diameter: nozzleDiameter };
+      // for the geometry scale + nozzle/2 layer height. baseline_flow_ratio
+      // is the multiplier the per-block overrides ride on top of — the
+      // route applies it as a filament-side override so the slice prints
+      // at that baseline.
+      return { nozzle_diameter: nozzleDiameter, baseline_flow_ratio: baselineFlowRatio };
     }
     return undefined;
   };
@@ -350,7 +361,7 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
   const specValid = isTemp
     ? tempStart <= 350 && tempEnd >= 180 && tempStart >= tempEnd + 5
     : isFlowRate
-      ? true
+      ? baselineFlowRatio > 0 && baselineFlowRatio < 2
       : effectiveEnd > effectiveStart && effectiveStep > 0;
 
   const canSubmit =
@@ -722,7 +733,7 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
       )}
 
       {isFlowRate && (
-        <section className="space-y-2 border border-bambu-dark-tertiary rounded p-3">
+        <section className="space-y-3 border border-bambu-dark-tertiary rounded p-3">
           <h4 className="text-sm font-medium text-bambu-gray">
             {t('filamentCali.verifyDownload.specHeading')}
           </h4>
@@ -749,6 +760,27 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
               </button>
             </div>
           </div>
+          <label className="block">
+            <span className="text-xs text-bambu-gray">
+              {flowPassN === 1
+                ? t('filamentCali.verifyDownload.flowRateBaselinePass1')
+                : t('filamentCali.verifyDownload.flowRateBaselinePass2')}
+            </span>
+            <input
+              type="number"
+              step="0.01"
+              min="0.5"
+              max="1.5"
+              value={baselineFlowRatio}
+              onChange={(e) => setBaselineFlowRatio(parseFloat(e.target.value) || 0)}
+              className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
+            />
+            <span className="text-xs text-bambu-gray mt-1 block">
+              {flowPassN === 1
+                ? t('filamentCali.verifyDownload.flowRateBaselinePass1Hint')
+                : t('filamentCali.verifyDownload.flowRateBaselinePass2Hint')}
+            </span>
+          </label>
         </section>
       )}
 

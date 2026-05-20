@@ -63,6 +63,19 @@ def test_compute_flow_ratio_fine():
     assert abs(compute_flow_ratio_fine(1.2, -9) - 1.092) < 1e-9
 
 
+def test_compute_flow_ratio_coarse_baselines_off_filament_value():
+    """BS centers pass-1 blocks on the operator's filament_flow_ratio
+    (`Plater::calib_flowrate` sets `print_flow_ratio` per-object, which
+    MULTIPLIES the filament baseline). The save formula must mirror that
+    — `baseline * (100+mod)/100` — not assume 1.0."""
+    # Operator's filament has 0.95; mod=+5 lands at 0.95 × 1.05 = 0.9975.
+    assert abs(compute_flow_ratio_coarse(5, baseline=0.95) - 0.9975) < 1e-9
+    # mod=0 returns the baseline itself.
+    assert abs(compute_flow_ratio_coarse(0, baseline=0.95) - 0.95) < 1e-9
+    # Default baseline=1.0 keeps the legacy single-arg call working.
+    assert abs(compute_flow_ratio_coarse(10) - 1.1) < 1e-9
+
+
 def test_cali_mode_enum():
     assert CaliMode.PA_LINE.value == "pa_line"
     assert CaliMode.FLOW_RATE.value == "flow_rate"

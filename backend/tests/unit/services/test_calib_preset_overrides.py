@@ -241,3 +241,24 @@ def test_flow_rate_process_overrides_pin_nozzle_derived_layer_height():
     out6 = json.loads(apply_flow_rate_process_overrides("{}", nozzle_diameter=0.6))
     assert out6["layer_height"] == "0.3"
     assert out6["initial_layer_print_height"] == "0.3"
+
+
+def test_flow_rate_filament_overrides_pin_filament_flow_ratio_scalar():
+    """When the preset stores filament_flow_ratio as a scalar string, the
+    override replaces it in place."""
+    from backend.app.services.calib_preset_overrides import apply_flow_rate_filament_overrides
+
+    preset = json.dumps({"filament_flow_ratio": "0.95", "filament_type": ["PETG"]})
+    out = json.loads(apply_flow_rate_filament_overrides(preset, baseline_ratio=1.0))
+    assert out["filament_flow_ratio"] == "1"
+    # Unrelated keys round-trip intact.
+    assert out["filament_type"] == ["PETG"]
+
+
+def test_flow_rate_filament_overrides_pin_filament_flow_ratio_list():
+    """Per-extruder list shape: every entry gets the new baseline."""
+    from backend.app.services.calib_preset_overrides import apply_flow_rate_filament_overrides
+
+    preset = json.dumps({"filament_flow_ratio": ["0.95", "0.95"]})
+    out = json.loads(apply_flow_rate_filament_overrides(preset, baseline_ratio=0.9975))
+    assert out["filament_flow_ratio"] == ["0.9975", "0.9975"]

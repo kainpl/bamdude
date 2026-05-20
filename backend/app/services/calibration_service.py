@@ -285,6 +285,32 @@ async def _persist_calibration_slice_to_library(
         return new_file.id
 
 
+def _flow_rate_baseline_from_session(session) -> float:
+    """Operator's filament_flow_ratio captured at session start.
+
+    Flow Rate's coarse save formula is ``baseline * (100 + mod) / 100``;
+    ``baseline`` must be the same value the test 3MF physically printed
+    at — i.e. the filament preset's flow_ratio active when the session
+    started. We stash it into ``filaments_json[0]['flow_rate']`` at
+    start_calibration. Falls back to 1.0 if the row is missing the key
+    (older sessions, manual API callers), with a logged warning so the
+    operator can spot it.
+    """
+    try:
+        filaments = json.loads(session.filaments_json) if session.filaments_json else []
+    except (ValueError, TypeError):
+        filaments = []
+    if filaments and isinstance(filaments[0], dict):
+        v = filaments[0].get("flow_rate")
+        if isinstance(v, (int, float)) and v > 0:
+            return float(v)
+    logger.warning(
+        "flow_rate: session %s has no baseline flow_rate; falling back to 1.0 (saved result may not match the printed test)",
+        getattr(session, "id", "?"),
+    )
+    return 1.0
+
+
 class CalibrationService:
     """Stateless orchestrator — all state lives in DB + PrinterState.
 
@@ -364,6 +390,11 @@ class CalibrationService:
                 "nozzle_id": nozzle_id,
                 "nozzle_diameter": str(nozzle_diameter),
                 "max_volumetric_speed": str(f.max_volumetric_speed),
+                # The operator's current filament_flow_ratio at session start —
+                # Flow Rate's coarse-stage save baselines off this so the
+                # recorded result matches what physically printed (BS-faithful;
+                # see CalibrationWizardSavePage.cpp:1668).
+                "flow_rate": f.flow_rate,
             }
             for f in filaments
         ]
@@ -803,7 +834,11 @@ class CalibrationService:
         if cm == CaliMode.FLOW_RATE and s.stage == 1:
             if coarse_modifier is None:
                 raise ValueError("coarse_modifier required for Flow Rate stage 1")
-            coarse = compute_flow_ratio_coarse(coarse_modifier)
+            # Baseline = the operator's current filament_flow_ratio captured at
+            # session start. BS centers pass-1 blocks on this same value, so
+            # the saved coarse result must use it (not a hardcoded 1.0).
+            baseline = _flow_rate_baseline_from_session(s)
+            coarse = compute_flow_ratio_coarse(coarse_modifier, baseline=baseline)
             s.coarse_ratio = coarse
             await db.commit()
             if skip_fine:

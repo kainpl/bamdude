@@ -82,11 +82,22 @@ def compute_pa_k(line_index: int) -> float:
     return start + line_index * step
 
 
-def compute_flow_ratio_coarse(modifier_pct: int) -> float:
-    """Flow ratio after coarse stage = 1.0 * (100 + mod) / 100."""
+def compute_flow_ratio_coarse(modifier_pct: int, *, baseline: float = 1.0) -> float:
+    """Flow ratio after coarse stage = ``baseline * (100 + mod) / 100``.
+
+    ``baseline`` is the operator's current ``filament_flow_ratio`` — the
+    multiplier the per-block ``print_flow_ratio`` overrides ride on top
+    of (per BS ``Plater::calib_flowrate``). BS's save page uses exactly
+    this formula (``CalibrationWizardSavePage.cpp:1668`` —
+    ``m_coarse_flow_ratio = m_curr_flow_ratio * (100 + stof(mod)) / 100``).
+    Default ``1.0`` is back-compat for callers that genuinely want the
+    raw modifier-as-ratio; production save paths must pass the real
+    filament baseline so the recorded result matches what physically
+    printed.
+    """
     if modifier_pct not in FLOW_RATE_COARSE_MODIFIERS:
         raise ValueError(f"Invalid coarse modifier: {modifier_pct}")
-    return (100 + modifier_pct) / 100.0
+    return baseline * (100 + modifier_pct) / 100.0
 
 
 def compute_flow_ratio_fine(coarse_ratio: float, modifier_pct: int) -> float:

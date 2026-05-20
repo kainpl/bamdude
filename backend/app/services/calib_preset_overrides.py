@@ -490,6 +490,36 @@ def apply_flow_rate_process_overrides(process_json: str, *, nozzle_diameter: flo
     return json.dumps(data)
 
 
+def apply_flow_rate_filament_overrides(filament_json: str, *, baseline_ratio: float) -> str:
+    """Pin the filament's ``filament_flow_ratio`` for a Flow Rate slice.
+
+    BS centers pass-1 blocks on the operator's current
+    ``filament_flow_ratio`` — pass-1 modifiers ride on top of it as
+    per-object ``print_flow_ratio`` multipliers. If the operator wants to
+    test from a baseline other than what's stored in the filament preset
+    (e.g. fresh 1.0 instead of an already-calibrated 0.95, or pass 2's
+    "build fine on top of MY measured pass-1 result"), we override the
+    filament JSON before handing it to the sidecar. Stored as both the
+    scalar and the per-extruder list shape some BS presets use.
+    """
+    try:
+        data = json.loads(filament_json)
+    except (ValueError, TypeError):
+        logger.warning("apply_flow_rate_filament_overrides: input not valid JSON; passing through")
+        return filament_json
+    if not isinstance(data, dict):
+        return filament_json
+
+    ratio_str = f"{baseline_ratio:g}"
+    existing = data.get("filament_flow_ratio")
+    if isinstance(existing, list):
+        # Preserve list length (per-extruder shape); set every entry.
+        _set(data, "filament_flow_ratio", [ratio_str] * max(1, len(existing)))
+    else:
+        _set(data, "filament_flow_ratio", ratio_str)
+    return json.dumps(data)
+
+
 def apply_retraction_printer_overrides(printer_json: str) -> str:
     """Patch a printer-preset JSON with Retraction Tower hardcodes.
 

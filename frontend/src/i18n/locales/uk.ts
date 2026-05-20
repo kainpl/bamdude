@@ -4174,6 +4174,12 @@ export default {
       flowRatePass: 'Прохід',
       flowRatePass1: 'Прохід 1 (грубий)',
       flowRatePass2: 'Прохід 2 (точний)',
+      flowRateBaselinePass1: 'Базовий flow ratio (з твого філаменту)',
+      flowRateBaselinePass2: 'Результат проходу 1 (виміряний flow ratio)',
+      flowRateBaselinePass1Hint:
+        '9 тестових блоків друкуються на цьому значенні ± модифікатор. За замовчуванням — поточний flow_ratio твого філамент-профілю; постав 1.0, щоб тестити «з нуля», не редагуючи профіль.',
+      flowRateBaselinePass2Hint:
+        'Введи значення, яке прочитав з друку проходу 1. 10 точних блоків уточнюють вниз від нього ({"-9%"} → 0%).',
       layerHeight: 'Висота шару (мм)',
       nozzleDia: 'Діаметр сопла (мм)',
       paPatternFixedRangeNote:

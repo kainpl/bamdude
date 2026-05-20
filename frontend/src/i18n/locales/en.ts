@@ -4172,6 +4172,12 @@ export default {
       flowRatePass: 'Pass',
       flowRatePass1: 'Pass 1 (coarse)',
       flowRatePass2: 'Pass 2 (fine)',
+      flowRateBaselinePass1: 'Baseline flow ratio (from your filament)',
+      flowRateBaselinePass2: 'Pass 1 result (your measured flow ratio)',
+      flowRateBaselinePass1Hint:
+        'The 9 test blocks print at this value ± per-block modifier. Defaults to your filament profile\'s current value; type 1.0 to test from a fresh baseline without editing the profile.',
+      flowRateBaselinePass2Hint:
+        'Enter the ratio you read off the pass-1 print. The 10 fine blocks refine downward from here ({"-9%"} → 0%).',
       layerHeight: 'Layer height (mm)',
       nozzleDia: 'Nozzle diameter (mm)',
       paPatternFixedRangeNote:

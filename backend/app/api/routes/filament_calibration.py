@@ -642,6 +642,7 @@ async def slice_calibration_for_verification(
                 # operator's preset values and overrides anything we'd
                 # embedded into the 3MF's project_settings.config.
                 from backend.app.services.calib_preset_overrides import (
+                    apply_flow_rate_filament_overrides,
                     apply_flow_rate_process_overrides,
                     apply_pa_line_filament_overrides,
                     apply_pa_line_printer_overrides,
@@ -693,6 +694,18 @@ async def slice_calibration_for_verification(
                     printer_json = apply_retraction_printer_overrides(printer_json)
                 elif body.cali_mode == CaliMode.FLOW_RATE:
                     process_json = apply_flow_rate_process_overrides(process_json, nozzle_diameter=nozzle_diameter)
+                    # spec.baseline_flow_ratio (optional) lets the operator
+                    # slice from a baseline other than the filament preset's
+                    # stored value — e.g. test from a fresh 1.0 without
+                    # editing the preset, or seed pass-2 from the measured
+                    # pass-1 result. Falls back to whatever the filament JSON
+                    # already carries (the BS default).
+                    _baseline = (body.spec or {}).get("baseline_flow_ratio") if isinstance(body.spec, dict) else None
+                    if isinstance(_baseline, (int, float)) and float(_baseline) > 0:
+                        filament_jsons = [
+                            apply_flow_rate_filament_overrides(f, baseline_ratio=float(_baseline))
+                            for f in filament_jsons
+                        ]
 
                 # Log compat-relevant fields from each JSON so when BS rejects
                 # the combo we can see what the resolver actually produced
