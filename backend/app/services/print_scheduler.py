@@ -32,6 +32,17 @@ from backend.app.utils.threemf_tools import extract_nozzle_mapping_from_3mf
 
 logger = logging.getLogger(__name__)
 
+# Bambu firmware states that mean the project_file has actually been accepted
+# and the printer is now processing / running / paused mid-print. Used by the
+# queue-side watchdog (#1370 / B.3) to gate the "command landed" early return.
+# A transition from FINISH → IDLE (user dismissing a post-print prompt without
+# the printer ever accepting our project_file) is NOT a "command landed"
+# signal even though the state value changed. The subtask_id-advance check
+# below remains as the definitive path for H2D's slow FINISH → PREPARE flip
+# (#1078). Mirrors the same constant in background_dispatch.py — kept
+# duplicated rather than imported to avoid coupling the two services.
+_ACTIVE_PRINT_STATES: frozenset[str] = frozenset({"PREPARE", "SLICING", "RUNNING", "PAUSE"})
+
 # Filament type equivalence groups - types within the same group are
 # interchangeable on the printer side (Bambu Lab firmware treats them as compatible).
 _FILAMENT_TYPE_GROUPS: list[list[str]] = [
@@ -1836,10 +1847,15 @@ class PrintScheduler:
                 scheduler._release_dispatch_hold(printer_id)
                 return
             last_status = status
-            if status.state != pre_state:
-                # Printer picked up the job (state change) — release the
-                # post-dispatch hold so the next pending item for this printer
-                # can be evaluated normally (#1157).
+            if status.state in _ACTIVE_PRINT_STATES:
+                # Printer is actively processing the job. We do NOT accept
+                # arbitrary state transitions: a printer going FINISH → IDLE
+                # (user dismissed the post-print prompt without accepting our
+                # project_file) would otherwise look like "command landed"
+                # and the queue row would stay stuck at 'printing' while the
+                # scheduler permanently marked the printer as busy. Upstream
+                # Bambuddy #1370 / commit 5680f5d3. Inactive transitions
+                # (IDLE / FINISH / FAILED) no longer short-circuit the revert.
                 scheduler._release_dispatch_hold(printer_id)
                 return
             if pre_subtask_id and status.subtask_id and status.subtask_id != pre_subtask_id:

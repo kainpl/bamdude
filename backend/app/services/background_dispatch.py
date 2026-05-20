@@ -36,6 +36,15 @@ from backend.app.services.printer_manager import printer_manager
 
 logger = logging.getLogger(__name__)
 
+# Bambu firmware states that mean the project_file has actually been accepted
+# and the printer is now processing / running / paused mid-print. Used by the
+# direct-dispatch verifier (#1370 / B.3): a transition into one of these
+# states means the print landed; anything else (e.g. FINISH → IDLE after the
+# user dismisses a post-print prompt) is NOT a valid "command landed" signal
+# even though the state value did change. Mirrors the same constant in
+# print_scheduler.py — kept duplicated to avoid coupling the two services.
+_ACTIVE_PRINT_STATES: frozenset[str] = frozenset({"PREPARE", "SLICING", "RUNNING", "PAUSE"})
+
 
 async def _apply_calibrations_for_print(
     db,
@@ -1866,7 +1875,13 @@ class BackgroundDispatchService:
                 # within the remaining timeout and still surface a transition.
                 continue
             last_status = state
-            if state.state != pre_state:
+            if state.state in _ACTIVE_PRINT_STATES:
+                # Active print state — command landed. We do NOT accept
+                # arbitrary state transitions: a printer going FINISH → IDLE
+                # (user dismissed the post-print prompt without accepting our
+                # project_file) would otherwise look like "command landed"
+                # and the dispatch job would be marked successful even though
+                # no print is running. Upstream Bambuddy #1370 / commit 5680f5d3.
                 return True
             if pre_subtask_id is not None and state.subtask_id is not None and state.subtask_id != pre_subtask_id:
                 return True

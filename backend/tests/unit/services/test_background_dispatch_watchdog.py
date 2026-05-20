@@ -79,6 +79,65 @@ class TestReturnsTrueOnPickup:
         assert result is True
 
 
+class TestRejectsInactiveTransitions:
+    """B.3 / upstream Bambuddy #1370 regression — narrow "command landed" to
+    an allow-list of active-print states so FINISH→IDLE (user dismissing a
+    post-print prompt) does NOT register as a successful dispatch."""
+
+    @pytest.mark.asyncio
+    async def test_returns_false_on_finish_to_idle_user_dismissed_prompt(self):
+        """When pre_state is FINISH and the printer transitions to IDLE during
+        the verifier window, that's the user dismissing a post-print prompt —
+        NOT acceptance of our project_file. The old `state != pre_state`
+        check incorrectly returned True; the dispatch job was marked
+        successful even though no print was running.
+        """
+        get_status = MagicMock(return_value=_status("IDLE", "OLD_SUBTASK"))
+        client = MagicMock()
+        get_client = MagicMock(return_value=client)
+
+        with (
+            patch(
+                "backend.app.services.background_dispatch.printer_manager.get_status",
+                get_status,
+            ),
+            patch(
+                "backend.app.services.background_dispatch.printer_manager.get_client",
+                get_client,
+            ),
+        ):
+            result = await BackgroundDispatchService._verify_print_response(
+                printer_id=42,
+                printer_name="P1S",
+                pre_state="FINISH",
+                pre_subtask_id="OLD_SUBTASK",
+                timeout=0.2,
+                poll_interval=0.05,
+            )
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("active_state", ["PREPARE", "SLICING", "RUNNING", "PAUSE"])
+    async def test_returns_true_on_each_active_print_state(self, active_state):
+        """All four active-print states must be accepted as "command landed"."""
+        get_status = MagicMock(return_value=_status(active_state, "OLD_SUBTASK"))
+        with patch(
+            "backend.app.services.background_dispatch.printer_manager.get_status",
+            get_status,
+        ):
+            result = await BackgroundDispatchService._verify_print_response(
+                printer_id=42,
+                printer_name="P1S",
+                pre_state="FINISH",
+                pre_subtask_id="OLD_SUBTASK",
+                timeout=0.3,
+                poll_interval=0.05,
+            )
+
+        assert result is True, f"{active_state} should be treated as 'command landed'"
+
+
 class TestReturnsFalseOnTimeout:
     @pytest.mark.asyncio
     async def test_returns_false_when_neither_state_nor_subtask_id_changes(self):

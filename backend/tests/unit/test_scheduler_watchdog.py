@@ -58,6 +58,80 @@ class TestWatchdogGating:
             session.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_finish_to_idle_user_dismissed_prompt_does_not_exit_early(self):
+        """Regression for upstream Bambuddy #1370 / B.3.
+
+        When a printer is in FINISH at dispatch time (un-dismissed post-print
+        prompt from a prior job), the firmware silently rejects the new
+        project_file. If the user then dismisses the screen prompt, the
+        printer moves FINISH → IDLE — looks like a state change but is NOT
+        acceptance of our command. The old `state != pre_state` check
+        incorrectly exited early; the queue row would stay stuck at
+        'printing' indefinitely and the scheduler would permanently mark the
+        printer as busy. Now narrowed to an allow-list of active-print
+        states (PREPARE / SLICING / RUNNING / PAUSE).
+        """
+        pre_state = "FINISH"
+        pre_subtask = "sid-1"
+
+        mock_item = MagicMock()
+        mock_item.status = "printing"
+        mock_db = AsyncMock()
+        mock_db.get.return_value = mock_item
+        mock_db.commit = AsyncMock()
+        session = MagicMock()
+        session.return_value.__aenter__.return_value = mock_db
+        session.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        client = MagicMock()
+
+        with (
+            patch("backend.app.services.print_scheduler.printer_manager") as pm,
+            patch("backend.app.services.print_scheduler.async_session", session),
+        ):
+            # IDLE is NOT in the active-print allow-list → watchdog falls
+            # through to its revert path even though state != pre_state.
+            pm.get_status.return_value = _make_status(state="IDLE", subtask_id=pre_subtask)
+            pm.get_client.return_value = client
+
+            await PrintScheduler._watchdog_print_start(
+                queue_item_id=1,
+                printer_id=1,
+                pre_state=pre_state,
+                pre_subtask_id=pre_subtask,
+                swap_start_fired=False,
+                timeout=0.3,
+                poll_interval=0.05,
+            )
+
+            # Revert path ran: queue item flipped back to 'pending'.
+            assert mock_item.status == "pending"
+            mock_db.commit.assert_called_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("active_state", ["PREPARE", "SLICING", "RUNNING", "PAUSE"])
+    async def test_each_active_print_state_exits_early(self, active_state):
+        """All four active-print states must be treated as "command landed"."""
+        with (
+            patch("backend.app.services.print_scheduler.printer_manager") as pm,
+            patch("backend.app.services.print_scheduler.async_session") as session,
+        ):
+            pm.get_status.return_value = _make_status(state=active_state, subtask_id="old")
+            pm.get_client.return_value = None
+
+            await PrintScheduler._watchdog_print_start(
+                queue_item_id=1,
+                printer_id=1,
+                pre_state="FINISH",
+                pre_subtask_id="old",
+                swap_start_fired=False,
+                timeout=0.3,
+                poll_interval=0.05,
+            )
+
+            session.assert_not_called(), f"{active_state} should be treated as 'command landed'"
+
+    @pytest.mark.asyncio
     async def test_subtask_advance_exits_early_even_when_state_stuck(self):
         """New signal (upstream #1078): state stays FINISH but subtask_id advances.
 
