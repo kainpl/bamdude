@@ -78,6 +78,48 @@ def get_buffered_frame(printer_id: int) -> bytes | None:
     return _last_frames.get(printer_id)
 
 
+def is_stream_active(printer_id: int) -> bool:
+    """Return True iff any MJPEG fan-out stream is currently registered for
+    this printer (main camera or chamber camera).
+
+    Used by callers that want to AVOID opening a competing upstream RTSP /
+    HTTP socket while a viewer is attached — some firmwares (notably X2D
+    01.01.00.00) enforce strict single-camera-connection and will drop the
+    live fan-out stream the moment a second socket opens. Checking
+    ``_active_streams`` independently of buffer state lets us skip the
+    competing-socket path even during the 1–3 s startup window before the
+    first JPEG lands in ``_last_frames``. Upstream Bambuddy #1348 / commit
+    ce5f4e5f.
+    """
+    # Stream IDs are constructed as ``f"{printer_id}-fanout"`` (main camera)
+    # or with a printer-prefix for chamber streams. Match by prefix to cover
+    # both shapes without committing to either suffix.
+    printer_prefix = f"{printer_id}-"
+    if any(sid == str(printer_id) or sid.startswith(printer_prefix) for sid in _active_streams):
+        return True
+    return any(sid == str(printer_id) or sid.startswith(printer_prefix) for sid in _active_chamber_streams)
+
+
+def try_get_active_buffered_frame(printer_id: int) -> bytes | None:
+    """Return the broadcaster's last buffered frame ONLY when a viewer is
+    attached for this printer; ``None`` otherwise.
+
+    Distinct from :func:`get_buffered_frame` — that one returns whatever sits
+    in the buffer regardless of whether a viewer is currently watching, which
+    can return stale frames from a previously-attached viewer. This helper
+    is the right gate for the "avoid competing socket" decision: it's the
+    *combination* of "viewer attached" and "fresh frame available". Callers
+    that need to know "viewer attached" independently of buffer state should
+    use :func:`is_stream_active` (e.g. Obico, which prefers to skip a poll
+    cycle entirely rather than open a competing socket).
+
+    Upstream Bambuddy #1271 / commit c097140e + #1348 / commit ce5f4e5f.
+    """
+    if not is_stream_active(printer_id):
+        return None
+    return _last_frames.get(printer_id)
+
+
 async def get_printer_or_404(printer_id: int, db: AsyncSession) -> Printer:
     """Get printer by ID or raise 404."""
     result = await db.execute(select(Printer).where(Printer.id == printer_id))
@@ -807,6 +849,24 @@ async def camera_snapshot(
             )
         return Response(
             content=frame_data,
+            media_type="image/jpeg",
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Content-Disposition": f'inline; filename="snapshot_{printer_id}.jpg"',
+            },
+        )
+
+    # If a live fan-out stream is already running for this printer, reuse
+    # the broadcaster's buffered frame instead of opening a competing RTSP
+    # socket. Some firmwares (notably X2D 01.01.00.00) enforce strict
+    # single-camera-connection — a fresh socket here would drop the live
+    # viewer's stream. Falls through to fresh capture when no viewer is
+    # attached (snapshot is user-initiated single-shot; that's fine).
+    # Upstream Bambuddy #1271 / commit c097140e.
+    buffered = try_get_active_buffered_frame(printer_id)
+    if buffered is not None:
+        return Response(
+            content=buffered,
             media_type="image/jpeg",
             headers={
                 "Cache-Control": "no-cache, no-store, must-revalidate",

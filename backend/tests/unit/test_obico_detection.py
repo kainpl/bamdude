@@ -469,3 +469,192 @@ class TestCheckPrinterUsesCachedFrameUrl:
             await svc._check_printer(1, status, settings)
 
         assert svc._last_error is None
+
+
+class TestCaptureFrameStreamActiveGate:
+    """B.7 / upstream Bambuddy #1271 + #1348 — when a viewer is attached to
+    the live camera, Obico's ``_capture_frame`` must NOT open a competing
+    upstream socket. Some firmwares (notably X2D) enforce strict single-
+    camera-connection and a second socket drops the viewer's stream.
+    """
+
+    @pytest.mark.asyncio
+    async def test_built_in_camera_reuses_buffered_frame_when_viewer_attached(self):
+        from backend.app.services.obico_detection import ObicoDetectionService
+
+        svc = ObicoDetectionService()
+        mock_printer = MagicMock()
+        mock_printer.external_camera_enabled = False
+        mock_printer.ip_address = "192.168.1.100"
+        mock_printer.access_code = "12345678"
+        mock_printer.model = "X2D"
+
+        mock_db = AsyncMock()
+        mock_db.__aenter__ = AsyncMock(return_value=mock_db)
+        mock_db.__aexit__ = AsyncMock(return_value=False)
+        mock_db.get = AsyncMock(return_value=mock_printer)
+
+        fresh_capture = AsyncMock(return_value=b"FRESH-SHOULD-NOT-BE-CALLED")
+
+        with (
+            patch("backend.app.services.obico_detection.async_session", return_value=mock_db),
+            patch("backend.app.api.routes.camera.is_stream_active", return_value=True),
+            patch("backend.app.api.routes.camera.get_buffered_frame", return_value=b"BUFFERED"),
+            patch("backend.app.services.camera.capture_camera_frame_bytes", fresh_capture),
+        ):
+            result = await svc._capture_frame(1)
+
+        assert result == b"BUFFERED"
+        fresh_capture.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_built_in_camera_skips_poll_when_viewer_attached_but_buffer_empty(self):
+        """The #1348 race: viewer attached but buffer momentarily empty
+        (startup or mid-reconnect). Must return None, NOT open competing
+        socket. The next poll cycle will find a populated buffer.
+        """
+        from backend.app.services.obico_detection import ObicoDetectionService
+
+        svc = ObicoDetectionService()
+        mock_printer = MagicMock()
+        mock_printer.external_camera_enabled = False
+        mock_printer.ip_address = "192.168.1.100"
+        mock_printer.access_code = "12345678"
+        mock_printer.model = "X2D"
+
+        mock_db = AsyncMock()
+        mock_db.__aenter__ = AsyncMock(return_value=mock_db)
+        mock_db.__aexit__ = AsyncMock(return_value=False)
+        mock_db.get = AsyncMock(return_value=mock_printer)
+
+        fresh_capture = AsyncMock(return_value=b"FRESH-SHOULD-NOT-BE-CALLED")
+
+        with (
+            patch("backend.app.services.obico_detection.async_session", return_value=mock_db),
+            patch("backend.app.api.routes.camera.is_stream_active", return_value=True),
+            patch("backend.app.api.routes.camera.get_buffered_frame", return_value=None),
+            patch("backend.app.services.camera.capture_camera_frame_bytes", fresh_capture),
+        ):
+            result = await svc._capture_frame(1)
+
+        assert result is None
+        fresh_capture.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_built_in_camera_falls_back_to_fresh_capture_when_no_viewer(self):
+        """No viewer attached → standard fresh-capture path."""
+        from backend.app.services.obico_detection import ObicoDetectionService
+
+        svc = ObicoDetectionService()
+        mock_printer = MagicMock()
+        mock_printer.external_camera_enabled = False
+        mock_printer.ip_address = "192.168.1.100"
+        mock_printer.access_code = "12345678"
+        mock_printer.model = "X1C"
+
+        mock_db = AsyncMock()
+        mock_db.__aenter__ = AsyncMock(return_value=mock_db)
+        mock_db.__aexit__ = AsyncMock(return_value=False)
+        mock_db.get = AsyncMock(return_value=mock_printer)
+
+        fresh_capture = AsyncMock(return_value=b"FRESH")
+
+        with (
+            patch("backend.app.services.obico_detection.async_session", return_value=mock_db),
+            patch("backend.app.api.routes.camera.is_stream_active", return_value=False),
+            patch("backend.app.services.camera.capture_camera_frame_bytes", fresh_capture),
+        ):
+            result = await svc._capture_frame(1)
+
+        assert result == b"FRESH"
+        fresh_capture.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_external_camera_path_unchanged_by_buffer_gate(self):
+        """External-camera printers don't use the broadcaster; the gate
+        must not apply to them."""
+        from backend.app.services.obico_detection import ObicoDetectionService
+
+        svc = ObicoDetectionService()
+        mock_printer = MagicMock()
+        mock_printer.external_camera_enabled = True
+        mock_printer.external_camera_url = "http://camera.local/stream"
+        mock_printer.external_camera_type = "mjpeg"
+        mock_printer.external_camera_snapshot_url = "http://camera.local/snapshot.jpg"
+
+        mock_db = AsyncMock()
+        mock_db.__aenter__ = AsyncMock(return_value=mock_db)
+        mock_db.__aexit__ = AsyncMock(return_value=False)
+        mock_db.get = AsyncMock(return_value=mock_printer)
+
+        external_capture = AsyncMock(return_value=b"EXTERNAL")
+
+        with (
+            patch("backend.app.services.obico_detection.async_session", return_value=mock_db),
+            patch("backend.app.services.external_camera.capture_frame", external_capture),
+        ):
+            result = await svc._capture_frame(1)
+
+        assert result == b"EXTERNAL"
+        external_capture.assert_called_once()
+
+
+class TestIsStreamActiveHelper:
+    """Pin the camera-route helpers' classification contract."""
+
+    def test_no_streams_registered_returns_false(self):
+        from backend.app.api.routes import camera
+
+        camera._active_streams.clear()
+        camera._active_chamber_streams.clear()
+        assert camera.is_stream_active(42) is False
+        assert camera.try_get_active_buffered_frame(42) is None
+
+    def test_main_fanout_stream_registered_returns_true(self):
+        from backend.app.api.routes import camera
+
+        camera._active_streams.clear()
+        camera._active_chamber_streams.clear()
+        camera._active_streams["42-fanout"] = MagicMock()
+        try:
+            assert camera.is_stream_active(42) is True
+        finally:
+            camera._active_streams.pop("42-fanout", None)
+
+    def test_chamber_stream_registered_returns_true(self):
+        from backend.app.api.routes import camera
+
+        camera._active_streams.clear()
+        camera._active_chamber_streams.clear()
+        camera._active_chamber_streams["42-chamber"] = (MagicMock(), MagicMock())
+        try:
+            assert camera.is_stream_active(42) is True
+        finally:
+            camera._active_chamber_streams.pop("42-chamber", None)
+
+    def test_try_get_active_buffered_returns_frame_when_stream_active_and_buffered(self):
+        from backend.app.api.routes import camera
+
+        camera._active_streams.clear()
+        camera._last_frames.clear()
+        camera._active_streams["42-fanout"] = MagicMock()
+        camera._last_frames[42] = b"BUFFERED"
+        try:
+            assert camera.try_get_active_buffered_frame(42) == b"BUFFERED"
+        finally:
+            camera._active_streams.pop("42-fanout", None)
+            camera._last_frames.pop(42, None)
+
+    def test_try_get_active_buffered_returns_none_when_no_stream_even_with_buffer(self):
+        """Independent of stale-buffer state: no viewer → None. Prevents
+        returning stale frames from a previously-attached viewer."""
+        from backend.app.api.routes import camera
+
+        camera._active_streams.clear()
+        camera._active_chamber_streams.clear()
+        camera._last_frames.clear()
+        camera._last_frames[42] = b"STALE"
+        try:
+            assert camera.try_get_active_buffered_frame(42) is None
+        finally:
+            camera._last_frames.pop(42, None)

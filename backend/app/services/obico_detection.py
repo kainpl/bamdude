@@ -181,8 +181,25 @@ class ObicoDetectionService:
             await self._check_printer(printer_id, status, settings)
 
     async def _capture_frame(self, printer_id: int) -> bytes | None:
-        """Capture one JPEG frame from the printer camera. Returns None on failure."""
+        """Capture one JPEG frame from the printer camera. Returns None on failure.
+
+        Built-in camera path: if a live fan-out stream is already attached
+        for this printer (i.e. a user is watching the live camera in the
+        UI), we MUST NOT open a competing upstream socket — some firmwares
+        (notably X2D 01.01.00.00) enforce strict single-camera-connection
+        and a second socket here would drop the viewer's stream. We consult
+        ``is_stream_active`` first, then ``get_buffered_frame``: if a viewer
+        is attached and a frame is available we reuse it; if a viewer is
+        attached but the buffer is momentarily empty (1-3 s startup window,
+        or upstream mid-reconnect) we skip this Obico poll cycle (return
+        None) — the next poll 10 s later is virtually guaranteed to have a
+        populated buffer. When no viewer is attached we fall through to the
+        fresh-capture path (Obico's primary use case: detection on
+        headless / unattended prints). Upstream Bambuddy #1271 / c097140e
+        + #1348 / ce5f4e5f.
+        """
         # Late import to avoid cycles at module load time
+        from backend.app.api.routes.camera import get_buffered_frame, is_stream_active
         from backend.app.services.camera import capture_camera_frame_bytes
         from backend.app.services.external_camera import capture_frame as capture_external_frame
 
@@ -199,6 +216,13 @@ class ObicoDetectionService:
                 timeout=SNAPSHOT_CAPTURE_TIMEOUT,
                 snapshot_url=printer.external_camera_snapshot_url,
             )
+
+        # Built-in camera: never compete with an attached viewer. Cost: at
+        # most one missed Obico detection cycle per viewer-attach (~10 s
+        # lag); benefit: zero competing-socket events.
+        if is_stream_active(printer_id):
+            return get_buffered_frame(printer_id)
+
         return await capture_camera_frame_bytes(
             ip_address=printer.ip_address,
             access_code=printer.access_code,
