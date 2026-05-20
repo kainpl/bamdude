@@ -1966,15 +1966,15 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
         onSave={handleColumnConfigSave}
       />
 
-      {/* Label printing (B.1 #809). Spoolman path is wired in client + backend
-          but the inventory UI doesn't expose Spoolman directly here, so the
-          flag is hard-false — flip when the dedicated Spoolman tab lands. */}
+      {/* Label printing (B.1 #809). The picker routes to either the internal
+          `/inventory/labels` or the `/spoolman/labels` endpoint based on the
+          current inventory backend — the unified UI exposes both. */}
       <LabelTemplatePickerModal
         isOpen={labelPickerSpoolIds !== null}
         onClose={() => setLabelPickerSpoolIds(null)}
         availableSpools={filteredSpools}
         initialSelectedIds={labelPickerSpoolIds ?? []}
-        spoolmanMode={false}
+        spoolmanMode={spoolmanMode}
         spoolDisplayTemplate={spoolDisplayTemplate}
       />
     </div>
