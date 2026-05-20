@@ -89,17 +89,10 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
   const [presetSource, setPresetSource] = useState<PresetSource>('manual');
   const [ownerFilter, setOwnerFilter] = useState<OwnerFilter>('all');
 
-  // One-shot initial pick — if bundles exist when the page mounts, start
-  // in bundle mode (matches SliceModal). After the first run the user is
-  // free to flip the segmented control; we must NOT re-assert 'bundle'
-  // on every render or "Manual" becomes un-clickable. ``didInitMode``
-  // gates the effect to the first non-pending bundles response.
-  const [didInitMode, setDidInitMode] = useState(false);
-  useEffect(() => {
-    if (didInitMode || bundlesQuery.isPending) return;
-    if (bundles.length > 0) setPresetSource('bundle');
-    setDidInitMode(true);
-  }, [didInitMode, bundlesQuery.isPending, bundles.length]);
+  // Calibration testing is per-filament — operator picks the cloud /
+  // local filament preset to characterise. Bundles roll all three slots
+  // together and aren't relevant to filament-side calibration; SliceModal
+  // auto-switches to bundle here, we don't. Default 'manual' is enough.
 
   // ---- Manual mode state ----
   const [printerRef, setPrinterRef] = useState<PresetRef | null>(null);

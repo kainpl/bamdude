@@ -536,6 +536,10 @@ async def test_submit_manual_flow_coarse_creates_stage2(
     mock_client,
 ):
     printer = await printer_factory(model="P1S")
+    # Wave 5: coarse-save → _start_flow_rate_stage2 → _run_calibration_print
+    # which slices pass 2 + dispatches the print. Parent session must carry
+    # dispatch_args_json (populated by start_calibration). The actual slice
+    # is mocked out — this test pins the orchestration, not the sidecar.
     s = CalibrationSession(
         printer_id=printer.id,
         user_id=None,
@@ -547,12 +551,40 @@ async def test_submit_manual_flow_coarse_creates_stage2(
         filaments_json='[{"ams_id":0,"slot_id":0,"tray_id":0,"filament_id":"GFG00","setting_id":""}]',
         status="awaiting_user_input",
         stage=1,
+        dispatch_args_json='{"spec":{},"printer_preset":null,"process_preset":null,'
+        '"filament_presets":[],"bundle":null,"slicer":null,"bed_type":null,'
+        '"print_options":null,"swap_macros":null}',
     )
     db_session.add(s)
     await db_session.commit()
     await db_session.refresh(s)
 
-    with patch("backend.app.services.calibration_service.printer_manager") as pm:
+    async def _fake_run_calibration_print(**kwargs):
+        # Mock the dispatch — create the stage-2 row the way the real
+        # helper does, but skip sidecar / FTP / enqueue.
+        stage2 = CalibrationSession(
+            printer_id=kwargs["printer_id"],
+            user_id=kwargs["user_id"],
+            cali_mode=kwargs["cali_mode"].value,
+            method=kwargs["method"].value,
+            nozzle_diameter=kwargs["nozzle_diameter"],
+            nozzle_volume_type=kwargs["nozzle_volume_type"],
+            extruder_id=kwargs["extruder_id"],
+            filaments_json=json.dumps(kwargs["filaments_payload"]),
+            status="running",
+            stage=kwargs["stage"],
+            parent_session_id=kwargs["parent_session_id"],
+            coarse_ratio=kwargs["coarse_ratio"],
+        )
+        db_session.add(stage2)
+        await db_session.commit()
+        await db_session.refresh(stage2)
+        return stage2
+
+    with (
+        patch("backend.app.services.calibration_service.printer_manager") as pm,
+        patch.object(service, "_run_calibration_print", side_effect=_fake_run_calibration_print),
+    ):
         pm.get_client.return_value = mock_client
         out = await service.submit_manual_result(
             db=db_session,
@@ -1209,3 +1241,113 @@ async def test_sync_idempotent_when_already_in_sync(db_session, printer_factory)
         pm.get_client.return_value = client
         touched = await sync_printer_kprofiles_to_cache(db=db_session, printer_id=printer.id)
     assert touched == 0
+
+
+@pytest.mark.asyncio
+async def test_start_flow_rate_stage2_dispatches_with_baseline_override(
+    service,
+    db_session,
+    printer_factory,
+):
+    """Wave 5: stage-2 reads the parent's dispatch_args_json + coarse_ratio
+    and calls _run_calibration_print(pass_n=2, baseline_flow_ratio=coarse_ratio).
+    Pin the call shape so the production wizard's two-pass flow keeps
+    re-running pass 2 against the picked coarse ratio + the original
+    presets after the operator saves the coarse pick."""
+    from unittest.mock import AsyncMock
+
+    printer = await printer_factory(model="P1S")
+    parent = CalibrationSession(
+        printer_id=printer.id,
+        user_id=None,
+        cali_mode="flow_rate",
+        method="manual",
+        nozzle_diameter=0.4,
+        nozzle_volume_type="standard",
+        extruder_id=0,
+        filaments_json='[{"ams_id":1,"slot_id":2,"tray_id":3,"filament_id":"GFG00"}]',
+        status="awaiting_user_input",
+        stage=1,
+        coarse_ratio=1.05,
+        dispatch_args_json=json.dumps(
+            {
+                "spec": {"nozzle_diameter": 0.4},
+                "printer_preset": {"source": "cloud", "id": "PMU_X"},
+                "process_preset": {"source": "cloud", "id": "PPU_X"},
+                "filament_presets": [{"source": "cloud", "id": "PFU_X"}],
+                "bundle": None,
+                "slicer": None,
+                "bed_type": "Textured PEI Plate",
+                "print_options": None,
+                "swap_macros": None,
+            }
+        ),
+    )
+    db_session.add(parent)
+    await db_session.commit()
+    await db_session.refresh(parent)
+
+    fake_stage2 = CalibrationSession(
+        printer_id=printer.id,
+        user_id=None,
+        cali_mode="flow_rate",
+        method="manual",
+        nozzle_diameter=0.4,
+        nozzle_volume_type="standard",
+        extruder_id=0,
+        filaments_json=parent.filaments_json,
+        status="running",
+        stage=2,
+        parent_session_id=parent.id,
+        coarse_ratio=1.05,
+    )
+    db_session.add(fake_stage2)
+    await db_session.commit()
+    await db_session.refresh(fake_stage2)
+
+    mock_run = AsyncMock(return_value=fake_stage2)
+    with patch.object(service, "_run_calibration_print", mock_run):
+        stage2 = await service._start_flow_rate_stage2(db=db_session, parent=parent)
+
+    assert stage2.id == fake_stage2.id
+    # The helper was invoked with pass_n=2, the baseline override, and the
+    # filament's AMS/slot/tray picked up from the parent's filaments_json.
+    kw = mock_run.call_args.kwargs
+    assert kw["pass_n"] == 2
+    assert kw["baseline_flow_ratio"] == 1.05
+    assert kw["stage"] == 2
+    assert kw["parent_session_id"] == parent.id
+    assert kw["coarse_ratio"] == 1.05
+    assert kw["ams_id"] == 1 and kw["slot_id"] == 2 and kw["tray_id"] == 3
+    assert kw["dispatch_args"]["filament_presets"][0]["id"] == "PFU_X"
+
+
+@pytest.mark.asyncio
+async def test_start_flow_rate_stage2_rejects_missing_dispatch_args(
+    service,
+    db_session,
+    printer_factory,
+):
+    """A parent session created before m070 has no dispatch_args_json —
+    the stage-2 path raises rather than silently slicing without presets."""
+    printer = await printer_factory(model="P1S")
+    parent = CalibrationSession(
+        printer_id=printer.id,
+        user_id=None,
+        cali_mode="flow_rate",
+        method="manual",
+        nozzle_diameter=0.4,
+        nozzle_volume_type="standard",
+        extruder_id=0,
+        filaments_json="[]",
+        status="awaiting_user_input",
+        stage=1,
+        coarse_ratio=1.05,
+        dispatch_args_json=None,
+    )
+    db_session.add(parent)
+    await db_session.commit()
+    await db_session.refresh(parent)
+
+    with pytest.raises(ValueError, match="dispatch_args_json"):
+        await service._start_flow_rate_stage2(db=db_session, parent=parent)

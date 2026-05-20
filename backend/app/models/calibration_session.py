@@ -43,6 +43,17 @@ class CalibrationSession(Base):
     stage: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     coarse_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
 
+    # JSON snapshot of the wizard args (preset refs, bundle, bed_type,
+    # slicer, spec, print_options, swap_macros) captured at session
+    # creation. Read by Flow Rate's `_start_flow_rate_stage2` so the
+    # pass-2 dispatch can re-slice through the same sidecar + presets
+    # the operator picked at the start of pass 1, without the wizard
+    # having to round-trip the args back through the API. NULL for
+    # AUTO sessions (no slicer dispatch — MQTT flow_rate_cali_start
+    # path) and for any session created before m070 (no behaviour
+    # change for already-running calibrations).
+    dispatch_args_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
