@@ -1633,6 +1633,12 @@ export interface UnifiedPreset {
   // colour (colour is a runtime spool attribute on Bambu).
   filament_type?: string | null;
   filament_colour?: string | null;
+  // The filament preset's stored ``filament_flow_ratio`` — Flow Rate's
+  // verify-download page auto-prefills the baseline input with this so
+  // the operator doesn't have to retype their filament's current value.
+  // Populated for local-preset filament entries; ``null`` for cloud /
+  // standard (the listing doesn't resolve the full JSON for those).
+  filament_flow_ratio?: number | null;
 }
 
 export interface UnifiedPresetsBySlot {

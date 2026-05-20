@@ -205,14 +205,14 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
   // pass 2 = 10-block fine (-9..0% step 1). The operator picks which to
   // verify and the page slices that one.
   const [flowPassN, setFlowPassN] = useState<1 | 2>(1);
-  // The baseline the per-block modifiers ride on top of. For pass 1 it
-  // should be the filament preset's current filament_flow_ratio (the
-  // operator may also test from a fresh 1.0 instead of editing the
-  // preset). For pass 2 it should be the result the operator picked
-  // from pass 1. The route applies this as a filament-side override so
-  // the slice physically prints at that baseline regardless of what's
-  // stored in the picked filament preset.
-  const [baselineFlowRatio, setBaselineFlowRatio] = useState<number>(1.0);
+  // The baseline the per-block modifiers ride on top of. Kept as a string
+  // so the user can type decimals freely (a numeric controlled input
+  // strips the trailing dot on each keystroke and the user can never
+  // finish typing "0.95"). For pass 1, auto-prefilled from the picked
+  // filament preset's filament_flow_ratio when the listing exposes it
+  // (local presets). For pass 2, the operator types their pass-1 result.
+  const [baselineFlowRatioInput, setBaselineFlowRatioInput] = useState<string>('1.0');
+  const baselineFlowRatio = parseFloat(baselineFlowRatioInput) || 0;
 
   const [isDownloading, setIsDownloading] = useState(false);
   const [isBaking, setIsBaking] = useState(false);
@@ -225,6 +225,20 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
   const isTemp = caliMode === 'temp_tower';
   const isRetraction = caliMode === 'retraction_tower';
   const isFlowRate = caliMode === 'flow_rate';
+
+  // Flow Rate pass 1: auto-prefill the baseline from the picked filament
+  // preset's stored filament_flow_ratio when available (local-preset
+  // tier exposes it; cloud / bundle deltas don't, so the operator types
+  // it). Pass 2 doesn't auto-prefill — the operator has to enter their
+  // measured pass-1 result.
+  useEffect(() => {
+    if (!isFlowRate || flowPassN !== 1) return;
+    if (presetSource !== 'manual' || !filamentRef) return;
+    const p = presets?.[filamentRef.source]?.filament.find((x) => x.id === filamentRef.id);
+    if (p && typeof p.filament_flow_ratio === 'number' && p.filament_flow_ratio > 0) {
+      setBaselineFlowRatioInput(String(p.filament_flow_ratio));
+    }
+  }, [isFlowRate, flowPassN, presetSource, filamentRef, presets]);
 
   // Temp Tower: seed the start/end defaults from the selected filament's
   // type (BS picks them off its filament-type radio; we have a preset
@@ -767,12 +781,11 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
                 : t('filamentCali.verifyDownload.flowRateBaselinePass2')}
             </span>
             <input
-              type="number"
-              step="0.01"
-              min="0.5"
-              max="1.5"
-              value={baselineFlowRatio}
-              onChange={(e) => setBaselineFlowRatio(parseFloat(e.target.value) || 0)}
+              type="text"
+              inputMode="decimal"
+              value={baselineFlowRatioInput}
+              onChange={(e) => setBaselineFlowRatioInput(e.target.value.replace(',', '.'))}
+              placeholder="1.0"
               className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
             />
             <span className="text-xs text-bambu-gray mt-1 block">

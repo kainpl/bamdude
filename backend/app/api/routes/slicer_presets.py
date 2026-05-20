@@ -170,9 +170,10 @@ async def _fetch_local_presets(db: AsyncSession) -> dict[str, list[UnifiedPreset
         slot = type_to_slot.get(p.preset_type)
         if slot is None:
             continue
-        extra: dict[str, str | None] = {}
+        extra: dict[str, str | float | None] = {}
         if slot == "filament":
             extra["filament_type"], extra["filament_colour"] = _parse_filament_metadata(p.setting)
+            extra["filament_flow_ratio"] = _parse_filament_flow_ratio(p.setting)
         slots[slot].append(
             UnifiedPreset(id=str(p.id), name=p.name, source="local", **extra),
         )
@@ -194,6 +195,35 @@ def _parse_filament_metadata(setting_json: str | None) -> tuple[str | None, str 
     if not isinstance(data, dict):
         return None, None
     return _first_scalar(data.get("filament_type")), _first_scalar(data.get("filament_colour"))
+
+
+def _parse_filament_flow_ratio(setting_json: str | None) -> float | None:
+    """Extract the filament preset's stored ``filament_flow_ratio`` so the
+    Flow Rate verify-download page can auto-prefill the baseline input
+    with the operator's current value (saves them from typing it). BS
+    stores it as a per-extruder vector; we surface the first scalar.
+    Any parse failure returns ``None`` so a corrupt row never breaks the
+    listing."""
+    if not setting_json:
+        return None
+    try:
+        data = json.loads(setting_json)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    raw = data.get("filament_flow_ratio")
+    if isinstance(raw, list) and raw:
+        raw = raw[0]
+    if isinstance(raw, (int, float)) and float(raw) > 0:
+        return float(raw)
+    if isinstance(raw, str):
+        try:
+            v = float(raw)
+        except ValueError:
+            return None
+        return v if v > 0 else None
+    return None
 
 
 def _first_scalar(value: object) -> str | None:

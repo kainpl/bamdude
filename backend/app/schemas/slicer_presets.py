@@ -38,6 +38,13 @@ class UnifiedPreset(BaseModel):
     source: Literal["cloud", "local", "standard"]
     filament_type: str | None = None
     filament_colour: str | None = None
+    # The filament preset's stored ``filament_flow_ratio`` (a per-extruder
+    # vector in BS — we surface the first value). Populated for the
+    # filament slot only; used by the Flow Rate verify-download page to
+    # auto-prefill the baseline input with the operator's current value
+    # instead of forcing them to type it. ``None`` when the resolver
+    # didn't expose it (typical for thin cloud-delta stubs).
+    filament_flow_ratio: float | None = None
 
 
 class UnifiedPresetsBySlot(BaseModel):
