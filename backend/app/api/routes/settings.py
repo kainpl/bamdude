@@ -7,10 +7,11 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermission
+from backend.app.core.auth import RequirePermission, require_energy_cost_update
 from backend.app.core.config import settings as app_settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -238,6 +239,47 @@ async def patch_settings(
 ):
     """Partially update application settings (same as PUT, for REST compatibility)."""
     return await update_settings(settings_update, db, _)
+
+
+class ElectricityPriceUpdate(BaseModel):
+    """Payload for ``POST /settings/electricity-price`` (upstream Bambuddy
+    #1356 / commit ae29a7dc).
+
+    Plain non-negative float; tariffs can go as low as 0.0 in some markets
+    (e.g. free hours). Field name matches the existing
+    ``energy_cost_per_kwh`` row in ``AppSettings`` so Home Assistant
+    ``rest_command`` examples docs reference the same name end-to-end.
+    """
+
+    energy_cost_per_kwh: float = Field(ge=0)
+
+
+@router.post("/electricity-price", response_model=AppSettings)
+async def update_electricity_price(
+    payload: ElectricityPriceUpdate,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = Depends(require_energy_cost_update()),
+):
+    """Update the per-kWh electricity cost used by the energy-tracking pipeline.
+
+    A narrowly-scoped settings-write endpoint for the Home-Assistant
+    dynamic-tariff use case. JWT users still need ``SETTINGS_UPDATE``;
+    API keys need the ``can_update_energy_cost`` opt-in flag on their
+    row (default False so existing keys never silently gain settings-
+    write capability on upgrade). The general ``PATCH /settings`` route
+    is intentionally left alone — we expose this endpoint as a cleaner
+    alternative URL rather than as a workaround for a block (BamDude's
+    API-key auth is more permissive than upstream's by design).
+
+    See ``wiki/features/energy.md`` and upstream Bambuddy #1356 for the
+    full rationale.
+    """
+    await set_setting(db, "energy_cost_per_kwh", str(payload.energy_cost_per_kwh))
+    await db.commit()
+    db.expire_all()
+    # Return the full settings response so the HA integration can confirm
+    # the new value applied. Build via the same path PATCH /settings uses.
+    return await get_settings(db, _)
 
 
 @router.post("/reset", response_model=AppSettings)

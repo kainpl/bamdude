@@ -968,6 +968,87 @@ def RequirePermission(*permissions: str | Permission):
     return Depends(require_permission(*permissions))
 
 
+def require_energy_cost_update():
+    """Dependency for ``POST /settings/electricity-price`` (upstream Bambuddy
+    #1356 / commit ae29a7dc).
+
+    Two accept paths:
+
+    - JWT user with ``SETTINGS_UPDATE`` permission — the standard admin path.
+    - API key with ``can_update_energy_cost = True`` — explicit opt-in
+      narrowly-scoped to this single endpoint. Unlike ``can_queue`` /
+      ``can_control_printer`` / ``can_read_status``, this gate is
+      route-specific because BamDude's general ``PATCH /settings`` route
+      already accepts API keys (different from upstream) — we expose this
+      endpoint as a *cleaner* alternative URL for Home-Assistant dynamic-
+      tariff integrations rather than as a workaround for a block.
+
+    The narrow path:
+
+    * API keys without ``can_update_energy_cost`` get 403 even though a
+      valid key was supplied — communicates the operator must opt in
+      explicitly on the key's row.
+    * Unauthenticated requests get the standard 401.
+    """
+
+    async def permission_checker(
+        credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)] = None,
+        x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
+    ) -> User | None:
+        async with async_session() as db:
+            credentials_exception = HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Could not validate credentials",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+            # API-key path — X-API-Key header OR ``Bearer bb_xxx``.
+            api_key_value: str | None = None
+            if x_api_key:
+                api_key_value = x_api_key
+            elif credentials is not None and credentials.credentials.startswith("bb_"):
+                api_key_value = credentials.credentials
+
+            if api_key_value is not None:
+                api_key = await _validate_api_key(db, api_key_value)
+                if api_key is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Invalid API key",
+                        headers={"WWW-Authenticate": "Bearer"},
+                    )
+                if not api_key.can_update_energy_cost:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="API key does not have 'update_energy_cost' permission",
+                    )
+                return None
+
+            # JWT path — standard SETTINGS_UPDATE check.
+            if credentials is None:
+                raise credentials_exception
+
+            try:
+                payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM])
+                username: str = payload.get("sub")
+                if username is None:
+                    raise credentials_exception
+            except JWTError:
+                raise credentials_exception
+
+            user = await get_user_by_username(db, username)
+            if user is None or not user.is_active:
+                raise credentials_exception
+            if not user.has_all_permissions(Permission.SETTINGS_UPDATE.value):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Missing required permissions: {Permission.SETTINGS_UPDATE.value}",
+                )
+            return user
+
+    return permission_checker
+
+
 def require_any_permission(*permissions: str | Permission):
     """Dependency factory: pass when the user has ANY of the listed permissions.
 

@@ -78,6 +78,7 @@ async def create_api_key(
         can_control_printer=data.can_control_printer,
         can_read_status=data.can_read_status,
         can_access_cloud=data.can_access_cloud,
+        can_update_energy_cost=data.can_update_energy_cost,
         printer_ids=data.printer_ids,
         expires_at=data.expires_at,
     )
@@ -101,6 +102,7 @@ async def create_api_key(
         can_control_printer=api_key.can_control_printer,
         can_read_status=api_key.can_read_status,
         can_access_cloud=api_key.can_access_cloud,
+        can_update_energy_cost=api_key.can_update_energy_cost,
         printer_ids=api_key.printer_ids,
         enabled=api_key.enabled,
         last_used=api_key.last_used,
@@ -153,6 +155,8 @@ async def update_api_key(
         # here so a legacy ownerless key can't be promoted post-hoc.
         _reject_cloud_without_owner(data.can_access_cloud, api_key.user_id)
         api_key.can_access_cloud = data.can_access_cloud
+    if data.can_update_energy_cost is not None:
+        api_key.can_update_energy_cost = data.can_update_energy_cost
     if data.printer_ids is not None:
         api_key.printer_ids = data.printer_ids
     if data.enabled is not None:

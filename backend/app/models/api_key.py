@@ -35,6 +35,14 @@ class APIKey(Base):
     # cloud token; flipping to True at create / update time is rejected for
     # ownerless keys (would have nothing to spend).
     can_access_cloud: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Narrowly-scoped opt-in for ``POST /settings/electricity-price`` so
+    # Home-Assistant dynamic-tariff integrations can update
+    # ``energy_cost_per_kwh`` via API key. Does NOT grant general
+    # ``SETTINGS_UPDATE`` — full PATCH /settings remains denied for API
+    # keys because it can rewrite SMTP / LDAP / MQTT credentials.
+    # Default False so existing keys never silently gain settings-write
+    # capability on upgrade. Upstream Bambuddy #1356 / commit ae29a7dc.
+    can_update_energy_cost: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Optional scope limits
     printer_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)  # null = all printers
