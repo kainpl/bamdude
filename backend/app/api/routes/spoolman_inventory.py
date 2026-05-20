@@ -440,18 +440,25 @@ async def create_spool(
 
     spool, price_warnings = await _apply_price_if_set(client, spool, data.cost_per_kg)
 
-    # Persist slicer_filament under the spool's extra dict (mirror update_spool).
-    if data.slicer_filament is not None or data.slicer_filament_name is not None:
+    # Persist slicer_filament AND color_name under the spool's extra dict
+    # (mirror update_spool). Spoolman has no ``color_name`` field on
+    # Filament (#1357 — confirmed against FilamentUpdateParameters), so we
+    # own the round-trip ourselves via ``spool.extra.bambu_color_name``.
+    if data.slicer_filament is not None or data.slicer_filament_name is not None or data.color_name is not None:
         # Ensure extra fields are registered before write.
         if data.slicer_filament is not None:
             await client.ensure_extra_field("bambu_slicer_filament")
         if data.slicer_filament_name is not None:
             await client.ensure_extra_field("bambu_slicer_filament_name")
+        if data.color_name is not None:
+            await client.ensure_extra_field("bambu_color_name")
         new_extra: dict = {}
         if data.slicer_filament is not None:
             new_extra["bambu_slicer_filament"] = json.dumps(data.slicer_filament)
         if data.slicer_filament_name is not None:
             new_extra["bambu_slicer_filament_name"] = json.dumps(data.slicer_filament_name)
+        if data.color_name is not None:
+            new_extra["bambu_color_name"] = json.dumps(data.color_name)
         if new_extra:
             try:
                 async with _translate_spoolman_errors():
@@ -459,7 +466,7 @@ async def create_spool(
             except HTTPException:
                 # Best-effort — the spool already exists, log and continue.
                 logger.warning(
-                    "Failed to persist slicer_filament for spool %s",
+                    "Failed to persist slicer_filament/color_name for spool %s",
                     spool.get("id"),
                 )
 
@@ -574,15 +581,68 @@ async def update_spool(
     storage_location = data.storage_location if storage_location_changed else None
 
     color_hex = rgba[:6]
-    async with _translate_spoolman_errors():
-        filament_id = await client.find_or_create_filament(
-            material=material,
-            subtype=subtype or "",
-            brand=brand,
-            color_hex=color_hex,
-            label_weight=label_weight,
-            color_name=color_name,
-        )
+
+    # Resolve which filament this spool should be linked to AFTER the edit.
+    #
+    # The old behaviour was always ``find_or_create_filament``, which
+    # proliferated duplicate Spoolman filaments whenever the user changed
+    # any field that made up the match key (material / subtype / brand /
+    # color) — every edit minted a fresh row and orphaned the previous one
+    # (upstream Bambuddy #1357 follow-up / commit 3b552094). To match
+    # internal-mode behaviour (editing a spool does not proliferate new
+    # entities), prefer PATCHing the current filament in place when it's
+    # a singleton (only this spool links to it, archived spools included).
+    cur_filament_id = cur_filament.get("id")
+    desired_name = f"{material} {subtype}".strip() if subtype else material
+    cur_color_norm = (cur_filament.get("color_hex") or "").upper()[:6]
+    cur_vendor_name = (cur_vendor.get("name") or "").strip()
+    cur_weight_int = int(cur_filament.get("weight") or 0)
+    metadata_unchanged = (
+        cur_filament_id
+        and (cur_filament.get("name") or "").strip() == desired_name
+        and (cur_filament.get("material") or "").upper() == material.upper()
+        and cur_color_norm == color_hex.upper()
+        and cur_vendor_name.lower() == ((brand or "").strip().lower())
+        and cur_weight_int == int(label_weight)
+    )
+
+    if metadata_unchanged:
+        # No filament-side change at all — re-use the existing link, skip
+        # find_or_create entirely so a no-op edit (e.g. just changing
+        # weight_used or note) never even touches the filament catalogue.
+        filament_id = cur_filament_id
+    else:
+        async with _translate_spoolman_errors():
+            shared = await client.is_filament_shared(cur_filament_id, spool_id) if cur_filament_id else False
+        if cur_filament_id and not shared:
+            # Singleton filament — PATCH it in place so the user's edit
+            # lands on the row their spool already points at instead of
+            # orphaning it.
+            patch_body: dict = {
+                "name": desired_name,
+                "material": material,
+                "color_hex": color_hex,
+                "weight": float(label_weight),
+            }
+            if brand:
+                vendor_id = await client.find_or_create_vendor(brand)
+                patch_body["vendor_id"] = vendor_id
+            async with _translate_spoolman_errors():
+                await client.patch_filament(cur_filament_id, patch_body)
+            filament_id = cur_filament_id
+        else:
+            # Filament is shared with other spools — PATCHing it in place
+            # would silently rewrite their metadata too. Fall back to
+            # find-or-create so only this spool's link moves.
+            async with _translate_spoolman_errors():
+                filament_id = await client.find_or_create_filament(
+                    material=material,
+                    subtype=subtype or "",
+                    brand=brand,
+                    color_hex=color_hex,
+                    label_weight=label_weight,
+                    color_name=color_name,
+                )
     if not filament_id:
         raise HTTPException(status_code=500, detail="Failed to find or create filament in Spoolman")
 
@@ -627,25 +687,34 @@ async def update_spool(
                 clear_location=storage_location_changed and not storage_location,
             )
 
-    # Persist BambuStudio slicer preset under the spool's extra dict.
-    # Spoolman doesn't have a native field for this, so we round-trip via
-    # extra and unpack in _map_spoolman_spool. Only writes when the request
-    # explicitly set the field — passing null/omitting leaves the existing
-    # extra entry untouched (write empty string to clear).
+    # Persist BambuStudio slicer preset AND color_name under spool.extra.
+    # Spoolman has no native fields for these — color_name was confirmed
+    # absent from the FilamentUpdateParameters schema in 0.23.1 (#1357),
+    # so writing ``filament.color_name`` was a silent no-op that left
+    # every edit looking "not saved". They all round-trip via extra and
+    # get unpacked in ``_map_spoolman_spool``. Only writes when the
+    # request explicitly set the field — passing null / omitting leaves
+    # the existing extra entry untouched (write empty string to clear).
     sf_set = "slicer_filament" in data.model_fields_set
     sfn_set = "slicer_filament_name" in data.model_fields_set
-    if sf_set or sfn_set:
-        # Ensure extra fields are registered (Spoolman rejects PATCHes with
-        # unknown keys with HTTP 400). Idempotent if startup already ran this.
+    cn_set = "color_name" in data.model_fields_set
+    if sf_set or sfn_set or cn_set:
+        # Ensure extra fields are registered (Spoolman rejects PATCHes
+        # with unknown keys with HTTP 400). Idempotent if startup already
+        # ran this.
         if sf_set:
             await client.ensure_extra_field("bambu_slicer_filament")
         if sfn_set:
             await client.ensure_extra_field("bambu_slicer_filament_name")
+        if cn_set:
+            await client.ensure_extra_field("bambu_color_name")
         new_extra: dict = {}
         if sf_set:
             new_extra["bambu_slicer_filament"] = json.dumps(data.slicer_filament or "")
         if sfn_set:
             new_extra["bambu_slicer_filament_name"] = json.dumps(data.slicer_filament_name or "")
+        if cn_set:
+            new_extra["bambu_color_name"] = json.dumps(data.color_name or "")
         async with _translate_spoolman_errors():
             updated = await client.merge_spool_extra(spool_id, new_extra)
 

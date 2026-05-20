@@ -310,7 +310,11 @@ export function SpoolFormModal({
           material: spool.material || '',
           subtype: spool.subtype || '',
           brand: spool.brand || '',
-          color_name: spool.color_name || '',
+          // ``color_name_is_synthesized`` is True when the backend fell back
+          // to ``subtype`` because nothing real was stored. Leaving the input
+          // blank in that case prevents round-tripping the synth value back
+          // as if the user had set it. Upstream Bambuddy #1319 / #1357.
+          color_name: spool.color_name_is_synthesized ? '' : (spool.color_name || ''),
           rgba: spool.rgba || '808080FF',
           label_weight: spool.label_weight || 1000,
           core_weight: spool.core_weight || 250,

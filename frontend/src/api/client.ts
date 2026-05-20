@@ -2868,6 +2868,12 @@ export interface InventorySpool {
   material: string;
   subtype: string | null;
   color_name: string | null;
+  /** True iff color_name was synthesised from subtype (no real value stored
+   *  in spool.extra.bambu_color_name or filament.color_name). Surfaced so
+   *  the edit form leaves the input blank instead of round-tripping the
+   *  synth value back as if it were a real edit. Upstream Bambuddy #1319/
+   *  #1357. Optional for back-compat with older Spoolman-mode responses. */
+  color_name_is_synthesized?: boolean;
   rgba: string | null;
   brand: string | null;
   label_weight: number;

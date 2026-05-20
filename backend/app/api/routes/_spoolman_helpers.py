@@ -26,6 +26,12 @@ class MappedSpoolFields(TypedDict):
     subtype: str | None
     brand: str | None
     color_name: str | None
+    # True iff ``color_name`` was synthesised from ``subtype`` (no real
+    # value stored in ``spool.extra.bambu_color_name`` or
+    # ``filament.color_name``). Surfaced so the edit form can avoid
+    # round-tripping the synth value back as if it were a real user
+    # edit — upstream Bambuddy #1319 / #1357.
+    color_name_is_synthesized: bool
     rgba: str | None
     label_weight: int | None
     core_weight: int | None
@@ -224,11 +230,32 @@ def _map_spoolman_spool(spool: dict) -> MappedSpoolFields:
 
     created_at: str | None = spool.get("registered") or None
 
-    # ef7fd4fa item 4: Spoolman doesn't standardise color_name — most installs
-    # only populate color_hex + filament.name. Fall back to subtype (filament
-    # name minus material prefix) so spools are visually distinguishable in the
-    # UI even on Spoolman installs that don't fill color_name.
-    color_name: str | None = filament.get("color_name") or subtype or None
+    # Spoolman has no ``color_name`` field on Filament — confirmed against
+    # the FilamentUpdateParameters schema in 0.23.1 (name/vendor_id/material/
+    # price/density/diameter/weight/spool_weight/article_number/comment/
+    # extruder_temp/bed_temp/color_hex/multi_color_hexes/multi_color_direction/
+    # external_id/extra; no color_name). An earlier attempt to PATCH it was
+    # silently dropped by Spoolman, which is exactly why user edits looked
+    # "not saved" (upstream Bambuddy #1357 / commit 4a98914d).
+    #
+    # We persist color_name ourselves under ``spool.extra.bambu_color_name``
+    # (JSON-encoded string, same pattern as ``bambu_slicer_filament``).
+    # Read order:
+    #   1. ``spool.extra.bambu_color_name`` — canonical store.
+    #   2. ``filament.color_name`` — forward-compat for any future Spoolman
+    #      release that adds the field, or for admins who registered the
+    #      field themselves via a custom extra.
+    #   3. ``subtype`` — synth fallback so the inventory list isn't a sea
+    #      of "Unknown color" entries on installs with neither set.
+    #
+    # ``color_name_is_synthesized`` is True only when we fell back to
+    # subtype — the edit form uses it to leave the input blank so the
+    # user doesn't round-trip the synth value back as a real edit
+    # (upstream #1319).
+    extra_color_name = _extract_extra_str(extra, "bambu_color_name") or None
+    stored_color_name = extra_color_name or (filament.get("color_name") or None)
+    color_name: str | None = stored_color_name or subtype or None
+    color_name_is_synthesized: bool = stored_color_name is None and color_name is not None
 
     nozzle_temp_raw = filament.get("settings_extruder_temp")
     nozzle_temp_min: int | None = _safe_int(nozzle_temp_raw, 0) or None
@@ -238,6 +265,7 @@ def _map_spoolman_spool(spool: dict) -> MappedSpoolFields:
         "material": material,
         "subtype": subtype,
         "color_name": color_name,
+        "color_name_is_synthesized": color_name_is_synthesized,
         "rgba": rgba,
         "brand": vendor.get("name") or None,
         "label_weight": label_weight,
