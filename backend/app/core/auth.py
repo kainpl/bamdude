@@ -31,6 +31,26 @@ logger = logging.getLogger(__name__)
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
 
+_JWT_SECRET_MIN_LEN = 32
+"""Minimum length (characters) for an HS256 signing secret.
+
+HS256 is HMAC-SHA256 — RFC 7518 §3.2 mandates a key at least as long as
+the hash output (256 bits = 32 bytes). Below that the JWT signature
+collapses to brute-force territory, which is what PYSEC-2025-183 /
+CVE-2025-45768 flags pyjwt for (the CVE is disputed and the supplier
+correctly places the responsibility on the application — that's here).
+
+Applied to both code paths:
+
+- ``JWT_SECRET_KEY`` env var: rejected at startup if shorter (hard fail
+  with an actionable error so a self-hosted operator can fix it and
+  restart).
+- ``.jwt_secret`` file: rejected on read (already enforced); the
+  generator uses ``secrets.token_urlsafe(64)`` which produces ~86 chars
+  of base64url, well above the floor.
+"""
+
+
 def _get_jwt_secret() -> str:
     """Get the JWT secret key from environment, file, or generate a new one.
 
@@ -45,6 +65,12 @@ def _get_jwt_secret() -> str:
     # 1. Check environment variable first
     env_secret = os.environ.get("JWT_SECRET_KEY")
     if env_secret:
+        if len(env_secret) < _JWT_SECRET_MIN_LEN:
+            raise RuntimeError(
+                f"JWT_SECRET_KEY is too short ({len(env_secret)} chars; minimum {_JWT_SECRET_MIN_LEN}). "
+                "HS256 requires a 256-bit key (RFC 7518 §3.2 / CVE-2025-45768). "
+                'Generate one with: python -c "import secrets; print(secrets.token_urlsafe(64))"'
+            )
         logger.info("Using JWT secret from JWT_SECRET_KEY environment variable")
         return env_secret
 
@@ -59,7 +85,7 @@ def _get_jwt_secret() -> str:
     if secret_file.exists():
         try:
             secret = secret_file.read_text().strip()
-            if secret and len(secret) >= 32:
+            if secret and len(secret) >= _JWT_SECRET_MIN_LEN:
                 logger.info("Using JWT secret from %s", secret_file)
                 return secret
         except OSError as e:
