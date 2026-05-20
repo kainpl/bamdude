@@ -3683,18 +3683,21 @@ class BambuMQTTClient:
                         # with a single slot (slot 0). BambuStudio convention:
                         #   255 = VIRTUAL_TRAY_MAIN_ID (main/left nozzle)
                         #   254 = VIRTUAL_TRAY_DEPUTY_ID (deputy/right nozzle)
-                        # Single-nozzle printers (P1S, A1, X1C) always need ams_id=255.
-                        # Only H2D series uses the actual tray_id (254 for deputy nozzle).
+                        # Single-nozzle printers (P1S, A1, X1C, **H2S**) always need ams_id=255.
+                        # Only dual-nozzle printers use the actual tray_id (254 for deputy).
                         # Flat mapping must use -1 (firmware doesn't accept raw 254/255).
-                        _is_h2d = self.model and self.model.upper().strip() in (
-                            "H2D",
-                            "H2D PRO",
-                            "H2DPRO",
-                            "H2C",
-                            "H2S",
-                            "X2D",
+                        # Source-of-truth is the runtime ``_is_dual_nozzle`` flag set from
+                        # device.extruder.info (>=2 entries); model name is the fallback
+                        # for the brief window after connect before push data arrives.
+                        # Upstream Bambuddy #1386 / commit 96fd4bb7 — H2S shares the H
+                        # family's calibration-int format but is single-nozzle, so the
+                        # previous classifier that put H2S into the dual-nozzle bucket
+                        # silently routed external-spool prints to ams_id=254 and the
+                        # firmware rejected the dispatch with ``07FF_8012``.
+                        _is_dual_nozzle = self._is_dual_nozzle or (
+                            self.model and self.model.upper().strip() in ("H2D", "H2D PRO", "H2DPRO", "H2C", "X2D")
                         )
-                        ext_ams_id = tray_id if _is_h2d else 255
+                        ext_ams_id = tray_id if _is_dual_nozzle else 255
                         flat_ams_mapping.append(-1)
                         ams_mapping2.append({"ams_id": ext_ams_id, "slot_id": 0})
                     elif tray_id >= 128:
@@ -3708,16 +3711,32 @@ class BambuMQTTClient:
                         flat_ams_mapping.append(tray_id)
                         ams_mapping2.append({"ams_id": ams_id, "slot_id": slot_id})
 
-            # H2D series requires integer values (0/1) for calibration/leveling fields
-            # but use_ams MUST remain boolean - H2D Pro firmware interprets integer
-            # values as nozzle index (1 = deputy nozzle), causing wrong extruder routing
-            # Other printers (X1C, P1S, A1, etc.) require actual booleans for all fields
-            is_h2d = self.model and self.model.upper().strip() in ("H2D", "H2D PRO", "H2DPRO", "H2C", "H2S", "X2D")
+            # H-family printers (incl. H2S) require integer values (0/1) for
+            # calibration/leveling fields. Other printers (X1C, P1S, A1, etc.)
+            # require actual booleans. This gate is firmware-format only —
+            # H2S firmware structurally accepts the integer format even though
+            # it's single-nozzle, so it belongs here.
+            is_h_family = self.model and self.model.upper().strip() in (
+                "H2D",
+                "H2D PRO",
+                "H2DPRO",
+                "H2C",
+                "H2S",
+                "X2D",
+            )
+            # Dual-nozzle gating for AMS-routing / use_ams branches. EXCLUDES
+            # H2S (single-nozzle). Source-of-truth is the runtime
+            # ``_is_dual_nozzle`` flag set from device.extruder.info (>=2
+            # entries); model name is the fallback for the brief window after
+            # connect before push data arrives. Upstream Bambuddy #1386.
+            is_dual_nozzle = self._is_dual_nozzle or (
+                self.model and self.model.upper().strip() in ("H2D", "H2D PRO", "H2DPRO", "H2C", "X2D")
+            )
 
             # If all mapped slots are external spool (no real AMS trays), force use_ams=False.
             # P1S/P1P with no AMS rejects use_ams=True with "Failed to get AMS mapping table".
-            # Skip for H2D series — use_ams controls nozzle routing on those printers.
-            if ams_mapping and use_ams and not is_h2d:
+            # Skip for dual-nozzle — use_ams controls nozzle routing on those printers.
+            if ams_mapping and use_ams and not is_dual_nozzle:
                 if all(t is None or int(t) < 0 or int(t) >= 254 for t in ams_mapping):
                     use_ams = False
                     logger.info(
@@ -3729,8 +3748,8 @@ class BambuMQTTClient:
             # On printers without a physical AMS, firmware rejects -1 (unmapped)
             # and 254 (virtual tray) in ams_mapping with 0700_8012 "Failed to get
             # AMS mapping table". Fix: remap -1→0 and omit ams_mapping2 entirely.
-            # H2D excluded — use_ams controls nozzle routing on those.
-            no_ams_printer = not use_ams and not is_h2d and not self.state.raw_data.get("ams")
+            # Dual-nozzle excluded — use_ams controls nozzle routing on those.
+            no_ams_printer = not use_ams and not is_dual_nozzle and not self.state.raw_data.get("ams")
             if no_ams_printer and flat_ams_mapping:
                 flat_ams_mapping = [0 if v == -1 else v for v in flat_ams_mapping]
                 logger.info(
@@ -3762,16 +3781,16 @@ class BambuMQTTClient:
                     "file": filename,
                     "md5": "",
                     "bed_type": "auto",
-                    "timelapse": (1 if timelapse else 0) if is_h2d else timelapse,
-                    "bed_leveling": (1 if bed_levelling else 0) if is_h2d else bed_levelling,
+                    "timelapse": (1 if timelapse else 0) if is_h_family else timelapse,
+                    "bed_leveling": (1 if bed_levelling else 0) if is_h_family else bed_levelling,
                     "auto_bed_leveling": 1 if bed_levelling else 0,
-                    "flow_cali": (1 if flow_cali else 0) if is_h2d else flow_cali,
+                    "flow_cali": (1 if flow_cali else 0) if is_h_family else flow_cali,
                     # Hardcoded off — upstream Bambu Studio does the same for
                     # every model. Kept in the payload only because older
                     # firmware versions reject the command if the key is
                     # missing.
-                    "vibration_cali": 0 if is_h2d else False,
-                    "layer_inspect": (1 if layer_inspect else 0) if is_h2d else layer_inspect,
+                    "vibration_cali": 0 if is_h_family else False,
+                    "layer_inspect": (1 if layer_inspect else 0) if is_h_family else layer_inspect,
                     "use_ams": use_ams,
                     "cfg": "0",
                     "extrude_cali_flag": 0,
@@ -3785,9 +3804,9 @@ class BambuMQTTClient:
                 }
             }
 
-            if is_h2d:
+            if is_h_family:
                 logger.debug(
-                    "[%s] H2D series detected: using integer format for calibration fields (use_ams stays boolean)",
+                    "[%s] H-family detected: using integer format for calibration fields (use_ams stays boolean)",
                     self.serial_number,
                 )
 

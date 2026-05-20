@@ -3554,6 +3554,67 @@ class TestStartPrintAmsMapping:
             {"ams_id": 255, "slot_id": 0},
         ]
 
+    # --- B.4 / upstream Bambuddy #1386: H2S is single-nozzle, must NOT route as dual.
+
+    def test_h2s_single_external_spool_uses_main_id(self, mqtt_client):
+        """H2S external spool: tray_id=254 must remap to ams_id=255.
+
+        H2S shares the H-family's calibration int format but is single-nozzle.
+        Routing 254 through to ams_mapping2 made the firmware reject the
+        dispatch with 07FF_8012 'Failed to get AMS mapping table'.
+        """
+        mqtt_client.model = "H2S"
+        # No physical AMS — same as the reporter's setup.
+        mqtt_client.state.raw_data.pop("ams", None)
+        mqtt_client.start_print("test.3mf", ams_mapping=[254])
+
+        cmd = self._get_published_command(mqtt_client)
+        # External spool on single-nozzle H2S routes to canonical 255.
+        # No-AMS remap also kicks in because is_dual_nozzle=False on H2S.
+        assert cmd["use_ams"] is False
+        # When no_ams_printer fires, ams_mapping2 is omitted entirely.
+        assert "ams_mapping2" not in cmd
+
+    def test_h2s_keeps_integer_format_for_calibration_fields(self, mqtt_client):
+        """H2S still belongs to the H-family for firmware-format purposes.
+
+        The calibration / leveling fields must be ints (0/1) — not booleans
+        — even though H2S is single-nozzle. This is the firmware-format
+        gate that B.4 explicitly KEEPS for H2S.
+        """
+        mqtt_client.model = "H2S"
+        mqtt_client.start_print(
+            "test.3mf",
+            ams_mapping=[0],
+            timelapse=True,
+            bed_levelling=True,
+            flow_cali=True,
+            layer_inspect=True,
+        )
+
+        cmd = self._get_published_command(mqtt_client)
+        assert cmd["timelapse"] == 1
+        assert cmd["bed_leveling"] == 1
+        assert cmd["flow_cali"] == 1
+        assert cmd["layer_inspect"] == 1
+        assert cmd["vibration_cali"] == 0  # int, not False
+        # use_ams stays boolean across the whole H-family — that's the
+        # original H2D / X2D requirement and H2S inherits it.
+        assert cmd["use_ams"] is True
+
+    def test_h2s_runtime_flag_overrides_model_fallback(self, mqtt_client):
+        """When device.extruder.info ever sets _is_dual_nozzle=True the
+        runtime flag wins over the model-name fallback. Defensive — if a
+        future Bambu single-nozzle printer started reporting two extruders
+        we'd want to follow the runtime signal."""
+        mqtt_client.model = "H2S"
+        mqtt_client._is_dual_nozzle = True  # runtime override
+        mqtt_client.start_print("test.3mf", ams_mapping=[254])
+
+        cmd = self._get_published_command(mqtt_client)
+        # Runtime flag wins — deputy ID preserved.
+        assert cmd["ams_mapping2"] == [{"ams_id": 254, "slot_id": 0}]
+
     def test_h2d_single_external_deputy(self, mqtt_client):
         """H2D: single external spool on deputy nozzle (254) keeps ams_id=254."""
         mqtt_client.model = "H2D Pro"
