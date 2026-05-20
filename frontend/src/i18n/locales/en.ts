@@ -4169,6 +4169,9 @@ export default {
       startLength: 'Start length (mm)',
       endLength: 'End length (mm)',
       stepLength: 'Step (mm)',
+      flowRatePass: 'Pass',
+      flowRatePass1: 'Pass 1 (coarse)',
+      flowRatePass2: 'Pass 2 (fine)',
       layerHeight: 'Layer height (mm)',
       nozzleDia: 'Nozzle diameter (mm)',
       paPatternFixedRangeNote:

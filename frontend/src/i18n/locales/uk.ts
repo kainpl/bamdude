@@ -4171,6 +4171,9 @@ export default {
       startLength: 'Початкова довжина (мм)',
       endLength: 'Кінцева довжина (мм)',
       stepLength: 'Крок (мм)',
+      flowRatePass: 'Прохід',
+      flowRatePass1: 'Прохід 1 (грубий)',
+      flowRatePass2: 'Прохід 2 (точний)',
       layerHeight: 'Висота шару (мм)',
       nozzleDia: 'Діаметр сопла (мм)',
       paPatternFixedRangeNote:

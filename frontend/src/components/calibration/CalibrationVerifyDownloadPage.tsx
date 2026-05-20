@@ -201,6 +201,11 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
   const [retractEnd, setRetractEnd] = useState<number>(2);
   const [retractStep, setRetractStep] = useState<number>(0.1);
 
+  // Flow Rate: two-pass test. Pass 1 = 9-block coarse (-20..+20% step 5),
+  // pass 2 = 10-block fine (-9..0% step 1). The operator picks which to
+  // verify and the page slices that one.
+  const [flowPassN, setFlowPassN] = useState<1 | 2>(1);
+
   const [isDownloading, setIsDownloading] = useState(false);
   const [isBaking, setIsBaking] = useState(false);
 
@@ -211,6 +216,7 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
   const isVfa = caliMode === 'vfa_tower';
   const isTemp = caliMode === 'temp_tower';
   const isRetraction = caliMode === 'retraction_tower';
+  const isFlowRate = caliMode === 'flow_rate';
 
   // Temp Tower: seed the start/end defaults from the selected filament's
   // type (BS picks them off its filament-type radio; we have a preset
@@ -282,11 +288,18 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
     if (isRetraction) {
       return { start: retractStart, end: retractEnd, step: retractStep, nozzle_diameter: nozzleDiameter };
     }
+    if (isFlowRate) {
+      // Per-block flow_ratio modifiers are baked into the BS-shipped 3MFs
+      // (flowrate_<mod> object names); the builder only needs nozzle_diameter
+      // for the geometry scale + nozzle/2 layer height.
+      return { nozzle_diameter: nozzleDiameter };
+    }
     return undefined;
   };
 
   const onBakeOnly = async () => {
     const body: CalibBakeOnlyIn = { cali_mode: caliMode, spec: buildSpec(), bed_type: bedType };
+    if (isFlowRate) body.pass_n = flowPassN;
     setIsBaking(true);
     try {
       const { blob, filename } = await api.bakeCalibrationForVerification(printerId, body);
@@ -331,9 +344,14 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
 
   // Temp Tower is the odd one out: temperature descends (start > end) and
   // there is no step. Mirror the BS Temp_Calibration_Dlg validation.
+  // Flow Rate has no operator-input spec — the per-block modifiers are
+  // baked into the BS-shipped 3MFs; nozzle_diameter comes from the
+  // preset triplet and is always valid here.
   const specValid = isTemp
     ? tempStart <= 350 && tempEnd >= 180 && tempStart >= tempEnd + 5
-    : effectiveEnd > effectiveStart && effectiveStep > 0;
+    : isFlowRate
+      ? true
+      : effectiveEnd > effectiveStart && effectiveStep > 0;
 
   const canSubmit =
     !isDownloading &&
@@ -369,6 +387,7 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
     }
     if (pickedSlicer) body.slicer = pickedSlicer;
     body.bed_type = bedType;
+    if (isFlowRate) body.pass_n = flowPassN;
 
     setIsDownloading(true);
     try {
@@ -698,6 +717,37 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
                 className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
               />
             </label>
+          </div>
+        </section>
+      )}
+
+      {isFlowRate && (
+        <section className="space-y-2 border border-bambu-dark-tertiary rounded p-3">
+          <h4 className="text-sm font-medium text-bambu-gray">
+            {t('filamentCali.verifyDownload.specHeading')}
+          </h4>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.flowRatePass')}</span>
+            <div className="inline-flex rounded border border-bambu-dark-tertiary overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setFlowPassN(1)}
+                className={`px-3 py-1.5 text-sm ${
+                  flowPassN === 1 ? 'bg-bambu-dark-tertiary text-white' : 'bg-bambu-dark text-bambu-gray'
+                }`}
+              >
+                {t('filamentCali.verifyDownload.flowRatePass1')}
+              </button>
+              <button
+                type="button"
+                onClick={() => setFlowPassN(2)}
+                className={`px-3 py-1.5 text-sm ${
+                  flowPassN === 2 ? 'bg-bambu-dark-tertiary text-white' : 'bg-bambu-dark text-bambu-gray'
+                }`}
+              >
+                {t('filamentCali.verifyDownload.flowRatePass2')}
+              </button>
+            </div>
           </div>
         </section>
       )}
