@@ -1416,6 +1416,19 @@ export interface ColorCatalogEntry {
   hex_color: string;
   material: string | null;
   is_default: boolean;
+  /**
+   * Optional comma-separated 6/8-char hex tokens (no leading `#`), up to
+   * 8 stops. Empty / null = solid swatch (just hex_color). When set, the
+   * Spool Form's catalog picker applies these gradient stops onto the
+   * spool when this entry is clicked (#1340).
+   */
+  extra_colors?: string | null;
+  /**
+   * Optional visual effect tag (matte / silk / sparkle / wood / marble /
+   * glow / dual-color / tri-color / multicolor / gradient). Empty / null
+   * = no effect. Same `FILAMENT_EFFECT_OPTIONS` set the spool form uses.
+   */
+  effect_type?: string | null;
 }
 
 export interface ColorLookupResult {
@@ -5941,9 +5954,9 @@ export const api = {
     request<ColorCatalogEntry[]>('/inventory/colors'),
   getColorNameMap: () =>
     request<{ colors: Record<string, string> }>('/inventory/colors/map'),
-  addColorEntry: (data: { manufacturer: string; color_name: string; hex_color: string; material: string | null }) =>
+  addColorEntry: (data: { manufacturer: string; color_name: string; hex_color: string; material: string | null; extra_colors?: string | null; effect_type?: string | null }) =>
     request<ColorCatalogEntry>('/inventory/colors', { method: 'POST', body: JSON.stringify(data) }),
-  updateColorEntry: (id: number, data: { manufacturer: string; color_name: string; hex_color: string; material: string | null }) =>
+  updateColorEntry: (id: number, data: { manufacturer: string; color_name: string; hex_color: string; material: string | null; extra_colors?: string | null; effect_type?: string | null }) =>
     request<ColorCatalogEntry>(`/inventory/colors/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteColorEntry: (id: number) =>
     request<{ status: string }>(`/inventory/colors/${id}`, { method: 'DELETE' }),

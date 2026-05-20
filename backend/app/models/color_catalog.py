@@ -17,4 +17,11 @@ class ColorCatalogEntry(Base):
     hex_color: Mapped[str] = mapped_column(String(7))  # #RRGGBB
     material: Mapped[str | None] = mapped_column(String(100))
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Optional multi-colour stops + visual effect — mirrors the
+    # ``spool.extra_colors`` / ``spool.effect_type`` columns from m026 so
+    # a catalog entry can carry the full preset look (gradient + effect)
+    # and clicking it in the Spool Form's catalog picker applies all of
+    # it via ``selectColor`` (upstream Bambuddy #1340 / m076).
+    extra_colors: Mapped[str | None] = mapped_column(String(255))
+    effect_type: Mapped[str | None] = mapped_column(String(20))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

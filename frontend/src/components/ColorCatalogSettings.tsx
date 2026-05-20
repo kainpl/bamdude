@@ -6,6 +6,7 @@ import type { ColorCatalogEntry } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
 import { Card, CardHeader, CardContent } from './Card';
 import { ConfirmModal } from './ConfirmModal';
+import { FILAMENT_EFFECT_OPTIONS } from './filamentSwatchHelpers';
 
 export function ColorCatalogSettings() {
   const { t } = useTranslation();
@@ -23,6 +24,11 @@ export function ColorCatalogSettings() {
   const [formColorName, setFormColorName] = useState('');
   const [formHexColor, setFormHexColor] = useState('#FFFFFF');
   const [formMaterial, setFormMaterial] = useState('');
+  // #1340 / m076: optional gradient stops + visual effect on a catalog
+  // preset. When set, the Spool Form's catalog-swatch click applies the
+  // full preset look (not just hex + name) via ``selectColor``.
+  const [formExtraColors, setFormExtraColors] = useState('');
+  const [formEffectType, setFormEffectType] = useState('');
   const [saving, setSaving] = useState(false);
 
   // Selection state
@@ -68,6 +74,8 @@ export function ColorCatalogSettings() {
     setFormColorName('');
     setFormHexColor('#FFFFFF');
     setFormMaterial('');
+    setFormExtraColors('');
+    setFormEffectType('');
   };
 
   const handleAdd = async () => {
@@ -82,6 +90,8 @@ export function ColorCatalogSettings() {
         color_name: formColorName.trim(),
         hex_color: formHexColor,
         material: formMaterial.trim() || null,
+        extra_colors: formExtraColors.trim() || null,
+        effect_type: formEffectType.trim() || null,
       });
       setCatalog(prev => [...prev, entry].sort((a, b) =>
         a.manufacturer.localeCompare(b.manufacturer) ||
@@ -104,6 +114,8 @@ export function ColorCatalogSettings() {
     setFormColorName(entry.color_name);
     setFormHexColor(entry.hex_color);
     setFormMaterial(entry.material || '');
+    setFormExtraColors(entry.extra_colors || '');
+    setFormEffectType(entry.effect_type || '');
   };
 
   const cancelEdit = () => {
@@ -123,6 +135,8 @@ export function ColorCatalogSettings() {
         color_name: formColorName.trim(),
         hex_color: formHexColor,
         material: formMaterial.trim() || null,
+        extra_colors: formExtraColors.trim() || null,
+        effect_type: formEffectType.trim() || null,
       });
       setCatalog(prev =>
         prev.map(e => e.id === id ? updated : e).sort((a, b) =>
@@ -473,6 +487,28 @@ export function ColorCatalogSettings() {
                 </button>
               </div>
             </div>
+            {/* #1340 / m076: optional multi-colour stops + visual effect.
+                Same shape as the spool form's "Additional" section. */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2">
+              <input
+                type="text"
+                className="px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white text-sm font-mono placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
+                placeholder={t('inventory.spoolForm.extraColorsHelp')}
+                value={formExtraColors}
+                onChange={(e) => setFormExtraColors(e.target.value)}
+              />
+              <select
+                className="px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none"
+                value={formEffectType}
+                onChange={(e) => setFormEffectType(e.target.value)}
+              >
+                {FILAMENT_EFFECT_OPTIONS.map((opt) => (
+                  <option key={opt.value || 'none'} value={opt.value}>
+                    {t(opt.labelKey)}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
         )}
 
@@ -569,6 +605,30 @@ export function ColorCatalogSettings() {
                               value={formHexColor}
                               onChange={(e) => setFormHexColor(e.target.value)}
                             />
+                            {/* #1340 / m076: extra_colors + effect_type
+                                live in a compact two-line block under the
+                                hex cell so the existing column layout
+                                isn't widened. */}
+                            <div className="mt-1 flex gap-1">
+                              <input
+                                type="text"
+                                className="flex-1 min-w-0 px-2 py-1 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-xs font-mono focus:border-bambu-green focus:outline-none"
+                                placeholder={t('inventory.spoolForm.extraColors')}
+                                value={formExtraColors}
+                                onChange={(e) => setFormExtraColors(e.target.value)}
+                              />
+                              <select
+                                className="px-2 py-1 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-xs focus:border-bambu-green focus:outline-none"
+                                value={formEffectType}
+                                onChange={(e) => setFormEffectType(e.target.value)}
+                              >
+                                {FILAMENT_EFFECT_OPTIONS.map((opt) => (
+                                  <option key={opt.value || 'none'} value={opt.value}>
+                                    {t(opt.labelKey)}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
                           </td>
                           <td className="px-3 py-2">
                             <div className="flex justify-end gap-1">

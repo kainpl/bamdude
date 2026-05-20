@@ -4,7 +4,7 @@ import logging
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -511,6 +511,12 @@ class ColorEntryResponse(BaseModel):
     hex_color: str
     material: str | None
     is_default: bool
+    # Optional gradient stops + visual effect — same shape the spool form
+    # already carries on ``Spool``. Set on a catalog entry so picking it in
+    # the Spool Form's catalog picker applies the full preset look, not
+    # just hex + name (upstream Bambuddy #1340 / m076).
+    extra_colors: str | None = None
+    effect_type: str | None = None
 
     class Config:
         from_attributes = True
@@ -521,6 +527,8 @@ class ColorEntryCreate(BaseModel):
     color_name: str
     hex_color: str
     material: str | None = None
+    extra_colors: str | None = Field(default=None, max_length=255)
+    effect_type: str | None = Field(default=None, max_length=20)
 
 
 class ColorEntryUpdate(BaseModel):
@@ -528,6 +536,8 @@ class ColorEntryUpdate(BaseModel):
     color_name: str
     hex_color: str
     material: str | None = None
+    extra_colors: str | None = Field(default=None, max_length=255)
+    effect_type: str | None = Field(default=None, max_length=20)
 
 
 class ColorLookupResult(BaseModel):
@@ -700,6 +710,8 @@ async def add_color_entry(
         color_name=entry.color_name,
         hex_color=entry.hex_color,
         material=entry.material,
+        extra_colors=entry.extra_colors,
+        effect_type=entry.effect_type,
         is_default=False,
     )
     db.add(row)
@@ -724,6 +736,8 @@ async def update_color_entry(
     row.color_name = entry.color_name
     row.hex_color = entry.hex_color
     row.material = entry.material
+    row.extra_colors = entry.extra_colors
+    row.effect_type = entry.effect_type
     await db.commit()
     await db.refresh(row)
     return row
