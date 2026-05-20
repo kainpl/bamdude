@@ -470,9 +470,47 @@ class BambuFTPClient:
                     logger.info("FTP STOR confirmed for %s: %s", remote_path, resp.strip())
                 finally:
                     self._ftp.sock.settimeout(old_timeout)
+            except ftplib.Error as e:
+                # The printer's FTP server explicitly told us the transfer
+                # failed (e.g. 426 "Failure reading network stream" seen on
+                # some P2S firmware revisions). Two interpretations exist:
+                #   (a) The file is truncated on the SD card and we MUST NOT
+                #       send a print command for it (upstream #1417 — silent
+                #       0500_C010 / "unable to parse 3mf file" 30s into the
+                #       print attempt).
+                #   (b) The 426 is noise from the TLS data-channel close
+                #       racing the 226 confirmation; the file is fully on
+                #       the SD card (upstream #1417-followup — same hardware
+                #       worked on v0.2.4.1 after a clean SD-card check).
+                # Disambiguate with a server-side SIZE probe. Match → noise,
+                # mismatch / probe-fails → real truncation. Upstream Bambuddy
+                # #1417 / commit 1fac0276 + #1417-followup / commit 9c934c90.
+                server_size = self.get_file_size(remote_path)
+                if server_size is not None and server_size == file_size:
+                    logger.warning(
+                        "FTP STOR returned %s for %s but SIZE confirms %d bytes "
+                        "on disk — treating as transient %s (file intact)",
+                        e,
+                        remote_path,
+                        server_size,
+                        type(e).__name__,
+                    )
+                else:
+                    logger.error(
+                        "FTP STOR rejected by printer for %s: %s (%s); "
+                        "SIZE=%s, expected %d — file is truncated, not sending print command",
+                        remote_path,
+                        e,
+                        type(e).__name__,
+                        server_size,
+                        file_size,
+                    )
+                    return False
             except Exception as e:
-                # Timeout or error reading 226 - log but proceed, the data
-                # was fully sent so the file is likely on the SD card.
+                # Timeout or socket-level error reading 226 — the data was sent
+                # on our side and the printer may still have written the file.
+                # H2D can take 30+ seconds to send 226 after the data channel
+                # closes, so we proceed with a warning rather than failing here.
                 logger.warning(
                     "FTP STOR confirmation not received for %s (proceeding): %s (%s)",
                     remote_path,
@@ -555,8 +593,35 @@ class BambuFTPClient:
                     self._ftp.voidresp()
                 finally:
                     self._ftp.sock.settimeout(old_timeout)
+            except ftplib.Error as e:
+                # Server-explicit transfer rejection (e.g. 426) — disambiguate
+                # via SIZE check against the buffer length we sent. Match →
+                # noise (TLS data-channel close raced 226); mismatch / probe-
+                # fails → real truncation. Upstream Bambuddy #1417 / commit
+                # 1fac0276 + #1417-followup / 9c934c90.
+                server_size = self.get_file_size(remote_path)
+                expected = len(data)
+                if server_size is not None and server_size == expected:
+                    logger.warning(
+                        "FTP STOR returned %s for %s but SIZE confirms %d bytes "
+                        "on disk — treating as transient %s (file intact)",
+                        e,
+                        remote_path,
+                        server_size,
+                        type(e).__name__,
+                    )
+                else:
+                    logger.error(
+                        "FTP STOR rejected by printer for %s: %s (%s); SIZE=%s, expected %d — file is truncated",
+                        remote_path,
+                        e,
+                        type(e).__name__,
+                        server_size,
+                        expected,
+                    )
+                    return False
             except Exception:
-                pass  # Best-effort - data was sent, proceed
+                pass  # Timeout / socket-level — proceed, data was sent.
             return True
         except (OSError, ftplib.Error):
             return False

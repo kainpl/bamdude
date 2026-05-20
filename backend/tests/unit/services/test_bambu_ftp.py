@@ -456,6 +456,99 @@ class TestUpload:
 
 
 # ---------------------------------------------------------------------------
+# B.5 / upstream Bambuddy #1417 + #1417-followup — voidresp ftplib.Error
+#
+# Some printer firmware revisions (notably P2S) emit a 426 "Failure reading
+# network stream" on the FTP control channel after a successful data
+# transfer, because the TLS data-channel close races the 226 confirmation.
+# The old broad "except Exception: warn and proceed" swallowed this — so
+# Bambuddy sent the print command, the printer surfaced "unable to parse
+# 3MF" 30s later, and the user saw nothing in the logs to suggest the upload
+# had failed (#1417). Naively tightening to re-raise on ftplib.Error broke
+# the legitimate case where the file is actually on the SD card and the 426
+# is just protocol noise (#1417-followup, same hardware confirmed working
+# after clean SD-card check). The current behaviour disambiguates via an
+# FTP SIZE probe: match → noise (proceed with warning); mismatch / probe
+# fails → real truncation (return False, no print command).
+# ---------------------------------------------------------------------------
+class TestVoidrespErrorTransientVsTruncated:
+    """Pin the 426 / ftplib.Error → SIZE-disambiguated behaviour."""
+
+    def _make_426(self):
+        import ftplib
+
+        return ftplib.error_temp("426 Failure reading network stream.")
+
+    def test_upload_file_intact_treats_426_as_transient(self, ftp_client_factory, ftp_server, tmp_path):
+        """SIZE matches → 426 is noise from TLS race; upload_file returns True.
+
+        pyftpdlib only flushes to disk on a clean voidresp, so we inject a
+        SIZE return matching the buffer length directly — that's exactly
+        what the printer would report once the file is actually on disk.
+        """
+        content = b"intact-content"
+        local = tmp_path / "intact.3mf"
+        local.write_bytes(content)
+        client = ftp_client_factory()
+        client.connect()
+        # Patch voidresp to raise 426 and size() to return the matching size.
+        client._ftp.voidresp = lambda: (_ for _ in ()).throw(self._make_426())
+        client._ftp.size = lambda path: len(content)  # matches local size
+        result = client.upload_file(local, "/cache/intact.3mf")
+        assert result is True
+        client.disconnect()
+
+    def test_upload_file_truncated_returns_false_on_426(self, ftp_client_factory, ftp_server, tmp_path):
+        """SIZE mismatches local size → real truncation; upload_file returns False."""
+        content = b"truncated-content-is-much-longer-than-what-disk-has"
+        local = tmp_path / "truncated.3mf"
+        local.write_bytes(content)
+        client = ftp_client_factory()
+        client.connect()
+        client._ftp.voidresp = lambda: (_ for _ in ()).throw(self._make_426())
+        client._ftp.size = lambda path: 3  # much smaller than len(content)
+        result = client.upload_file(local, "/cache/truncated.3mf")
+        assert result is False
+        client.disconnect()
+
+    def test_upload_file_returns_false_when_size_check_fails(self, ftp_client_factory, ftp_server, tmp_path):
+        """If even the SIZE probe raises, we can't confirm intact → fail closed."""
+        import ftplib
+
+        content = b"probe-fails"
+        local = tmp_path / "probe.3mf"
+        local.write_bytes(content)
+        client = ftp_client_factory()
+        client.connect()
+        client._ftp.voidresp = lambda: (_ for _ in ()).throw(self._make_426())
+        client._ftp.size = lambda path: (_ for _ in ()).throw(ftplib.error_perm("550 Not found."))
+        result = client.upload_file(local, "/cache/probe.3mf")
+        assert result is False
+        client.disconnect()
+
+    def test_upload_bytes_intact_treats_426_as_transient(self, ftp_client_factory, ftp_server):
+        """upload_bytes mirrors upload_file: SIZE matches → True."""
+        data = b"intact-bytes"
+        client = ftp_client_factory()
+        client.connect()
+        client._ftp.voidresp = lambda: (_ for _ in ()).throw(self._make_426())
+        client._ftp.size = lambda path: len(data)
+        result = client.upload_bytes(data, "/cache/intact_bytes.bin")
+        assert result is True
+        client.disconnect()
+
+    def test_upload_bytes_truncated_returns_false(self, ftp_client_factory, ftp_server):
+        data = b"the-real-content-is-this-long"
+        client = ftp_client_factory()
+        client.connect()
+        client._ftp.voidresp = lambda: (_ for _ in ()).throw(self._make_426())
+        client._ftp.size = lambda path: 4
+        result = client.upload_bytes(data, "/cache/truncated_bytes.bin")
+        assert result is False
+        client.disconnect()
+
+
+# ---------------------------------------------------------------------------
 # TestDelete
 # ---------------------------------------------------------------------------
 class TestDelete:
