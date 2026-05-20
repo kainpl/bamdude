@@ -804,9 +804,14 @@ async def stop_queue_item(
     item.completed_at = datetime.now(timezone.utc)
     item.error_message = "Stopped by user" if stop_sent else "Stopped by user (printer was offline)"
 
-    from backend.app.services.queue_counters import set_queue_idle, update_queue_counters
+    # User-initiated stop pauses the queue (not idle) so the operator
+    # explicitly resumes after inspecting the printer / dealing with the
+    # reason they stopped. Mirrors ``_cancel_item`` in the scheduler and
+    # the runtime ``on_print_complete`` cancelled-branch (main.py) so all
+    # three cancel paths behave the same way.
+    from backend.app.services.queue_counters import set_queue_paused, update_queue_counters
 
-    await set_queue_idle(db, item.queue_id)
+    await set_queue_paused(db, item.queue_id, paused_item_id=item.id)
     await update_queue_counters(db, item.queue_id)
     await db.commit()
 

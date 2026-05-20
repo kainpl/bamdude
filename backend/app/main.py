@@ -3983,6 +3983,7 @@ async def on_print_complete(printer_id: int, data: dict):
                 from backend.app.services.queue_counters import (
                     set_queue_error,
                     set_queue_idle,
+                    set_queue_paused,
                     update_queue_counters,
                 )
 
@@ -3991,8 +3992,23 @@ async def on_print_complete(printer_id: int, data: dict):
                 elif queue_status == "completed":
                     await set_queue_idle(db, queue_item.queue_id)
                 else:
-                    # cancelled - set idle (user intentionally stopped)
-                    await set_queue_idle(db, queue_item.queue_id)
+                    # Cancelled — pause the queue so the operator inspects
+                    # the printer before the next pending item dispatches.
+                    # Covers two cases the runtime can't distinguish
+                    # locally: (a) user-initiated cancel (UI button or
+                    # printer-screen Stop) and (b) printer-initiated
+                    # abort on a mid-print error (auto-bed-leveling
+                    # failure, runaway thermistor, AMS jam — printer
+                    # transitions RUNNING → IDLE without ever flipping
+                    # gcode_state to FAILED, so MQTT surfaces it as
+                    # ``aborted`` → normalised to ``cancelled`` above).
+                    # In both cases the safe default is to stop further
+                    # dispatch and let the human decide whether the
+                    # underlying cause is cleared. Mirrors
+                    # ``_cancel_item`` in the scheduler (the scheduler-
+                    # internal cancel path always paused the queue;
+                    # this aligns the MQTT-runtime path with that).
+                    await set_queue_paused(db, queue_item.queue_id, paused_item_id=queue_item.id)
                 await update_queue_counters(db, queue_item.queue_id)
                 await db.commit()
                 logger.info("Updated queue item %s status to %s", queue_item.id, queue_status)
