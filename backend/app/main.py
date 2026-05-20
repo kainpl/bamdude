@@ -2455,6 +2455,31 @@ async def on_print_start(printer_id: int, data: dict):
                 if subtask_name:
                     _active_prints[(printer_id, f"{subtask_name}.3mf")] = archive.id
 
+                # Start timelapse session if external camera is enabled
+                # (upstream Bambuddy #1353 / commit f2e3de0a). The two
+                # new-archive paths below (fallback + auto-archive) also
+                # call start_session, but queue / VP-dispatched prints land
+                # here in the expected-archive branch and used to skip it
+                # entirely — so the timelapse session never started, no
+                # frames were captured, and the post-print stitch silently
+                # returned None. Every queue / reprint silently lost its
+                # timelapse.
+                if printer.external_camera_enabled and printer.external_camera_url:
+                    from backend.app.services.layer_timelapse import start_session
+
+                    start_session(
+                        printer_id,
+                        archive.id,
+                        printer.external_camera_url,
+                        printer.external_camera_type or "mjpeg",
+                        snapshot_url=printer.external_camera_snapshot_url,
+                    )
+                    logger.info(
+                        "Started layer timelapse for printer %s, expected archive %s",
+                        printer_id,
+                        archive.id,
+                    )
+
                 # Ensure queue reflects the busy state (queue-driven flow
                 # already sets this from the scheduler, but repeat-safe).
                 await mark_queue_printing_for_printer(printer_id)

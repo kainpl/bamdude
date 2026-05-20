@@ -2071,7 +2071,7 @@ export default {
     cameraTypeUsb: 'USB камера (V4L2)',
     cameraSnapshotUrl: 'URL знімка (опційно)',
     cameraSnapshotUrlPlaceholder: 'http://192.168.1.61:1984/api/frame.jpeg?src=printer',
-    cameraSnapshotUrlHelp: 'URL для single-frame захоплення (notification thumbnails, finish photos, timelapse, plate detection). Залиш порожнім - кадр буде братись з live-стріма вище. Корисно для go2rtc (/api/frame.jpeg) та IP-камер з окремим snapshot-ендпоінтом.',
+    cameraSnapshotUrlHelp: 'URL для single-frame захоплення (notification thumbnails, finish photos, timelapse, plate detection). Залиш порожнім - кадр буде братись з live-стріма вище. Корисно для go2rtc (/api/frame.jpeg) та IP-камер з окремим snapshot-ендпоінтом. Timelapse та plate detection вимагають окремих per-printer тогглів — цей URL лише джерело зображення для них.',
     cameraRotation: 'Поворот',
     test: 'Тест',
     connected: 'Підключено',
