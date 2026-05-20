@@ -609,7 +609,16 @@ class NotificationService:
         if not webhook_url:
             return False, "Webhook URL is required"
 
-        if not webhook_url.startswith("https://discord.com/api/webhooks/"):
+        # Discord's "Copy Webhook URL" button emits the legacy discordapp.com
+        # host alongside the canonical discord.com — both hostnames are
+        # operational on Discord's side and serve the same webhooks. Accept
+        # either prefix; the guard itself stays to catch the
+        # paste-the-wrong-URL-into-the-Discord-field mistake. Upstream
+        # Bambuddy #1363 / commit 5e88ce13.
+        if not (
+            webhook_url.startswith("https://discord.com/api/webhooks/")
+            or webhook_url.startswith("https://discordapp.com/api/webhooks/")
+        ):
             return False, "Invalid Discord webhook URL"
 
         # Discord embed format for nicer messages

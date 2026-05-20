@@ -1887,3 +1887,67 @@ class TestFirstLayerCompleteNotifications:
             mock_send.assert_called_once()
             call_kwargs = mock_send.call_args
             assert call_kwargs.kwargs.get("image_data") == fake_image
+
+
+class TestDiscordProviderHostWhitelist:
+    """C.1 / upstream Bambuddy #1363 regression.
+
+    Discord's "Copy Webhook URL" button emits ``https://discordapp.com/...``
+    while our validator only accepted ``https://discord.com/...``, so a
+    fresh paste straight from the Discord UI hit "Invalid Discord webhook
+    URL" on Save. Both hostnames are operational on Discord's side and
+    serve the same webhooks — accept either.
+    """
+
+    @pytest.mark.asyncio
+    async def test_discord_com_webhook_accepted(self):
+        """Canonical discord.com host stays accepted."""
+        service = NotificationService()
+        mock_resp = MagicMock(status_code=204)
+        client = MagicMock()
+        client.post = AsyncMock(return_value=mock_resp)
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("backend.app.services.notification_service.httpx.AsyncClient", return_value=client):
+            success, _ = await service._send_discord(
+                {"webhook_url": "https://discord.com/api/webhooks/123/abc"}, "Title", "Body"
+            )
+
+        assert success is True
+        client.post.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_discordapp_com_webhook_accepted(self):
+        """Legacy discordapp.com host must also be accepted (the bug)."""
+        service = NotificationService()
+        mock_resp = MagicMock(status_code=204)
+        client = MagicMock()
+        client.post = AsyncMock(return_value=mock_resp)
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("backend.app.services.notification_service.httpx.AsyncClient", return_value=client):
+            success, _ = await service._send_discord(
+                {"webhook_url": "https://discordapp.com/api/webhooks/123/abc"}, "Title", "Body"
+            )
+
+        assert success is True
+        client.post.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_non_discord_host_rejected(self):
+        """Pasted-the-wrong-thing guard still works."""
+        service = NotificationService()
+        success, msg = await service._send_discord(
+            {"webhook_url": "https://example.com/api/webhooks/123/abc"}, "Title", "Body"
+        )
+        assert success is False
+        assert "Invalid Discord webhook URL" in msg
+
+    @pytest.mark.asyncio
+    async def test_empty_url_rejected(self):
+        service = NotificationService()
+        success, msg = await service._send_discord({"webhook_url": ""}, "Title", "Body")
+        assert success is False
+        assert "required" in msg.lower()
