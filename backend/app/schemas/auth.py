@@ -480,6 +480,15 @@ class OIDCProviderResponse(BaseModel):
     email_claim: str = "email"
     require_email_verified: bool = True
     icon_url: str | None = None
+    # True iff the server has cached image bytes for this provider. The
+    # SPA uses this to decide whether to render
+    # ``<img src="/api/v1/auth/oidc/providers/{id}/icon">`` vs a fallback
+    # avatar — without it the SPA would 404-storm on every login-page
+    # render for providers configured with an icon_url that hasn't yet
+    # been successfully fetched. Sourced from ``OIDCProvider.has_icon``
+    # property (reads ``icon_content_type``, never triggers a deferred-
+    # column lazy-load). Upstream Bambuddy #1333.
+    has_icon: bool = False
     default_group_id: int | None = None
 
     class Config:

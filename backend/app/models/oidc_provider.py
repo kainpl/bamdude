@@ -8,6 +8,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -45,6 +46,19 @@ class OIDCProvider(Base):
         CheckConstraint(
             "auto_link_existing_accounts = 0 OR email_claim != 'email' OR require_email_verified = 1",
             name="ck_auto_link_requires_verified_email_claim",
+        ),
+        # All-or-nothing icon-cache record (#1333). The application keeps the
+        # triplet consistent via _fetch_icon_or_400 + DELETE /icon, but the
+        # CHECK at the DB layer prevents drift from raw SQL maintenance
+        # scripts, manual UPDATEs during incident recovery, etc.
+        # Fresh installs (SQLite + PostgreSQL) get this via metadata.create_all.
+        # Stale PostgreSQL installs get it via ALTER TABLE in m071. SQLite
+        # cannot ADD CONSTRAINT to an existing table — stale SQLite installs
+        # rely on the application layer, same trade-off documented for
+        # ck_auto_link_requires_verified_email_claim above.
+        CheckConstraint(
+            "(icon_data IS NULL) = (icon_content_type IS NULL) AND (icon_content_type IS NULL) = (icon_etag IS NULL)",
+            name="ck_oidc_icon_triplet_co_null",
         ),
     )
 
@@ -99,8 +113,33 @@ class OIDCProvider(Base):
     default_group_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("groups.id", ondelete="SET NULL"), nullable=True, default=None
     )
-    # Optional icon URL (SVG/PNG) shown on the login button
+    # Optional icon URL the admin entered. The actual image bytes are fetched
+    # server-side and cached in ``icon_data`` — the SPA never hotlinks this
+    # URL (would require loosening the strict ``img-src 'self' data: blob:``
+    # CSP). Upstream Bambuddy #1333 / commit 8a7598f6.
     icon_url: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    # Cached icon bytes (PNG / JPEG / WebP / GIF). ``deferred=True`` so
+    # list-style queries (``GET /oidc/providers``) don't pull the BLOB on
+    # every login-page render — only the icon endpoint un-defers it via
+    # ``select(...).options(undefer(OIDCProvider.icon_data))``.
+    icon_data: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True, default=None, deferred=True)
+    # MIME type derived from the fetched icon (e.g. ``image/png``). Also
+    # serves as the "has icon" indicator — checked instead of ``icon_data``
+    # so we never accidentally trigger an async lazy-load on the deferred
+    # BLOB column. Width 20 is plenty: the longest whitelisted value is
+    # ``image/jpeg`` (10 chars).
+    icon_content_type: Mapped[str | None] = mapped_column(String(20), nullable=True, default=None)
+    # SHA-256 hex of ``icon_data``, served as the ETag header so clients
+    # can revalidate via ``If-None-Match`` and receive 304 Not Modified.
+    icon_etag: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+
+    @property
+    def has_icon(self) -> bool:
+        """True when cached icon bytes exist. Reads the non-deferred
+        ``icon_content_type`` column so accessing this never triggers an
+        async lazy-load on the deferred ``icon_data`` BLOB."""
+        return self.icon_content_type is not None
+
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 

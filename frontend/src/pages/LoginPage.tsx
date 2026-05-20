@@ -637,8 +637,8 @@ export function LoginPage() {
                   disabled={oidcLoginMutation.isPending}
                   className="w-full flex items-center justify-center gap-3 py-3 px-4 bg-bambu-dark-secondary border border-bambu-dark-tertiary hover:border-bambu-green/50 rounded-lg text-white font-medium transition-colors disabled:opacity-50"
                 >
-                  {provider.icon_url ? (
-                    <img src={provider.icon_url} alt="" className="w-5 h-5 object-contain" />
+                  {provider.has_icon ? (
+                    <img src={`/api/v1/auth/oidc/providers/${provider.id}/icon`} alt="" className="w-5 h-5 object-contain" />
                   ) : (
                     <Shield className="w-5 h-5 text-bambu-green" />
                   )}

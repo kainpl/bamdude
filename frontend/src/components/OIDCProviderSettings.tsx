@@ -308,8 +308,8 @@ export function OIDCProviderSettings() {
         <Card key={provider.id}>
           <CardHeader>
             <div className="flex items-center gap-3">
-              {provider.icon_url ? (
-                <img src={provider.icon_url} alt={provider.name} className="w-8 h-8 rounded object-contain" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+              {provider.has_icon ? (
+                <img src={`/api/v1/auth/oidc/providers/${provider.id}/icon`} alt={provider.name} className="w-8 h-8 rounded object-contain" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
               ) : (
                 <div className="w-8 h-8 rounded-full bg-bambu-dark-tertiary flex items-center justify-center">
                   <Globe className="w-4 h-4 text-bambu-gray" />

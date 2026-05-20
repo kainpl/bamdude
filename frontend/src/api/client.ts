@@ -3360,6 +3360,10 @@ export interface OIDCProvider {
   /** Only consulted when email_claim === "email". Set false for legacy IdPs that never send email_verified. */
   require_email_verified: boolean;
   icon_url?: string | null;
+  /** True iff the backend has cached image bytes for this provider. Drives
+   *  whether the SPA renders ``<img src="/api/v1/auth/oidc/providers/{id}/icon">``
+   *  or a fallback icon. */
+  has_icon: boolean;
   /** Operator-configurable default group for auto-created OIDC users (#1173).
    *  null → callback falls back to "Viewers". */
   default_group_id?: number | null;
