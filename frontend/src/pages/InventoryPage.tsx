@@ -636,6 +636,10 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   const [categoryFilter, setCategoryFilter] = useState('');
   const [spoolFilter, setSpoolFilter] = useState('');
   const [stockFilter, setStockFilter] = useState<'all' | 'stock' | 'configured'>('all');
+  // #1400: storage-location dropdown chip. Uses the sentinel ``__none__``
+  // for the "no storage location set" group, same pattern as the category
+  // filter so users can find unfiled spools.
+  const [storageLocationFilter, setStorageLocationFilter] = useState('');
   const [search, setSearch] = useState('');
   const [viewMode, setViewMode] = useState<ViewMode>('table');
   const [sortState, setSortState] = useState<SortState>(loadSortState);
@@ -1042,6 +1046,16 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
       filtered = filtered.filter((s) => s.core_weight_catalog_id === catalogId);
     }
 
+    // Storage location dropdown (#1400). ``__none__`` lets the user find
+    // spools that haven't been assigned a storage location yet.
+    if (storageLocationFilter) {
+      if (storageLocationFilter === '__none__') {
+        filtered = filtered.filter((s) => !s.storage_location?.trim());
+      } else {
+        filtered = filtered.filter((s) => s.storage_location?.trim() === storageLocationFilter);
+      }
+    }
+
     // Stock filter
     if (stockFilter === 'stock') {
       filtered = filtered.filter((s) => !s.slicer_filament);
@@ -1071,7 +1085,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     }
 
     return filtered;
-  }, [spools, archiveFilter, usageFilter, materialFilter, brandFilter, categoryFilter, spoolFilter, stockFilter, search, spoolDisplayTemplate, lowStockThreshold]);
+  }, [spools, archiveFilter, usageFilter, materialFilter, brandFilter, categoryFilter, spoolFilter, storageLocationFilter, stockFilter, search, spoolDisplayTemplate, lowStockThreshold]);
 
   // Reset page on filter changes
   const resetPage = () => setPageIndex(0);
@@ -1086,9 +1100,13 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   });
   const uniqueCategories = [...new Set(spools?.map((s) => s.category?.trim()).filter(Boolean) as string[] || [])].sort();
   const hasUncategorized = (spools ?? []).some((s) => !s.category);
+  // #1400: storage-location distinct values. ``.trim()`` so accidental
+  // trailing whitespace doesn't render as a separate option.
+  const uniqueStorageLocations = [...new Set(spools?.map((s) => s.storage_location?.trim()).filter(Boolean) as string[] || [])].sort();
+  const hasUnsetStorageLocation = (spools ?? []).some((s) => !s.storage_location?.trim());
 
   // Check if any filters are non-default
-  const hasActiveFilters = archiveFilter !== 'active' || usageFilter !== 'all' || !!materialFilter || !!brandFilter || !!categoryFilter || !!spoolFilter || stockFilter !== 'all' || !!search;
+  const hasActiveFilters = archiveFilter !== 'active' || usageFilter !== 'all' || !!materialFilter || !!brandFilter || !!categoryFilter || !!spoolFilter || !!storageLocationFilter || stockFilter !== 'all' || !!search;
 
   const handleColumnConfigSave = (config: ColumnConfig[]) => {
     setColumnConfig(config);
@@ -1240,6 +1258,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     setBrandFilter('');
     setCategoryFilter('');
     setSpoolFilter('');
+    setStorageLocationFilter('');
     setStockFilter('all');
     setSearch('');
     resetPage();
@@ -1659,6 +1678,29 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
             ))}
             {hasUncategorized && (
               <option value="__none__">{t('inventory.categoryNone')}</option>
+            )}
+          </select>
+        )}
+
+        {/* Storage location dropdown chip (#1400) — only render once at
+            least one spool carries a storage location, otherwise it's
+            noise (matches the category chip pattern). */}
+        {(uniqueStorageLocations.length > 0 || storageLocationFilter) && (
+          <select
+            value={storageLocationFilter}
+            onChange={(e) => { setStorageLocationFilter(e.target.value); resetPage(); }}
+            className={`px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors cursor-pointer focus:outline-none ${
+              storageLocationFilter
+                ? 'bg-bambu-green/20 text-bambu-green border-bambu-green/30'
+                : 'bg-transparent text-bambu-gray border-bambu-dark-tertiary hover:bg-bambu-dark-tertiary'
+            }`}
+          >
+            <option value="">{t('inventory.storageLocation')}</option>
+            {uniqueStorageLocations.map((loc) => (
+              <option key={loc} value={loc}>{loc}</option>
+            ))}
+            {hasUnsetStorageLocation && (
+              <option value="__none__">{t('inventory.storageLocationNone')}</option>
             )}
           </select>
         )}

@@ -373,17 +373,23 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
                           {t('inventory.assigned')}
                         </span>
                       </div>
-                      <p className="text-xs text-white truncate" title={inventory.assignedSpool.displayName}>
-                        {inventory.assignedSpool.displayName ? (
-                          inventory.assignedSpool.displayName
-                        ) : (
-                          <>
-                            {inventory.assignedSpool.brand ? `${inventory.assignedSpool.brand} ` : ''}
-                            {inventory.assignedSpool.material}
-                            {inventory.assignedSpool.color_name ? ` - ${inventory.assignedSpool.color_name}` : ''}
-                          </>
-                        )}
-                      </p>
+                      <div className="flex items-baseline gap-1.5 min-w-0">
+                        <p className="text-xs text-white truncate" title={inventory.assignedSpool.displayName}>
+                          {inventory.assignedSpool.displayName ? (
+                            inventory.assignedSpool.displayName
+                          ) : (
+                            <>
+                              {inventory.assignedSpool.brand ? `${inventory.assignedSpool.brand} ` : ''}
+                              {inventory.assignedSpool.material}
+                              {inventory.assignedSpool.color_name ? ` - ${inventory.assignedSpool.color_name}` : ''}
+                            </>
+                          )}
+                        </p>
+                        {/* Spool ID next to the display name so operators
+                            can reference it without opening the edit modal
+                            (upstream Bambuddy #1385). */}
+                        <span className="text-[10px] font-mono text-bambu-gray shrink-0">#{inventory.assignedSpool.id}</span>
+                      </div>
                       {(!spoolman?.linkedSpoolId || inventory.assignedSpool!.id !== spoolman.linkedSpoolId) && (
                         <button
                           onClick={(e) => {

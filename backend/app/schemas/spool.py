@@ -45,6 +45,12 @@ class SpoolBase(BaseModel):
     # B.8 — free-text category + per-spool low-stock threshold override (%).
     category: str | None = Field(default=None, max_length=50)
     low_stock_threshold_pct: int | None = Field(default=None, ge=1, le=99)
+    # Free-text storage location ("Drybox #1", "Top shelf"), distinct from
+    # ``location`` (AMS slot assignment). Column has lived on the ORM since
+    # the inventory rework but was missing from this schema, so PATCH
+    # writes were silently dropped by Pydantic and GET responses left the
+    # field out — upstream Bambuddy #1291.
+    storage_location: str | None = Field(default=None, max_length=255)
 
 
 class SpoolCreate(SpoolBase):
@@ -88,6 +94,7 @@ class SpoolUpdate(BaseModel):
     effect_type: str | None = Field(default=None, max_length=20)
     category: str | None = Field(default=None, max_length=50)
     low_stock_threshold_pct: int | None = Field(default=None, ge=1, le=99)
+    storage_location: str | None = Field(default=None, max_length=255)
 
 
 class SpoolKProfileBase(BaseModel):
