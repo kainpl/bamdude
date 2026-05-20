@@ -179,8 +179,20 @@ class FirmwareUpdateService:
             # We'll get actual size during download
             result["firmware_size"] = 100 * 1024 * 1024  # 100MB estimate
         elif target_version:
-            # Requested specific version has no download URL (wiki-only announcement)
-            result["errors"].append(f"Firmware file for {target_version} is not available from Bambu Lab")
+            # Requested specific version has no download URL. Distinguish
+            # "Bambu doesn't list this file" from "we couldn't reach Bambu's
+            # download page" (Cloudflare 403 reported in upstream Bambuddy
+            # #1350) so users in affected regions get an actionable error
+            # instead of believing the firmware doesn't exist.
+            if firmware_service.download_page_unreachable:
+                result["errors"].append(
+                    f"Could not reach Bambu Lab's firmware download page to fetch the file URL for "
+                    f"{target_version}. Version is listed on the Bambu wiki but the download endpoint "
+                    f"is unreachable from this network. Try again later, or download the firmware "
+                    f"manually from bambulab.com and copy it to the printer's SD card."
+                )
+            else:
+                result["errors"].append(f"Firmware file for {target_version} is not available from Bambu Lab")
 
         # When a target version is requested, allow proceeding even if it equals or
         # is older than the current version (explicit downgrade/reinstall path).

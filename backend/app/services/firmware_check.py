@@ -22,6 +22,7 @@ with BamDude divergences that must be preserved:
    on new releases.
 """
 
+import json
 import logging
 import re
 import time
@@ -133,6 +134,14 @@ class FirmwareCheckService:
     def __init__(self):
         self._build_id: str | None = None
         self._build_id_time: float = 0
+        # True after a non-200 from the firmware-download page or its JSON
+        # endpoint — surfaced via the ``download_page_unreachable`` property
+        # so the firmware-update prepare flow can render an honest "page
+        # unreachable from this network" error instead of the misleading
+        # "Firmware file is not available from Bambu Lab" (which implies
+        # Bambu doesn't have the file rather than "we can't reach Bambu"
+        # — upstream Bambuddy #1350 / commit 405dd152).
+        self._download_page_unreachable: bool = False
         self._version_cache: dict[str, FirmwareVersion] = {}
         self._versions_list_cache: dict[str, list[FirmwareVersion]] = {}
         self._cache_time: float = 0
@@ -143,7 +152,18 @@ class FirmwareCheckService:
         # here is a fingerprint workaround — the request itself still
         # identifies as BamDude in headers below where applicable.
         # (Cloudflare's check happens at the TLS layer, not the HTTP layer.)
-        self._cf_client = CurlAsyncSession(timeout=30, impersonate="chrome120")
+        # Browser-like Accept headers added on top so requests don't trip
+        # Cloudflare's "bare scraper" signal even when the TLS handshake
+        # itself passes (#1350 follow-up: some networks block bare UAs
+        # regardless of TLS impersonation).
+        self._cf_client = CurlAsyncSession(
+            timeout=30,
+            impersonate="chrome120",
+            headers={
+                "Accept": "text/html,application/json,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+        )
         # Wiki (wiki.bambulab.com) has no TLS / UA-special handling —
         # verified 2026-05-12 that ``BamDude/<ver>`` returns the same
         # HTML as a Chrome UA. Honest UA per Bambu's 2026-05-12
@@ -155,27 +175,105 @@ class FirmwareCheckService:
             },
         )
 
+    def _build_id_cache_path(self) -> Path:
+        """Disk-cache path for the last-known Next.js buildId."""
+        cache_dir = _data_dir / "firmware"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        return cache_dir / "build_id.json"
+
+    def _load_build_id_from_disk(self) -> tuple[str | None, float]:
+        """Load the last-known buildId from disk → (build_id, fetched_at)."""
+        path = self._build_id_cache_path()
+        try:
+            if not path.exists():
+                return None, 0.0
+            data = json.loads(path.read_text())
+            build_id = data.get("build_id")
+            fetched_at = float(data.get("fetched_at", 0))
+            if isinstance(build_id, str) and build_id:
+                return build_id, fetched_at
+        except (OSError, ValueError, TypeError) as e:
+            logger.debug("Could not read cached buildId: %s", e)
+        return None, 0.0
+
+    def _save_build_id_to_disk(self, build_id: str) -> None:
+        try:
+            self._build_id_cache_path().write_text(json.dumps({"build_id": build_id, "fetched_at": time.time()}))
+        except OSError as e:
+            logger.debug("Could not persist buildId: %s", e)
+
     async def _get_build_id(self) -> str | None:
-        """Fetch the Next.js build ID from Bambu Lab's firmware page (CF-bypassed)."""
-        # Use cached build ID if still valid (cache for 1 hour)
+        """Fetch the Next.js build ID from Bambu Lab's firmware page (CF-bypassed).
+
+        Cache layers (fresh → stale → none):
+
+        1. In-memory (1 hour TTL) — fast path for repeated checks in a session.
+        2. Disk-cached buildId at ``<data_dir>/firmware/build_id.json`` (any
+           age) — survives restarts, lets us recover from upstream Cloudflare
+           403s. Bambu rebuilds the page only every few weeks, so a stale
+           buildId is almost always still valid; if the JSON fetch later
+           fails the caller falls back via the existing 2-attempt retry.
+        3. Live fetch from bambulab.com — only when both caches miss.
+
+        On 403 / 5xx (Cloudflare block or upstream outage) we keep the cached
+        buildId and set ``_download_page_unreachable=True`` so the firmware-
+        update prepare flow can render an honest error. Upstream Bambuddy
+        #1350 / commit 405dd152.
+        """
+        # 1. In-memory cache (fresh)
         if self._build_id and (time.time() - self._build_id_time) < CACHE_TTL:
             return self._build_id
 
+        # 2. Disk cache — load if we don't have one in memory yet (first
+        #    call after restart). Still try the live fetch below to refresh.
+        if not self._build_id:
+            disk_id, disk_time = self._load_build_id_from_disk()
+            if disk_id:
+                self._build_id = disk_id
+                self._build_id_time = disk_time
+
+        # 3. Live fetch
         try:
             response = await self._cf_client.get(f"{BAMBU_FIRMWARE_BASE}{FIRMWARE_PAGE}")
             if response.status_code == 200:
-                # Extract buildId from the page
                 match = re.search(r'"buildId":"([^"]+)"', response.text)
                 if match:
-                    self._build_id = match.group(1)
+                    new_build_id = match.group(1)
+                    if new_build_id != self._build_id:
+                        logger.info("Got Bambu Lab build ID: %s", new_build_id)
+                    self._build_id = new_build_id
                     self._build_id_time = time.time()
-                    logger.info("Got Bambu Lab build ID: %s", self._build_id)
+                    self._download_page_unreachable = False
+                    self._save_build_id_to_disk(new_build_id)
                     return self._build_id
-            logger.warning("Failed to get Bambu Lab page: %s", response.status_code)
+            else:
+                # 403/5xx — keep stale cached buildId if we have one, but
+                # flag the page as unreachable so callers can surface an
+                # honest error instead of misleadingly saying the file
+                # isn't on Bambu's side.
+                logger.warning(
+                    "Failed to get Bambu Lab page: %s (will try cached buildId if available)",
+                    response.status_code,
+                )
+                self._download_page_unreachable = True
         except Exception as e:
             logger.error("Error fetching Bambu Lab build ID: %s", e)
+            self._download_page_unreachable = True
 
-        return self._build_id  # Return cached value if available
+        return self._build_id  # Return whatever we have — stale beats nothing
+
+    @property
+    def download_page_unreachable(self) -> bool:
+        """True iff the most recent attempt to reach the Bambu Lab firmware
+        page or its JSON endpoint failed.
+
+        Surfaced to the firmware-update prepare flow so a wiki-listed
+        version that lacks a download URL gets a clearer error ("page
+        unreachable from this network") instead of the misleading
+        "Firmware file is not available from Bambu Lab" — upstream
+        Bambuddy #1350.
+        """
+        return self._download_page_unreachable
 
     async def _fetch_version_from_wiki(self, api_key: str) -> str | None:
         """Fetch the latest firmware version from Bambu Lab's wiki release history page."""
@@ -289,6 +387,11 @@ class FirmwareCheckService:
                     self._build_id = None
                     self._build_id_time = 0
                     continue
+                # 403 from the JSON endpoint after a refresh is the same
+                # Cloudflare-block signal as on the index page — surface
+                # via the unreachable flag (upstream Bambuddy #1350).
+                if response.status_code == 403:
+                    self._download_page_unreachable = True
                 logger.debug(
                     "Download-page data endpoint returned %s for %s after buildId refresh",
                     response.status_code,

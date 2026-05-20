@@ -15,7 +15,8 @@ plain httpx gets 403 from EU/UA users behind Cloudflare. Wiki-side tests still
 patch ``_client`` (plain httpx) because the wiki isn't CF-blocked.
 """
 
-from unittest.mock import AsyncMock, patch
+import json
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -194,3 +195,138 @@ async def test_x2d_is_routed_through_api_key_map():
     svc = FirmwareCheckService()
     assert svc._resolve_api_key("X2D") == "x2d"
     assert svc._resolve_api_key("N6") == "x2d"  # SSDP code path
+
+
+# ---------------------------------------------------------------------------
+# B.9 / upstream Bambuddy #1350 — Cloudflare-403 resilience layers
+# ---------------------------------------------------------------------------
+
+
+def test_cf_client_sends_browser_accept_headers_alongside_chrome_impersonation():
+    """Even with curl_cffi's TLS impersonation, some Cloudflare rules 403
+    on bare requests with no Accept hints (upstream #1350). Send normal
+    Accept + Accept-Language so the bot signal goes away."""
+    svc = FirmwareCheckService()
+    # curl_cffi lowercases header keys internally — check the lowercase form.
+    headers = {k.lower(): v for k, v in dict(svc._cf_client.headers).items()}
+    assert "accept" in headers
+    assert "accept-language" in headers
+
+
+def test_wiki_client_identifies_honestly_as_bamdude():
+    """The wiki-side client must NOT impersonate Chrome — Bambu's
+    2026-05-12 cloud-access policy requires honest identification, and the
+    wiki returns the same HTML for an honest UA."""
+    svc = FirmwareCheckService()
+    ua = svc._client.headers["User-Agent"]
+    assert ua.startswith("BamDude/")
+    assert "Chrome" not in ua
+
+
+@pytest.mark.asyncio
+async def test_build_id_is_persisted_to_disk(tmp_path, monkeypatch):
+    """Successful buildId fetch writes to disk so it survives restart."""
+    monkeypatch.setattr("backend.app.services.firmware_check._data_dir", tmp_path)
+
+    svc = FirmwareCheckService()
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.text = 'window.__data = {"buildId":"abc123xyz","other":"stuff"}'
+
+    with patch.object(svc._cf_client, "get", AsyncMock(return_value=mock_resp)):
+        build_id = await svc._get_build_id()
+
+    assert build_id == "abc123xyz"
+    cache_file = tmp_path / "firmware" / "build_id.json"
+    assert cache_file.exists()
+    data = json.loads(cache_file.read_text())
+    assert data["build_id"] == "abc123xyz"
+    assert data["fetched_at"] > 0
+
+
+@pytest.mark.asyncio
+async def test_build_id_falls_back_to_disk_on_403(tmp_path, monkeypatch):
+    """When bambulab.com 403s, fall back to the disk-cached buildId from
+    the previous successful fetch. Without this the wiki version is
+    detected but the download URL stays empty forever (upstream #1350)."""
+    monkeypatch.setattr("backend.app.services.firmware_check._data_dir", tmp_path)
+
+    # Pre-seed a previously-saved buildId
+    cache_dir = tmp_path / "firmware"
+    cache_dir.mkdir(parents=True)
+    (cache_dir / "build_id.json").write_text(json.dumps({"build_id": "cached_id_42", "fetched_at": 1000.0}))
+
+    svc = FirmwareCheckService()
+    mock_resp = MagicMock()
+    mock_resp.status_code = 403
+    mock_resp.text = "<html>Access denied</html>"
+
+    with patch.object(svc._cf_client, "get", AsyncMock(return_value=mock_resp)):
+        build_id = await svc._get_build_id()
+
+    assert build_id == "cached_id_42"
+    assert svc.download_page_unreachable is True
+
+
+@pytest.mark.asyncio
+async def test_download_page_unreachable_flag_set_on_403_json(tmp_path, monkeypatch):
+    """A 403 on the per-model JSON endpoint also marks the page unreachable
+    after the retry budget is exhausted."""
+    monkeypatch.setattr("backend.app.services.firmware_check._data_dir", tmp_path)
+
+    svc = FirmwareCheckService()
+    svc._build_id = "stale_id"
+    svc._build_id_time = 9999999999.0  # never expires for this test
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 403
+    mock_resp.text = "Forbidden"
+
+    with patch.object(svc._cf_client, "get", AsyncMock(return_value=mock_resp)):
+        result = await svc._fetch_all_versions_from_download_page("x1")
+
+    assert result == []
+    assert svc.download_page_unreachable is True
+
+
+@pytest.mark.asyncio
+async def test_download_page_retries_once_when_buildid_stale(tmp_path, monkeypatch):
+    """If the cached buildId returns 404 (Bambu rebuilt the page), refresh
+    once and retry. Pre-existing behaviour — covered here to lock the
+    interaction with the new disk-cache layer."""
+    monkeypatch.setattr("backend.app.services.firmware_check._data_dir", tmp_path)
+
+    svc = FirmwareCheckService()
+    svc._build_id = "stale_id"
+    svc._build_id_time = 9999999999.0
+
+    stale_resp = MagicMock(status_code=404, text="not found")
+    page_resp = MagicMock(status_code=200)
+    page_resp.text = 'foo "buildId":"fresh_id" bar'
+    fresh_resp = MagicMock(status_code=200)
+    fresh_resp.json = MagicMock(
+        return_value={
+            "pageProps": {
+                "printerMap": {
+                    "x1": {
+                        "versions": [
+                            {
+                                "version": "01.11.02.00",
+                                "url": "https://cdn/fw.bin",
+                                "release_notes_en": "n",
+                                "release_time": "2025-12-10",
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+    )
+    # Sequence: stale 404 (JSON) → page refresh 200 → fresh 200 (JSON)
+    get = AsyncMock(side_effect=[stale_resp, page_resp, fresh_resp])
+    with patch.object(svc._cf_client, "get", get):
+        result = await svc._fetch_all_versions_from_download_page("x1")
+
+    assert len(result) == 1
+    assert result[0].version == "01.11.02.00"
+    assert svc._build_id == "fresh_id"
