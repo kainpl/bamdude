@@ -3278,6 +3278,18 @@ class BambuMQTTClient:
         current_file = self.state.gcode_file or self.state.current_print
         is_new_print = (
             self.state.state == "RUNNING"
+            # ``_previous_gcode_state is None`` means we haven't seen any
+            # prior gcode_state in THIS process lifetime yet — either a fresh
+            # BamDude start observing a printer already mid-print (the
+            # reporter's #1304 scenario in upstream Bambuddy), or a brand-new
+            # client that hasn't yet received its first push. In neither case
+            # is this a real IDLE→RUNNING transition. Skipping start-fire here
+            # is safe: ``_was_running`` still flips below in its own block, so
+            # completion detection isn't affected. Mid-print stale reconnects
+            # are unaffected — our reconnect path carries ``_previous_gcode_state``
+            # across client recreation, so this guard only fires on genuine
+            # process-fresh catch-up.
+            and self._previous_gcode_state is not None
             and self._previous_gcode_state != "RUNNING"
             and current_file
             and not self._was_running  # Prevent duplicates when resuming from PAUSE
