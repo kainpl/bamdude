@@ -535,11 +535,20 @@ export function SpoolFormModal({
     },
   });
 
-  // Fetch assignment for this spool (to show Unassign button)
+  // Fetch assignment for this spool (to show Unassign button). In Spoolman
+  // mode the slot assignment lives in ``spoolman_slot_assignments`` keyed
+  // by ``spoolman_spool_id``, not in the legacy ``spool_assignments`` table
+  // — upstream Bambuddy #1336 was the resulting "Unassign button is always
+  // disabled in Spoolman mode" report.
   const { data: assignments } = useQuery({
     queryKey: ['spool-assignments'],
     queryFn: () => api.getAssignments(),
-    enabled: isOpen && isEditing,
+    enabled: isOpen && isEditing && !spoolmanMode,
+  });
+  const { data: spoolmanSlotAssignments } = useQuery({
+    queryKey: ['spoolman-slot-assignments-all'],
+    queryFn: () => api.getSpoolmanSlotAssignments(),
+    enabled: isOpen && isEditing && spoolmanMode,
   });
 
   // B.8 — collect categories already in use for the autocomplete <datalist>.
@@ -555,15 +564,31 @@ export function SpoolFormModal({
     }
     return Array.from(set).sort();
   }, [allSpoolsForCategories]);
-  const spoolAssignment = spool ? assignments?.find(a => a.spool_id === spool.id) : undefined;
+  const spoolAssignment = (() => {
+    if (!spool) return undefined;
+    if (spoolmanMode) {
+      return spoolmanSlotAssignments?.find(a => a.spoolman_spool_id === spool.id);
+    }
+    return assignments?.find(a => a.spool_id === spool.id);
+  })();
 
   const unassignMutation = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       if (!spoolAssignment) throw new Error('No assignment');
-      return api.unassignSpool(spoolAssignment.printer_id, spoolAssignment.ams_id, spoolAssignment.tray_id);
+      if (spoolmanMode) {
+        if (!spool) throw new Error('No spool');
+        await api.unassignSpoolmanSlot(spool.id);
+        return;
+      }
+      await api.unassignSpool(spoolAssignment.printer_id, spoolAssignment.ams_id, spoolAssignment.tray_id);
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['spool-assignments'] });
+      if (spoolmanMode) {
+        await queryClient.invalidateQueries({ queryKey: ['spoolman-slot-assignments-all'] });
+        await queryClient.invalidateQueries({ queryKey: ['spoolman-slot-assignments'] });
+      } else {
+        await queryClient.invalidateQueries({ queryKey: ['spool-assignments'] });
+      }
       showToast(t('inventory.unassignSuccess', 'Spool unassigned'), 'success');
       onClose();
     },

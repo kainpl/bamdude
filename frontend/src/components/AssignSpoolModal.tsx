@@ -323,7 +323,11 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
 
   return (
     <>
-      <div className="fixed inset-0 z-50 flex items-start sm:items-center justify-center overflow-y-auto p-4">
+      {/* z-[100] so the mobile sidebar drawer (z-50) can't bleed over the
+          modal on narrow viewports — matches GitHubBackupSettings, the
+          Layout confirmation modal, and FilamentHoverCard's z-class
+          (upstream Bambuddy #1336). */}
+      <div className="fixed inset-0 z-[100] flex items-start sm:items-center justify-center overflow-y-auto p-4">
         <div
           className="absolute inset-0 bg-black/60 backdrop-blur-sm"
           onClick={onClose}
@@ -589,6 +593,9 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
             message={message}
             confirmText={t('inventory.assignMismatchConfirm')}
             variant="warning"
+            // Sit above the AssignSpoolModal wrapper (z-[100], #1336) —
+            // without this the mismatch dialog is hidden behind its parent.
+            overlayZIndex="z-[110]"
             isLoading={assignMutation.isPending}
             onConfirm={handleConfirmMismatch}
             onCancel={() => {

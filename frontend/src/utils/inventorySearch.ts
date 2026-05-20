@@ -8,6 +8,10 @@ export function spoolMatchesQuery(spool: InventorySpool, query: string): boolean
   if (!query) return true;
   const q = query.toLowerCase();
   return (
+    // Numeric spool ID — typing the Spoolman ID into the Assign Spool
+    // dialog or Inventory search used to return nothing (upstream
+    // Bambuddy #1336).
+    String(spool.id).includes(q) ||
     spool.material.toLowerCase().includes(q) ||
     (spool.brand?.toLowerCase().includes(q) ?? false) ||
     (spool.color_name?.toLowerCase().includes(q) ?? false) ||
