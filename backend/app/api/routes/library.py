@@ -1941,11 +1941,32 @@ async def slice_and_persist(
         job_id=job_id,
     )
 
+    # The sidecar CLI doesn't render preview thumbnails when fed a bare
+    # STL — the resulting .gcode.3mf has no Metadata/plate_1.png and the
+    # library card shows an empty tile. Inject the source STL's
+    # thumbnail (rendering one on the fly when the source row has none
+    # yet) so the sliced row carries a real preview. Hash + write below
+    # use the post-injection bytes so file_hash matches what's on disk.
+    sliced_bytes = result.content
+    source_lib_file_id = (extra_metadata or {}).get("sliced_from_library_file_id")
+    if source_lib_file_id is not None:
+        src_row = (
+            await db.execute(LibraryFile.active().where(LibraryFile.id == source_lib_file_id))
+        ).scalar_one_or_none()
+        if src_row is not None:
+            from backend.app.services.library_3mf_preview import inject_source_stl_preview
+
+            sliced_bytes = await inject_source_stl_preview(
+                sliced_3mf_bytes=sliced_bytes,
+                source_library_file=src_row,
+                db=db,
+            )
+
     base_name = model_filename.rsplit(".", 1)[0]
     out_filename = f"{base_name}.gcode.3mf"
     unique_name = f"{uuid.uuid4().hex}.gcode.3mf"
     out_path = get_library_files_dir() / unique_name
-    out_path.write_bytes(result.content)
+    out_path.write_bytes(sliced_bytes)
 
     # Extract thumbnail from the produced 3MF so the library card shows a
     # preview. Failures here aren't fatal — the file is still useful.
@@ -2005,8 +2026,8 @@ async def slice_and_persist(
             source_type="sliced",
             swap_compatible=False,
         ),
-        file_size=len(result.content),
-        file_hash=hashlib.sha256(result.content).hexdigest(),
+        file_size=len(sliced_bytes),
+        file_hash=hashlib.sha256(sliced_bytes).hexdigest(),
         thumbnail_path=thumbnail_relative,
         file_metadata=metadata,
         source_type="sliced",
