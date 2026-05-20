@@ -5537,6 +5537,23 @@ async def lifespan(app: FastAPI):
 
     printer_manager.set_layer_change_callback(on_layer_change)
 
+    # #1349: smart-plug auto-off after AMS drying completes. The callback
+    # fires once per AMS unit on the falling edge of ``dry_time``
+    # (>0 → 0). We don't need the ``ams_id`` payload at the plug layer
+    # because BamDude's plug model is plug→printer (not plug→AMS); the
+    # plug-side handler walks every linked plug and respects per-plug
+    # ``auto_off_after_drying`` toggles.
+    async def on_drying_complete(printer_id: int, _ams_id: int):
+        async with async_session() as db:
+            try:
+                await smart_plug_manager.on_drying_complete(printer_id, db)
+            except Exception as e:
+                logging.getLogger(__name__).warning(
+                    "Smart-plug drying auto-off failed for printer %s: %s", printer_id, e
+                )
+
+    printer_manager.set_drying_complete_callback(on_drying_complete)
+
     # Initialize MQTT relay from settings
     async with async_session() as db:
         from backend.app.api.routes.settings import get_setting

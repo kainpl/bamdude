@@ -244,6 +244,9 @@ class PrinterManager:
         self._on_status_change: Callable[[int, PrinterState], None] | None = None
         self._on_ams_change: Callable[[int, list], None] | None = None
         self._on_layer_change: Callable[[int, int], None] | None = None
+        # #1349: fires when an AMS on the connected printer finishes a
+        # drying cycle. Receives ``(printer_id, ams_id)``.
+        self._on_drying_complete: Callable[[int, int], None] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         # Track who started the current print (Issue #206)
         self._current_print_user: dict[int, dict] = {}  # {printer_id: {"user_id": int, "username": str}}
@@ -383,6 +386,14 @@ class PrinterManager:
         """Set callback for layer change events. Receives (printer_id, layer_num)."""
         self._on_layer_change = callback
 
+    def set_drying_complete_callback(self, callback: Callable[[int, int], None]):
+        """Set callback for AMS drying completion events (#1349).
+
+        Receives ``(printer_id, ams_id)``. Fires once per falling edge of
+        ``dry_time`` (>0 → 0) for each AMS unit on the connected printer.
+        """
+        self._on_drying_complete = callback
+
     def _schedule_async(self, coro):
         """Schedule an async coroutine from a sync context.
 
@@ -439,6 +450,10 @@ class PrinterManager:
             if self._on_layer_change:
                 self._schedule_async(self._on_layer_change(printer_id, layer_num))
 
+        def on_drying_complete(ams_id: int):
+            if self._on_drying_complete:
+                self._schedule_async(self._on_drying_complete(printer_id, ams_id))
+
         def on_macro_complete(macro_name: str, status: str):
             self._schedule_async(self._broadcast_macro_complete(printer_id, macro_name, status))
 
@@ -469,6 +484,7 @@ class PrinterManager:
             on_macro_complete=on_macro_complete,
             on_kprofiles_changed=on_kprofiles_changed,
             on_first_status=on_first_status,
+            on_drying_complete=on_drying_complete,
         )
 
         # Carry print-tracking state across the client recreation so a

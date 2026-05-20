@@ -1865,6 +1865,9 @@ export interface SmartPlug {
   off_delay_mode: 'time' | 'temperature';
   off_delay_minutes: number;
   off_temp_threshold: number;
+  // #1349: auto-off after AMS drying. Independent of auto_off (print-finish).
+  auto_off_after_drying: boolean;
+  off_delay_after_drying_minutes: number;
   username: string | null;
   password: string | null;
   // Power alerts
@@ -1936,6 +1939,9 @@ export interface SmartPlugCreate {
   off_delay_mode?: 'time' | 'temperature';
   off_delay_minutes?: number;
   off_temp_threshold?: number;
+  // #1349
+  auto_off_after_drying?: boolean;
+  off_delay_after_drying_minutes?: number;
   username?: string | null;
   password?: string | null;
   // Power alerts
@@ -1999,6 +2005,9 @@ export interface SmartPlugUpdate {
   off_delay_mode?: 'time' | 'temperature';
   off_delay_minutes?: number;
   off_temp_threshold?: number;
+  // #1349
+  auto_off_after_drying?: boolean;
+  off_delay_after_drying_minutes?: number;
   username?: string | null;
   password?: string | null;
   // Power alerts

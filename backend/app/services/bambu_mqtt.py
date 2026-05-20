@@ -558,6 +558,7 @@ class BambuMQTTClient:
         on_macro_complete: Callable[[str, str], None] | None = None,
         on_kprofiles_changed: Callable[[], None] | None = None,
         on_first_status: Callable[[str, str], None] | None = None,
+        on_drying_complete: Callable[[int], None] | None = None,
     ):
         self.ip_address = ip_address
         self.serial_number = serial_number
@@ -569,6 +570,13 @@ class BambuMQTTClient:
         self.on_ams_change = on_ams_change
         self.on_layer_change = on_layer_change
         self.on_macro_complete = on_macro_complete
+        # #1349: fired when an AMS unit's ``dry_time`` falls from >0 to 0
+        # — i.e. the drying cycle just finished (queue-triggered, ambient,
+        # or manual). Receives the AMS id of the unit that finished drying.
+        self.on_drying_complete = on_drying_complete
+        # Per-AMS previous ``dry_time``, used to detect the falling edge.
+        # Seeded lazily as we observe each AMS unit.
+        self._previous_dry_times: dict[int, int] = {}
         # Fires when the printer's K-profile push contains content that
         # differs from the last seen hash — covers MQTT (re)connect (first
         # push fills empty hash), set/edit/delete from extrusion_cali_*
@@ -2150,6 +2158,35 @@ class BambuMQTTClient:
                                 tray["remain"] = 0
 
         self.state.raw_data["ams"] = merged_ams
+
+        # Detect AMS drying-complete falling edge per-unit (#1349). When an
+        # AMS's ``dry_time`` transitions from >0 to 0 the cycle just
+        # finished — fire the callback so smart-plug auto-off-after-drying
+        # can run. Works identically for queue-triggered, ambient, and
+        # manual drying because we observe the firmware-reported state,
+        # not our own intent.
+        if self.on_drying_complete:
+            for ams_unit in merged_ams:
+                try:
+                    ams_id = int(ams_unit.get("id", -1))
+                except (TypeError, ValueError):
+                    continue
+                if ams_id < 0:
+                    continue
+                try:
+                    current = int(ams_unit.get("dry_time") or 0)
+                except (TypeError, ValueError):
+                    current = 0
+                previous = self._previous_dry_times.get(ams_id, 0)
+                self._previous_dry_times[ams_id] = current
+                if previous > 0 and current == 0:
+                    logger.info(
+                        "[%s] AMS %d drying complete (dry_time %d → 0)",
+                        self.serial_number,
+                        ams_id,
+                        previous,
+                    )
+                    self.on_drying_complete(ams_id)
 
         # Apply cached AMS firmware/SN from get_version (handles ordering and id type mismatches)
         self._apply_ams_version_cache(merged_ams)
