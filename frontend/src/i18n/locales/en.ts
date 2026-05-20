@@ -2522,7 +2522,22 @@ export default {
       creating: 'Creating...',
       saving: 'Saving...',
       saveChanges: 'Save Changes',
-      advancedAuthSubtitle: 'with Advanced Authentication'
+      advancedAuthSubtitle: 'with Advanced Authentication',
+      // Manual LDAP user provisioning (upstream Bambuddy #1298)
+      tabLocal: 'Local',
+      tabLdap: 'LDAP',
+      ldapSearchLabel: 'Search LDAP directory',
+      ldapSearchPlaceholder: 'Type a name, username, or email…',
+      ldapMinChars: 'Type at least 2 characters to search',
+      ldapTypeToSearch: 'Type a name to search the directory',
+      ldapSearching: 'Searching…',
+      ldapNoResults: 'No directory users match this query',
+      ldapSearchError: 'Could not reach the LDAP directory',
+      ldapAlreadyProvisioned: 'Already provisioned',
+      ldapSelectedLabel: 'Selected',
+      ldapProvision: 'Provision user',
+      ldapProvisioning: 'Provisioning…',
+      ldapErrorProvision: 'Could not provision this user',
     },
     form: {
       username: 'Username',

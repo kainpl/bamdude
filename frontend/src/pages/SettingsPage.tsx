@@ -10,6 +10,7 @@ import { getCurrencySymbol, SUPPORTED_CURRENCIES } from '../utils/currency';
 import type { AppSettings, AppSettingsUpdate, APIKey, SmartPlug, SmartPlugStatus, NotificationProvider, NotificationTemplate, UpdateStatus, GitBackupStatus, CloudAuthStatus, UserCreate, UserUpdate, UserResponse, StorageUsageResponse, Macro, MacroCreate, MacroUpdate } from '../api/client';
 import { Card, CardContent, CardHeader } from '../components/Card';
 import { Button } from '../components/Button';
+import { LdapUserPicker } from '../components/LdapUserPicker';
 import { SmartPlugCard } from '../components/SmartPlugCard';
 import { AddSmartPlugModal } from '../components/AddSmartPlugModal';
 import { NotificationProviderCard } from '../components/NotificationProviderCard';
@@ -280,6 +281,10 @@ export function SettingsPage() {
 
   // User management state
   const [showCreateUserModal, setShowCreateUserModal] = useState(false);
+  // Tab toggle inside the create-user modal: Local form vs LDAP picker
+  // (upstream Bambuddy #1298). Resets whenever the modal is opened so a
+  // previously-active LDAP tab doesn't surprise the admin on next open.
+  const [createUserAuthSource, setCreateUserAuthSource] = useState<'local' | 'ldap'>('local');
   const [showEditUserModal, setShowEditUserModal] = useState(false);
   const [editingUserId, setEditingUserId] = useState<number | null>(null);
   const [deleteUserId, setDeleteUserId] = useState<number | null>(null);
@@ -5356,6 +5361,7 @@ export function SettingsPage() {
                           size="sm"
                           onClick={() => {
                             setShowCreateUserModal(true);
+                            setCreateUserAuthSource('local');
                             setUserFormData({ username: '', password: '', email: '', confirmPassword: '', role: 'user', group_ids: [] });
                           }}
                         >
@@ -5577,6 +5583,48 @@ export function SettingsPage() {
               </div>
             </CardHeader>
             <CardContent>
+              {/* Local / LDAP tab toggle — only when LDAP is enabled.
+                  Upstream Bambuddy #1298. When LDAP tab is active the rest
+                  of the local-create form is hidden and replaced by the
+                  directory picker; the picker calls our onSuccess handler
+                  to close the modal + invalidate the users query. */}
+              {ldapStatus?.ldap_enabled && (
+                <div className="flex gap-2 mb-4 border-b border-bambu-dark-tertiary">
+                  <button
+                    type="button"
+                    onClick={() => setCreateUserAuthSource('local')}
+                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                      createUserAuthSource === 'local'
+                        ? 'border-bambu-green text-white'
+                        : 'border-transparent text-bambu-gray hover:text-white'
+                    }`}
+                  >
+                    {t('users.modal.tabLocal')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCreateUserAuthSource('ldap')}
+                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                      createUserAuthSource === 'ldap'
+                        ? 'border-bambu-green text-white'
+                        : 'border-transparent text-bambu-gray hover:text-white'
+                    }`}
+                  >
+                    {t('users.modal.tabLdap')}
+                  </button>
+                </div>
+              )}
+
+              {createUserAuthSource === 'ldap' ? (
+                <LdapUserPicker
+                  onSuccess={() => {
+                    setShowCreateUserModal(false);
+                    setCreateUserAuthSource('local');
+                    queryClient.invalidateQueries({ queryKey: ['users'] });
+                  }}
+                />
+              ) : (
+              <>
               <div className="space-y-4">
                 <div>
                   <label className="block text-sm font-medium text-white mb-2">{t('settings.username')}</label>
@@ -5673,6 +5721,8 @@ export function SettingsPage() {
                   )}
                 </Button>
               </div>
+              </>
+              )}
             </CardContent>
           </Card>
         </div>

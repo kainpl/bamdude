@@ -3423,6 +3423,16 @@ export interface UserResponse {
   created_at: string;
 }
 
+/** One match from GET /auth/ldap/search — surfaced in the admin UI when
+ *  the admin manually onboards LDAP users (upstream Bambuddy #1298). */
+export interface LDAPSearchResult {
+  username: string;
+  email: string | null;
+  display_name: string | null;
+  dn: string;
+  already_provisioned: boolean;
+}
+
 export interface UserCreate {
   username: string;
   password?: string;  // Optional when advanced auth is enabled
@@ -6877,6 +6887,17 @@ export const api = {
     request<PrintOptionsPreferenceResponse>('/print-option-preferences/admin/copy', {
       method: 'POST',
       body: JSON.stringify(body),
+    }),
+
+  // ---------------------------------------------------------------------------
+  // Manual LDAP user provisioning (upstream Bambuddy #1298 / commit d6364646)
+  // ---------------------------------------------------------------------------
+  searchLDAPDirectory: (q: string) =>
+    request<LDAPSearchResult[]>(`/auth/ldap/search?q=${encodeURIComponent(q)}`),
+  provisionLDAPUser: (username: string) =>
+    request<UserResponse>('/auth/ldap/provision', {
+      method: 'POST',
+      body: JSON.stringify({ username }),
     }),
 };
 

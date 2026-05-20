@@ -2538,7 +2538,22 @@ export default {
       creating: 'Створення...',
       saving: 'Збереження...',
       saveChanges: 'Зберегти зміни',
-      advancedAuthSubtitle: 'з розширеною автентифікацією'
+      advancedAuthSubtitle: 'з розширеною автентифікацією',
+      // Manual LDAP user provisioning (upstream Bambuddy #1298)
+      tabLocal: 'Локальний',
+      tabLdap: 'LDAP',
+      ldapSearchLabel: 'Пошук у LDAP-директорії',
+      ldapSearchPlaceholder: 'Ім\'я, логін або email…',
+      ldapMinChars: 'Введіть принаймні 2 символи',
+      ldapTypeToSearch: 'Введіть ім\'я для пошуку в директорії',
+      ldapSearching: 'Пошук…',
+      ldapNoResults: 'Жодного користувача не знайдено',
+      ldapSearchError: 'Не вдалось зв\'язатись з LDAP-директорією',
+      ldapAlreadyProvisioned: 'Вже створений',
+      ldapSelectedLabel: 'Вибрано',
+      ldapProvision: 'Створити користувача',
+      ldapProvisioning: 'Створення…',
+      ldapErrorProvision: 'Не вдалось створити користувача',
     },
     form: {
       username: "Ім'я користувача",
