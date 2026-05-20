@@ -98,18 +98,42 @@ async def _get_printer_serial(printer_id: int) -> str:
 def _resolve_global_tray_id(slot_id: int, slot_to_tray: list | None, ams_trays: dict | None = None) -> int:
     """Map a 1-based slot_id to a global_tray_id using optional custom mapping.
 
-    Custom mapping: slot_to_tray[slot_id - 1] is used when >= 0.
-    Position-based default: uses sorted ams_trays keys so external spools (ID 254/255)
-    naturally follow standard AMS trays, matching the slicer's slot numbering.
-    A value of -1 in the custom mapping means unmapped (uses position-based default).
-    Final fallback: slot_id - 1 (legacy, works for pure AMS without external spools).
+    Custom mapping: ``slot_to_tray[slot_id - 1]`` is used when ``>= 0``.
+
+    A value of ``-1`` in the custom mapping means the slicer routed this
+    slot to the **external spool**. BambuStudio converts virtual tray IDs
+    (254 / 255) to ``-1`` in the flat ``ams_mapping`` array before sending
+    it to the printer — see ``start_print()`` in ``bambu_mqtt.py`` which
+    documents this convention. We mirror it here: when ``-1`` is seen,
+    look up the external spool's actual ``global_tray_id`` (254 / 255) in
+    ``ams_trays`` rather than falling through to the position-based
+    default (which would map ``slot_id=1`` to the first AMS tray and
+    credit an unrelated spool — upstream Bambuddy #1276, regression of
+    #853).
+
+    Position-based default: uses sorted ``ams_trays`` keys so external
+    spools (ID 254 / 255) naturally follow standard AMS trays, matching
+    the slicer's slot numbering.
+
+    Final fallback: ``slot_id - 1`` (legacy, works for pure AMS without
+    external spools).
     """
     if slot_to_tray and slot_id <= len(slot_to_tray):
         mapped_tray = slot_to_tray[slot_id - 1]
         if mapped_tray >= 0:
             return mapped_tray
-    # Position-based default: sort available tray IDs so external spools (254/255)
-    # come after standard AMS trays, matching the slicer's slot assignment order.
+        if mapped_tray == -1 and ams_trays:
+            # ``-1`` means external spool. 254 = ``VIRTUAL_TRAY_DEPUTY_ID``
+            # (main on single-nozzle, left / deputy on H2D dual-nozzle);
+            # 255 = ``VIRTUAL_TRAY_MAIN_ID``. Prefer 254 when both exist
+            # since that's what single-nozzle printers report via
+            # ``tray_now`` (upstream Bambuddy #1276 / commit 6fe00adb).
+            for ext_id in (254, 255):
+                if ext_id in ams_trays:
+                    return ext_id
+    # Position-based default: sort available tray IDs so external spools
+    # (254 / 255) come after standard AMS trays, matching the slicer's
+    # slot assignment order.
     if ams_trays:
         sorted_tray_ids = sorted(ams_trays.keys())
         if slot_id <= len(sorted_tray_ids):
