@@ -620,6 +620,204 @@ def _format_bytes(size_bytes: int) -> str:
     return f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
 
 
+async def _collect_auth_info(db: AsyncSession) -> dict:
+    """Auth-related config stored OUTSIDE the settings table.
+
+    The settings passthrough already captures ``ldap_*`` /
+    ``advanced_auth_enabled`` etc. The blocks below come from dedicated
+    tables the bundle didn't previously surface — every recent SSO / 2FA
+    / group bug needed this to triage. Counts and public labels only, no
+    secrets (upstream Bambuddy #1312).
+    """
+    from backend.app.models.api_key import APIKey
+    from backend.app.models.group import Group
+    from backend.app.models.long_lived_token import LongLivedToken
+    from backend.app.models.oidc_provider import OIDCProvider, UserOIDCLink
+    from backend.app.models.user_otp_code import UserOTPCode
+    from backend.app.models.user_totp import UserTOTP
+
+    now = datetime.now(timezone.utc)
+    auth: dict = {}
+
+    # OIDC providers — names are public (login-button labels), no secrets.
+    providers = (await db.execute(select(OIDCProvider).order_by(OIDCProvider.id))).scalars().all()
+    oidc_list = []
+    for p in providers:
+        try:
+            link_count = (
+                await db.execute(select(func.count(UserOIDCLink.id)).where(UserOIDCLink.provider_id == p.id))
+            ).scalar() or 0
+        except Exception:
+            link_count = None
+        oidc_list.append(
+            {
+                "name": p.name,
+                "is_enabled": p.is_enabled,
+                "scopes": p.scopes,
+                "email_claim": p.email_claim,
+                "require_email_verified": p.require_email_verified,
+                "auto_create_users": p.auto_create_users,
+                "auto_link_existing_accounts": p.auto_link_existing_accounts,
+                "has_default_group": p.default_group_id is not None,
+                "has_icon": bool(p.icon_url),
+                "linked_user_count": link_count,
+            }
+        )
+    auth["oidc_providers"] = oidc_list
+
+    # 2FA enrollment — counts only.
+    auth["users_with_totp"] = (
+        await db.execute(select(func.count(UserTOTP.id)).where(UserTOTP.is_enabled.is_(True)))
+    ).scalar() or 0
+    auth["email_otp_codes_pending"] = (
+        await db.execute(
+            select(func.count(UserOTPCode.id)).where(
+                UserOTPCode.used.is_(False),
+                UserOTPCode.expires_at > now,
+            )
+        )
+    ).scalar() or 0
+
+    # API keys.
+    auth["api_keys_total"] = (await db.execute(select(func.count(APIKey.id)))).scalar() or 0
+    auth["api_keys_enabled"] = (
+        await db.execute(select(func.count(APIKey.id)).where(APIKey.enabled.is_(True)))
+    ).scalar() or 0
+    auth["api_keys_expired"] = (
+        await db.execute(select(func.count(APIKey.id)).where(APIKey.expires_at.is_not(None), APIKey.expires_at < now))
+    ).scalar() or 0
+
+    # Long-lived tokens (camera-stream tokens used by kiosks etc.).
+    auth["long_lived_tokens_total"] = (await db.execute(select(func.count(LongLivedToken.id)))).scalar() or 0
+    auth["long_lived_tokens_active"] = (
+        await db.execute(
+            select(func.count(LongLivedToken.id)).where(
+                LongLivedToken.revoked_at.is_(None),
+                LongLivedToken.expires_at > now,
+            )
+        )
+    ).scalar() or 0
+
+    # Groups — system vs custom split matters for permission triage.
+    auth["groups_system"] = (
+        await db.execute(select(func.count(Group.id)).where(Group.is_system.is_(True)))
+    ).scalar() or 0
+    auth["groups_custom"] = (
+        await db.execute(select(func.count(Group.id)).where(Group.is_system.is_(False)))
+    ).scalar() or 0
+    return auth
+
+
+async def _collect_library_info(db: AsyncSession) -> dict:
+    """Library / folder / external / makerworld totals (upstream #1312)."""
+    from backend.app.models.external_link import ExternalLink
+    from backend.app.models.library import LibraryFile, LibraryFolder
+
+    info: dict = {}
+    info["library_files_total"] = (
+        await db.execute(select(func.count(LibraryFile.id)).where(LibraryFile.deleted_at.is_(None)))
+    ).scalar() or 0
+    info["library_files_in_trash"] = (
+        await db.execute(select(func.count(LibraryFile.id)).where(LibraryFile.deleted_at.is_not(None)))
+    ).scalar() or 0
+    info["library_folders_total"] = (await db.execute(select(func.count(LibraryFolder.id)))).scalar() or 0
+    info["external_folders_total"] = (
+        await db.execute(select(func.count(LibraryFolder.id)).where(LibraryFolder.is_external.is_(True)))
+    ).scalar() or 0
+    info["external_links_total"] = (await db.execute(select(func.count(ExternalLink.id)))).scalar() or 0
+    # MakerWorld imports are LibraryFile rows with source_type='makerworld'.
+    info["makerworld_imports_total"] = (
+        await db.execute(
+            select(func.count(LibraryFile.id)).where(
+                LibraryFile.deleted_at.is_(None),
+                LibraryFile.source_type == "makerworld",
+            )
+        )
+    ).scalar() or 0
+    return info
+
+
+async def _collect_inventory_info(db: AsyncSession) -> dict:
+    """Spool / k-profile totals (upstream #1312)."""
+    from backend.app.models.spool import Spool
+    from backend.app.models.spool_k_profile import SpoolKProfile
+    from backend.app.models.spoolman_k_profile import SpoolmanKProfile
+
+    return {
+        "spools_internal": (await db.execute(select(func.count(Spool.id)))).scalar() or 0,
+        "k_profiles_internal": (await db.execute(select(func.count(SpoolKProfile.id)))).scalar() or 0,
+        "k_profiles_spoolman": (await db.execute(select(func.count(SpoolmanKProfile.id)))).scalar() or 0,
+    }
+
+
+async def _collect_queue_info(db: AsyncSession) -> dict:
+    """Print-queue health: pending count + oldest pending age (upstream #1312)."""
+    from backend.app.models.print_queue import PrintQueueItem
+
+    info: dict = {}
+    info["pending_total"] = (
+        await db.execute(select(func.count(PrintQueueItem.id)).where(PrintQueueItem.status == "pending"))
+    ).scalar() or 0
+    info["manual_start_pending"] = (
+        await db.execute(
+            select(func.count(PrintQueueItem.id)).where(
+                PrintQueueItem.status == "pending",
+                PrintQueueItem.manual_start.is_(True),
+            )
+        )
+    ).scalar() or 0
+    oldest = (
+        await db.execute(select(func.min(PrintQueueItem.created_at)).where(PrintQueueItem.status == "pending"))
+    ).scalar()
+    if oldest is not None:
+        if oldest.tzinfo is None:
+            oldest = oldest.replace(tzinfo=timezone.utc)
+        info["oldest_pending_age_seconds"] = int((datetime.now(timezone.utc) - oldest).total_seconds())
+    else:
+        info["oldest_pending_age_seconds"] = None
+    return info
+
+
+async def _collect_maintenance_info(db: AsyncSession) -> dict:
+    """Maintenance schedule totals (upstream #1312)."""
+    from backend.app.models.maintenance import PrinterMaintenance
+
+    return {
+        "items_total": (await db.execute(select(func.count(PrinterMaintenance.id)))).scalar() or 0,
+        "items_enabled": (
+            await db.execute(select(func.count(PrinterMaintenance.id)).where(PrinterMaintenance.enabled.is_(True)))
+        ).scalar()
+        or 0,
+    }
+
+
+async def _collect_git_backup_info(db: AsyncSession) -> dict:
+    """Git-backup configs: count per provider + recent-failure indicator.
+
+    BamDude's ``GitBackupConfig`` supports GitHub / GitLab / Gitea /
+    Forgejo (broader than upstream's GitHub-only model), so the provider
+    histogram naturally covers all four (upstream #1312).
+    """
+    from backend.app.models.git_backup import GitBackupConfig
+
+    rows = (await db.execute(select(GitBackupConfig))).scalars().all()
+    providers_used: dict[str, int] = {}
+    last_failure_count = 0
+    schedule_enabled_count = 0
+    for cfg in rows:
+        providers_used[cfg.provider] = providers_used.get(cfg.provider, 0) + 1
+        if cfg.last_backup_status == "failed":
+            last_failure_count += 1
+        if cfg.schedule_enabled:
+            schedule_enabled_count += 1
+    return {
+        "configs_total": len(rows),
+        "providers_used": providers_used,
+        "schedule_enabled_count": schedule_enabled_count,
+        "last_failure_count": last_failure_count,
+    }
+
+
 async def _collect_support_info() -> dict:
     """Collect all support information."""
     in_docker = is_running_in_docker()
@@ -685,6 +883,32 @@ async def _collect_support_info() -> dict:
         printers = result.scalars().all()
         statuses = printer_manager.get_all_statuses()
 
+        # Obico per-printer enablement (upstream Bambuddy #1312). The
+        # ``obico_enabled_printers`` setting is a JSON id list; an empty /
+        # absent value means "all printers" (mirrors obico_detection.py).
+        # Read straight from Settings — ``info["settings"]`` isn't populated
+        # until later in this function (the passthrough block runs after
+        # the printers loop).
+        obico_global = False
+        obico_printer_ids: set[int] | None = None
+        try:
+            obico_rows = (
+                (
+                    await db.execute(
+                        select(Settings).where(Settings.key.in_(("obico_enabled", "obico_enabled_printers")))
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            obico_raw = {s.key: (s.value or "") for s in obico_rows}
+            obico_global = obico_raw.get("obico_enabled", "false").lower() == "true"
+            raw_ids = obico_raw.get("obico_enabled_printers", "")
+            if raw_ids:
+                obico_printer_ids = set(json.loads(raw_ids))
+        except Exception:
+            obico_printer_ids = None
+
         # Check reachability in parallel
         reachability_tasks = [_check_port(p.ip_address, 8883) for p in printers]
         reachable_results = await asyncio.gather(*reachability_tasks, return_exceptions=True)
@@ -727,6 +951,9 @@ async def _collect_support_info() -> dict:
                     "has_vt_tray": has_vt_tray,
                     "external_camera_configured": bool(printer.external_camera_url),
                     "plate_detection_enabled": printer.plate_detection_enabled,
+                    # Obico AI failure detection on this printer: global flag
+                    # AND (all-printers OR this printer in the id list) (#1312).
+                    "obico_enabled": obico_global and (obico_printer_ids is None or printer.id in obico_printer_ids),
                     "hms_error_count": len(state.hms_errors) if state else 0,
                     "developer_mode": state.developer_mode if state else None,
                     "nozzle_rack_count": len(state.nozzle_rack) if state else 0,
@@ -835,6 +1062,35 @@ async def _collect_support_info() -> dict:
         except Exception:
             logger.debug("Failed to collect database health info", exc_info=True)
 
+    # Feature-table diagnostics (upstream Bambuddy #1312). Each opens its
+    # own session and is best-effort — one feature's collector failing
+    # never blanks the rest of the bundle.
+    try:
+        async with async_session() as auth_db:
+            info["auth"] = await _collect_auth_info(auth_db)
+    except Exception:
+        logger.debug("Failed to collect auth info", exc_info=True)
+    try:
+        async with async_session() as lib_db:
+            info["library"] = await _collect_library_info(lib_db)
+    except Exception:
+        logger.debug("Failed to collect library info", exc_info=True)
+    try:
+        async with async_session() as inv_db:
+            info["inventory"] = await _collect_inventory_info(inv_db)
+    except Exception:
+        logger.debug("Failed to collect inventory info", exc_info=True)
+    try:
+        async with async_session() as q_db:
+            info["queue"] = await _collect_queue_info(q_db)
+    except Exception:
+        logger.debug("Failed to collect queue info", exc_info=True)
+    try:
+        async with async_session() as m_db:
+            info["maintenance"] = await _collect_maintenance_info(m_db)
+    except Exception:
+        logger.debug("Failed to collect maintenance info", exc_info=True)
+
     # Integrations (lazy imports to avoid circular dependencies)
     info.setdefault("integrations", {})
 
@@ -885,6 +1141,14 @@ async def _collect_support_info() -> dict:
         info["integrations"]["slicer_api"] = await _collect_slicer_api_info()
     except Exception:
         logger.debug("Failed to collect slicer-API info", exc_info=True)
+
+    # Git-backup configs (GitHub / GitLab / Gitea / Forgejo) — provider
+    # histogram + recent-failure indicator (upstream Bambuddy #1312).
+    try:
+        async with async_session() as gb_db:
+            info["integrations"]["git_backup"] = await _collect_git_backup_info(gb_db)
+    except Exception:
+        logger.debug("Failed to collect git-backup info", exc_info=True)
 
     # Dependencies
     try:

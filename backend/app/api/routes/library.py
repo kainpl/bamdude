@@ -1,5 +1,6 @@
 """API routes for File Manager (Library) functionality."""
 
+import asyncio
 import base64
 import binascii
 import contextlib
@@ -1262,6 +1263,58 @@ async def create_external_folder(
     )
 
 
+async def _backfill_external_mesh_thumbnails(folder_ids: list[int]) -> None:
+    """Generate STL / OBJ thumbnails for an external folder tree in the background.
+
+    Spawned via ``asyncio.create_task`` from ``scan_external_folder`` so the
+    HTTP request can return as soon as the filesystem walk + folder / file
+    rows are committed. Thumbnails for thousands of mesh files would
+    otherwise hold the request open for many minutes (each file triggers a
+    ``trimesh.load`` + matplotlib render, ~1-5s each) and the FE modal times
+    out before the final ``db.commit()`` runs — the original symptom in
+    upstream Bambuddy #1299 where subdirectories never showed up because
+    nothing got committed.
+
+    Opens its own session because the request session is closed by the time
+    this task starts running. Commits per-file so a worker restart mid-run
+    only loses the in-flight file, and processes one file at a time to avoid
+    memory pressure on systems with many huge meshes.
+    """
+    if not folder_ids:
+        return
+    from backend.app.core.database import async_session
+
+    thumbnails_dir = get_library_thumbnails_dir()
+    async with async_session() as db:
+        result = await db.execute(
+            LibraryFile.active().where(
+                LibraryFile.folder_id.in_(folder_ids),
+                LibraryFile.file_type.in_(("stl", "obj")),
+                LibraryFile.thumbnail_path.is_(None),
+            )
+        )
+        mesh_files = result.scalars().all()
+        if not mesh_files:
+            return
+        logger.info(
+            "Backfilling mesh thumbnails: %d file(s) across %d folder(s)",
+            len(mesh_files),
+            len(folder_ids),
+        )
+        for mesh_file in mesh_files:
+            abs_path = to_absolute_path(mesh_file.file_path)
+            if not abs_path or not abs_path.exists():
+                continue
+            try:
+                thumb_path = generate_stl_thumbnail(abs_path, thumbnails_dir)
+            except Exception as exc:  # noqa: BLE001 — never let one bad mesh kill the rest
+                logger.debug("Mesh thumbnail backfill skipped %s: %s", abs_path, exc)
+                continue
+            if thumb_path:
+                mesh_file.thumbnail_path = to_relative_path(Path(thumb_path))
+                await db.commit()
+
+
 @router.post("/folders/{folder_id}/scan")
 async def scan_external_folder(
     folder_id: int,
@@ -1417,16 +1470,14 @@ async def scan_external_folder(
                 except Exception as e:
                     logger.debug("Failed to extract metadata from external 3mf %s: %s", filepath, e)
 
-            # Generate thumbnail for mesh files (STL + OBJ — trimesh handles
-            # both via extension dispatch, the renderer is format-agnostic).
-            if file_type in ("stl", "obj") and thumbnail_path is None:
-                try:
-                    thumb_dir = get_library_thumbnails_dir()
-                    thumb_result = generate_stl_thumbnail(str(filepath), str(thumb_dir))
-                    if thumb_result:
-                        thumbnail_path = to_relative_path(Path(thumb_result))
-                except Exception as e:
-                    logger.debug("Failed to generate mesh thumbnail for external %s: %s", filepath, e)
+            # Mesh thumbnails (STL + OBJ — trimesh handles both via extension
+            # dispatch) are DEFERRED to a background task spawned after the
+            # scan's db.commit() — see _backfill_external_mesh_thumbnails.
+            # Doing them inline would block the HTTP request for minutes on a
+            # large NAS mount (each file is a trimesh.load + matplotlib render,
+            # ~1-5s) and the FE modal would time out before the commit ran —
+            # the original symptom in upstream Bambuddy #1299 where
+            # subdirectories never showed up because nothing got committed.
 
             # Extract gcode thumbnail — only for raw .gcode files; sliced
             # .gcode.3mf already went through the 3MF parser branch above.
@@ -1507,6 +1558,22 @@ async def scan_external_folder(
             await db.delete(sub)
 
     await db.commit()
+
+    # Spawn mesh-thumbnail backfill in the background — the scan endpoint
+    # returns immediately so the FE modal closes and subdirectories are
+    # visible right away; thumbnails fill in over the following seconds /
+    # minutes as the task processes each STL/OBJ file. Survives FE refresh
+    # — the task lives in the FastAPI event loop, not the request scope.
+    # ``folder_cache.values()`` covers the root + every pre-existing
+    # subfolder + every subfolder created during this scan;
+    # ``all_folder_ids`` on its own would miss the newly-created ones.
+    # Fire-and-forget like the other route-level background scans
+    # (discovery / tasmota); the task opens its own session and the
+    # autouse leaked-task drain handles it in tests (#1299).
+    asyncio.create_task(  # noqa: RUF006 — fire-and-forget backfill, see comment above
+        _backfill_external_mesh_thumbnails(list(set(folder_cache.values()))),
+        name=f"mesh-backfill-folder-{folder_id}",
+    )
 
     return {"status": "success", "added": added, "removed": removed}
 
