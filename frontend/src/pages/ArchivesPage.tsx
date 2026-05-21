@@ -962,7 +962,7 @@ function ArchiveCard({
 
         {/* Title */}
         <div className="flex items-center justify-between gap-2 mb-1">
-          <h3 className="min-w-0 font-medium text-white truncate">
+          <h3 className="min-w-0 font-medium text-white truncate" title={archive.print_name || archive.filename}>
             {archive.print_name || archive.filename}
           </h3>
           <Button
