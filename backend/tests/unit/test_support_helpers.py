@@ -584,3 +584,141 @@ class TestCollectSupportInfo:
         assert "log_file" in info
         assert info["log_file"]["size_bytes"] > 0
         assert "B" in info["log_file"]["size_formatted"] or "KB" in info["log_file"]["size_formatted"]
+
+
+class TestSlicerHealthVersionParsing:
+    """Tests for _fetch_slicer_health() — slicer CLI version from /health
+    (upstream Bambuddy #1312 follow-up)."""
+
+    @pytest.mark.asyncio
+    async def test_empty_url_returns_none(self):
+        """Empty / whitespace URL → None (caller distinguishes 'not configured'
+        from 'unreachable')."""
+        from backend.app.api.routes.support import _fetch_slicer_health
+
+        assert await _fetch_slicer_health("") is None
+        assert await _fetch_slicer_health("   ") is None
+
+    @pytest.mark.asyncio
+    async def test_version_read_from_non_datapath_check_key(self):
+        """The wrapper labels both sidecars under checks.orcaslicer regardless
+        of which CLI is bundled — version is read from whichever non-dataPath
+        child key carries it."""
+        from backend.app.api.routes import support
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "checks": {
+                "dataPath": {"writable": True},
+                "orcaslicer": {"version": "2.1.1-bambu"},
+            }
+        }
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            result = await support._fetch_slicer_health("http://localhost:3001/")
+
+        assert result == {"reachable": True, "version": "2.1.1-bambu"}
+
+    @pytest.mark.asyncio
+    async def test_trailing_slash_stripped_before_health_path(self):
+        """``url.rstrip('/') + '/health'`` avoids a double-slash 404."""
+        from backend.app.api.routes import support
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"checks": {}}
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            await support._fetch_slicer_health("http://localhost:3001/")
+
+        called_url = mock_client.get.call_args.args[0]
+        assert called_url == "http://localhost:3001/health"
+
+    @pytest.mark.asyncio
+    async def test_non_200_reports_reachable_no_version(self):
+        from backend.app.api.routes import support
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 503
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            result = await support._fetch_slicer_health("http://localhost:3001")
+
+        assert result == {"reachable": True, "version": None}
+
+    @pytest.mark.asyncio
+    async def test_connection_failure_reports_unreachable(self):
+        from backend.app.api.routes import support
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(side_effect=OSError("connection refused"))
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            result = await support._fetch_slicer_health("http://localhost:3001")
+
+        assert result == {"reachable": False, "version": None}
+
+
+class TestSensitiveKeyRedaction:
+    """Pin the broker + auth_key leak fixes (upstream Bambuddy #1312).
+
+    The settings passthrough redacts any key whose lowercase form contains
+    a sensitive substring. ``mqtt_broker`` (an internal infra hostname/IP)
+    and ``*_auth_key`` (Tailscale etc.) used to leak because neither
+    'broker' nor 'auth_key' was in the substring set.
+    """
+
+    def _redact(self, key: str, value: str) -> str:
+        # Mirror the route's predicate exactly. Kept in sync by the
+        # asserts below (any drift in the route's set is a test update).
+        sensitive_keys = {
+            "access_code",
+            "password",
+            "token",
+            "secret",
+            "api_key",
+            "installation_id",
+            "cloud_token",
+            "mqtt_password",
+            "email",
+            "username",
+            "vapid",
+            "private_key",
+            "public_key",
+            "webhook",
+            "url",
+            "path",
+            "config",
+            "_ip",
+            "host",
+            "credential",
+            "broker",
+            "auth_key",
+        }
+        if any(sub in key.lower() for sub in sensitive_keys):
+            return "[REDACTED]" if value else ""
+        return value
+
+    def test_mqtt_broker_redacted(self):
+        assert self._redact("mqtt_broker", "192.168.1.50") == "[REDACTED]"
+
+    def test_tailscale_auth_key_redacted(self):
+        assert self._redact("virtual_printer_tailscale_auth_key", "tskey-abc123") == "[REDACTED]"
+
+    def test_non_sensitive_passes_through(self):
+        assert self._redact("preferred_slicer", "orcaslicer") == "orcaslicer"

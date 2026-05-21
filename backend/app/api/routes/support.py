@@ -494,6 +494,97 @@ async def _check_port(ip: str, port: int, timeout: float = 2.0) -> bool:
         return False
 
 
+async def _fetch_slicer_health(url: str, timeout: float = 2.0) -> dict | None:
+    """Fetch ``/health`` from a slicer sidecar and extract the CLI version.
+
+    Returns ``None`` when ``url`` is empty (so the caller can distinguish
+    "not configured" from "unreachable"). On any failure to fetch or
+    parse, returns ``{"reachable": False, "version": None}``. The
+    slicer-API wrapper labels both sidecars' CLI under
+    ``checks.orcaslicer`` regardless of which slicer is actually bundled
+    (cosmetic wrapper bug), so we read the version from whichever
+    non-``dataPath`` child key exists rather than hardcoding one. This
+    lets a bundle reviewer answer "is the user running the image they
+    think they are?" without a separate curl (upstream Bambuddy #1312
+    follow-up).
+    """
+    if not url or not url.strip():
+        return None
+    health_url = url.rstrip("/") + "/health"
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=timeout, verify=False) as client:  # noqa: S501 — local sidecars often self-signed
+            r = await client.get(health_url, follow_redirects=False)
+            if r.status_code != 200:
+                return {"reachable": True, "version": None}
+            try:
+                data = r.json()
+            except Exception:
+                return {"reachable": True, "version": None}
+            version = None
+            checks = data.get("checks") if isinstance(data, dict) else None
+            if isinstance(checks, dict):
+                for key, child in checks.items():
+                    if key == "dataPath":
+                        continue
+                    if isinstance(child, dict) and child.get("version"):
+                        version = child["version"]
+                        break
+            return {"reachable": True, "version": version}
+    except Exception:
+        return {"reachable": False, "version": None}
+
+
+async def _collect_slicer_api_info() -> dict:
+    """Reachability + CLI version for configured slicer-API sidecars.
+
+    Mirrors the URL-resolution precedence used by the real slicer routes
+    (``slicer_routing.resolve_sidecar_url``) — DB setting first, falling
+    back to ``settings.bambu_studio_api_url`` / ``settings.slicer_api_url``
+    which themselves respect the ``BAMBU_STUDIO_API_URL`` / ``SLICER_API_URL``
+    env vars and default to ``http://localhost:3001`` / ``:3003``. A
+    bundle-time check that only looked at the DB setting would return
+    ``null`` for every user who runs the sidecar via env var or on the
+    default port — i.e. most of them.
+
+    Reads URLs directly from ``Settings.value`` rather than from
+    ``info["settings"]`` (already redacted by the time the integrations
+    block runs — ``*_api_url`` matches the ``url`` keyword filter, so
+    pinging that value crashes httpx). Upstream Bambuddy #1312 (+ follow-up).
+    """
+    async with async_session() as db:
+        keys_we_need = (
+            "use_slicer_api",
+            "preferred_slicer",
+            "bambu_studio_api_url",
+            "orcaslicer_api_url",
+        )
+        rows = (await db.execute(select(Settings).where(Settings.key.in_(keys_we_need)))).scalars().all()
+        raw = {s.key: (s.value or "") for s in rows}
+
+    bs_db = raw.get("bambu_studio_api_url", "").strip()
+    oc_db = raw.get("orcaslicer_api_url", "").strip()
+    bs_url = bs_db or (settings.bambu_studio_api_url or "").strip()
+    oc_url = oc_db or (settings.slicer_api_url or "").strip()
+
+    bs_health = await _fetch_slicer_health(bs_url)
+    oc_health = await _fetch_slicer_health(oc_url)
+
+    return {
+        "enabled": (raw.get("use_slicer_api", "false") or "false").lower() == "true",
+        "preferred": raw.get("preferred_slicer", ""),
+        # URL-source accounting helps triage: was the URL set in the DB,
+        # or are we falling through to the env-var / default?
+        "bambu_studio_url_source": "db" if bs_db else ("env_or_default" if bs_url else "unset"),
+        "orcaslicer_url_source": "db" if oc_db else ("env_or_default" if oc_url else "unset"),
+        "bambu_studio_reachable": bs_health.get("reachable") if bs_health else None,
+        "orcaslicer_reachable": oc_health.get("reachable") if oc_health else None,
+        "bambu_studio_version": bs_health.get("version") if bs_health else None,
+        "orcaslicer_version": oc_health.get("version") if oc_health else None,
+    }
+
+
 def _get_container_memory_limit() -> int | None:
     """Read cgroup memory limit. Returns bytes or None."""
     # cgroup v2
@@ -698,6 +789,8 @@ async def _collect_support_info() -> dict:
             "_ip",  # IP address fields (e.g. virtual_printer_remote_interface_ip)
             "host",  # hostnames/FQDNs may leak internal infra layout
             "credential",  # generic credential-bearing keys (ldap_bind_credential, etc.)
+            "broker",  # mqtt_broker hostname/IP — internal infra (upstream #1312)
+            "auth_key",  # Tailscale / future auth-key settings (upstream #1312)
         }
         for s in all_settings:
             if any(sensitive in s.key.lower() for sensitive in sensitive_keys):
@@ -780,6 +873,18 @@ async def _collect_support_info() -> dict:
         }
     except Exception:
         logger.debug("Failed to collect Home Assistant info", exc_info=True)
+
+    # Slicer-API sidecar — reachability + CLI version per slicer. Triaging
+    # slicer-bundle / slice failures (e.g. #1312's "Name cannot be empty",
+    # which traced to a sidecar image pre-dating an endpoint) needs to know
+    # which image the operator is actually running. Reads URLs straight from
+    # Settings (not info["settings"], which has already redacted the ``url``
+    # keyword) and mirrors the route's DB → env-default URL precedence so
+    # the bundle reflects what the running app resolves at request time.
+    try:
+        info["integrations"]["slicer_api"] = await _collect_slicer_api_info()
+    except Exception:
+        logger.debug("Failed to collect slicer-API info", exc_info=True)
 
     # Dependencies
     try:
