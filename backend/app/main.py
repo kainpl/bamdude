@@ -2461,6 +2461,16 @@ async def on_print_start(printer_id: int, data: dict):
                 # Update archive status to printing
                 archive.status = "printing"
                 archive.started_at = datetime.now(timezone.utc)
+                # #1403 follow-up: our dispatcher normally creates the archive
+                # with printer_id already set, but reprint / adopted /
+                # externally-registered expected prints can reach this branch
+                # with printer_id=None. Leaving it unset permanently disables
+                # every path gated on archive.printer_id — the "Scan for
+                # timelapse" action, the per-printer Archives filter, and
+                # per-printer stats. Idempotent: a value matching the running
+                # printer is preserved (no clobber).
+                if archive.printer_id != printer_id:
+                    archive.printer_id = printer_id
                 await db.commit()
 
                 # Track as active print

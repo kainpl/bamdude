@@ -215,3 +215,69 @@ async def test_expected_archive_path_skips_timelapse_when_external_camera_disabl
         await on_print_start(1, {"filename": "test.3mf", "subtask_name": "test"})
 
         mock_start_session.assert_not_called()
+
+
+async def _run_expected_archive_print_start(mock_printer, mock_archive, filename):
+    """Drive on_print_start through the expected-archive branch under the full
+    patch stack. Used by the printer_id-assignment regressions below."""
+    mock_session = _build_session(mock_printer, mock_archive)
+    with (
+        patch("backend.app.main.async_session") as mock_session_maker,
+        patch("backend.app.main.notification_service") as mock_notif,
+        patch("backend.app.main.smart_plug_manager") as mock_plug,
+        patch("backend.app.main.ws_manager") as mock_ws,
+        patch("backend.app.main.printer_manager") as mock_pm,
+        patch("backend.app.main.mqtt_relay") as mock_relay,
+        patch("backend.app.main._record_energy_start", new_callable=AsyncMock),
+        patch("backend.app.main._load_objects_from_archive"),
+        patch("backend.app.main._store_spoolman_print_data", new_callable=AsyncMock),
+        patch("backend.app.main._send_print_start_notification", new_callable=AsyncMock),
+        patch("backend.app.main.notify_missing_spool_assignments_on_print_start", new_callable=AsyncMock),
+        patch("backend.app.main.mark_queue_printing_for_printer", new_callable=AsyncMock),
+        patch("backend.app.main.maybe_register_external_stagger", new_callable=AsyncMock),
+        patch("backend.app.services.macro_trigger.fire_event_macros", new_callable=AsyncMock),
+        patch("backend.app.api.routes.printers.clear_cover_cache"),
+        patch("backend.app.services.layer_timelapse.start_session"),
+    ):
+        mock_session_maker.return_value = mock_session
+        mock_notif.on_print_start = AsyncMock()
+        mock_plug.on_print_start = AsyncMock()
+        mock_ws.send_print_start = AsyncMock()
+        mock_ws.send_archive_updated = AsyncMock()
+        mock_relay.on_print_start = AsyncMock()
+        mock_pm.get_printer = MagicMock(return_value=MagicMock(name="Test", serial_number="TEST123"))
+
+        from backend.app.main import on_print_start
+
+        await on_print_start(1, {"filename": filename, "subtask_name": filename.replace(".3mf", "")})
+
+
+@pytest.mark.asyncio
+async def test_expected_archive_path_assigns_printer_id_when_unset():
+    """#1403 follow-up: a VP-queue / adopted expected archive created with
+    printer_id=None is promoted to the running printer in the expected-archive
+    branch, so the timelapse-scan + per-printer paths aren't disabled forever."""
+    mock_printer, mock_archive = _build_mocks(external_camera_enabled=False, external_camera_url=None)
+    mock_archive.filename = "vp_dispatched.3mf"
+    mock_archive.id = 77
+    mock_archive.printer_id = None
+    register_expected_print(1, "vp_dispatched.3mf", archive_id=77, ams_mapping=None)
+
+    await _run_expected_archive_print_start(mock_printer, mock_archive, "vp_dispatched.3mf")
+
+    assert mock_archive.printer_id == 1
+
+
+@pytest.mark.asyncio
+async def test_expected_archive_path_preserves_existing_printer_id():
+    """The assignment is idempotent: an archive that already carries the
+    running printer's id stays put (no clobber)."""
+    mock_printer, mock_archive = _build_mocks(external_camera_enabled=False, external_camera_url=None)
+    mock_archive.filename = "lib_file.3mf"
+    mock_archive.id = 88
+    mock_archive.printer_id = 1
+    register_expected_print(1, "lib_file.3mf", archive_id=88, ams_mapping=None)
+
+    await _run_expected_archive_print_start(mock_printer, mock_archive, "lib_file.3mf")
+
+    assert mock_archive.printer_id == 1
