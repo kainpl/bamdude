@@ -1,6 +1,7 @@
 """Integration tests for Updates API endpoints + version-comparison helpers."""
 
-from unittest.mock import AsyncMock, patch
+import time
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from httpx import AsyncClient
@@ -20,6 +21,9 @@ def reset_update_status():
         "message": "",
         "error": None,
     }
+    # Reset the GitHub rate-limit backoff window (#1420) — it's module-level
+    # state that would otherwise leak a backoff set by one test into the next.
+    updates._github_rate_limit_until = 0.0
     yield
 
 
@@ -287,3 +291,95 @@ class TestPrereleaseDetection:
         from backend.app.api.routes.updates import _is_release_prerelease
 
         assert await _is_release_prerelease({"tag_name": "v0.4.5", "prerelease": False}) is False
+
+
+class TestGithubRateLimitBackoff:
+    """#1420: the update checker backs off when GitHub returns a 403/429
+    rate-limit response instead of hammering api.github.com every poll."""
+
+    def _resp(self, status, headers=None, text=""):
+        r = MagicMock()
+        r.status_code = status
+        r.headers = headers or {}
+        r.text = text
+        return r
+
+    def test_detect_403_remaining_zero(self):
+        from backend.app.api.routes.updates import _is_github_rate_limit_response
+
+        assert _is_github_rate_limit_response(self._resp(403, {"X-RateLimit-Remaining": "0"})) is True
+
+    def test_detect_200_is_not_rate_limit(self):
+        from backend.app.api.routes.updates import _is_github_rate_limit_response
+
+        assert _is_github_rate_limit_response(self._resp(200, {"X-RateLimit-Remaining": "0"})) is False
+
+    def test_detect_body_fallback_when_header_stripped(self):
+        from backend.app.api.routes.updates import _is_github_rate_limit_response
+
+        assert _is_github_rate_limit_response(self._resp(403, {}, text="API rate limit exceeded for 1.2.3.4")) is True
+
+    def test_detect_404_is_not_rate_limit(self):
+        from backend.app.api.routes.updates import _is_github_rate_limit_response
+
+        assert _is_github_rate_limit_response(self._resp(404, {})) is False
+
+    def test_record_sets_backoff_window_from_reset_header(self):
+        from backend.app.api.routes import updates
+
+        reset = int(time.time()) + 600
+        updates._record_github_rate_limit(self._resp(403, {"X-RateLimit-Reset": str(reset)}))
+        assert updates._seconds_until_github_unblocked() > 0
+
+    def test_record_floors_past_reset_to_at_least_60s(self):
+        from backend.app.api.routes import updates
+
+        past = int(time.time()) - 100  # clock skew: reset epoch already elapsed
+        updates._record_github_rate_limit(self._resp(403, {"X-RateLimit-Reset": str(past)}))
+        assert updates._seconds_until_github_unblocked() > 30
+
+    @pytest.mark.asyncio
+    async def test_find_latest_release_short_circuits_during_backoff(self):
+        from backend.app.api.routes import updates
+
+        updates._github_rate_limit_until = time.time() + 600
+        with patch(
+            "backend.app.api.routes.updates.httpx.AsyncClient",
+            side_effect=AssertionError("must not contact GitHub during backoff"),
+        ):
+            assert await updates._find_latest_release(include_beta=False) is None
+
+    @pytest.mark.asyncio
+    async def test_find_latest_release_records_backoff_on_403(self):
+        from backend.app.api.routes import updates
+
+        reset = int(time.time()) + 600
+        fake_resp = self._resp(403, {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": str(reset)})
+
+        class _FakeClient:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, *a, **k):
+                return fake_resp
+
+        with patch("backend.app.api.routes.updates.httpx.AsyncClient", _FakeClient):
+            assert await updates._find_latest_release(include_beta=False) is None
+        assert updates._seconds_until_github_unblocked() > 0
+
+    @pytest.mark.asyncio
+    async def test_check_surfaces_retry_after_seconds(self, async_client: AsyncClient):
+        from backend.app.api.routes import updates
+
+        updates._github_rate_limit_until = time.time() + 600
+        resp = await async_client.get("/api/v1/updates/check")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("retry_after_seconds", 0) > 0
+        assert "rate limit" in (body.get("error") or "").lower()
