@@ -75,6 +75,10 @@ def _make_archive(archive_id=1, file_path=None):
     archive = MagicMock()
     archive.id = archive_id
     archive.file_path = file_path
+    # Explicit numeric default so the #1344 top-up logic (archive_grams -
+    # tracked_grams) never compares a MagicMock to a float. Tests that exercise
+    # the top-up path overwrite this with a real number.
+    archive.filament_used_grams = 0
     return archive
 
 
@@ -266,6 +270,120 @@ class TestCostCalculation:
         assert results[0]["weight_used"] == 30.0
         # Cost = 30g / 1000 * 15.0 = 0.45
         assert results[0]["cost"] == 0.45
+
+    @pytest.mark.asyncio
+    async def test_archive_cost_includes_untracked_filament_at_default_rate(self):
+        """#1344: a multi-color print where only one tray maps to an inventory
+        spool tops up the untracked grams at the global default rate so the
+        archive reflects the whole print, not just the tracked slot's share.
+
+        Reporter scenario shape: 110 g archive, only 10 g tracked by inventory
+        at $10/kg, default rate $10/kg → archive.cost = $1.10 (was ~$0.10)."""
+        spool = _make_spool(spool_id=1, label_weight=1000, cost_per_kg=10.0)
+        assignment = _make_assignment(spool_id=1)
+        archive = _make_archive(archive_id=10)
+        archive.filament_used_grams = 110.0  # whole print
+        archive.cost = None
+
+        _active_sessions[1] = PrintSession(
+            printer_id=1,
+            print_name="Test",
+            started_at=datetime.now(timezone.utc),
+            tray_remain_start={(0, 0): 80},
+            tray_now_at_start=0,
+        )
+
+        printer_manager = MagicMock()
+        printer_manager.get_status.return_value = SimpleNamespace(
+            raw_data={"ams": [{"id": 0, "tray": [{"id": 0, "remain": 70}]}]},
+            progress=100,
+            layer_num=50,
+            tray_now=0,
+        )
+
+        # 5th response is the archive re-selected by the cost-update block.
+        db = _mock_db_sequential([archive, None, assignment, spool, archive])
+
+        # Only 10 g tracked by inventory; the other 100 g had no spool record.
+        filament_usage = [{"slot_id": 1, "used_g": 10.0, "type": "PLA", "color": "#FF0000"}]
+
+        with (
+            patch("backend.app.core.config.settings") as mock_settings,
+            patch("backend.app.api.routes.settings.get_setting", return_value="10.0"),  # default $10/kg
+            patch(
+                "backend.app.utils.threemf_tools.extract_filament_usage_from_3mf",
+                return_value=filament_usage,
+            ),
+        ):
+            mock_settings.base_dir = MagicMock()
+            mock_path = MagicMock()
+            mock_path.exists.return_value = True
+            mock_settings.base_dir.__truediv__ = MagicMock(return_value=mock_path)
+
+            await on_print_complete(
+                printer_id=1,
+                data={"status": "completed"},
+                printer_manager=printer_manager,
+                db=db,
+                archive_id=10,
+            )
+
+        # tracked 10g * $10/kg = $0.10, + untracked 100g * $10/kg = $1.00 → $1.10
+        assert archive.cost == 1.1
+
+    @pytest.mark.asyncio
+    async def test_archive_cost_fully_tracked_unchanged_by_topup(self):
+        """#1344: when the tracked weight already covers the whole print, the
+        top-up adds nothing — single-color fully-tracked behaviour preserved."""
+        spool = _make_spool(spool_id=1, label_weight=1000, cost_per_kg=10.0)
+        assignment = _make_assignment(spool_id=1)
+        archive = _make_archive(archive_id=10)
+        archive.filament_used_grams = 20.0  # equals the tracked weight below
+        archive.cost = None
+
+        _active_sessions[1] = PrintSession(
+            printer_id=1,
+            print_name="Test",
+            started_at=datetime.now(timezone.utc),
+            tray_remain_start={(0, 0): 80},
+            tray_now_at_start=0,
+        )
+
+        printer_manager = MagicMock()
+        printer_manager.get_status.return_value = SimpleNamespace(
+            raw_data={"ams": [{"id": 0, "tray": [{"id": 0, "remain": 60}]}]},
+            progress=100,
+            layer_num=50,
+            tray_now=0,
+        )
+
+        db = _mock_db_sequential([archive, None, assignment, spool, archive])
+
+        filament_usage = [{"slot_id": 1, "used_g": 20.0, "type": "PLA", "color": "#FF0000"}]
+
+        with (
+            patch("backend.app.core.config.settings") as mock_settings,
+            patch("backend.app.api.routes.settings.get_setting", return_value="10.0"),
+            patch(
+                "backend.app.utils.threemf_tools.extract_filament_usage_from_3mf",
+                return_value=filament_usage,
+            ),
+        ):
+            mock_settings.base_dir = MagicMock()
+            mock_path = MagicMock()
+            mock_path.exists.return_value = True
+            mock_settings.base_dir.__truediv__ = MagicMock(return_value=mock_path)
+
+            await on_print_complete(
+                printer_id=1,
+                data={"status": "completed"},
+                printer_manager=printer_manager,
+                db=db,
+                archive_id=10,
+            )
+
+        # 20g tracked * $10/kg = $0.20; untracked grams = 0 → no top-up.
+        assert archive.cost == 0.2
 
     @pytest.mark.asyncio
     async def test_cost_zero_when_default_cost_is_zero(self):
