@@ -22,6 +22,12 @@ import {
 } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
 
+// Sentinel for the "System (slicer fallback)" pseudo-user. Real user ids
+// start at 1, so 0 is safe to mean "the per-model system row (user_id IS
+// NULL)". Never sent to the backend as a real FK — the upsert/delete paths
+// branch on it and call the dedicated /system endpoints instead.
+const SYSTEM_USER_ID = 0;
+
 const DEFAULT_PRINT_OPTIONS: PrintOptionsPreferenceData = {
   print_options: {
     bed_levelling: true,
@@ -63,10 +69,32 @@ export function PrintOptionsPreferencesPanel() {
 
   const [dialog, setDialog] = useState<DialogMode>({ kind: 'closed' });
 
-  const { data: entries, isLoading: loadingEntries } = useQuery({
+  const { data: adminEntries, isLoading: loadingEntries } = useQuery({
     queryKey: ['print-options-preferences-admin'],
     queryFn: api.listAllPrintOptionsPreferences,
   });
+
+  const { data: systemRows } = useQuery({
+    queryKey: ['print-options-preferences-system'],
+    queryFn: api.listSystemPrintOptionsPreferences,
+  });
+
+  // System fallback rows (user_id IS NULL) carry no user — surface them in
+  // the same table under the SYSTEM_USER_ID sentinel so an admin manages
+  // them alongside per-user profiles.
+  const entries = useMemo<PrintOptionsPreferenceAdminEntry[]>(() => {
+    const merged: PrintOptionsPreferenceAdminEntry[] = [...(adminEntries ?? [])];
+    for (const row of systemRows ?? []) {
+      merged.push({
+        user_id: SYSTEM_USER_ID,
+        username: t('printOptionsPrefs.systemUser'),
+        printer_model: row.printer_model,
+        options: row.options,
+        updated_at: row.updated_at,
+      });
+    }
+    return merged;
+  }, [adminEntries, systemRows, t]);
 
   const { data: users } = useQuery({
     queryKey: ['users'],
@@ -85,9 +113,12 @@ export function PrintOptionsPreferencesPanel() {
 
   const deleteMutation = useMutation({
     mutationFn: ({ userId, model }: { userId: number; model: string }) =>
-      api.adminDeletePrintOptionsPreference(userId, model),
+      userId === SYSTEM_USER_ID
+        ? api.deleteSystemPrintOptionsPreference(model)
+        : api.adminDeletePrintOptionsPreference(userId, model),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['print-options-preferences-admin'] });
+      queryClient.invalidateQueries({ queryKey: ['print-options-preferences-system'] });
       // Also invalidate per-user query keys so an open PrintModal re-fetches.
       queryClient.invalidateQueries({ queryKey: ['print-options-preference'] });
       showToast(t('printOptionsPrefs.toast.deleted'));
@@ -171,14 +202,16 @@ export function PrintOptionsPreferencesPanel() {
                     >
                       <Pencil className="w-4 h-4" />
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => setDialog({ kind: 'copy', src: entry })}
-                      className="p-1.5 text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary rounded"
-                      title={t('printOptionsPrefs.copyToUser')}
-                    >
-                      <Copy className="w-4 h-4" />
-                    </button>
+                    {entry.user_id !== SYSTEM_USER_ID && (
+                      <button
+                        type="button"
+                        onClick={() => setDialog({ kind: 'copy', src: entry })}
+                        className="p-1.5 text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary rounded"
+                        title={t('printOptionsPrefs.copyToUser')}
+                      >
+                        <Copy className="w-4 h-4" />
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => handleDelete(entry)}
@@ -270,19 +303,24 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
 
   const swapEligible = isSwapEligibleModel(printerModel);
 
+  const isSystemRow = userId === SYSTEM_USER_ID;
+
   const upsertMutation = useMutation({
     mutationFn: () => {
       // Strip swap_macros for non-A1 models so the row never carries a
       // misleading "execute=true" — the panel hides the controls in that
       // case, but a row edited after the model was changed could otherwise
-      // retain stale swap state.
-      const payload: PrintOptionsPreferenceData = swapEligible
-        ? data
-        : { ...data, swap_macros: { execute: false, events: [] } };
-      return api.adminUpsertPrintOptionsPreference(userId, printerModel.trim(), payload);
+      // retain stale swap state. System rows never carry swap macros (they
+      // only feed the virtual-printer slicer-silent fallback).
+      const payload: PrintOptionsPreferenceData =
+        swapEligible && !isSystemRow ? data : { ...data, swap_macros: { execute: false, events: [] } };
+      return isSystemRow
+        ? api.upsertSystemPrintOptionsPreference(printerModel.trim(), payload)
+        : api.adminUpsertPrintOptionsPreference(userId, printerModel.trim(), payload);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['print-options-preferences-admin'] });
+      queryClient.invalidateQueries({ queryKey: ['print-options-preferences-system'] });
       queryClient.invalidateQueries({ queryKey: ['print-options-preference'] });
       showToast(t('printOptionsPrefs.toast.saved'));
       onClose();
@@ -293,7 +331,10 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
   });
 
   const canSave =
-    userId > 0 && printerModel.trim().length > 0 && !collidesWithExisting && !upsertMutation.isPending;
+    (userId > 0 || isSystemRow) &&
+    printerModel.trim().length > 0 &&
+    !collidesWithExisting &&
+    !upsertMutation.isPending;
 
   const togglePrintOption = (key: keyof PrintOptionsPreferenceData['print_options']) => {
     setData((prev) => ({
@@ -338,12 +379,16 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
               onChange={(e) => setUserId(Number(e.target.value))}
               className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:outline-none focus:border-bambu-green disabled:opacity-60"
             >
+              <option value={SYSTEM_USER_ID}>{t('printOptionsPrefs.systemUser')}</option>
               {users.map((u) => (
                 <option key={u.id} value={u.id}>
                   {u.username}
                 </option>
               ))}
             </select>
+            {isSystemRow && (
+              <p className="text-xs text-bambu-gray mt-1">{t('printOptionsPrefs.systemHint')}</p>
+            )}
           </div>
 
           <div>
@@ -406,7 +451,7 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
           </div>
         </div>
 
-        {swapEligible && (
+        {swapEligible && !isSystemRow && (
           <div className="border-t border-bambu-dark-tertiary pt-3 mb-4">
             <h4 className="text-sm font-medium text-white mb-2">{t('printModal.swapMacros')}</h4>
             <label className="flex items-center gap-2 cursor-pointer mb-2">

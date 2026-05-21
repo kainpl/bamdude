@@ -5808,6 +5808,9 @@ export default {
     modelPlaceholder: 'e.g. P1S, X1C, A1',
     noModelsAvailable: 'No printers configured yet - add a printer first to seed the model list.',
     swapExecute: 'Run swap-mode macros during print',
+    systemUser: 'System (slicer fallback)',
+    systemHint:
+      'Per-model defaults applied when a slicer sends a print to a virtual printer but omits the option flags. Slicer-sent values still win; these only fill the gaps.',
     col: {
       user: 'User',
       model: 'Printer model',

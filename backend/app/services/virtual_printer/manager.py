@@ -94,6 +94,30 @@ def _get_serial_for_model(model: str, serial_suffix: str) -> str:
     return f"{prefix}{serial_suffix}"
 
 
+def _resolve_print_option(
+    slicer_opts: dict | None,
+    system_opts: dict | None,
+    slicer_key: str,
+    pref_key: str,
+    column_default: bool,
+) -> bool:
+    """Resolve one queue-item print-option flag for a slicer→VP submission.
+
+    Precedence (upstream Bambuddy #1403 + #1235):
+        slicer-sent value → system fallback row → model column default.
+
+    MQTT field naming differs from our column / preference names — the slicer
+    sends ``bed_leveling`` (single L) while we store ``bed_levelling`` (double
+    L). Both bool and int (0/1) shapes appear in the wild depending on firmware
+    family, so coerce via ``bool()``.
+    """
+    if slicer_opts is not None and slicer_key in slicer_opts:
+        return bool(slicer_opts[slicer_key])
+    if system_opts is not None and pref_key in system_opts:
+        return bool(system_opts[pref_key])
+    return column_default
+
+
 class VirtualPrinterInstance:
     """Per-printer state and file handling logic.
 
@@ -543,20 +567,14 @@ class VirtualPrinterInstance:
 
                 plate_id = self._extract_plate_id_from_metadata(library_file.file_metadata)
 
-                # Slicer-side options take precedence over the model's
-                # column defaults so the queue item carries the user's
-                # in-slicer toggles. MQTT field naming differs from our
-                # column names — slicer sends ``bed_leveling`` (single L)
-                # while the column / settings key uses ``bed_levelling``
-                # (double L). Both bool and int (0/1) shapes appear in
-                # the wild depending on firmware family — coerce via
-                # ``bool()`` so ``0`` / ``False`` and ``1`` / ``True``
-                # both work (upstream Bambuddy #1403).
-                def _slicer_opt(key: str, column_default: bool) -> bool:
-                    if slicer_opts is not None and key in slicer_opts:
-                        return bool(slicer_opts[key])
-                    return column_default
+                # System fallback row (user_id IS NULL) for the target
+                # printer's model — fills any flag the slicer omitted. There's
+                # no user in a slicer→VP handshake, so the per-user preference
+                # rows can't serve here (upstream Bambuddy #1235).
+                system_opts = await self._load_system_print_options(db, queue.printer_id)
 
+                # Precedence per flag: slicer value → system fallback → column
+                # default (see ``_resolve_print_option``).
                 queue_item = PrintQueueItem(
                     queue_id=queue.id,
                     library_file_id=library_file.id,
@@ -565,11 +583,18 @@ class VirtualPrinterInstance:
                     position=1,
                     status="pending",
                     manual_start=not self.auto_dispatch,
-                    bed_levelling=_slicer_opt("bed_leveling", True),
-                    flow_cali=_slicer_opt("flow_cali", True),
-                    layer_inspect=_slicer_opt("layer_inspect", False),
-                    timelapse=_slicer_opt("timelapse", False),
-                    use_ams=_slicer_opt("use_ams", True),
+                    bed_levelling=_resolve_print_option(
+                        slicer_opts, system_opts, "bed_leveling", "bed_levelling", True
+                    ),
+                    flow_cali=_resolve_print_option(slicer_opts, system_opts, "flow_cali", "flow_cali", True),
+                    layer_inspect=_resolve_print_option(
+                        slicer_opts, system_opts, "layer_inspect", "layer_inspect", False
+                    ),
+                    timelapse=_resolve_print_option(slicer_opts, system_opts, "timelapse", "timelapse", False),
+                    # use_ams has no system-preference field (the saved
+                    # PrintModal toggles don't carry it) — slicer value or
+                    # column default only.
+                    use_ams=(bool(slicer_opts["use_ams"]) if slicer_opts and "use_ams" in slicer_opts else True),
                 )
                 db.add(queue_item)
                 await db.commit()
@@ -583,6 +608,36 @@ class VirtualPrinterInstance:
                 )
         except Exception as e:
             logger.exception("[VP %s] Error adding to print queue: %s", self.name, e)
+
+    @staticmethod
+    async def _load_system_print_options(db, printer_id: int | None) -> dict | None:
+        """Return the system fallback ``print_options`` dict for ``printer_id``'s model.
+
+        The system row is a ``PrintOptionsPreference`` with ``user_id IS NULL``
+        keyed by printer model (upstream Bambuddy #1235). Returns None when the
+        printer / model is unknown or no system row is configured — callers
+        then fall back to the model column defaults.
+        """
+        if not printer_id:
+            return None
+        from sqlalchemy import select as sa_select
+
+        from backend.app.models.print_options_preference import PrintOptionsPreference
+        from backend.app.models.printer import Printer
+
+        model = await db.scalar(sa_select(Printer.model).where(Printer.id == printer_id))
+        if not model:
+            return None
+        pref = await db.scalar(
+            sa_select(PrintOptionsPreference).where(
+                PrintOptionsPreference.user_id.is_(None),
+                PrintOptionsPreference.printer_model == model,
+            )
+        )
+        if pref is None or not isinstance(pref.options, dict):
+            return None
+        print_options = pref.options.get("print_options")
+        return print_options if isinstance(print_options, dict) else None
 
     async def _add_to_auto_queue(self, file_path: Path, source_ip: str) -> None:
         """Save file to library and drop it into the global auto-queue layer.

@@ -36,6 +36,75 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/print-option-preferences", tags=["print-option-preferences"])
 
 
+# ──────────────── System fallback rows (slicer-silent VP default) ────────────
+# These power the "System (slicer fallback)" pseudo-user in the Settings →
+# Print → Saved Profiles widget. A row with user_id IS NULL is the per-model
+# default the virtual-printer queue-receive path consults when a slicer omits
+# the print-option flags (precedence: slicer value → system row → column
+# default). Gated on SETTINGS_* (a global default), not USERS_*.
+#
+# Declared BEFORE ``/{printer_model}`` so the literal ``/system`` segment is
+# never swallowed by the single-segment parameter route below.
+
+
+@router.get("/system", response_model=list[PrintOptionsPreferenceResponse])
+async def list_system_preferences(
+    _: User | None = RequirePermission(Permission.SETTINGS_READ),
+    db: AsyncSession = Depends(get_db),
+):
+    """List every per-model system fallback row (user_id IS NULL)."""
+    result = await db.execute(
+        select(PrintOptionsPreference)
+        .where(PrintOptionsPreference.user_id.is_(None))
+        .order_by(PrintOptionsPreference.printer_model)
+    )
+    return list(result.scalars().all())
+
+
+@router.put("/system/{printer_model}", response_model=PrintOptionsPreferenceResponse)
+async def upsert_system_preference(
+    printer_model: str,
+    data: PrintOptionsPreferenceData,
+    _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
+    db: AsyncSession = Depends(get_db),
+):
+    """Insert or update the system fallback row for ``printer_model``."""
+    result = await db.execute(
+        select(PrintOptionsPreference)
+        .where(PrintOptionsPreference.user_id.is_(None))
+        .where(PrintOptionsPreference.printer_model == printer_model)
+    )
+    pref = result.scalar_one_or_none()
+    payload = data.model_dump()
+    if pref is None:
+        pref = PrintOptionsPreference(user_id=None, printer_model=printer_model, options=payload)
+        db.add(pref)
+    else:
+        pref.options = payload
+    await db.commit()
+    await db.refresh(pref)
+    return pref
+
+
+@router.delete("/system/{printer_model}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_system_preference(
+    printer_model: str,
+    _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete the system fallback row for ``printer_model`` (404 if absent)."""
+    result = await db.execute(
+        select(PrintOptionsPreference)
+        .where(PrintOptionsPreference.user_id.is_(None))
+        .where(PrintOptionsPreference.printer_model == printer_model)
+    )
+    pref = result.scalar_one_or_none()
+    if pref is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="System preference not found")
+    await db.delete(pref)
+    await db.commit()
+
+
 @router.get("/{printer_model}", response_model=PrintOptionsPreferenceResponse)
 async def get_preference(
     printer_model: str,

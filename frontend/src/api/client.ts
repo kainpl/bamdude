@@ -7000,6 +7000,20 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+  // System fallback rows (user_id IS NULL) — per-model defaults the virtual
+  // printer applies when a slicer omits the print-option flags.
+  listSystemPrintOptionsPreferences: () =>
+    request<PrintOptionsPreferenceResponse[]>('/print-option-preferences/system'),
+  upsertSystemPrintOptionsPreference: (printerModel: string, data: PrintOptionsPreferenceData) =>
+    request<PrintOptionsPreferenceResponse>(
+      `/print-option-preferences/system/${encodeURIComponent(printerModel)}`,
+      { method: 'PUT', body: JSON.stringify(data) },
+    ),
+  deleteSystemPrintOptionsPreference: (printerModel: string) =>
+    request<void>(
+      `/print-option-preferences/system/${encodeURIComponent(printerModel)}`,
+      { method: 'DELETE' },
+    ),
 
   // ---------------------------------------------------------------------------
   // Manual LDAP user provisioning (upstream Bambuddy #1298 / commit d6364646)
