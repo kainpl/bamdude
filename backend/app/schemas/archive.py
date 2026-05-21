@@ -10,6 +10,9 @@ class ArchiveBase(BaseModel):
     notes: str | None = None
     cost: float | None = None
     failure_reason: str | None = None
+    # Verbose diagnostic text for failures (HMS code / what happened) — the
+    # editable twin of the short ``failure_reason`` cause code.
+    error_message: str | None = None
     quantity: int | None = None  # Number of items printed
     # User-defined link (Printables, Thingiverse, etc.)
     external_url: str | None = None

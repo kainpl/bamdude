@@ -238,13 +238,16 @@ export function FilamentTrends({ archives, currency = '$', dateFrom, dateTo }: F
   const chartData = spanDays <= 7 && hourlyData.length > 0 ? hourlyData : weeklyData;
   const totalFilament = archives.reduce((sum, a) => sum + (a.filament_used_grams || 0), 0);
   const totalCost = archives.reduce((sum, a) => sum + (a.cost || 0), 0);
-  const totalPrints = archives.reduce((sum, a) => sum + (a.quantity || 1), 0);
+  // Sum of per-print item quantities = total printed objects (NOT print jobs).
+  const totalObjects = archives.reduce((sum, a) => sum + (a.quantity || 1), 0);
+  // Number of print jobs (one archive = one print).
+  const totalPrints = archives.length;
   const printerCount = new Set(archives.map(a => a.printer_id).filter(Boolean)).size;
 
   return (
     <div className="space-y-4">
       {/* Summary Cards */}
-      <div className="grid grid-cols-3 gap-2 max-[640px]:grid-cols-1">
+      <div className="grid grid-cols-4 gap-2 max-[640px]:grid-cols-2">
         <div className="bg-bambu-dark rounded-lg p-4">
           <div className="flex items-center justify-between gap-2">
             <p className="text-sm text-bambu-gray leading-none">{t('stats.periodFilament')}</p>
@@ -257,7 +260,20 @@ export function FilamentTrends({ archives, currency = '$', dateFrom, dateTo }: F
             <p className="text-sm text-bambu-gray leading-none">{t('stats.periodCost')}</p>
             <p className="text-2xl font-bold text-white leading-none">{currency}{totalCost.toFixed(2)}</p>
           </div>
-          <p className="text-xs text-bambu-gray">{totalPrints} {t('common.prints')}</p>
+          <p className="text-xs text-bambu-gray">{totalObjects} {t('common.objects')}</p>
+        </div>
+        <div className="bg-bambu-dark rounded-lg p-4">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-sm text-bambu-gray leading-none">{t('stats.avgPerObject')}</p>
+            <p className="text-2xl font-bold text-white leading-none">
+              {totalObjects > 0
+                ? (totalFilament / totalObjects).toFixed(0)
+                : 0}g
+            </p>
+          </div>
+          <p className="text-xs text-bambu-gray">
+            {currency}{totalObjects > 0 ? (totalCost / totalObjects).toFixed(2) : '0.00'} avg
+          </p>
         </div>
         <div className="bg-bambu-dark rounded-lg p-4">
           <div className="flex items-center justify-between gap-2">

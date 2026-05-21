@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.models.archive import PrintArchive
 from backend.app.models.printer import Printer
 
-FAILED_STATUSES = ["failed", "aborted", "cancelled"]
+FAILED_STATUSES = ["failed", "aborted", "cancelled", "stopped"]
 
 
 class FailureAnalysisService:
@@ -36,10 +36,13 @@ class FailureAnalysisService:
         Returns:
             Dictionary with failure analysis results
         """
-        # Build base query - separate date vs non-date filters for trend reuse
-        # Exclude "archived" - uploaded but never printed
-        base_filter = [PrintArchive.status != "archived"]
-        non_date_filter = [PrintArchive.status != "archived"]
+        # Build base query - separate date vs non-date filters for trend reuse.
+        # Exclude "archived" (uploaded but never printed) and trashed rows
+        # (deleted_at) — same base as /archives/stats so the Success Rate and
+        # Failure Analysis widgets count the exact same population.
+        base_filter = [PrintArchive.status != "archived", PrintArchive.deleted_at.is_(None)]
+        non_date_filter = [PrintArchive.status != "archived", PrintArchive.deleted_at.is_(None)]
+        all_time = False
         if date_from or date_to:
             if date_from:
                 dt_from = datetime.combine(date_from, time.min, tzinfo=timezone.utc)
@@ -51,15 +54,31 @@ class FailureAnalysisService:
             range_start = dt_from if date_from else datetime.now(timezone.utc) - timedelta(days=365)
             range_end = dt_to if date_to else datetime.now(timezone.utc)
             effective_days = max((range_end - range_start).days, 1)
-        else:
-            effective_days = days if days is not None else 30
+        elif days is not None:
+            effective_days = days
             cutoff_date = datetime.now(timezone.utc) - timedelta(days=effective_days)
             base_filter.append(PrintArchive.created_at >= cutoff_date)
+        else:
+            # "All time" — no created_at cutoff, mirroring /archives/stats when
+            # no timeframe is selected. effective_days (trend span) is derived
+            # from the oldest matching archive below, once all filters are set.
+            all_time = True
+            effective_days = 30
         if printer_id:
             non_date_filter.append(PrintArchive.printer_id == printer_id)
         if project_id:
             non_date_filter.append(PrintArchive.project_id == project_id)
         base_filter.extend(non_date_filter)
+
+        if all_time:
+            oldest_result = await self.db.execute(select(func.min(PrintArchive.created_at)).where(and_(*base_filter)))
+            oldest = oldest_result.scalar()
+            if oldest:
+                # SQLite returns naive datetimes — assume UTC so the subtraction
+                # against an aware "now" doesn't raise.
+                if oldest.tzinfo is None:
+                    oldest = oldest.replace(tzinfo=timezone.utc)
+                effective_days = max((datetime.now(timezone.utc) - oldest).days, 1)
 
         # Total counts
         total_result = await self.db.execute(select(func.count(PrintArchive.id)).where(and_(*base_filter)))

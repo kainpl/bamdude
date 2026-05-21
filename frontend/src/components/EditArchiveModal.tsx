@@ -17,6 +17,8 @@ const FAILURE_REASON_KEYS = [
   'stringing',
   'underExtrusion',
   'powerFailure',
+  'swapModeFailure',
+  'printerError',
   'userCancelled',
   'other',
 ] as const;
@@ -48,6 +50,7 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
   const [notes, setNotes] = useState(archive.notes || '');
   const [tags, setTags] = useState(archive.tags || '');
   const [failureReason, setFailureReason] = useState(archive.failure_reason || '');
+  const [errorMessage, setErrorMessage] = useState(archive.error_message || '');
   const [status, setStatus] = useState(archive.status);
   const [quantity, setQuantity] = useState(archive.quantity ?? 1);
   const [photos, setPhotos] = useState<string[]>(archive.photos || []);
@@ -183,12 +186,14 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
       updateData.status = status;
     }
 
-    // Handle failure_reason based on status
+    // Handle failure_reason + error_message based on status
     if (status === 'failed' || status === 'aborted') {
       updateData.failure_reason = failureReason || undefined;
+      updateData.error_message = errorMessage || null;
     } else if (archive.status === 'failed' || archive.status === 'aborted') {
-      // Clear failure_reason when changing from failed/aborted to another status
+      // Clear failure_reason + error_message when leaving failed/aborted
       updateData.failure_reason = null;
+      updateData.error_message = null;
     }
 
     updateMutation.mutate(updateData);
@@ -387,9 +392,10 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
               value={status}
               onChange={(e) => {
                 setStatus(e.target.value);
-                // Clear failure reason when changing to completed
+                // Clear failure reason + error details when changing to completed
                 if (e.target.value === 'completed') {
                   setFailureReason('');
+                  setErrorMessage('');
                 }
               }}
               className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
@@ -418,6 +424,20 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
                   </option>
                 ))}
               </select>
+            </div>
+          )}
+
+          {/* Error details (verbose error_message) - only for failed/aborted prints */}
+          {(status === 'failed' || status === 'aborted') && (
+            <div>
+              <label className="block text-sm text-bambu-gray mb-1">{t('editArchive.errorMessage')}</label>
+              <textarea
+                value={errorMessage}
+                onChange={(e) => setErrorMessage(e.target.value)}
+                rows={2}
+                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none resize-none"
+                placeholder={t('editArchive.errorMessagePlaceholder')}
+              />
             </div>
           )}
 

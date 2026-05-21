@@ -735,18 +735,19 @@ function FilamentTrendsWidget({
   return <FilamentTrends archives={archives} currency={currency} dateFrom={dateFrom} dateTo={dateTo} />;
 }
 
-function FailureAnalysisWidget({ size = 1, dateFrom, dateTo }: {
+function FailureAnalysisWidget({ size = 1, dateFrom, dateTo, preset }: {
   size?: 1 | 2 | 4;
   dateFrom?: string;
   dateTo?: string;
+  preset: TimeframePreset;
 }) {
   const { t } = useTranslation();
   const hasDateRange = !!(dateFrom || dateTo);
   const { data: analysis, isLoading } = useQuery({
     queryKey: ['failureAnalysis', dateFrom, dateTo],
-    queryFn: () => api.getFailureAnalysis({
-      ...(hasDateRange ? { dateFrom, dateTo } : { days: 30 }),
-    }),
+    // No date range = "All time": send nothing so the backend counts the full
+    // history, matching the Success Rate widget (was a hardcoded last-30-days).
+    queryFn: () => api.getFailureAnalysis(hasDateRange ? { dateFrom, dateTo } : {}),
   });
 
   if (isLoading) {
@@ -758,7 +759,12 @@ function FailureAnalysisWidget({ size = 1, dateFrom, dateTo }: {
   }
 
   if (!analysis || analysis.total_prints === 0) {
-    return <p className="text-bambu-gray text-center py-4">{hasDateRange ? t('stats.noPrintDataInRange') : t('stats.noPrintDataLast30Days')}</p>;
+    // Empty-state label mirrors the selected timeframe: explicit dates for a
+    // custom range, otherwise the preset's own label (incl. "All time").
+    const rangeLabel = preset === 'custom'
+      ? [dateFrom, dateTo].filter(Boolean).join(' – ') || t('stats.timeframe.custom')
+      : t(`stats.timeframe.${preset}`);
+    return <p className="text-bambu-gray text-center py-4">{t('stats.noPrintDataForRange', { range: rangeLabel })}</p>;
   }
 
   // Show more reasons when expanded
@@ -1098,7 +1104,7 @@ export function StatsPage() {
     {
       id: 'failure-analysis',
       title: t('stats.failureAnalysis'),
-      component: (size) => <FailureAnalysisWidget size={size} dateFrom={effectiveDateRange.dateFrom} dateTo={effectiveDateRange.dateTo} />,
+      component: (size) => <FailureAnalysisWidget size={size} dateFrom={effectiveDateRange.dateFrom} dateTo={effectiveDateRange.dateTo} preset={timeframe.preset} />,
       defaultSize: 1,
     },
     {

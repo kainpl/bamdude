@@ -862,7 +862,7 @@ async def get_archive_stats(
 
     failed_result = await db.execute(
         select(func.count(PrintArchive.id)).where(
-            PrintArchive.status.in_(["failed", "aborted", "cancelled"]), *base_conditions
+            PrintArchive.status.in_(["failed", "aborted", "cancelled", "stopped"]), *base_conditions
         )
     )
     failed_prints = failed_result.scalar() or 0

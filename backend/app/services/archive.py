@@ -2236,7 +2236,7 @@ class ArchiveService:
                 # failure subset.
                 filters.append(PrintArchive.status.in_(["completed", "failed", "aborted", "cancelled", "stopped"]))
             elif collection == "failed":
-                filters.append(PrintArchive.status.in_(["failed", "aborted"]))
+                filters.append(PrintArchive.status.in_(["failed", "aborted", "cancelled"]))
             elif collection == "duplicates":
                 # Subquery: content_hash values that appear more than once
                 dup_hashes = (
@@ -2264,9 +2264,9 @@ class ArchiveService:
         if favorites_only:
             filters.append(PrintArchive.is_favorite == True)  # noqa: E712
 
-        # Hide failed
+        # Hide failed (inverse of the Failed collection — keep the status sets in sync)
         if hide_failed:
-            filters.append(PrintArchive.status.notin_(["failed", "aborted"]))
+            filters.append(PrintArchive.status.notin_(["failed", "aborted", "cancelled"]))
 
         # Tag filter (comma-separated field)
         if tag:

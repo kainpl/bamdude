@@ -4689,6 +4689,7 @@ export const api = {
     notes?: string;
     cost?: number;
     failure_reason?: string | null;
+    error_message?: string | null;
     status?: string;
     quantity?: number;
     external_url?: string | null;
