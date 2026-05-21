@@ -376,6 +376,23 @@ class TestArchivesSlimAPI:
         assert response.status_code == 200
         assert len(response.json()) == 2
 
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_slim_excludes_trashed(self, async_client: AsyncClient, archive_factory, printer_factory, db_session):
+        """Trashed (soft-deleted) archives are excluded from /slim so the
+        dashboard/stats widgets it feeds agree with Quick Stats (E.9)."""
+        from datetime import datetime, timezone
+
+        printer = await printer_factory()
+        await archive_factory(printer.id, print_name="Live Print")
+        await archive_factory(printer.id, print_name="Trashed Print", deleted_at=datetime.now(timezone.utc))
+
+        response = await async_client.get("/api/v1/archives/slim")
+        assert response.status_code == 200
+        names = [a["print_name"] for a in response.json()]
+        assert "Live Print" in names
+        assert "Trashed Print" not in names
+
 
 class TestArchiveDataIntegrity:
     """Tests for archive data integrity."""

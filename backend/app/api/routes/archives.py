@@ -378,8 +378,16 @@ async def list_archives_slim(
     Returns only the fields needed for client-side aggregation,
     skipping duplicate detection, file paths, and extra_data.
     """
-    # Exclude "archived" status - uploaded but never printed
-    filters = [PrintArchive.status != "archived"]
+    # Exclude "archived" status - uploaded but never printed.
+    # Also exclude trashed rows (deleted_at IS NOT NULL) to stay consistent with
+    # GET /stats: the stats/dashboard widgets fed by this endpoint (Filament
+    # Trends, Calendar, StatsPage charts) must not count prints the user removed
+    # from active history, otherwise the trend charts and the Quick Stats totals
+    # would disagree about the same prints.
+    filters = [
+        PrintArchive.status != "archived",
+        PrintArchive.deleted_at.is_(None),
+    ]
     if date_from:
         dt_from = datetime.combine(date_from, time.min, tzinfo=timezone.utc)
         filters.append(PrintArchive.created_at >= dt_from)
