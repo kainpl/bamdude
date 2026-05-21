@@ -307,6 +307,102 @@ class TestPrintQueueAPI:
         response = await async_client.delete("/api/v1/queue/9999")
         assert response.status_code == 404
 
+    # --- Soft-deleted (trashed) source archive (#1348 follow-up) -----------
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_soft_delete_archive_cancels_pending_queue_items(
+        self, db_session, printer_factory, archive_factory, queue_item_factory
+    ):
+        """Trashing an archive cancels its pending queue items (they can never
+        dispatch — the 3MF is gone) but leaves historical rows untouched."""
+        from backend.app.models.print_queue import PrintQueueItem
+        from backend.app.services.archive_purge import archive_purge_service
+
+        _printer, queue = await printer_factory()
+        archive = await archive_factory()
+        pending = await queue_item_factory(queue_id=queue.id, archive_id=archive.id, status="pending")
+        completed = await queue_item_factory(queue_id=queue.id, archive_id=archive.id, status="completed")
+
+        await archive_purge_service.move_to_trash(db_session, archive)
+
+        await db_session.refresh(pending)
+        await db_session.refresh(completed)
+        pending_db = await db_session.get(PrintQueueItem, pending.id)
+        completed_db = await db_session.get(PrintQueueItem, completed.id)
+        assert pending_db.status == "cancelled"
+        assert pending_db.waiting_reason == "Source archive deleted"
+        # Historical row is left exactly as it was.
+        assert completed_db.status == "completed"
+        assert completed_db.waiting_reason is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_enrich_response_suppresses_surface_when_archive_soft_deleted(
+        self, db_session, printer_factory, archive_factory, queue_item_factory
+    ):
+        """The serializer flags a trashed-archive row and suppresses every
+        archive-derived field so the queue never serves a stale thumbnail."""
+        from sqlalchemy import select as _select
+        from sqlalchemy.orm import selectinload
+
+        from backend.app.api.routes.print_queue import _enrich_response
+        from backend.app.models.print_queue import PrintQueueItem
+        from backend.app.services.archive_purge import archive_purge_service
+
+        _printer, queue = await printer_factory()
+        archive = await archive_factory(thumbnail_path="archives/x/thumb.png", print_name="Will Be Trashed")
+        item = await queue_item_factory(queue_id=queue.id, archive_id=archive.id, status="completed")
+        await archive_purge_service.move_to_trash(db_session, archive)
+
+        loaded = (
+            await db_session.execute(
+                _select(PrintQueueItem)
+                .options(
+                    selectinload(PrintQueueItem.archive),
+                    selectinload(PrintQueueItem.library_file),
+                    selectinload(PrintQueueItem.created_by),
+                )
+                .where(PrintQueueItem.id == item.id)
+            )
+        ).scalar_one()
+        resp = _enrich_response(loaded)
+        assert resp.archive_deleted is True
+        assert resp.archive_name is None
+        assert resp.archive_thumbnail is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_enrich_response_exposes_surface_when_archive_live(
+        self, db_session, printer_factory, archive_factory, queue_item_factory
+    ):
+        """Sanity guard: a live archive's fields still flow through unchanged."""
+        from sqlalchemy import select as _select
+        from sqlalchemy.orm import selectinload
+
+        from backend.app.api.routes.print_queue import _enrich_response
+        from backend.app.models.print_queue import PrintQueueItem
+
+        _printer, queue = await printer_factory()
+        archive = await archive_factory(thumbnail_path="archives/y/thumb.png", print_name="Live Print")
+        item = await queue_item_factory(queue_id=queue.id, archive_id=archive.id, status="pending")
+
+        loaded = (
+            await db_session.execute(
+                _select(PrintQueueItem)
+                .options(
+                    selectinload(PrintQueueItem.archive),
+                    selectinload(PrintQueueItem.library_file),
+                    selectinload(PrintQueueItem.created_by),
+                )
+                .where(PrintQueueItem.id == item.id)
+            )
+        ).scalar_one()
+        resp = _enrich_response(loaded)
+        assert resp.archive_deleted is False
+        assert resp.archive_name == "Live Print"
+        assert resp.archive_thumbnail == "archives/y/thumb.png"
+
 
 class TestQueueStartEndpoint:
     """Tests for the /queue/{item_id}/start endpoint."""

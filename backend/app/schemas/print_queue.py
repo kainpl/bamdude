@@ -94,6 +94,9 @@ class PrintQueueItemResponse(BaseModel):
     # Nested info for UI
     archive_name: str | None = None
     archive_thumbnail: str | None = None
+    # True when the linked archive has been soft-deleted (trashed): its files
+    # are gone, so the archive-derived fields above are suppressed (#1348).
+    archive_deleted: bool = False
     library_file_name: str | None = None
     library_file_thumbnail: str | None = None
     printer_name: str | None = None

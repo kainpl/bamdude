@@ -116,9 +116,35 @@ class ArchivePurgeService:
     async def move_to_trash(db: AsyncSession, archive: PrintArchive) -> PrintArchive:
         """Stamp ``deleted_at`` on a single archive (manual delete path)."""
         archive.deleted_at = datetime.now(timezone.utc)
+        # A pending queue item whose source archive was just trashed can never
+        # dispatch — its 3MF is gone from disk. Cancel it with a clear reason
+        # instead of leaving it stuck 'pending' forever (#1348 follow-up).
+        # Hard-delete is already handled by ON DELETE CASCADE on the FK.
+        await ArchivePurgeService._cancel_pending_queue_items(db, archive.id)
         await db.commit()
         await db.refresh(archive)
         return archive
+
+    @staticmethod
+    async def _cancel_pending_queue_items(db: AsyncSession, archive_id: int) -> None:
+        """Cancel pending queue items pointing at a now-trashed archive.
+
+        Only ``pending`` rows are touched — ``printing`` is a rare race the
+        printer-side fail path catches anyway, and completed / failed /
+        cancelled rows are historical. Does not commit; the caller's
+        transaction does.
+        """
+        from backend.app.models.print_queue import PrintQueueItem
+
+        result = await db.execute(
+            select(PrintQueueItem).where(
+                PrintQueueItem.archive_id == archive_id,
+                PrintQueueItem.status == "pending",
+            )
+        )
+        for qi in result.scalars().all():
+            qi.status = "cancelled"
+            qi.waiting_reason = "Source archive deleted"
 
     @staticmethod
     async def restore(db: AsyncSession, archive: PrintArchive) -> PrintArchive:
