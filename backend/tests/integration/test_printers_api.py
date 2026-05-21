@@ -33,6 +33,18 @@ patch = _PrinterManagerPatch  # noqa: E811
 class TestPrintersAPI:
     """Integration tests for /api/v1/printers/ endpoints."""
 
+    @pytest.fixture(autouse=True)
+    def _mock_connection_probe(self):
+        """Add-Printer now probes MQTT connectivity before persisting (the
+        empty-card fix). Default the probe to success so the existing create
+        tests exercise the create flow; the probe-failure path is tested
+        explicitly below."""
+        with _orig_patch(
+            "backend.app.api.routes.printers.printer_manager.test_connection",
+            new=AsyncMock(return_value={"success": True, "state": "IDLE", "model": "X1C"}),
+        ):
+            yield
+
     # ========================================================================
     # List endpoints
     # ========================================================================
@@ -153,6 +165,31 @@ class TestPrintersAPI:
 
         # Should fail due to duplicate serial
         assert response.status_code in [400, 409, 422, 500]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_create_active_printer_rejected_when_probe_fails(self, async_client: AsyncClient):
+        """A failed MQTT probe (mistyped access code / wrong IP) returns 400 and
+        does NOT persist the printer — no empty card on the dashboard."""
+        data = {
+            "name": "Unreachable",
+            "serial_number": "00M09A333333333",
+            "ip_address": "192.168.1.199",
+            "access_code": "00000000",
+            "is_active": True,
+            "model": "X1C",
+        }
+        with _orig_patch(
+            "backend.app.api.routes.printers.printer_manager.test_connection",
+            new=AsyncMock(return_value={"success": False}),
+        ):
+            response = await async_client.post("/api/v1/printers/", json=data)
+        assert response.status_code == 400
+
+        # The row must not have been written.
+        listing = await async_client.get("/api/v1/printers/")
+        serials = [p["serial_number"] for p in listing.json()]
+        assert "00M09A333333333" not in serials
 
     # ========================================================================
     # Get single endpoint

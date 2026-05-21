@@ -75,6 +75,27 @@ async def create_printer(
         raise HTTPException(400, "Printer with this serial number already exists")
 
     printer = Printer(**printer_data.model_dump())
+
+    # Probe MQTT connectivity BEFORE persisting so a mistyped access code or
+    # wrong IP doesn't leave a permanently-empty card on the dashboard
+    # (upstream Bambuddy "empty-card" fix / b51598ea). The printer must be
+    # powered on and reachable at add time — which it is in the normal flow,
+    # since you read the access code off its screen.
+    try:
+        probe = await printer_manager.test_connection(
+            ip_address=printer_data.ip_address,
+            serial_number=printer_data.serial_number,
+            access_code=printer_data.access_code,
+        )
+    except Exception:
+        probe = {"success": False}
+    if not probe.get("success"):
+        raise HTTPException(
+            400,
+            "Could not connect to the printer — check the IP address, serial number, and access "
+            "code, and confirm the printer is powered on with LAN-Only Mode enabled.",
+        )
+
     db.add(printer)
     await db.commit()
     await db.refresh(printer)

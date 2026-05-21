@@ -88,6 +88,12 @@ ENV PYTHONUNBUFFERED=1
 ENV DATA_DIR=/app/data
 ENV LOG_DIR=/app/logs
 ENV PORT=8000
+# Pin matplotlib's cache (used lazily by the STL thumbnail generator) to a
+# uid-agnostic writable dir. HOME=/app is root-owned and not writable by the
+# PUID:PGID the entrypoint drops to, so matplotlib logged "Permission denied"
+# and re-scanned fonts into a wiped /tmp/matplotlib-* on every STL upload
+# (upstream Bambuddy #1318 / commit 8e241915).
+ENV MPLCONFIGDIR=/tmp/matplotlib
 
 EXPOSE 322
 EXPOSE 990

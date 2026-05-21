@@ -2676,7 +2676,7 @@ export default {
       checkEmail: 'Перевірте email ({{email}}) на наявність 6-значного коду',
       enterTotpHint: 'Введіть 6-значний код з вашого додатку автентифікатора',
       accessToken: 'Токен доступу',
-      accessTokenHint: 'Вставте ваш токен доступу Bambu Lab (з Bambu Studio)',
+      accessTokenHint: 'Вставте ваш токен доступу Bambu Lab. Bambu Studio його більше не показує — візьміть з браузера, авторизованого в MakerWorld (DevTools → Application → Cookies → token). Акаунти регіону Китай мусять входити через токен (їхні акаунти прив\'язані до номера телефону, не email).',
       back: 'Назад',
       loginButton: 'Увійти',
       verifyButton: 'Підтвердити',
