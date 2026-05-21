@@ -122,6 +122,7 @@ async def _build_payload(db) -> dict | None:
     from backend.app.models.smart_plug import SmartPlug
     from backend.app.models.spool import Spool
     from backend.app.models.user import User
+    from backend.app.models.virtual_printer import VirtualPrinter
 
     failure_states = ["failed", "aborted", "cancelled", "stopped"]
     start_of_today = datetime.combine(date.today(), time.min, tzinfo=timezone.utc)
@@ -135,10 +136,17 @@ async def _build_payload(db) -> dict | None:
         "smart_plugs": await _count(db, SmartPlug),
         "users": await _count(db, User),
         "ams_units": _ams_unit_count(),
+        "virtual_printers": await _count(db, VirtualPrinter),
     }
 
     model_rows = await db.execute(select(Printer.model).where(Printer.model.isnot(None)).distinct())
     printer_models = sorted({m for (m,) in model_rows.all() if m})
+
+    # Virtual printers: per-mode counts + the set of advertised models.
+    vp_mode_rows = await db.execute(select(VirtualPrinter.mode, func.count()).group_by(VirtualPrinter.mode))
+    vp_modes = {mode: int(c) for mode, c in vp_mode_rows.all() if mode}
+    vp_model_rows = await db.execute(select(VirtualPrinter.model).where(VirtualPrinter.model.isnot(None)).distinct())
+    vp_models = sorted({m for (m,) in vp_model_rows.all() if m})
 
     usage = {
         "prints_completed": await _count(
@@ -161,6 +169,8 @@ async def _build_payload(db) -> dict | None:
         "snapshot_date": date.today().isoformat(),
         "counts": counts,
         "printer_models": printer_models,
+        "vp_modes": vp_modes,
+        "vp_models": vp_models,
         "features": await _features(db),
         "usage": usage,
     }
