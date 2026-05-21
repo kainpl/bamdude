@@ -46,6 +46,25 @@ def _channel() -> str:
     return "pre" if any(c.isalpha() for c in APP_VERSION) else "stable"
 
 
+def _ams_unit_count() -> int:
+    """Total AMS units across all printers, from live MQTT state (best-effort)."""
+    try:
+        from backend.app.services.printer_manager import printer_manager
+
+        total = 0
+        for state in printer_manager.get_all_statuses().values():
+            raw = getattr(state, "raw_data", None) or {}
+            ams = raw.get("ams")
+            if isinstance(ams, list):
+                total += len(ams)
+            elif isinstance(ams, dict) and isinstance(ams.get("ams"), list):
+                total += len(ams["ams"])
+        return total
+    except Exception as e:  # noqa: BLE001 - best-effort, never disrupt telemetry
+        logger.debug("ams unit count failed: %s", e)
+        return 0
+
+
 async def _count(db, model, *where) -> int:
     stmt = select(func.count()).select_from(model)
     if where:
@@ -102,6 +121,7 @@ async def _build_payload(db) -> dict | None:
     from backend.app.models.project import Project
     from backend.app.models.smart_plug import SmartPlug
     from backend.app.models.spool import Spool
+    from backend.app.models.user import User
 
     failure_states = ["failed", "aborted", "cancelled", "stopped"]
     start_of_today = datetime.combine(date.today(), time.min, tzinfo=timezone.utc)
@@ -113,6 +133,8 @@ async def _build_payload(db) -> dict | None:
         "spools": await _count(db, Spool),
         "projects": await _count(db, Project),
         "smart_plugs": await _count(db, SmartPlug),
+        "users": await _count(db, User),
+        "ams_units": _ams_unit_count(),
     }
 
     model_rows = await db.execute(select(Printer.model).where(Printer.model.isnot(None)).distinct())

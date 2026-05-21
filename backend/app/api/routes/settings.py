@@ -526,6 +526,17 @@ async def create_backup_zip(output_path: Path | None = None) -> tuple[Path, str]
                 )
                 raise
 
+        # Include the anonymous telemetry install id so a restore keeps the same
+        # identity. Some users do a clean install then restore the old DB; without
+        # this the restored instance would mint a fresh install_id and look like a
+        # brand-new install. Best-effort — not critical to a successful restore.
+        install_id_src = resolve_data_dir() / ".install_id"
+        if install_id_src.exists() and install_id_src.is_file():
+            try:
+                shutil.copy2(install_id_src, temp_path / ".install_id")
+            except OSError as exc:
+                logger.warning("Could not include install id in backup: %s", exc)
+
         # 3. Create ZIP
         if output_path is not None:
             zip_file = output_path / filename
@@ -695,6 +706,24 @@ async def restore_backup(
                         status_code=500,
                         detail="Restore aborted: MFA key write failed. Database is unchanged. Check server logs.",
                     ) from e
+
+            # Restore the anonymous telemetry install id (best-effort). Keeps the
+            # same identity when a user does a clean install then restores the old
+            # DB — without it the restored instance would look brand-new. A failure
+            # here must NOT abort the restore (the id is non-critical).
+            install_id_src = temp_path / ".install_id"
+            if install_id_src.exists() and install_id_src.is_file():
+                dst_id = resolve_data_dir() / ".install_id"
+                try:
+                    dst_id.parent.mkdir(parents=True, exist_ok=True)
+                    fd = os.open(str(dst_id), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                    try:
+                        os.write(fd, install_id_src.read_bytes())
+                    finally:
+                        os.close(fd)
+                    logger.info("Restored .install_id from backup")
+                except OSError as e:
+                    logger.warning("Could not restore install id from backup: %s - continuing", e)
 
             # 5. Replace database
             logger.info("Restoring database from backup...")

@@ -822,11 +822,16 @@ async def _collect_support_info() -> dict:
     """Collect all support information."""
     in_docker = is_running_in_docker()
 
+    from backend.app.core.install_id import get_install_id
+
     info = {
         "generated_at": datetime.now().isoformat(),
         "app": {
             "version": APP_VERSION,
             "debug_mode": settings.debug,
+            # Anonymous install id — lets a bug report / support bundle be
+            # correlated with this install's telemetry. Not linked to identity.
+            "install_id": get_install_id(),
         },
         "system": {
             "platform": platform.system(),
