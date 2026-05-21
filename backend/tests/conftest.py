@@ -132,6 +132,7 @@ async def test_engine():
         project_print_plan,
         settings,
         shopping_list,
+        slot_preset,
         smart_plug,
         spool,
         spool_assignment,
@@ -216,12 +217,25 @@ async def async_client(test_engine, db_session) -> AsyncGenerator[AsyncClient, N
     async def mock_init_printer_connections(db):
         pass  # No-op - don't connect to real printers
 
+    # No-op the external-folder mesh-thumbnail backfill. In production it's a
+    # fire-and-forget asyncio.create_task with its own session; under the
+    # in-memory SQLite StaticPool every session shares one connection, so the
+    # leaked task races the test's own db_session mid-test and kills the
+    # greenlet ("Could not refresh instance"). Its real behaviour is covered by
+    # test_external_mesh_thumbnail_backfill.py.
+    async def mock_backfill_external_mesh_thumbnails(folder_ids):
+        return
+
     # Also patch the module-level async_session used by services, auth, and middleware
     with (
         patch("backend.app.core.database.async_session", test_async_session),
         patch("backend.app.core.auth.async_session", test_async_session),
         patch("backend.app.main.async_session", test_async_session),
         patch("backend.app.main.init_printer_connections", mock_init_printer_connections),
+        patch(
+            "backend.app.api.routes.library._backfill_external_mesh_thumbnails",
+            mock_backfill_external_mesh_thumbnails,
+        ),
     ):
         # Seed default groups for tests that need them
         from backend.app.migrations.m001_bamdude_baseline import _seed_default_groups

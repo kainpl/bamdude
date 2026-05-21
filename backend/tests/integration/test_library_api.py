@@ -691,9 +691,18 @@ endsolid cube"""
         with the slicer-output route which stored ``"gcode"``. Helper +
         m035 backfill close this gap. Test guards the regression.
         """
-        # Empty content — ThreeMFParser will fail on the not-a-zip but
-        # the failure is non-fatal (logged) and shouldn't affect file_type.
-        files = {"file": ("output.gcode.3mf", b"not really a zip", "application/octet-stream")}
+        # A minimal but real ZIP container: the upload validator (#1401)
+        # rejects non-ZIP .3mf bodies at upload time, so the body must carry
+        # the ZIP magic. ThreeMFParser still won't find the expected 3MF
+        # structure — that failure is non-fatal (logged) and shouldn't affect
+        # file_type, which collapses to 'gcode' from the .gcode.3mf filename.
+        import io
+        import zipfile
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("Metadata/plate_1.gcode", b"; sliced gcode\n")
+        files = {"file": ("output.gcode.3mf", buf.getvalue(), "application/octet-stream")}
         response = await async_client.post("/api/v1/library/files", files=files)
         assert response.status_code == 200
         result = response.json()

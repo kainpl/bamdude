@@ -1,8 +1,19 @@
 """Integration tests for inventory spool assignment - tray_info_idx resolution.
 
-Tests that the spool's own slicer_filament (including PFUS* cloud-synced
-custom presets) takes priority, with slot reuse and generic fallback as
-lower-priority fallbacks.
+Resolution priority for the value sent to the printer as ``tray_info_idx``:
+
+* A spool's own ``slicer_filament`` is used directly when it is already a
+  valid filament-id — Bambu official ``GF*`` ids or ``P``-prefix local
+  preset ids.
+* ``PFUS*`` cloud setting-ids are NOT valid ``tray_info_idx`` values: the
+  printer's calibration table indexes by ``filament_id`` and a PFUS isn't
+  one. With cloud/printer_kp auth a PFUS realigns to a ``P``-prefix local
+  id; without it (no auth in these tests, or the ``current_user=None``
+  replay path) the PFUS is discarded and the slot falls back to reusing the
+  slot's own specific preset (when its material matches) or the generic id
+  for the spool's material (upstream Bambuddy #1387 / dd3e3f80).
+* Empty-slot detection uses the firmware's explicit ``state ∈ {9, 10}``
+  signal, not a ``tray_type == ""`` heuristic (upstream Bambuddy #1322).
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch as _orig_patch
@@ -79,8 +90,12 @@ class TestAssignSpoolTrayInfoIdx:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_pfus_slicer_filament_used_directly(self, async_client: AsyncClient, printer_factory, spool_factory):
-        """PFUS* cloud-synced custom preset IDs are sent to the printer."""
+    async def test_pfus_slicer_filament_discarded_falls_back_to_generic(
+        self, async_client: AsyncClient, printer_factory, spool_factory
+    ):
+        """PFUS* setting-ids are not valid tray_info_idx. With no cloud/printer_kp
+        realignment, the PFUS is discarded and an empty slot falls back to the
+        generic id for the spool's material (#1387)."""
         printer = await printer_factory(name="H2D")
         spool = await spool_factory(slicer_filament="PFUS9ac902733670a9", material="PLA")
 
@@ -101,14 +116,15 @@ class TestAssignSpoolTrayInfoIdx:
 
             assert response.status_code == 200
             call_kwargs = mock_client.ams_set_filament_setting.call_args
-            assert call_kwargs.kwargs["tray_info_idx"] == "PFUS9ac902733670a9"
+            assert call_kwargs.kwargs["tray_info_idx"] == "GFL99"
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_spool_preset_takes_priority_over_slot(
+    async def test_pfus_discarded_reuses_slot_specific_preset(
         self, async_client: AsyncClient, printer_factory, spool_factory
     ):
-        """Spool's own slicer_filament takes priority over slot's existing preset."""
+        """A discarded PFUS spool reuses the slot's own specific preset when the
+        slot material matches the spool (#1387 fallback: slot-reuse before generic)."""
         printer = await printer_factory(name="H2D")
         spool = await spool_factory(slicer_filament="PFUS9ac902733670a9", material="PLA")
 
@@ -132,15 +148,17 @@ class TestAssignSpoolTrayInfoIdx:
 
             assert response.status_code == 200
             call_kwargs = mock_client.ams_set_filament_setting.call_args
-            # Spool's own preset wins over slot's existing one
-            assert call_kwargs.kwargs["tray_info_idx"] == "PFUS9ac902733670a9"
+            # PFUS discarded → slot's specific preset (same material) is reused.
+            assert call_kwargs.kwargs["tray_info_idx"] == "P4d64437"
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_spool_preset_used_even_if_different_material_on_slot(
+    async def test_pfus_discarded_generic_when_slot_material_differs(
         self, async_client: AsyncClient, printer_factory, spool_factory
     ):
-        """Spool's own slicer_filament is used regardless of what's on the slot."""
+        """A discarded PFUS spool cannot reuse the slot's preset when the slot
+        material differs — it falls back to the generic id for the spool's
+        own material (#1387)."""
         printer = await printer_factory(name="H2D")
         spool = await spool_factory(slicer_filament="PFUS9ac902733670a9", material="PETG")
 
@@ -164,7 +182,8 @@ class TestAssignSpoolTrayInfoIdx:
 
             assert response.status_code == 200
             call_kwargs = mock_client.ams_set_filament_setting.call_args
-            assert call_kwargs.kwargs["tray_info_idx"] == "PFUS9ac902733670a9"
+            # PFUS discarded, slot material (PLA) ≠ spool (PETG) → generic PETG.
+            assert call_kwargs.kwargs["tray_info_idx"] == "GFG99"
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -222,8 +241,12 @@ class TestAssignSpoolTrayInfoIdx:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_spool_pfus_used_over_slot_pfus(self, async_client: AsyncClient, printer_factory, spool_factory):
-        """Spool's own PFUS preset is used even when slot has a different PFUS."""
+    async def test_spool_pfus_and_slot_pfus_both_discarded_to_generic(
+        self, async_client: AsyncClient, printer_factory, spool_factory
+    ):
+        """Both the spool's PFUS and the slot's existing PFUS are invalid
+        tray_info_idx values — neither is usable, so the slot falls back to the
+        generic id for the spool's material (#1387)."""
         printer = await printer_factory(name="H2D")
         spool = await spool_factory(slicer_filament="PFUS1111111111", material="PLA")
 
@@ -247,15 +270,17 @@ class TestAssignSpoolTrayInfoIdx:
 
             assert response.status_code == 200
             call_kwargs = mock_client.ams_set_filament_setting.call_args
-            # Spool's own preset wins
-            assert call_kwargs.kwargs["tray_info_idx"] == "PFUS1111111111"
+            # Both PFUS values discarded → generic PLA.
+            assert call_kwargs.kwargs["tray_info_idx"] == "GFL99"
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_generic_on_slot_not_reused_over_spool_preset(
+    async def test_pfus_discarded_generic_when_slot_already_generic(
         self, async_client: AsyncClient, printer_factory, spool_factory
     ):
-        """Generic ID on slot (e.g. GFB99) must not override spool's own preset."""
+        """A discarded PFUS spool over a slot that already holds a generic id
+        resolves to the generic id for the spool's material (the slot's generic
+        is not 'reused' via the sticky path — it's re-derived) (#1387)."""
         printer = await printer_factory(name="P2S")
         spool = await spool_factory(slicer_filament="PFUScda4c46fc9031", material="ABS")
 
@@ -279,8 +304,8 @@ class TestAssignSpoolTrayInfoIdx:
 
             assert response.status_code == 200
             call_kwargs = mock_client.ams_set_filament_setting.call_args
-            # Spool's preset wins - generic on slot must not be sticky
-            assert call_kwargs.kwargs["tray_info_idx"] == "PFUScda4c46fc9031"
+            # PFUS discarded → generic ABS (re-derived, not sticky-reused).
+            assert call_kwargs.kwargs["tray_info_idx"] == "GFB99"
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -507,7 +532,9 @@ class TestAssignSpoolEmptySlotPreConfig:
     async def test_empty_slot_skips_mqtt_but_persists_assignment(
         self, async_client: AsyncClient, printer_factory, spool_factory
     ):
-        """Assigning to an empty slot skips MQTT and returns pending_config=True."""
+        """Assigning to a firmware-empty slot (state=9) skips MQTT and returns
+        pending_config=True (#1322: empty is the explicit state signal, not a
+        bare tray_type="")."""
         printer = await printer_factory(name="H2D")
         spool = await spool_factory(slicer_filament="GFL05", material="PLA")
 
@@ -515,8 +542,8 @@ class TestAssignSpoolEmptySlotPreConfig:
         mock_client.ams_set_filament_setting.return_value = True
         mock_client.extrusion_cali_sel.return_value = True
 
-        # Slot found but empty (tray_type=""): the pre-load scenario.
-        status = _make_mock_status(ams_data=[{"id": 2, "tray": [{"id": 3, "tray_type": ""}]}])
+        # Slot found but firmware reports empty (state=9): the pre-load scenario.
+        status = _make_mock_status(ams_data=[{"id": 2, "tray": [{"id": 3, "tray_type": "", "state": 9}]}])
 
         with patch("backend.app.services.printer_manager.printer_manager") as mock_pm:
             mock_pm.get_client.return_value = mock_client
@@ -537,14 +564,19 @@ class TestAssignSpoolEmptySlotPreConfig:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_empty_slot_no_ams_data_skips_mqtt(self, async_client: AsyncClient, printer_factory, spool_factory):
-        """No AMS data at all (printer offline, no telemetry yet) → still pre-config."""
+    async def test_no_ams_data_still_attempts_mqtt(self, async_client: AsyncClient, printer_factory, spool_factory):
+        """No AMS telemetry at all is NOT the firmware empty signal (#1322 only
+        suppresses on explicit state 9/10). The user asserts a spool is present,
+        so the configure push is attempted; on_ams_change remains the safety net
+        if firmware silently drops it."""
         printer = await printer_factory(name="X1C")
         spool = await spool_factory(slicer_filament="GFL05", material="PLA")
 
         mock_client = MagicMock()
+        mock_client.ams_set_filament_setting.return_value = True
+        mock_client.extrusion_cali_sel.return_value = True
 
-        # No AMS data — fingerprint_type stays None, treated as empty.
+        # No AMS data — tray not found, tray_state stays None (not 9/10).
         status = _make_mock_status(ams_data=[])
 
         with patch("backend.app.services.printer_manager.printer_manager") as mock_pm:
@@ -557,8 +589,8 @@ class TestAssignSpoolEmptySlotPreConfig:
             )
 
         assert response.status_code == 200
-        assert response.json()["pending_config"] is True
-        mock_client.ams_set_filament_setting.assert_not_called()
+        assert response.json()["pending_config"] is False
+        mock_client.ams_set_filament_setting.assert_called_once()
 
     @pytest.mark.asyncio
     @pytest.mark.integration
