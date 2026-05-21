@@ -20,6 +20,8 @@ All notable changes to BamDude will be documented in this file.
 
 ### Fixed
 
+- **The Printers page renders fully for non-admin operators again (AMS humidity/temp colours, camera view mode, time/date format, drying presets).** Those UI touches were read from the global settings endpoint, which requires the "read settings" permission — so an operator who could control printers but wasn't granted settings access got a silent 403 and lost them (granting settings access would have leaked SMTP/LDAP/MQTT credentials and the whole Settings UI, which isn't the intent). The page now reads them from a new curated `GET /settings/ui-preferences` endpoint that returns only a whitelist of non-sensitive UI fields and needs no settings permission. A leak-canary test seeds sensitive settings and asserts none of them ever appear in the response. Mirrors upstream Bambuddy #1293 / commit 8a6fcf5c.
+
 - **Adding a printer with a wrong access code or IP no longer leaves a dead, empty card.** Add Printer used to write the printer row first and connect afterwards, so a mistyped access code persisted a card that never showed any data. The connection is now probed before the row is saved — on failure the request is rejected with a clear message ("check the IP address, serial number, and access code…") and nothing is written. Add a printer while it's powered on and reachable (which it is when you've just read the access code off its screen).
 
 - **MakerWorld "Open Cloud settings" link now lands on the right page.** The sign-in-required banner's link pointed at a Settings tab that doesn't exist (it silently fell back to General); it now goes to **Profiles**, where Bambu Cloud login actually lives (the Cloud sub-tab opens directly).

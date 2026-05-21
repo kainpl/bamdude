@@ -5195,6 +5195,10 @@ export const api = {
     ),
   // Settings
   getSettings: () => request<AppSettings>('/settings/'),
+  // Curated, non-sensitive UI-rendering settings — readable without
+  // SETTINGS_READ so pages like Printers render correctly for non-admin
+  // operators (#1293). Returns a subset of AppSettings (UI fields only).
+  getUiPreferences: () => request<Partial<AppSettings>>('/settings/ui-preferences'),
   getDefaultSidebarOrder: () => request<{ default_sidebar_order: string }>('/settings/default-sidebar-order'),
   updateSettings: (data: AppSettingsUpdate) =>
     request<AppSettings>('/settings/', {

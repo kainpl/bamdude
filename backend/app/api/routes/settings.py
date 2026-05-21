@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermission, require_energy_cost_update
+from backend.app.core.auth import RequirePermission, get_current_user_optional, require_energy_cost_update
 from backend.app.core.config import settings as app_settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -296,6 +296,39 @@ async def reset_settings(
     await db.commit()
 
     return DEFAULT_SETTINGS
+
+
+# Curated, non-sensitive UI-rendering settings exposed without SETTINGS_READ
+# (#1293). A non-admin operator with printers access but no settings:read used
+# to get a 403 on GET /settings, so the Printers page silently lost camera view
+# mode, time/date format, drying presets, AMS humidity/temp thresholds, etc.
+# ONLY these explicitly-listed fields are returned — never a credential or any
+# other setting. Adding a sensitive key here would fail the leak-canary test.
+_UI_PREFERENCE_FIELDS: tuple[str, ...] = (
+    "camera_view_mode",
+    "time_format",
+    "date_format",
+    "spool_display_template",
+    "check_printer_firmware",
+    "use_slicer_api",
+    "drying_presets",
+    "ams_humidity_good",
+    "ams_humidity_fair",
+    "ams_temp_good",
+    "ams_temp_fair",
+)
+
+
+@router.get("/ui-preferences")
+async def get_ui_preferences(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = Depends(get_current_user_optional),
+):
+    """Curated UI-rendering settings that pages must render correctly even for
+    users without SETTINGS_READ (#1293). Reuses the full settings load, then
+    returns only the whitelisted non-sensitive fields."""
+    full = await get_settings(db=db, _=None)
+    return {field: getattr(full, field, None) for field in _UI_PREFERENCE_FIELDS}
 
 
 @router.get("/default-sidebar-order")
