@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Shield, Lock, Unlock, AlertTriangle, CheckCircle, Loader2, Send } from 'lucide-react';
+import { Shield, Lock, Unlock, AlertTriangle, CheckCircle, Loader2, Send, ChevronDown } from 'lucide-react';
 import { api } from '../api/client';
 import type { AppSettings } from '../api/client';
 import { Card, CardContent, CardHeader } from './Card';
@@ -43,6 +43,10 @@ export function LDAPSettings() {
     ldap_auto_provision: false,
     ldap_default_group: '',
   });
+  // Advanced settings (auto-provision, group mapping, default group) are
+  // collapsed by default — a basic LDAP bind only needs the server/search
+  // fields above. Mirrors upstream Bambuddy's LDAP layout (#1297).
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   // Fetch settings
   const { data: settings, isLoading } = useQuery({
@@ -347,6 +351,18 @@ export function LDAPSettings() {
               </p>
             </div>
 
+            {/* Advanced (collapsed by default) */}
+            <button
+              type="button"
+              onClick={() => setShowAdvanced(v => !v)}
+              className="flex items-center gap-2 text-sm font-medium text-bambu-gray hover:text-white transition-colors pt-2"
+            >
+              <ChevronDown className={`w-4 h-4 transition-transform ${showAdvanced ? '' : '-rotate-90'}`} />
+              {t('settings.ldap.advanced') || 'Advanced'}
+            </button>
+
+            {showAdvanced && (
+              <>
             {/* Auto Provision */}
             <div className="flex items-center justify-between py-2">
               <div>
@@ -407,6 +423,8 @@ export function LDAPSettings() {
                 {t('settings.ldap.defaultGroupHint') || 'Assigned when an authenticated LDAP user has no mapped groups. Empty = user lands with no permissions (previous behavior).'}
               </p>
             </div>
+              </>
+            )}
 
             {/* Action Buttons */}
             <div className="flex gap-3 pt-2">

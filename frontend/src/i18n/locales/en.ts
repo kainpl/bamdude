@@ -1385,6 +1385,7 @@ export default {
     // LDAP settings
     ldap: {
       title: 'LDAP Authentication',
+      advanced: 'Advanced',
       enabledDesc: 'LDAP authentication is enabled',
       disabledDesc: 'LDAP authentication is disabled',
       disabledHint: 'Configure and save LDAP settings below, then enable.',

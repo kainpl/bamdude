@@ -1399,6 +1399,7 @@ export default {
     // LDAP settings
     ldap: {
       title: 'LDAP автентифікація',
+      advanced: 'Розширені',
       enabledDesc: 'LDAP автентифікацію увімкнено',
       disabledDesc: 'LDAP автентифікацію вимкнено',
       disabledHint: 'Налаштуйте та збережіть параметри LDAP нижче, потім увімкніть.',
