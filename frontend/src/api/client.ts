@@ -1258,6 +1258,7 @@ export interface AppSettings {
   check_updates: boolean;
   check_printer_firmware: boolean;
   include_beta_updates: boolean;
+  telemetry_enabled: boolean;
   language: string;
   // Telegram
   telegram_registration_open: boolean;

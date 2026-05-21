@@ -186,6 +186,9 @@ export function SetupPage() {
             >
               {setupMutation.isPending ? t('setup.settingUp') : t('setup.completeSetup')}
             </button>
+            <p className="text-xs text-bambu-gray text-center">
+              {t('setup.telemetryNotice')}
+            </p>
           </div>
         </form>
       </div>

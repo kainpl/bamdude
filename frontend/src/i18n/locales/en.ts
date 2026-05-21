@@ -1561,6 +1561,8 @@ export default {
     checkPrinterFirmware: 'Check printer firmware',
     includeBetaUpdates: 'Include beta versions',
     includeBetaUpdatesDesc: 'Notify about beta and prerelease versions when checking for updates',
+    telemetry: 'Anonymous usage statistics',
+    telemetryDesc: 'Send a daily anonymized snapshot (version, platform, feature usage) to help guide development. No names, IPs, serials or file contents. Turn off anytime.',
     // Queue
     enableRetry: 'Enable retry',
     // Home Assistant
@@ -2422,6 +2424,7 @@ export default {
     confirmPasswordPlaceholder: 'Confirm admin password',
     settingUp: 'Setting up...',
     completeSetup: 'Complete Setup',
+    telemetryNotice: 'BamDude sends anonymized usage statistics by default (no names, IPs or serials) to guide development. You can turn this off anytime in Settings.',
     toast: {
       authEnabledAdminCreated: 'Admin user created - welcome to BamDude',
       enterBothCredentials: 'Please enter both admin username and password',

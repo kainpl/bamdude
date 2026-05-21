@@ -62,6 +62,9 @@ class AppSettings(BaseModel):
     check_updates: bool = Field(default=True, description="Automatically check for updates on startup")
     check_printer_firmware: bool = Field(default=True, description="Check for printer firmware updates from Bambu Lab")
     include_beta_updates: bool = Field(default=False, description="Include beta/prerelease versions in update checks")
+    telemetry_enabled: bool = Field(
+        default=True, description="Send anonymized usage telemetry (opt-out; no PII, no IPs, no serials)"
+    )
 
     # Language
     language: str = Field(default="en", description="UI language (en, de, fr, ja, it, pt-BR)")
@@ -365,6 +368,7 @@ class AppSettingsUpdate(BaseModel):
     check_updates: bool | None = None
     check_printer_firmware: bool | None = None
     include_beta_updates: bool | None = None
+    telemetry_enabled: bool | None = None
     language: str | None = None
     bed_cooled_threshold: float | None = None
     ams_humidity_good: int | None = None

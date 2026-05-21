@@ -8,6 +8,10 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Anonymized usage telemetry (opt-out).** BamDude now sends a once-a-day anonymized snapshot — app version, OS platform/arch, Docker yes/no, aggregate counts (archives, printers, spools, projects), printer **models** (never names/serials), enabled integrations (Spoolman, Obico, Telegram, OIDC, Git backup, slicer API) and daily print counts — to help prioritise development. It is keyed by a random `install_id` generated once at first boot (`DATA_DIR/.install_id`, mode 0600) and **not** linked to any account, email, IP or hardware id. **No IP is stored** by the collector (a coarse country is derived from the proxy header, then discarded), and no names, serials, file paths or settings values are ever sent. It is **on by default with disclosure** — a notice on the first-run setup screen, and a toggle under **Settings → General** (en + uk). Turning it off immediately asks the collector to erase this install's data. Disable entirely with `TELEMETRY_DISABLED=true`, or point it at your own collector with `TELEMETRY_RELAY_URL`. The daily send is fail-silent and never disrupts the app. Backend collector + admin dashboard live in the separate `bamdude-telemetry` project.
+
 ## [0.4.5b4] - 2026-05-21
 
 Fourth beta of the 0.4.5 cycle. Completes the Filament Calibration Wave 2 roadmap — Flow Rate plus the Temperature / Retraction / VFA / Max-Volumetric-Speed towers all run end-to-end as real calibration prints — and folds in a large batch of upstream Bambuddy ports (the v0.2.4→0.2.4.2 audit): smart-plug auto-off after drying, an in-app camera diagnostic, manual LDAP provisioning, Spoolman parity fixes, MQTT / FTP / firmware robustness, and an A1 / A1-mini bed-jog safety fix. Plus archive & statistics polish — consistent failure-status accounting, distinct cancelled/aborted badges, and per-print vs per-object filament averages. Image: `ghcr.io/kainpl/bamdude:0.4.5b4` / `kainpl/bamdude:0.4.5b4`. Pin the exact tag — `:latest` still tracks 0.4.4.1.

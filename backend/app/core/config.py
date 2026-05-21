@@ -13,6 +13,13 @@ GITHUB_REPO = "kainpl/bamdude"
 # forwarder) or set to empty string to disable the in-app bug-report UI.
 BUG_REPORT_RELAY_URL = os.environ.get("BUG_REPORT_RELAY_URL", "https://bamdude.top/api/bug-report")
 
+# Anonymized telemetry endpoint (opt-out). Sends a daily anonymized snapshot
+# (version / platform / aggregate counts / feature flags) keyed by a random
+# install id. Override the URL to point at your own collector, or set
+# ``TELEMETRY_DISABLED=true`` (or the in-app Settings toggle) to turn it off.
+TELEMETRY_RELAY_URL = os.environ.get("TELEMETRY_RELAY_URL", "https://bamdude.top/api/telemetry")
+TELEMETRY_DISABLED = os.environ.get("TELEMETRY_DISABLED", "").strip().lower() in ("1", "true", "yes")
+
 # App directory - where the application is installed (for static files)
 _app_dir = Path(__file__).resolve().parent.parent.parent.parent
 

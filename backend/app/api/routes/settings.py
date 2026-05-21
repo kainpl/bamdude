@@ -89,6 +89,7 @@ async def get_settings(
                 "check_updates",
                 "check_printer_firmware",
                 "include_beta_updates",
+                "telemetry_enabled",
                 "virtual_printer_enabled",
                 "ftp_retry_enabled",
                 "mqtt_enabled",
@@ -183,6 +184,14 @@ async def update_settings(
     await db.commit()
     # Expire all objects to ensure fresh reads after commit
     db.expire_all()
+
+    # Opt-out: when telemetry is turned off, ask the relay to erase this install.
+    if update_data.get("telemetry_enabled") is False:
+        import asyncio
+
+        from backend.app.services.telemetry import forget_telemetry
+
+        asyncio.create_task(forget_telemetry())
 
     # If log retention changed, push the new value into the live
     # rotating-file handler so the next midnight rotation honours it

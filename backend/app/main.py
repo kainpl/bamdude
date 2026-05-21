@@ -5717,6 +5717,11 @@ async def lifespan(app: FastAPI):
     # Start camera stream orphan cleanup
     start_camera_cleanup()
 
+    # Start anonymized opt-out telemetry (daily snapshot)
+    from backend.app.services.telemetry import start_telemetry
+
+    start_telemetry()
+
     # Start expected-print TTL eviction (prevents memory leak when prints are
     # registered but on_print_start never fires)
     start_expected_prints_cleanup()
@@ -5828,6 +5833,9 @@ async def lifespan(app: FastAPI):
     stop_ams_history_recording()
     stop_runtime_tracking()
     stop_camera_cleanup()
+    from backend.app.services.telemetry import stop_telemetry
+
+    stop_telemetry()
     # Tear down all camera fan-out broadcasters (#1089) so subscribers exit
     # cleanly and pump tasks don't outlive the asyncio loop.
     try:
