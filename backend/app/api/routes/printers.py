@@ -31,6 +31,7 @@ from backend.app.schemas.printer import (
     PrintOptionsResponse,
 )
 from backend.app.services.bambu_ftp import (
+    clear_sdcard_async,
     delete_file_async,
     download_file_bytes_async,
     get_storage_info_async,
@@ -1575,6 +1576,39 @@ async def delete_printer_file(
         raise HTTPException(500, f"Failed to delete file: {path}")
 
     return {"status": "deleted", "path": path}
+
+
+@router.post("/{printer_id}/files/clear-sdcard")
+async def clear_printer_sdcard(
+    printer_id: int,
+    _=RequirePermission(Permission.PRINTERS_FILES),
+    db: AsyncSession = Depends(get_db),
+):
+    """Recursively delete every file on the SD card (root + all nested folders).
+
+    Folder structure is left intact; only files are removed. Refused while a
+    print is RUNNING/PAUSE because Bambu streams the active job from the SD
+    card — wiping it mid-print would abort the print.
+    """
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    state = printer_manager.get_status(printer_id)
+    if state.state in ("RUNNING", "PAUSE"):
+        raise HTTPException(409, "Cannot clear the SD card while a print is in progress")
+
+    summary = await clear_sdcard_async(printer.ip_address, printer.access_code, printer_model=printer.model)
+    if not summary.get("connected"):
+        raise HTTPException(502, "Could not connect to the printer over FTP")
+
+    return {
+        "status": "cleared",
+        "deleted": summary["deleted"],
+        "failed": summary["failed"],
+        "folders_removed": summary.get("folders_removed", 0),
+    }
 
 
 @router.get("/{printer_id}/storage")

@@ -2168,6 +2168,7 @@ class ArchiveService:
         self,
         printer_id: int | None = None,
         project_id: int | None = None,
+        library_file_id: int | None = None,
         date_from: date | None = None,
         date_to: date | None = None,
         search: str | None = None,
@@ -2199,6 +2200,11 @@ class ArchiveService:
             filters.append(PrintArchive.printer_id == printer_id)
         if project_id:
             filters.append(PrintArchive.project_id == project_id)
+        # Library-file filter — every print dispatched from one library file.
+        # background_dispatch stamps PrintArchive.library_file_id at dispatch
+        # time; external/manual prints have it NULL and never match.
+        if library_file_id:
+            filters.append(PrintArchive.library_file_id == library_file_id)
 
         # Date range
         if date_from:

@@ -2,9 +2,34 @@ import {defineConfig} from 'vite'
 import react from '@vitejs/plugin-react'
 import path from 'path'
 
-// Backend port for dev server proxy (default: 8000)
+// Backend port for dev/preview server proxy (default: 8000)
 const backendPort = process.env.BACKEND_PORT || '8000'
 const backendUrl = `http://localhost:${backendPort}`
+
+// Shared proxy rules — used by both the dev server (`npm run dev`) and the
+// preview server (`npm run preview` / `npm run start`, which serves the
+// production build from `static/`). Vite's preview server does not inherit
+// `server.proxy`, so the production-style local run needs these wired
+// explicitly or its `/api` calls would 404.
+const proxy = {
+    '/api/v1/ws': {
+        target: backendUrl,
+        ws: true,
+        changeOrigin: true,
+    },
+    '/api': {
+        target: backendUrl,
+        changeOrigin: true,
+    },
+    '/openapi.json': {
+        target: backendUrl,
+        changeOrigin: true,
+    },
+    '/docs': {
+        target: backendUrl,
+        changeOrigin: true,
+    },
+}
 
 export default defineConfig({
     // Default base ('/') emits absolute asset URLs (/assets/..., /manifest.json,
@@ -54,25 +79,16 @@ export default defineConfig({
         headers: {
             'Cache-Control': 'no-store',
         },
-        proxy: {
-            '/api/v1/ws': {
-                target: backendUrl,
-                ws: true,
-                changeOrigin: true,
-            },
-            '/api': {
-                target: backendUrl,
-                changeOrigin: true,
-            },
-            '/openapi.json': {
-                target: backendUrl,
-                changeOrigin: true,
-            },
-            '/docs': {
-                target: backendUrl,
-                changeOrigin: true,
-            },
-        },
+        proxy,
+    },
+    // Production-style local run: `npm run start` (build + serve from static/)
+    // or `npm run preview` after a build. Mirrors the dev server's host and
+    // backend proxy, but serves the minified bundle instead of the dev HMR
+    // server. Override the port with `--port` if 4173 is taken.
+    preview: {
+        host: '0.0.0.0',
+        port: 4173,
+        proxy,
     },
     resolve: {
         alias: {

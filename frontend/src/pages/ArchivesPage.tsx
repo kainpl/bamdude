@@ -2548,6 +2548,18 @@ export function ArchivesPage() {
     const saved = localStorage.getItem('archiveFilterPrinter');
     return saved ? Number(saved) : null;
   });
+  // Library-file filter: set via the clickable file name in the File Manager
+  // (`?file=<id>&fileName=<name>`). Shows every archive dispatched from that
+  // library file. Read from the URL only — not persisted to localStorage, so
+  // it's a transient "drill-in" filter that clears on reset. The name rides
+  // along purely for the display chip (avoids an extra lookup).
+  const [filterLibraryFile, setFilterLibraryFile] = useState<number | null>(() => {
+    const urlFile = searchParams.get('file');
+    return urlFile ? Number(urlFile) : null;
+  });
+  const [filterLibraryFileName, setFilterLibraryFileName] = useState<string | null>(() =>
+    searchParams.get('fileName')
+  );
   const [filterMaterial, setFilterMaterial] = useState<string | null>(() =>
     localStorage.getItem('archiveFilterMaterial')
   );
@@ -2646,6 +2658,7 @@ export function ArchivesPage() {
     per_page: perPage === -1 ? undefined : perPage,
     all: perPage === -1 ? true : undefined,
     printer_id: filterPrinter || undefined,
+    library_file_id: filterLibraryFile || undefined,
     search: debouncedSearch || undefined,
     collection: collection !== 'all' ? collection : undefined,
     material: filterMaterial || undefined,
@@ -2873,6 +2886,20 @@ export function ArchivesPage() {
     setFilterColors(new Set());
   };
 
+  // Drop the library-file filter and strip its URL params so a refresh
+  // doesn't re-apply it.
+  const clearLibraryFileFilter = () => {
+    setFilterLibraryFile(null);
+    setFilterLibraryFileName(null);
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete('file');
+      next.delete('fileName');
+      return next;
+    }, { replace: true });
+    setPage(1);
+  };
+
   const clearTopFilters = () => {
     setSearch('');
     setFilterPrinter(null);
@@ -2882,10 +2909,11 @@ export function ArchivesPage() {
     setHideDuplicates(false);
     setFilterTag(null);
     setFilterKind('all');
+    clearLibraryFileFilter();
     setPage(1);
   };
 
-  const hasTopFilters = search || filterPrinter || filterMaterial || filterFavorites || hideFailed || hideDuplicates || filterTag || filterKind !== 'all';
+  const hasTopFilters = search || filterPrinter || filterLibraryFile || filterMaterial || filterFavorites || hideFailed || hideDuplicates || filterTag || filterKind !== 'all';
 
   // Keyboard shortcuts. Archive uploads were removed in 0.4.2 (Audit-1):
   // archives are now strictly the print history of record — drag-drop +
@@ -3320,6 +3348,17 @@ export function ArchivesPage() {
                   <Settings className="w-4 h-4" />
                 </button>
               </div>
+            )}
+            {filterLibraryFile && (
+              <button
+                onClick={clearLibraryFileFilter}
+                title={t('archives.page.clearFileFilter')}
+                className="inline-flex items-center gap-1.5 max-w-[16rem] px-2.5 py-1.5 rounded-lg bg-bambu-green/15 border border-bambu-green/40 text-bambu-green text-sm hover:bg-bambu-green/25 transition-colors"
+              >
+                <FileText className="w-4 h-4 flex-shrink-0" />
+                <span className="truncate">{filterLibraryFileName || `#${filterLibraryFile}`}</span>
+                <X className="w-4 h-4 flex-shrink-0" />
+              </button>
             )}
             {hasTopFilters && (
               <Button

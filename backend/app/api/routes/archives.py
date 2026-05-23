@@ -185,6 +185,7 @@ def archive_to_response(
 async def list_archives(
     printer_id: int | None = None,
     project_id: int | None = None,
+    library_file_id: int | None = Query(None, description="Only prints dispatched from this library file"),
     date_from: date | None = Query(None),
     date_to: date | None = Query(None),
     search: str | None = Query(None),
@@ -214,6 +215,7 @@ async def list_archives(
     archives, total = await service.list_archives(
         printer_id=printer_id,
         project_id=project_id,
+        library_file_id=library_file_id,
         date_from=date_from,
         date_to=date_to,
         search=search,

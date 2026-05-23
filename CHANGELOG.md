@@ -10,7 +10,17 @@ All notable changes to BamDude will be documented in this file.
 
 ### Added
 
+- **"Clear SD card" in the printer file browser.** A one-click recursive wipe that deletes every file on the SD card and removes all nested subfolders, while keeping the standard top-level folders (cache, model, timelapse…) the printer expects to exist. Guarded by a danger confirmation, and refused while a print is running or paused (the active job streams from the card). The whole walk runs over a single FTP connection so it stays fast even on a card full of cached models. Requires the `printers:files` permission. en + uk.
+- **Click a file name to see its print history.** In the File Manager (grid and list views) and on the MakerWorld → History tab, the file name is now a link that opens the Archive filtered to every print dispatched from that library file, with a dismissible chip showing which file you're drilled into. Backed by a new `library_file_id` filter on the archive list (the link is stamped at dispatch time, so external/manual prints never match). en + uk.
 - **Anonymized usage telemetry (opt-out).** BamDude now sends a once-a-day anonymized snapshot — app version, OS platform/arch, Docker yes/no, aggregate counts (archives, printers, spools, projects, smart plugs, **users**, **AMS units**), printer **models** (never names/serials), enabled integrations (Spoolman, Obico, Telegram, OIDC, Git backup, slicer API) and daily print counts — to help prioritise development. It is keyed by a random `install_id` generated once at first boot (`DATA_DIR/.install_id`, mode 0600) and **not** linked to any account, email, IP or hardware id. The id is included in **backups** (so a restore keeps the same identity) and in the **support bundle / bug report** (so a report can be correlated with telemetry). **No IP is stored** by the collector (a coarse country is derived from the proxy header, then discarded), and no names, serials, file paths or settings values are ever sent. It is **on by default with disclosure** — a notice on the first-run setup screen, and a toggle under **Settings → General** (en + uk). Turning it off immediately asks the collector to erase this install's data. Disable entirely with `TELEMETRY_DISABLED=true`, or point it at your own collector with `TELEMETRY_RELAY_URL`. The daily send is fail-silent and never disrupts the app. Backend collector + admin dashboard live in the separate `bamdude-telemetry` project.
+
+### Fixed
+
+- **A malformed MQTT PUBLISH from a Bambu printer no longer kills the connection.** The printer's broker occasionally delivers a truncated packet whose declared topic length exceeds the bytes present; paho-mqtt would build a negative `struct` count and crash its network thread with `struct.error: bad char in struct format`, dropping the printer offline until the ~70 s stale-connection watchdog reconnected. BamDude now drops the malformed push (the printer re-pushes its state within seconds), mirroring the guard already in place for malformed SUBACK packets.
+
+### Changed
+
+- **File library multi-select now toggles only when you click the checkbox**, not anywhere on the card or row. Clicking a card/row body no longer flips its selection (which made it easy to select files by accident while scanning the library); the checkbox is the single select affordance, matching the printers page. Applies to both grid and list views.
 
 ## [0.4.5b4] - 2026-05-21
 

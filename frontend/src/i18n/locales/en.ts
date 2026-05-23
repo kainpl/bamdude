@@ -864,6 +864,7 @@ export default {
       colors: 'Colors:',
       reset: 'Reset',
       clear: 'Clear',
+      clearFileFilter: 'Clear file filter',
       matchAnyColor: 'Match ANY selected color',
       matchAllColors: 'Match ALL selected colors',
       // Empty state
@@ -2289,6 +2290,10 @@ export default {
     deleteFiles: 'Delete {{count}} Files',
     deleteFileConfirm: 'Delete "{{name}}"? This cannot be undone.',
     deleteFilesConfirm: 'Delete {{count}} selected files? This cannot be undone.',
+    clearSdCard: 'Clear SD card',
+    clearSdCardHint: 'Delete all files and nested subfolders; the standard top-level folders are kept',
+    clearSdCardTitle: 'Clear the entire SD card?',
+    clearSdCardConfirm: 'This deletes every file on the SD card and removes all nested subfolders. The standard top-level folders (cache, model, timelapse…) are kept, but everything inside them is wiped. This cannot be undone.',
     downloading: 'Downloading...',
     importToLibrary: 'Save to Library',
     importDialog: {
@@ -2303,6 +2308,10 @@ export default {
     toast: {
       filesDeleted: 'Deleted {{count}} file(s)',
       deleteFailed: 'Delete failed: {{error}}',
+      clearing: 'Clearing SD card...',
+      sdCardCleared: 'SD card cleared — deleted {{count}} file(s)',
+      sdCardClearedPartial: 'Cleared SD card: deleted {{deleted}}, {{failed}} could not be removed',
+      clearFailed: 'Clear SD card failed: {{error}}',
       importStarted: 'Importing {{count}} file(s)...',
       importDone: 'Imported {{imported}} of {{total}} ({{existing}} already in library)',
       importDoneSimple: 'Imported {{imported}} of {{total}}',
@@ -2942,6 +2951,7 @@ export default {
     },
     history: {
       searchPlaceholder: 'Search by file, title, or author...',
+      viewPrints: 'View prints of {{name}}',
       noCover: 'No cover',
       noResults: 'Nothing matched your search.',
       showingRange: '{{from}}–{{to}} of {{total}}',
@@ -3279,6 +3289,8 @@ export default {
   fileManager: {
     title: 'File Manager',
     subtitle: 'Organize and manage your print files',
+    selectFile: 'Select file',
+    viewPrintsOf: 'View prints of {{name}}',
     plate: 'Plate',
     plateSlot: 'Slot',
     plateGallery: 'Plate gallery',

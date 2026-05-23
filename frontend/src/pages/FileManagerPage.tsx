@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useMemo, useEffect, type DragEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -877,6 +877,8 @@ interface FileCardProps {
   isSelected: boolean;
   isMobile: boolean;
   onSelect: (id: number) => void;
+  /** Open the archive (print history) filtered to this file's prints. */
+  onOpenArchives: (file: LibraryFileListItem) => void;
   onDelete: (id: number) => void;
   onDownload: (id: number) => void;
   onAddToQueue?: (id: number) => void;
@@ -1063,7 +1065,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   );
 }
 
-function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, onAddToQueue, onPrint, onSlice, useSlicerApi, onPreview3d, onRename, onLink, onGenerateThumbnail, onPlateGallery, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
+function FileCard({ file, isSelected, isMobile, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, useSlicerApi, onPreview3d, onRename, onLink, onGenerateThumbnail, onPlateGallery, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
   const [showActions, setShowActions] = useState(false);
   // Portal-rendered dropdown — the card root has `overflow-hidden` for the
   // thumbnail crop, which clips an absolute-positioned menu against the card
@@ -1102,12 +1104,11 @@ function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, 
 
   return (
     <div
-      className={`group relative bg-bambu-dark-secondary rounded-lg border transition-all cursor-pointer overflow-hidden ${
+      className={`group relative bg-bambu-dark-secondary rounded-lg border transition-all overflow-hidden ${
         isSelected
           ? 'border-bambu-green ring-1 ring-bambu-green'
           : 'border-bambu-dark-tertiary hover:border-bambu-green/50'
       }`}
-      onClick={() => onSelect(file.id)}
     >
       {/* Thumbnail */}
       <div className="relative aspect-square bg-bambu-dark flex items-center justify-center overflow-hidden">
@@ -1192,8 +1193,15 @@ function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, 
 
       {/* Info */}
       <div className="p-3">
-        <h3 className="text-sm font-medium text-white truncate" title={file.print_name || file.filename}>
-          {file.print_name || file.filename}
+        <h3 className="text-sm font-medium text-white truncate">
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onOpenArchives(file); }}
+            title={t('fileManager.viewPrintsOf', { name: file.print_name || file.filename })}
+            className="block w-full truncate text-left hover:text-bambu-green hover:underline transition-colors cursor-pointer"
+          >
+            {file.print_name || file.filename}
+          </button>
         </h3>
         <div className="flex items-center gap-3 mt-1 text-xs text-bambu-gray">
           <span>{formatFileSize(file.file_size)}</span>
@@ -1379,14 +1387,22 @@ function FileCard({ file, isSelected, isMobile, onSelect, onDelete, onDownload, 
         )}
       </div>
 
-      {/* Selection checkbox - always visible on mobile, hover on desktop */}
-      <div className={`absolute top-2 left-2 w-5 h-5 rounded border-2 flex items-center justify-center transition-all ${
-        isSelected
-          ? 'bg-bambu-green border-bambu-green'
-          : `border-white/30 bg-black/30 ${isMobile ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`
-      }`}>
+      {/* Selection checkbox - the only select affordance (a plain card click
+          no longer toggles selection). Always visible on mobile, hover on
+          desktop. stopPropagation keeps the click off the card body. */}
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); onSelect(file.id); }}
+        aria-pressed={isSelected}
+        aria-label={t('fileManager.selectFile', { defaultValue: 'Select file' })}
+        className={`absolute top-2 left-2 w-5 h-5 rounded border-2 flex items-center justify-center transition-all cursor-pointer ${
+          isSelected
+            ? 'bg-bambu-green border-bambu-green'
+            : `border-white/30 bg-black/30 ${isMobile ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`
+        }`}
+      >
         {isSelected && <div className="w-2 h-2 bg-white rounded-sm" />}
-      </div>
+      </button>
     </div>
   );
 }
@@ -1397,6 +1413,7 @@ export function FileManagerPage() {
   const { showToast } = useToast();
   const { hasPermission, hasAnyPermission, canModify, authEnabled } = useAuth();
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
 
   // Read folder ID from URL query parameter
   const folderIdFromUrl = searchParams.get('folder');
@@ -1908,6 +1925,17 @@ export function FileManagerPage() {
       return prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
     });
   }, []);
+
+  // Open the archive page filtered to this file's print history. The file
+  // name rides along so the archive page can show a "prints of <name>" chip
+  // without a second lookup.
+  const handleOpenArchives = useCallback((file: LibraryFileListItem) => {
+    const params = new URLSearchParams({
+      file: String(file.id),
+      fileName: file.print_name || file.filename,
+    });
+    navigate(`/archives?${params.toString()}`);
+  }, [navigate]);
 
   const handleSelectAll = useCallback(() => {
     if (filteredAndSortedFiles.length > 0) {
@@ -2625,6 +2653,7 @@ export function FileManagerPage() {
                     isMobile={isMobile}
                     t={t}
                     onSelect={handleFileSelect}
+                    onOpenArchives={handleOpenArchives}
                     onDelete={(id) => setDeleteConfirm({ type: 'file', id })}
                     onDownload={handleDownload}
                     onAddToQueue={(id) => {
@@ -2679,19 +2708,25 @@ export function FileManagerPage() {
                 {filteredAndSortedFiles.map((file) => (
                   <div
                     key={file.id}
-                    className={`grid grid-cols-subgrid col-span-full gap-4 px-4 py-3 items-center border-b border-bambu-dark-tertiary last:border-b-0 cursor-pointer hover:bg-bambu-dark/50 transition-colors ${
+                    className={`grid grid-cols-subgrid col-span-full gap-4 px-4 py-3 items-center border-b border-bambu-dark-tertiary last:border-b-0 hover:bg-bambu-dark/50 transition-colors ${
                       selectedFiles.includes(file.id) ? 'bg-bambu-green/10' : ''
                     }`}
-                    onClick={() => handleFileSelect(file.id)}
                   >
-                    {/* Checkbox */}
-                    <div className={`w-5 h-5 rounded border-2 flex items-center justify-center ${
-                      selectedFiles.includes(file.id)
-                        ? 'bg-bambu-green border-bambu-green'
-                        : 'border-bambu-gray/50'
-                    }`}>
+                    {/* Checkbox — the only select affordance (a plain row
+                        click no longer toggles selection). */}
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); handleFileSelect(file.id); }}
+                      aria-pressed={selectedFiles.includes(file.id)}
+                      aria-label={t('fileManager.selectFile', { defaultValue: 'Select file' })}
+                      className={`w-5 h-5 rounded border-2 flex items-center justify-center cursor-pointer ${
+                        selectedFiles.includes(file.id)
+                          ? 'bg-bambu-green border-bambu-green'
+                          : 'border-bambu-gray/50'
+                      }`}
+                    >
                       {selectedFiles.includes(file.id) && <div className="w-2 h-2 bg-white rounded-sm" />}
-                    </div>
+                    </button>
                     {/* Name with thumbnail */}
                     <div className="flex items-center gap-3 min-w-0">
                       <div className="relative group/thumb">
@@ -2732,7 +2767,14 @@ export function FileManagerPage() {
                         )}
                       </div>
                       <div className="min-w-0">
-                        <div className="text-sm text-white truncate">{file.print_name || file.filename}</div>
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); handleOpenArchives(file); }}
+                          title={t('fileManager.viewPrintsOf', { name: file.print_name || file.filename })}
+                          className="block w-full text-sm text-white truncate text-left hover:text-bambu-green hover:underline transition-colors cursor-pointer"
+                        >
+                          {file.print_name || file.filename}
+                        </button>
                       </div>
                     </div>
                     {/* Uploaded By - only show when auth is enabled */}

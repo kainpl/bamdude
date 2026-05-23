@@ -23,6 +23,7 @@ import {
   Square,
   MinusSquare,
   Box,
+  Eraser,
 } from 'lucide-react';
 import { api, type LibraryFolderTree } from '../api/client';
 import { parseUTCDate } from '../utils/date';
@@ -315,6 +316,7 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
   const [viewerFile, setViewerFile] = useState<{ path: string; name: string } | null>(null);
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [importFolderId, setImportFolderId] = useState<number | null>(null);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
 
   // Library folder tree — fetched lazily, only when the import dialog opens.
   // Same shape the VP card / Makerworld page consume.
@@ -412,6 +414,28 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
     },
     onError: (error: Error) => {
       showToast(t('printerFiles.toast.deleteFailed', { error: error.message }), 'error');
+    },
+  });
+
+  const clearSdCardMutation = useMutation({
+    mutationFn: () => api.clearPrinterSdCard(printerId),
+    onSuccess: (result) => {
+      if (result.failed > 0) {
+        showToast(
+          t('printerFiles.toast.sdCardClearedPartial', { deleted: result.deleted, failed: result.failed }),
+          'error',
+        );
+      } else {
+        showToast(t('printerFiles.toast.sdCardCleared', { count: result.deleted }));
+      }
+      queryClient.invalidateQueries({ queryKey: ['printerFiles', printerId] });
+      queryClient.invalidateQueries({ queryKey: ['printerStorage', printerId] });
+      setSelectedFiles(new Set());
+      setShowClearConfirm(false);
+    },
+    onError: (error: Error) => {
+      showToast(t('printerFiles.toast.clearFailed', { error: error.message }), 'error');
+      setShowClearConfirm(false);
     },
   });
 
@@ -772,6 +796,19 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
                 )}
               </div>
             )}
+            <button
+              onClick={() => setShowClearConfirm(true)}
+              disabled={clearSdCardMutation.isPending}
+              className="flex items-center gap-1 text-xs text-red-400 hover:text-red-300 transition-colors disabled:opacity-50"
+              title={t('printerFiles.clearSdCardHint')}
+            >
+              {clearSdCardMutation.isPending ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Eraser className="w-4 h-4" />
+              )}
+              {t('printerFiles.clearSdCard')}
+            </button>
           </div>
           <div className="flex gap-2">
             <Button
@@ -838,6 +875,19 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
             deleteMutation.mutate(filesToDelete);
           }}
           onCancel={() => setFilesToDelete([])}
+        />
+      )}
+
+      {showClearConfirm && (
+        <ConfirmModal
+          title={t('printerFiles.clearSdCardTitle')}
+          message={t('printerFiles.clearSdCardConfirm')}
+          confirmText={t('printerFiles.clearSdCard')}
+          variant="danger"
+          isLoading={clearSdCardMutation.isPending}
+          loadingText={t('printerFiles.toast.clearing')}
+          onConfirm={() => clearSdCardMutation.mutate()}
+          onCancel={() => setShowClearConfirm(false)}
         />
       )}
 

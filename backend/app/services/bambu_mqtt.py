@@ -60,7 +60,56 @@ def _install_paho_suback_guard() -> None:
     mqtt.Client._handle_suback = _guarded_handle_suback
 
 
+def _install_paho_publish_guard() -> None:
+    """Guard paho's PUBLISH handler against malformed (truncated) packets.
+
+    The PUBLISH counterpart of :func:`_install_paho_suback_guard`. A Bambu
+    printer's broker occasionally delivers a truncated PUBLISH whose declared
+    topic length exceeds the bytes actually present. paho-mqtt's
+    ``_handle_publish`` then builds a ``struct`` format with a negative count
+    (``f"!{slen}s{len-slen}s"`` → ``"!120s-40s"``) and ``struct.unpack`` raises
+    ``struct.error: bad char in struct format`` on paho's network thread —
+    killing that thread until BamDude's stale-connection watchdog reconnects
+    ~70 s later. This wrapper drops the malformed PUBLISH instead (the printer
+    re-pushes its state within seconds) so the paho loop thread survives.
+    Idempotent; best-effort — a paho API change just leaves the original
+    behaviour in place.
+    """
+    try:
+        original = mqtt.Client._handle_publish
+    except AttributeError:
+        return
+    if getattr(original, "_bamdude_guarded", False):
+        return
+
+    def _guarded_handle_publish(self):  # type: ignore[no-untyped-def]
+        packet = self._in_packet.get("packet", b"")
+        # paho reads a 2-byte topic length, then unpacks slen topic bytes plus
+        # the remainder. Either field going negative crashes struct.unpack.
+        if len(packet) < 2:
+            logger.warning(
+                "Dropping malformed PUBLISH (%d-byte body, need >=2) — paho would "
+                "otherwise crash its network thread on this packet",
+                len(packet),
+            )
+            return None
+        slen = (packet[0] << 8) | packet[1]
+        if slen > len(packet) - 2:
+            logger.warning(
+                "Dropping malformed PUBLISH (topic len %d > %d remaining bytes) — "
+                "paho would otherwise crash its network thread on this packet",
+                slen,
+                len(packet) - 2,
+            )
+            return None
+        return original(self)
+
+    _guarded_handle_publish._bamdude_guarded = True  # type: ignore[attr-defined]
+    mqtt.Client._handle_publish = _guarded_handle_publish
+
+
 _install_paho_suback_guard()
+_install_paho_publish_guard()
 
 # AMS module name prefixes used in get_version responses.
 # The numeric suffix after '/' is the AMS unit ID as reported in push_status.

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import DOMPurify from 'dompurify';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { AlertCircle, ArrowRight, Check, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, ExternalLink, FolderOpen, History, Images, Loader2, Trash2, X } from 'lucide-react';
@@ -113,6 +113,7 @@ export function MakerworldPage() {
   const { hasPermission } = useAuth();
   const { showToast } = useToast();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
 
   const canImport = hasPermission('makerworld:import');
 
@@ -1087,9 +1088,19 @@ export function MakerworldPage() {
                         )}
                       </div>
                       <div className="flex flex-col gap-1 p-2.5 min-w-0">
-                        <p className="text-sm font-medium text-white truncate" title={displayTitle}>
+                        <button
+                          type="button"
+                          onClick={() => navigate(
+                            `/archives?${new URLSearchParams({
+                              file: String(item.library_file_id),
+                              fileName: displayTitle,
+                            }).toString()}`
+                          )}
+                          title={t('makerworld.history.viewPrints', { name: displayTitle })}
+                          className="block w-full text-sm font-medium text-white truncate text-left hover:text-bambu-green hover:underline transition-colors cursor-pointer"
+                        >
                           {displayTitle}
-                        </p>
+                        </button>
                         {item.author_name && (
                           <p className="text-xs text-bambu-gray truncate" title={item.author_name}>
                             {item.author_name}

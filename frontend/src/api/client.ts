@@ -775,6 +775,7 @@ export interface ArchiveListParams {
   all?: boolean;
   printer_id?: number;
   project_id?: number;
+  library_file_id?: number;
   date_from?: string;
   date_to?: string;
   search?: string;
@@ -4575,6 +4576,11 @@ export const api = {
     request<{ status: string; path: string }>(`/printers/${printerId}/files?path=${encodeURIComponent(path)}`, {
       method: 'DELETE',
     }),
+  clearPrinterSdCard: (printerId: number) =>
+    request<{ status: string; deleted: number; failed: number; folders_removed: number }>(
+      `/printers/${printerId}/files/clear-sdcard`,
+      { method: 'POST' },
+    ),
   importPrinterFilesToLibrary: (
     printerId: number,
     paths: string[],
@@ -4603,6 +4609,7 @@ export const api = {
     if (params.per_page && !params.all) qs.set('per_page', String(params.per_page));
     if (params.printer_id) qs.set('printer_id', String(params.printer_id));
     if (params.project_id) qs.set('project_id', String(params.project_id));
+    if (params.library_file_id) qs.set('library_file_id', String(params.library_file_id));
     if (params.date_from) qs.set('date_from', params.date_from);
     if (params.date_to) qs.set('date_to', params.date_to);
     if (params.search) qs.set('search', params.search);

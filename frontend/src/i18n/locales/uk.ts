@@ -873,6 +873,7 @@ export default {
       colors: 'Кольори:',
       reset: 'Скинути',
       clear: 'Очистити',
+      clearFileFilter: 'Скинути фільтр за файлом',
       matchAnyColor: 'Збіг з БУДЬ-ЯКИМ вибраним кольором',
       matchAllColors: 'Збіг з УСІМА вибраними кольорами',
       archivesAutoCreated: 'Архіви створюються автоматично після завершення друку',
@@ -2305,6 +2306,10 @@ export default {
     deleteFiles: 'Видалити {{count}} файлів',
     deleteFileConfirm: 'Видалити "{{name}}"? Це не можна скасувати.',
     deleteFilesConfirm: 'Видалити {{count}} вибраних файлів? Це не можна скасувати.',
+    clearSdCard: 'Очистити SD-карту',
+    clearSdCardHint: 'Видалити всі файли та вкладені підпапки; стандартні папки верхнього рівня залишаються',
+    clearSdCardTitle: 'Очистити всю SD-карту?',
+    clearSdCardConfirm: 'Будуть видалені всі файли на SD-карті та всі вкладені підпапки. Стандартні папки верхнього рівня (cache, model, timelapse…) залишаються, але весь їхній вміст видаляється. Це не можна скасувати.',
     downloading: 'Завантаження...',
     importToLibrary: 'У бібліотеку',
     importDialog: {
@@ -2319,6 +2324,10 @@ export default {
     toast: {
       filesDeleted: 'Видалено {{count}} файлів',
       deleteFailed: 'Помилка видалення: {{error}}',
+      clearing: 'Очищення SD-карти...',
+      sdCardCleared: 'SD-карту очищено — видалено {{count}} файлів',
+      sdCardClearedPartial: 'SD-карту очищено: видалено {{deleted}}, не вдалося — {{failed}}',
+      clearFailed: 'Не вдалося очистити SD-карту: {{error}}',
       importStarted: 'Імпорт {{count}} файлів...',
       importDone: 'Імпортовано {{imported}} з {{total}} ({{existing}} уже в бібліотеці)',
       importDoneSimple: 'Імпортовано {{imported}} з {{total}}',
@@ -2958,6 +2967,7 @@ export default {
     },
     history: {
       searchPlaceholder: 'Пошук за файлом, назвою або автором...',
+      viewPrints: 'Переглянути друки «{{name}}»',
       noCover: 'Без обкладинки',
       noResults: 'Нічого не знайдено за запитом.',
       showingRange: '{{from}}–{{to}} з {{total}}',
@@ -3291,6 +3301,8 @@ export default {
   fileManager: {
     title: 'Файловий менеджер',
     subtitle: 'Організуйте та керуйте файлами для друку',
+    selectFile: 'Вибрати файл',
+    viewPrintsOf: 'Переглянути друки «{{name}}»',
     plate: 'Плита',
     plateSlot: 'Слот',
     plateGallery: 'Галерея плит',

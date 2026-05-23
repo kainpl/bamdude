@@ -638,6 +638,69 @@ class BambuFTPClient:
             logger.warning("Failed to delete %s: %s", remote_path, e)
             return False
 
+    def remove_dir(self, remote_path: str) -> bool:
+        """Remove an (already-emptied) directory from the printer."""
+        if not self._ftp:
+            return False
+        try:
+            self._ftp.rmd(remote_path)
+            return True
+        except (OSError, ftplib.Error) as e:
+            logger.warning("Failed to remove dir %s: %s", remote_path, e)
+            return False
+
+    def clear_all(self, root: str = "/") -> dict:
+        """Clear the SD card: delete every file, and remove nested folders.
+
+        The top-level folders that live directly in ``root`` (e.g. ``/cache``,
+        ``/model``, ``/timelapse``) are KEPT — only their contents are wiped,
+        since the printer expects those standard directories to exist. Any
+        folder nested deeper than that is removed outright once emptied. Files
+        are deleted at every level, including the root.
+
+        Reuses this single connection for the whole walk — opening a fresh FTP
+        session per entry would be punishingly slow on an SD card with hundreds
+        of cached models. Returns ``{"deleted", "failed", "folders_removed"}``.
+        """
+        if not self._ftp:
+            return {"deleted": 0, "failed": 0, "folders_removed": 0}
+
+        stats = {"deleted": 0, "failed": 0, "folders_removed": 0}
+
+        def _clean(dir_path: str, depth: int) -> None:
+            # depth: 0 == root, 1 == top-level folder, 2+ == nested folder.
+            for entry in self.list_files(dir_path):
+                if entry["is_directory"]:
+                    # Defensive: some servers surface "." / ".." in LIST.
+                    if entry["name"] in (".", ".."):
+                        continue
+                    child = entry["path"]
+                    child_depth = depth + 1
+                    _clean(child, child_depth)
+                    # Remove the folder itself only when nested (depth >= 2).
+                    # Top-level folders (depth 1) and the root are preserved.
+                    if child_depth >= 2:
+                        if self.remove_dir(child):
+                            stats["folders_removed"] += 1
+                        else:
+                            stats["failed"] += 1
+                elif self.delete_file(entry["path"]):
+                    stats["deleted"] += 1
+                else:
+                    stats["failed"] += 1
+
+        # Folder nesting on an SD card is shallow, so plain recursion is safe
+        # and keeps the empty-bottom-up removal order trivial.
+        _clean(root, 0)
+        logger.info(
+            "clear_all under %s: deleted=%s folders_removed=%s failed=%s",
+            root,
+            stats["deleted"],
+            stats["folders_removed"],
+            stats["failed"],
+        )
+        return stats
+
     def rename_file(self, from_path: str, to_path: str) -> bool | None:
         """Rename/move a file on the printer. Returns True on success, None if not found, False on error."""
         if not self._ftp:
@@ -1006,6 +1069,38 @@ async def delete_file_async(
         return False
 
     return await loop.run_in_executor(None, _delete)
+
+
+async def clear_sdcard_async(
+    ip_address: str,
+    access_code: str,
+    root: str = "/",
+    socket_timeout: float | None = None,
+    printer_model: str | None = None,
+) -> dict:
+    """Async wrapper for a full recursive SD-card wipe.
+
+    Runs the whole walk inside one executor job (one FTP connection). No
+    asyncio ``wait_for`` cap — a card with many files legitimately takes a
+    while and the caller is an explicit, confirmed admin action.
+
+    Returns ``{"deleted", "failed", "connected"}`` so the caller can tell a
+    failed connection (nothing wiped) apart from "nothing to delete".
+    """
+    loop = asyncio.get_event_loop()
+
+    def _clear() -> dict:
+        client = BambuFTPClient(ip_address, access_code, timeout=socket_timeout, printer_model=printer_model)
+        if not client.connect():
+            return {"deleted": 0, "failed": 0, "folders_removed": 0, "connected": False}
+        try:
+            result = client.clear_all(root)
+            result["connected"] = True
+            return result
+        finally:
+            client.disconnect()
+
+    return await loop.run_in_executor(None, _clear)
 
 
 async def rename_file_async(
