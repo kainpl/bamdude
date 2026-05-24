@@ -12,6 +12,7 @@ from typing import Any, Literal
 import defusedxml.ElementTree as ET
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from backend.app.core.config import settings
 from backend.app.core.database import async_session
@@ -21,6 +22,8 @@ from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
 from backend.app.models.settings import Settings
 from backend.app.models.smart_plug import SmartPlug
+from backend.app.models.spool_assignment import SpoolAssignment
+from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
 from backend.app.services.notification_service import notification_service
 from backend.app.services.printer_manager import (
     first_drying_blocking_reason,
@@ -437,8 +440,18 @@ class PrintScheduler:
         # Check if user prefers lowest remaining filament when multiple spools match
         prefer_lowest = await self._get_bool_setting(db, "prefer_lowest_filament")
 
+        # When the preference is on, surface BamDude's inventory-side remaining
+        # for each slot bound to a tracked spool, so the sort beats the MQTT-only
+        # blind spot (#1508). Skip the lookup when the preference is off — no
+        # behaviour change for users who haven't opted in.
+        inventory_remain_overrides: dict[int, float] | None = None
+        if prefer_lowest:
+            inventory_remain_overrides = await self._build_inventory_remain_overrides(db, printer_id, loaded_filaments)
+
         # Compute mapping: match required filaments to available slots
-        return self._match_filaments_to_slots(filament_reqs, loaded_filaments, prefer_lowest)
+        return self._match_filaments_to_slots(
+            filament_reqs, loaded_filaments, prefer_lowest, inventory_remain_overrides
+        )
 
     async def _get_filament_requirements(self, db: AsyncSession, item: PrintQueueItem) -> list[dict] | None:
         """Extract filament requirements from the source 3MF file.
@@ -647,8 +660,132 @@ class PrintScheduler:
         except ValueError:
             return False
 
+    async def _build_inventory_remain_overrides(
+        self, db: AsyncSession, printer_id: int, loaded: list[dict]
+    ) -> dict[int, float]:
+        """Return ``{global_tray_id: remaining_grams}`` for AMS slots the user
+        has bound to an inventory spool — BamDude-side or Spoolman-side.
+
+        The MQTT ``remain`` on a tray is the printer firmware's RFID-decremented
+        value, which the "Prefer Lowest Remaining Filament" feature has been
+        ignoring (#1508): it's meaningful only for Bambu RFID spools (everything
+        else reports ``-1`` → clamped → trays tie → sort collapses to slot
+        order), and even when set it's the printer's counter, not BamDude's
+        ``label_weight - weight_used`` or Spoolman's ``remaining_weight``.
+
+        When a slot is bound to a spool, the user's own inventory tracking is
+        authoritative — surface it. Unbound slots are absent from the map (the
+        caller falls back to MQTT ``remain``, preserving pre-#1508 behaviour).
+        Best-effort: returns ``{}`` on any failure.
+        """
+        if not loaded:
+            return {}
+        # External / virtual-tray slots are tracked separately from AMS bindings.
+        tracked_slots = [(f["ams_id"], f["tray_id"], f["global_tray_id"]) for f in loaded if not f.get("is_external")]
+        if not tracked_slots:
+            return {}
+
+        overrides: dict[int, float] = {}
+        try:
+            if await self._is_spoolman_mode(db):
+                result = await db.execute(
+                    select(SpoolmanSlotAssignment).where(SpoolmanSlotAssignment.printer_id == printer_id)
+                )
+                by_slot = {(a.ams_id, a.tray_id): a.spoolman_spool_id for a in result.scalars().all()}
+                if not by_slot:
+                    return {}
+                from backend.app.services.spoolman import get_spoolman_client
+
+                client = await get_spoolman_client()
+                if client is None:
+                    return {}
+                for ams_id, tray_id, gtid in tracked_slots:
+                    spoolman_id = by_slot.get((ams_id, tray_id))
+                    if spoolman_id is None:
+                        continue
+                    grams = await self._spoolman_remaining_grams(client, spoolman_id)
+                    if grams is not None:
+                        overrides[gtid] = grams
+                return overrides
+
+            # Internal inventory mode (default). selectinload matches the pattern
+            # the inventory routes use, so the row-attribute shape is identical.
+            result = await db.execute(
+                select(SpoolAssignment)
+                .options(selectinload(SpoolAssignment.spool))
+                .where(SpoolAssignment.printer_id == printer_id)
+            )
+            by_slot = {(a.ams_id, a.tray_id): a.spool for a in result.scalars().all()}
+            for ams_id, tray_id, gtid in tracked_slots:
+                spool = by_slot.get((ams_id, tray_id))
+                if spool is None:
+                    continue
+                overrides[gtid] = max(0.0, float(spool.label_weight or 0) - float(spool.weight_used or 0))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("prefer-lowest inventory overrides failed for printer %s: %s", printer_id, e)
+            return {}
+        return overrides
+
+    @staticmethod
+    async def _is_spoolman_mode(db: AsyncSession) -> bool:
+        """True when the install is in Spoolman inventory mode."""
+        try:
+            from backend.app.api.routes.settings import get_setting
+
+            v = await get_setting(db, "spoolman_enabled")
+            return bool(v) and v.lower() == "true"
+        except Exception:  # noqa: BLE001
+            return False
+
+    @staticmethod
+    async def _spoolman_remaining_grams(client, spoolman_spool_id: int) -> float | None:
+        """Remaining grams for a Spoolman spool via its ``remaining_weight``.
+        Returns None on any failure (Spoolman unreachable, spool gone)."""
+        try:
+            spool = await client.get_spool(spoolman_spool_id)
+            rw = spool.get("remaining_weight") if isinstance(spool, dict) else getattr(spool, "remaining_weight", None)
+            return float(rw) if rw is not None else None
+        except Exception:  # noqa: BLE001
+            return None
+
+    @staticmethod
+    def _slot_priority(ams_id: int | None, tray_id: int | None) -> int:
+        """Deterministic slot-position tie-breaker for the prefer-lowest sort.
+
+        Banded so regular AMS < AMS-HT < external on ties, matching the
+        emission order in ``_build_loaded_filaments`` (preserves the
+        pre-#1508 stable-sort baseline). ``ams_id < 0`` (VT) must not sort
+        to a negative number or it would beat AMS slot 0.
+        """
+        if ams_id is None or ams_id < 0:
+            return 10_000
+        if ams_id >= 128:
+            return 1_000 + (ams_id - 128) * 4 + (tray_id or 0)
+        return ams_id * 4 + (tray_id or 0)
+
+    @staticmethod
+    def _prefer_lowest_sort_key(f: dict, overrides: dict[int, float] | None) -> tuple[int, float, int]:
+        """Sort key for "Prefer Lowest Remaining Filament" (#1508).
+
+        Two tiers: inventory-tracked spools (0) sort before MQTT-only ones (1),
+        then ascending by remaining within each tier, then by slot position.
+        The tier flag dominates, so grams (inventory) and percent (MQTT) never
+        cross-compare — no unit conversion needed. MQTT ``remain = -1`` maps to
+        101 so known spools beat unknown ones (pre-#1508 behaviour preserved).
+        """
+        gtid = f.get("global_tray_id")
+        slot_order = PrintScheduler._slot_priority(f.get("ams_id"), f.get("tray_id"))
+        if overrides and gtid in overrides:
+            return (0, overrides[gtid], slot_order)
+        remain = f.get("remain", -1)
+        return (1, float(remain) if remain is not None and remain >= 0 else 101.0, slot_order)
+
     def _match_filaments_to_slots(
-        self, required: list[dict], loaded: list[dict], prefer_lowest: bool = False
+        self,
+        required: list[dict],
+        loaded: list[dict],
+        prefer_lowest: bool = False,
+        inventory_remain_overrides: dict[int, float] | None = None,
     ) -> list[int] | None:
         """Match required filaments to loaded filaments and build AMS mapping.
 
@@ -695,9 +832,11 @@ class PrintScheduler:
             if req_nozzle_id is not None:
                 available = [f for f in available if f.get("extruder_id") == req_nozzle_id]
 
-            # Sort by remaining filament (ascending) so lowest-remain spool wins
+            # Sort by remaining filament (ascending) so lowest-remain spool wins.
+            # Inventory-tracked spools sort before MQTT-only ones (#1508); see
+            # _prefer_lowest_sort_key for the full rationale.
             if prefer_lowest:
-                available.sort(key=lambda f: f.get("remain", -1) if f.get("remain", -1) >= 0 else 101)
+                available.sort(key=lambda f: self._prefer_lowest_sort_key(f, inventory_remain_overrides))
 
             # Check if tray_info_idx is unique among available trays
             if req_tray_info_idx:
@@ -715,6 +854,8 @@ class PrintScheduler:
                         f"Non-unique tray_info_idx={req_tray_info_idx} found in {len(idx_matches)} trays, "
                         f"using color matching among trays: {[f['global_tray_id'] for f in idx_matches]}"
                     )
+                    if prefer_lowest:
+                        idx_matches.sort(key=lambda f: self._prefer_lowest_sort_key(f, inventory_remain_overrides))
                     # Use color matching within this subset
                     for f in idx_matches:
                         f_color = f.get("color", "")
