@@ -1,10 +1,15 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { Bug, X, Loader2, CheckCircle, AlertCircle, Trash2, Upload, Circle, CheckCircle2, Stethoscope } from 'lucide-react';
+import { Bug, X, Loader2, CheckCircle, AlertCircle, AlertTriangle, Trash2, Upload, Circle, CheckCircle2, Stethoscope } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
 import { api, bugReportApi, type PrinterDiagnosticResult } from '../api/client';
 import { DiagnosticChecklist } from './ConnectionDiagnostic';
 import { SystemHealthPanel } from './SystemHealthPanel';
+import { Collapsible } from './Collapsible';
+
+/** One scanned printer paired with its name — the diagnostic result alone
+ *  carries no name, and the bug-report panel lists affected printers by name. */
+type DiagnosticEntry = { name: string; result: PrinterDiagnosticResult };
 
 type ViewState = 'form' | 'logging' | 'stopping' | 'submitting' | 'success' | 'error';
 
@@ -67,16 +72,19 @@ export function BugReportBubble() {
     queryKey: ['bugReportDiagnostic'],
     enabled: isOpen && viewState === 'form',
     staleTime: 30_000,
-    queryFn: async (): Promise<PrinterDiagnosticResult[]> => {
+    queryFn: async (): Promise<DiagnosticEntry[]> => {
       const printers = await api.getPrinters();
-      const results = await Promise.all(
-        printers.map((p) => api.diagnosePrinter(p.id).catch(() => null)),
+      const entries = await Promise.all(
+        printers.map(async (p) => {
+          const result = await api.diagnosePrinter(p.id).catch(() => null);
+          return result ? { name: p.name, result } : null;
+        }),
       );
-      return results.filter((r): r is PrinterDiagnosticResult => r !== null);
+      return entries.filter((e): e is DiagnosticEntry => e !== null);
     },
   });
-  const diagnosticResults = diagnosticScan.data ?? [];
-  const diagnosticProblems = diagnosticResults.filter((r) => r.overall === 'problems');
+  const diagnosticEntries = diagnosticScan.data ?? [];
+  const diagnosticProblems = diagnosticEntries.filter((e) => e.result.overall === 'problems');
 
   // Scan recent logs against the known-issue catalog. Like the diagnostic
   // above, this surfaces user-fixable ("layer 8") problems before a report is
@@ -260,20 +268,39 @@ export function BugReportBubble() {
                         <Stethoscope className="w-4 h-4 mt-0.5 flex-shrink-0 text-amber-600 dark:text-amber-400" />
                         <div>
                           <p className="text-sm font-medium text-amber-700 dark:text-amber-300">
-                            {t('bugReport.diagnosticHeading')}
+                            {t('bugReport.diagnosticSummary', {
+                              problems: diagnosticProblems.length,
+                              total: diagnosticEntries.length,
+                            })}
                           </p>
                           <p className="text-xs text-amber-800 dark:text-amber-200 mt-0.5">
                             {t('bugReport.diagnosticIntro')}
                           </p>
                         </div>
                       </div>
-                      {diagnosticProblems.map((result) => (
-                        <DiagnosticChecklist key={result.printer_id ?? result.ip_address} result={result} />
-                      ))}
+                      <div className="space-y-2">
+                        {diagnosticProblems.map((entry) => (
+                          <Collapsible
+                            key={entry.result.printer_id ?? entry.result.ip_address}
+                            defaultOpen={diagnosticProblems.length === 1}
+                            className="rounded-lg bg-amber-100/60 dark:bg-amber-900/30 px-3 py-2"
+                            summary={
+                              <div className="flex items-center gap-2 min-w-0">
+                                <AlertTriangle className="w-4 h-4 flex-shrink-0 text-amber-600 dark:text-amber-400" />
+                                <span className="text-sm font-medium text-amber-800 dark:text-amber-200 truncate">
+                                  {entry.name}
+                                </span>
+                              </div>
+                            }
+                          >
+                            <DiagnosticChecklist result={entry.result} />
+                          </Collapsible>
+                        ))}
+                      </div>
                     </div>
                   )}
                   {!diagnosticScan.isLoading &&
-                    diagnosticResults.length > 0 &&
+                    diagnosticEntries.length > 0 &&
                     diagnosticProblems.length === 0 && (
                       <div className="flex items-start gap-2 rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 p-3">
                         <CheckCircle className="w-4 h-4 mt-0.5 flex-shrink-0 text-green-600 dark:text-green-400" />
