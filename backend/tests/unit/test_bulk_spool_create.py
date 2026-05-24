@@ -7,7 +7,7 @@ Tests:
 - Bulk create returns spools with k_profiles loaded
 """
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import ValidationError
@@ -98,6 +98,15 @@ def _make_mock_spool(spool_id):
 
 class TestBulkCreateEndpoint:
     """Tests for the bulk_create_spools endpoint logic."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_autolink(self):
+        """Stub the K-profile auto-link collaborator. It runs its own DB
+        queries + commit per spool (covered by test_kprofile_autolink.py);
+        these unit tests mock ``db`` wholesale and only assert the
+        bulk-create logic, so the collaborator must not run here."""
+        with patch("backend.app.api.routes.inventory._safe_autolink", new=AsyncMock()):
+            yield
 
     @pytest.mark.asyncio
     async def test_creates_requested_number_of_spools(self):
