@@ -164,6 +164,12 @@ export default {
   printers: {
     title: 'Printers',
     addPrinter: 'Add Printer',
+    addPreflight: {
+      checking: 'Checking connection...',
+      warning: 'Some connection checks failed. This printer may show as offline. Review the checks below, fix what you can, or save anyway.',
+      back: 'Back',
+      saveAnyway: 'Save anyway',
+    },
     bulk: {
       selected: '{{count}} selected',
       selectAll: 'Select All',
