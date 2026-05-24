@@ -655,6 +655,13 @@ class BambuMQTTClient:
         self._message_log: deque[MQTTLogEntry] = deque(maxlen=100)
         self._logging_enabled: bool = False
         self._last_message_time: float = 0.0  # Track when we last received a message
+        # Count of report-topic messages received since the last (re)connect.
+        # Lets check_staleness() distinguish "printer never sent a status
+        # report" (typically a wrong / mis-cased serial) from a normal quiet
+        # gap mid-session. _zero_report_hint_logged keeps the actionable hint
+        # to once per client lifetime so the stale loop doesn't spam it (#1465).
+        self._report_messages_since_connect: int = 0
+        self._zero_report_hint_logged: bool = False
         # Raw-message fan-out for VP MQTT bridge (non-proxy modes republish the
         # printer's pushes verbatim to slicers connected to a virtual printer).
         # Handlers receive (topic, payload_bytes) before JSON parsing.
@@ -786,6 +793,22 @@ class BambuMQTTClient:
             logger.warning(
                 f"[{self.serial_number}] Connection stale - no message for {now - self._last_message_time:.1f}s, forcing reconnect"
             )
+            # A connection that keeps going stale without ever receiving a
+            # status report is almost always a wrong or mis-cased serial
+            # number — the broker accepts the connection and the subscription
+            # regardless, but the printer publishes to device/<real-serial>/
+            # report, which is case-sensitive. Surface that once so the user
+            # has something actionable instead of an endless reconnect loop.
+            if self._report_messages_since_connect == 0 and not self._zero_report_hint_logged:
+                self._zero_report_hint_logged = True
+                logger.warning(
+                    "[%s] Connected and subscribed, but the printer has sent zero "
+                    "status reports. The most common cause is a wrong or mis-cased "
+                    "serial number — the device/<serial>/report MQTT topic is "
+                    "case-sensitive. Verify the serial number configured in BamDude "
+                    "exactly matches the printer.",
+                    self.serial_number,
+                )
             self._last_stale_reconnect = now
             self.state.connected = False
             if self.on_state_change:
@@ -901,6 +924,7 @@ class BambuMQTTClient:
             self._dev_mode_probe_time = 0.0
             self._dev_mode_probe_failures = 0
             self._connect_time = time.monotonic()
+            self._report_messages_since_connect = 0
             # Reset zombie session detection — fresh session means no commands pending
             self._last_ams_cmd_time = 0.0
             self._ams_cmd_unanswered = 0
@@ -1043,6 +1067,11 @@ class BambuMQTTClient:
             if msg.topic == self.topic_publish:
                 self._handle_request_message(payload)
                 return
+
+            # Count status reports per connection so check_staleness() can tell
+            # "printer never sent a report" apart from a mid-session quiet gap.
+            if msg.topic == self.topic_subscribe:
+                self._report_messages_since_connect += 1
 
             # Log message if logging is enabled
             if self._logging_enabled:
