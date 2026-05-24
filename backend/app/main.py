@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import secrets
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -6227,6 +6228,15 @@ async def security_headers_middleware(request, call_next):
       ``ALLOW-FROM`` syntax is deprecated and inconsistent across vendors —
       modern browsers honour ``frame-ancestors`` which takes precedence).
     """
+    # Per-request nonce stamped into the SPA ``script-src`` (#1460). On its own
+    # this changes nothing for our own pages — index.html has no inline scripts
+    # since SW registration moved to /sw-register.js. It's here for Cloudflare:
+    # a CF-fronted deployment has the bot-detection script injected into the
+    # HTML on the edge with a fresh hash every load (so hashes can't be
+    # allowlisted). When CF sees a nonce in our CSP it clones the same nonce
+    # onto its injected <script>, so it passes without us needing 'unsafe-inline'.
+    # https://developers.cloudflare.com/cloudflare-challenges/challenge-types/javascript-detections/#if-you-have-a-content-security-policy-csp
+    csp_nonce = secrets.token_urlsafe(16)
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     if not _TRUSTED_FRAME_ORIGINS:
@@ -6250,7 +6260,7 @@ async def security_headers_middleware(request, call_next):
     else:
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
-            "script-src 'self'; "
+            f"script-src 'self' 'nonce-{csp_nonce}'; "
             "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
             "img-src 'self' data: blob:; "
             "media-src 'self' blob:; "
@@ -6430,7 +6440,7 @@ async def health_check():
     return {"status": "healthy"}
 
 
-@app.get("/manifest.json")
+@app.api_route("/manifest.json", methods=["GET", "HEAD"])
 async def serve_manifest():
     """Serve PWA manifest."""
     manifest_file = app_settings.static_dir / "manifest.json"
@@ -6439,7 +6449,7 @@ async def serve_manifest():
     return {"error": "Manifest not found"}
 
 
-@app.get("/sw.js")
+@app.api_route("/sw.js", methods=["GET", "HEAD"])
 async def serve_service_worker():
     """Serve service worker."""
     sw_file = app_settings.static_dir / "sw.js"
@@ -6452,7 +6462,7 @@ async def serve_service_worker():
     return {"error": "Service worker not found"}
 
 
-@app.get("/sw-register.js")
+@app.api_route("/sw-register.js", methods=["GET", "HEAD"])
 async def serve_sw_register():
     """Serve the service-worker registration bootstrap script.
 

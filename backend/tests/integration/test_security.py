@@ -824,3 +824,37 @@ class TestRateLimitBuckets:
         assert status_codes[-1] == 429, (
             f"Expected 429 after {MAX_LOGIN_ATTEMPTS} username-spray failures, got: {status_codes}"
         )
+
+
+class TestCspNonceAndPwaRoutes:
+    """#1460: per-request CSP nonce on the SPA policy + HEAD on PWA routes."""
+
+    @staticmethod
+    def _script_src(csp: str) -> str:
+        return next((d.strip() for d in csp.split(";") if d.strip().startswith("script-src")), "")
+
+    @pytest.mark.asyncio
+    async def test_spa_csp_stamps_nonce_keeps_self_no_unsafe_inline(self, async_client: AsyncClient):
+        resp = await async_client.get("/manifest.json")
+        script_src = self._script_src(resp.headers.get("Content-Security-Policy", ""))
+        assert "'self'" in script_src
+        assert "'nonce-" in script_src
+        assert "'unsafe-inline'" not in script_src
+
+    @pytest.mark.asyncio
+    async def test_csp_nonce_is_fresh_per_request(self, async_client: AsyncClient):
+        import re
+
+        nonces = []
+        for _ in range(5):
+            resp = await async_client.get("/manifest.json")
+            m = re.search(r"'nonce-([^']+)'", self._script_src(resp.headers.get("Content-Security-Policy", "")))
+            assert m, "expected a nonce in script-src"
+            nonces.append(m.group(1))
+        assert len(set(nonces)) == len(nonces), f"nonces should be unique per request: {nonces}"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path", ["/manifest.json", "/sw.js", "/sw-register.js"])
+    async def test_pwa_routes_accept_head(self, async_client: AsyncClient, path: str):
+        resp = await async_client.head(path)
+        assert resp.status_code != 405, f"HEAD {path} should not be 405"
