@@ -478,3 +478,160 @@ def extract_project_filaments_from_3mf(zf: zipfile.ZipFile) -> list[dict]:
             }
         )
     return out
+
+
+# paint_color attr on <triangle> elements (per-face filament painting).
+_PAINT_COLOR_ATTR_RE = re.compile(rb'paint_color="([0-9A-Fa-f]+)"')
+# Min share of painted triangles an extruder must cover to count as "used"
+# — filters one-off paint edit artifacts.
+_PAINT_NOISE_THRESHOLD = 0.05
+
+
+def extract_plate_extruder_set_from_3mf(zf: zipfile.ZipFile, plate_id: int) -> set[int]:
+    """Extruder/AMS slot indices (1-indexed) used by objects on ``plate_id``.
+
+    Three sources are unioned because Bambu Studio splits per-object extruder
+    info across THREE places depending on how the user assigned colours:
+
+    1. ``model_settings.config`` — top-level ``<metadata key="extruder">``
+       on each ``<object>`` (the "default extruder" for the whole object).
+    2. ``model_settings.config`` — per-``<part>`` ``<metadata key="extruder">``
+       overrides (used when the user split an object into multiple parts
+       with distinct filaments).
+    3. ``3D/Objects/object_*.model`` — ``paint_color`` attributes on
+       individual ``<triangle>`` elements (used when the user "painted" a
+       face with a different filament). Each nibble is a TriangleSelector
+       tree node: ``0`` = unpainted leaf, ``F`` = branch, ``1``..``E`` = leaf
+       painted with extruder N. A flat hex scan yields the set without
+       decoding the tree.
+
+    Without (3) the painted-face data is invisible: model_settings says
+    every object on a multi-color plate uses extruder 1 by default but the
+    actual print uses 3, 4, 12 etc. via face paint (#1150 follow-up).
+    """
+    if "Metadata/model_settings.config" not in zf.namelist():
+        return set()
+    try:
+        root = ET.fromstring(zf.read("Metadata/model_settings.config").decode())
+    except (ET.ParseError, OSError):
+        return set()
+
+    # Pass 1: object → set of extruders from XML metadata (sources 1 + 2)
+    # plus the per-object .model file path so we can later scan source 3.
+    object_extruders: dict[str, set[int]] = {}
+    object_model_paths: dict[str, list[str]] = {}
+    for obj_elem in root.findall(".//object"):
+        obj_id = obj_elem.get("id")
+        if not obj_id:
+            continue
+        extruders: set[int] = set()
+        top = obj_elem.find("metadata[@key='extruder']")
+        if top is not None:
+            try:
+                v = int(top.get("value", "0"))
+                if v > 0:
+                    extruders.add(v)
+            except (ValueError, TypeError):
+                pass
+        for part_elem in obj_elem.findall(".//part"):
+            part_ext = part_elem.find("metadata[@key='extruder']")
+            if part_ext is None:
+                continue
+            try:
+                v = int(part_ext.get("value", "0"))
+                if v > 0:
+                    extruders.add(v)
+            except (ValueError, TypeError):
+                pass
+        object_extruders[obj_id] = extruders
+
+    # Pass 2: 3dmodel.model maps each <object id="N"> to its component
+    # .model file path(s). Strip xmlns prefixes so ElementTree finds the
+    # attributes without namespace gymnastics.
+    if "3D/3dmodel.model" in zf.namelist():
+        try:
+            raw = zf.read("3D/3dmodel.model").decode()
+            stripped = re.sub(r'xmlns:?\w*="[^"]*"', "", raw)
+            stripped = re.sub(r"<(/?)\w+:", r"<\1", stripped)
+            stripped = re.sub(r" \w+:(\w+=)", r" \1", stripped)
+            model_root = ET.fromstring(stripped)
+            for obj_elem in model_root.findall(".//object"):
+                oid = obj_elem.get("id")
+                if not oid:
+                    continue
+                comps = obj_elem.find("components")
+                if comps is None:
+                    continue
+                paths = []
+                for c in comps.findall("component"):
+                    p = c.get("path")
+                    if p:
+                        paths.append(p.lstrip("/"))
+                if paths:
+                    object_model_paths[oid] = paths
+        except (ET.ParseError, OSError):
+            pass  # No 3dmodel — paint scan just won't apply
+
+    # Pass 3: scan paint_color attrs in each per-object .model file. Cache
+    # by file path because two objects often share the same component tree.
+    paint_cache: dict[str, set[int]] = {}
+
+    def _scan_paint(path: str) -> set[int]:
+        if path in paint_cache:
+            return paint_cache[path]
+        out: set[int] = set()
+        if path not in zf.namelist():
+            paint_cache[path] = out
+            return out
+        try:
+            data = zf.read(path)
+        except OSError:
+            paint_cache[path] = out
+            return out
+        extruder_triangles: dict[int, int] = {}
+        total_painted = 0
+        for match in _PAINT_COLOR_ATTR_RE.finditer(data):
+            total_painted += 1
+            seen: set[int] = set()
+            for ch in match.group(1):
+                # Hex digit → 4-bit value. 0 = unpainted leaf, F = branch,
+                # 1-E = leaf painted with extruder N.
+                if ch in b"123456789":
+                    seen.add(ch - 0x30)
+                elif ch in b"ABCDEabcde":
+                    seen.add((ch & 0x4F) - 0x37)
+            for e in seen:
+                extruder_triangles[e] = extruder_triangles.get(e, 0) + 1
+        if total_painted > 0:
+            cutoff = max(1, int(total_painted * _PAINT_NOISE_THRESHOLD))
+            for ext, count in extruder_triangles.items():
+                if count >= cutoff:
+                    out.add(ext)
+        paint_cache[path] = out
+        return out
+
+    # Walk plates — collect extruders for objects on the requested plate.
+    used: set[int] = set()
+    for plate_elem in root.findall(".//plate"):
+        plater_id = None
+        for meta in plate_elem.findall("metadata"):
+            if meta.get("key") == "plater_id":
+                try:
+                    plater_id = int(meta.get("value", ""))
+                except (ValueError, TypeError):
+                    pass
+                break
+        if plater_id != plate_id:
+            continue
+        for inst in plate_elem.findall("model_instance"):
+            for inst_meta in inst.findall("metadata"):
+                if inst_meta.get("key") != "object_id":
+                    continue
+                obj_id = inst_meta.get("value")
+                if not obj_id:
+                    continue
+                used.update(object_extruders.get(obj_id, set()))
+                for path in object_model_paths.get(obj_id, []):
+                    used.update(_scan_paint(path))
+        break
+    return used

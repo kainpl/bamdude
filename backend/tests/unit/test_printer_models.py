@@ -8,9 +8,25 @@ from backend.app.utils.printer_models import (
     STEEL_ROD_MODELS,
     get_rod_type,
     has_ethernet,
+    is_dual_nozzle_model,
     normalize_printer_model,
     normalize_printer_model_id,
 )
+
+
+class TestIsDualNozzleModel:
+    """Tests for is_dual_nozzle_model() nozzle-class classification."""
+
+    # Takes an already-normalized short code / display name (callers run
+    # normalize_printer_model first), so "H2D" matches but "Bambu Lab H2D"
+    # does not — same contract as has_ethernet / get_rod_type.
+    @pytest.mark.parametrize("model", ["H2D", "h2d", "H2D Pro", "H2C", "X2D", "O1D", "N6"])
+    def test_dual_nozzle_models(self, model):
+        assert is_dual_nozzle_model(model) is True
+
+    @pytest.mark.parametrize("model", ["X1C", "P1S", "A1", "A1 mini", None, ""])
+    def test_single_nozzle_models(self, model):
+        assert is_dual_nozzle_model(model) is False
 
 
 class TestGetRodType:
