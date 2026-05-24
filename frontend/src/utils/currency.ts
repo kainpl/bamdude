@@ -3,6 +3,7 @@ const CURRENCY_SYMBOLS: Record<string, string> = {
   EUR: '€',
   PLN: 'zł',
   UAH: '₴',
+  BZD: 'BZ$',  // Belize Dollars (#1454)
 };
 
 export function getCurrencySymbol(currencyCode: string): string {

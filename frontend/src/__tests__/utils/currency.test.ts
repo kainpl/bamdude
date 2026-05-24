@@ -18,6 +18,10 @@ describe('getCurrencySymbol', () => {
     expect(getCurrencySymbol('UAH')).toBe('₴');
   });
 
+  it('returns BZ$ for BZD', () => {
+    expect(getCurrencySymbol('BZD')).toBe('BZ$');
+  });
+
   it('returns the code itself for unknown currencies', () => {
     expect(getCurrencySymbol('XYZ')).toBe('XYZ');
   });
@@ -37,7 +41,11 @@ describe('SUPPORTED_CURRENCIES', () => {
     expect(SUPPORTED_CURRENCIES.find((c) => c.code === 'UAH')).toBeDefined();
   });
 
-  it('has 4 entries', () => {
-    expect(SUPPORTED_CURRENCIES).toHaveLength(4);
+  it('contains BZD', () => {
+    expect(SUPPORTED_CURRENCIES.find((c) => c.code === 'BZD')).toBeDefined();
+  });
+
+  it('has 5 entries', () => {
+    expect(SUPPORTED_CURRENCIES).toHaveLength(5);
   });
 });
