@@ -38,7 +38,6 @@ from backend.app.utils.http import build_content_disposition
 from backend.app.utils.threemf_tools import (
     extract_nozzle_mapping_from_3mf,
     extract_project_filaments_from_3mf,
-    extract_source_printer_model_from_3mf,
 )
 
 logger = logging.getLogger(__name__)
@@ -2821,14 +2820,6 @@ async def get_archive_plates(
     if not file_path.is_file():
         raise HTTPException(404, "Archive file not found")
 
-    # SliceModal pre-check signal: the source 3MF's bound printer model.
-    source_printer_model: str | None = None
-    try:
-        with zipfile.ZipFile(file_path, "r") as zf:
-            source_printer_model = extract_source_printer_model_from_3mf(zf)
-    except (zipfile.BadZipFile, OSError):
-        pass
-
     # Fast path: read pre-computed plates from the archive's JSON metadata
     # (populated at archive_print() / attach_3mf_to_archive() + by m023
     # backfill). No ZIP open.
@@ -2858,7 +2849,6 @@ async def get_archive_plates(
             "plates": plates,
             "is_multi_plate": len(plates) > 1,
             "has_gcode": has_gcode,
-            "source_printer_model": source_printer_model,
         }
 
     # Slow path: open ZIP + parse. Used for archives created before m023 ran.
@@ -2891,7 +2881,6 @@ async def get_archive_plates(
         "plates": plates,
         "is_multi_plate": len(plates) > 1,
         "has_gcode": has_gcode,
-        "source_printer_model": source_printer_model,
     }
 
 

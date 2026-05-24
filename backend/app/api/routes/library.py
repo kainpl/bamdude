@@ -70,7 +70,6 @@ from backend.app.services.threemf_capabilities import extract_3mf_capabilities
 from backend.app.utils.threemf_tools import (
     extract_nozzle_mapping_from_3mf,
     extract_project_filaments_from_3mf,
-    extract_source_printer_model_from_3mf,
 )
 
 logger = logging.getLogger(__name__)
@@ -3177,18 +3176,7 @@ async def get_library_file_plates(
             "filename": lib_file.filename,
             "plates": [],
             "is_multi_plate": False,
-            "source_printer_model": None,
         }
-
-    # SliceModal pre-check signal: the source 3MF's bound printer model. The
-    # slicer CLI cannot re-slice for a different printer; surface this so
-    # the modal can warn the user before they pick a mismatched profile.
-    source_printer_model: str | None = None
-    try:
-        with zipfile.ZipFile(file_path, "r") as zf:
-            source_printer_model = extract_source_printer_model_from_3mf(zf)
-    except (zipfile.BadZipFile, OSError):
-        pass
 
     # Fast path: read pre-computed plates from the library file's JSON
     # metadata (populated at upload time + by m023 backfill). No ZIP open.
@@ -3210,7 +3198,6 @@ async def get_library_file_plates(
             "filename": lib_file.filename,
             "plates": plates,
             "is_multi_plate": len(plates) > 1,
-            "source_printer_model": source_printer_model,
         }
 
     # Slow path: open ZIP + parse. Used for files uploaded before m023 ran,
@@ -3239,7 +3226,6 @@ async def get_library_file_plates(
         "filename": lib_file.filename,
         "plates": plates,
         "is_multi_plate": len(plates) > 1,
-        "source_printer_model": source_printer_model,
     }
 
 

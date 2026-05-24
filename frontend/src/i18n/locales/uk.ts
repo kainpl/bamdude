@@ -3030,7 +3030,6 @@ export default {
     completedToast: 'Нарізано {{name}}',
     failedToast: 'Нарізання {{name}} не вдалося: {{detail}}',
     failed: 'Помилка нарізання',
-    printerMismatch: 'Цей 3MF було нарізано для {{source}}, але ви вибрали {{target}}. Слайсер CLI не може перенарізати 3MF для іншого принтера - відкрийте джерело в Bambu Studio, змініть принтер та переекспортуйте.',
     sidecarPicker: 'Нарізати в',
     platePicker: {
       label: 'Виберіть плиту для нарізання',

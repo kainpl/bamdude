@@ -692,38 +692,14 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
     },
   });
 
-  // Pre-slice compatibility check: the slicer CLI (both OrcaSlicer and
-  // BambuStudio) cannot re-slice a 3MF for a printer different from the one
-  // it was originally bound to — the cross-printer "convert project" flow
-  // is desktop-Studio only. If we can match the source's printer model to a
-  // SliceModal-known model and the user's chosen printer profile names a
-  // different model, surface a warning before they click Slice.
-  // For bundle mode, the bundle's printer_preset_name plays the same role
-  // as the picked PresetRef's resolved name in preset mode.
-  const sourcePrinterModel = platesQuery.data?.source_printer_model ?? null;
-  const printerProfileName = isBundleMode
-    ? selectedBundle?.printer_preset_name.replace(/^# /, '') ?? null
-    : printerPreset
-      ? presetsQuery.data?.[printerPreset.source].printer.find((p) => p.id === printerPreset.id)?.name
-      : null;
-  // Profile names follow `<model> <nozzle> nozzle` (e.g. "Bambu Lab H2D 0.4
-  // nozzle"). The CLI compat check uses the model prefix; substring match
-  // catches both standard and locally-imported user-named profiles that
-  // include the model in the name. Cloud presets with arbitrary names
-  // (e.g. "My Custom X1C") fall through to no-warning, which is a
-  // reasonable default — the user picked it knowingly.
-  const printerMismatch =
-    !!sourcePrinterModel &&
-    !!printerProfileName &&
-    !printerProfileName.toLowerCase().includes(sourcePrinterModel.toLowerCase());
+  // Cross-printer re-slicing is supported: the slicer CLI re-slices a 3MF
+  // for whatever printer the chosen bundle/preset names — bed, kinematics,
+  // nozzle count and start-gcode all come from the target. No source/target
+  // model gate (#1325 cross-printer; upstream Bambuddy ed27b27a).
 
-  // Slice button stays disabled while the printer mismatch warning is
-  // visible: clicking it would silently fall back to embedded settings and
-  // produce a wrong-printer file, the exact UX bug the warning is here to
-  // prevent. Only re-enable when the user picks a matching profile (or
-  // cloud preset whose name we can't parse). Multi-plate sources also need
-  // an explicit plate pick so the slicer (and the filament-reqs query
-  // that feeds the dropdowns) target the right plate.
+  // Slice button gates only on a complete picker selection. Multi-plate
+  // sources also need an explicit plate pick so the slicer (and the
+  // filament-reqs query that feeds the dropdowns) target the right plate.
   // Tier mode also gates on the preview-slice / embedded-metadata read
   // having succeeded (``filamentReqsQuery.isSuccess``) — until then, the
   // synthetic single-slot fallback would have auto-enabled the button on
@@ -734,14 +710,12 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
       bundleProcessName != null &&
       bundleFilamentNames.length > 0 &&
       bundleFilamentNames.every((n) => n != null) &&
-      !printerMismatch &&
       (!isMultiPlate || selectedPlate != null)
     : printerPreset != null &&
       processPreset != null &&
       filamentReqsQuery.isSuccess &&
       filamentPresets.length > 0 &&
       filamentPresets.every((r) => r != null) &&
-      !printerMismatch &&
       (!isMultiPlate || selectedPlate != null);
   const isEnqueuing = enqueueMutation.isPending;
 
@@ -996,20 +970,6 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                 })
               )}
             </>
-          )}
-
-          {printerMismatch && (
-            <div
-              className="text-sm text-amber-200 bg-amber-900/20 border border-amber-700/40 rounded p-2"
-              role="alert"
-            >
-              {t('slice.printerMismatch', {
-                source: sourcePrinterModel,
-                target: printerProfileName,
-                defaultValue:
-                  'This 3MF was sliced for {{source}}, but you picked {{target}}. The slicer CLI cannot re-slice a 3MF for a different printer — open the source in Bambu Studio, change the printer, and re-export.',
-              })}
-            </div>
           )}
 
           {errorMessage && (

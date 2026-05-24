@@ -3014,7 +3014,6 @@ export default {
     completedToast: 'Sliced {{name}}',
     failedToast: 'Slicing {{name}} failed: {{detail}}',
     failed: 'Slice failed',
-    printerMismatch: 'This 3MF was sliced for {{source}}, but you picked {{target}}. The slicer CLI cannot re-slice a 3MF for a different printer - open the source in Bambu Studio, change the printer, and re-export.',
     sidecarPicker: 'Slice with',
     platePicker: {
       label: 'Pick a plate to slice',
