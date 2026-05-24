@@ -328,6 +328,11 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // and we'll backfill 1 at submit time). Set to a 1-indexed plate number once
   // the user picks one (or implicitly for single-plate sources).
   const [selectedPlate, setSelectedPlate] = useState<number | null>(null);
+  // "Slice all plates": sends ``plate=0`` so the backend slices every plate
+  // (one archive, one multi-plate 3MF) instead of a single picked plate.
+  // Filament selection then covers every project slot (used_in_plate forced
+  // true below) since across the whole project every defined slot is used.
+  const [sliceAllPlates, setSliceAllPlates] = useState(false);
 
   // Per-job slicer picker (B.4 follow-up). Visible only when both sidecars
   // are reachable — otherwise the global preferred_slicer setting is the
@@ -484,11 +489,15 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // works (single dropdown, mono-color slice).
   const filamentSlots = useMemo<PlateFilament[]>(() => {
     const reqs = filamentReqsQuery.data?.filaments ?? [];
-    if (reqs.length > 0) return reqs as PlateFilament[];
-    return [
-      { slot_id: 1, type: '', color: '', used_grams: 0, used_meters: 0 },
-    ];
-  }, [filamentReqsQuery.data]);
+    const base: PlateFilament[] =
+      reqs.length > 0 ? (reqs as PlateFilament[]) : [{ slot_id: 1, type: '', color: '', used_grams: 0, used_meters: 0 }];
+    // In slice-all mode every defined slot is used by at least one plate, so
+    // drop the per-plate "not used" gating that disables the dropdowns.
+    if (sliceAllPlates) {
+      return base.map((slot) => ({ ...slot, used_in_plate: true }));
+    }
+    return base;
+  }, [sliceAllPlates, filamentReqsQuery.data]);
 
   const presetsQuery = useQuery({
     queryKey: ['slicerPresets'],
@@ -643,7 +652,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
         };
         body = {
           bundle: bundleSpec,
-          ...(selectedPlate != null ? { plate: selectedPlate } : {}),
+          ...(sliceAllPlates ? { plate: 0 } : selectedPlate != null ? { plate: selectedPlate } : {}),
           ...(pickedSlicer != null ? { slicer: pickedSlicer } : {}),
           bed_type: bedType,
         };
@@ -667,7 +676,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
           // Always send a concrete plate number when the source is multi-plate;
           // omit otherwise so the backend default applies for STL / single-plate
           // 3MF sources where the concept doesn't apply.
-          ...(selectedPlate != null ? { plate: selectedPlate } : {}),
+          ...(sliceAllPlates ? { plate: 0 } : selectedPlate != null ? { plate: selectedPlate } : {}),
           // Per-job slicer override. Only sent when the picker is actually
           // visible to the user (both sidecars healthy) AND the user picked
           // something — otherwise the global preferred_slicer setting decides.
@@ -710,13 +719,13 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
       bundleProcessName != null &&
       bundleFilamentNames.length > 0 &&
       bundleFilamentNames.every((n) => n != null) &&
-      (!isMultiPlate || selectedPlate != null)
+      (!isMultiPlate || sliceAllPlates || selectedPlate != null)
     : printerPreset != null &&
       processPreset != null &&
       filamentReqsQuery.isSuccess &&
       filamentPresets.length > 0 &&
       filamentPresets.every((r) => r != null) &&
-      (!isMultiPlate || selectedPlate != null);
+      (!isMultiPlate || sliceAllPlates || selectedPlate != null);
   const isEnqueuing = enqueueMutation.isPending;
 
   // Single-screen layout: preset picker
@@ -767,12 +776,26 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
               filament-reqs query so the dropdowns below realign to the
               new plate's required (type, color) automatically. */}
           {isMultiPlate && platesQuery.data && (
-            <SlicePlateSelector
-              plates={platesQuery.data.plates}
-              selectedPlate={selectedPlate}
-              onSelect={setSelectedPlate}
-              disabled={isEnqueuing}
-            />
+            <>
+              <label className="flex items-center gap-2 text-sm text-white cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={sliceAllPlates}
+                  onChange={(e) => setSliceAllPlates(e.target.checked)}
+                  disabled={isEnqueuing}
+                  className="accent-bambu-green"
+                />
+                {t('slice.allPlates', 'Slice all plates')}
+              </label>
+              {!sliceAllPlates && (
+                <SlicePlateSelector
+                  plates={platesQuery.data.plates}
+                  selectedPlate={selectedPlate}
+                  onSelect={setSelectedPlate}
+                  disabled={isEnqueuing}
+                />
+              )}
+            </>
           )}
           {/* Preset listing loader — printer/process dropdowns can't render
               without it. Plate query reuses the same spinner since it's

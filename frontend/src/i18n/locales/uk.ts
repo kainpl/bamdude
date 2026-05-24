@@ -3030,6 +3030,8 @@ export default {
     completedToast: 'Нарізано {{name}}',
     failedToast: 'Нарізання {{name}} не вдалося: {{detail}}',
     failed: 'Помилка нарізання',
+    failedTitle: 'Помилка нарізання',
+    allPlates: 'Нарізати всі плити',
     sidecarPicker: 'Нарізати в',
     platePicker: {
       label: 'Виберіть плиту для нарізання',

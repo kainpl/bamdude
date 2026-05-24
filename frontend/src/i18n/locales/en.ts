@@ -3014,6 +3014,8 @@ export default {
     completedToast: 'Sliced {{name}}',
     failedToast: 'Slicing {{name}} failed: {{detail}}',
     failed: 'Slice failed',
+    failedTitle: 'Slice failed',
+    allPlates: 'Slice all plates',
     sidecarPicker: 'Slice with',
     platePicker: {
       label: 'Pick a plate to slice',

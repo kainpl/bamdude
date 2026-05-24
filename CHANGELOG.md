@@ -31,6 +31,7 @@ All notable changes to BamDude will be documented in this file.
 
 ### Changed
 
+- **A failed slice now shows a dismissible dialog with the slicer's reason** instead of a toast that auto-vanished before you could read it. (Upstream Bambuddy #1493.)
 - **File library multi-select now toggles only when you click the checkbox**, not anywhere on the card or row. Clicking a card/row body no longer flips its selection (which made it easy to select files by accident while scanning the library); the checkbox is the single select affordance, matching the printers page. Applies to both grid and list views.
 
 ### Security
