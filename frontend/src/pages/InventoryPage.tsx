@@ -24,6 +24,7 @@ import { resolveSpoolColorName } from '../utils/colors';
 import { getCurrencySymbol } from '../utils/currency';
 import { formatDateInput, parseUTCDate, type DateFormat } from '../utils/date';
 import { formatSlotLabel } from '../utils/amsHelpers';
+import { aggregateGroupSpool } from '../utils/inventoryGrouping';
 import {
   DEFAULT_SPOOL_DISPLAY_TEMPLATE,
   formatSpoolDisplayName,
@@ -1760,6 +1761,12 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
               {pagedItems.map((item) => {
                 if (item.type === 'group') {
                   const { key, spools: groupSpools, representative: rep } = item;
+                  // Total remaining filament across the group (#1368) — the
+                  // headline number for the collapsed card, vs one member's.
+                  const groupRemaining = groupSpools.reduce(
+                    (sum, s) => sum + Math.max(0, s.label_weight - s.weight_used),
+                    0,
+                  );
                   const colorStyle = rep.rgba ? `#${rep.rgba.substring(0, 6)}` : '#808080';
                   const isExpanded = expandedGroups.has(key);
                   return (
@@ -1783,7 +1790,9 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
                             </div>
                           </div>
                           <div className="flex items-center gap-2">
-                            <span className="text-sm text-bambu-gray">{formatWeight(rep.label_weight)}</span>
+                            <span className="text-sm text-bambu-gray" title={t('inventory.remaining')}>
+                              {formatWeight(groupRemaining)}
+                            </span>
                             <span className="text-xs font-medium bg-bambu-green/20 text-bambu-green px-2 py-0.5 rounded-full">
                               {t('inventory.groupedSpools', { count: groupSpools.length })}
                             </span>
@@ -1891,15 +1900,18 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
                 <tbody>
                   {pagedItems.map((item) => {
                     if (item.type === 'group') {
-                      const { key, spools: groupSpools, representative: rep } = item;
+                      const { key, spools: groupSpools } = item;
                       const isExpanded = expandedGroups.has(key);
-                      const remaining = Math.max(0, rep.label_weight - rep.weight_used);
-                      const pct = rep.label_weight > 0 ? (remaining / rep.label_weight) * 100 : 0;
+                      // Header row shows group totals (#1368): an aggregate
+                      // spool plus remaining / pct summed across all members.
+                      const headerSpool = aggregateGroupSpool(groupSpools);
+                      const remaining = Math.max(0, headerSpool.label_weight - headerSpool.weight_used);
+                      const pct = headerSpool.label_weight > 0 ? (remaining / headerSpool.label_weight) * 100 : 0;
                       return (
                         <SpoolTableGroup
                           key={`group-${key}`}
                           spools={groupSpools}
-                          representative={rep}
+                          headerSpool={headerSpool}
                           remaining={remaining}
                           pct={pct}
                           isExpanded={isExpanded}
@@ -2380,13 +2392,15 @@ function SpoolTableRow({
 
 /* Grouped spool rows for table view */
 function SpoolTableGroup({
-  spools, representative, remaining, pct, isExpanded, onToggle,
+  spools, headerSpool, remaining, pct, isExpanded, onToggle,
   onEdit, onCopy, onArchive, onDelete, onPrintLabel, onResetUsage,
   visibleColumns, assignmentMap, catalogMap, currencySymbol, dateFormat, t, onSyncWeight,
   spoolDisplayTemplate,
 }: {
   spools: InventorySpool[];
-  representative: InventorySpool;
+  // Aggregate of all members (summed quantities, shared identity) — rendered
+  // in the collapsed header row so it shows group totals (#1368).
+  headerSpool: InventorySpool;
   remaining: number;
   pct: number;
   isExpanded: boolean;
@@ -2418,14 +2432,14 @@ function SpoolTableGroup({
             {idx === 0 ? (
               <div className="flex items-center gap-2">
                 <ChevronDown className={`w-4 h-4 text-bambu-gray transition-transform ${isExpanded ? '' : '-rotate-90'}`} />
-                {columnCells[colId]?.({ spool: representative, remaining, pct, assignmentMap, catalogMap, currencySymbol, dateFormat, t, onSyncWeight, spoolDisplayTemplate })}
+                {columnCells[colId]?.({ spool: headerSpool, remaining, pct, assignmentMap, catalogMap, currencySymbol, dateFormat, t, onSyncWeight, spoolDisplayTemplate })}
               </div>
             ) : colId === 'id' ? (
               <span className="text-xs font-medium bg-bambu-green/20 text-bambu-green px-2 py-0.5 rounded-full">
                 {t('inventory.groupedSpools', { count: spools.length })}
               </span>
             ) : (
-              columnCells[colId]?.({ spool: representative, remaining, pct, assignmentMap, catalogMap, currencySymbol, dateFormat, t, onSyncWeight, spoolDisplayTemplate })
+              columnCells[colId]?.({ spool: headerSpool, remaining, pct, assignmentMap, catalogMap, currencySymbol, dateFormat, t, onSyncWeight, spoolDisplayTemplate })
             )}
           </td>
         ))}

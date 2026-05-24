@@ -12,6 +12,8 @@ import pytest
 from backend.app.services.usage_tracker import (
     PrintSession,
     _active_sessions,
+    _archive_colors_from_spools,
+    _spool_color_to_hex,
     _track_from_3mf,
     on_print_complete,
     on_print_start,
@@ -705,3 +707,99 @@ class TestSpoolAssignmentSnapshot:
         assert results[0]["weight_used"] == 14.2
         # Spool weight should be updated: 50 + 14.2 = 64.2
         assert spool.weight_used == 64.2
+
+
+class TestSpoolColorToHex:
+    """`_spool_color_to_hex` normalises Spool.rgba (RRGGBBAA, no #) to #RRGGBB."""
+
+    def test_strips_alpha_and_adds_hash(self):
+        assert _spool_color_to_hex("000000FF") == "#000000"
+        assert _spool_color_to_hex("EC984CFF") == "#EC984C"
+
+    def test_uppercases(self):
+        assert _spool_color_to_hex("ec984cff") == "#EC984C"
+
+    def test_accepts_six_char_value(self):
+        """A value with no alpha is still valid."""
+        assert _spool_color_to_hex("161616") == "#161616"
+
+    def test_tolerates_leading_hash(self):
+        assert _spool_color_to_hex("#000000FF") == "#000000"
+
+    def test_none_and_too_short_return_none(self):
+        """Missing / malformed colour falls back to the 3MF value."""
+        assert _spool_color_to_hex(None) is None
+        assert _spool_color_to_hex("") is None
+        assert _spool_color_to_hex("FFF") is None
+
+
+class TestArchiveColorsFromSpools:
+    """`_archive_colors_from_spools` rebuilds an archive's filament_color from
+    the inventory spools that fed the print (#1494). All-or-nothing: a partial
+    match returns None so the 3MF colour is left intact."""
+
+    def test_single_slot_matched(self):
+        """The #1494 case: one used slot, matched to a #000000 spool."""
+        usage = [{"slot_id": 1, "used_g": 15.9, "color": "#161616"}]
+        results = [{"slot_id": 1, "color": "#000000"}]
+        assert _archive_colors_from_spools(usage, results) == ["#000000"]
+
+    def test_multi_slot_all_matched_keeps_slot_order(self):
+        usage = [
+            {"slot_id": 1, "used_g": 10.0, "color": "#111111"},
+            {"slot_id": 2, "used_g": 20.0, "color": "#222222"},
+        ]
+        # results deliberately out of slot order — output must be slot-ordered
+        results = [
+            {"slot_id": 2, "color": "#00FF00"},
+            {"slot_id": 1, "color": "#FF0000"},
+        ]
+        assert _archive_colors_from_spools(usage, results) == ["#FF0000", "#00FF00"]
+
+    def test_duplicate_colors_deduplicated(self):
+        """Two slots of the same spool colour collapse to one entry, as the
+        3MF-derived path also de-duplicates."""
+        usage = [
+            {"slot_id": 1, "used_g": 10.0, "color": "#111111"},
+            {"slot_id": 2, "used_g": 20.0, "color": "#222222"},
+        ]
+        results = [
+            {"slot_id": 1, "color": "#000000"},
+            {"slot_id": 2, "color": "#000000"},
+        ]
+        assert _archive_colors_from_spools(usage, results) == ["#000000"]
+
+    def test_partial_match_returns_none(self):
+        """Slot 2 was used but never matched to a spool — leave the 3MF colour
+        untouched rather than dropping slot 2 from the archive."""
+        usage = [
+            {"slot_id": 1, "used_g": 10.0, "color": "#111111"},
+            {"slot_id": 2, "used_g": 20.0, "color": "#222222"},
+        ]
+        results = [{"slot_id": 1, "color": "#000000"}]
+        assert _archive_colors_from_spools(usage, results) is None
+
+    def test_matched_spool_without_color_returns_none(self):
+        """A spool with no rgba (color None) does not count as matched."""
+        usage = [{"slot_id": 1, "used_g": 15.0, "color": "#161616"}]
+        results = [{"slot_id": 1, "color": None}]
+        assert _archive_colors_from_spools(usage, results) is None
+
+    def test_unused_slot_not_required(self):
+        """A slot with zero usage need not be matched."""
+        usage = [
+            {"slot_id": 1, "used_g": 15.0, "color": "#161616"},
+            {"slot_id": 2, "used_g": 0.0, "color": "#888888"},
+        ]
+        results = [{"slot_id": 1, "color": "#000000"}]
+        assert _archive_colors_from_spools(usage, results) == ["#000000"]
+
+    def test_no_used_slots_returns_none(self):
+        assert _archive_colors_from_spools([], []) is None
+
+    def test_ams_fallback_results_excluded(self):
+        """AMS remain%-delta fallback results carry slot_id=None and must not
+        satisfy the match for a real 3MF slot."""
+        usage = [{"slot_id": 1, "used_g": 15.0, "color": "#161616"}]
+        results = [{"slot_id": None, "color": "#000000"}]
+        assert _archive_colors_from_spools(usage, results) is None

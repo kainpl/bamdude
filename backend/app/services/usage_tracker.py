@@ -63,6 +63,60 @@ def _decode_mqtt_mapping(mapping_raw: list | None) -> list[int] | None:
     return result
 
 
+def _spool_color_to_hex(rgba: str | None) -> str | None:
+    """Normalise a ``Spool.rgba`` value (``RRGGBBAA`` hex, no ``#``) to the
+    ``#RRGGBB`` form archives store in ``filament_color``.
+
+    Alpha is dropped — the archive colour list and the Color Distribution
+    graph treat filament colour as opaque. Returns ``None`` for a missing or
+    too-short value so the caller can fall back to the 3MF colour.
+    """
+    if not rgba:
+        return None
+    h = rgba.strip().lstrip("#")
+    if len(h) < 6:
+        return None
+    return "#" + h[:6].upper()
+
+
+def _archive_colors_from_spools(filament_usage: list[dict], results: list[dict]) -> list[str] | None:
+    """Slot-ordered, de-duplicated hex colours for an archive's ``filament_color``,
+    taken from the inventory spools that actually fed the print (#1494).
+
+    The slicer's 3MF carries its own ``filament_colour`` per slot — a value
+    picked independently of the colour the user curates on the matched
+    inventory spool. So an archive printed from a ``#000000`` inventory spool
+    would otherwise show the slicer's near-black ``#161616``. Once usage
+    tracking has resolved the used slots to spools, the spool colours are the
+    authoritative source and replace the 3MF values.
+
+    Returns ``None`` — leave the 3MF colour untouched — unless *every* slot
+    with non-zero usage was matched to a spool that carries a colour. A
+    partial rewrite would silently drop the unmatched slots' colours from the
+    archive (and the Color Distribution graph), so it is all-or-nothing.
+    """
+    used_slots = {u["slot_id"] for u in filament_usage if u.get("used_g", 0) > 0 and u.get("slot_id") is not None}
+    if not used_slots:
+        return None
+
+    slot_color: dict[int, str] = {}
+    for r in results:
+        slot_id = r.get("slot_id")
+        color = r.get("color")
+        if slot_id is not None and color:
+            slot_color.setdefault(slot_id, color)
+
+    if not used_slots.issubset(slot_color):
+        return None
+
+    ordered: list[str] = []
+    for slot_id in sorted(used_slots):
+        color = slot_color[slot_id]
+        if color not in ordered:
+            ordered.append(color)
+    return ordered
+
+
 def _match_slots_by_color(
     filament_usage: list[dict],
     ams_raw: dict | list | None,
@@ -475,6 +529,10 @@ async def on_print_complete(
                             "tray_id": tray_id,
                             "material": spool.material,
                             "cost": cost,
+                            # AMS remain%-delta fallback has no 3MF slot — slot_id
+                            # stays None so it is excluded from the colour rewrite.
+                            "slot_id": None,
+                            "color": _spool_color_to_hex(spool.rgba),
                         }
                     )
 
@@ -868,6 +926,8 @@ async def _track_from_3mf(
                         "tray_id": seg_tray_id,
                         "material": spool.material,
                         "cost": cost,
+                        "slot_id": slot_id,
+                        "color": _spool_color_to_hex(spool.rgba),
                     }
                 )
 
@@ -997,6 +1057,8 @@ async def _track_from_3mf(
                 "tray_id": tray_id,
                 "material": spool.material,
                 "cost": cost,
+                "slot_id": slot_id,
+                "color": _spool_color_to_hex(spool.rgba),
             }
         )
 
@@ -1018,5 +1080,22 @@ async def _track_from_3mf(
             tray_id,
             status,
         )
+
+    # --- Adopt the matched inventory spools' colours for the archive (#1494) ---
+    # The archive's filament_color was set from the slicer's 3MF at creation
+    # time; now that every used slot has been resolved to an inventory spool,
+    # the curated spool colour is authoritative. Committed by the caller.
+    if archive is not None:
+        spool_colors = _archive_colors_from_spools(filament_usage, results)
+        if spool_colors:
+            joined = ",".join(spool_colors)
+            if joined != archive.filament_color:
+                logger.info(
+                    "[UsageTracker] 3MF: archive %s filament_color %r -> %r (from inventory spools)",
+                    archive_id,
+                    archive.filament_color,
+                    joined,
+                )
+                archive.filament_color = joined
 
     return results

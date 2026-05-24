@@ -11,6 +11,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.app.core.auth import RequireAnyPermission, RequirePermission
 from backend.app.core.catalog_defaults import DEFAULT_COLOR_CATALOG, DEFAULT_SPOOL_CATALOG
+from backend.app.core.config import APP_VERSION
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.core.websocket import ws_manager
@@ -868,7 +869,13 @@ async def sync_from_filamentcolors(
         total_available = 0
 
         try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
+            # Identify honestly as BamDude rather than leaking httpx's default
+            # "python-httpx/x.y" UA — consistent with every other outbound
+            # client (bambu_cloud, makerworld, firmware check).
+            async with httpx.AsyncClient(
+                timeout=120.0,
+                headers={"User-Agent": f"BamDude/{APP_VERSION} (+https://github.com/kainpl/bamdude)"},
+            ) as client:
                 page = 1
                 while True:
                     response = await client.get(
