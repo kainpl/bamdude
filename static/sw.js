@@ -1,6 +1,6 @@
 // BamDude Service Worker
-const CACHE_NAME = 'bamdude-v1';
-const STATIC_CACHE = 'bamdude-static-v1';
+const CACHE_NAME = 'bamdude-v2';
+const STATIC_CACHE = 'bamdude-static-v2';
 
 // Static assets to cache on install
 const STATIC_ASSETS = [
@@ -13,6 +13,9 @@ const STATIC_ASSETS = [
   '/img/android-chrome-512x512.png',
   '/img/apple-touch-icon.png',
   '/img/bamdude_logo_dark.png',
+  // Self-hosted Inter font (#1460) - cached so the UI renders offline.
+  '/fonts/inter-latin.woff2',
+  '/fonts/inter-latin-ext.woff2',
 ];
 
 // Install event - cache static assets
@@ -57,6 +60,14 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
+  // Skip cross-origin requests - let the browser handle them directly.
+  // Without this the catch-all HTML branch below would answer a failed
+  // cross-origin request with our cached index.html, so e.g. a blocked
+  // Google Fonts request came back as text/html (#1460).
+  if (url.origin !== self.location.origin) {
+    return;
+  }
+
   // Skip WebSocket connections
   if (url.protocol === 'ws:' || url.protocol === 'wss:') {
     return;
@@ -88,10 +99,12 @@ self.addEventListener('fetch', (event) => {
   if (
     url.pathname.startsWith('/img/') ||
     url.pathname.startsWith('/icons/') ||
+    url.pathname.startsWith('/fonts/') ||
     url.pathname.endsWith('.png') ||
     url.pathname.endsWith('.jpg') ||
     url.pathname.endsWith('.svg') ||
-    url.pathname.endsWith('.ico')
+    url.pathname.endsWith('.ico') ||
+    url.pathname.endsWith('.woff2')
   ) {
     event.respondWith(
       caches.match(request).then((cached) => {

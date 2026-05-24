@@ -29,6 +29,8 @@ export default {
     switchToDark: 'Switch to dark mode',
     smartSwitches: 'Smart Switches',
     logout: 'Logout',
+    installApp: 'Install app',
+    installAppSuccess: 'BamDude was installed',
     group: {
       operations: 'Operations',
       workshop: 'Workshop',
@@ -2637,6 +2639,7 @@ export default {
       importing: 'Importing...',
       search: 'Search local presets...',
       noPresets: 'No local presets yet',
+      noSearchResults: 'No presets match your search',
       badge: 'Local',
       delete: 'Delete',
       cancel: 'Cancel',

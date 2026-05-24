@@ -29,6 +29,8 @@ export default {
     switchToDark: 'Темна тема',
     smartSwitches: 'Розумні вимикачі',
     logout: 'Вийти',
+    installApp: 'Встановити застосунок',
+    installAppSuccess: 'BamDude встановлено',
     group: {
       operations: 'Операції',
       workshop: 'Майстерня',
@@ -2653,6 +2655,7 @@ export default {
       importing: 'Імпорт...',
       search: 'Пошук локальних пресетів...',
       noPresets: 'Локальних пресетів ще немає',
+      noSearchResults: 'Жоден пресет не відповідає запиту',
       badge: 'Локальний',
       delete: 'Видалити',
       cancel: 'Скасувати',

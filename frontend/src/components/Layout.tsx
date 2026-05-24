@@ -5,6 +5,7 @@ import { GitHubIcon, TelegramIcon, MakerWorldIcon } from './BrandIcons';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '../contexts/ThemeContext';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
+import { InstallAppButton } from './InstallAppButton';
 import { SwitchbarPopover } from './SwitchbarPopover';
 import { useQuery, useQueries } from '@tanstack/react-query';
 import { api, supportApi, type Permission } from '../api/client';
@@ -1011,6 +1012,7 @@ export function Layout() {
               </div>
               {/* Row 2: external links (GitHub, docs, Telegram support). */}
               <div className="flex items-center justify-center gap-1">
+                <InstallAppButton />
                 <a
                   href="https://github.com/kainpl/bambuddy-he"
                   target="_blank"
@@ -1081,6 +1083,7 @@ export function Layout() {
                   )}
                 </div>
               )}
+              <InstallAppButton />
               <a
                 href="https://github.com/kainpl/bambuddy-hedy"
                 target="_blank"

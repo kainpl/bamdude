@@ -6319,10 +6319,10 @@ async def security_headers_middleware(request, call_next):
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
             "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
-            "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; "
+            "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
             "img-src 'self' data: blob: https://fastapi.tiangolo.com https://cdn.redoc.ly; "
             "connect-src 'self'; "
-            "font-src 'self' data: https://fonts.gstatic.com; "
+            "font-src 'self' data:; "
             "worker-src 'self' blob:; "
             "object-src 'none'; "
             "base-uri 'self'; " + _frame_ancestors("'none'")
@@ -6331,11 +6331,11 @@ async def security_headers_middleware(request, call_next):
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
             f"script-src 'self' 'nonce-{csp_nonce}'; "
-            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data: blob:; "
             "media-src 'self' blob:; "
             "connect-src 'self' ws: wss:; "
-            "font-src 'self' data: https://fonts.gstatic.com; "
+            "font-src 'self' data:; "
             "object-src 'none'; "
             "base-uri 'self'; "
             "frame-src 'self' http: https:; " + _frame_ancestors("'none'")
@@ -6475,6 +6475,16 @@ if app_settings.static_dir.exists() and any(app_settings.static_dir.iterdir()):
             "/icons",
             StaticFiles(directory=app_settings.static_dir / "icons"),
             name="icons",
+        )
+    # Self-hosted Inter woff2 files (#1460). Without this mount /fonts/*.woff2
+    # falls through to the SPA catch-all and returns index.html, which the
+    # browser's font sanitizer rejects ("downloadable font: rejected by
+    # sanitizer").
+    if (app_settings.static_dir / "fonts").exists():
+        app.mount(
+            "/fonts",
+            StaticFiles(directory=app_settings.static_dir / "fonts"),
+            name="fonts",
         )
 
 
