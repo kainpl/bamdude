@@ -608,6 +608,7 @@ class BambuMQTTClient:
         on_kprofiles_changed: Callable[[], None] | None = None,
         on_first_status: Callable[[str, str], None] | None = None,
         on_drying_complete: Callable[[int], None] | None = None,
+        on_print_running_observed: Callable[[dict], None] | None = None,
     ):
         self.ip_address = ip_address
         self.serial_number = serial_number
@@ -623,6 +624,13 @@ class BambuMQTTClient:
         # — i.e. the drying cycle just finished (queue-triggered, ambient,
         # or manual). Receives the AMS id of the unit that finished drying.
         self.on_drying_complete = on_drying_complete
+        # #1485 follow-up: fired the first time we see RUNNING state in a
+        # session WHEN on_print_start was suppressed (BamDude started mid-
+        # print, the #1304 first-push guard skipped the start event). Lets
+        # main.py capture a fresh timelapse baseline at restart-recovery time
+        # so the completion-time snapshot-diff still works. Receives the same
+        # payload shape as on_print_start.
+        self.on_print_running_observed = on_print_running_observed
         # Per-AMS previous ``dry_time``, used to detect the falling edge.
         # Seeded lazily as we observe each AMS unit.
         self._previous_dry_times: dict[int, int] = {}
@@ -3460,6 +3468,7 @@ class BambuMQTTClient:
         )
 
         # Track RUNNING state for more robust completion detection
+        running_first_observed = False
         if self.state.state == "RUNNING" and current_file:
             if not self._was_running:
                 logger.debug("[%s] Now tracking RUNNING state for %s", self.serial_number, current_file)
@@ -3467,6 +3476,14 @@ class BambuMQTTClient:
                 if self.state.timelapse:
                     self._timelapse_during_print = True
                     logger.debug("[%s] Timelapse detected when entering RUNNING state", self.serial_number)
+                # Mark this as the first RUNNING observation of the session.
+                # If is_new_print also fires below, on_print_start handles
+                # baseline capture and we suppress on_print_running_observed
+                # to avoid double-capture. If is_new_print does NOT fire
+                # (BamDude started mid-print — the #1304 guard suppressed it),
+                # main.py needs this hook to catch the restart-recovery case
+                # (#1485 follow-up).
+                running_first_observed = True
             self._was_running = True
             self._completion_triggered = False
 
@@ -3508,6 +3525,25 @@ class BambuMQTTClient:
                     "remaining_time": self.state.remaining_time * 60
                     if self.state.remaining_time > 0
                     else None,  # Convert minutes to seconds
+                    "raw_data": data,
+                    "ams_mapping": self._captured_ams_mapping,
+                }
+            )
+        elif running_first_observed and self.on_print_running_observed:
+            # Restart-recovery hook (#1485 follow-up): BamDude started mid-
+            # print, so the #1304 first-push guard suppressed on_print_start,
+            # but we still need main.py to capture a fresh timelapse baseline
+            # before the printer uploads the in-flight MP4. Same payload
+            # shape as on_print_start so the consumer can reuse fields.
+            logger.info(
+                f"[{self.serial_number}] RUNNING observed without PRINT START "
+                f"(restart-recovery) - file: {current_file}, subtask: {self.state.subtask_name}"
+            )
+            self.on_print_running_observed(
+                {
+                    "filename": current_file,
+                    "subtask_name": self.state.subtask_name,
+                    "remaining_time": self.state.remaining_time * 60 if self.state.remaining_time > 0 else None,
                     "raw_data": data,
                     "ams_mapping": self._captured_ams_mapping,
                 }

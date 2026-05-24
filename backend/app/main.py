@@ -2551,6 +2551,14 @@ async def on_print_start(printer_id: int, data: dict):
                 except Exception as e:
                     logger.warning("[SPOOLMAN] Failed to store tracking data: %s", e)
 
+                # Capture timelapse file baseline for snapshot-diff on completion
+                # (mirrors the new-archive branch). Queue / VP-dispatched prints
+                # hit this branch — without the baseline the completion-time scan
+                # falls into its "take baseline now" fallback, which snapshots
+                # AFTER the new MP4 already exists and never matches a diff
+                # (#1403 follow-up).
+                await _capture_timelapse_baseline_at_start(printer, printer_id, logger)
+
             return  # Skip creating a new archive
 
         # Check if there's already a "printing" archive for this printer/file
@@ -3172,16 +3180,7 @@ async def on_print_start(printer_id: int, data: dict):
                     logger.warning("[SPOOLMAN] Failed to store tracking data: %s", e)
 
                 # Capture timelapse file baseline for snapshot-diff on completion
-                try:
-                    baseline_files, _ = await _list_timelapse_videos(printer)
-                    _timelapse_baselines[printer_id] = {f.get("name", "") for f in baseline_files}
-                    logger.info(
-                        "[TIMELAPSE] Baseline at print start: %s video files for printer %s",
-                        len(_timelapse_baselines[printer_id]),
-                        printer_id,
-                    )
-                except Exception as e:
-                    logger.warning("[TIMELAPSE] Failed to capture baseline at print start: %s", e)
+                await _capture_timelapse_baseline_at_start(printer, printer_id, logger)
         finally:
             if temp_path and temp_path.exists():
                 temp_path.unlink()
@@ -3219,6 +3218,25 @@ async def _list_timelapse_videos(printer) -> tuple[list[dict], str | None]:
             continue
 
     return [], None
+
+
+async def _capture_timelapse_baseline_at_start(printer, printer_id: int, logger: logging.Logger) -> None:
+    """Snapshot the printer's existing timelapse video filenames into
+    ``_timelapse_baselines[printer_id]`` so the completion-time scan can diff
+    against it and attach only the video this print produced. Best-effort:
+    a capture failure just means the completion scan falls back to its own
+    baseline. Shared by ``on_print_start`` and the restart-recovery hook
+    ``on_print_running_observed`` (#1485 follow-up)."""
+    try:
+        baseline_files, _ = await _list_timelapse_videos(printer)
+        _timelapse_baselines[printer_id] = {f.get("name", "") for f in baseline_files}
+        logger.info(
+            "[TIMELAPSE] Baseline at print start: %s video files for printer %s",
+            len(_timelapse_baselines[printer_id]),
+            printer_id,
+        )
+    except Exception as e:
+        logger.warning("[TIMELAPSE] Failed to capture baseline at print start: %s", e)
 
 
 async def _scan_for_timelapse_with_retries(archive_id: int, baseline_names: set[str] | None = None):
@@ -3409,6 +3427,48 @@ async def _scan_for_timelapse_with_retries(archive_id: int, baseline_names: set[
             logger.warning("[TIMELAPSE] Name-match fallback failed: %s", e)
 
     logger.warning("[TIMELAPSE] All attempts exhausted for archive %s, giving up", archive_id)
+
+
+async def on_print_running_observed(printer_id: int, data: dict):
+    """Restart-recovery: capture a fresh timelapse baseline for a print that
+    started before BamDude came up.
+
+    bambu_mqtt.py suppresses ``on_print_start`` on the first RUNNING push
+    after BamDude startup (#1304 guard, prevents duplicate archive creation).
+    Without that path, ``_capture_timelapse_baseline_at_start`` never runs and
+    ``_scan_for_timelapse_with_retries`` falls into its "take baseline now"
+    fallback at completion time — but by then the printer has already uploaded
+    the in-flight MP4, so the baseline includes it and no diff ever matches
+    (#1485 follow-up).
+
+    Fires once per session, in lieu of on_print_start when restart-recovery
+    kicks in. The printer doesn't upload the timelapse until after PRINT
+    COMPLETE, so a baseline captured any time during the print is still
+    pre-upload.
+    """
+    logger = logging.getLogger(__name__)
+
+    # Avoid double-capture: on_print_start may have run earlier in this process.
+    if printer_id in _timelapse_baselines:
+        logger.debug(
+            "[TIMELAPSE] on_print_running_observed: baseline already present for printer %s, skipping",
+            printer_id,
+        )
+        return
+
+    async with async_session() as db:
+        from backend.app.models.printer import Printer
+
+        result = await db.execute(select(Printer).where(Printer.id == printer_id))
+        printer = result.scalar_one_or_none()
+        if not printer:
+            logger.warning(
+                "[TIMELAPSE] on_print_running_observed: printer %s not found in DB, skipping baseline",
+                printer_id,
+            )
+            return
+
+    await _capture_timelapse_baseline_at_start(printer, printer_id, logger)
 
 
 async def on_print_complete(printer_id: int, data: dict):
@@ -5511,6 +5571,7 @@ async def lifespan(app: FastAPI):
     printer_manager.set_status_change_callback(on_printer_status_change)
     printer_manager.set_print_start_callback(on_print_start)
     printer_manager.set_print_complete_callback(on_print_complete)
+    printer_manager.set_print_running_observed_callback(on_print_running_observed)
     printer_manager.set_ams_change_callback(on_ams_change)
 
     # Layer change callback for external camera timelapse
