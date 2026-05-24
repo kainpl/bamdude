@@ -17,6 +17,7 @@ All notable changes to BamDude will be documented in this file.
 
 ### Fixed
 
+- **AMS drying no longer powers the printer off seconds after it starts.** A tray-only AMS status update (which carries no drying fields) was dropping the remaining `dry_time` during the state merge; the drying-complete detector then read the absent value as 0, saw a false "60 → 0" finish, and — for anyone using the new smart-plug auto-off-after-drying — cut power mid-cycle. The merge now preserves `dry_time`/humidity/temp across tray-only updates, and the completion detector only fires on an explicit `dry_time` reading. (Upstream Bambuddy #1462.)
 - **A malformed MQTT PUBLISH from a Bambu printer no longer kills the connection.** The printer's broker occasionally delivers a truncated packet whose declared topic length exceeds the bytes present; paho-mqtt would build a negative `struct` count and crash its network thread with `struct.error: bad char in struct format`, dropping the printer offline until the ~70 s stale-connection watchdog reconnected. BamDude now drops the malformed push (the printer re-pushes its state within seconds), mirroring the guard already in place for malformed SUBACK packets.
 
 ### Changed

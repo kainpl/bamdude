@@ -2124,8 +2124,15 @@ class BambuMQTTClient:
                             merged_trays.append(merged_tray)
                         else:
                             merged_trays.append(new_tray)
-                    # Update ams_unit with merged trays
-                    ams_unit = {**ams_unit, "tray": merged_trays}
+                    # Update ams_unit with merged trays. Spread existing_unit
+                    # FIRST so top-level fields the partial update omits —
+                    # dry_time, info (which drives dry_status / dry_sub_status),
+                    # humidity, temp — are preserved instead of dropped. The
+                    # printer sends tray-bearing partials that carry no drying
+                    # fields; without this, dry_time reads as absent → 0 and the
+                    # falling-edge detector below fires a false "drying complete"
+                    # (#1462). Mirrors the no-tray branch's merge semantics.
+                    ams_unit = {**existing_unit, **ams_unit, "tray": merged_trays}
                 elif existing_unit:
                     # Partial update without tray data: merge new fields into existing
                     # unit to preserve tray, sn, sw_ver, and other accumulated data.
@@ -2222,10 +2229,18 @@ class BambuMQTTClient:
                     continue
                 if ams_id < 0:
                     continue
+                # Only evaluate the edge when this update carries an explicit
+                # dry_time. An absent / unparseable value is NOT zero — treating
+                # it as 0 lets a tray-only partial fake a drying-complete edge
+                # (#1462). Skip without touching the remembered value so the
+                # next update that DOES carry dry_time sees the true previous.
+                raw_dry_time = ams_unit.get("dry_time")
+                if raw_dry_time is None:
+                    continue
                 try:
-                    current = int(ams_unit.get("dry_time") or 0)
+                    current = int(raw_dry_time)
                 except (TypeError, ValueError):
-                    current = 0
+                    continue
                 previous = self._previous_dry_times.get(ams_id, 0)
                 self._previous_dry_times[ams_id] = current
                 if previous > 0 and current == 0:

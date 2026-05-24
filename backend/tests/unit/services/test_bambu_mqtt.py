@@ -875,6 +875,29 @@ class TestAMSDataMerging:
             "Without power_on_flag, clearing should proceed (defaults to True)"
         )
 
+    def test_tray_only_partial_does_not_fake_drying_completion(self, mqtt_client):
+        """#1462 — a tray-bearing partial that omits dry_time must not be read
+        as dry_time=0. The pre-fix merge dropped dry_time on such partials, so
+        the falling-edge detector saw a 60→0 edge and fired a false 'drying
+        complete' seconds after drying started — arming smart-plug auto-off and
+        killing the printer mid-cycle."""
+        events: list[int] = []
+        mqtt_client.on_drying_complete = events.append
+
+        # Drying active, 60 minutes remaining.
+        mqtt_client._handle_ams_data({"ams": [{"id": "0", "dry_time": 60, "tray": []}]})
+        assert events == []
+
+        # Printer sends a tray-bearing partial carrying NO dry_time field.
+        mqtt_client._handle_ams_data({"ams": [{"id": "0", "tray": []}]})
+        assert events == []
+        # dry_time survived the partial in the merged AMS state.
+        assert mqtt_client.state.raw_data["ams"][0]["dry_time"] == 60
+
+        # Drying genuinely finishes → the real edge still fires exactly once.
+        mqtt_client._handle_ams_data({"ams": [{"id": "0", "dry_time": 0, "tray": []}]})
+        assert events == [0]
+
 
 class TestAMSTrayStateClearning:
     """Tests for AMS tray state-based clearing (#784).
