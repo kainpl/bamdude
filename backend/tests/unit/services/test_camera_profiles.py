@@ -66,6 +66,18 @@ class TestP2SOverride:
         profile = get_camera_profile("P2S")
         assert profile.analyzeduration == 500_000
 
+    def test_p2s_regenerates_timestamps_from_wallclock(self):
+        """P2S firmware 01.02.00.00 sends non-advancing RTP timestamps;
+        ffmpeg's default CFR conversion (`-r 15`) then freezes the output
+        clock after frame 1 and drops everything else (#1395). The profile
+        must splice `-use_wallclock_as_timestamps 1` into the input args so
+        ffmpeg rebuilds PTS from arrival time. Order matters — the flag and
+        its value must be adjacent so they reach ffmpeg as a pair."""
+        args = get_camera_profile("P2S").extra_ffmpeg_input_args
+        assert "-use_wallclock_as_timestamps" in args
+        idx = args.index("-use_wallclock_as_timestamps")
+        assert args[idx + 1] == "1"
+
     def test_lookup_is_case_insensitive(self):
         assert get_camera_profile("p2s") is get_camera_profile("P2S")
         assert get_camera_profile("  p2s  ") is get_camera_profile("P2S")

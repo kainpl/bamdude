@@ -121,6 +121,17 @@ describe('CameraPage', () => {
         expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
       });
     });
+
+    it('shows the camera diagnostic (stethoscope) button in the control bar (#1395)', async () => {
+      // The diagnostic shipped wired into the embedded viewer only; window mode
+      // (this page) was missing it. The control-bar button must be present here.
+      renderCameraPage(1);
+
+      await waitFor(() => {
+        expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
+      });
+      expect(screen.getByTitle('Diagnose')).toBeInTheDocument();
+    });
   });
 
   describe('camera controls', () => {

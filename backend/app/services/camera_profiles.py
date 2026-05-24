@@ -55,11 +55,27 @@ DEFAULT_PROFILE = CameraProfile()
 # ``_MODEL_ALIASES`` below so the camera path resolves correctly during
 # the early-connect window before the display name is settled.
 _PROFILES: dict[str, CameraProfile] = {
-    # P2S: firmware 01.02.00.00 produces a slow first keyframe; ffmpeg
-    # needs ~1 MB of probe data to lock onto the format and ~500 ms of
-    # analysis time. Sized so that startup latency stays sub-second on
-    # a healthy stream while still surviving the slow-keyframe case.
-    "P2S": CameraProfile(probesize=1_000_000, analyzeduration=500_000),
+    # P2S firmware 01.02.00.00 has two RTSP quirks, both surfaced by #1395:
+    #
+    # 1. Slow keyframe pacing — ffmpeg needs ~1 MB of probe data to lock onto
+    #    the format and ~500 ms of analysis time (its "32-byte probe + zero
+    #    analyze" combo can't estimate the frame rate; stderr literally says
+    #    "consider increasing probesize"). Fixed by the relaxed
+    #    probesize/analyzeduration below.
+    #
+    # 2. Non-advancing RTP timestamps — every frame is stamped at ~t=0.06s.
+    #    With ffmpeg's default CFR rate conversion (`-r 15`), this freezes the
+    #    output clock after the first frame and drops every subsequent frame
+    #    as a same-timestamp duplicate (ffmpeg stderr: `frame=1
+    #    time=00:00:00.06 dup=0 drop=526`). `-use_wallclock_as_timestamps 1`
+    #    regenerates each packet's PTS from arrival wall-clock time, so the
+    #    output clock advances and CFR conversion works. X1/H2 send correct
+    #    timestamps and need no override.
+    "P2S": CameraProfile(
+        probesize=1_000_000,
+        analyzeduration=500_000,
+        extra_ffmpeg_input_args=("-use_wallclock_as_timestamps", "1"),
+    ),
 }
 
 
