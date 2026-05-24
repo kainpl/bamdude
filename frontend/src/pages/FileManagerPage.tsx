@@ -1573,7 +1573,10 @@ export function FileManagerPage() {
 
   const { data: files, isLoading: filesLoading } = useQuery({
     queryKey: ['library-files', selectedFolderId],
-    queryFn: () => api.getLibraryFiles(selectedFolderId, selectedFolderId === null),
+    // "All Files" (selectedFolderId === null) lists every file across folders,
+    // so include_root must be false — true would scope the result to files at
+    // the library root only and hide everything nested in subfolders (#1499).
+    queryFn: () => api.getLibraryFiles(selectedFolderId, false),
   });
 
   const { data: stats } = useQuery({

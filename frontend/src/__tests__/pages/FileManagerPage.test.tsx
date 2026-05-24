@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { render } from '../utils';
 import { FileManagerPage } from '../../pages/FileManagerPage';
@@ -147,6 +147,27 @@ describe('FileManagerPage', () => {
         return HttpResponse.json([{ id: 1, print_name: 'Test Archive', filename: 'test.3mf' }]);
       })
     );
+  });
+
+  describe('All Files include_root (#1499)', () => {
+    it('requests every file with include_root=false and shows nested files', async () => {
+      let capturedIncludeRoot: string | null = null;
+      server.use(
+        http.get('/api/v1/library/files', ({ request }) => {
+          capturedIncludeRoot = new URL(request.url).searchParams.get('include_root');
+          // A library where the only file lives inside a subfolder — under the
+          // pre-fix include_root=true this rendered empty.
+          return HttpResponse.json([
+            { ...mockFiles[0], id: 99, filename: 'nested-only.3mf', folder_id: 2, print_name: null },
+          ]);
+        }),
+      );
+
+      render(<FileManagerPage />);
+
+      await waitFor(() => expect(capturedIncludeRoot).toBe('false'));
+      expect(await screen.findByText('nested-only.3mf')).toBeInTheDocument();
+    });
   });
 
   describe('rendering', () => {
@@ -377,11 +398,10 @@ describe('FileManagerPage', () => {
         expect(screen.getByText('Benchy')).toBeInTheDocument();
       });
 
-      // Click on the file card to select it
-      const fileCard = screen.getByText('Benchy').closest('div[class*="cursor-pointer"]');
-      if (fileCard) {
-        await user.click(fileCard);
-      }
+      // Selection is via the card's checkbox only (a plain card click no
+      // longer toggles selection). Click Benchy's "Select file" checkbox.
+      const card = screen.getByText('Benchy').closest('.group') as HTMLElement;
+      await user.click(within(card).getByLabelText('Select file'));
 
       await waitFor(() => {
         expect(screen.getByText('1 selected')).toBeInTheDocument();
@@ -475,11 +495,9 @@ describe('FileManagerPage', () => {
         expect(screen.getByText('Benchy')).toBeInTheDocument();
       });
 
-      // Select a sliced file (benchy.gcode.3mf) by clicking on its card
-      const fileCard = screen.getByText('Benchy').closest('div[class*="cursor-pointer"]');
-      if (fileCard) {
-        await user.click(fileCard);
-      }
+      // Select a sliced file (benchy.gcode.3mf) via its checkbox.
+      const card = screen.getByText('Benchy').closest('.group') as HTMLElement;
+      await user.click(within(card).getByLabelText('Select file'));
 
       await waitFor(() => {
         expect(screen.getByText(/Schedule/)).toBeInTheDocument();
