@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
-import { X, ExternalLink, Box, Code2, Loader2, Layers, Check, Maximize2, Minimize2 } from 'lucide-react';
+import { X, ExternalLink, Box, Code2, Cog, Loader2, Layers, Check, Maximize2, Minimize2 } from 'lucide-react';
 import { ModelViewer } from './ModelViewer';
 import { GcodeViewer } from './GcodeViewer';
 import { Button } from './Button';
@@ -22,6 +22,11 @@ interface ModelViewerModalProps {
    *  shows the geometry that was actually printed instead of dropping
    *  back to the "All Plates" pseudo-view. */
   archivePlateIndex?: number | null;
+  // When set and ``settings.use_slicer_api`` is on, the header's slicer button
+  // becomes "Slice" and calls this (in-app SliceModal) instead of launching
+  // BambuStudio / Orca externally — so the library preview's slice action
+  // matches the file-row Cog. Falls back to the external launcher otherwise.
+  onSliceWithBambuddy?: () => void;
   onClose: () => void;
 }
 
@@ -33,7 +38,7 @@ interface Capabilities {
   filament_colors: string[];
 }
 
-export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, archivePlateIndex, onClose }: ModelViewerModalProps) {
+export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, archivePlateIndex, onSliceWithBambuddy, onClose }: ModelViewerModalProps) {
   const { t } = useTranslation();
   const { mode: themeMode } = useTheme();
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
@@ -300,6 +305,13 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
 
   const canOpenInSlicer = isLibrary ? (fileType || '').toLowerCase() === '3mf' : true;
 
+  // With the in-app Slicer API enabled, route the header's slicer button into
+  // Bambuddy's own SliceModal (same as the file-row Cog) instead of launching
+  // an external slicer. Only for library previews of a sliceable source type,
+  // and only when the caller wired an in-app handler.
+  const sliceableType = ['3mf', 'stl', 'step', 'stp'].includes((fileType || '').toLowerCase());
+  const useBambuddySlicer = Boolean(isLibrary && settings?.use_slicer_api && onSliceWithBambuddy && sliceableType);
+
   const handleOpenInSlicer = async () => {
     if (!canOpenInSlicer) return;
     const filename = title || 'model';
@@ -347,10 +359,17 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
             )}
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="secondary" size="sm" onClick={handleOpenInSlicer} disabled={!canOpenInSlicer}>
-              <ExternalLink className="w-4 h-4" />
-              {t('modelViewer.openInSlicer')}
-            </Button>
+            {useBambuddySlicer ? (
+              <Button variant="secondary" size="sm" onClick={onSliceWithBambuddy}>
+                <Cog className="w-4 h-4" />
+                {t('slice.action')}
+              </Button>
+            ) : (
+              <Button variant="secondary" size="sm" onClick={handleOpenInSlicer} disabled={!canOpenInSlicer}>
+                <ExternalLink className="w-4 h-4" />
+                {t('modelViewer.openInSlicer')}
+              </Button>
+            )}
             <Button
               variant="secondary"
               size="sm"
