@@ -3598,12 +3598,14 @@ class TestStartPrintAmsMapping:
         # When no_ams_printer fires, ams_mapping2 is omitted entirely.
         assert "ams_mapping2" not in cmd
 
-    def test_h2s_keeps_integer_format_for_calibration_fields(self, mqtt_client):
-        """H2S still belongs to the H-family for firmware-format purposes.
+    def test_h2s_uses_boolean_format_for_calibration_fields(self, mqtt_client):
+        """H2S sends calibration fields as JSON booleans (#1478).
 
-        The calibration / leveling fields must be ints (0/1) — not booleans
-        — even though H2S is single-nozzle. This is the firmware-format
-        gate that B.4 explicitly KEEPS for H2S.
+        The H2S was previously integer-encoded as part of the H2 family. That
+        made it accept the print command but silently skip flow-dynamics
+        calibration — poor corner quality from a stale K value. BambuStudio
+        sends booleans for these fields and pairs flow_cali with
+        extrude_cali_flag=1 to actually run the calibration pass.
         """
         mqtt_client.model = "H2S"
         mqtt_client.start_print(
@@ -3616,13 +3618,15 @@ class TestStartPrintAmsMapping:
         )
 
         cmd = self._get_published_command(mqtt_client)
-        assert cmd["timelapse"] == 1
-        assert cmd["bed_leveling"] == 1
-        assert cmd["flow_cali"] == 1
-        assert cmd["layer_inspect"] == 1
-        assert cmd["vibration_cali"] == 0  # int, not False
-        # use_ams stays boolean across the whole H-family — that's the
-        # original H2D / X2D requirement and H2S inherits it.
+        assert cmd["timelapse"] is True
+        assert cmd["bed_leveling"] is True
+        assert cmd["flow_cali"] is True
+        assert cmd["layer_inspect"] is True
+        assert cmd["vibration_cali"] is False
+        # flow_cali on → extrude_cali_flag=1 so the printer runs the
+        # flow-dynamics calibration instead of reusing the stored PA value.
+        assert cmd["extrude_cali_flag"] == 1
+        # use_ams stays boolean across the whole H-family.
         assert cmd["use_ams"] is True
 
     def test_h2s_runtime_flag_overrides_model_fallback(self, mqtt_client):

@@ -233,5 +233,10 @@ def generate_stl_thumbnail(
         logger.warning("STL thumbnail generation unavailable (missing dependencies): %s", e)
         return None
     except Exception as e:
-        logger.warning("Failed to generate STL thumbnail for %s: %s", stl_path, e)
+        # Log the traceback, not just the message: a bare
+        # "unsupported operand type(s) for /: 'str' and 'str'" gives no clue
+        # which line failed, and the fault is data-/environment-specific
+        # enough that it can't be reproduced from a clean STL — the traceback
+        # in the next support bundle is what pinpoints it (#1480).
+        logger.warning("Failed to generate STL thumbnail for %s: %s", stl_path, e, exc_info=True)
         return None

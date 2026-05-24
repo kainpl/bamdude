@@ -1343,6 +1343,12 @@ class BambuMQTTClient:
                 logger.debug("[%s] Received command response: %s", self.serial_number, cmd)
                 if cmd in ("extrusion_cali_sel", "extrusion_cali_set", "extrusion_cali_del", "ams_filament_setting"):
                     logger.debug("[%s] %s response: %s", self.serial_number, cmd, print_data)
+                # AMS drying responses are rare (user-initiated only) and the
+                # full payload — including `result` and any `reason` code —
+                # is the only way to diagnose silent rejections like #1447.
+                # INFO level so the body lands in support bundles by default.
+                elif cmd == "ams_filament_drying":
+                    logger.info("[%s] ams_filament_drying response: %s", self.serial_number, print_data)
                 # Check for developer mode probe response
                 if (
                     cmd == "ams_filament_setting"
@@ -3904,19 +3910,17 @@ class BambuMQTTClient:
                         flat_ams_mapping.append(tray_id)
                         ams_mapping2.append({"ams_id": ams_id, "slot_id": slot_id})
 
-            # H-family printers (incl. H2S) require integer values (0/1) for
-            # calibration/leveling fields. Other printers (X1C, P1S, A1, etc.)
-            # require actual booleans. This gate is firmware-format only —
-            # H2S firmware structurally accepts the integer format even though
-            # it's single-nozzle, so it belongs here.
-            is_h_family = self.model and self.model.upper().strip() in (
-                "H2D",
-                "H2D PRO",
-                "H2DPRO",
-                "H2C",
-                "H2S",
-                "X2D",
-            )
+            # Bambu print command format — matches Bambu Studio's format.
+            # The calibration/leveling fields (timelapse, bed_leveling,
+            # flow_cali, vibration_cali, layer_inspect) are JSON booleans for
+            # every model. An earlier revision integer-encoded them for the H2
+            # family (H2D/H2S/H2C/X2D) on the belief that H2 firmware required
+            # 0/1 — but a BambuStudio request-topic capture from a real H2D
+            # sends plain booleans, and the integer encoding made the H2S
+            # silently skip flow-dynamics calibration (#1478). use_ams is the
+            # one field that genuinely must stay boolean: H2D Pro firmware
+            # reads an integer use_ams as a nozzle index (1 = deputy), which is
+            # what actually caused the wrong-extruder routing behind #1386.
             # Dual-nozzle gating for AMS-routing / use_ams branches. EXCLUDES
             # H2S (single-nozzle). Source-of-truth is the runtime
             # ``_is_dual_nozzle`` flag set from device.extruder.info (>=2
@@ -3974,19 +3978,25 @@ class BambuMQTTClient:
                     "file": filename,
                     "md5": "",
                     "bed_type": "auto",
-                    "timelapse": (1 if timelapse else 0) if is_h_family else timelapse,
-                    "bed_leveling": (1 if bed_levelling else 0) if is_h_family else bed_levelling,
+                    "timelapse": timelapse,
+                    "bed_leveling": bed_levelling,
                     "auto_bed_leveling": 1 if bed_levelling else 0,
-                    "flow_cali": (1 if flow_cali else 0) if is_h_family else flow_cali,
+                    "flow_cali": flow_cali,
                     # Hardcoded off — upstream Bambu Studio does the same for
                     # every model. Kept in the payload only because older
                     # firmware versions reject the command if the key is
-                    # missing.
-                    "vibration_cali": 0 if is_h_family else False,
-                    "layer_inspect": (1 if layer_inspect else 0) if is_h_family else layer_inspect,
+                    # missing. (BamDude decision — per-print vibration cali is
+                    # the standalone wizard's job; see method docstring.)
+                    "vibration_cali": False,
+                    "layer_inspect": layer_inspect,
                     "use_ams": use_ams,
                     "cfg": "0",
-                    "extrude_cali_flag": 0,
+                    # extrude_cali_flag gates flow-dynamics calibration:
+                    # 1 = run it, 2 = skip and reuse the stored PA value.
+                    # BambuStudio always pairs this with flow_cali and never
+                    # sends 0; a hardcoded 0 made the printer skip calibration
+                    # regardless of the flow_cali toggle (#1478).
+                    "extrude_cali_flag": 1 if flow_cali else 2,
                     "extrude_cali_manual_mode": 0,
                     "nozzle_offset_cali": 2,
                     "subtask_name": filename.replace(".3mf", "").replace(".gcode", ""),
@@ -3996,12 +4006,6 @@ class BambuMQTTClient:
                     "task_id": submission_id,
                 }
             }
-
-            if is_h_family:
-                logger.debug(
-                    "[%s] H-family detected: using integer format for calibration fields (use_ams stays boolean)",
-                    self.serial_number,
-                )
 
             # Add AMS mapping if provided
             if ams_mapping is not None:
@@ -4468,14 +4472,17 @@ class BambuMQTTClient:
                 "close_power_conflict": False,
             }
         }
-        self._client.publish(self.topic_publish, json.dumps(command), qos=1)
+        # Log the full wire JSON at INFO so support bundles capture exactly
+        # what we sent — needed to diagnose silent rejections (#1447) where
+        # the printer ACKs the command but never starts/stops drying.
+        # Paired with the ams_filament_drying response-payload INFO log so
+        # both halves of the conversation land in the bundle by default.
+        wire_json = json.dumps(command)
+        self._client.publish(self.topic_publish, wire_json, qos=1)
         logger.info(
-            "[%s] Sent drying command: ams_id=%d, temp=%d, duration=%d, mode=%d",
+            "[%s] Sent ams_filament_drying: %s",
             self.serial_number,
-            ams_id,
-            temp,
-            duration,
-            mode,
+            wire_json,
         )
         return True
 

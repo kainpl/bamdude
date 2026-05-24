@@ -113,6 +113,14 @@ import { getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoo
 import { getPrinterImage, getWifiStrength, hasDoorSensor, mapModelCode } from '../utils/printer';
 import { formatPrintName } from '../utils/printName';
 import { compareFwVersions } from '../utils/firmwareVersion';
+import { computePopoverPosition } from '../utils/popoverPosition';
+
+// AMS drying popover dimensions — w-[240px] on the popover, estimated height
+// covers header + filament select + temp slider + duration + rotate-tray
+// toggle + buttons. Over-estimating is fine (flip-above kicks in slightly
+// earlier); under-estimating leaves the popover clipped off the bottom (#1447).
+const DRYING_POPOVER_WIDTH = 240;
+const DRYING_POPOVER_ESTIMATED_HEIGHT = 320;
 import { FilamentSlotCircle } from '../components/FilamentSlotCircle';
 import { getColorName, parseFilamentColor, isLightColor } from '../utils/colors';
 import { formatSpoolDisplayName, DEFAULT_SPOOL_DISPLAY_TEMPLATE } from '../utils/spoolName';
@@ -3629,7 +3637,7 @@ function PrinterCard({
                                           setDryingPopoverModuleType(ams.module_type);
                                           setDryingPopoverAmsId(ams.id);
                                           const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                                          setDryingPopoverPos({ top: rect.bottom + 4, left: Math.max(8, rect.right - 240) });
+                                          setDryingPopoverPos(computePopoverPosition({ triggerRect: rect, popoverWidth: DRYING_POPOVER_WIDTH, estimatedHeight: DRYING_POPOVER_ESTIMATED_HEIGHT }));
                                         }
                                       }}
                                       className={`flex items-center gap-0.5 px-1 py-0.5 rounded text-[9px] transition-colors ${
@@ -4142,7 +4150,7 @@ function PrinterCard({
                                         setDryingPopoverModuleType(ams.module_type);
                                         setDryingPopoverAmsId(ams.id);
                                         const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                                        setDryingPopoverPos({ top: rect.bottom + 4, left: Math.max(8, rect.right - 240) });
+                                        setDryingPopoverPos(computePopoverPosition({ triggerRect: rect, popoverWidth: DRYING_POPOVER_WIDTH, estimatedHeight: DRYING_POPOVER_ESTIMATED_HEIGHT }));
                                       }
                                     }}
                                     className={`flex items-center gap-0.5 px-1 py-0.5 rounded text-[9px] transition-colors ${
@@ -5553,17 +5561,27 @@ function PrinterCard({
             <div className="fixed inset-0 z-[100]" onClick={() => setDryingPopoverAmsId(null)} />
             {/* Popover */}
             <div
-              className="fixed z-[101] w-[240px] bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl shadow-2xl overflow-hidden"
-              style={{ top: dryingPopoverPos.top, left: dryingPopoverPos.left }}
+              className="fixed z-[101] flex flex-col w-[240px] bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl shadow-2xl overflow-hidden"
+              style={{
+                top: dryingPopoverPos.top,
+                left: dryingPopoverPos.left,
+                // Cap to the space between the popover's top and the bottom
+                // viewport margin (8px, matching computePopoverPosition's
+                // margin). When the popover is taller than that space — short
+                // viewport, landscape phone, zoomed-in — the body scrolls and
+                // the footer stays pinned, so the Start button is always
+                // reachable (#1458 / #1447 follow-up).
+                maxHeight: `calc(100vh - ${dryingPopoverPos.top}px - 8px)`,
+              }}
               onClick={e => e.stopPropagation()}
             >
               {/* Header */}
-              <div className="flex items-center gap-2 px-3 py-2.5 border-b border-bambu-dark-tertiary">
+              <div className="shrink-0 flex items-center gap-2 px-3 py-2.5 border-b border-bambu-dark-tertiary">
                 <Flame className="w-3.5 h-3.5 text-amber-400" />
                 <span className="text-xs text-white font-medium">{t('printers.drying.start')}</span>
               </div>
               {/* Body */}
-              <div className="px-3 py-2.5 space-y-2.5">
+              <div className="px-3 py-2.5 space-y-2.5 overflow-y-auto min-h-0">
                 {/* Filament type select */}
                 <div>
                   <label className="text-[10px] text-bambu-gray mb-1 block">{t('printers.filaments')}</label>
@@ -5656,7 +5674,7 @@ function PrinterCard({
                 </label>
               </div>
               {/* Footer */}
-              <div className="px-3 pb-3">
+              <div className="shrink-0 px-3 pt-2.5 pb-3">
                 <button
                   onClick={() => {
                     if (dryingPopoverAmsId !== null) {
