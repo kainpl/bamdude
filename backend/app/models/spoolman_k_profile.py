@@ -8,7 +8,7 @@ backend. Actual K data lives on :class:`FilamentCalibration`.
 
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, UniqueConstraint, func
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
@@ -29,6 +29,8 @@ class SpoolmanKProfile(Base):
     filament_calibration_id: Mapped[int] = mapped_column(
         ForeignKey("filament_calibration.id", ondelete="CASCADE"), nullable=False
     )
+    # True when created by the auto-link engine (mirror of SpoolKProfile).
+    auto_linked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     printer: Mapped["Printer"] = relationship()  # noqa: F821

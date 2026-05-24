@@ -22,6 +22,9 @@ class SpoolBase(BaseModel):
     weight_used_baseline: float = 0
     slicer_filament: str | None = None
     slicer_filament_name: str | None = None
+    # Normalized GF-form filament_id for K-profile / colour matching
+    # (base-resolved for custom presets). Set by the spool form at save time.
+    resolved_filament_id: str | None = Field(default=None, max_length=50)
     nozzle_temp_min: int | None = None
     nozzle_temp_max: int | None = None
     note: str | None = None
@@ -78,6 +81,7 @@ class SpoolUpdate(BaseModel):
     weight_used_baseline: float | None = None  # PATCH-able for "Reset usage to 0" parity (#1390)
     slicer_filament: str | None = None
     slicer_filament_name: str | None = None
+    resolved_filament_id: str | None = Field(default=None, max_length=50)
     nozzle_temp_min: int | None = None
     nozzle_temp_max: int | None = None
     note: str | None = None
@@ -132,6 +136,7 @@ class SpoolKProfileResponse(BaseModel):
     name: str | None = None
     cali_idx: int | None = None
     setting_id: str | None = None
+    auto_linked: bool = False
     created_at: datetime
 
     class Config:
@@ -154,6 +159,7 @@ class SpoolKProfileResponse(BaseModel):
             "spool_id": getattr(data, "spool_id", None) or getattr(data, "spoolman_spool_id", None),
             "printer_id": getattr(data, "printer_id", None),
             "extruder": getattr(data, "extruder", 0),
+            "auto_linked": getattr(data, "auto_linked", False),
             "created_at": getattr(data, "created_at", None),
             "nozzle_diameter": str(fc.nozzle_diameter) if fc.nozzle_diameter is not None else "0.4",
             "nozzle_type": fc.nozzle_volume_type,

@@ -12,7 +12,7 @@ are disambiguated by joining through ``filament_calibration.nozzle_diameter``.
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
@@ -28,6 +28,10 @@ class SpoolKProfile(Base):
     filament_calibration_id: Mapped[int] = mapped_column(
         ForeignKey("filament_calibration.id", ondelete="CASCADE"), nullable=False
     )
+    # True when this link was created by the auto-link engine
+    # (services/kprofile_autolink.py). Manual links from the PA tab are
+    # False and the engine never touches them ("B-simple" rule).
+    auto_linked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     spool: Mapped["Spool"] = relationship(back_populates="k_profiles")
