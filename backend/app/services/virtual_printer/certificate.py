@@ -330,6 +330,28 @@ class CertificateService:
         logger.info("  Printer: CN=%s", self.serial)
         return self.cert_path, self.key_path
 
+    def get_ca_certificate_info(self) -> dict:
+        """Return the shared CA certificate as PEM text plus identifying metadata.
+
+        Generates the CA if it does not exist yet. Safe to expose over the
+        API: this is the *public* CA certificate users import into their
+        slicer's trust store. The CA private key (``bbl_ca.key``) is never
+        included and never leaves the backend.
+
+        Returns:
+            Dict with ``pem`` (PEM-encoded certificate), ``fingerprint_sha256``
+            (colon-separated uppercase hex) and ``not_valid_after`` (ISO 8601).
+        """
+        _ca_key, ca_cert = self._get_or_create_ca()
+        pem = ca_cert.public_bytes(serialization.Encoding.PEM).decode("ascii")
+        digest = ca_cert.fingerprint(hashes.SHA256()).hex().upper()
+        fingerprint = ":".join(digest[i : i + 2] for i in range(0, len(digest), 2))
+        return {
+            "pem": pem,
+            "fingerprint_sha256": fingerprint,
+            "not_valid_after": ca_cert.not_valid_after_utc.isoformat(),
+        }
+
     def delete_printer_certificate(self) -> None:
         """Delete only the printer certificate (preserves CA)."""
         for path in [self.cert_path, self.key_path]:

@@ -1234,6 +1234,18 @@ class VirtualPrinterManager:
         """Inject the global ``printer_manager`` so non-proxy VPs can mirror their target's MQTT stream."""
         self._printer_manager = printer_manager
 
+    def get_ca_certificate_info(self) -> dict:
+        """Return the shared virtual-printer CA certificate for slicer-trust import.
+
+        The CA is shared by every VP (one import covers all of them). It is
+        generated on demand here if no VP has triggered cert generation yet,
+        so the "copy/download certificate" UI works even before the first VP
+        is enabled.
+        """
+        certs_dir = self._base_dir / "certs"
+        cert_service = CertificateService(cert_dir=certs_dir, shared_ca_dir=certs_dir)
+        return cert_service.get_ca_certificate_info()
+
     @property
     def is_enabled(self) -> bool:
         """Check if any virtual printer is running."""

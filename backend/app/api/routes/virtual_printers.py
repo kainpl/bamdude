@@ -10,6 +10,7 @@ from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.user import User
+from backend.app.schemas.virtual_printer import VPDiagnosticResult
 
 logger = logging.getLogger(__name__)
 
@@ -287,6 +288,49 @@ async def create_virtual_printer(
             logger.error("Failed to start virtual printer after create: %s", e)
 
     return _vp_to_dict(vp)
+
+
+@router.get("/ca-certificate")
+async def get_ca_certificate(
+    _: User | None = RequirePermission(Permission.SETTINGS_READ),
+):
+    """Return the shared virtual-printer CA certificate (PEM) for slicer trust import.
+
+    One CA is shared by every virtual printer — the user imports it into their
+    slicer's trust store once. Only the public certificate is returned; the CA
+    private key never leaves the backend.
+    """
+    from backend.app.services.virtual_printer import virtual_printer_manager
+
+    try:
+        return virtual_printer_manager.get_ca_certificate_info()
+    except Exception as e:
+        logger.error("Failed to obtain virtual printer CA certificate: %s", e)
+        return JSONResponse(status_code=500, content={"detail": "Could not generate the CA certificate"})
+
+
+@router.get("/{vp_id}/diagnostic", response_model=VPDiagnosticResult)
+async def diagnose_virtual_printer(
+    vp_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.SETTINGS_READ),
+):
+    """Run setup diagnostics for a virtual printer.
+
+    Probes the VP's own bind IP and services so the user can self-diagnose the
+    common "my virtual printer doesn't show up in the slicer" failures.
+    """
+    from backend.app.models.virtual_printer import VirtualPrinter
+    from backend.app.services.virtual_printer import virtual_printer_manager
+    from backend.app.services.virtual_printer.diagnostic import run_vp_diagnostic
+
+    result = await db.execute(select(VirtualPrinter).where(VirtualPrinter.id == vp_id))
+    vp = result.scalar_one_or_none()
+    if not vp:
+        return JSONResponse(status_code=404, content={"detail": "Virtual printer not found"})
+
+    instance = virtual_printer_manager.get_instance(vp.id)
+    return await run_vp_diagnostic(vp, instance)
 
 
 @router.get("/{vp_id}")

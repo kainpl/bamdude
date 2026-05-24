@@ -4971,8 +4971,68 @@ export default {
   },
 
   // Virtual Printer
+  vpDiagnostic: {
+    title: 'Setup check — {{name}}',
+    runButton: 'Run setup check',
+    running: 'Running setup check...',
+    runFailed: 'Could not run the setup check: {{error}}',
+    retry: 'Run again',
+    overall: {
+      ok: 'All checks passed — this virtual printer is set up correctly.',
+      warnings: 'The virtual printer should work, but some things need attention.',
+      problems: 'Found problems that explain why the slicer can\'t see or use this virtual printer.',
+    },
+    check: {
+      enabled: {
+        title: 'Virtual printer enabled',
+        fail: 'This virtual printer is switched off. Toggle it on to make it discoverable.',
+      },
+      running: {
+        title: 'Services running',
+        fail: 'The virtual printer is enabled but its services are not running. Check the BamDude log — a bind IP conflict or a permission error usually stops them.',
+      },
+      bind_interface: {
+        title: 'Bind network interface',
+        fail: 'The bind interface is not set, or no longer exists on this host. Pick a current interface in the Bind Interface dropdown.',
+      },
+      access_code: {
+        title: 'Access code set',
+        fail: 'No access code is set. The slicer must be given the same 8-character access code you set here.',
+      },
+      target_printer: {
+        title: 'Target printer',
+        fail: 'No target printer is selected. Proxy mode needs a real printer to forward to.',
+        warn: 'The target printer is offline right now — proxying will resume once it reconnects.',
+      },
+      port_ftps: {
+        title: 'File-upload service (port {{port}})',
+        fail: 'Nothing is listening on port {{port}} of the bind IP, so the slicer cannot upload files. A port conflict on this interface is the usual cause.',
+      },
+      port_mqtt: {
+        title: 'Control service (port {{port}})',
+        fail: 'Nothing is listening on port {{port}} of the bind IP, so the slicer cannot connect or show status.',
+      },
+      port_bind: {
+        title: 'Discovery service (port {{port}})',
+        fail: 'Nothing is listening on port {{port}} of the bind IP, so the slicer\'s discovery handshake fails.',
+      },
+      certificate: {
+        title: 'TLS certificate',
+        pass: 'Certificate ready. Make sure the BamDude CA certificate (above) is imported into your slicer\'s trust store.',
+        fail: 'The TLS certificate for this virtual printer is missing. Check that the BamDude data directory is writable.',
+      },
+    },
+  },
   virtualPrinter: {
     title: 'Virtual Printer',
+    caCert: {
+      title: 'Slicer certificate',
+      description: 'Virtual printers use a TLS certificate signed by the BamDude CA. Import this CA certificate into your slicer\'s trust store once so it accepts the connection — no need to copy it from the command line.',
+      copy: 'Copy',
+      copied: 'Copied',
+      download: 'Download',
+      fingerprint: 'SHA-256',
+    },
     running: 'Running',
     stopped: 'Stopped',
     description: {
