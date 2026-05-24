@@ -406,6 +406,16 @@ async def update_spoolman_settings(
 
             result = await db.execute(delete(SpoolAssignment))
             logger.info("Cleared %d spool assignments on switch to Spoolman mode", result.rowcount)
+        # Switching back to internal mode: clear Spoolman slot assignments — the
+        # symmetric counterpart of the clear above. Without this, stale
+        # spoolman_slot_assignments rows linger and would wrongly count as
+        # "assigned" in any mode-agnostic check (e.g. the missing-spool-
+        # assignment notification, which unions both tables — #1473).
+        elif old_val.lower() == "true" and new_val.lower() != "true":
+            from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
+
+            result = await db.execute(delete(SpoolmanSlotAssignment))
+            logger.info("Cleared %d Spoolman slot assignments on switch to internal mode", result.rowcount)
     if "spoolman_url" in settings:
         await set_setting(db, "spoolman_url", settings["spoolman_url"])
     if "spoolman_sync_mode" in settings:
