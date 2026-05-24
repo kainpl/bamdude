@@ -392,6 +392,7 @@ class SlicerApiService:
         filament_profile_jsons: list[str],
         plate: int | None = None,
         export_3mf: bool = False,
+        arrange: bool = False,
         bed_type: str | None = None,
         request_id: str | None = None,
         on_progress: Callable[[dict], None] | None = None,
@@ -443,6 +444,11 @@ class SlicerApiService:
             data["plate"] = str(plate)
         if export_3mf:
             data["exportType"] = "3mf"
+        if arrange:
+            # Sidecar reads truthy strings as True; cross-nozzle-class re-slices
+            # (#1493) need --arrange so BS repositions objects for the target
+            # bed instead of inheriting the source printer's coordinate layout.
+            data["arrange"] = "true"
         if bed_type is not None:
             # Sidecar's ``SlicingSettings.bedType`` → ``--curr-bed-type`` CLI
             # arg. Empty string falls back to slicer-internal default, so we
@@ -513,6 +519,7 @@ class SlicerApiService:
         filament_names: list[str],
         plate: int | None = None,
         export_3mf: bool = False,
+        arrange: bool = False,
         request_id: str | None = None,
         on_progress: Callable[[dict], None] | None = None,
     ) -> SliceResult:
@@ -554,6 +561,10 @@ class SlicerApiService:
             data["plate"] = str(plate)
         if export_3mf:
             data["exportType"] = "3mf"
+        if arrange:
+            # See slice_with_profiles: cross-class re-slices (#1493) need
+            # --arrange so BS repositions objects for the target bed.
+            data["arrange"] = "true"
         if request_id is not None:
             data["requestId"] = request_id
 
