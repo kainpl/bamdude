@@ -264,6 +264,45 @@ def extract_filament_properties_from_3mf(file_path: Path) -> dict[int, dict]:
     return properties
 
 
+def _first_settings_id(value: object) -> str | None:
+    """A ``*_settings_id`` value is usually a string, occasionally a list (one
+    entry per extruder). Return the first non-empty string, else None."""
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, list):
+        for item in value:
+            if isinstance(item, str) and item.strip():
+                return item.strip()
+    return None
+
+
+def extract_embedded_presets_from_3mf(zf: zipfile.ZipFile) -> dict[str, str | None]:
+    """Read the printer / process preset names a 3MF project was prepared with.
+
+    BambuStudio / OrcaSlicer write the chosen preset names into
+    ``Metadata/project_settings.config`` (``printer_settings_id`` and
+    ``print_settings_id``). The SliceModal uses them to default its printer
+    and process dropdowns to what the file was sliced for (#1325) instead of
+    blindly taking the first listed preset.
+
+    Returns ``{"printer": <name|None>, "process": <name|None>}``. Every failure
+    mode (missing config, malformed JSON, unexpected shape) yields ``None``
+    values so the modal falls back to its own defaults.
+    """
+    result: dict[str, str | None] = {"printer": None, "process": None}
+    try:
+        if "Metadata/project_settings.config" not in zf.namelist():
+            return result
+        data = json.loads(zf.read("Metadata/project_settings.config").decode())
+    except (KeyError, ValueError, OSError):
+        return result
+    if not isinstance(data, dict):
+        return result
+    result["printer"] = _first_settings_id(data.get("printer_settings_id"))
+    result["process"] = _first_settings_id(data.get("print_settings_id"))
+    return result
+
+
 def extract_nozzle_mapping_from_3mf(zf: zipfile.ZipFile) -> dict[int, int] | None:
     """Extract per-slot nozzle/extruder mapping from a 3MF file.
 

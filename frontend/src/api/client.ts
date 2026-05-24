@@ -1724,6 +1724,13 @@ export interface UnifiedPreset {
   // Populated for local-preset filament entries; ``null`` for cloud /
   // standard (the listing doesn't resolve the full JSON for those).
   filament_flow_ratio?: number | null;
+  // The slicer's own compatible_printers list (process / filament slots),
+  // populated for the local tier. The SliceModal + calibration matcher
+  // (slicerPrinterMatch) uses it as the authoritative compatibility signal
+  // against the selected printer; null on cloud / standard stubs, where the
+  // matcher falls back to bundle membership then the `@BBL <model> <nozzle>`
+  // name convention (#1325).
+  compatible_printers?: string[] | null;
 }
 
 export interface UnifiedPresetsBySlot {
@@ -6878,6 +6885,13 @@ export const api = {
   // routes/slicer_presets.py for the priority + dedup rules.
   getSlicerPresets: () =>
     request<UnifiedPresetsResponse>('/slicer/presets'),
+  // Canonical Bambu printer-model registry (long "Bambu Lab <model>" name →
+  // normalized short code used in `@BBL <code>` cloud-preset filenames). The
+  // slicerPrinterMatch classifier uses it to match cloud / standard presets
+  // against the selected printer when no bundle covers them (#1325). Static
+  // reference data — safe to cache aggressively.
+  getPrinterModels: () =>
+    request<Record<string, string>>('/slicer/printer-models'),
   // Resolve one filament preset's flow-rate-relevant metadata on demand.
   // The unified listing exposes filament_flow_ratio only for local presets
   // (cloud / standard listings are thin); the Flow Rate verify-download

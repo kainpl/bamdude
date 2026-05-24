@@ -3011,6 +3011,7 @@ export default {
     notUsedByPlate: '- не використовується цією платою',
     selectPreset: '- Виберіть пресет -',
     noPresetsForSlot: 'Немає доступних пресетів',
+    otherPrinters: 'Інші принтери',
     allPresetsRequired: 'Потрібно вибрати всі пресети',
     bundle: 'Слайсерний бандл',
     bundleNone: '- Немає (обирай пресети окремо) -',

@@ -36,6 +36,7 @@ from backend.app.services.archive import ArchiveService, resolve_display_stem
 from backend.app.services.threemf_capabilities import extract_3mf_capabilities
 from backend.app.utils.http import build_content_disposition
 from backend.app.utils.threemf_tools import (
+    extract_embedded_presets_from_3mf,
     extract_nozzle_mapping_from_3mf,
     extract_project_filaments_from_3mf,
 )
@@ -2820,6 +2821,18 @@ async def get_archive_plates(
     if not file_path.is_file():
         raise HTTPException(404, "Archive file not found")
 
+    # Printer / process preset names the 3MF was prepared with — used by the
+    # SliceModal to default its dropdowns (#1325). A single cheap read of
+    # Metadata/project_settings.config; failures yield None so the modal falls
+    # back to its own defaults. Done outside the fast/slow plate split so both
+    # return paths carry it.
+    embedded_presets: dict[str, str | None] = {"printer": None, "process": None}
+    try:
+        with zipfile.ZipFile(file_path, "r") as zf:
+            embedded_presets = extract_embedded_presets_from_3mf(zf)
+    except Exception:
+        pass
+
     # Fast path: read pre-computed plates from the archive's JSON metadata
     # (populated at archive_print() / attach_3mf_to_archive() + by m023
     # backfill). No ZIP open.
@@ -2849,6 +2862,8 @@ async def get_archive_plates(
             "plates": plates,
             "is_multi_plate": len(plates) > 1,
             "has_gcode": has_gcode,
+            "embedded_printer": embedded_presets["printer"],
+            "embedded_process": embedded_presets["process"],
         }
 
     # Slow path: open ZIP + parse. Used for archives created before m023 ran.
@@ -2881,6 +2896,8 @@ async def get_archive_plates(
         "plates": plates,
         "is_multi_plate": len(plates) > 1,
         "has_gcode": has_gcode,
+        "embedded_printer": embedded_presets["printer"],
+        "embedded_process": embedded_presets["process"],
     }
 
 

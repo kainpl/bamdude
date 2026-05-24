@@ -49,6 +49,14 @@ export interface ArchivePlatesResponse {
   // backwards compatibility with cached responses from before the field
   // was added.
   has_gcode?: boolean;
+  // Printer / process preset names the 3MF was prepared with (read from
+  // Metadata/project_settings.config). The SliceModal defaults its printer +
+  // process dropdowns to these when the matching presets exist in the listing,
+  // instead of blindly taking the first preset (#1325). Optional / nullable:
+  // absent on cached responses from before the fields were added, null when
+  // the 3MF carries no embedded preset ids.
+  embedded_printer?: string | null;
+  embedded_process?: string | null;
 }
 
 export interface LibraryFilePlatesResponse {
@@ -56,6 +64,9 @@ export interface LibraryFilePlatesResponse {
   filename: string;
   plates: PlateMetadata[];
   is_multi_plate: boolean;
+  // See ArchivePlatesResponse.embedded_printer / embedded_process (#1325).
+  embedded_printer?: string | null;
+  embedded_process?: string | null;
 }
 
 export interface ViewerPlateSelectionState {

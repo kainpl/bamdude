@@ -2995,6 +2995,7 @@ export default {
     notUsedByPlate: '- not used by this plate',
     selectPreset: '- Select a preset -',
     noPresetsForSlot: 'No presets available',
+    otherPrinters: 'Other printers',
     allPresetsRequired: 'All presets must be selected',
     bundle: 'Slicer bundle',
     bundleNone: '- None (pick presets individually) -',

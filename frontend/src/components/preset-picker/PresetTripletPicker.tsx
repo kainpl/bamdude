@@ -16,6 +16,11 @@ import {
   matchesOwnerFilter,
   toRefValue,
 } from './presetPickerUtils';
+import {
+  EMPTY_COMPATIBILITY_INDEX,
+  presetCompatibility,
+  type PrinterCompatibilityIndex,
+} from '../../utils/slicerPrinterMatch';
 
 interface PresetDropdownProps {
   label: string;
@@ -30,6 +35,14 @@ interface PresetDropdownProps {
   // 'custom' keeps user-imported + user-cloud, 'builtin' keeps standard
   // + bundled cloud presets. Empty tiers collapse out.
   ownerFilter?: OwnerFilter;
+  // Selected printer context (#1325). When provided for a process / filament
+  // slot, presets that resolve to a *different* printer (per uploaded Slicer
+  // Bundles + the @BBL name registry in compatIndex) move into a trailing
+  // "Other printers" group instead of the main tier list. Compatibility-
+  // unknown presets stay in their tier, so a custom / untagged preset is
+  // never hidden. Omitted (or printer slot) ⇒ no compatibility partition.
+  selectedPrinterName?: string | null;
+  compatIndex?: PrinterCompatibilityIndex;
 }
 
 /** Cloud/local/standard preset dropdown with optgroup tiers. */
@@ -42,26 +55,57 @@ export function PresetDropdown({
   disabled,
   swatchColor,
   ownerFilter = 'all',
+  selectedPrinterName,
+  compatIndex,
 }: PresetDropdownProps) {
   const { t } = useTranslation();
 
-  const sections: { tierLabel: string; entries: UnifiedPreset[] }[] = useMemo(() => {
+  // Tier sections (imported → cloud → standard) after the owner filter, plus
+  // — for a process / filament slot with a selected printer — a trailing
+  // group of presets that resolve to a different printer (#1325). Empty
+  // sections collapse out.
+  const { sections, otherEntries } = useMemo(() => {
     const tiers: { key: keyof UnifiedPresetsResponse; label: string; fallback: string }[] = [
       { key: 'local', label: 'slice.tier.local', fallback: 'Imported' },
       { key: 'cloud', label: 'slice.tier.cloud', fallback: 'Cloud' },
       { key: 'standard', label: 'slice.tier.standard', fallback: 'Standard' },
     ];
-    return tiers
-      .map(({ key, label: lk, fallback }) => ({
-        tierLabel: t(lk, fallback),
-        entries: (data[key] as UnifiedPresetsBySlot)[slot].filter((p) =>
-          matchesOwnerFilter(p, ownerFilter),
-        ),
-      }))
-      .filter((s) => s.entries.length > 0);
-  }, [data, slot, t, ownerFilter]);
+    const filterByPrinter = slot !== 'printer';
+    const compatSections: { tierLabel: string; entries: UnifiedPreset[] }[] = [];
+    const other: UnifiedPreset[] = [];
+    for (const { key, label: lk, fallback } of tiers) {
+      const entries = (data[key] as UnifiedPresetsBySlot)[slot].filter((p) =>
+        matchesOwnerFilter(p, ownerFilter),
+      );
+      if (!filterByPrinter) {
+        if (entries.length > 0) compatSections.push({ tierLabel: t(lk, fallback), entries });
+        continue;
+      }
+      const compatible: UnifiedPreset[] = [];
+      for (const p of entries) {
+        if (
+          presetCompatibility(
+            p,
+            // filterByPrinter is true here, so slot is never 'printer'.
+            slot as 'process' | 'filament',
+            selectedPrinterName ?? null,
+            compatIndex ?? EMPTY_COMPATIBILITY_INDEX,
+          ) === 'mismatch'
+        ) {
+          other.push(p);
+        } else {
+          compatible.push(p);
+        }
+      }
+      if (compatible.length > 0) {
+        compatSections.push({ tierLabel: t(lk, fallback), entries: compatible });
+      }
+    }
+    return { sections: compatSections, otherEntries: other };
+  }, [data, slot, t, ownerFilter, selectedPrinterName, compatIndex]);
 
-  const totalEntries = sections.reduce((sum, s) => sum + s.entries.length, 0);
+  const totalEntries =
+    sections.reduce((sum, s) => sum + s.entries.length, 0) + otherEntries.length;
 
   return (
     <label className="block">
@@ -95,6 +139,15 @@ export function PresetDropdown({
             ))}
           </optgroup>
         ))}
+        {otherEntries.length > 0 && (
+          <optgroup label={t('slice.otherPrinters', 'Other printers')}>
+            {otherEntries.map((p) => (
+              <option key={`${p.source}:${p.id}`} value={`${p.source}:${p.id}`}>
+                {p.name}
+              </option>
+            ))}
+          </optgroup>
+        )}
       </select>
     </label>
   );

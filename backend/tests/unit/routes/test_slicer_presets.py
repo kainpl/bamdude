@@ -11,7 +11,9 @@ import pytest
 from backend.app.api.routes.slicer_presets import (
     _dedupe_by_name,
     _empty_slots,
+    _parse_compatible_printers,
     _parse_filament_metadata,
+    list_printer_models,
 )
 from backend.app.schemas.slicer_presets import UnifiedPreset
 
@@ -129,3 +131,58 @@ class TestFilamentMetadataParse:
     def test_none_returns_none(self):
         out = _parse_filament_metadata(None)
         assert out == (None, None)
+
+
+class TestParseCompatiblePrinters:
+    """``compatible_printers`` exposed for local process / filament presets so
+    the SliceModal can filter the dropdowns by the selected printer (#1325)."""
+
+    def test_parses_json_array(self):
+        raw = '["Bambu Lab X1 Carbon 0.4 nozzle", "Bambu Lab X1 0.4 nozzle"]'
+        assert _parse_compatible_printers(raw) == [
+            "Bambu Lab X1 Carbon 0.4 nozzle",
+            "Bambu Lab X1 0.4 nozzle",
+        ]
+
+    def test_none_and_empty_return_none(self):
+        assert _parse_compatible_printers(None) is None
+        assert _parse_compatible_printers("") is None
+        assert _parse_compatible_printers("[]") is None
+
+    def test_malformed_json_returns_none(self):
+        assert _parse_compatible_printers("not json") is None
+        # A JSON value that isn't an array is treated as absent, not an error.
+        assert _parse_compatible_printers('"a string"') is None
+
+    def test_drops_non_string_and_blank_entries(self):
+        assert _parse_compatible_printers('["X1C", 5, "", "  ", "A1"]') == [
+            "X1C",
+            "A1",
+        ]
+
+
+class TestListPrinterModels:
+    """``GET /slicer/printer-models`` exposes ``PRINTER_MODEL_MAP`` so the
+    frontend doesn't duplicate the Bambu model registry (#1325 follow-up)."""
+
+    def test_returns_canonical_printer_model_map(self):
+        from backend.app.utils.printer_models import PRINTER_MODEL_MAP
+
+        result = list_printer_models()
+        # Same shape - mapping from "Bambu Lab <model>" to short code.
+        assert result == PRINTER_MODEL_MAP
+        # Spot-check a few entries: the SliceModal name-fallback (#1325)
+        # specifically depends on these resolving.
+        assert result["Bambu Lab X1 Carbon"] == "X1C"
+        assert result["Bambu Lab P2S"] == "P2S"
+        assert result["Bambu Lab A1 mini"] == "A1 Mini"
+        assert result["Bambu Lab H2D Pro"] == "H2D Pro"
+
+    def test_returns_a_copy_not_the_module_dict(self):
+        # A response handler must never hand out the live module-level dict —
+        # accidental mutation by middleware / serialisers would silently
+        # corrupt the registry for every subsequent request.
+        from backend.app.utils.printer_models import PRINTER_MODEL_MAP
+
+        result = list_printer_models()
+        assert result is not PRINTER_MODEL_MAP

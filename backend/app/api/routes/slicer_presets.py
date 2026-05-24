@@ -46,6 +46,7 @@ from backend.app.services.slicer_api import (
     SlicerApiUnavailableError,
     SlicerInputError,
 )
+from backend.app.utils.printer_models import PRINTER_MODEL_MAP
 
 logger = logging.getLogger(__name__)
 
@@ -171,14 +172,36 @@ async def _fetch_local_presets(db: AsyncSession) -> dict[str, list[UnifiedPreset
         slot = type_to_slot.get(p.preset_type)
         if slot is None:
             continue
-        extra: dict[str, str | float | None] = {}
+        extra: dict[str, str | float | list[str] | None] = {}
         if slot == "filament":
             extra["filament_type"], extra["filament_colour"] = _parse_filament_metadata(p.setting)
             extra["filament_flow_ratio"] = _parse_filament_flow_ratio(p.setting)
+        if slot in ("process", "filament"):
+            # Precise compatibility link — the slicer's own compatible_printers
+            # list, captured at import time. Lets the SliceModal + calibration
+            # filter process / filament dropdowns by the selected printer
+            # without the name-suffix heuristic (#1325).
+            extra["compatible_printers"] = _parse_compatible_printers(p.compatible_printers)
         slots[slot].append(
             UnifiedPreset(id=str(p.id), name=p.name, source="local", **extra),
         )
     return slots
+
+
+def _parse_compatible_printers(raw: str | None) -> list[str] | None:
+    """``LocalPreset.compatible_printers`` stores a JSON array of printer-preset
+    names. Return the parsed list, or ``None`` on missing / malformed data so
+    the matcher falls back to its name-suffix heuristic for that preset."""
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, list):
+        return None
+    names = [s for s in data if isinstance(s, str) and s.strip()]
+    return names or None
 
 
 def _parse_filament_metadata(setting_json: str | None) -> tuple[str | None, str | None]:
@@ -349,6 +372,24 @@ def _dedupe_by_name(
             deduped_standard[slot].append(p)
             seen.add(p.name)
     return cloud, deduped_local, deduped_standard
+
+
+@router.get("/printer-models")
+def list_printer_models(
+    _: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD)),
+) -> dict[str, str]:
+    """Canonical Bambu printer-model registry, surfaced for the SliceModal.
+
+    Returns the backend's ``PRINTER_MODEL_MAP`` unmodified: keys are the long
+    "Bambu Lab <model>" form that appears in 3MF metadata and in slicer
+    printer-preset names, values are the normalized short codes used in
+    BambuStudio's ``@BBL <code>`` cloud-preset filenames. The frontend uses this
+    mapping to classify cloud / standard presets against the selected printer
+    when no slicer bundle has been uploaded that covers the preset (#1325) —
+    avoiding a second, manually-maintained model table on the frontend. Gated by
+    ``LIBRARY_UPLOAD`` like the presets listing — any user who can slice can read it.
+    """
+    return dict(PRINTER_MODEL_MAP)
 
 
 @router.get("/presets", response_model=UnifiedPresetsResponse)

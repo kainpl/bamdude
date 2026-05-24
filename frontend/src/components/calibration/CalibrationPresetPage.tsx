@@ -39,6 +39,11 @@ import {
 import { BedTypePicker } from '../preset-picker/BedTypePicker';
 import { SlicerPicker, type SlicerKind } from '../preset-picker/SlicerPicker';
 import { tempDefaultsForFilament } from '../../utils/calibrationTemp';
+import {
+  buildCompatibilityIndex,
+  presetCompatibility,
+  type PrinterCompatibilityIndex,
+} from '../../utils/slicerPrinterMatch';
 
 type PresetSource = 'manual' | 'bundle';
 
@@ -122,33 +127,6 @@ function matchesPrinterModel(presetName: string, model: string | null | undefine
   return false;
 }
 
-function filterPresetsByModel(
-  data: UnifiedPresetsResponse | undefined,
-  model: string | null | undefined,
-): UnifiedPresetsResponse | undefined {
-  if (!data || !model) return data;
-  const filterSlot = (entries: UnifiedPresetsResponse['cloud']['printer']) =>
-    entries.filter((p) => matchesPrinterModel(p.name, model));
-  return {
-    cloud: {
-      printer: filterSlot(data.cloud.printer),
-      process: filterSlot(data.cloud.process),
-      filament: filterSlot(data.cloud.filament),
-    },
-    local: {
-      printer: filterSlot(data.local.printer),
-      process: filterSlot(data.local.process),
-      filament: filterSlot(data.local.filament),
-    },
-    standard: {
-      printer: filterSlot(data.standard.printer),
-      process: filterSlot(data.standard.process),
-      filament: filterSlot(data.standard.filament),
-    },
-    cloud_status: data.cloud_status,
-  };
-}
-
 function filterBundlesByModel(bundles: SlicerBundle[], model: string | null | undefined): SlicerBundle[] {
   if (!model) return bundles;
   return bundles.filter(
@@ -217,26 +195,83 @@ export function CalibrationPresetPage({
     staleTime: 60_000,
     enabled: needsPresetPicker,
   });
-  // Printer model drives the preset / bundle filter — only show
-  // presets whose name matches the printer's long-form ("Bambu Lab
-  // A1 mini") or BS-shorthand ("@BBL A1M") naming convention. Avoids
-  // operators picking a P1S preset for an A1 mini and getting -16
-  // CLI_3MF_NEW_MACHINE_NOT_SUPPORTED at slice time.
+  // Printer model drives the preset / bundle filter — only show presets
+  // compatible with this printer + nozzle. Avoids operators picking a P1S
+  // preset for an A1 mini and getting -16 CLI_3MF_NEW_MACHINE_NOT_SUPPORTED
+  // at slice time.
   const printerQuery = useQuery<Printer>({
     queryKey: ['printer', printerId],
     queryFn: () => api.getPrinter(printerId),
     staleTime: 60_000,
   });
   const printerModel = printerQuery.data?.model ?? null;
+  // Canonical Bambu printer-model registry — drives the @BBL name fallback in
+  // the shared compatibility matcher (#1325). Long staleTime: only changes
+  // across backend releases.
+  const printerModelsQuery = useQuery({
+    queryKey: ['slicerPrinterModels'],
+    queryFn: api.getPrinterModels,
+    staleTime: Infinity,
+    enabled: needsPresetPicker,
+  });
+
+  // Nozzle the operator is calibrating (defaults to the printer's first
+  // installed nozzle). Declared here — above the preset filter — because the
+  // shared matcher is nozzle-aware: a 0.6-nozzle process is unusable on a 0.4
+  // printer, so the dropdowns must filter by nozzle as well as model.
+  const firstNozzleDia = capabilities?.nozzles?.[0]?.diameter ?? 0.4;
+  const [nozzleDia, setNozzleDia] = useState<number>(firstNozzleDia);
+  const [nozzleVolType, setNozzleVolType] = useState<NozzleVolumeType>('standard');
+
+  // Compatibility ground truth shared with the SliceModal: uploaded Slicer
+  // Bundles + the backend printer-model registry (#1325).
+  const compatIndex = useMemo<PrinterCompatibilityIndex>(
+    () => buildCompatibilityIndex(bundlesQuery.data ?? [], printerModelsQuery.data ?? {}),
+    [bundlesQuery.data, printerModelsQuery.data],
+  );
+  // Synthetic printer-preset name the matcher can parse — the calibration
+  // wizard has only the hardware short code (e.g. "X1C") + nozzle, while the
+  // matcher expects a "Bambu Lab <model> <nozzle> nozzle" preset name. Reverse
+  // the short code to its long-form fragment via the matcher's own registry
+  // map ("X1C" → "X1 Carbon"), falling back to the raw code for models the
+  // registry doesn't know yet.
+  const syntheticPrinterName = useMemo<string | null>(() => {
+    if (!printerModel) return null;
+    const fragment = compatIndex.bambuModelByShortCode[printerModel] ?? printerModel;
+    return `Bambu Lab ${fragment} ${nozzleDia} nozzle`;
+  }, [printerModel, nozzleDia, compatIndex]);
 
   const bundles = useMemo(
     () => filterBundlesByModel(bundlesQuery.data ?? [], printerModel),
     [bundlesQuery.data, printerModel],
   );
-  const presets = useMemo(
-    () => filterPresetsByModel(presetsQuery.data, printerModel),
-    [presetsQuery.data, printerModel],
-  );
+  // Strict hide (D2): calibration drops process / filament presets that
+  // resolve to a *different* printer (a wrong-printer calibration print wastes
+  // a bed), but keeps compatibility-unknown presets (the operator's own custom
+  // profiles) so they're never silently hidden. The printer slot keeps the
+  // proven name/shorthand match — the matcher only classifies process /
+  // filament. Mirrors the SliceModal matcher; the difference is hide-vs-group.
+  const presets = useMemo<UnifiedPresetsResponse | undefined>(() => {
+    const data = presetsQuery.data;
+    if (!data || !printerModel) return data;
+    const keepPrinter = (entries: UnifiedPresetsResponse['cloud']['printer']) =>
+      entries.filter((p) => matchesPrinterModel(p.name, printerModel));
+    const keepCompat = (slot: 'process' | 'filament') => (entries: UnifiedPresetsResponse['cloud']['printer']) =>
+      entries.filter(
+        (p) => presetCompatibility(p, slot, syntheticPrinterName, compatIndex) !== 'mismatch',
+      );
+    const filterTier = (tier: UnifiedPresetsResponse['cloud']) => ({
+      printer: keepPrinter(tier.printer),
+      process: keepCompat('process')(tier.process),
+      filament: keepCompat('filament')(tier.filament),
+    });
+    return {
+      cloud: filterTier(data.cloud),
+      local: filterTier(data.local),
+      standard: filterTier(data.standard),
+      cloud_status: data.cloud_status,
+    };
+  }, [presetsQuery.data, printerModel, syntheticPrinterName, compatIndex]);
 
   // Bundles are hidden from the calibration preset picker for now: the
   // source stays 'manual' and PresetSourceControl receives an empty bundle
@@ -349,10 +384,6 @@ export function CalibrationPresetPage({
     queryFn: () => api.getPrinterStatus(printerId),
     refetchInterval: 5_000,
   });
-
-  const firstNozzleDia = capabilities?.nozzles?.[0]?.diameter ?? 0.4;
-  const [nozzleDia, setNozzleDia] = useState<number>(firstNozzleDia);
-  const [nozzleVolType, setNozzleVolType] = useState<NozzleVolumeType>('standard');
 
   const isDual = Boolean(capabilities?.dual_extruder);
   const extruderList = useMemo(

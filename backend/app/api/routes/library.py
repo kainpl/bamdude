@@ -68,6 +68,7 @@ from backend.app.services.print_plan import inherit_folder_projects, sync_plan_f
 from backend.app.services.stl_thumbnail import generate_stl_thumbnail
 from backend.app.services.threemf_capabilities import extract_3mf_capabilities
 from backend.app.utils.threemf_tools import (
+    extract_embedded_presets_from_3mf,
     extract_nozzle_mapping_from_3mf,
     extract_project_filaments_from_3mf,
 )
@@ -3385,6 +3386,18 @@ async def get_library_file_plates(
             "is_multi_plate": False,
         }
 
+    # Printer / process preset names the 3MF was prepared with — used by the
+    # SliceModal to default its dropdowns (#1325). A single cheap read of
+    # Metadata/project_settings.config; failures yield None so the modal falls
+    # back to its own defaults. Done outside the fast/slow plate split so both
+    # return paths carry it.
+    embedded_presets: dict[str, str | None] = {"printer": None, "process": None}
+    try:
+        with zipfile.ZipFile(file_path, "r") as zf:
+            embedded_presets = extract_embedded_presets_from_3mf(zf)
+    except Exception:
+        pass
+
     # Fast path: read pre-computed plates from the library file's JSON
     # metadata (populated at upload time + by m023 backfill). No ZIP open.
     cached_plates = (lib_file.file_metadata or {}).get("plates") if isinstance(lib_file.file_metadata, dict) else None
@@ -3405,6 +3418,8 @@ async def get_library_file_plates(
             "filename": lib_file.filename,
             "plates": plates,
             "is_multi_plate": len(plates) > 1,
+            "embedded_printer": embedded_presets["printer"],
+            "embedded_process": embedded_presets["process"],
         }
 
     # Slow path: open ZIP + parse. Used for files uploaded before m023 ran,
@@ -3433,6 +3448,8 @@ async def get_library_file_plates(
         "filename": lib_file.filename,
         "plates": plates,
         "is_multi_plate": len(plates) > 1,
+        "embedded_printer": embedded_presets["printer"],
+        "embedded_process": embedded_presets["process"],
     }
 
 

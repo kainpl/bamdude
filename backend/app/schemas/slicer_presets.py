@@ -45,6 +45,13 @@ class UnifiedPreset(BaseModel):
     # instead of forcing them to type it. ``None`` when the resolver
     # didn't expose it (typical for thin cloud-delta stubs).
     filament_flow_ratio: float | None = None
+    # The slicer's own ``compatible_printers`` list (process / filament slots).
+    # Drives the SliceModal + calibration printer-aware filtering (#1325):
+    # a preset is compatible with a printer when this list names it. Populated
+    # for the local tier (the imported preset JSON carries it); ``None`` on
+    # cloud / standard stubs, where the matcher falls back to bundle membership
+    # then the ``@BBL <model> <nozzle>`` name convention.
+    compatible_printers: list[str] | None = None
 
 
 class UnifiedPresetsBySlot(BaseModel):
