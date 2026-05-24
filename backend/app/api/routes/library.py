@@ -1868,6 +1868,58 @@ def _patch_process_bed_type(process_json: str, bed_type: str) -> str:
     return json.dumps(profile)
 
 
+def _read_3mf_entry(zip_path: Path, entry: str) -> bytes | None:
+    """Raw bytes of an entry inside a 3MF (ZIP), or ``None`` when the file
+    isn't a parseable zip / lacks that entry / on any IO error. Used to lift
+    a source archive's per-plate render onto a re-sliced archive (#1493) —
+    the slicer CLI often doesn't emit a fresh ``Metadata/plate_N.png``."""
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            if entry not in zf.namelist():
+                return None
+            return zf.read(entry)
+    except (zipfile.BadZipFile, OSError, KeyError):
+        return None
+
+
+def _canonical_printer_model(raw: str | None) -> str | None:
+    """Normalise a printer-preset name / ``printer_model`` field to a canonical
+    model code. Strips the BambuStudio ``"# "`` user-clone prefix and the
+    ``" 0.4 nozzle"`` variant suffix that preset names carry but bare model
+    names don't (so ``"Bambu Lab H2D 0.4 nozzle"`` → ``H2D``)."""
+    from backend.app.utils.printer_models import normalize_printer_model
+
+    if not raw:
+        return None
+    cleaned = str(raw).strip()
+    if cleaned.startswith("# "):
+        cleaned = cleaned[2:].strip()
+    cleaned = re.sub(r"\s+0\.\d+\s+nozzle$", "", cleaned, flags=re.IGNORECASE)
+    return normalize_printer_model(cleaned) if cleaned else None
+
+
+async def _resolve_target_printer_model(db: AsyncSession, user: "User | None", request) -> str | None:
+    """Best-effort: the printer model a slice request targets. Returns ``None``
+    when it can't be determined (cross-class detection then simply doesn't
+    fire — fail-open, never blocks/alters a slice spuriously)."""
+    from backend.app.services.preset_resolver import resolve_preset_ref
+
+    if request.bundle is not None:
+        return _canonical_printer_model(request.bundle.printer_name)
+    if request.printer_preset is None:
+        return None
+    try:
+        printer_json = await resolve_preset_ref(db, user, request.printer_preset, "printer")
+        data = json.loads(printer_json)
+        if not isinstance(data, dict):
+            return None
+        return _canonical_printer_model(
+            data.get("printer_model") or data.get("printer_settings_id") or data.get("name")
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+
 async def _run_slicer_with_fallback(
     db: AsyncSession,
     *,
@@ -2001,9 +2053,128 @@ async def _run_slicer_with_fallback(
             _dispatch.set_progress(job_id, snapshot)
 
         progress_callback = _on_progress
+
+    # #1493: cross-nozzle-class re-slice (single <-> dual). Forward the
+    # sidecar's --arrange so BambuStudio repositions objects for the target
+    # bed and reconciles the embedded project_settings.config against the new
+    # printer — otherwise the source's coordinate layout lands in the target's
+    # per-nozzle dead zone or trips the multi-extruder geometry pipeline.
+    # Only on a true class crossing; same-printer slices keep the user's layout.
+    cross_class_arrange = False
+    if is_3mf:
+        from backend.app.services.slicer_3mf_convert import extract_source_printer_model
+        from backend.app.utils.printer_models import is_dual_nozzle_model
+
+        source_model = extract_source_printer_model(primary_bytes)
+        target_model = await _resolve_target_printer_model(db, user, request)
+        if source_model and target_model and is_dual_nozzle_model(source_model) != is_dual_nozzle_model(target_model):
+            logger.info(
+                "Cross-nozzle-class re-slice (%s -> %s, %s): enabling --arrange",
+                source_model,
+                target_model,
+                "bundle" if bundle_spec is not None else "presets",
+            )
+            cross_class_arrange = True
+
+    # SliceModal submits a filament pick per slot, but each plate uses only a
+    # subset. A heterogeneous unused-slot default trips BS's loaded-filament
+    # temp-spread validator (exit 194) even though the plate's G-code never
+    # touches it. Replace unused-slot entries with the slot-1 pick first.
+    bundle_filament_names: list[str] | None = None
+    if is_3mf and request.plate is not None:
+        from backend.app.services.slicer_3mf_convert import substitute_unused_plate_filaments
+
+        if bundle_spec is not None:
+            bundle_filament_names = substitute_unused_plate_filaments(
+                primary_bytes, request.plate, list(bundle_spec.filament_names)
+            )
+        else:
+            filament_jsons = substitute_unused_plate_filaments(primary_bytes, request.plate, filament_jsons)
+
+    # Cross-class slice-all (#1493): plate=0 (all plates) + a class crossing →
+    # ``--slice 0 --arrange`` would consolidate every plate onto one bed
+    # (arrange is project-wide). Slice each plate with --arrange and merge the
+    # per-plate outputs instead. Same-class slice-all uses the native path.
+    use_cross_class_slice_all = cross_class_arrange and request.plate == 0 and request.export_3mf
+
     try:
         try:
-            if bundle_spec is not None:
+            if use_cross_class_slice_all:
+                from backend.app.services.slicer_3mf_convert import count_plates_in_3mf, merge_plate_3mfs
+                from backend.app.services.slicer_api import SliceResult
+
+                plate_count = count_plates_in_3mf(primary_bytes)
+                if plate_count == 0:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "Couldn't read plate count from the source 3MF for cross-class "
+                            "slice-all. The source may be malformed or missing "
+                            "Metadata/model_settings.config."
+                        ),
+                    )
+                logger.info("Cross-class slice-all: %d plates with --arrange each, then merge", plate_count)
+                per_plate_results: list[tuple[int, SliceResult]] = []
+
+                def _wrap_progress_for_plate(plate_num: int, total: int):
+                    if progress_callback is None:
+                        return None
+
+                    def _cb(snapshot: dict) -> None:
+                        snapshot = dict(snapshot)
+                        snapshot["multi_plate_index"] = plate_num
+                        snapshot["multi_plate_count"] = total
+                        progress_callback(snapshot)
+
+                    return _cb
+
+                for plate_num in range(1, plate_count + 1):
+                    plate_cb = _wrap_progress_for_plate(plate_num, plate_count)
+                    if bundle_spec is not None:
+                        per_plate = await service.slice_with_bundle(
+                            model_bytes=primary_bytes,
+                            model_filename=model_filename,
+                            bundle_id=bundle_spec.bundle_id,
+                            printer_name=bundle_spec.printer_name,
+                            process_name=bundle_spec.process_name,
+                            filament_names=(
+                                bundle_filament_names
+                                if bundle_filament_names is not None
+                                else bundle_spec.filament_names
+                            ),
+                            plate=plate_num,
+                            export_3mf=True,
+                            arrange=True,
+                            bed_type=request.bed_type,
+                            request_id=progress_request_id,
+                            on_progress=plate_cb,
+                        )
+                    else:
+                        per_plate = await service.slice_with_profiles(
+                            model_bytes=primary_bytes,
+                            model_filename=model_filename,
+                            printer_profile_json=presets["printer"],
+                            process_profile_json=presets["process"],
+                            filament_profile_jsons=filament_jsons,
+                            plate=plate_num,
+                            export_3mf=True,
+                            arrange=True,
+                            request_id=progress_request_id,
+                            on_progress=plate_cb,
+                        )
+                    per_plate_results.append((plate_num, per_plate))
+
+                merged_bytes = merge_plate_3mfs(
+                    [(n, r.content) for n, r in per_plate_results],
+                    source_3mf_bytes=primary_bytes,
+                )
+                result = SliceResult(
+                    content=merged_bytes,
+                    print_time_seconds=sum(r.print_time_seconds for _, r in per_plate_results),
+                    filament_used_g=sum(r.filament_used_g for _, r in per_plate_results),
+                    filament_used_mm=sum(r.filament_used_mm for _, r in per_plate_results),
+                )
+            elif bundle_spec is not None:
                 # Bundle path: sidecar materialises printer/process/filament
                 # JSONs from the stored .bbscfg by name. Skips PresetRef
                 # resolution entirely — closes the cloud-preset-behind-login,
@@ -2015,9 +2186,12 @@ async def _run_slicer_with_fallback(
                     bundle_id=bundle_spec.bundle_id,
                     printer_name=bundle_spec.printer_name,
                     process_name=bundle_spec.process_name,
-                    filament_names=bundle_spec.filament_names,
+                    filament_names=(
+                        bundle_filament_names if bundle_filament_names is not None else bundle_spec.filament_names
+                    ),
                     plate=request.plate,
                     export_3mf=request.export_3mf,
+                    arrange=cross_class_arrange,
                     request_id=progress_request_id,
                     on_progress=progress_callback,
                 )
@@ -2030,6 +2204,7 @@ async def _run_slicer_with_fallback(
                     filament_profile_jsons=filament_jsons,
                     plate=request.plate,
                     export_3mf=request.export_3mf,
+                    arrange=cross_class_arrange,
                     bed_type=request.bed_type,
                     request_id=progress_request_id,
                     on_progress=progress_callback,
@@ -2266,17 +2441,34 @@ async def slice_and_persist_as_archive(
     out_path = archive_dir / out_filename
     out_path.write_bytes(result.content)
 
+    # Thumbnail for the new archive card. Priority: (1) the source archive's
+    # own ``plate_{N}.png`` (the GUI render of the plate being re-sliced —
+    # closest to "what's printing"; with --arrange the layout may differ
+    # slightly but objects/colours match), else (2) the ThreeMFParser fallback
+    # on the sliced output. BS CLI often leaves the per-plate preview empty on
+    # a re-slice, so without (1) the card falls through to unrelated cover art
+    # (#1493 follow-up). Failures don't fail the slice.
+    plate_num = request.plate or 1
     thumbnail_path: str | None = None
     parsed_metadata: dict = {}
+
+    src_3mf_path = app_settings.base_dir / source_archive.file_path
+    source_plate_bytes = _read_3mf_entry(src_3mf_path, f"Metadata/plate_{plate_num}.png")
+    if source_plate_bytes:
+        thumb_dest = archive_dir / "thumbnail.png"
+        thumb_dest.write_bytes(source_plate_bytes)
+        thumbnail_path = str(thumb_dest.relative_to(app_settings.base_dir))
+
     try:
-        parser = ThreeMFParser(str(out_path))
+        parser = ThreeMFParser(str(out_path), plate_number=plate_num)
         parsed = parser.parse()
-        thumb_data = parsed.get("_thumbnail_data")
-        thumb_ext = parsed.get("_thumbnail_ext", ".png")
-        if thumb_data:
-            thumb_dest = archive_dir / f"thumbnail{thumb_ext}"
-            thumb_dest.write_bytes(thumb_data)
-            thumbnail_path = str(thumb_dest.relative_to(app_settings.base_dir))
+        if thumbnail_path is None:
+            thumb_data = parsed.get("_thumbnail_data")
+            thumb_ext = parsed.get("_thumbnail_ext", ".png")
+            if thumb_data:
+                thumb_dest = archive_dir / f"thumbnail{thumb_ext}"
+                thumb_dest.write_bytes(thumb_data)
+                thumbnail_path = str(thumb_dest.relative_to(app_settings.base_dir))
         parsed_metadata = {k: v for k, v in parsed.items() if not k.startswith("_")}
     except Exception as exc:
         logger.warning("Failed to parse sliced 3MF metadata for %s: %s", out_filename, exc)
