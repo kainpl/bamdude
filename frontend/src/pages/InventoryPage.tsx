@@ -8,7 +8,7 @@ import {
   Search, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight,
   TrendingDown, Layers, Printer, AlertTriangle, X, Clock, LayoutGrid, TableProperties, Columns,
   ArrowUp, ArrowDown, ArrowUpDown, Group, ChevronDown, Check, RefreshCw, Disc3, Copy, Eraser,
-  TrendingUp, Lock,
+  TrendingUp, Lock, Sparkles,
 } from 'lucide-react';
 import { ForecastPanel } from '../components/ForecastPanel';
 import { api, ApiError } from '../api/client';
@@ -2260,6 +2260,32 @@ function SpoolCard({
             </span>
           </div>
         </div>
+        {spool.k_profiles && spool.k_profiles.length > 0 && (
+          <div className="pt-2 border-t border-bambu-dark-tertiary space-y-1">
+            <div className="text-[10px] uppercase tracking-wide text-bambu-gray/60">
+              {t('inventory.kprofile.title')}
+            </div>
+            <div className="flex flex-wrap gap-1">
+              {spool.k_profiles.map((kp) => {
+                const flow = (kp.nozzle_type || '').toUpperCase().startsWith('HIGH') ? 'HF' : 'S';
+                const k = Math.trunc((kp.k_value ?? 0) * 1000) / 1000;
+                return (
+                  <span
+                    key={kp.id}
+                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] bg-bambu-green/15 text-bambu-green"
+                    title={kp.name || undefined}
+                  >
+                    {kp.auto_linked && (
+                      <Sparkles className="w-3 h-3 opacity-80" aria-label={t('inventory.kprofile.autoTooltip')} />
+                    )}
+                    <span className="max-w-[90px] truncate">{kp.name || `#${kp.id}`}</span>
+                    <span className="opacity-70">· {kp.nozzle_diameter} {flow} · K{k.toFixed(3)}</span>
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        )}
         {spool.note && (
           <div
             className="text-xs text-bambu-gray/60 pt-2 border-t border-bambu-dark-tertiary truncate"

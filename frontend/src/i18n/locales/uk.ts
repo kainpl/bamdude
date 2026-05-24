@@ -3780,6 +3780,10 @@ export default {
     title: 'Філамент',
     addSpool: 'Додати котушку',
     editSpool: 'Редагувати котушку',
+    kprofile: {
+      title: 'K-профілі',
+      autoTooltip: 'Привʼязано автоматично з калібрування',
+    },
     copySpool: 'Копіювати котушку',
     material: 'Матеріал',
     selectMaterial: 'Виберіть матеріал...',

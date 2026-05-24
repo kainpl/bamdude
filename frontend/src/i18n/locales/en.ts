@@ -3776,6 +3776,10 @@ export default {
     title: 'Spool Inventory',
     addSpool: 'Add Spool',
     editSpool: 'Edit Spool',
+    kprofile: {
+      title: 'K-profiles',
+      autoTooltip: 'Auto-linked from calibration',
+    },
     copySpool: 'Copy Spool',
     material: 'Material',
     selectMaterial: 'Select material...',
