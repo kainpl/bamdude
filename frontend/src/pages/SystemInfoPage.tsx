@@ -23,10 +23,12 @@ import {
   FolderOpen,
   Cog,
   Info,
+  Stethoscope,
 } from 'lucide-react';
-import { api, supportApi } from '../api/client';
+import { api, supportApi, type Printer as PrinterModel } from '../api/client';
 import { Card } from '../components/Card';
 import { LogViewer } from '../components/LogViewer';
+import { ConnectionDiagnosticModal } from '../components/ConnectionDiagnostic';
 import { LogArchivesPanel } from '../components/LogArchivesPanel';
 import { SlicerHealthIndicator } from '../components/SlicerHealthIndicator';
 import { formatDateTime, type TimeFormat } from '../utils/date';
@@ -102,6 +104,7 @@ export function SystemInfoPage() {
   const [bundleError, setBundleError] = useState<string | null>(null);
   const [bundleDownloading, setBundleDownloading] = useState(false);
   const [debugToggling, setDebugToggling] = useState(false);
+  const [diagnosticPrinter, setDiagnosticPrinter] = useState<PrinterModel | null>(null);
 
   const { data: systemInfo, isLoading, refetch, isFetching } = useQuery({
     queryKey: ['systemInfo'],
@@ -124,6 +127,11 @@ export function SystemInfoPage() {
   const { data: libraryStats } = useQuery({
     queryKey: ['library-stats'],
     queryFn: api.getLibraryStats,
+  });
+
+  const { data: allPrinters } = useQuery({
+    queryKey: ['printers'],
+    queryFn: api.getPrinters,
   });
 
   const timeFormat: TimeFormat = settings?.time_format || 'system';
@@ -391,6 +399,40 @@ export function SystemInfoPage() {
         </div>
       </Section>
 
+      {/* Connection Diagnostic */}
+      <Section title={t('diagnostic.sectionTitle', 'Connection Diagnostic')} icon={Stethoscope}>
+        <p className="text-sm text-bambu-gray mb-4">
+          {t(
+            'diagnostic.sectionDescription',
+            "Check why a printer won't connect or won't print — port reachability, LAN developer mode, Docker network mode, and credentials.",
+          )}
+        </p>
+        {allPrinters && allPrinters.length > 0 ? (
+          <div className="space-y-2">
+            {allPrinters.map((printer) => (
+              <div
+                key={printer.id}
+                className="flex items-center justify-between p-3 bg-bambu-dark rounded-lg"
+              >
+                <div className="min-w-0">
+                  <span className="font-medium text-white">{printer.name}</span>
+                  <span className="text-sm text-bambu-gray ml-2">{printer.ip_address}</span>
+                </div>
+                <button
+                  onClick={() => setDiagnosticPrinter(printer)}
+                  className="flex items-center gap-2 px-3 py-1.5 text-sm bg-bambu-dark-secondary hover:bg-bambu-dark-tertiary text-white rounded-lg transition-colors flex-shrink-0"
+                >
+                  <Stethoscope className="w-4 h-4" />
+                  {t('diagnostic.runButton', 'Run diagnostic')}
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-bambu-gray">{t('diagnostic.noPrinters', 'No printers configured.')}</p>
+        )}
+      </Section>
+
       {/* Database Stats */}
       <Section title={t('system.database', 'Database')} icon={Database}>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
@@ -613,6 +655,14 @@ export function SystemInfoPage() {
           />
         </div>
       </Section>
+
+      {diagnosticPrinter && (
+        <ConnectionDiagnosticModal
+          printerId={diagnosticPrinter.id}
+          printerName={diagnosticPrinter.name}
+          onClose={() => setDiagnosticPrinter(null)}
+        />
+      )}
     </div>
   );
 }

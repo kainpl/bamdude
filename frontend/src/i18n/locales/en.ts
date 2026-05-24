@@ -3742,9 +3742,69 @@ export default {
   },
 
   // In-app bug report (floating red bubble)
+  diagnostic: {
+    modalTitle: 'Connection diagnostic — {{name}}',
+    running: 'Running diagnostic...',
+    runFailed: 'Diagnostic could not run: {{error}}',
+    retry: 'Run again',
+    runButton: 'Run diagnostic',
+    sectionTitle: 'Connection Diagnostic',
+    sectionDescription: 'Check why a printer won\'t connect or won\'t print — port reachability, LAN developer mode, Docker network mode, and credentials.',
+    noPrinters: 'No printers configured.',
+    overall: {
+      ok: 'No problems found — the printer connection looks healthy.',
+      warnings: 'The printer should work, but some things need attention.',
+      problems: 'Found problems that explain why the printer won\'t connect or print.',
+    },
+    check: {
+      port_mqtt: {
+        title: 'Control port (MQTT 8883)',
+        pass: 'Reachable — the printer is accepting control connections.',
+        fail: 'Port 8883 is unreachable. The printer is powered off, on a different IP address, or a firewall is blocking it. Verify the printer IP and that nothing blocks port 8883.',
+      },
+      port_ftps: {
+        title: 'File transfer port (FTPS 990)',
+        pass: 'Reachable — sending print files will work.',
+        warn: 'Port 990 is unreachable. Monitoring may still work, but sending prints to the printer will fail. Make sure port 990 is not blocked.',
+      },
+      port_rtsps: {
+        title: 'Camera port (RTSPS 322)',
+        pass: 'Reachable — the camera stream will work.',
+        warn: 'Port 322 is unreachable. The live camera view will not work. This does not affect printing.',
+      },
+      network_mode: {
+        title: 'Docker network mode',
+        pass: 'Running in host network mode.',
+        warn: 'BamDude is running in Docker bridge networking. Printer discovery and the Virtual Printer need host network mode — recreate the container with "network_mode: host".',
+        skip: 'Not running in Docker — not applicable.',
+      },
+      subnet: {
+        title: 'Network subnet',
+        pass: 'The printer and BamDude are on the same subnet.',
+        warn: 'The printer ({{printer_ip}}) and BamDude ({{host_ip}}) are on different subnets. They may not reach each other unless routing between the subnets is configured.',
+        skip: 'Subnet could not be determined — skipped.',
+      },
+      mqtt_auth: {
+        title: 'Printer credentials',
+        pass: 'The printer accepted the connection.',
+        fail: 'The printer is reachable but rejected the connection. The access code or serial number is most likely wrong. The access code changes every time Developer Mode is toggled — re-copy it from the printer screen.',
+        skip: 'Not checked — the printer could not be reached.',
+      },
+      developer_mode: {
+        title: 'LAN Developer Mode',
+        pass: 'Developer Mode is enabled.',
+        fail: 'Developer Mode is OFF on the printer. Enable it in the printer\'s LAN settings — and confirm with OK. Without it, prints will not start.',
+        skip: 'Could not be checked — requires a live connection to the printer.',
+      },
+    },
+  },
   bugReport: {
     title: 'Report a Bug',
     description: 'Description',
+    diagnosticChecking: 'Checking printer connections...',
+    diagnosticHealthy: 'Connection check passed — no problems found on your printers.',
+    diagnosticHeading: 'Possible setup issue detected',
+    diagnosticIntro: 'A printer has a connection problem that may be causing your issue. Check the fix below — resolving it could solve the problem without a bug report. You can still submit a report below.',
     descriptionPlaceholder: 'What went wrong? Please describe the issue...',
     email: 'Email (optional)',
     emailPlaceholder: 'your@email.com',

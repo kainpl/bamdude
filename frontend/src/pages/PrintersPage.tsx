@@ -28,6 +28,7 @@ import {
   Filter,
   MoreHorizontal,
   SlidersHorizontal,
+  Stethoscope,
   Pencil,
   ArrowUpNarrowWide,
   ArrowDownWideNarrow,
@@ -107,6 +108,7 @@ import { SkipObjectsModal, SkipObjectsIcon } from '../components/SkipObjectsModa
 import { FileUploadModal } from '../components/FileUploadModal';
 import { PrintModal } from '../components/PrintModal';
 import { PrinterInfoModal } from '../components/PrinterInfoModal';
+import { ConnectionDiagnosticModal } from '../components/ConnectionDiagnostic';
 import { getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag, isBambuLabSpool } from '../utils/amsHelpers';
 import { getPrinterImage, getWifiStrength, hasDoorSensor, mapModelCode } from '../utils/printer';
 import { formatPrintName } from '../utils/printName';
@@ -1467,6 +1469,7 @@ function PrinterCard({
   const [showSkipObjectsModal, setShowSkipObjectsModal] = useState(false);
   const [showUploadForPrint, setShowUploadForPrint] = useState(false);
   const [showPrinterInfo, setShowPrinterInfo] = useState(false);
+  const [showDiagnostic, setShowDiagnostic] = useState(false);
   const [showMacrosMenu, setShowMacrosMenu] = useState(false);
   const closePrinterInfo = useCallback(() => setShowPrinterInfo(false), []);
   const [printAfterUpload, setPrintAfterUpload] = useState<{ id: number; filename: string } | null>(null);
@@ -2689,6 +2692,16 @@ function PrinterCard({
                     <Terminal className="w-4 h-4" />
                     {t('printers.mqttDebug')}
                   </button>
+                  <button
+                    className="w-full px-4 py-2 text-left text-sm hover:bg-bambu-dark-tertiary flex items-center gap-2"
+                    onClick={() => {
+                      setShowDiagnostic(true);
+                      setShowMenu(false);
+                    }}
+                  >
+                    <Stethoscope className="w-4 h-4" />
+                    {t('diagnostic.runButton')}
+                  </button>
                   <div className="mx-3 my-1 border-t border-bambu-dark-tertiary" />
                   {/* Edit & Delete */}
                   <button
@@ -2747,6 +2760,17 @@ function PrinterCard({
                 )}
                 {status?.connected ? t('printers.connection.connected') : t('printers.connection.offline')}
               </span>
+              {/* Run connection diagnostic — offered when the printer is offline */}
+              {!status?.connected && (
+                <button
+                  onClick={() => setShowDiagnostic(true)}
+                  className="flex items-center gap-1 px-2 py-1 rounded-full text-xs cursor-pointer bg-bambu-dark-tertiary text-bambu-gray hover:text-white transition-colors"
+                  title={t('diagnostic.runButton')}
+                >
+                  <Stethoscope className="w-3 h-3" />
+                  {t('diagnostic.runButton')}
+                </button>
+              )}
               {/* Network connection indicator */}
               {status?.connected && status?.wired_network && (
                 <span
@@ -4957,6 +4981,14 @@ function PrinterCard({
           status={status}
           totalPrintHours={maintenanceInfo?.total_print_hours}
           onClose={closePrinterInfo}
+        />
+      )}
+
+      {showDiagnostic && (
+        <ConnectionDiagnosticModal
+          printerId={printer.id}
+          printerName={printer.name}
+          onClose={() => setShowDiagnostic(false)}
         />
       )}
 

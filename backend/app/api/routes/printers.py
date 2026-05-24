@@ -20,11 +20,13 @@ from backend.app.schemas.printer import (
     AmsLabelBody,
     AMSTray,
     AMSUnit,
+    DiagnosticRequest,
     FilaSwitchResponse,
     HMSErrorResponse,
     NozzleInfoResponse,
     NozzleRackSlot,
     PrinterCreate,
+    PrinterDiagnosticResult,
     PrinterResponse,
     PrinterStatus,
     PrinterUpdate,
@@ -37,6 +39,7 @@ from backend.app.services.bambu_ftp import (
     get_storage_info_async,
     list_files_async,
 )
+from backend.app.services.printer_diagnostic import run_connection_diagnostic
 from backend.app.services.printer_manager import (
     find_ams_unit,
     first_drying_blocking_reason,
@@ -770,6 +773,37 @@ async def test_printer_connection(
         access_code=access_code,
     )
     return result
+
+
+@router.post("/diagnostic", response_model=PrinterDiagnosticResult)
+async def diagnose_connection(
+    req: DiagnosticRequest,
+    _=RequirePermission(Permission.PRINTERS_CREATE),
+):
+    """Run connection diagnostics for the Add-Printer flow (printer not yet saved).
+
+    When serial_number + access_code are supplied the MQTT credential check
+    also runs; otherwise only the network-level checks are performed.
+    """
+    return await run_connection_diagnostic(
+        req.ip_address,
+        serial_number=req.serial_number or None,
+        access_code=req.access_code or None,
+    )
+
+
+@router.get("/{printer_id}/diagnostic", response_model=PrinterDiagnosticResult)
+async def diagnose_printer(
+    printer_id: int,
+    _=RequirePermission(Permission.PRINTERS_READ),
+    db: AsyncSession = Depends(get_db),
+):
+    """Run connection diagnostics for an existing saved printer."""
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+    return await run_connection_diagnostic(printer.ip_address, printer=printer)
 
 
 # Cache for cover images (printer_id -> {(subtask_name, plate_num, view) -> image_bytes})

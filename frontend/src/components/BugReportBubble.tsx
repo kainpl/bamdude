@@ -1,7 +1,9 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { Bug, X, Loader2, CheckCircle, AlertCircle, Trash2, Upload, Circle, CheckCircle2 } from 'lucide-react';
+import { Bug, X, Loader2, CheckCircle, AlertCircle, Trash2, Upload, Circle, CheckCircle2, Stethoscope } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { bugReportApi } from '../api/client';
+import { useQuery } from '@tanstack/react-query';
+import { api, bugReportApi, type PrinterDiagnosticResult } from '../api/client';
+import { DiagnosticChecklist } from './ConnectionDiagnostic';
 
 type ViewState = 'form' | 'logging' | 'stopping' | 'submitting' | 'success' | 'error';
 
@@ -55,6 +57,25 @@ export function BugReportBubble() {
   const modalRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const handleStopLoggingRef = useRef<() => void>(() => {});
+
+  // Before the user files a report, diagnose configured printers. Most bug
+  // reports are setup issues — surfacing a connection problem inline lets the
+  // user self-fix instead of waiting on a triage round-trip. The result is
+  // always shown (healthy or not) so the user can see the check ran.
+  const diagnosticScan = useQuery({
+    queryKey: ['bugReportDiagnostic'],
+    enabled: isOpen && viewState === 'form',
+    staleTime: 30_000,
+    queryFn: async (): Promise<PrinterDiagnosticResult[]> => {
+      const printers = await api.getPrinters();
+      const results = await Promise.all(
+        printers.map((p) => api.diagnosePrinter(p.id).catch(() => null)),
+      );
+      return results.filter((r): r is PrinterDiagnosticResult => r !== null);
+    },
+  });
+  const diagnosticResults = diagnosticScan.data ?? [];
+  const diagnosticProblems = diagnosticResults.filter((r) => r.overall === 'problems');
 
   // Elapsed timer for the logging phase — auto-stop at 5 minutes.
   useEffect(() => {
@@ -211,6 +232,44 @@ export function BugReportBubble() {
             <div className="p-4 space-y-4">
               {viewState === 'form' && (
                 <>
+                  {/* Connection diagnostic — scanned on form-open. The result
+                      is always shown: a problem panel when a printer has a
+                      detected setup issue, otherwise a healthy confirmation. */}
+                  {diagnosticScan.isLoading && (
+                    <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      {t('bugReport.diagnosticChecking')}
+                    </div>
+                  )}
+                  {!diagnosticScan.isLoading && diagnosticProblems.length > 0 && (
+                    <div className="rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 p-3 space-y-3">
+                      <div className="flex items-start gap-2">
+                        <Stethoscope className="w-4 h-4 mt-0.5 flex-shrink-0 text-amber-600 dark:text-amber-400" />
+                        <div>
+                          <p className="text-sm font-medium text-amber-700 dark:text-amber-300">
+                            {t('bugReport.diagnosticHeading')}
+                          </p>
+                          <p className="text-xs text-amber-800 dark:text-amber-200 mt-0.5">
+                            {t('bugReport.diagnosticIntro')}
+                          </p>
+                        </div>
+                      </div>
+                      {diagnosticProblems.map((result) => (
+                        <DiagnosticChecklist key={result.printer_id ?? result.ip_address} result={result} />
+                      ))}
+                    </div>
+                  )}
+                  {!diagnosticScan.isLoading &&
+                    diagnosticResults.length > 0 &&
+                    diagnosticProblems.length === 0 && (
+                      <div className="flex items-start gap-2 rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 p-3">
+                        <CheckCircle className="w-4 h-4 mt-0.5 flex-shrink-0 text-green-600 dark:text-green-400" />
+                        <p className="text-xs text-green-800 dark:text-green-200">
+                          {t('bugReport.diagnosticHealthy')}
+                        </p>
+                      </div>
+                    )}
+
                   {/* Description */}
                   <div>
                     <label className="block text-sm text-bambu-gray mb-1">
