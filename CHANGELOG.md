@@ -28,6 +28,10 @@ All notable changes to BamDude will be documented in this file.
 
 - **File library multi-select now toggles only when you click the checkbox**, not anywhere on the card or row. Clicking a card/row body no longer flips its selection (which made it easy to select files by accident while scanning the library); the checkbox is the single select affordance, matching the printers page. Applies to both grid and list views.
 
+### Security
+
+- **Pinned `starlette>=1.0.1` and `idna>=3.15`** against PYSEC-2026-161 (Starlette) and CVE-2026-45409 (idna ReDoS) — both are transitive dependencies that were resolving to the vulnerable versions. (Upstream Bambuddy security pins.)
+
 ## [0.4.5b4] - 2026-05-21
 
 Fourth beta of the 0.4.5 cycle. Completes the Filament Calibration Wave 2 roadmap — Flow Rate plus the Temperature / Retraction / VFA / Max-Volumetric-Speed towers all run end-to-end as real calibration prints — and folds in a large batch of upstream Bambuddy ports (the v0.2.4→0.2.4.2 audit): smart-plug auto-off after drying, an in-app camera diagnostic, manual LDAP provisioning, Spoolman parity fixes, MQTT / FTP / firmware robustness, and an A1 / A1-mini bed-jog safety fix. Plus archive & statistics polish — consistent failure-status accounting, distinct cancelled/aborted badges, and per-print vs per-object filament averages. Image: `ghcr.io/kainpl/bamdude:0.4.5b4` / `kainpl/bamdude:0.4.5b4`. Pin the exact tag — `:latest` still tracks 0.4.4.1.
