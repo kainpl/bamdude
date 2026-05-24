@@ -2956,6 +2956,7 @@ export interface InventorySpool {
   weight_used_baseline?: number;
   slicer_filament: string | null;
   slicer_filament_name: string | null;
+  resolved_filament_id?: string | null;
   nozzle_temp_min: number | null;
   nozzle_temp_max: number | null;
   note: string | null;
@@ -3036,6 +3037,7 @@ export interface SpoolKProfile {
   name: string | null;
   cali_idx: number | null;
   setting_id: string | null;
+  auto_linked: boolean;
   created_at: string;
 }
 

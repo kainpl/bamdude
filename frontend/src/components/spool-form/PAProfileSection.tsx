@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../api/client';
 import type { CalibrationProfile, PAProfileSectionProps } from './types';
-import { isMatchingCalibration, normalizeSlicerCodeToFilamentId } from './utils';
+import { isMatchingCalibration, normalizeSlicerCodeToFilamentId, resolveTargetFilamentId } from './utils';
 
 export function PAProfileSection({
   formData,
@@ -32,8 +32,12 @@ export function PAProfileSection({
     enabled: needsCloudDetail,
     staleTime: 60_000,
   });
-  const targetFilamentId =
-    syncFilamentId ?? cloudSettingDetailQuery.data?.filament_id ?? null;
+  // Prefer the custom preset's inherited base (base_id) over its own id so a
+  // custom filament matches the base's K-profiles (calibrated under the base).
+  const targetFilamentId = resolveTargetFilamentId(
+    formData.slicer_filament,
+    cloudSettingDetailQuery.data,
+  );
 
   const togglePrinterExpanded = (printerId: string) => {
     setExpandedPrinters((prev) => {

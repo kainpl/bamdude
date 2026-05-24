@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { X, Loader2, Settings2, ChevronDown, CheckCircle2, RotateCcw } from 'lucide-react';
 import { api } from '../api/client';
 import type { KProfile } from '../api/client';
+import { resolveTargetFilamentId } from './spool-form/utils';
 import { Button } from './Button';
 
 interface SlotInfo {
@@ -705,9 +706,10 @@ export function ConfigureAmsSlotModal({
       return convertToTrayInfoIdx(selectedPresetId);
     }
     // Cloud user preset (P*) — comes from the async detail fetch above.
-    // ``null`` until the query resolves; matchingKProfiles falls back to []
-    // until then so the UI shows "no matches" briefly, not a wrong list.
-    return cloudSettingDetailQuery.data?.filament_id || null;
+    // Prefer the inherited base (base_id, e.g. "Sunlu PETG крило" → "GFG99")
+    // over the custom filament_id, which never appears in the printer's
+    // K-profile table. ``null`` until the query resolves.
+    return resolveTargetFilamentId(selectedPresetId, cloudSettingDetailQuery.data);
   }, [selectedPresetId, localPresets?.filament, cloudSettingDetailQuery.data]);
 
   const matchingKProfiles = useMemo(() => {

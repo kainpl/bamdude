@@ -317,6 +317,26 @@ export function normalizeSlicerCodeToFilamentId(code: string | null | undefined)
   return null;
 }
 
+// Resolve the filament_id to match K-profiles / colours against, preferring a
+// custom preset's INHERITED BASE over its own id. ``slicerCode`` is the
+// spool's preset id; ``cloudDetail`` is the (optional) result of
+// ``getCloudSettingDetail`` for a P-prefix preset, which carries ``base_id``
+// (e.g. "GFSG99" for Generic PETG) plus the custom ``filament_id``.
+//
+// Custom filaments (e.g. "Sunlu PETG крило") are calibrated on the printer
+// under their base ("Generic PETG" → GFG99), so matching must resolve to the
+// base — otherwise the K-profile/colour lists come up empty (the custom
+// ``filament_id`` never appears in the printer's K-profile table).
+export function resolveTargetFilamentId(
+  slicerCode: string | null | undefined,
+  cloudDetail: { base_id?: string | null; filament_id?: string | null } | null | undefined,
+): string | null {
+  const sync = normalizeSlicerCodeToFilamentId(slicerCode);
+  if (sync) return sync;
+  if (cloudDetail?.base_id) return normalizeSlicerCodeToFilamentId(cloudDetail.base_id);
+  return cloudDetail?.filament_id ?? null;
+}
+
 // Check if a calibration matches the spool's filament selection.
 //
 // Preferred path (when we can resolve a filament_id from the spool):
