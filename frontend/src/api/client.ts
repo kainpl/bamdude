@@ -5876,6 +5876,8 @@ export const api = {
     }),
   deleteSpool: (id: number) =>
     request<{ status: string }>(`/inventory/spools/${id}`, { method: 'DELETE' }),
+  relinkSpoolKProfiles: (id: number) =>
+    request<{ status: string; linked: number }>(`/inventory/spools/${id}/relink-kprofiles`, { method: 'POST' }),
   archiveSpool: (id: number) =>
     request<InventorySpool>(`/inventory/spools/${id}/archive`, { method: 'POST' }),
   restoreSpool: (id: number) =>

@@ -21,13 +21,28 @@ async def _sync_kprofiles_for_printer(printer_id: int) -> None:
     ``filament_calibration`` cache. Wraps :func:`sync_printer_kprofiles_to_cache`
     so callers don't need to construct a session themselves."""
     from backend.app.core.database import async_session
+    from backend.app.models.filament_calibration import FilamentCalibration
     from backend.app.services.calibration_service import sync_printer_kprofiles_to_cache
+    from backend.app.services.kprofile_autolink import propagate_calibration_to_spools
 
     try:
         async with async_session() as db:
             await sync_printer_kprofiles_to_cache(db=db, printer_id=printer_id)
+            # Re-link spools whose resolved filament_id matches any of this
+            # printer's calibrations (fresh K-profiles auto-attach to spools).
+            fids = set(
+                (
+                    await db.execute(
+                        select(FilamentCalibration.filament_id).where(FilamentCalibration.printer_id == printer_id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            await propagate_calibration_to_spools(db=db, printer_id=printer_id, filament_ids=fids)
+            await db.commit()
     except Exception as e:  # noqa: BLE001
-        logger.warning("Auto-sync of K-profiles for printer %s failed: %s", printer_id, e)
+        logger.warning("Auto-sync/link of K-profiles for printer %s failed: %s", printer_id, e)
 
 
 # Models that have a real chamber temperature sensor

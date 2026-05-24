@@ -39,6 +39,19 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/inventory", tags=["inventory"])
 
+
+async def _safe_autolink(db: AsyncSession, spool: Spool) -> None:
+    """Auto-link K-profiles for a spool, fail-silent so a link error never
+    fails the spool write (mirrors printer_manager's sync wrapper)."""
+    from backend.app.services.kprofile_autolink import autolink_spool
+
+    try:
+        await autolink_spool(db=db, spool=spool)
+        await db.commit()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Auto-link of K-profiles for spool %s failed: %s", getattr(spool, "id", "?"), e)
+
+
 # Material temperature defaults (nozzle min/max)
 MATERIAL_TEMPS: dict[str, tuple[int, int]] = {
     "PLA": (190, 230),
@@ -989,6 +1002,7 @@ async def create_spool(
     db.add(spool)
     await db.commit()
     await db.refresh(spool)
+    await _safe_autolink(db, spool)
     result = await db.execute(select(Spool).options(selectinload(Spool.k_profiles)).where(Spool.id == spool.id))
     return result.scalar_one()
 
@@ -1015,6 +1029,8 @@ async def bulk_create_spools(
         db.add(spool)
         spools.append(spool)
     await db.commit()
+    for spool in spools:
+        await _safe_autolink(db, spool)
     ids = [s.id for s in spools]
     result = await db.execute(select(Spool).options(selectinload(Spool.k_profiles)).where(Spool.id.in_(ids)))
     return list(result.scalars().all())
@@ -1042,8 +1058,30 @@ async def update_spool(
         setattr(spool, field, value)
 
     await db.commit()
+    # Re-link when the resolved filament_id changed (or on any save — cheap
+    # and keeps links current with the spool's current preset).
+    if "resolved_filament_id" in update_data or "slicer_filament" in update_data:
+        await _safe_autolink(db, spool)
     result = await db.execute(select(Spool).options(selectinload(Spool.k_profiles)).where(Spool.id == spool_id))
     return result.scalar_one()
+
+
+@router.post("/spools/{spool_id}/relink-kprofiles")
+async def relink_spool_kprofiles(
+    spool_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
+):
+    """Manually re-run K-profile auto-linking for one spool."""
+    from backend.app.services.kprofile_autolink import autolink_spool
+
+    result = await db.execute(select(Spool).where(Spool.id == spool_id))
+    spool = result.scalar_one_or_none()
+    if not spool:
+        raise HTTPException(404, "Spool not found")
+    count = await autolink_spool(db=db, spool=spool)
+    await db.commit()
+    return {"status": "ok", "linked": count}
 
 
 @router.delete("/spools/{spool_id}")
