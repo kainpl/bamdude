@@ -3798,9 +3798,58 @@ export default {
       },
     },
   },
+  systemHealth: {
+    sectionTitle: 'System Health',
+    sectionDescription: 'Scans recent logs for known issues you can usually fix yourself, before they turn into a support ticket.',
+    rescan: 'Re-scan',
+    clean: 'No known issues found in the last {{times}} log entries.',
+    logUnavailable: 'File logging is disabled, so logs cannot be scanned. Enable file logging to use this check.',
+    learnMore: 'How to fix',
+    fixLabel: 'Fix:',
+    occurrences: 'Seen {{times}}× — last at {{lastSeen}}',
+    category: {
+      layer8: 'You can fix this',
+      environment: 'Environment',
+      bug: 'Please report this',
+    },
+    signature: {
+      'ftp-auth-rejected': {
+        name: 'Printer rejected the access code',
+        cause: 'The printer refused the file-transfer login. The access code is wrong, or it changed after Developer Mode was toggled.',
+        fix: 'Re-copy the access code from the printer screen (LAN settings) and update it in the printer\'s settings in BamDude.',
+      },
+      'ftp-connection-timeout': {
+        name: 'File-transfer connection timed out',
+        cause: 'BamDude could not reach the printer\'s file-transfer port (FTPS 990). The port is blocked, or the printer is off or on another subnet.',
+        fix: 'Make sure nothing blocks port 990 between BamDude and the printer, and that both are on the same network.',
+      },
+      'ftp-ssl-error': {
+        name: 'Secure file-transfer handshake failed',
+        cause: 'The TLS handshake with the printer\'s file-transfer server failed. This is often a firewall or outdated printer firmware.',
+        fix: 'Update the printer firmware and check that no firewall or proxy intercepts the connection on port 990.',
+      },
+      'mqtt-connection-flapping': {
+        name: 'Printer connection keeps dropping',
+        cause: 'The control connection (MQTT 8883) repeatedly disconnects and reconnects — usually a weak network path or a partially blocked port.',
+        fix: 'Check the Wi-Fi signal at the printer, prefer a wired connection, and make sure port 8883 is reliably reachable.',
+      },
+      'camera-connection-refused': {
+        name: 'Camera stream unreachable',
+        cause: 'The live camera could not be reached on port RTSPS 322. The port is blocked, or the camera or LAN liveview is off on the printer.',
+        fix: 'Enable the camera and LAN liveview on the printer, and make sure port 322 is not blocked. This does not affect printing.',
+      },
+      'database-locked': {
+        name: 'Database write contention',
+        cause: 'The SQLite database is hitting "database is locked" errors under load — common when running several printers at once.',
+        fix: 'Switch BamDude to an external PostgreSQL database. See the PostgreSQL guide in the documentation.',
+      },
+    },
+  },
   bugReport: {
     title: 'Report a Bug',
     description: 'Description',
+    logHealthSummary: 'Known issues found in your logs',
+    logHealthIntro: 'Recent logs match known problems. Check the fixes below — resolving them could solve your issue without a bug report. You can still submit a report below.',
     diagnosticChecking: 'Checking printer connections...',
     diagnosticHealthy: 'Connection check passed — no problems found on your printers.',
     diagnosticHeading: 'Possible setup issue detected',

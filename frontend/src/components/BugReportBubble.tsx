@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
 import { api, bugReportApi, type PrinterDiagnosticResult } from '../api/client';
 import { DiagnosticChecklist } from './ConnectionDiagnostic';
+import { SystemHealthPanel } from './SystemHealthPanel';
 
 type ViewState = 'form' | 'logging' | 'stopping' | 'submitting' | 'success' | 'error';
 
@@ -76,6 +77,18 @@ export function BugReportBubble() {
   });
   const diagnosticResults = diagnosticScan.data ?? [];
   const diagnosticProblems = diagnosticResults.filter((r) => r.overall === 'problems');
+
+  // Scan recent logs against the known-issue catalog. Like the diagnostic
+  // above, this surfaces user-fixable ("layer 8") problems before a report is
+  // filed. Only shown when something matched — a clean scan stays silent so
+  // the form is uncluttered.
+  const logHealthScan = useQuery({
+    queryKey: ['bugReportLogHealth'],
+    enabled: isOpen && viewState === 'form',
+    staleTime: 30_000,
+    queryFn: api.getSystemHealth,
+  });
+  const logFindings = logHealthScan.data?.findings ?? [];
 
   // Elapsed timer for the logging phase — auto-stop at 5 minutes.
   useEffect(() => {
@@ -269,6 +282,25 @@ export function BugReportBubble() {
                         </p>
                       </div>
                     )}
+
+                  {/* Log-health scan — known issues found in recent logs.
+                      Shown only when something matched. */}
+                  {!logHealthScan.isLoading && logFindings.length > 0 && logHealthScan.data && (
+                    <div className="rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 p-3 space-y-3">
+                      <div className="flex items-start gap-2">
+                        <Stethoscope className="w-4 h-4 mt-0.5 flex-shrink-0 text-amber-600 dark:text-amber-400" />
+                        <div>
+                          <p className="text-sm font-medium text-amber-700 dark:text-amber-300">
+                            {t('bugReport.logHealthSummary')}
+                          </p>
+                          <p className="text-xs text-amber-800 dark:text-amber-200 mt-0.5">
+                            {t('bugReport.logHealthIntro')}
+                          </p>
+                        </div>
+                      </div>
+                      <SystemHealthPanel result={logHealthScan.data} />
+                    </div>
+                  )}
 
                   {/* Description */}
                   <div>

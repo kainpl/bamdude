@@ -24,11 +24,13 @@ import {
   Cog,
   Info,
   Stethoscope,
+  HeartPulse,
 } from 'lucide-react';
 import { api, supportApi, type Printer as PrinterModel } from '../api/client';
 import { Card } from '../components/Card';
 import { LogViewer } from '../components/LogViewer';
 import { ConnectionDiagnosticModal } from '../components/ConnectionDiagnostic';
+import { SystemHealthPanel } from '../components/SystemHealthPanel';
 import { LogArchivesPanel } from '../components/LogArchivesPanel';
 import { SlicerHealthIndicator } from '../components/SlicerHealthIndicator';
 import { formatDateTime, type TimeFormat } from '../utils/date';
@@ -132,6 +134,16 @@ export function SystemInfoPage() {
   const { data: allPrinters } = useQuery({
     queryKey: ['printers'],
     queryFn: api.getPrinters,
+  });
+
+  const {
+    data: systemHealth,
+    refetch: refetchHealth,
+    isFetching: healthFetching,
+  } = useQuery({
+    queryKey: ['systemHealth'],
+    queryFn: api.getSystemHealth,
+    staleTime: 60 * 1000,
   });
 
   const timeFormat: TimeFormat = settings?.time_format || 'system';
@@ -430,6 +442,26 @@ export function SystemInfoPage() {
           </div>
         ) : (
           <p className="text-bambu-gray">{t('diagnostic.noPrinters', 'No printers configured.')}</p>
+        )}
+      </Section>
+
+      {/* System Health */}
+      <Section title={t('systemHealth.sectionTitle')} icon={HeartPulse}>
+        <div className="flex items-start justify-between gap-3 mb-3">
+          <p className="text-sm text-bambu-gray">{t('systemHealth.sectionDescription')}</p>
+          <button
+            onClick={() => refetchHealth()}
+            disabled={healthFetching}
+            className="flex items-center gap-2 px-3 py-1.5 text-sm bg-bambu-dark-secondary hover:bg-bambu-dark-tertiary text-white rounded-lg transition-colors flex-shrink-0 disabled:opacity-50"
+          >
+            <RefreshCw className={`w-4 h-4 ${healthFetching ? 'animate-spin' : ''}`} />
+            {t('systemHealth.rescan')}
+          </button>
+        </div>
+        {systemHealth ? (
+          <SystemHealthPanel result={systemHealth} />
+        ) : (
+          <p className="text-sm text-bambu-gray">{t('common.loading')}</p>
         )}
       </Section>
 
