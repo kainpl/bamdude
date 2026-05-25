@@ -15,9 +15,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.models.firmware import FirmwareBatchItem, FirmwareBatchRun
 from backend.app.models.printer import Printer
 from backend.app.models.user import User
+from backend.app.schemas.firmware_batch import (
+    BatchItemOut,
+    BatchPreviewResponse,
+    BatchRunOut,
+    BatchStartRequest,
+    BatchStartResponse,
+    PreviewModelGroup,
+)
+from backend.app.services.firmware_batch import BatchTarget, _is_printing, firmware_batch_service
 from backend.app.services.firmware_check import get_firmware_service
+from backend.app.services.firmware_profiles import get_firmware_profile
 from backend.app.services.firmware_update import (
     FirmwareUploadStatus,
     get_firmware_update_service,
@@ -331,3 +342,119 @@ async def get_firmware_upload_status(
         firmware_filename=state.firmware_filename,
         firmware_version=state.firmware_version,
     )
+
+
+# ---------------------------------------------------------------------------
+# Bulk (mass) firmware update — many printers in one run, grouped per model.
+# ---------------------------------------------------------------------------
+
+
+def _batch_run_to_out(run: FirmwareBatchRun, items: list[FirmwareBatchItem]) -> BatchRunOut:
+    return BatchRunOut(
+        id=run.id,
+        status=run.status,
+        total=run.total,
+        succeeded=run.succeeded,
+        skipped=run.skipped,
+        failed=run.failed,
+        items=[
+            BatchItemOut(
+                printer_id=i.printer_id,
+                model=i.model,
+                from_version=i.from_version,
+                to_version=i.to_version,
+                status=i.status,
+                message=i.message,
+                error=i.error,
+            )
+            for i in items
+        ],
+    )
+
+
+@router.post("/batch", response_model=BatchStartResponse)
+async def start_batch(
+    body: BatchStartRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = RequirePermission(Permission.FIRMWARE_UPDATE),
+):
+    """Start a bulk firmware run across the selected printers."""
+    svc = get_firmware_service()
+    targets: list[BatchTarget] = []
+    for t in body.targets:
+        printer = (await db.execute(select(Printer).where(Printer.id == t.printer_id))).scalar_one_or_none()
+        if not printer:
+            continue
+        if body.skip_printing and _is_printing(t.printer_id):
+            continue  # excluded at start (also re-checked at run time)
+        model = printer.model or "Unknown"
+        version = t.version
+        if not version:
+            latest = await svc.get_latest_version(model)
+            version = latest.version if latest else None
+        if not version:
+            raise HTTPException(400, f"No firmware version resolvable for printer {t.printer_id}")
+        client = printer_manager.get_client(t.printer_id)
+        from_version = client.state.firmware_version if client and client.state else None
+        targets.append(BatchTarget(printer_id=t.printer_id, model=model, version=version, from_version=from_version))
+    if not targets:
+        raise HTTPException(400, "No eligible printers (all skipped or unresolved)")
+    run_id = await firmware_batch_service.start_batch(targets, actor_id=user.id if user else None)
+    return BatchStartResponse(run_id=run_id)
+
+
+@router.post("/batch/preview", response_model=BatchPreviewResponse)
+async def preview_batch(
+    body: BatchStartRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.FIRMWARE_READ),
+):
+    """Group the selected printers by model and report versions + skip list."""
+    svc = get_firmware_service()
+    groups: dict[str, PreviewModelGroup] = {}
+    for t in body.targets:
+        printer = (await db.execute(select(Printer).where(Printer.id == t.printer_id))).scalar_one_or_none()
+        if not printer:
+            continue
+        model = printer.model or "Unknown"
+        if model not in groups:
+            versions = [v.version for v in await svc.get_available_versions(model)]
+            latest = await svc.get_latest_version(model)
+            groups[model] = PreviewModelGroup(
+                model=model,
+                printer_ids=[],
+                available_versions=versions,
+                default_version=(latest.version if latest else None),
+                remote_apply=get_firmware_profile(model).remote_apply,
+                skipped_printer_ids=[],
+            )
+        groups[model].printer_ids.append(t.printer_id)
+        if _is_printing(t.printer_id):
+            groups[model].skipped_printer_ids.append(t.printer_id)
+    return BatchPreviewResponse(groups=list(groups.values()))
+
+
+@router.get("/batch/{run_id}", response_model=BatchRunOut)
+async def get_batch(
+    run_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.FIRMWARE_READ),
+):
+    run = (await db.execute(select(FirmwareBatchRun).where(FirmwareBatchRun.id == run_id))).scalar_one_or_none()
+    if not run:
+        raise HTTPException(404, "Run not found")
+    items = (await db.execute(select(FirmwareBatchItem).where(FirmwareBatchItem.run_id == run_id))).scalars().all()
+    return _batch_run_to_out(run, items)
+
+
+@router.get("/batch", response_model=list[BatchRunOut])
+async def list_batches(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.FIRMWARE_READ),
+):
+    runs = (await db.execute(select(FirmwareBatchRun).order_by(FirmwareBatchRun.id.desc()).limit(50))).scalars().all()
+    out: list[BatchRunOut] = []
+    for run in runs:
+        items = (await db.execute(select(FirmwareBatchItem).where(FirmwareBatchItem.run_id == run.id))).scalars().all()
+        out.append(_batch_run_to_out(run, items))
+    return out
