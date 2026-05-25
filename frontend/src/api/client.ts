@@ -1373,6 +1373,7 @@ export interface AppSettings {
   ha_env_managed: boolean;
   // File Manager / Library settings
   library_disk_warning_gb: number;
+  library_all_files_recursive: boolean;
   // Camera view settings
   camera_view_mode: 'window' | 'embedded';
   // Preferred slicer

@@ -1571,12 +1571,16 @@ export function FileManagerPage() {
     staleTime: 30_000,
   });
 
+  const allFilesRecursive = settings?.library_all_files_recursive ?? false;
   const { data: files, isLoading: filesLoading } = useQuery({
-    queryKey: ['library-files', selectedFolderId],
-    // "All Files" (selectedFolderId === null) lists every file across folders,
-    // so include_root must be false — true would scope the result to files at
-    // the library root only and hide everything nested in subfolders (#1499).
-    queryFn: () => api.getLibraryFiles(selectedFolderId, false),
+    queryKey: ['library-files', selectedFolderId, allFilesRecursive],
+    // "All Files" (selectedFolderId === null): include_root=false lists every
+    // file across all subfolders recursively (#1499), include_root=true scopes
+    // to root-level files only. Gated on the library_all_files_recursive
+    // setting (default off → root-only, the pre-#1499 behaviour). When a
+    // specific folder is selected the backend ignores include_root.
+    queryFn: () =>
+      api.getLibraryFiles(selectedFolderId, selectedFolderId === null ? !allFilesRecursive : true),
   });
 
   const { data: stats } = useQuery({

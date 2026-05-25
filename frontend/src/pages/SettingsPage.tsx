@@ -1161,6 +1161,7 @@ export function SettingsPage() {
       settings.ha_url !== localSettings.ha_url ||
       settings.ha_token !== localSettings.ha_token ||
       Number(settings.library_disk_warning_gb ?? 5) !== Number(localSettings.library_disk_warning_gb ?? 5) ||
+      (settings.library_all_files_recursive ?? false) !== (localSettings.library_all_files_recursive ?? false) ||
       (settings.camera_view_mode ?? 'window') !== (localSettings.camera_view_mode ?? 'window') ||
       (settings.preferred_slicer ?? 'bambu_studio') !== (localSettings.preferred_slicer ?? 'bambu_studio') ||
       (settings.use_slicer_api ?? false) !== (localSettings.use_slicer_api ?? false) ||
@@ -1243,6 +1244,7 @@ export function SettingsPage() {
         ha_url: localSettings.ha_url,
         ha_token: localSettings.ha_token,
         library_disk_warning_gb: localSettings.library_disk_warning_gb,
+        library_all_files_recursive: localSettings.library_all_files_recursive,
         camera_view_mode: localSettings.camera_view_mode,
         preferred_slicer: localSettings.preferred_slicer,
         use_slicer_api: localSettings.use_slicer_api,
@@ -2083,6 +2085,22 @@ export function SettingsPage() {
                 <p className="text-xs text-bambu-gray mt-1">
                   {t('settings.lowDiskSpaceDescription')}
                 </p>
+              </div>
+
+              <div className="flex items-center justify-between border-t border-bambu-dark-tertiary pt-4">
+                <div className="pr-4">
+                  <p className="text-white">{t('settings.allFilesRecursive')}</p>
+                  <p className="text-sm text-bambu-gray">{t('settings.allFilesRecursiveDescription')}</p>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={localSettings.library_all_files_recursive ?? false}
+                    onChange={(e) => updateSetting('library_all_files_recursive', e.target.checked)}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                </label>
               </div>
 
               {/* Library auto-purge + trash (#1008). Admin-only — without

@@ -108,6 +108,7 @@ async def get_settings(
                 "stagger_strict_for_direct_dispatch",
                 "ldap_enabled",
                 "ldap_auto_provision",
+                "library_all_files_recursive",
             ]:
                 settings_dict[setting.key] = setting.value.lower() == "true"
             elif setting.key in [

@@ -214,6 +214,13 @@ class AppSettings(BaseModel):
         default=5.0,
         description="Show warning when free disk space falls below this threshold (GB)",
     )
+    library_all_files_recursive: bool = Field(
+        default=False,
+        description=(
+            "In the File Manager 'All Files' view, list files from every subfolder "
+            "recursively. When off (default), 'All Files' shows only root-level files."
+        ),
+    )
 
     # Camera view settings
     camera_view_mode: str = Field(
@@ -417,6 +424,7 @@ class AppSettingsUpdate(BaseModel):
     ha_url: str | None = None
     ha_token: str | None = None
     library_disk_warning_gb: float | None = None
+    library_all_files_recursive: bool | None = None
     camera_view_mode: str | None = None
     preferred_slicer: str | None = None
     use_slicer_api: bool | None = None

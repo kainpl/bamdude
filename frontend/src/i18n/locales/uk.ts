@@ -2105,6 +2105,8 @@ export default {
     fileManager: 'Файловий менеджер',
     lowDiskSpaceWarning: 'Попередження про мало місця на диску',
     lowDiskSpaceDescription: 'Показувати попередження, коли вільне місце менше цього порогу',
+    allFilesRecursive: 'Показувати всі файли рекурсивно',
+    allFilesRecursiveDescription: 'У вкладці «Усі файли» показувати файли з усіх вкладених папок. Коли вимкнено — «Усі файли» показує лише файли в корені бібліотеки.',
     // Updates
     printerFirmware: 'Прошивка принтера',
     checkFirmwareDescription: 'Перевіряти оновлення прошивки принтера від Bambu Lab',

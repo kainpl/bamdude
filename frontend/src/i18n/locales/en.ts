@@ -2091,6 +2091,8 @@ export default {
     fileManager: 'File Manager',
     lowDiskSpaceWarning: 'Low Disk Space Warning',
     lowDiskSpaceDescription: 'Show warning when free disk space falls below this threshold',
+    allFilesRecursive: 'Show all files recursively',
+    allFilesRecursiveDescription: 'In the "All Files" view, include files from every subfolder. When off, "All Files" shows only files at the library root.',
     // Updates
     printerFirmware: 'Printer Firmware',
     checkFirmwareDescription: 'Check for printer firmware updates from Bambu Lab',
