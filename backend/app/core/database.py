@@ -142,6 +142,7 @@ async def init_db():
         color_catalog,
         external_link,
         filament_sku_settings,
+        firmware,
         git_backup,
         group,
         kprofile_note,
