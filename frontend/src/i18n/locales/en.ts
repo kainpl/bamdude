@@ -1240,6 +1240,11 @@ export default {
   // Mass firmware update page
   firmware: {
     bulkTitle: 'Update Firmware',
+    tabUpdate: 'Update',
+    tabLog: 'Update log',
+    logEmpty: 'No firmware updates yet.',
+    sourceBulk: 'Bulk',
+    sourceSingle: 'Single',
     updateAll: 'Update all available',
     upgrade: 'Upgrade',
     version: 'Version',

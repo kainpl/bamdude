@@ -355,6 +355,8 @@ async def get_firmware_upload_status(
 def _batch_run_to_out(run: FirmwareBatchRun, items: list[FirmwareBatchItem]) -> BatchRunOut:
     return BatchRunOut(
         id=run.id,
+        created_at=run.created_at.isoformat() if run.created_at else None,
+        source=run.source,
         status=run.status,
         total=run.total,
         succeeded=run.succeeded,

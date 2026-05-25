@@ -8018,6 +8018,8 @@ export interface FirmwareBatchItem {
 }
 export interface FirmwareBatchRun {
   id: number;
+  created_at: string | null;
+  source: string;
   status: string;
   total: number;
   succeeded: number;

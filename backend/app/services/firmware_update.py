@@ -386,12 +386,36 @@ class FirmwareUpdateService:
 
             logger.info("Firmware upload complete for printer %s", printer_id)
 
+            # Record into the shared firmware update log (single-printer source).
+            from backend.app.services.firmware_batch import record_single_update
+
+            client = printer_manager.get_client(printer_id)
+            current = client.state.firmware_version if client and client.state else None
+            await record_single_update(
+                printer_id,
+                model,
+                from_version=current,
+                to_version=state.firmware_version or "",
+                status="uploaded",
+            )
+
         except Exception as e:
             logger.error("Firmware upload failed for printer %s: %s", printer_id, e)
             state.status = FirmwareUploadStatus.ERROR
             state.error = str(e)
             state.message = f"Firmware upload failed: {e}"
             await self._broadcast_progress(printer_id, state)
+
+            from backend.app.services.firmware_batch import record_single_update
+
+            await record_single_update(
+                printer_id,
+                model,
+                from_version=None,
+                to_version=target_version or (state.firmware_version or ""),
+                status="failed",
+                error=str(e),
+            )
 
     async def _broadcast_progress(self, printer_id: int, state: FirmwareUploadState):
         """Broadcast firmware upload progress via WebSocket."""

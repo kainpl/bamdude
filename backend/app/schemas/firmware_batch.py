@@ -54,6 +54,8 @@ class BatchItemOut(BaseModel):
 
 class BatchRunOut(BaseModel):
     id: int
+    created_at: str | None
+    source: str
     status: str
     total: int
     succeeded: int

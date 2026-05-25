@@ -44,6 +44,8 @@ class FirmwareBatchRun(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    # "bulk" = the mass-update page; "single" = the per-printer firmware modal.
+    source: Mapped[str] = mapped_column(String(16), default="bulk")
     status: Mapped[str] = mapped_column(String(16), default="running")  # running|completed|failed
     total: Mapped[int] = mapped_column(Integer, default=0)
     succeeded: Mapped[int] = mapped_column(Integer, default=0)

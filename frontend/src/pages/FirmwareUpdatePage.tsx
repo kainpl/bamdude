@@ -24,6 +24,7 @@ export function FirmwareUpdatePage() {
   const { showToast } = useToast();
   const queryClient = useQueryClient();
 
+  const [view, setView] = useState<'update' | 'log'>('update');
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [activeModel, setActiveModel] = useState<string | null>(null);
   const [versionByModel, setVersionByModel] = useState<Record<string, string>>({});
@@ -33,6 +34,11 @@ export function FirmwareUpdatePage() {
 
   const { data: printers } = useQuery({ queryKey: ['printers'], queryFn: api.getPrinters });
   const { data: updates } = useQuery({ queryKey: ['firmware-updates'], queryFn: firmwareApi.checkUpdates });
+  const { data: logRuns } = useQuery({
+    queryKey: ['firmware-batches'],
+    queryFn: firmwareApi.listBatches,
+    enabled: view === 'log',
+  });
 
   const allIds = useMemo(() => (printers ?? []).map((p) => p.id), [printers]);
 
@@ -162,23 +168,83 @@ export function FirmwareUpdatePage() {
           <Download className="w-5 h-5 text-bambu-green" />
           {t('firmware.bulkTitle')}
         </h1>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={updateAllAvailable}
-            className="px-3 py-2 rounded-lg bg-bambu-dark-tertiary text-white hover:bg-bambu-dark-tertiary/80"
-          >
-            {t('firmware.updateAll')}
-          </button>
-          <button
-            onClick={() => launch.mutate()}
-            disabled={launchableCount === 0 || launch.isPending || runId != null}
-            className="px-4 py-2 rounded-lg bg-bambu-green text-white disabled:opacity-50"
-          >
-            {t('firmware.upgrade')} ({launchableCount})
-          </button>
-        </div>
+        {view === 'update' && (
+          <div className="flex items-center gap-2">
+            <button
+              onClick={updateAllAvailable}
+              className="px-3 py-2 rounded-lg bg-bambu-dark-tertiary text-white hover:bg-bambu-dark-tertiary/80"
+            >
+              {t('firmware.updateAll')}
+            </button>
+            <button
+              onClick={() => launch.mutate()}
+              disabled={launchableCount === 0 || launch.isPending || runId != null}
+              className="px-4 py-2 rounded-lg bg-bambu-green text-white disabled:opacity-50"
+            >
+              {t('firmware.upgrade')} ({launchableCount})
+            </button>
+          </div>
+        )}
       </div>
 
+      {/* Top-level view switcher: Update vs Update Log */}
+      <div className="flex gap-1 border-b border-bambu-dark-tertiary mb-4">
+        <button
+          onClick={() => setView('update')}
+          className={`px-3 py-2 text-sm ${view === 'update' ? 'text-white border-b-2 border-bambu-green' : 'text-bambu-gray hover:text-white'}`}
+        >
+          {t('firmware.tabUpdate')}
+        </button>
+        <button
+          onClick={() => setView('log')}
+          className={`px-3 py-2 text-sm ${view === 'log' ? 'text-white border-b-2 border-bambu-green' : 'text-bambu-gray hover:text-white'}`}
+        >
+          {t('firmware.tabLog')}
+        </button>
+      </div>
+
+      {view === 'log' && (
+        <div className="space-y-3">
+          {(logRuns ?? []).length === 0 && (
+            <p className="text-bambu-gray text-sm">{t('firmware.logEmpty')}</p>
+          )}
+          {(logRuns ?? []).map((run) => (
+            <div key={run.id} className="rounded-lg border border-bambu-dark-tertiary p-3">
+              <div className="flex items-center gap-2 mb-2 text-sm">
+                <span className="text-white">
+                  {run.created_at ? new Date(run.created_at).toLocaleString() : `#${run.id}`}
+                </span>
+                <span
+                  className={`text-xs px-2 py-0.5 rounded ${
+                    run.source === 'single' ? 'bg-bambu-dark-tertiary text-bambu-gray' : 'bg-bambu-green/20 text-bambu-green'
+                  }`}
+                >
+                  {run.source === 'single' ? t('firmware.sourceSingle') : t('firmware.sourceBulk')}
+                </span>
+                <span className="text-bambu-gray text-xs">
+                  ✓{run.succeeded} · ⏭{run.skipped} · ✗{run.failed}
+                </span>
+              </div>
+              <table className="w-full text-xs">
+                <tbody>
+                  {run.items.map((it) => (
+                    <tr key={`${run.id}-${it.printer_id}`} className="text-bambu-gray">
+                      <td className="py-1 pr-3 text-white">{it.model}</td>
+                      <td className="py-1 pr-3">
+                        {it.from_version ?? '—'} {'→'} {it.to_version}
+                      </td>
+                      <td className="py-1">{t(`firmware.status.${it.status}`, { defaultValue: it.status })}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {view === 'update' && (
+      <>
       {/* Model tabs */}
       <div className="flex gap-1 border-b border-bambu-dark-tertiary mb-3 overflow-x-auto">
         {groups.map((g) => (
@@ -301,6 +367,8 @@ export function FirmwareUpdatePage() {
 
       {groups.length === 0 && (
         <p className="text-bambu-gray text-sm mt-6">{t('firmware.noPrinters')}</p>
+      )}
+      </>
       )}
     </div>
   );

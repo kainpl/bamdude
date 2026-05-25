@@ -1248,6 +1248,11 @@ export default {
   // Mass firmware update page
   firmware: {
     bulkTitle: 'Оновлення прошивки',
+    tabUpdate: 'Оновлення',
+    tabLog: 'Журнал оновлень',
+    logEmpty: 'Оновлень прошивки ще не було.',
+    sourceBulk: 'Масове',
+    sourceSingle: 'Поодиноке',
     updateAll: 'Оновити всі доступні',
     upgrade: 'Оновити',
     version: 'Версія',

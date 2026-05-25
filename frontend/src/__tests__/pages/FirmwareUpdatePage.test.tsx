@@ -76,4 +76,40 @@ describe('FirmwareUpdatePage', () => {
     expect(body.targets[0].printer_id).toBe(1);
     expect(body.targets[0].version).toBe('01.02.00.00');
   });
+
+  it('shows past runs (incl. single-source) in the update log tab', async () => {
+    server.use(
+      http.get('/api/v1/firmware/batch', () =>
+        HttpResponse.json([
+          {
+            id: 5,
+            created_at: '2026-05-25T10:00:00',
+            source: 'single',
+            status: 'completed',
+            total: 1,
+            succeeded: 1,
+            skipped: 0,
+            failed: 0,
+            items: [
+              {
+                printer_id: 1,
+                model: 'P1S',
+                from_version: '01.00.00.00',
+                to_version: '01.02.00.00',
+                status: 'uploaded',
+                message: null,
+                error: null,
+              },
+            ],
+          },
+        ]),
+      ),
+    );
+
+    render(<FirmwareUpdatePage />);
+    await userEvent.click(screen.getByRole('button', { name: /Update log/i }));
+
+    await waitFor(() => expect(screen.getByText('Single')).toBeInTheDocument());
+    expect(screen.getByText(/01\.00\.00\.00/)).toBeInTheDocument();
+  });
 });

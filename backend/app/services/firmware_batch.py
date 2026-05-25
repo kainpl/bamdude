@@ -229,4 +229,57 @@ async def _get_concurrency() -> int:
         return DEFAULT_CONCURRENCY
 
 
+async def record_single_update(
+    printer_id: int,
+    model: str,
+    from_version: str | None,
+    to_version: str,
+    status: str,
+    *,
+    message: str | None = None,
+    error: str | None = None,
+    actor_id: int | None = None,
+) -> None:
+    """Record a per-printer (single, legacy-modal) firmware update into the same
+    history the bulk runs use, so the update log shows both. One run, one item,
+    ``source="single"``.
+    """
+    # Re-import at call time so the test harness's patch of the module-level
+    # session maker applies (services bind ``async_session`` at import time).
+    from backend.app.core.database import async_session
+
+    succeeded = 1 if status in ("uploaded", "applied") else 0
+    failed = 1 if status == "failed" else 0
+    try:
+        async with async_session() as db:
+            run = FirmwareBatchRun(
+                created_by_id=actor_id,
+                source="single",
+                status="completed",
+                total=1,
+                succeeded=succeeded,
+                skipped=0,
+                failed=failed,
+            )
+            db.add(run)
+            await db.flush()
+            db.add(
+                FirmwareBatchItem(
+                    run_id=run.id,
+                    printer_id=printer_id,
+                    model=model,
+                    from_version=from_version,
+                    to_version=to_version,
+                    action="download_only",
+                    status=status,
+                    message=message,
+                    error=error,
+                    finished_at=_now(),
+                )
+            )
+            await db.commit()
+    except Exception as exc:  # never let logging break the actual update
+        logger.warning("Could not record single firmware update for printer %s: %s", printer_id, exc)
+
+
 firmware_batch_service = FirmwareBatchService()

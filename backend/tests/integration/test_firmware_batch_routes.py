@@ -39,3 +39,23 @@ async def test_start_batch_400_when_no_eligible_printers(async_client, monkeypat
 async def test_get_batch_404_for_missing_run(async_client):
     r = await async_client.get("/api/v1/firmware/batch/999999")
     assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_single_printer_update_appears_in_log(async_client, printer_factory):
+    """A per-printer (legacy modal) update is recorded into the same log with
+    source='single' so the update journal shows both mechanisms."""
+    printer = await printer_factory(model="P1S")
+    from backend.app.services.firmware_batch import record_single_update
+
+    await record_single_update(
+        printer.id, "P1S", from_version="01.00.00.00", to_version="01.02.00.00", status="uploaded"
+    )
+
+    r = await async_client.get("/api/v1/firmware/batch")
+    assert r.status_code == 200
+    runs = r.json()
+    single = [run for run in runs if run["source"] == "single"]
+    assert single, "single-source run must appear in the log"
+    assert single[0]["items"][0]["to_version"] == "01.02.00.00"
+    assert single[0]["created_at"]  # timestamp present for the journal
