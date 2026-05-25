@@ -7977,7 +7977,48 @@ export const firmwareApi = {
 
   getUploadStatus: (printerId: number) =>
     request<FirmwareUploadStatus>(`/firmware/updates/${printerId}/upload/status`),
+
+  // Bulk (mass) firmware update
+  previewBatch: (targets: { printer_id: number; version?: string }[]) =>
+    request<{ groups: FirmwarePreviewGroup[] }>('/firmware/batch/preview', {
+      method: 'POST',
+      body: JSON.stringify({ targets }),
+    }),
+  startBatch: (targets: { printer_id: number; version?: string }[], skipPrinting = true) =>
+    request<{ run_id: number }>('/firmware/batch', {
+      method: 'POST',
+      body: JSON.stringify({ targets, skip_printing: skipPrinting }),
+    }),
+  getBatch: (runId: number) => request<FirmwareBatchRun>(`/firmware/batch/${runId}`),
+  listBatches: () => request<FirmwareBatchRun[]>('/firmware/batch'),
 };
+
+export interface FirmwarePreviewGroup {
+  model: string;
+  printer_ids: number[];
+  available_versions: string[];
+  default_version: string | null;
+  remote_apply: boolean;
+  skipped_printer_ids: number[];
+}
+export interface FirmwareBatchItem {
+  printer_id: number;
+  model: string;
+  from_version: string | null;
+  to_version: string;
+  status: string;
+  message: string | null;
+  error: string | null;
+}
+export interface FirmwareBatchRun {
+  id: number;
+  status: string;
+  total: number;
+  succeeded: number;
+  skipped: number;
+  failed: number;
+  items: FirmwareBatchItem[];
+}
 
 // Support types
 export interface DebugLoggingState {
