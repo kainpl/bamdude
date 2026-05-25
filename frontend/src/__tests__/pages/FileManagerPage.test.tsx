@@ -149,14 +149,38 @@ describe('FileManagerPage', () => {
     );
   });
 
-  describe('All Files include_root (#1499)', () => {
-    it('requests every file with include_root=false and shows nested files', async () => {
+  describe('All Files recursive listing (#1499 + toggle)', () => {
+    it('defaults to include_root=true (root-only) when the recursive setting is off', async () => {
+      // Default settings omit library_all_files_recursive (→ false), so
+      // "All Files" keeps the pre-#1499 behaviour: only root-level files.
       let capturedIncludeRoot: string | null = null;
       server.use(
         http.get('/api/v1/library/files', ({ request }) => {
           capturedIncludeRoot = new URL(request.url).searchParams.get('include_root');
-          // A library where the only file lives inside a subfolder — under the
-          // pre-fix include_root=true this rendered empty.
+          return HttpResponse.json(mockFiles);
+        }),
+      );
+
+      render(<FileManagerPage />);
+
+      await waitFor(() => expect(capturedIncludeRoot).toBe('true'));
+    });
+
+    it('requests include_root=false and shows nested files when the recursive setting is on', async () => {
+      let capturedIncludeRoot: string | null = null;
+      server.use(
+        http.get('/api/v1/settings/', () =>
+          HttpResponse.json({
+            check_updates: false,
+            check_printer_firmware: false,
+            library_disk_warning_gb: 5,
+            library_all_files_recursive: true,
+          }),
+        ),
+        http.get('/api/v1/library/files', ({ request }) => {
+          capturedIncludeRoot = new URL(request.url).searchParams.get('include_root');
+          // A library where the only file lives inside a subfolder — under
+          // include_root=true this would render empty.
           return HttpResponse.json([
             { ...mockFiles[0], id: 99, filename: 'nested-only.3mf', folder_id: 2, print_name: null },
           ]);

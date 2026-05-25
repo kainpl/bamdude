@@ -41,13 +41,21 @@ qrcode[pil]>=7.4.0
 # PDF spool labels (B.1 from upstream 0.2.4b2)
 reportlab>=4.0.0
 
-# STL Thumbnail Generation. The calibration 3MF writer also uses
-# trimesh's STL loader, but only the bare loader — no slice_plane,
-# no mesh editing — so trimesh's optional heavy deps (scipy, shapely,
-# mapbox-earcut, networkx) are NOT pulled in. Tower-shape calibrations
-# scale via the 3MF build-item transform instead of cutting the mesh,
-# matching BS's own ``Plater.cpp::_calib_pa_select`` approach.
+# STL Thumbnail Generation + calibration mesh editing. The calibration
+# tower modes (Temp / Retraction / VFA / Max-Volumetric-Speed) Z-cut the
+# scaffold mesh down to the requested sweep range: trimesh ``mesh.split``
+# separates connected bodies, then ``slice_plane(cap=True)`` cuts each and
+# triangulates a watertight cap. Those paths pull in trimesh's otherwise
+# optional heavy deps — a graph engine (scipy / networkx) for split +
+# section, and polygon triangulation (shapely + mapbox-earcut) for the cap.
+# Without them the towers fail with "no graph engines available" /
+# "ModuleNotFoundError: scipy". (The PA Tower still scales via the 3MF
+# build-item transform; only the range-trimmed towers need the cut.)
 trimesh>=4.0.0
+scipy>=1.11.0
+networkx>=3.0
+shapely>=2.0.0
+mapbox-earcut>=1.0.0
 matplotlib>=3.8.0
 fast-simplification>=0.1.0
 
