@@ -1011,7 +1011,6 @@ export default {
     pauseQueue: 'Pause queue',
     resumeQueue: 'Resume queue',
     pausedPill: 'Paused',
-    errorState: 'Queue encountered an error',
     currentPrint: 'Currently printing',
     showMore: 'Show {{count}} more',
     showLess: 'Show less',

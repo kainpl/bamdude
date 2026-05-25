@@ -33,6 +33,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { formatETA, formatDuration } from '../utils/date';
 import { mapModelCode } from '../utils/printer';
+import { queueResumePayload } from '../utils/queueStatus';
 
 interface QueueCardProps {
   queue: PrinterQueue;
@@ -436,13 +437,9 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
   const handlePauseResume = () => {
     if (!hasPermission('queue:update_all')) return;
     if (queueHalted) {
-      // Resume: clear the operator pause; if the queue also carries a
-      // status-level paused/error state, reset that to idle too.
-      toggleQueueMutation.mutate(
-        queue.status === 'paused' || queue.status === 'error'
-          ? { is_paused: false, status: 'idle' }
-          : { is_paused: false },
-      );
+      // Resume: clear the operator pause AND any status-level paused/error
+      // state, so this single control fully restarts dispatch.
+      toggleQueueMutation.mutate(queueResumePayload(queue.status));
     } else {
       // Pause — allowed in any status, including while printing.
       toggleQueueMutation.mutate({ is_paused: true });
@@ -500,25 +497,6 @@ export function QueueCard({ queue, onEditItem }: QueueCardProps) {
             </button>
           </div>
         </div>
-
-        {/* Error banner */}
-        {queue.status === 'error' && (
-          <div className="flex items-center gap-2 p-2 rounded-lg bg-red-500/10 border border-red-500/20">
-            <AlertCircle className="w-4 h-4 text-red-400 flex-shrink-0" />
-            <span className="text-xs text-red-400 flex-1">{t('queueCard.errorState')}</span>
-            <button
-              onClick={() => {
-                if (hasPermission('queue:update_all')) {
-                  toggleQueueMutation.mutate({ status: 'idle' });
-                }
-              }}
-              disabled={toggleQueueMutation.isPending || !hasPermission('queue:update_all')}
-              className="text-xs px-2 py-0.5 rounded bg-red-500/20 text-red-400 hover:bg-red-500/30 transition-colors disabled:opacity-50"
-            >
-              {t('queueCard.resumeQueue')}
-            </button>
-          </div>
-        )}
 
         {/* Current print section */}
         {queue.status === 'printing' && currentPrintName && status && (

@@ -1017,7 +1017,6 @@ export default {
     pauseQueue: 'Призупинити чергу',
     resumeQueue: 'Відновити чергу',
     pausedPill: 'На паузі',
-    errorState: 'Черга зіткнулася з помилкою',
     currentPrint: 'Зараз друкується',
     showMore: 'Показати ще {{count}}',
     showLess: 'Згорнути',

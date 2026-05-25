@@ -14,6 +14,7 @@ All notable changes to BamDude will be documented in this file.
 
 ### Fixed
 
+- **Queue error state is simpler and no longer gets stuck "resumed but not running".** A queue can be halted by two independent things — the operator's pause (`is_paused`) and a fault (`status='error'`) — and they can be set at the same time. The old separate error banner had its own "Resume" button that cleared only the error, leaving the operator pause in place, so the queue still wouldn't dispatch (its only hint a small "paused" pill). The error banner is removed; the error now shows in the queue's status pill alongside idle/printing/paused, and the single Pause/Resume control fully resumes — clearing both the fault and the pause at once.
 - **Filament Calibration no longer hides your own process/filament profiles (notably on A1 mini).** The wizard filtered profiles against a *fabricated* printer name built from the hardware short code (`Bambu Lab A1 Mini 0.4 nozzle`), whose casing didn't match the real preset name the slicer records in `compatible_printers` (`Bambu Lab A1 mini`) — so a printer's own cloud profiles were treated as a wrong-printer mismatch and dropped, often leaving a single unrelated profile visible. The wizard now resolves the actually-selected printer preset's real name (the same approach the Slice dialog uses, which was unaffected); your compatible profiles show again while genuinely wrong-printer ones stay filtered. (Regression from the #1325 profile-filtering port.)
 
 ## [0.4.5b5] - 2026-05-25
