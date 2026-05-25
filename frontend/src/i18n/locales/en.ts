@@ -1251,6 +1251,7 @@ export default {
     skippedPrinting: 'Skipped — printing',
     remoteApply: 'Applies over network',
     manualApplyBadge: 'Manual apply on printer',
+    applyNext: 'Now apply on each printer',
     noPrinters: 'No printers to update.',
     batchStarted: 'Firmware update started',
     batchError: 'Could not start the firmware update',

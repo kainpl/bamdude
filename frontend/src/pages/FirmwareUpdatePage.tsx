@@ -207,6 +207,22 @@ export function FirmwareUpdatePage() {
             </span>
           </div>
 
+          {/* After upload, surface the model-specific on-screen apply instruction —
+              same idea as the single-printer flow, which shows "go to the printer
+              screen and apply" once the file has landed on the SD card. The backend
+              sends the i18n key in the item message when a manual upload completes. */}
+          {(() => {
+            const instr = activeGroup.printer_ids
+              .map((id) => progress[id]?.message)
+              .find((m) => m && m.startsWith('firmware.manualApply'));
+            if (!instr) return null;
+            return (
+              <div className="mb-3 rounded-lg border border-bambu-green/40 bg-bambu-green/10 px-3 py-2 text-sm text-white">
+                <span className="font-medium">{t('firmware.applyNext')}:</span> {t(instr)}
+              </div>
+            );
+          })()}
+
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-bambu-gray border-b border-bambu-dark-tertiary">
