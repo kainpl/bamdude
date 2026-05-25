@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from 'react';
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { Printer, Archive, Calendar, BarChart3, Cloud, Settings, Sun, Moon, ChevronLeft, ChevronRight, Keyboard, GripVertical, ArrowUpCircle, Wrench, FolderKanban, FolderOpen, X, Menu, Info, Plug, Bug, LogOut, Key, Loader2, Disc3, ShieldAlert, Bell, BookOpen, type LucideIcon } from 'lucide-react';
+import { Printer, Archive, Calendar, BarChart3, Cloud, Settings, Sun, Moon, ChevronLeft, ChevronRight, Keyboard, GripVertical, ArrowUpCircle, Wrench, FolderKanban, FolderOpen, X, Menu, Info, Plug, Bug, LogOut, Key, Loader2, Disc3, ShieldAlert, Bell, BookOpen, Cpu, type LucideIcon } from 'lucide-react';
 import { GitHubIcon, TelegramIcon, MakerWorldIcon } from './BrandIcons';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '../contexts/ThemeContext';
@@ -58,6 +58,7 @@ export const defaultNavItems: NavItem[] = [
   { id: 'profiles', to: '/profiles', icon: Cloud, labelKey: 'nav.profiles', group: 'resources' },
   // Care — long-term printer health
   { id: 'maintenance', to: '/maintenance', icon: Wrench, labelKey: 'nav.maintenance', group: 'care' },
+  { id: 'firmware', to: '/firmware', icon: Cpu, labelKey: 'nav.firmware', group: 'care' },
   // System — account-level configuration
   { id: 'notifications', to: '/notifications', icon: Bell, labelKey: 'nav.notifications', group: 'system' },
   { id: 'system', to: '/system', icon: Info, labelKey: 'nav.system', group: 'system' },
@@ -339,6 +340,7 @@ export function Layout() {
       inventory: 'inventory:read',
       files: 'library:read',
       makerworld: 'makerworld:view',
+      firmware: 'firmware:read',
       settings: 'settings:read',
       notifications: 'notifications:user_email',
       system: 'system:read',

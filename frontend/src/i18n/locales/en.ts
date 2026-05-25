@@ -7,6 +7,7 @@ export default {
     stats: 'Statistics',
     profiles: 'Profiles',
     maintenance: 'Maintenance',
+    firmware: 'Firmware',
     projects: 'Projects',
     inventory: 'Filament',
     files: 'File Manager',
@@ -1234,6 +1235,41 @@ export default {
       from: 'From',
       to: 'To'
     }
+  },
+
+  // Mass firmware update page
+  firmware: {
+    bulkTitle: 'Update Firmware',
+    updateAll: 'Update all available',
+    upgrade: 'Upgrade',
+    version: 'Version',
+    printer: 'Printer',
+    firmware: 'Firmware',
+    printStatus: 'Print Status',
+    upgradeStatus: 'Upgrade Status',
+    idle: 'Idle',
+    skippedPrinting: 'Skipped — printing',
+    remoteApply: 'Applies over network',
+    manualApplyBadge: 'Manual apply on printer',
+    noPrinters: 'No printers to update.',
+    batchStarted: 'Firmware update started',
+    batchError: 'Could not start the firmware update',
+    status: {
+      pending: 'Pending',
+      uploading: 'Uploading',
+      uploaded: 'Uploaded',
+      applying: 'Applying',
+      applied: 'Applied',
+      skipped: 'Skipped',
+      failed: 'Failed',
+    },
+    manualApply: {
+      generic: 'On the printer screen, open Settings → Firmware and start the update (it reads the file from the SD card).',
+      p1: 'On the P1 screen: Settings (gear) → Device → Firmware → Update — it installs the file just uploaded to the SD card.',
+      x1: 'On the X1 touchscreen: Settings → General → Firmware Update → Update, which picks up the file from the SD card.',
+      a1: 'On the A1 screen: Settings → Firmware → Update to install the file from the SD card.',
+      h2: 'On the H2 touchscreen: Settings → Firmware → Update to install the file from the SD card.',
+    },
   },
 
   // Maintenance page

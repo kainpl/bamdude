@@ -256,6 +256,13 @@ export function useWebSocket() {
       return;
     }
 
+    // Bulk firmware update per-printer progress → CustomEvent for the
+    // FirmwareUpdatePage to drive its live Upgrade Status column.
+    if (message.type === 'firmware_batch_progress') {
+      window.dispatchEvent(new CustomEvent('firmware-batch-progress', { detail: message }));
+      return;
+    }
+
     switch (message.type) {
       case 'printer_status':
         if (message.printer_id !== undefined && message.data) {
