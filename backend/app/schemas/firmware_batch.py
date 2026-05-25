@@ -21,9 +21,21 @@ class PreviewModelGroup(BaseModel):
     model: str
     printer_ids: list[int]
     available_versions: list[str]  # both directions, newest first, incl. cached-only
+    cached_versions: list[str]  # versions already downloaded into the local store
     default_version: str | None
     remote_apply: bool
     skipped_printer_ids: list[int]  # currently printing
+
+
+class StoreDownloadRequest(BaseModel):
+    model: str
+    version: str
+
+
+class StoreDownloadResponse(BaseModel):
+    model: str
+    version: str
+    cached: bool  # True once the file is in the store (after this call)
 
 
 class BatchPreviewResponse(BaseModel):

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Download } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
 import { api, firmwareApi } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
 
@@ -21,6 +22,7 @@ interface ItemProgress {
 export function FirmwareUpdatePage() {
   const { t } = useTranslation();
   const { showToast } = useToast();
+  const queryClient = useQueryClient();
 
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [activeModel, setActiveModel] = useState<string | null>(null);
@@ -130,8 +132,21 @@ export function FirmwareUpdatePage() {
     onError: () => showToast(t('firmware.batchError'), 'error'),
   });
 
+  const downloadToStore = useMutation({
+    mutationFn: ({ model, version }: { model: string; version: string }) =>
+      firmwareApi.downloadToStore(model, version),
+    onSuccess: () => {
+      showToast(t('firmware.downloadedToStore'), 'success');
+      queryClient.invalidateQueries({ queryKey: ['firmware-preview'] });
+    },
+    onError: () => showToast(t('firmware.downloadStoreError'), 'error'),
+  });
+
   const activeGroup = groups.find((g) => g.model === activeModel) ?? null;
   const launchableCount = [...selected].filter((id) => !skippedIds.has(id)).length;
+  const activeVersion = activeGroup ? versionByModel[activeGroup.model] : undefined;
+  const activeVersionCached =
+    !!activeGroup && !!activeVersion && (activeGroup.cached_versions ?? []).includes(activeVersion);
 
   const statusLabel = (id: number) => {
     const pr = progress[id];
@@ -205,6 +220,24 @@ export function FirmwareUpdatePage() {
             >
               {activeGroup.remote_apply ? t('firmware.remoteApply') : t('firmware.manualApplyBadge')}
             </span>
+
+            {/* Store status for the selected version + pre-cache without touching a printer. */}
+            {activeVersionCached ? (
+              <span className="text-xs px-2 py-1 rounded bg-bambu-green/20 text-bambu-green">
+                ✓ {t('firmware.inStore')}
+              </span>
+            ) : (
+              <button
+                onClick={() =>
+                  activeVersion && downloadToStore.mutate({ model: activeGroup.model, version: activeVersion })
+                }
+                disabled={!activeVersion || downloadToStore.isPending}
+                className="text-xs px-2 py-1 rounded bg-bambu-dark-tertiary text-bambu-gray hover:text-white disabled:opacity-50"
+                title={t('firmware.notInStore')}
+              >
+                ↓ {t('firmware.downloadToStore')}
+              </button>
+            )}
           </div>
 
           {/* After upload, surface the model-specific on-screen apply instruction —

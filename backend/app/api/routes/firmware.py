@@ -25,7 +25,10 @@ from backend.app.schemas.firmware_batch import (
     BatchStartRequest,
     BatchStartResponse,
     PreviewModelGroup,
+    StoreDownloadRequest,
+    StoreDownloadResponse,
 )
+from backend.app.services import firmware_store
 from backend.app.services.firmware_batch import BatchTarget, _is_printing, firmware_batch_service
 from backend.app.services.firmware_check import get_firmware_service
 from backend.app.services.firmware_profiles import get_firmware_profile
@@ -420,10 +423,12 @@ async def preview_batch(
         if model not in groups:
             versions = [v.version for v in await svc.get_available_versions(model)]
             latest = await svc.get_latest_version(model)
+            cached = [sf.version for sf in await firmware_store.list_cached(model)]
             groups[model] = PreviewModelGroup(
                 model=model,
                 printer_ids=[],
                 available_versions=versions,
+                cached_versions=cached,
                 default_version=(latest.version if latest else None),
                 remote_apply=get_firmware_profile(model).remote_apply,
                 skipped_printer_ids=[],
@@ -458,3 +463,18 @@ async def list_batches(
         items = (await db.execute(select(FirmwareBatchItem).where(FirmwareBatchItem.run_id == run.id))).scalars().all()
         out.append(_batch_run_to_out(run, items))
     return out
+
+
+@router.post("/store/download", response_model=StoreDownloadResponse)
+async def download_to_store(
+    body: StoreDownloadRequest,
+    _: User | None = RequirePermission(Permission.FIRMWARE_UPDATE),
+):
+    """Download a firmware version into BamDude's local store WITHOUT touching any
+    printer. Lets the operator pre-cache (or archive) a version so it survives the
+    vendor removing it later. No-op (returns cached=True) if already stored.
+    """
+    sf = await firmware_store.get_or_download(body.model, body.version)
+    if sf is None:
+        raise HTTPException(400, "Firmware not available to download (no URL and not cached)")
+    return StoreDownloadResponse(model=body.model, version=body.version, cached=True)

@@ -30,6 +30,7 @@ const mockPreview = {
       model: 'P1S',
       printer_ids: [1, 2],
       available_versions: ['01.02.00.00', '01.01.00.00'],
+      cached_versions: ['01.01.00.00'],
       default_version: '01.02.00.00',
       remote_apply: false,
       skipped_printer_ids: [2],

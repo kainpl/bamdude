@@ -7991,12 +7991,18 @@ export const firmwareApi = {
     }),
   getBatch: (runId: number) => request<FirmwareBatchRun>(`/firmware/batch/${runId}`),
   listBatches: () => request<FirmwareBatchRun[]>('/firmware/batch'),
+  downloadToStore: (model: string, version: string) =>
+    request<{ model: string; version: string; cached: boolean }>('/firmware/store/download', {
+      method: 'POST',
+      body: JSON.stringify({ model, version }),
+    }),
 };
 
 export interface FirmwarePreviewGroup {
   model: string;
   printer_ids: number[];
   available_versions: string[];
+  cached_versions: string[];
   default_version: string | null;
   remote_apply: boolean;
   skipped_printer_ids: number[];
