@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Download } from 'lucide-react';
-import { useQueryClient } from '@tanstack/react-query';
+import { Cpu } from 'lucide-react';
 import { api, firmwareApi } from '../api/client';
+import { Button } from '../components/Button';
 import { useToast } from '../contexts/ToastContext';
 
 interface ItemProgress {
@@ -162,27 +162,24 @@ export function FirmwareUpdatePage() {
   };
 
   return (
-    <div className="p-4 md:p-6 max-w-6xl mx-auto">
-      <div className="flex items-center justify-between mb-4">
-        <h1 className="text-xl font-semibold text-white flex items-center gap-2">
-          <Download className="w-5 h-5 text-bambu-green" />
+    <div className="p-4 md:p-6">
+      <div className="flex items-center justify-between gap-3 mb-6">
+        <h1 className="text-2xl font-bold text-white flex items-center gap-3">
+          <Cpu className="w-7 h-7 text-bambu-green" />
           {t('firmware.bulkTitle')}
         </h1>
         {view === 'update' && (
           <div className="flex items-center gap-2">
-            <button
-              onClick={updateAllAvailable}
-              className="px-3 py-2 rounded-lg bg-bambu-dark-tertiary text-white hover:bg-bambu-dark-tertiary/80"
-            >
+            <Button variant="secondary" onClick={updateAllAvailable}>
               {t('firmware.updateAll')}
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="primary"
               onClick={() => launch.mutate()}
               disabled={launchableCount === 0 || launch.isPending || runId != null}
-              className="px-4 py-2 rounded-lg bg-bambu-green text-white disabled:opacity-50"
             >
               {t('firmware.upgrade')} ({launchableCount})
-            </button>
+            </Button>
           </div>
         )}
       </div>
