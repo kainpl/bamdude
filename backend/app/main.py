@@ -5890,6 +5890,12 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
     try:
+        from backend.app.services.firmware_batch import firmware_batch_service
+
+        await firmware_batch_service.shutdown()
+    except Exception:
+        pass
+    try:
         from backend.app.services.archive_purge import archive_purge_service
 
         archive_purge_service.stop_scheduler()
