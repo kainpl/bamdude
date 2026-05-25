@@ -103,3 +103,39 @@ async def test_get_or_download_returns_none_when_uncached_and_no_url(monkeypatch
     monkeypatch.setattr(firmware_store, "get_firmware_service", lambda: FakeSvc())
 
     assert await firmware_store.get_or_download("P1S", "99.99.99.99") is None
+
+
+@pytest.mark.asyncio
+async def test_available_versions_includes_cached_only(monkeypatch):
+    """A version held only in the local store (vendor dropped it) still appears
+    in the available list, flagged cached, so the operator can roll back to it."""
+    from backend.app.services import firmware_check as fc, firmware_store as fs
+
+    svc = fc.get_firmware_service()
+
+    async def fake_online(model):
+        return [fc.FirmwareVersion(version="01.02.00.00", download_url="https://x/a.bin")]
+
+    monkeypatch.setattr(svc, "_get_available_versions_online", fake_online)
+
+    async def fake_cached(model):
+        return [
+            fs.StoredFirmware(
+                model="P1S",
+                version="01.01.00.00",
+                filename="old.bin",
+                path=None,
+                sha256="sha",
+                size_bytes=1,
+                source_url=None,
+                release_notes="old",
+            )
+        ]
+
+    monkeypatch.setattr(fs, "list_cached", fake_cached)
+
+    versions = await svc.get_available_versions("P1S")
+    by_version = {v.version: v for v in versions}
+    assert "01.01.00.00" in by_version  # cached-only surfaced
+    assert by_version["01.01.00.00"].cached is True
+    assert by_version["01.02.00.00"].cached is False

@@ -126,6 +126,10 @@ class FirmwareVersion:
     download_url: str
     release_notes: str | None = None
     release_time: str | None = None
+    # True when this version is only available from the local firmware store
+    # (the vendor has removed it from the wiki/download page). Such a version is
+    # still installable from cache — it just can't be (re)downloaded.
+    cached: bool = False
 
 
 class FirmwareCheckService:
@@ -486,6 +490,33 @@ class FirmwareCheckService:
         return version
 
     async def get_available_versions(self, model: str) -> list[FirmwareVersion]:
+        """All installable firmware versions for a model, newest first.
+
+        The online list (wiki + download page) merged with versions held only in
+        the local firmware store. A store-only version (the vendor removed it
+        from the site) is flagged ``cached=True`` so the UI can mark it and the
+        operator can still roll back to a version they already downloaded.
+        """
+        online = await self._get_available_versions_online(model)
+        seen = {v.version for v in online}
+
+        # Import here to avoid a circular import at module load time.
+        from backend.app.services import firmware_store
+
+        for sf in await firmware_store.list_cached(model):
+            if sf.version not in seen:
+                online.append(
+                    FirmwareVersion(version=sf.version, download_url="", release_notes=sf.release_notes, cached=True)
+                )
+                seen.add(sf.version)
+
+        try:
+            online.sort(key=lambda fv: self._version_tuple(fv.version), reverse=True)
+        except (ValueError, AttributeError):
+            pass
+        return online
+
+    async def _get_available_versions_online(self, model: str) -> list[FirmwareVersion]:
         """
         Get all announced firmware versions for a model, newest first.
 
