@@ -133,6 +133,7 @@ async def get_settings(
                 "stagger_concurrent",
                 "stagger_interval_minutes",
                 "forecast_global_lead_time_days",
+                "firmware_batch_concurrency",
             ]:
                 settings_dict[setting.key] = int(setting.value)
             elif setting.key == "default_printer_id":

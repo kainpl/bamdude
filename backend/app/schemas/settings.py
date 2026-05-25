@@ -221,6 +221,12 @@ class AppSettings(BaseModel):
             "recursively. When off (default), 'All Files' shows only root-level files."
         ),
     )
+    firmware_batch_concurrency: int = Field(
+        default=2,
+        ge=1,
+        le=10,
+        description="Max printers updated in parallel during a bulk firmware run (TLS-handshake budget).",
+    )
 
     # Camera view settings
     camera_view_mode: str = Field(
@@ -425,6 +431,7 @@ class AppSettingsUpdate(BaseModel):
     ha_token: str | None = None
     library_disk_warning_gb: float | None = None
     library_all_files_recursive: bool | None = None
+    firmware_batch_concurrency: int | None = None
     camera_view_mode: str | None = None
     preferred_slicer: str | None = None
     use_slicer_api: bool | None = None
