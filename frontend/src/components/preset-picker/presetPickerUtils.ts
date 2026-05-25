@@ -5,7 +5,7 @@
  * exports React components — ``react-refresh/only-export-components``
  * flags non-component exports (they break Fast Refresh / fail CI lint).
  */
-import type { PresetRef, PresetSource, UnifiedPreset } from '../../api/client';
+import type { PresetRef, PresetSource, UnifiedPreset, UnifiedPresetsResponse } from '../../api/client';
 
 // Slot is one of the three preset categories the slicer takes: machine,
 // process, filament. Shared with SliceModal so both sites use the same
@@ -39,6 +39,27 @@ export function matchesOwnerFilter(p: UnifiedPreset, filter: OwnerFilter): boole
 
 export function toRefValue(ref: PresetRef | null): string {
   return ref ? `${ref.source}:${ref.id}` : '';
+}
+
+/**
+ * Resolve a {@link PresetRef} to the real preset *name* from the catalogue.
+ *
+ * The name is the exact string the slicer writes into a process / filament
+ * preset's `compatible_printers`, so this (NOT a reconstructed "Bambu Lab
+ * <model> <nozzle>" string) is what the printer-compatibility matcher must be
+ * fed. The calibration wizard previously fabricated a name from the hardware
+ * short code, whose casing ("A1 Mini") didn't match the real preset name
+ * ("A1 mini") — so a printer's own profiles were classed as a mismatch and
+ * hidden. Returns null when the ref is unset or no longer in the catalogue
+ * (the matcher then answers 'unknown' and nothing is hidden).
+ */
+export function resolvePresetName(
+  presets: UnifiedPresetsResponse | undefined,
+  ref: PresetRef | null,
+  slot: Slot,
+): string | null {
+  if (!presets || !ref) return null;
+  return presets[ref.source]?.[slot].find((p) => p.id === ref.id)?.name ?? null;
 }
 
 export function fromRefValue(raw: string): PresetRef | null {

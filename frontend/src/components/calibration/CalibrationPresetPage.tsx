@@ -34,6 +34,7 @@ import {
 import {
   TIER_ORDER,
   matchesOwnerFilter,
+  resolvePresetName,
   type OwnerFilter,
 } from '../preset-picker/presetPickerUtils';
 import { BedTypePicker } from '../preset-picker/BedTypePicker';
@@ -229,17 +230,24 @@ export function CalibrationPresetPage({
     () => buildCompatibilityIndex(bundlesQuery.data ?? [], printerModelsQuery.data ?? {}),
     [bundlesQuery.data, printerModelsQuery.data],
   );
-  // Synthetic printer-preset name the matcher can parse — the calibration
-  // wizard has only the hardware short code (e.g. "X1C") + nozzle, while the
-  // matcher expects a "Bambu Lab <model> <nozzle> nozzle" preset name. Reverse
-  // the short code to its long-form fragment via the matcher's own registry
-  // map ("X1C" → "X1 Carbon"), falling back to the raw code for models the
-  // registry doesn't know yet.
-  const syntheticPrinterName = useMemo<string | null>(() => {
-    if (!printerModel) return null;
-    const fragment = compatIndex.bambuModelByShortCode[printerModel] ?? printerModel;
-    return `Bambu Lab ${fragment} ${nozzleDia} nozzle`;
-  }, [printerModel, nozzleDia, compatIndex]);
+  const [printerRef, setPrinterRef] = useState<PresetRef | null>(null);
+  const [processRef, setProcessRef] = useState<PresetRef | null>(null);
+  const [filamentRef, setFilamentRef] = useState<PresetRef | null>(null);
+
+  // The printer-preset name the matcher classifies process / filament presets
+  // against MUST be the *real* selected printer preset's name — the exact
+  // string BambuStudio writes into a process preset's ``compatible_printers``.
+  // SliceModal does the same (it resolves its printer ref to the preset name);
+  // an earlier cut here fabricated "Bambu Lab <fragment> <nozzle> nozzle" from
+  // the hardware short code, but the registry fragment's casing ("A1 Mini") did
+  // not match the real preset name ("A1 mini"), so the printer's own profiles
+  // were classed as a mismatch and hidden. Resolve the selected printer ref
+  // against the raw preset catalogue instead. Null until a printer is picked →
+  // the matcher returns 'unknown' and nothing is hidden.
+  const selectedPrinterName = useMemo<string | null>(
+    () => resolvePresetName(presetsQuery.data, printerRef, 'printer'),
+    [presetsQuery.data, printerRef],
+  );
 
   const bundles = useMemo(
     () => filterBundlesByModel(bundlesQuery.data ?? [], printerModel),
@@ -258,7 +266,7 @@ export function CalibrationPresetPage({
       entries.filter((p) => matchesPrinterModel(p.name, printerModel));
     const keepCompat = (slot: 'process' | 'filament') => (entries: UnifiedPresetsResponse['cloud']['printer']) =>
       entries.filter(
-        (p) => presetCompatibility(p, slot, syntheticPrinterName, compatIndex) !== 'mismatch',
+        (p) => presetCompatibility(p, slot, selectedPrinterName, compatIndex) !== 'mismatch',
       );
     const filterTier = (tier: UnifiedPresetsResponse['cloud']) => ({
       printer: keepPrinter(tier.printer),
@@ -271,7 +279,7 @@ export function CalibrationPresetPage({
       standard: filterTier(data.standard),
       cloud_status: data.cloud_status,
     };
-  }, [presetsQuery.data, printerModel, syntheticPrinterName, compatIndex]);
+  }, [presetsQuery.data, printerModel, selectedPrinterName, compatIndex]);
 
   // Bundles are hidden from the calibration preset picker for now: the
   // source stays 'manual' and PresetSourceControl receives an empty bundle
@@ -279,10 +287,6 @@ export function CalibrationPresetPage({
   // is 'custom' ("My presets"), matching the model-slicing picker.
   const [presetSource, setPresetSource] = useState<PresetSource>('manual');
   const [ownerFilter, setOwnerFilter] = useState<OwnerFilter>('custom');
-
-  const [printerRef, setPrinterRef] = useState<PresetRef | null>(null);
-  const [processRef, setProcessRef] = useState<PresetRef | null>(null);
-  const [filamentRef, setFilamentRef] = useState<PresetRef | null>(null);
 
   useEffect(() => {
     if (!presets) return;
