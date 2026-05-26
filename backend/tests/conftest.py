@@ -114,6 +114,7 @@ async def test_engine():
         external_link,
         filament_calibration,
         filament_sku_settings,
+        firmware,
         git_backup,
         group,
         kprofile_note,
