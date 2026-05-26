@@ -48,7 +48,7 @@ class Project(Base):
     parent_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"), nullable=True)
 
     # B.2 (#1155) — external link rendered as a clickable icon next to the project
-    # name (Bambuddy / MakerWorld / GitHub / Notion etc). Validated http(s) only
+    # name (BamDude / MakerWorld / GitHub / Notion etc). Validated http(s) only
     # in the schema layer so a `javascript:`-style XSS payload can't reach the DOM.
     url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     # B.2 (#1155) — filename of the cover photo inside the project's attachments

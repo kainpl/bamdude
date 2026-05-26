@@ -230,7 +230,7 @@ async def update_settings(
                 "mqtt_port": int(await get_setting(db, "mqtt_port") or "1883"),
                 "mqtt_username": await get_setting(db, "mqtt_username") or "",
                 "mqtt_password": await get_setting(db, "mqtt_password") or "",
-                "mqtt_topic_prefix": await get_setting(db, "mqtt_topic_prefix") or "bambuddy",
+                "mqtt_topic_prefix": await get_setting(db, "mqtt_topic_prefix") or "bamdude",
                 "mqtt_use_tls": (await get_setting(db, "mqtt_use_tls") or "false") == "true",
             }
             await mqtt_relay.configure(mqtt_settings)

@@ -287,7 +287,7 @@ def test_smart_plug_power_off_confirmation(page):
 def run_all_toggle_tests():
     """Run all toggle persistence tests."""
     print("=" * 60)
-    print("Bambuddy Toggle Persistence E2E Tests")
+    print("BamDude Toggle Persistence E2E Tests")
     print("=" * 60)
 
     with sync_playwright() as p:

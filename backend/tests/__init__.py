@@ -1,1 +1,1 @@
-"""BamBuddy backend tests."""
+"""BamDude backend tests."""

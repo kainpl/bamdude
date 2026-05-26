@@ -18,7 +18,7 @@ router = APIRouter(prefix="/virtual-printers", tags=["virtual-printers"])
 
 
 class VirtualPrinterCreate(BaseModel):
-    name: str = "Bambuddy"
+    name: str = "BamDude"
     enabled: bool = False
     mode: str = "file_manager"
     model: str | None = None

@@ -866,7 +866,7 @@ class SpoolmanClient:
 
         Spoolman rejects PATCH requests that include unknown extra-dict keys
         with HTTP 400 ('Unknown extra field <name>.'), so any custom field
-        Bambuddy persists alongside spools needs to be pre-registered.
+        BamDude persists alongside spools needs to be pre-registered.
         Idempotent — returns True if the field already exists.
         """
         try:
@@ -1077,7 +1077,7 @@ class SpoolmanClient:
             return await self.create_spool(
                 filament_id=filament_id,
                 remaining_weight=remaining,
-                comment="Created by Bambuddy",
+                comment="Created by BamDude",
                 extra={"tag": json.dumps(spool_tag)},
             )
 

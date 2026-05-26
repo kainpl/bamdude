@@ -223,7 +223,7 @@ export function StreamOverlayPage() {
 
       {/* BamDude logo - top right */}
       <a
-        href="https://github.com/kainpl/bambuddy-he"
+        href="https://github.com/kainpl/bamdude"
         target="_blank"
         rel="noopener noreferrer"
         className="absolute top-4 right-4 z-10"

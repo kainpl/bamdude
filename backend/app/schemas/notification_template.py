@@ -116,7 +116,7 @@ SAMPLE_DATA: dict[str, dict[str, str]] = {
         "estimated_time": "1h 23m",
         "eta": "15:53",
         "timestamp": "2024-01-15 14:30",
-        "app_name": "Bambuddy",
+        "app_name": "BamDude",
     },
     "print_complete": {
         "printer": "Bambu X1C",
@@ -126,7 +126,7 @@ SAMPLE_DATA: dict[str, dict[str, str]] = {
         "filament_details": "AMS-A T1 PLA: 12.4g | AMS-A T3 PETG: 2.8g",
         "finish_photo_url": "/api/v1/archives/123/photos/finish_20240115_154800_abc12345.jpg",
         "timestamp": "2024-01-15 15:48",
-        "app_name": "Bambuddy",
+        "app_name": "BamDude",
     },
     "print_failed": {
         "printer": "Bambu X1C",
@@ -138,7 +138,7 @@ SAMPLE_DATA: dict[str, dict[str, str]] = {
         "reason": "Filament runout",
         "finish_photo_url": "/api/v1/archives/123/photos/finish_20240115_151500_def67890.jpg",
         "timestamp": "2024-01-15 15:15",
-        "app_name": "Bambuddy",
+        "app_name": "BamDude",
     },
     "print_stopped": {
         "printer": "Bambu X1C",
@@ -149,7 +149,7 @@ SAMPLE_DATA: dict[str, dict[str, str]] = {
         "progress": "30",
         "finish_photo_url": "/api/v1/archives/123/photos/finish_20240115_150000_ghi11223.jpg",
         "timestamp": "2024-01-15 15:00",
-        "app_name": "Bambuddy",
+        "app_name": "BamDude",
     },
     "print_progress": {
         "printer": "Bambu X1C",
@@ -158,7 +158,7 @@ SAMPLE_DATA: dict[str, dict[str, str]] = {
         "remaining_time": "0h 41m",
         "eta": "15:41",
         "timestamp": "2024-01-15 15:00",
-        "app_name": "Bambuddy",
+        "app_name": "BamDude",
     },
     "print_paused": {
         "printer": "Bambu X1C",
@@ -181,19 +181,19 @@ SAMPLE_DATA: dict[str, dict[str, str]] = {
         "missing_slots": "A1, A3",
         "missing_slot_details": "- A1: PLA Basic\n- A3: PETG HF",
         "timestamp": "2024-01-15 14:30",
-        "app_name": "Bambuddy",
+        "app_name": "BamDude",
     },
     "printer_offline": {
         "printer": "Bambu X1C",
         "timestamp": "2024-01-15 14:30",
-        "app_name": "Bambuddy",
+        "app_name": "BamDude",
     },
     "printer_error": {
         "printer": "Bambu X1C",
         "error_type": "AMS Error",
         "error_detail": "Filament slot 1 jammed",
         "timestamp": "2024-01-15 14:30",
-        "app_name": "Bambuddy",
+        "app_name": "BamDude",
     },
     "filament_low": {
         "printer": "Bambu X1C",
@@ -201,13 +201,13 @@ SAMPLE_DATA: dict[str, dict[str, str]] = {
         "remaining_percent": "15",
         "color": "Black PLA",
         "timestamp": "2024-01-15 14:30",
-        "app_name": "Bambuddy",
+        "app_name": "BamDude",
     },
     "maintenance_due": {
         "printer": "Bambu X1C",
         "items": "• Nozzle cleaning (OVERDUE)\n• Carbon rod lubrication (Soon)",
         "timestamp": "2024-01-15 14:30",
-        "app_name": "Bambuddy",
+        "app_name": "BamDude",
     },
     "ams_humidity_high": {
         "printer": "Bambu X1C",
@@ -215,7 +215,7 @@ SAMPLE_DATA: dict[str, dict[str, str]] = {
         "humidity": "75",
         "threshold": "60",
         "timestamp": "2024-01-15 14:30",
-        "app_name": "Bambuddy",
+        "app_name": "BamDude",
     },
     "ams_temperature_high": {
         "printer": "Bambu X1C",
@@ -223,7 +223,7 @@ SAMPLE_DATA: dict[str, dict[str, str]] = {
         "temperature": "42",
         "threshold": "35",
         "timestamp": "2024-01-15 14:30",
-        "app_name": "Bambuddy",
+        "app_name": "BamDude",
     },
     "bed_cooled": {
         "printer": "Bambu X1C",
@@ -231,10 +231,10 @@ SAMPLE_DATA: dict[str, dict[str, str]] = {
         "threshold": "35",
         "filename": "Benchy",
         "timestamp": "2024-01-15 14:30",
-        "app_name": "Bambuddy",
+        "app_name": "BamDude",
     },
     "test": {
-        "app_name": "Bambuddy",
+        "app_name": "BamDude",
         "timestamp": "2024-01-15 14:30",
     },
     # Queue notifications
@@ -242,7 +242,7 @@ SAMPLE_DATA: dict[str, dict[str, str]] = {
         "job_name": "Benchy.3mf",
         "target": "Bambu X1C",
         "timestamp": "2024-01-15 14:30",
-        "app_name": "Bambuddy",
+        "app_name": "BamDude",
     },
     "queue_job_started": {
         "printer": "Bambu X1C",
@@ -250,38 +250,38 @@ SAMPLE_DATA: dict[str, dict[str, str]] = {
         "estimated_time": "1h 23m",
         "eta": "15:53",
         "timestamp": "2024-01-15 14:30",
-        "app_name": "Bambuddy",
+        "app_name": "BamDude",
     },
     "queue_job_waiting": {
         "job_name": "Benchy.3mf",
         "target_model": "X1C",
         "waiting_reason": "Printer1 (needs PLA)",
         "timestamp": "2024-01-15 14:30",
-        "app_name": "Bambuddy",
+        "app_name": "BamDude",
     },
     "queue_job_skipped": {
         "printer": "Bambu X1C",
         "job_name": "Benchy.3mf",
         "reason": "Previous print failed",
         "timestamp": "2024-01-15 14:30",
-        "app_name": "Bambuddy",
+        "app_name": "BamDude",
     },
     "queue_job_failed": {
         "printer": "Bambu X1C",
         "job_name": "Benchy.3mf",
         "reason": "Upload failed: connection timeout",
         "timestamp": "2024-01-15 14:30",
-        "app_name": "Bambuddy",
+        "app_name": "BamDude",
     },
     "queue_completed": {
         "completed_count": "5",
         "timestamp": "2024-01-15 18:30",
-        "app_name": "Bambuddy",
+        "app_name": "BamDude",
     },
     "printer_queue_completed": {
         "printer": "Bambu X1C",
         "timestamp": "2024-01-15 18:30",
-        "app_name": "Bambuddy",
+        "app_name": "BamDude",
     },
     # User management notifications.
     # Password fields use placeholder strings (not real-looking credentials) so
@@ -290,15 +290,15 @@ SAMPLE_DATA: dict[str, dict[str, str]] = {
     "user_created": {
         "username": "john_doe",
         "password": "<generated-password>",
-        "login_url": "https://bambuddy.example.com/login",
-        "app_name": "Bambuddy",
+        "login_url": "https://bamdude.example.com/login",
+        "app_name": "BamDude",
         "timestamp": "2024-01-15 14:30",
     },
     "password_reset": {
         "username": "john_doe",
         "password": "<new-password>",
-        "login_url": "https://bambuddy.example.com/login",
-        "app_name": "Bambuddy",
+        "login_url": "https://bamdude.example.com/login",
+        "app_name": "BamDude",
         "timestamp": "2024-01-15 14:30",
     },
     # User email print notifications
@@ -307,28 +307,28 @@ SAMPLE_DATA: dict[str, dict[str, str]] = {
         "printer": "Bambu X1C",
         "filename": "Benchy.3mf",
         "timestamp": "2024-01-15 14:30",
-        "app_name": "Bambuddy",
+        "app_name": "BamDude",
     },
     "user_print_complete": {
         "username": "john_doe",
         "printer": "Bambu X1C",
         "filename": "Benchy.3mf",
         "timestamp": "2024-01-15 15:48",
-        "app_name": "Bambuddy",
+        "app_name": "BamDude",
     },
     "user_print_failed": {
         "username": "john_doe",
         "printer": "Bambu X1C",
         "filename": "Benchy.3mf",
         "timestamp": "2024-01-15 15:15",
-        "app_name": "Bambuddy",
+        "app_name": "BamDude",
     },
     "user_print_stopped": {
         "username": "john_doe",
         "printer": "Bambu X1C",
         "filename": "Benchy.3mf",
         "timestamp": "2024-01-15 15:15",
-        "app_name": "Bambuddy",
+        "app_name": "BamDude",
     },
 }
 

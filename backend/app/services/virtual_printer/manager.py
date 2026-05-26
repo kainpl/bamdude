@@ -1434,7 +1434,7 @@ class VirtualPrinterManager:
             "enabled": False,
             "running": False,
             "mode": "file_manager",
-            "name": "Bambuddy",
+            "name": "BamDude",
             "serial": "",
             "model": DEFAULT_VIRTUAL_PRINTER_MODEL,
             "model_name": VIRTUAL_PRINTER_MODELS[DEFAULT_VIRTUAL_PRINTER_MODEL],

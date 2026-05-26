@@ -1,4 +1,4 @@
-# Pre-commit hooks for BamBuddy
+# Pre-commit hooks for BamDude
 # Install with: pip install pre-commit && pre-commit install
 
 repos:

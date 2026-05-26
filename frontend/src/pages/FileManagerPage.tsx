@@ -3085,7 +3085,7 @@ export function FileManagerPage() {
           title={viewerFile.print_name || viewerFile.filename}
           fileType={viewerFile.file_type}
           onClose={() => setViewerFile(null)}
-          onSliceWithBambuddy={
+          onSliceWithBamDude={
             // Mirror the file-row Cog gate: only offer in-app slicing on a
             // sliceable source the user may upload. ModelViewerModal itself
             // gates on settings.use_slicer_api.

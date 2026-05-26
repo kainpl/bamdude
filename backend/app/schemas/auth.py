@@ -173,7 +173,7 @@ class SMTPSettings(BaseModel):
     smtp_security: str = "starttls"  # 'starttls', 'ssl', 'none'
     smtp_auth_enabled: bool = True
     smtp_from_email: str
-    smtp_from_name: str = "BamBuddy"
+    smtp_from_name: str = "BamDude"
     # Deprecated field for backward compatibility
     smtp_use_tls: bool | None = None
 

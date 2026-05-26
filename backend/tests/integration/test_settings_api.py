@@ -292,7 +292,7 @@ class TestSettingsAPI:
                 "mqtt_port": 1883,
                 "mqtt_username": "",
                 "mqtt_password": "",
-                "mqtt_topic_prefix": "bambuddy",
+                "mqtt_topic_prefix": "bamdude",
                 "mqtt_use_tls": False,
             },
         )
@@ -302,7 +302,7 @@ class TestSettingsAPI:
 
         assert result["mqtt_enabled"] is False
         assert result["mqtt_port"] == 1883
-        assert result["mqtt_topic_prefix"] == "bambuddy"
+        assert result["mqtt_topic_prefix"] == "bamdude"
         assert result["mqtt_use_tls"] is False
 
     # ========================================================================

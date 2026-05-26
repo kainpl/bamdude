@@ -1,4 +1,4 @@
-"""Shared test fixtures for BamBuddy backend tests."""
+"""Shared test fixtures for BamDude backend tests."""
 
 import asyncio
 import atexit
@@ -27,7 +27,7 @@ from backend.app.core.config import settings  # noqa: E402
 settings.log_to_file = False
 
 # Use a temp directory for plate calibration to avoid deleting real calibration files
-_test_plate_cal_dir = Path(tempfile.mkdtemp(prefix="bambuddy_test_plate_cal_"))
+_test_plate_cal_dir = Path(tempfile.mkdtemp(prefix="bamdude_test_plate_cal_"))
 settings.plate_calibration_dir = _test_plate_cal_dir
 
 

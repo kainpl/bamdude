@@ -705,7 +705,7 @@ class BambuMQTTClient:
         self._last_load_tray_id: int | None = None
 
         # Captured ams_mapping from print commands on the request topic
-        # Intercepts slicer/Bambuddy print commands to get the slot-to-tray mapping
+        # Intercepts slicer/BamDude print commands to get the slot-to-tray mapping
         self._captured_ams_mapping: list[int] | None = None
 
         # Request topic subscription tracking
@@ -1071,7 +1071,7 @@ class BambuMQTTClient:
             self._last_message_time = time.time()
             self.state.connected = True
 
-            # Intercept request-topic messages (print commands from slicer/Bambuddy)
+            # Intercept request-topic messages (print commands from slicer/BamDude)
             if msg.topic == self.topic_publish:
                 self._handle_request_message(payload)
                 return
@@ -3788,7 +3788,7 @@ class BambuMQTTClient:
         """
         self._loop = loop
         BambuMQTTClient._client_instance_counter += 1
-        client_id = f"bambuddy_{self.serial_number}_{os.getpid()}_{BambuMQTTClient._client_instance_counter}"
+        client_id = f"bamdude_{self.serial_number}_{os.getpid()}_{BambuMQTTClient._client_instance_counter}"
         self._client = mqtt.Client(
             callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
             client_id=client_id,

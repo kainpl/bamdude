@@ -129,7 +129,7 @@ class TestVirtualPrinterSettingsAPI:
                     "enabled": True,
                     "running": True,
                     "mode": "file_manager",
-                    "name": "Bambuddy",
+                    "name": "BamDude",
                     "serial": "00M09A391800001",
                     "pending_files": 0,
                 }
@@ -150,7 +150,7 @@ class TestVirtualPrinterSettingsAPI:
                     "enabled": False,
                     "running": False,
                     "mode": "file_manager",
-                    "name": "Bambuddy",
+                    "name": "BamDude",
                     "serial": "00M09A391800001",
                     "pending_files": 0,
                 }

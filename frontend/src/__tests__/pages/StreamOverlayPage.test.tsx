@@ -121,7 +121,7 @@ describe('StreamOverlayPage', () => {
       await waitFor(() => {
         const logo = screen.getByAltText('BamDude');
         const link = logo.closest('a');
-        expect(link).toHaveAttribute('href', 'https://github.com/kainpl/bambuddy-he');
+        expect(link).toHaveAttribute('href', 'https://github.com/kainpl/bamdude');
       });
     });
   });

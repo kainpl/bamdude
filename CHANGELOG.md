@@ -8,6 +8,15 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The login page logo is no longer broken.** It referenced the old `bambuddy_logo_*` filenames (renamed to `bamdude_logo_*` during the fork), so the logo 404'd on the login screen for everyone (Docker included). Also fixed the sidebar **GitHub** links, which still pointed at the predecessor repo (`kainpl/bambuddy-he`) instead of `kainpl/bamdude`.
+- **Leftover "Bambuddy" branding swept out of the running app.** Stale fork-origin names were still showing in user-facing places: the default virtual-printer name + SSDP discovery name, default email sender/subject/body text and notification-template defaults, the support-bundle filename, and various log lines. All now read **BamDude**. (Upstream attribution in docs/comments and legacy database/backup compatibility — `bambuddy.db`, the `bambuddy-backup-*` legacy reader, the import migration — are intentionally left as-is.)
+
+### Changed
+
+- **Default MQTT topic prefix is now `bamdude` (was `bambuddy`).** If you publish to an external MQTT broker and never set **Settings → MQTT → topic prefix** explicitly, your published topics move from `bambuddy/*` to `bamdude/*` — update any Home Assistant / Node-RED subscriptions accordingly (or set the prefix back to `bambuddy` in Settings to keep the old topics). The internal MQTT client IDs were rebranded too (cosmetic; brokers rarely key on them).
+
 ## [0.4.5] - 2026-05-26
 
 Stable 0.4.5 release — consolidates the cumulative b1–b5 beta cycle (see the `[0.4.5b5]` and earlier beta sections below for the full per-beta detail) plus the post-b5 work listed here. Image: `ghcr.io/kainpl/bamdude:0.4.5` / `kainpl/bamdude:0.4.5` (`:latest` now tracks this).

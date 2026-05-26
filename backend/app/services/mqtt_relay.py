@@ -1,4 +1,4 @@
-"""MQTT Relay Service for publishing BamBuddy events to external MQTT brokers.
+"""MQTT Relay Service for publishing BamDude events to external MQTT brokers.
 
 This service enables integration with external automation systems like
 Node-RED, Home Assistant, and other MQTT-based platforms.
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class MQTTRelayService:
-    """Publishes BamBuddy events to an external MQTT broker."""
+    """Publishes BamDude events to an external MQTT broker."""
 
     # Minimum interval between status updates per printer (seconds)
     STATUS_THROTTLE_SECONDS = 1.0
@@ -28,7 +28,7 @@ class MQTTRelayService:
         self.client: mqtt.Client | None = None
         self.enabled = False
         self.connected = False
-        self.topic_prefix = "bambuddy"
+        self.topic_prefix = "bamdude"
         self._lock = threading.Lock()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._broker = ""
@@ -57,7 +57,7 @@ class MQTTRelayService:
         port = settings.get("mqtt_port", 1883)
         username = settings.get("mqtt_username", "")
         password = settings.get("mqtt_password", "")
-        self.topic_prefix = settings.get("mqtt_topic_prefix", "bambuddy")
+        self.topic_prefix = settings.get("mqtt_topic_prefix", "bamdude")
         use_tls = settings.get("mqtt_use_tls", False)
 
         if not broker:
@@ -107,7 +107,7 @@ class MQTTRelayService:
             # Create client with callback API version 2 (use MQTTv311 for broader compatibility)
             self.client = mqtt.Client(
                 callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
-                client_id=f"bambuddy-{id(self)}",
+                client_id=f"bamdude-{id(self)}",
                 protocol=mqtt.MQTTv311,
             )
 
@@ -208,7 +208,7 @@ class MQTTRelayService:
                 self.connected = False
 
     def _publish_status(self, status: str):
-        """Publish BamBuddy status (online/offline)."""
+        """Publish BamDude status (online/offline)."""
         self._publish(
             f"{self.topic_prefix}/status",
             {"status": status, "timestamp": datetime.now(timezone.utc).isoformat()},

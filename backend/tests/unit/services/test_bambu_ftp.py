@@ -462,7 +462,7 @@ class TestUpload:
 # network stream" on the FTP control channel after a successful data
 # transfer, because the TLS data-channel close races the 226 confirmation.
 # The old broad "except Exception: warn and proceed" swallowed this — so
-# Bambuddy sent the print command, the printer surfaced "unable to parse
+# BamDude sent the print command, the printer surfaced "unable to parse
 # 3MF" 30s later, and the user saw nothing in the logs to suggest the upload
 # had failed (#1417). Naively tightening to re-raise on ftplib.Error broke
 # the legitimate case where the file is actually on the SD card and the 426

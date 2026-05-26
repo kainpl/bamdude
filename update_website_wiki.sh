@@ -1,16 +1,16 @@
 #!/bin/bash
 
-cd ../bambuddy-website
+cd ../bamdude.top
 git add .
 git commit -m "Updated website"
 git push
 
-cd ../bambuddy-wiki
+cd ../docs.bamdude.top
 git add .
 git commit -m "Updated Wiki"
 git push
 
-cd ../bambuddy-telemetry/
+cd ../bamdude-telemetry/
 git add .
 git commit -m "Updated Stats"
 git push

@@ -12,7 +12,7 @@ class VirtualPrinter(Base):
     __tablename__ = "virtual_printers"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str] = mapped_column(String(100), default="Bambuddy")
+    name: Mapped[str] = mapped_column(String(100), default="BamDude")
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     mode: Mapped[str] = mapped_column(String(20), default="file_manager")  # print_queue|auto_queue|file_manager|proxy
     auto_dispatch: Mapped[bool] = mapped_column(Boolean, default=True)  # print_queue + auto_queue: auto-start or manual

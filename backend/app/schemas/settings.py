@@ -189,12 +189,12 @@ class AppSettings(BaseModel):
     mqtt_port: int = Field(default=1883, description="MQTT broker port (default 1883, TLS typically 8883)")
     mqtt_username: str = Field(default="", description="MQTT username for authentication (optional)")
     mqtt_password: str = Field(default="", description="MQTT password for authentication (optional)")
-    mqtt_topic_prefix: str = Field(default="bambuddy", description="Topic prefix for all published messages")
+    mqtt_topic_prefix: str = Field(default="bamdude", description="Topic prefix for all published messages")
     mqtt_use_tls: bool = Field(default=False, description="Use TLS/SSL encryption for MQTT connection")
 
     # External URL for notifications
     external_url: str = Field(
-        default="", description="External URL where Bambuddy is accessible (for notification images)"
+        default="", description="External URL where BamDude is accessible (for notification images)"
     )
 
     # Home Assistant integration for smart plug control

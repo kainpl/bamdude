@@ -2457,7 +2457,7 @@ class TestTrayNowDualNozzleH2DSnow(_H2DFixtureMixin):
 
 
 class TestTrayNowDualNozzleH2DPendingTarget(_H2DFixtureMixin):
-    """Pending target disambiguation (when Bambuddy initiates load)."""
+    """Pending target disambiguation (when BamDude initiates load)."""
 
     def test_pending_target_matches_slot(self, h2d_client):
         """pending=5, tray_now='1' (5%4=1 matches) → tray_now=5."""
@@ -4575,7 +4575,7 @@ class TestZeroReportSerialHint:
 class TestPrintRunningObservedCallback:
     """#1485 follow-up: on_print_running_observed fires the FIRST time we
     see ``state == RUNNING`` for a printer whose print started before
-    Bambuddy came up. It lets main.py capture a timelapse baseline at
+    BamDude came up. It lets main.py capture a timelapse baseline at
     restart-recovery time — when on_print_start was suppressed by the
     #1304 first-push guard. Must NOT fire when on_print_start handles the
     transition (avoids double-capture), and must NOT fire again after
@@ -4602,7 +4602,7 @@ class TestPrintRunningObservedCallback:
         mqtt_client.on_print_running_observed = lambda data: running_observed_calls.append(data)
 
         # Pristine state — exactly what we have right after BambuMQTTClient
-        # construction following a Bambuddy restart.
+        # construction following a BamDude restart.
         mqtt_client._was_running = False
         mqtt_client._previous_gcode_state = None
 

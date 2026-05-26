@@ -47,7 +47,7 @@ BAMBU_WIKI_BASE = "https://wiki.bambulab.com"
 # Cache TTL in seconds (1 hour)
 CACHE_TTL = 3600
 
-# Map Bambuddy model names to Bambu Lab API keys
+# Map BamDude model names to Bambu Lab API keys
 MODEL_TO_API_KEY = {
     "X1": "x1",
     "X1C": "x1",
@@ -466,7 +466,7 @@ class FirmwareCheckService:
         Get the latest firmware version for a printer model.
 
         Args:
-            model: Bambuddy printer model name (e.g., "X1C", "P1S", "H2D")
+            model: BamDude printer model name (e.g., "X1C", "P1S", "H2D")
 
         Returns:
             FirmwareVersion if found, None otherwise

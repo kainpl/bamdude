@@ -1,1 +1,1 @@
-"""Integration tests for BamBuddy API endpoints."""
+"""Integration tests for BamDude API endpoints."""
