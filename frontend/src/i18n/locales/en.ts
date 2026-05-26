@@ -1192,7 +1192,7 @@ export default {
     noPermissionResetLayout: 'You do not have permission to reset layout',
     noPermissionRecalculate: 'You do not have permission to recalculate costs',
     noPrintDataInRange: 'No print data in selected range',
-    noPrintDataForRange: 'No print data — {{range}}',
+    noPrintDataForRange: 'No print data - {{range}}',
     periodFilament: 'Period Filament',
     periodCost: 'Period Cost',
     avgPerPrint: 'Avg per Print',
@@ -1252,7 +1252,7 @@ export default {
     printStatus: 'Print Status',
     upgradeStatus: 'Upgrade Status',
     idle: 'Idle',
-    skippedPrinting: 'Skipped — printing',
+    skippedPrinting: 'Skipped - printing',
     remoteApply: 'Applies over network',
     manualApplyBadge: 'Manual apply on printer',
     applyNext: 'Now apply on each printer',
@@ -1275,7 +1275,7 @@ export default {
     },
     manualApply: {
       generic: 'On the printer screen, open Settings → Firmware and start the update (it reads the file from the SD card).',
-      p1: 'On the P1 screen: Settings (gear) → Device → Firmware → Update — it installs the file just uploaded to the SD card.',
+      p1: 'On the P1 screen: Settings (gear) → Device → Firmware → Update - it installs the file just uploaded to the SD card.',
       x1: 'On the X1 touchscreen: Settings → General → Firmware Update → Update, which picks up the file from the SD card.',
       a1: 'On the A1 screen: Settings → Firmware → Update to install the file from the SD card.',
       h2: 'On the H2 touchscreen: Settings → Firmware → Update to install the file from the SD card.',
@@ -2121,7 +2121,7 @@ export default {
     cameraTypeUsb: 'USB Camera (V4L2)',
     cameraSnapshotUrl: 'Snapshot URL (optional)',
     cameraSnapshotUrlPlaceholder: 'http://192.168.1.61:1984/api/frame.jpeg?src=printer',
-    cameraSnapshotUrlHelp: 'Single-frame URL used for notification thumbnails, finish photos, timelapse and plate detection. Leave blank to capture from the live stream above. Useful for go2rtc (/api/frame.jpeg) and IP cameras with a dedicated snapshot endpoint. Timelapse and plate detection each require their own per-printer toggle — this URL is just the image source they pull from when active.',
+    cameraSnapshotUrlHelp: 'Single-frame URL used for notification thumbnails, finish photos, timelapse and plate detection. Leave blank to capture from the live stream above. Useful for go2rtc (/api/frame.jpeg) and IP cameras with a dedicated snapshot endpoint. Timelapse and plate detection each require their own per-printer toggle - this URL is just the image source they pull from when active.',
     cameraRotation: 'Rotation',
     test: 'Test',
     connected: 'Connected',
@@ -2365,7 +2365,7 @@ export default {
       filesDeleted: 'Deleted {{count}} file(s)',
       deleteFailed: 'Delete failed: {{error}}',
       clearing: 'Clearing SD card...',
-      sdCardCleared: 'SD card cleared — deleted {{count}} file(s)',
+      sdCardCleared: 'SD card cleared - deleted {{count}} file(s)',
       sdCardClearedPartial: 'Cleared SD card: deleted {{deleted}}, {{failed}} could not be removed',
       clearFailed: 'Clear SD card failed: {{error}}',
       importStarted: 'Importing {{count}} file(s)...',
@@ -2557,7 +2557,7 @@ export default {
       },
       summary: {
         all_ok: 'Camera is working. The diagnostic completed all stages successfully.',
-        live_stream_active_healthy: 'Camera is currently streaming with recent frames — no test needed.',
+        live_stream_active_healthy: 'Camera is currently streaming with recent frames - no test needed.',
         printer_unreachable: 'Printer is not reachable. Check the IP address, network connection, and that the printer is powered on.',
         camera_port_closed: 'Printer is reachable but the camera port is closed. Make sure LAN-only mode and Developer Mode are enabled in the printer settings.',
         no_frame: 'Connected to the camera but no frames were received. Try again, or check that the camera is enabled in the printer settings.',
@@ -2733,7 +2733,7 @@ export default {
       checkEmail: 'Check your email ({{email}}) for a 6-digit code',
       enterTotpHint: 'Enter the 6-digit code from your authenticator app',
       accessToken: 'Access Token',
-      accessTokenHint: 'Paste your Bambu Lab access token. Bambu Studio no longer shows it — grab it from a browser logged into MakerWorld (DevTools → Application → Cookies → token). China-region accounts must use token login (their accounts are bound to a phone number, not email).',
+      accessTokenHint: 'Paste your Bambu Lab access token. Bambu Studio no longer shows it - grab it from a browser logged into MakerWorld (DevTools → Application → Cookies → token). China-region accounts must use token login (their accounts are bound to a phone number, not email).',
       back: 'Back',
       loginButton: 'Login',
       verifyButton: 'Verify',
@@ -3805,58 +3805,58 @@ export default {
 
   // In-app bug report (floating red bubble)
   diagnostic: {
-    modalTitle: 'Connection diagnostic — {{name}}',
+    modalTitle: 'Connection diagnostic - {{name}}',
     running: 'Running diagnostic...',
     runFailed: 'Diagnostic could not run: {{error}}',
     retry: 'Run again',
     runButton: 'Run diagnostic',
     sectionTitle: 'Connection Diagnostic',
-    sectionDescription: 'Check why a printer won\'t connect or won\'t print — port reachability, LAN developer mode, Docker network mode, and credentials.',
+    sectionDescription: 'Check why a printer won\'t connect or won\'t print - port reachability, LAN developer mode, Docker network mode, and credentials.',
     noPrinters: 'No printers configured.',
     overall: {
-      ok: 'No problems found — the printer connection looks healthy.',
+      ok: 'No problems found - the printer connection looks healthy.',
       warnings: 'The printer should work, but some things need attention.',
       problems: 'Found problems that explain why the printer won\'t connect or print.',
     },
     check: {
       port_mqtt: {
         title: 'Control port (MQTT 8883)',
-        pass: 'Reachable — the printer is accepting control connections.',
+        pass: 'Reachable - the printer is accepting control connections.',
         fail: 'Port 8883 is unreachable. The printer is powered off, on a different IP address, or a firewall is blocking it. Verify the printer IP and that nothing blocks port 8883.',
       },
       port_ftps: {
         title: 'File transfer port (FTPS 990)',
-        pass: 'Reachable — sending print files will work.',
+        pass: 'Reachable - sending print files will work.',
         warn: 'Port 990 is unreachable. Monitoring may still work, but sending prints to the printer will fail. Make sure port 990 is not blocked.',
       },
       port_rtsps: {
         title: 'Camera port (RTSPS 322)',
-        pass: 'Reachable — the camera stream will work.',
+        pass: 'Reachable - the camera stream will work.',
         warn: 'Port 322 is unreachable. The live camera view will not work. This does not affect printing.',
       },
       network_mode: {
         title: 'Docker network mode',
         pass: 'Running in host network mode.',
-        warn: 'BamDude is running in Docker bridge networking. Printer discovery and the Virtual Printer need host network mode — recreate the container with "network_mode: host".',
-        skip: 'Not running in Docker — not applicable.',
+        warn: 'BamDude is running in Docker bridge networking. Printer discovery and the Virtual Printer need host network mode - recreate the container with "network_mode: host".',
+        skip: 'Not running in Docker - not applicable.',
       },
       subnet: {
         title: 'Network subnet',
         pass: 'The printer and BamDude are on the same subnet.',
         warn: 'The printer ({{printer_ip}}) and BamDude ({{host_ip}}) are on different subnets. They may not reach each other unless routing between the subnets is configured.',
-        skip: 'Subnet could not be determined — skipped.',
+        skip: 'Subnet could not be determined - skipped.',
       },
       mqtt_auth: {
         title: 'Printer credentials',
         pass: 'The printer accepted the connection.',
-        fail: 'The printer is reachable but rejected the connection. The access code or serial number is most likely wrong. The access code changes every time Developer Mode is toggled — re-copy it from the printer screen.',
-        skip: 'Not checked — the printer could not be reached.',
+        fail: 'The printer is reachable but rejected the connection. The access code or serial number is most likely wrong. The access code changes every time Developer Mode is toggled - re-copy it from the printer screen.',
+        skip: 'Not checked - the printer could not be reached.',
       },
       developer_mode: {
         title: 'LAN Developer Mode',
         pass: 'Developer Mode is enabled.',
-        fail: 'Developer Mode is OFF on the printer. Enable it in the printer\'s LAN settings — and confirm with OK. Without it, prints will not start.',
-        skip: 'Could not be checked — requires a live connection to the printer.',
+        fail: 'Developer Mode is OFF on the printer. Enable it in the printer\'s LAN settings - and confirm with OK. Without it, prints will not start.',
+        skip: 'Could not be checked - requires a live connection to the printer.',
       },
     },
   },
@@ -3868,7 +3868,7 @@ export default {
     logUnavailable: 'File logging is disabled, so logs cannot be scanned. Enable file logging to use this check.',
     learnMore: 'How to fix',
     fixLabel: 'Fix:',
-    occurrences: 'Seen {{times}}× — last at {{lastSeen}}',
+    occurrences: 'Seen {{times}}× - last at {{lastSeen}}',
     category: {
       layer8: 'You can fix this',
       environment: 'Environment',
@@ -3892,7 +3892,7 @@ export default {
       },
       'mqtt-connection-flapping': {
         name: 'Printer connection keeps dropping',
-        cause: 'The control connection (MQTT 8883) repeatedly disconnects and reconnects — usually a weak network path or a partially blocked port.',
+        cause: 'The control connection (MQTT 8883) repeatedly disconnects and reconnects - usually a weak network path or a partially blocked port.',
         fix: 'Check the Wi-Fi signal at the printer, prefer a wired connection, and make sure port 8883 is reliably reachable.',
       },
       'camera-connection-refused': {
@@ -3902,7 +3902,7 @@ export default {
       },
       'database-locked': {
         name: 'Database write contention',
-        cause: 'The SQLite database is hitting "database is locked" errors under load — common when running several printers at once.',
+        cause: 'The SQLite database is hitting "database is locked" errors under load - common when running several printers at once.',
         fix: 'Switch BamDude to an external PostgreSQL database. See the PostgreSQL guide in the documentation.',
       },
     },
@@ -3915,11 +3915,11 @@ export default {
     submittingStepLogScan: 'Scanning recent logs for known issues',
     submittingStepSubmit: 'Submitting report to GitHub',
     logHealthSummary: 'Known issues found in your logs',
-    logHealthIntro: 'Recent logs match known problems. Check the fixes below — resolving them could solve your issue without a bug report. You can still submit a report below.',
+    logHealthIntro: 'Recent logs match known problems. Check the fixes below - resolving them could solve your issue without a bug report. You can still submit a report below.',
     diagnosticChecking: 'Checking printer connections...',
-    diagnosticHealthy: 'Connection check passed — no problems found on your printers.',
+    diagnosticHealthy: 'Connection check passed - no problems found on your printers.',
     diagnosticSummary: '{{problems}} of {{total}} printers have connection issues',
-    diagnosticIntro: 'One or more printers have a connection problem that may be causing your issue. Expand a printer below to see the fix — resolving it could solve the problem without a bug report. You can still submit a report below.',
+    diagnosticIntro: 'One or more printers have a connection problem that may be causing your issue. Expand a printer below to see the fix - resolving it could solve the problem without a bug report. You can still submit a report below.',
     descriptionPlaceholder: 'What went wrong? Please describe the issue...',
     email: 'Email (optional)',
     emailPlaceholder: 'your@email.com',
@@ -4234,11 +4234,11 @@ export default {
       error: 'Could not generate labels: {{msg}}',
       templates: {
         amsHolderSmall: {
-          label: 'AMS holder — small (74 × 33 mm)',
+          label: 'AMS holder - small (74 × 33 mm)',
           hint: 'Single label per page; matches the printable label STL from MakerWorld model 752566 (AMS Filament Label Holder).'
         },
         amsHolderLarge: {
-          label: 'AMS holder — large (75 × 55 mm)',
+          label: 'AMS holder - large (75 × 55 mm)',
           hint: 'Single label per page; fits the cardstock-insert variant of the AMS Filament Label Holder. Roomy enough for swatch, brand, material, ID, and QR code.'
         },
         box40x30: {
@@ -5032,13 +5032,13 @@ export default {
 
   // Virtual Printer
   vpDiagnostic: {
-    title: 'Setup check — {{name}}',
+    title: 'Setup check - {{name}}',
     runButton: 'Run setup check',
     running: 'Running setup check...',
     runFailed: 'Could not run the setup check: {{error}}',
     retry: 'Run again',
     overall: {
-      ok: 'All checks passed — this virtual printer is set up correctly.',
+      ok: 'All checks passed - this virtual printer is set up correctly.',
       warnings: 'The virtual printer should work, but some things need attention.',
       problems: 'Found problems that explain why the slicer can\'t see or use this virtual printer.',
     },
@@ -5049,7 +5049,7 @@ export default {
       },
       running: {
         title: 'Services running',
-        fail: 'The virtual printer is enabled but its services are not running. Check the BamDude log — a bind IP conflict or a permission error usually stops them.',
+        fail: 'The virtual printer is enabled but its services are not running. Check the BamDude log - a bind IP conflict or a permission error usually stops them.',
       },
       bind_interface: {
         title: 'Bind network interface',
@@ -5062,7 +5062,7 @@ export default {
       target_printer: {
         title: 'Target printer',
         fail: 'No target printer is selected. Proxy mode needs a real printer to forward to.',
-        warn: 'The target printer is offline right now — proxying will resume once it reconnects.',
+        warn: 'The target printer is offline right now - proxying will resume once it reconnects.',
       },
       port_ftps: {
         title: 'File-upload service (port {{port}})',
@@ -5087,7 +5087,7 @@ export default {
     title: 'Virtual Printer',
     caCert: {
       title: 'Slicer certificate',
-      description: 'Virtual printers use a TLS certificate signed by the BamDude CA. Import this CA certificate into your slicer\'s trust store once so it accepts the connection — no need to copy it from the command line.',
+      description: 'Virtual printers use a TLS certificate signed by the BamDude CA. Import this CA certificate into your slicer\'s trust store once so it accepts the connection - no need to copy it from the command line.',
       copy: 'Copy',
       copied: 'Copied',
       download: 'Download',
