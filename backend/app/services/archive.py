@@ -9,7 +9,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 
 from defusedxml import ElementTree as ET
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import settings
@@ -2366,6 +2366,19 @@ class ArchiveService:
         archive = await self.get_archive(archive_id)
         if not archive:
             return False
+
+        # Detach spool-usage history before removing the archive. The
+        # ``spool_usage_history.archive_id`` FK has no ``ON DELETE`` clause (the
+        # row must outlive the archive so the spool keeps its consumption record),
+        # so NULL it here: on SQLite this avoids a dangling reference, on
+        # PostgreSQL it avoids a foreign-key violation that would block the delete.
+        # Done before every ``db.delete(archive)`` path below (incl. the early
+        # security returns) so the subsequent commit flushes both together.
+        from backend.app.models.spool_usage_history import SpoolUsageHistory
+
+        await self.db.execute(
+            update(SpoolUsageHistory).where(SpoolUsageHistory.archive_id == archive_id).values(archive_id=None)
+        )
 
         # Resolve the directory to delete BEFORE committing the DB change
         dir_to_delete: Path | None = None
