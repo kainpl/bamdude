@@ -4175,6 +4175,8 @@ export default {
     noUsageHistory: 'No usage recorded yet',
     clearHistory: 'Clear',
     historyCleared: 'Usage history cleared',
+    deleteUsageRecord: 'Remove this record and return its weight to the spool',
+    usageRecordDeleted: 'Record removed, weight returned to spool',
     fillSourceLabel: '(Inv)',
     lowStockThresholdError: 'Threshold must be between 0.1 and 99.9',
     assignMismatchTitle: 'Material mismatch',

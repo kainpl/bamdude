@@ -6113,7 +6113,9 @@ export const api = {
   getAllUsageHistory: (limit = 100, printerId?: number) =>
     request<SpoolUsageRecord[]>(`/inventory/usage?limit=${limit}${printerId ? `&printer_id=${printerId}` : ''}`),
   clearSpoolUsageHistory: (spoolId: number) =>
-    request<{ status: string }>(`/inventory/spools/${spoolId}/usage`, { method: 'DELETE' }),
+    request<InventorySpool>(`/inventory/spools/${spoolId}/usage`, { method: 'DELETE' }),
+  deleteSpoolUsageRecord: (spoolId: number, usageId: number) =>
+    request<InventorySpool>(`/inventory/spools/${spoolId}/usage/${usageId}`, { method: 'DELETE' }),
   syncWeightsFromAms: () =>
     request<{ synced: number; skipped: number }>('/inventory/sync-ams-weights', { method: 'POST' }),
   // Stock forecasting + shopping list (upstream #1184)

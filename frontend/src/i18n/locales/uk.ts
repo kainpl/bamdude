@@ -4179,6 +4179,8 @@ export default {
     noUsageHistory: 'Використання ще не записано',
     clearHistory: 'Очистити',
     historyCleared: 'Історію використання очищено',
+    deleteUsageRecord: 'Видалити цей запис і повернути його вагу до котушки',
+    usageRecordDeleted: 'Запис видалено, вагу повернено до котушки',
     fillSourceLabel: '(Інв)',
     lowStockThresholdError: 'Поріг повинен бути від 0.1 до 99.9',
     assignMismatchTitle: 'Невідповідність матеріалу',

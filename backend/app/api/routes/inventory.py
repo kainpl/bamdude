@@ -1763,20 +1763,110 @@ async def get_all_usage_history(
     return list(result.scalars().all())
 
 
-@router.delete("/spools/{spool_id}/usage")
+async def _return_usage_weight(db: AsyncSession, spool: "Spool | None", rows: list) -> None:
+    """Hand the weight recorded by ``rows`` back to the spool and their archives.
+
+    Both delete paths (per-row and clear-all) funnel through here so they behave
+    identically. Deleting usage history means "this consumption no longer
+    counts", so:
+
+    * ``spool.weight_used`` drops by the rows' total (clamped at 0; the filament
+      becomes available again, remaining weight goes up) and the "total consumed"
+      baseline is pulled down to stay <= the counter.
+    * each linked ``PrintArchive.filament_used_grams`` drops by the weight of the
+      rows that referenced it (clamped at 0). Subtracting the *row's* share —
+      rather than zeroing the archive — keeps a multi-colour print's total
+      correct when only some of its slots are removed, so the Statistics page
+      (sum of archive grams) stays equal to inventory (sum of usage rows).
+
+    Caller is responsible for deleting the rows and committing.
+    """
+    if not rows:
+        return
+    from backend.app.models.archive import PrintArchive
+
+    total = sum((r.weight_used or 0) for r in rows)
+    if spool is not None:
+        spool.weight_used = max(0.0, round((spool.weight_used or 0) - total, 1))
+        if (spool.weight_used_baseline or 0) > spool.weight_used:
+            spool.weight_used_baseline = spool.weight_used
+
+    per_archive: dict[int, float] = {}
+    for r in rows:
+        if r.archive_id:
+            per_archive[r.archive_id] = per_archive.get(r.archive_id, 0.0) + (r.weight_used or 0)
+    for archive_id, used in per_archive.items():
+        archive = (await db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))).scalar_one_or_none()
+        if archive is not None and archive.filament_used_grams is not None:
+            archive.filament_used_grams = max(0.0, round(archive.filament_used_grams - used, 1))
+
+
+@router.delete("/spools/{spool_id}/usage", response_model=SpoolResponse)
 async def clear_spool_usage_history(
     spool_id: int,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
-    """Clear usage history for a spool."""
+    """Clear all usage history for a spool, returning the weight to the spool.
+
+    Same accounting as the per-row delete (see :func:`_return_usage_weight`):
+    every cleared row's weight goes back to the spool and to its linked archive.
+    """
     from backend.app.models.spool_usage_history import SpoolUsageHistory
 
-    result = await db.execute(select(SpoolUsageHistory).where(SpoolUsageHistory.spool_id == spool_id))
-    for row in result.scalars().all():
+    spool = (await db.execute(select(Spool).where(Spool.id == spool_id))).scalar_one_or_none()
+    if not spool:
+        raise HTTPException(404, "Spool not found")
+
+    rows = list(
+        (await db.execute(select(SpoolUsageHistory).where(SpoolUsageHistory.spool_id == spool_id))).scalars().all()
+    )
+    await _return_usage_weight(db, spool, rows)
+    for row in rows:
         await db.delete(row)
     await db.commit()
-    return {"status": "cleared"}
+
+    result = await db.execute(select(Spool).options(selectinload(Spool.k_profiles)).where(Spool.id == spool_id))
+    await ws_manager.broadcast({"type": "inventory_changed"})
+    return result.scalar_one()
+
+
+@router.delete("/spools/{spool_id}/usage/{usage_id}", response_model=SpoolResponse)
+async def delete_spool_usage_record(
+    spool_id: int,
+    usage_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
+):
+    """Delete a single usage-history row and return its weight to the spool.
+
+    See :func:`_return_usage_weight` for the shared accounting (spool weight +
+    linked-archive filament both drop by the row's weight, clamped at 0).
+    """
+    from backend.app.models.spool_usage_history import SpoolUsageHistory
+
+    spool_result = await db.execute(select(Spool).where(Spool.id == spool_id))
+    spool = spool_result.scalar_one_or_none()
+    if not spool:
+        raise HTTPException(404, "Spool not found")
+
+    row_result = await db.execute(
+        select(SpoolUsageHistory).where(
+            SpoolUsageHistory.id == usage_id,
+            SpoolUsageHistory.spool_id == spool_id,
+        )
+    )
+    row = row_result.scalar_one_or_none()
+    if not row:
+        raise HTTPException(404, "Usage record not found")
+
+    await _return_usage_weight(db, spool, [row])
+    await db.delete(row)
+    await db.commit()
+
+    result = await db.execute(select(Spool).options(selectinload(Spool.k_profiles)).where(Spool.id == spool_id))
+    await ws_manager.broadcast({"type": "inventory_changed"})
+    return result.scalar_one()
 
 
 # ── AMS Weight Sync ──────────────────────────────────────────────────────────

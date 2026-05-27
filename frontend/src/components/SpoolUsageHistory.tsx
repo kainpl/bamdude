@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Loader2, Trash2, Clock } from 'lucide-react';
+import { Loader2, Trash2, Clock, X } from 'lucide-react';
 import { api } from '../api/client';
 import type { SpoolUsageRecord } from '../api/client';
 import { Button } from './Button';
@@ -41,7 +41,20 @@ export function SpoolUsageHistory({ spoolId }: SpoolUsageHistoryProps) {
     mutationFn: () => api.clearSpoolUsageHistory(spoolId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['spool-usage', spoolId] });
+      // Clear-all returns each row's weight to the spool, so refresh the list too.
+      queryClient.invalidateQueries({ queryKey: ['spools'] });
       showToast(t('inventory.historyCleared'), 'success');
+    },
+  });
+
+  // Per-row delete returns the row's weight to the spool (counts as unused
+  // again), so refresh the spool list too — not just the usage list.
+  const deleteRowMutation = useMutation({
+    mutationFn: (usageId: number) => api.deleteSpoolUsageRecord(spoolId, usageId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['spool-usage', spoolId] });
+      queryClient.invalidateQueries({ queryKey: ['spools'] });
+      showToast(t('inventory.usageRecordDeleted'), 'success');
     },
   });
 
@@ -81,7 +94,7 @@ export function SpoolUsageHistory({ spoolId }: SpoolUsageHistoryProps) {
         {history.map((record: SpoolUsageRecord) => (
           <div
             key={record.id}
-            className="flex items-center justify-between p-2 rounded bg-bambu-dark/50 text-xs"
+            className="group flex items-center justify-between p-2 rounded bg-bambu-dark/50 text-xs"
           >
             <div className="flex-1 min-w-0">
               <span className="text-bambu-gray">{formatDateTime(record.created_at, timeFormat, dateFormat)}</span>
@@ -97,6 +110,16 @@ export function SpoolUsageHistory({ spoolId }: SpoolUsageHistoryProps) {
               <span className={STATUS_COLORS[record.status] || 'text-bambu-gray'}>
                 {record.status}
               </span>
+              <button
+                type="button"
+                onClick={() => deleteRowMutation.mutate(record.id)}
+                disabled={deleteRowMutation.isPending}
+                title={t('inventory.deleteUsageRecord')}
+                aria-label={t('inventory.deleteUsageRecord')}
+                className="text-bambu-gray/40 hover:text-red-400 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity disabled:opacity-30"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
             </div>
           </div>
         ))}

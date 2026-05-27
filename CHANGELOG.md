@@ -8,6 +8,10 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Delete spool usage-history entries and reclaim the weight.** Each row in a spool's **Usage History** now has a small hover **×** that removes just that consumption record. Removing a record (or using bulk **Clear**, which now behaves the same way) **returns its weight to the spool** — the filament counts as unused again, so the spool's remaining weight goes back up — *and* subtracts the same amount from the linked print's recorded filament, so the **Statistics page stays in step with inventory**. For a multi-colour print, removing one colour's record only reclaims that colour's share. Useful for cleaning up a mistaken or test print that shouldn't count against the spool.
+
 ### Fixed
 
 - **Deleting a print archive no longer leaves dangling spool-usage links (and no longer risks failing on PostgreSQL).** A spool's consumption history (`spool_usage_history`) is meant to outlive the archive it came from, but its `archive_id` link wasn't being detached on delete — on SQLite that left the row pointing at a deleted archive, and on PostgreSQL the foreign key could block the deletion entirely. Archive deletion now clears the link first, and a one-time migration NULLs any already-orphaned links left by past deletes. The usage records themselves are always kept — only the stale link is severed.
