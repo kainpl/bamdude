@@ -15,9 +15,43 @@ from backend.app.services.usage_tracker import (
     _archive_colors_from_spools,
     _spool_color_to_hex,
     _track_from_3mf,
+    actual_filament_grams,
     on_print_complete,
     on_print_start,
 )
+
+
+class TestActualFilamentGrams:
+    """The weight persisted on the archive must match what inventory was deducted.
+
+    A failed print's archive is created with the *full* slicer estimate; if that
+    estimate is kept, the stats page over-counts filament for failures while
+    inventory (deducted by actual partial usage) shows less. actual_filament_grams
+    substitutes the tracked actual for partial prints and keeps the estimate for
+    completed ones.
+    """
+
+    def test_failed_with_tracking_uses_actual(self):
+        # Full estimate 500 g, but only 120 g actually extruded before failure.
+        assert actual_filament_grams("failed", tracked_grams=120.0, estimate=500.0) == 120.0
+
+    @pytest.mark.parametrize("status", ["aborted", "cancelled", "stopped"])
+    def test_other_terminal_failures_use_actual(self, status):
+        assert actual_filament_grams(status, tracked_grams=80.4, estimate=500.0) == 80.4
+
+    def test_completed_keeps_estimate(self):
+        # At 100% the estimate equals actual; never override it.
+        assert actual_filament_grams("completed", tracked_grams=480.0, estimate=500.0) == 500.0
+
+    def test_failed_without_tracking_keeps_estimate(self):
+        # Untracked failure (no inventory spool mapped) has no measured actual.
+        assert actual_filament_grams("failed", tracked_grams=0.0, estimate=500.0) == 500.0
+
+    def test_rounds_to_one_decimal(self):
+        assert actual_filament_grams("failed", tracked_grams=123.456, estimate=500.0) == 123.5
+
+    def test_missing_estimate_is_zero(self):
+        assert actual_filament_grams("completed", tracked_grams=0.0, estimate=None) == 0.0
 
 
 def _make_spool(*, id=1, label_weight=1000, weight_used=0, tag_uid=None, tray_uuid=None):

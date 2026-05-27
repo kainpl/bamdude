@@ -228,6 +228,21 @@ def _to_epoch_seconds(value: datetime | None) -> float | None:
     return dt.timestamp()
 
 
+def actual_filament_grams(status: str, tracked_grams: float, estimate: float | None) -> float:
+    """Filament weight to store on the archive for a finished print.
+
+    At archive creation ``filament_used_grams`` holds the full slicer estimate.
+    For a partial / failed print only a fraction was extruded, so the estimate
+    over-counts — stats would then disagree with inventory (which was deducted by
+    the *actual* tracked usage). When usage was tracked, substitute the actually
+    consumed weight; otherwise (completed, or a failure we couldn't measure) keep
+    the estimate, which equals actual at 100%.
+    """
+    if status != "completed" and tracked_grams > 0:
+        return round(tracked_grams, 1)
+    return estimate or 0.0
+
+
 async def _resolve_spool_id_for_tray(
     printer_id: int,
     ams_id: int,
@@ -570,13 +585,22 @@ async def on_print_complete(
         if archive:
             total_cost = sum(r.get("cost", 0) or 0 for r in results)
             tracked_grams = sum(r.get("weight_used", 0) or 0 for r in results)
-            archive_grams = archive.filament_used_grams or 0
-            untracked_grams = max(0.0, archive_grams - tracked_grams)
+            # Effective weight = estimate for completed prints, actual tracked
+            # weight for partial / failed prints (see actual_filament_grams). Both
+            # the untracked-cost calc and the persisted weight use it so stats and
+            # cost agree with inventory. For a completed multi-color print where
+            # some AMS trays aren't mapped to inventory spools, effective ==
+            # estimate so untracked filament (#1344) is still costed at the default
+            # rate; for a failure effective == tracked so no phantom untracked cost.
+            effective_grams = actual_filament_grams(status, tracked_grams, archive.filament_used_grams)
+            untracked_grams = max(0.0, effective_grams - tracked_grams)
             if untracked_grams > 0 and default_filament_cost > 0:
                 total_cost += (untracked_grams / 1000.0) * default_filament_cost
             if total_cost > 0:
                 archive.cost = round(total_cost, 2)
-                await db.commit()
+            if effective_grams != (archive.filament_used_grams or 0):
+                archive.filament_used_grams = effective_grams
+            await db.commit()
 
     return results
 

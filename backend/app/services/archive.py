@@ -1781,17 +1781,14 @@ class ArchiveService:
 
         # Determine status and timestamps. Default `'completed'` covers the
         # path where on_print_complete archives a finished print without
-        # passing print_data (rare, but defensive). The pre-0.4.2 fallback
-        # was `'archived'` — used by the now-removed manual upload + VP
-        # placeholder + pending_uploads approval routes (Audits 1+2+3) to
-        # mark "uploaded but never printed" rows. After those writers are
-        # gone there is no caller that wants `'archived'` as a default;
-        # any caller that genuinely means "uploaded, never printed" must
-        # pass `print_data={'status': 'archived'}` explicitly so the
-        # intent is auditable at the call site.
+        # passing print_data (rare, but defensive). The legacy `'archived'`
+        # status (pre-0.4.2 "uploaded but never printed" rows from the
+        # now-removed manual-upload / VP-placeholder / pending-uploads flows)
+        # is no longer produced anywhere; only legacy DBs may still carry such
+        # rows, which the stats / history queries defensively exclude.
         status = print_data.get("status", "completed") if print_data else "completed"
         started_at = datetime.now(timezone.utc) if status == "printing" else None
-        completed_at = datetime.now(timezone.utc) if status in ("completed", "failed", "archived") else None
+        completed_at = datetime.now(timezone.utc) if status in ("completed", "failed") else None
 
         # Calculate initial cost estimate from default setting.
         # This is a placeholder - usage_tracker.on_print_complete() will overwrite

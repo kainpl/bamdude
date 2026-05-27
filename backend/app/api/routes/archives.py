@@ -380,9 +380,10 @@ async def list_archives_slim(
     Returns only the fields needed for client-side aggregation,
     skipping duplicate detection, file paths, and extra_data.
     """
-    # Exclude "archived" status - uploaded but never printed.
-    # Also exclude trashed rows (deleted_at IS NOT NULL) to stay consistent with
-    # GET /stats: the stats/dashboard widgets fed by this endpoint (Filament
+    # Defensively exclude the legacy "archived" status (uploaded-but-never-printed
+    # rows; no longer produced — see archive.py — but legacy DBs may still carry
+    # them). Also exclude trashed rows (deleted_at IS NOT NULL) to stay consistent
+    # with GET /stats: the stats/dashboard widgets fed by this endpoint (Filament
     # Trends, Calendar, StatsPage charts) must not count prints the user removed
     # from active history, otherwise the trend charts and the Quick Stats totals
     # would disagree about the same prints.
@@ -835,9 +836,10 @@ async def get_archive_stats(
     """Get statistics across all archives."""
     _validate_user_filter_permission(current_user, created_by_id)
 
-    # Build date filter conditions
-    # Exclude "archived" status - these are files uploaded via virtual printer
-    # or manual upload that were never actually printed.
+    # Build date filter conditions.
+    # Defensively exclude the legacy "archived" status (uploaded-but-never-printed
+    # rows from the removed VP / manual-upload flows; no longer produced, but
+    # legacy DBs may still carry them).
     # Exclude trashed rows (deleted_at IS NOT NULL) — trash is a soft-delete
     # awaiting the retention sweeper, the user has explicitly removed these
     # from active history and they shouldn't pollute totals / filament / cost.
