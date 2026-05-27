@@ -1,5 +1,6 @@
 import asyncio
 import ftplib  # nosec B402
+import functools
 import logging
 import os
 import socket
@@ -15,6 +16,53 @@ from typing import TypeVar
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
+
+# ---------------------------------------------------------------------------
+# Per-printer FTP serialization.
+#
+# Bambu printers' FTPS server (vsFTPd) accepts only ~one session at a time. If
+# BamDude opens a second / overlapping connection to the same printer — which
+# happens on print-complete, where the post-print SD-cleanup and the 3MF
+# archive-download both fire at the same IP, plus multi-path retries — the
+# printer answers the extra connect in PLAINTEXT (e.g. "421 too many users").
+# Because we connect with *implicit* TLS (wrap the socket immediately), the
+# client reads that plaintext as a malformed TLS record and raises
+# ``[SSL: WRONG_VERSION_NUMBER]``. P2S firmware 01.02.00.00 is especially prone
+# to this right after a print finishes (busy flushing the SD card / timelapse).
+#
+# Serializing every FTP operation per printer IP guarantees we never open a
+# second concurrent session, which removes the plaintext-rejection root cause.
+# This is separate from the #1401 TLS-1.2 cap (that fixes data-channel 426
+# truncation, a different symptom).
+_ftp_locks: dict[str, asyncio.Lock] = {}
+
+
+def _ftp_lock(ip_address: str) -> asyncio.Lock:
+    """Return the process-wide FTP lock for a printer IP, creating it lazily."""
+    lock = _ftp_locks.get(ip_address)
+    if lock is None:
+        lock = asyncio.Lock()
+        _ftp_locks[ip_address] = lock
+    return lock
+
+
+def _ftp_serialized(fn: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
+    """Serialize an async FTP entry point per printer IP.
+
+    The wrapped function must take ``ip_address`` as its first positional arg
+    (or keyword). The lock is held only for the duration of one connect→op→close
+    so retries (via :func:`with_ftp_retry`) release it between attempts.
+    """
+
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        ip = kwargs.get("ip_address") if "ip_address" in kwargs else (args[0] if args else None)
+        if not ip:
+            return await fn(*args, **kwargs)
+        async with _ftp_lock(ip):
+            return await fn(*args, **kwargs)
+
+    return wrapper
 
 
 class FileNotOnPrinterError(Exception):
@@ -790,6 +838,7 @@ class BambuFTPClient:
         return result if result else None
 
 
+@_ftp_serialized
 async def download_file_async(
     ip_address: str,
     access_code: str,
@@ -905,6 +954,7 @@ async def download_file_async(
     return False
 
 
+@_ftp_serialized
 async def download_file_try_paths_async(
     ip_address: str,
     access_code: str,
@@ -943,6 +993,7 @@ async def download_file_try_paths_async(
     return await loop.run_in_executor(None, _download)
 
 
+@_ftp_serialized
 async def upload_file_async(
     ip_address: str,
     access_code: str,
@@ -1021,6 +1072,7 @@ async def upload_file_async(
         return False
 
 
+@_ftp_serialized
 async def list_files_async(
     ip_address: str,
     access_code: str,
@@ -1053,6 +1105,7 @@ async def list_files_async(
         return []
 
 
+@_ftp_serialized
 async def delete_file_async(
     ip_address: str,
     access_code: str,
@@ -1080,6 +1133,7 @@ async def delete_file_async(
     return await loop.run_in_executor(None, _delete)
 
 
+@_ftp_serialized
 async def clear_sdcard_async(
     ip_address: str,
     access_code: str,
@@ -1112,6 +1166,7 @@ async def clear_sdcard_async(
     return await loop.run_in_executor(None, _clear)
 
 
+@_ftp_serialized
 async def rename_file_async(
     ip_address: str,
     access_code: str,
@@ -1135,6 +1190,7 @@ async def rename_file_async(
     return await loop.run_in_executor(None, _rename)
 
 
+@_ftp_serialized
 async def download_file_bytes_async(
     ip_address: str,
     access_code: str,
@@ -1162,6 +1218,7 @@ async def download_file_bytes_async(
     return await loop.run_in_executor(None, _download)
 
 
+@_ftp_serialized
 async def upload_bytes_async(
     ip_address: str,
     access_code: str,
@@ -1185,6 +1242,7 @@ async def upload_bytes_async(
     return await loop.run_in_executor(None, _upload)
 
 
+@_ftp_serialized
 async def get_storage_info_async(
     ip_address: str,
     access_code: str,
@@ -1270,10 +1328,14 @@ async def with_ftp_retry(
             last_error = e
             logger.warning("%s attempt %s/%s failed: %s", operation_name, attempt + 1, max_retries + 1, e)
 
-        # Don't wait after the last attempt
+        # Don't wait after the last attempt. Exponential backoff (capped at
+        # 30s) so a printer that's momentarily busy / refusing a second FTP
+        # session (P2S right after a print finishes) gets progressively more
+        # time to recover instead of being hammered every 2s.
         if attempt < max_retries:
-            logger.info("%s will retry in %ss...", operation_name, retry_delay)
-            await asyncio.sleep(retry_delay)
+            wait = min(retry_delay * (2**attempt), 30.0)
+            logger.info("%s will retry in %.1fs...", operation_name, wait)
+            await asyncio.sleep(wait)
 
     logger.error("%s failed after %s attempts", operation_name, max_retries + 1)
     if last_error:
