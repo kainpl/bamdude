@@ -21,6 +21,7 @@ import { LabelTemplatePickerModal } from '../components/LabelTemplatePickerModal
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { resolveSpoolColorName } from '../utils/colors';
+import { useColorCatalogVersion } from '../hooks/useColorCatalogVersion';
 import { getCurrencySymbol } from '../utils/currency';
 import { formatDateInput, parseUTCDate, type DateFormat } from '../utils/date';
 import { formatSlotLabel } from '../utils/amsHelpers';
@@ -634,6 +635,11 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   const [usageFilter, setUsageFilter] = useState<UsageFilter>('all');
   const [materialFilter, setMaterialFilter] = useState('');
   const [brandFilter, setBrandFilter] = useState('');
+  // Filter by resolved colour NAME (single source of truth via the colour
+  // catalog), with options drawn from existing (non-archived) spools only.
+  const [colorFilter, setColorFilter] = useState('');
+  // Re-resolve colour-name options once the colour catalog finishes loading.
+  const colorCatalogVersion = useColorCatalogVersion();
   const [categoryFilter, setCategoryFilter] = useState('');
   const [spoolFilter, setSpoolFilter] = useState('');
   const [stockFilter, setStockFilter] = useState<'all' | 'stock' | 'configured'>('all');
@@ -1032,6 +1038,13 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
       filtered = filtered.filter((s) => s.brand === brandFilter);
     }
 
+    // Colour dropdown — matches the resolved colour NAME (catalog single
+    // source of truth), so two near-identical hexes that map to the same
+    // name (e.g. both "Black") filter together.
+    if (colorFilter) {
+      filtered = filtered.filter((s) => resolveSpoolColorName(s.color_name, s.rgba) === colorFilter);
+    }
+
     // Category dropdown (#729) — '__none__' picks uncategorised spools.
     if (categoryFilter) {
       if (categoryFilter === '__none__') {
@@ -1086,7 +1099,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     }
 
     return filtered;
-  }, [spools, archiveFilter, usageFilter, materialFilter, brandFilter, categoryFilter, spoolFilter, storageLocationFilter, stockFilter, search, spoolDisplayTemplate, lowStockThreshold]);
+  }, [spools, archiveFilter, usageFilter, materialFilter, brandFilter, colorFilter, categoryFilter, spoolFilter, storageLocationFilter, stockFilter, search, spoolDisplayTemplate, lowStockThreshold]);
 
   // Reset page on filter changes
   const resetPage = () => setPageIndex(0);
@@ -1094,6 +1107,19 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   // Unique values for filter dropdowns
   const uniqueMaterials = [...new Set(spools?.map((s) => s.material) || [])].sort();
   const uniqueBrands = [...new Set(spools?.map((s) => s.brand).filter(Boolean) || [])].sort() as string[];
+  // Colour options come from EXISTING (non-archived) spools only, by resolved
+  // colour name. ``colorCatalogVersion`` is referenced so the list re-resolves
+  // once the colour catalog loads.
+  const uniqueColors = useMemo(() => {
+    void colorCatalogVersion;
+    const set = new Set<string>();
+    for (const s of spools || []) {
+      if (s.archived_at) continue;
+      const name = resolveSpoolColorName(s.color_name, s.rgba);
+      if (name) set.add(name);
+    }
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [spools, colorCatalogVersion]);
   const uniqueSpoolCatalogIds = [...new Set(spools?.map((s) => s.core_weight_catalog_id).filter((id): id is number => id != null) || [])].sort((a, b) => {
     const nameA = (catalogMap[a]?.name || '').toLowerCase();
     const nameB = (catalogMap[b]?.name || '').toLowerCase();
@@ -1107,7 +1133,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   const hasUnsetStorageLocation = (spools ?? []).some((s) => !s.storage_location?.trim());
 
   // Check if any filters are non-default
-  const hasActiveFilters = archiveFilter !== 'active' || usageFilter !== 'all' || !!materialFilter || !!brandFilter || !!categoryFilter || !!spoolFilter || !!storageLocationFilter || stockFilter !== 'all' || !!search;
+  const hasActiveFilters = archiveFilter !== 'active' || usageFilter !== 'all' || !!materialFilter || !!brandFilter || !!colorFilter || !!categoryFilter || !!spoolFilter || !!storageLocationFilter || stockFilter !== 'all' || !!search;
 
   const handleColumnConfigSave = (config: ColumnConfig[]) => {
     setColumnConfig(config);
@@ -1257,6 +1283,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     setUsageFilter('all');
     setMaterialFilter('');
     setBrandFilter('');
+    setColorFilter('');
     setCategoryFilter('');
     setSpoolFilter('');
     setStorageLocationFilter('');
@@ -1660,6 +1687,26 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
             <option key={b} value={b}>{b}</option>
           ))}
         </select>
+
+        {/* Colour dropdown chip — options from existing (non-archived) spools,
+            by resolved colour name. Only render once at least one active spool
+            has a resolvable colour (or a colour is already selected). */}
+        {(uniqueColors.length > 0 || colorFilter) && (
+          <select
+            value={colorFilter}
+            onChange={(e) => { setColorFilter(e.target.value); resetPage(); }}
+            className={`px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors cursor-pointer focus:outline-none ${
+              colorFilter
+                ? 'bg-bambu-green/20 text-bambu-green border-bambu-green/30'
+                : 'bg-transparent text-bambu-gray border-bambu-dark-tertiary hover:bg-bambu-dark-tertiary'
+            }`}
+          >
+            <option value="">{t('inventory.color')}</option>
+            {uniqueColors.map((c) => (
+              <option key={c} value={c}>{c}</option>
+            ))}
+          </select>
+        )}
 
         {/* Category dropdown chip (#729) — only render once at least one
             spool carries a category, otherwise it's noise. */}
