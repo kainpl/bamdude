@@ -399,6 +399,7 @@ class TestStatusReportCachedAsBase:
         server = _make_server()
         server._gcode_state = "PREPARE"
         server._current_file = "foo.3mf"
+        server.upload_started()  # mid-FTP-upload, so PREPARE is the live state (not stale)
         bridge = MagicMock()
         bridge.get_latest_print_state.return_value = {
             "command": "push_status",

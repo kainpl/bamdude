@@ -218,6 +218,18 @@ class SimpleMQTTServer:
         self._current_file = ""
         self._prepare_percent = "0"
 
+        # Number of FTP uploads currently transferring to this VP. Driven by
+        # the FTP server through ``upload_started`` / ``upload_finished`` (a
+        # counter, not a bool, so two concurrent slicer sessions can't clear
+        # each other's in-flight state). ``PREPARE`` is set the moment a slicer
+        # sends its ``project_file`` MQTT command, but if the upload that should
+        # follow never arrives or the FTP transfer fails, that ``PREPARE`` would
+        # otherwise stick forever — and BambuStudio / OrcaSlicer both treat
+        # ``PREPARE`` as "in printing", so every later pre-flight reads
+        # "The printer is busy with another print job". When no upload is in
+        # flight we advertise ``IDLE`` instead of the stale ``PREPARE``.
+        self._active_uploads = 0
+
         # MQTT bridge for non-proxy modes — set by VirtualPrinterInstance after
         # ``start()``. When the bridge is_active, ``_send_status_report`` serves
         # near-byte-identical real-printer pushes from cache and slicer-issued
@@ -635,6 +647,7 @@ class SimpleMQTTServer:
         """
         try:
             self._sequence_id += 1
+            reported_state = self._reported_gcode_state()
 
             cached = self._bridge.get_latest_print_state() if self._bridge is not None else None
             if isinstance(cached, dict):
@@ -645,7 +658,7 @@ class SimpleMQTTServer:
                 print_block["sequence_id"] = str(self._sequence_id)
                 print_block["command"] = "push_status"
                 print_block["msg"] = 0
-                print_block["gcode_state"] = self._gcode_state
+                print_block["gcode_state"] = reported_state
                 print_block["gcode_file"] = self._current_file
                 print_block["gcode_file_prepare_percent"] = self._prepare_percent
                 if self._current_file:
@@ -680,7 +693,7 @@ class SimpleMQTTServer:
                     "sequence_id": str(self._sequence_id),
                     "command": "push_status",
                     "msg": 0,
-                    "gcode_state": self._gcode_state,
+                    "gcode_state": reported_state,
                     "gcode_file": self._current_file,
                     "gcode_file_prepare_percent": self._prepare_percent,
                     "subtask_name": self._current_file.replace(".3mf", "") if self._current_file else "",
@@ -840,6 +853,42 @@ class SimpleMQTTServer:
         self._gcode_state = state
         self._current_file = filename
         self._prepare_percent = prepare_percent
+
+    def upload_started(self) -> None:
+        """Mark that an FTP upload began (called by the FTP server)."""
+        self._active_uploads += 1
+
+    def upload_finished(self) -> None:
+        """Mark that an FTP upload ended — on success OR failure. Paired with
+        ``upload_started`` from the FTP STOR handler's ``finally``."""
+        if self._active_uploads > 0:
+            self._active_uploads -= 1
+
+    def resolve_stale_prepare(self) -> None:
+        """Drop a leftover ``PREPARE`` to ``IDLE`` when there's nothing to print.
+
+        Used after a non-3MF upload completes (cover image / slicer junk): the
+        ``project_file`` command flipped us to ``PREPARE`` but no print job
+        exists, so advance to a terminal idle state rather than leaving the
+        slicer reading "busy with another print job"."""
+        if self._gcode_state == "PREPARE":
+            self._gcode_state = "IDLE"
+            self._current_file = ""
+            self._prepare_percent = "0"
+
+    def _reported_gcode_state(self) -> str:
+        """The ``gcode_state`` to advertise in status pushes.
+
+        ``PREPARE`` is only legitimate while an upload is actually in flight.
+        A ``PREPARE`` left from a ``project_file`` whose upload never completed
+        (slicer cancelled, FTP transfer failed) makes every slicer's pre-flight
+        read "busy with another print job", because BambuStudio and OrcaSlicer
+        alike map ``gcode_state`` → ``print_status`` and treat ``PREPARE`` as
+        in-printing. When no upload is in flight, report ``IDLE`` so the slicer
+        can send again."""
+        if self._gcode_state == "PREPARE" and self._active_uploads == 0:
+            return "IDLE"
+        return self._gcode_state
 
     async def _publish_to_report(self, writer: asyncio.StreamWriter, payload: dict, serial: str = "") -> None:
         """Publish a message on the device report topic.

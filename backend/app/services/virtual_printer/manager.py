@@ -264,27 +264,36 @@ class VirtualPrinterInstance:
         #                    bytes straight through to the real printer).
         # Anything unexpected falls back to file_manager rather than
         # silently dropping the file.
-        if self.mode == "print_queue":
-            await self._add_to_print_queue(file_path, source_ip)
-        elif self.mode == "auto_queue":
-            await self._add_to_auto_queue(file_path, source_ip)
-        else:
-            await self._save_to_library(file_path, source_ip)
-
-        # Signal job completion to the slicer. Send-flow slicers don't
-        # watch the post-upload state and would be happy with anything;
-        # the Print flow (intended for proxy-mode VPs, but users
-        # sometimes click it against queue / auto_queue / file_manager
-        # modes too — upstream Bambuddy #1280) watches the gcode_state
-        # cycle and only releases its in-flight-job lock when it sees
-        # ``FINISH``. Going ``PREPARE → IDLE`` wedges the slicer's UI
-        # at "Downloading...(0%)" and blocks the next dispatch with
-        # "busy with another print job". ``PREPARE → FINISH`` satisfies
-        # both flows. ``prepare_percent=100`` also unfreezes the
-        # slicer's "Downloading X%" progress bar (it ticks against the
-        # same field during the upload window).
-        if self._mqtt and file_path.suffix.lower() == ".3mf":
-            self._mqtt.set_gcode_state("FINISH", filename=file_path.name, prepare_percent="100")
+        try:
+            if self.mode == "print_queue":
+                await self._add_to_print_queue(file_path, source_ip)
+            elif self.mode == "auto_queue":
+                await self._add_to_auto_queue(file_path, source_ip)
+            else:
+                await self._save_to_library(file_path, source_ip)
+        finally:
+            # Always resolve the upload state machine to a terminal state, in a
+            # ``finally`` so it runs for every mode and even if a handler raised
+            # — otherwise the ``PREPARE`` set by the slicer's ``project_file``
+            # command sticks and the next pre-flight reads "busy with another
+            # print job" (BambuStudio / OrcaSlicer both treat PREPARE as
+            # in-printing).
+            #
+            # Send-flow slicers don't watch the post-upload state, but the Print
+            # flow (intended for proxy-mode VPs, though users click it against
+            # other modes too — upstream Bambuddy #1280) watches the gcode_state
+            # cycle and only releases its in-flight-job lock when it sees
+            # ``FINISH``. ``PREPARE → IDLE`` wedges its UI at "Downloading...(0%)";
+            # ``PREPARE → FINISH`` satisfies both flows, and
+            # ``prepare_percent=100`` unfreezes the "Downloading X%" bar. A
+            # non-3MF upload (cover image / slicer junk) carries no job, so we
+            # only clear any leftover PREPARE rather than advertising a phantom
+            # finished print.
+            if self._mqtt:
+                if file_path.suffix.lower() == ".3mf":
+                    self._mqtt.set_gcode_state("FINISH", filename=file_path.name, prepare_percent="100")
+                else:
+                    self._mqtt.resolve_stale_prepare()
 
     async def on_print_command(self, filename: str, data: dict) -> None:
         """Handle print command from MQTT.
@@ -305,6 +314,19 @@ class VirtualPrinterInstance:
         event = self._slicer_print_options_events.get(filename)
         if event:
             event.set()
+
+    def on_upload_start(self) -> None:
+        """FTP STOR began — flag the MQTT side so it advertises the real
+        in-flight ``PREPARE`` rather than downgrading it to IDLE."""
+        if self._mqtt:
+            self._mqtt.upload_started()
+
+    def on_upload_end(self) -> None:
+        """FTP STOR ended (success OR failure). A failed upload leaves the
+        ``PREPARE`` set by ``project_file`` behind; once no upload is in flight
+        the MQTT side reports IDLE so the slicer isn't stuck on "busy"."""
+        if self._mqtt:
+            self._mqtt.upload_finished()
 
     async def _save_to_library(self, file_path: Path, source_ip: str):  # noqa: ARG002
         """Save file to the File Manager library.
@@ -953,6 +975,8 @@ class VirtualPrinterInstance:
             on_file_received=self.on_file_received,
             bind_address=bind_addr,
             vp_name=self.name,
+            on_upload_start=self.on_upload_start,
+            on_upload_end=self.on_upload_end,
         )
         self._tasks.append(
             asyncio.create_task(

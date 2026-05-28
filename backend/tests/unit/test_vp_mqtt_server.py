@@ -70,3 +70,72 @@ class TestHandlePublishNullTerminatorTolerance:
         all_bytes = b"".join(call.args[0] for call in writer.write.call_args_list)
         assert b"device/01P00A391800001/report" in all_bytes
         assert b'"command": "push_status"' in all_bytes
+
+
+class TestStalePrepareReporting:
+    """A ``PREPARE`` left by a ``project_file`` whose upload never completed
+    must not advertise the VP as busy forever. BambuStudio and OrcaSlicer both
+    map gcode_state → print_status and treat PREPARE as in-printing, so a stale
+    PREPARE makes every pre-flight read "busy with another print job"."""
+
+    def test_reported_state_downgrades_stale_prepare_to_idle(self):
+        server = _make_server()
+        server._gcode_state = "PREPARE"
+        assert server._active_uploads == 0
+        assert server._reported_gcode_state() == "IDLE"
+
+    def test_reported_state_keeps_prepare_during_active_upload(self):
+        server = _make_server()
+        server._gcode_state = "PREPARE"
+        server.upload_started()
+        assert server._reported_gcode_state() == "PREPARE"
+        # Once the upload ends (success or failure) the leftover PREPARE is stale.
+        server.upload_finished()
+        assert server._reported_gcode_state() == "IDLE"
+
+    def test_upload_counter_never_goes_negative(self):
+        server = _make_server()
+        server.upload_finished()
+        assert server._active_uploads == 0
+        # And two concurrent uploads need both ends before we report idle.
+        server.upload_started()
+        server.upload_started()
+        server._gcode_state = "PREPARE"
+        server.upload_finished()
+        assert server._reported_gcode_state() == "PREPARE"
+        server.upload_finished()
+        assert server._reported_gcode_state() == "IDLE"
+
+    def test_non_prepare_states_pass_through(self):
+        server = _make_server()
+        for st in ("IDLE", "FINISH", "RUNNING", "FAILED"):
+            server._gcode_state = st
+            assert server._reported_gcode_state() == st
+
+    def test_resolve_stale_prepare_clears_to_idle(self):
+        server = _make_server()
+        server._gcode_state = "PREPARE"
+        server._current_file = "x.3mf"
+        server._prepare_percent = "0"
+        server.resolve_stale_prepare()
+        assert server._gcode_state == "IDLE"
+        assert server._current_file == ""
+        # Non-PREPARE states are left untouched.
+        server._gcode_state = "FINISH"
+        server.resolve_stale_prepare()
+        assert server._gcode_state == "FINISH"
+
+    def test_status_push_advertises_idle_for_stale_prepare(self):
+        """End-to-end: the actual push_status bytes carry IDLE, not PREPARE."""
+        server = _make_server()
+        server._gcode_state = "PREPARE"  # no upload in flight
+
+        writer = MagicMock()
+        writer.write = MagicMock()
+        writer.drain = AsyncMock()
+
+        asyncio.run(server._send_status_report(writer, serial=server.serial))
+
+        pushed = b"".join(call.args[0] for call in writer.write.call_args_list)
+        assert b'"gcode_state": "IDLE"' in pushed
+        assert b'"gcode_state": "PREPARE"' not in pushed

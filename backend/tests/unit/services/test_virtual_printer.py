@@ -165,6 +165,63 @@ class TestVirtualPrinterInstance:
             mock_q.assert_called_once_with(file_path, "192.168.1.100")
 
     # ========================================================================
+    # Tests for upload state-machine finalisation (no stuck PREPARE → "busy")
+    # ========================================================================
+
+    @pytest.mark.asyncio
+    async def test_on_file_received_sets_finish_for_3mf(self, instance):
+        """A completed 3MF upload advances the slicer-facing state to FINISH."""
+        instance._mqtt = MagicMock()
+        file_path = Path("/tmp/test.3mf")  # nosec B108
+
+        with patch.object(instance, "_save_to_library", new_callable=AsyncMock):
+            await instance.on_file_received(file_path, "192.168.1.100")
+
+        instance._mqtt.set_gcode_state.assert_called_once_with("FINISH", filename="test.3mf", prepare_percent="100")
+
+    @pytest.mark.asyncio
+    async def test_on_file_received_resolves_prepare_for_non_3mf(self, instance):
+        """A non-3MF upload (cover image / junk) carries no job — it must only
+        clear a leftover PREPARE, never advertise a phantom finished print."""
+        instance._mqtt = MagicMock()
+        file_path = Path("/tmp/cover.png")  # nosec B108
+
+        with patch.object(instance, "_save_to_library", new_callable=AsyncMock):
+            await instance.on_file_received(file_path, "192.168.1.100")
+
+        instance._mqtt.resolve_stale_prepare.assert_called_once()
+        instance._mqtt.set_gcode_state.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_on_file_received_finalises_state_even_when_handler_raises(self, instance):
+        """The terminal-state transition lives in a ``finally`` so a crashing
+        mode handler can't leave the VP stuck in PREPARE."""
+        instance._mqtt = MagicMock()
+        file_path = Path("/tmp/test.3mf")  # nosec B108
+
+        with (
+            patch.object(instance, "_save_to_library", new_callable=AsyncMock, side_effect=RuntimeError("boom")),
+            pytest.raises(RuntimeError),
+        ):
+            await instance.on_file_received(file_path, "192.168.1.100")
+
+        instance._mqtt.set_gcode_state.assert_called_once_with("FINISH", filename="test.3mf", prepare_percent="100")
+
+    def test_on_upload_start_end_delegate_to_mqtt(self, instance):
+        """FTP STOR bracketing forwards to the MQTT in-flight-upload counter."""
+        instance._mqtt = MagicMock()
+        instance.on_upload_start()
+        instance._mqtt.upload_started.assert_called_once()
+        instance.on_upload_end()
+        instance._mqtt.upload_finished.assert_called_once()
+
+    def test_on_upload_callbacks_safe_without_mqtt(self, instance):
+        """Proxy mode / pre-start has no MQTT server — callbacks must no-op."""
+        instance._mqtt = None
+        instance.on_upload_start()  # must not raise
+        instance.on_upload_end()
+
+    # ========================================================================
     # Tests for auto_dispatch
     # ========================================================================
 
@@ -1172,6 +1229,68 @@ class TestFTPSession:
 
         call_args = session.writer.write.call_args[0][0].decode()
         assert "200" in call_args
+
+    # ========================================================================
+    # Tests for STOR upload bracketing (drives the MQTT stale-PREPARE guard)
+    # ========================================================================
+
+    @pytest.mark.asyncio
+    async def test_stor_brackets_upload_callbacks_on_failure(self, mock_reader, mock_writer, ssl_context, tmp_path):
+        """on_upload_end must fire even when the transfer fails, so the MQTT
+        counter is balanced and a failed upload can't leave a stale PREPARE."""
+        from backend.app.services.virtual_printer.ftp_server import FTPSession
+
+        start = MagicMock()
+        end = MagicMock()
+        session = FTPSession(
+            reader=mock_reader,
+            writer=mock_writer,
+            upload_dir=tmp_path,
+            access_code="12345678",
+            ssl_context=ssl_context,
+            on_file_received=None,
+            on_upload_start=start,
+            on_upload_end=end,
+        )
+        session.authenticated = True
+        session._data_connected.set()  # pass the PASV guard + the connect wait
+        session._data_reader = None  # → "Data connection failed" → early return
+
+        await session.cmd_STOR("test.3mf")
+
+        start.assert_called_once()
+        end.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_stor_brackets_upload_callbacks_on_success(self, mock_reader, mock_writer, ssl_context, tmp_path):
+        """Happy path: start + end fire and on_file_received runs once."""
+        from backend.app.services.virtual_printer.ftp_server import FTPSession
+
+        start = MagicMock()
+        end = MagicMock()
+        received = MagicMock()
+        session = FTPSession(
+            reader=mock_reader,
+            writer=mock_writer,
+            upload_dir=tmp_path,
+            access_code="12345678",
+            ssl_context=ssl_context,
+            on_file_received=received,
+            on_upload_start=start,
+            on_upload_end=end,
+        )
+        session.authenticated = True
+        session._data_connected.set()
+        data_reader = AsyncMock()
+        data_reader.read = AsyncMock(side_effect=[b"hello", b""])  # one chunk then EOF
+        session._data_reader = data_reader
+
+        await session.cmd_STOR("test.3mf")
+
+        start.assert_called_once()
+        end.assert_called_once()
+        received.assert_called_once()
+        assert (tmp_path / "test.3mf").read_bytes() == b"hello"
 
     @pytest.mark.asyncio
     async def test_quit_command(self, session):

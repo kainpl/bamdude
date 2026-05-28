@@ -40,6 +40,8 @@ class FTPSession:
         pasv_address: str = "",
         bind_address: str = "0.0.0.0",  # nosec B104
         vp_name: str = "",
+        on_upload_start: Callable[[], None] | None = None,
+        on_upload_end: Callable[[], None] | None = None,
     ):
         self.reader = reader
         self.writer = writer
@@ -47,6 +49,11 @@ class FTPSession:
         self.access_code = access_code
         self.ssl_context = ssl_context
         self.on_file_received = on_file_received
+        # Bracketing callbacks fired around every STOR (success OR failure) so
+        # the MQTT side can tell whether an upload is actually in flight and
+        # avoid advertising a stale PREPARE ("busy with another print job").
+        self.on_upload_start = on_upload_start
+        self.on_upload_end = on_upload_end
         self.passive_port_range = passive_port_range
         self.pasv_address = pasv_address
         self.bind_address = bind_address
@@ -379,6 +386,28 @@ class FTPSession:
         if had_connection:
             await asyncio.sleep(0.1)
 
+    async def _notify_upload_start(self) -> None:
+        """Fire the on_upload_start callback (sync or coroutine), best-effort."""
+        if not self.on_upload_start:
+            return
+        try:
+            result = self.on_upload_start()
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception as e:
+            logger.debug("%supload-start callback error: %s", self._log_prefix, e)
+
+    async def _notify_upload_end(self) -> None:
+        """Fire the on_upload_end callback (sync or coroutine), best-effort."""
+        if not self.on_upload_end:
+            return
+        try:
+            result = self.on_upload_end()
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception as e:
+            logger.debug("%supload-end callback error: %s", self._log_prefix, e)
+
     async def cmd_STOR(self, arg: str) -> None:
         """Handle STOR command - receive file upload."""
         if not self.authenticated:
@@ -389,77 +418,85 @@ class FTPSession:
             await self.send(425, "Use PASV first")
             return
 
-        filename = Path(arg).name  # Sanitize filename
-        file_path = self.upload_dir / filename
-
-        logger.info("FTP receiving file: %s from %s", filename, self.remote_ip)
-
-        await self.send(150, f"Opening data connection for {filename}")
-
-        # Wait for data connection to be established (client connects after 150)
+        # Bracket the whole transfer: ``_notify_upload_end`` MUST run on every
+        # exit path (timeout, transfer error, write failure, success) so the
+        # MQTT side's in-flight-upload counter is balanced and a failed upload
+        # can't leave the slicer reading "busy with another print job".
+        await self._notify_upload_start()
         try:
-            await asyncio.wait_for(self._data_connected.wait(), timeout=30)
-        except TimeoutError:
-            logger.error("FTP data connection timeout - client didn't connect")
-            await self.send(425, "Data connection timeout")
+            filename = Path(arg).name  # Sanitize filename
+            file_path = self.upload_dir / filename
+
+            logger.info("FTP receiving file: %s from %s", filename, self.remote_ip)
+
+            await self.send(150, f"Opening data connection for {filename}")
+
+            # Wait for data connection to be established (client connects after 150)
+            try:
+                await asyncio.wait_for(self._data_connected.wait(), timeout=30)
+            except TimeoutError:
+                logger.error("FTP data connection timeout - client didn't connect")
+                await self.send(425, "Data connection timeout")
+                await self._close_data_connection()
+                return
+
+            if not self._data_reader:
+                await self.send(425, "Data connection failed")
+                await self._close_data_connection()
+                return
+
+            # Receive data
+            data_content: list[bytes] = []
+            total_received = 0
+            try:
+                while True:
+                    chunk = await asyncio.wait_for(self._data_reader.read(65536), timeout=60)
+                    if not chunk:
+                        break
+                    data_content.append(chunk)
+                    total_received += len(chunk)
+                    logger.debug("FTP received chunk: %s bytes (total: %s)", len(chunk), total_received)
+            except TimeoutError:
+                logger.error("FTP data transfer timeout after %s bytes for %s", total_received, filename)
+                await self.send(426, "Transfer timeout")
+                await self._close_data_connection()
+                return
+            except Exception as e:
+                logger.error(
+                    "FTP data transfer error after %s bytes for %s: %s(%s)",
+                    total_received,
+                    filename,
+                    type(e).__name__,
+                    e,
+                )
+                await self.send(426, f"Transfer failed: {e}")
+                await self._close_data_connection()
+                return
+
+            # Close data connection
             await self._close_data_connection()
-            return
 
-        if not self._data_reader:
-            await self.send(425, "Data connection failed")
-            await self._close_data_connection()
-            return
+            # Write file
+            try:
+                total_size = sum(len(c) for c in data_content)
+                file_path.write_bytes(b"".join(data_content))
+                logger.info("FTP saved file: %s (%s bytes)", file_path, total_size)
+                await self.send(226, "Transfer complete")
 
-        # Receive data
-        data_content: list[bytes] = []
-        total_received = 0
-        try:
-            while True:
-                chunk = await asyncio.wait_for(self._data_reader.read(65536), timeout=60)
-                if not chunk:
-                    break
-                data_content.append(chunk)
-                total_received += len(chunk)
-                logger.debug("FTP received chunk: %s bytes (total: %s)", len(chunk), total_received)
-        except TimeoutError:
-            logger.error("FTP data transfer timeout after %s bytes for %s", total_received, filename)
-            await self.send(426, "Transfer timeout")
-            await self._close_data_connection()
-            return
-        except Exception as e:
-            logger.error(
-                "FTP data transfer error after %s bytes for %s: %s(%s)",
-                total_received,
-                filename,
-                type(e).__name__,
-                e,
-            )
-            await self.send(426, f"Transfer failed: {e}")
-            await self._close_data_connection()
-            return
+                # Notify callback
+                if self.on_file_received:
+                    try:
+                        result = self.on_file_received(file_path, self.remote_ip)
+                        if asyncio.iscoroutine(result):
+                            await result
+                    except Exception as e:
+                        logger.error("File received callback error: %s", e)
 
-        # Close data connection
-        await self._close_data_connection()
-
-        # Write file
-        try:
-            total_size = sum(len(c) for c in data_content)
-            file_path.write_bytes(b"".join(data_content))
-            logger.info("FTP saved file: %s (%s bytes)", file_path, total_size)
-            await self.send(226, "Transfer complete")
-
-            # Notify callback
-            if self.on_file_received:
-                try:
-                    result = self.on_file_received(file_path, self.remote_ip)
-                    if asyncio.iscoroutine(result):
-                        await result
-                except Exception as e:
-                    logger.error("File received callback error: %s", e)
-
-        except Exception as e:
-            logger.error("Failed to save file %s: %s", file_path, e)
-            await self.send(550, "Failed to save file")
+            except Exception as e:
+                logger.error("Failed to save file %s: %s", file_path, e)
+                await self.send(550, "Failed to save file")
+        finally:
+            await self._notify_upload_end()
 
     async def cmd_SIZE(self, arg: str) -> None:
         """Handle SIZE command."""
@@ -539,6 +576,8 @@ class VirtualPrinterFTPServer:
         on_file_received: Callable[[Path, str], None] | None = None,
         bind_address: str = "0.0.0.0",  # nosec B104
         vp_name: str = "",
+        on_upload_start: Callable[[], None] | None = None,
+        on_upload_end: Callable[[], None] | None = None,
     ):
         """Initialize the FTPS server.
 
@@ -551,6 +590,8 @@ class VirtualPrinterFTPServer:
             on_file_received: Callback when file upload completes (path, source_ip)
             bind_address: IP address to bind to (default 0.0.0.0)
             vp_name: Virtual printer name for log identification
+            on_upload_start: Callback fired when a STOR begins (no args)
+            on_upload_end: Callback fired when a STOR ends, success or failure (no args)
         """
         self.upload_dir = upload_dir
         self.access_code = access_code
@@ -560,6 +601,8 @@ class VirtualPrinterFTPServer:
         self.on_file_received = on_file_received
         self.bind_address = bind_address
         self.vp_name = vp_name
+        self.on_upload_start = on_upload_start
+        self.on_upload_end = on_upload_end
         self._server: asyncio.Server | None = None
         self._running = False
         self._ssl_context: ssl.SSLContext | None = None
@@ -641,6 +684,8 @@ class VirtualPrinterFTPServer:
             pasv_address=self._pasv_address,
             bind_address=self.bind_address,
             vp_name=self.vp_name,
+            on_upload_start=self.on_upload_start,
+            on_upload_end=self.on_upload_end,
         )
 
         # Track the session task so we can cancel it on stop
