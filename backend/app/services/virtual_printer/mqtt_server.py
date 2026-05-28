@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import ssl
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -19,6 +20,14 @@ logger = logging.getLogger(__name__)
 
 # Default MQTT port for Bambu printers (MQTT over TLS)
 MQTT_PORT = 8883
+
+# Grace window after a ``project_file`` command during which a ``PREPARE`` with
+# no upload yet in flight is still considered live. Covers the gap between the
+# slicer's MQTT print command and it opening the FTP data connection (TLS
+# handshake + login + PASV + STOR — sub-second normally, a few seconds on slow
+# links). Past this with no upload started, the PREPARE is treated as stale and
+# reported as IDLE so a cancelled send can't read as "busy" indefinitely.
+PREPARE_GRACE_SECONDS = 15.0
 
 # Model code → product_name for version response (must match what slicer expects)
 MODEL_PRODUCT_NAMES = {
@@ -229,6 +238,11 @@ class SimpleMQTTServer:
         # "The printer is busy with another print job". When no upload is in
         # flight we advertise ``IDLE`` instead of the stale ``PREPARE``.
         self._active_uploads = 0
+        # Monotonic timestamp of the last ``project_file`` command. Gives a
+        # short grace (``PREPARE_GRACE_SECONDS``) in which a PREPARE with no
+        # upload yet is still treated as live — the slicer sends the MQTT print
+        # command a moment before it opens the FTP connection.
+        self._prepare_set_monotonic = 0.0
 
         # MQTT bridge for non-proxy modes — set by VirtualPrinterInstance after
         # ``start()``. When the bridge is_active, ``_send_status_report`` serves
@@ -885,8 +899,12 @@ class SimpleMQTTServer:
         read "busy with another print job", because BambuStudio and OrcaSlicer
         alike map ``gcode_state`` → ``print_status`` and treat ``PREPARE`` as
         in-printing. When no upload is in flight, report ``IDLE`` so the slicer
-        can send again."""
+        can send again — unless we're still inside the brief grace right after a
+        ``project_file`` command, during which the slicer is opening its FTP
+        connection and the PREPARE is genuinely live (not yet stale)."""
         if self._gcode_state == "PREPARE" and self._active_uploads == 0:
+            if time.monotonic() - self._prepare_set_monotonic <= PREPARE_GRACE_SECONDS:
+                return "PREPARE"
             return "IDLE"
         return self._gcode_state
 
@@ -931,10 +949,13 @@ class SimpleMQTTServer:
         self, writer: asyncio.StreamWriter, sequence_id: str, filename: str, serial: str | None = None
     ) -> None:
         """Send project_file acknowledgment matching real Bambu printer behavior."""
-        # Update state so periodic status pushes reflect preparation
+        # Update state so periodic status pushes reflect preparation. Stamp the
+        # time so ``_reported_gcode_state`` keeps advertising PREPARE during the
+        # short window before the slicer opens its FTP upload connection.
         self._gcode_state = "PREPARE"
         self._current_file = filename
         self._prepare_percent = "0"
+        self._prepare_set_monotonic = time.monotonic()
 
         try:
             # Send command acknowledgment - slicer expects to see

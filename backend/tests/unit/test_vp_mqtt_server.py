@@ -139,3 +139,38 @@ class TestStalePrepareReporting:
         pushed = b"".join(call.args[0] for call in writer.write.call_args_list)
         assert b'"gcode_state": "IDLE"' in pushed
         assert b'"gcode_state": "PREPARE"' not in pushed
+
+    def test_recent_prepare_within_grace_reports_prepare(self):
+        """The window between project_file and the FTP STOR: PREPARE is live."""
+        import time
+
+        server = _make_server()
+        server._gcode_state = "PREPARE"
+        server._prepare_set_monotonic = time.monotonic()  # just now, no upload yet
+        assert server._active_uploads == 0
+        assert server._reported_gcode_state() == "PREPARE"
+
+    def test_prepare_past_grace_reports_idle(self):
+        """A project_file with no upload after the grace elapses is stale → IDLE."""
+        import time
+
+        from backend.app.services.virtual_printer.mqtt_server import PREPARE_GRACE_SECONDS
+
+        server = _make_server()
+        server._gcode_state = "PREPARE"
+        server._prepare_set_monotonic = time.monotonic() - (PREPARE_GRACE_SECONDS + 60)
+        assert server._reported_gcode_state() == "IDLE"
+
+    def test_project_file_response_stamps_prepare_and_reports_prepare(self):
+        """``project_file`` sets PREPARE and stamps the grace clock, so the gap
+        before the upload starts reports PREPARE rather than a premature IDLE."""
+        server = _make_server()
+        writer = MagicMock()
+        writer.write = MagicMock()
+        writer.drain = AsyncMock()
+
+        asyncio.run(server._send_print_response(writer, "1", "foo.3mf"))
+
+        assert server._gcode_state == "PREPARE"
+        assert server._active_uploads == 0
+        assert server._reported_gcode_state() == "PREPARE"  # within grace
