@@ -16,6 +16,7 @@ The full per-printer dispatch (FTP / MQTT) is NOT tested here — these
 tests only verify the auto-queue → print_queue handoff.
 """
 
+import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -39,6 +40,15 @@ def _idle_status(filament_types: list[str], colors: list[str] | None = None) -> 
         state="IDLE",
         raw_data={"ams": [{"id": 0, "tray": trays}], "vt_tray": [], "ams_extruder_map": {}},
     )
+
+
+def _drying_status(filament_types: list[str], colors: list[str] | None = None) -> SimpleNamespace:
+    """Like ``_idle_status`` but reports a non-IDLE state — what a printer shows
+    while AMS auto-drying runs (so ``_is_printer_idle`` returns False). Trays stay
+    loaded; drying doesn't remove filament."""
+    s = _idle_status(filament_types, colors)
+    s.state = "RUNNING"
+    return s
 
 
 async def _make_printer_with_queue(db_session, printer_factory, **kwargs):
@@ -272,3 +282,90 @@ class TestAutoQueueSchedulerTick:
         # long_known is at position 3 (LATER than short, which is position 2)
         # → should NOT be marked (only earlier-positioned peers get jumped)
         assert long_known.been_jumped is False
+
+
+class TestAutoQueueDryingPriority:
+    """Auto-queue divergence from upstream: a print takes priority over AMS
+    drying. A printer that is non-idle ONLY because it is auto-drying is still
+    eligible when ``queue_drying_block`` is False (the default), but a truly-idle
+    printer is always preferred. When ``queue_drying_block`` is True, drying
+    blocks the queue (parity with upstream's printer-specific path)."""
+
+    @staticmethod
+    def _mark_drying(monkeypatch, printer_id: int) -> None:
+        from backend.app.services.print_scheduler import scheduler as print_scheduler_singleton
+
+        monkeypatch.setitem(print_scheduler_singleton._drying_in_progress, printer_id, time.monotonic())
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_drying_printer_eligible_when_block_disabled(
+        self, monkeypatch, db_session, scheduler, printer_factory
+    ) -> None:
+        printer, pq = await _make_printer_with_queue(db_session, printer_factory, model="A1MINI")
+        self._mark_drying(monkeypatch, printer.id)
+
+        item = AutoQueueItem(target_model="A1MINI", status="pending", position=1)
+        db_session.add(item)
+        await db_session.commit()
+
+        # Printer is connected (in idle_ids) but reports a non-idle (drying) state.
+        p_elig, p_sched, p_ams = _patch_printer_manager({printer.id}, {printer.id: _drying_status(["PLA"])})
+        with p_elig, p_sched, p_ams:
+            await scheduler.tick()
+
+        await db_session.refresh(item)
+        assert item.status == "assigned"  # print takes priority over drying
+        assert item.assigned_to_item_id is not None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_drying_printer_skipped_when_block_enabled(
+        self, monkeypatch, db_session, scheduler, printer_factory
+    ) -> None:
+        db_session.add(Settings(key="queue_drying_block", value="true"))
+        printer, _ = await _make_printer_with_queue(db_session, printer_factory, model="A1MINI")
+        self._mark_drying(monkeypatch, printer.id)
+
+        item = AutoQueueItem(target_model="A1MINI", status="pending", position=1)
+        db_session.add(item)
+        await db_session.commit()
+
+        p_elig, p_sched, p_ams = _patch_printer_manager({printer.id}, {printer.id: _drying_status(["PLA"])})
+        with p_elig, p_sched, p_ams:
+            await scheduler.tick()
+
+        await db_session.refresh(item)
+        assert item.status == "pending"  # drying blocks the queue
+        assert item.waiting_reason is not None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_idle_printer_preferred_over_drying(
+        self, monkeypatch, db_session, scheduler, printer_factory
+    ) -> None:
+        drying_p, drying_pq = await _make_printer_with_queue(
+            db_session, printer_factory, name="A1m-dry", model="A1MINI"
+        )
+        idle_p, idle_pq = await _make_printer_with_queue(db_session, printer_factory, name="A1m-idle", model="A1MINI")
+        self._mark_drying(monkeypatch, drying_p.id)
+
+        item = AutoQueueItem(target_model="A1MINI", status="pending", position=1)
+        db_session.add(item)
+        await db_session.commit()
+
+        status_map = {drying_p.id: _drying_status(["PLA"]), idle_p.id: _idle_status(["PLA"])}
+        p_elig, p_sched, p_ams = _patch_printer_manager({drying_p.id, idle_p.id}, status_map)
+        with p_elig, p_sched, p_ams:
+            await scheduler.tick()
+
+        await db_session.refresh(item)
+        assert item.status == "assigned"
+
+        # The routed per-printer item must land on the IDLE printer, not the drying one.
+        from sqlalchemy import select
+
+        result = await db_session.execute(select(PrintQueueItem))
+        pq_items = result.scalars().all()
+        assert len(pq_items) == 1
+        assert pq_items[0].queue_id == idle_pq.id

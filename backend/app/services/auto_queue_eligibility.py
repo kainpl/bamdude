@@ -7,7 +7,11 @@ current scheduler tick, find an idle printer that:
 2. Matches ``target_location`` if specified.
 3. Has ``auto_distribute_eligible=True`` on its PrinterQueue.
 4. Is connected (MQTT) and idle (state=IDLE or FINISH/FAILED with
-   plate-clear gate released, mirroring per-printer scheduler).
+   plate-clear gate released, mirroring per-printer scheduler). A printer
+   that is non-idle ONLY because it is auto-drying still qualifies as a
+   *fallback* when ``queue_drying_block`` is False (print takes priority
+   over drying) — truly-idle printers are preferred. This diverges from
+   upstream, whose model-distribute path never interrupts drying.
 5. Has all ``required_filament_types`` loaded across AMS + external
    trays (canonical-type matching, so PA-CF / PA12-CF / PAHT-CF are
    equivalent — same as upstream).
@@ -192,10 +196,19 @@ async def find_eligible_printer(
     force_overrides = [o for o in filament_overrides if o.get("force_color_match")]
     pref_overrides = [o for o in filament_overrides if not o.get("force_color_match")]
 
+    # Divergence from upstream (whose model-distribute path has no drying awareness):
+    # a print takes priority over AMS drying. When ``queue_drying_block`` is False
+    # (the default — "prints take priority over drying"), a printer that is non-idle
+    # ONLY because it is auto-drying counts as a *fallback* candidate. The per-printer
+    # ``check_queue()`` performs the actual ``_stop_drying`` when the routed item
+    # dispatches. Truly-idle printers are always preferred over drying ones.
+    block_for_drying = await scheduler._get_bool_setting(db, "queue_drying_block")
+
     printers_busy: list[str] = []
     printers_offline: list[str] = []
     printers_missing_filament: list[tuple[str, list[str]]] = []
     candidates: list[tuple[Printer, int]] = []  # (printer, color_match_count)
+    drying_candidates: list[tuple[Printer, int]] = []  # fallback when no truly-idle printer matches
 
     for printer in printers:
         if printer.id in busy_printers:
@@ -215,14 +228,22 @@ async def find_eligible_printer(
             continue
 
         is_idle = scheduler._is_printer_idle(printer.id, require_plate_clear)
+        is_drying_fallback = False
         if not is_idle:
-            if force_overrides and not pref_overrides:
-                missing_colors = _get_missing_force_color_slots(printer.id, force_overrides)
-                if missing_colors:
-                    printers_missing_filament.append((printer.name, missing_colors))
-                    continue
-            printers_busy.append(printer.name)
-            continue
+            # A printer that is non-idle ONLY because it is auto-drying still
+            # qualifies as a *fallback* candidate when block_for_drying is False
+            # (print takes priority over drying). Truly-idle printers are preferred;
+            # the per-printer check_queue() stops drying when the routed item dispatches.
+            if not block_for_drying and scheduler._drying_in_progress.get(printer.id):
+                is_drying_fallback = True
+            else:
+                if force_overrides and not pref_overrides:
+                    missing_colors = _get_missing_force_color_slots(printer.id, force_overrides)
+                    if missing_colors:
+                        printers_missing_filament.append((printer.name, missing_colors))
+                        continue
+                printers_busy.append(printer.name)
+                continue
 
         if required_types:
             missing = _get_missing_filament_types(printer.id, required_types)
@@ -248,19 +269,27 @@ async def find_eligible_printer(
         if pref_overrides:
             color_matches = _count_override_color_matches(printer.id, pref_overrides)
             if color_matches > 0:
-                candidates.append((printer, color_matches))
+                (drying_candidates if is_drying_fallback else candidates).append((printer, color_matches))
             else:
                 pref_descriptions = [f"{o.get('type', '?')} ({o.get('color', '?')})" for o in pref_overrides]
                 printers_missing_filament.append((printer.name, pref_descriptions))
                 continue
-        elif force_overrides:
-            return printer, None
+        elif is_drying_fallback:
+            # force_overrides satisfied (or none) — defer; a truly-idle printer wins.
+            drying_candidates.append((printer, 0))
         else:
             return printer, None
 
     if candidates:
         candidates.sort(key=lambda c: c[1], reverse=True)
         return candidates[0][0], None
+
+    # No truly-idle printer matched — fall back to a drying printer (print takes
+    # priority over drying when queue_drying_block is False). The per-printer
+    # check_queue() stops drying when this routed item dispatches.
+    if drying_candidates:
+        drying_candidates.sort(key=lambda c: c[1], reverse=True)
+        return drying_candidates[0][0], None
 
     reasons: list[str] = []
     if printers_missing_filament:
