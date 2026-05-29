@@ -141,6 +141,9 @@ async def test_get_available_versions_merges_sources():
     with (
         patch.object(svc, "_fetch_all_versions_from_wiki", AsyncMock(return_value=wiki)),
         patch.object(svc, "_fetch_all_versions_from_download_page", AsyncMock(return_value=download)),
+        # Merge logic is the unit under test — the local firmware store is an
+        # unrelated DB dependency, so stub it empty (no init_db in unit tests).
+        patch("backend.app.services.firmware_store.list_cached", AsyncMock(return_value=[])),
     ):
         result = await svc.get_available_versions("H2D")
 
@@ -166,6 +169,7 @@ async def test_get_available_versions_sorts_newest_first():
     with (
         patch.object(svc, "_fetch_all_versions_from_wiki", AsyncMock(return_value=wiki)),
         patch.object(svc, "_fetch_all_versions_from_download_page", AsyncMock(return_value=download)),
+        patch("backend.app.services.firmware_store.list_cached", AsyncMock(return_value=[])),
     ):
         result = await svc.get_available_versions("H2D")
     assert [v.version for v in result] == ["01.03.00.00", "01.02.10.00", "01.02.02.00"]
