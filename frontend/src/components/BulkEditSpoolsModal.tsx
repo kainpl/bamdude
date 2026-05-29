@@ -4,8 +4,8 @@ import { useTranslation } from 'react-i18next';
 import { X, Loader2, Layers } from 'lucide-react';
 import { api, type InventorySpool, type SpoolCatalogEntry } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
-import { MATERIALS } from './spool-form/constants';
-import { buildFilamentOptions } from './spool-form/utils';
+import { MATERIALS, KNOWN_VARIANTS } from './spool-form/constants';
+import { buildFilamentOptions, extractBrandsFromPresets } from './spool-form/utils';
 import { FILAMENT_EFFECT_OPTIONS } from './filamentSwatchHelpers';
 
 interface Props {
@@ -32,7 +32,7 @@ const FIELDS: FieldDef[] = [
   { key: 'slicer_filament', labelKey: 'inventory.slicerPreset', type: 'preset' },
   { key: 'material', labelKey: 'inventory.material', type: 'datalist' },
   { key: 'brand', labelKey: 'inventory.brand', type: 'datalist' },
-  { key: 'subtype', labelKey: 'inventory.subtype', type: 'text' },
+  { key: 'subtype', labelKey: 'inventory.subtype', type: 'datalist' },
   { key: 'label_weight', labelKey: 'inventory.labelWeight', type: 'number' },
   { key: 'color', labelKey: 'inventory.color', type: 'color' },
   { key: 'core_weight_catalog_id', labelKey: 'inventory.coreWeight', type: 'catalog' },
@@ -85,39 +85,59 @@ export function BulkEditSpoolsModal({ isOpen, spools, allSpools, catalogEntries,
     [cloudPresets, localPresets, builtinFilaments],
   );
 
-  // Autocomplete suggestions drawn from the WHOLE inventory (not just the
-  // filtered candidates) — otherwise filtering to one brand would hide every
-  // other brand from the picker.
-  const suggestions = useMemo(() => {
-    const distinct = (get: (s: InventorySpool) => string | null | undefined) =>
-      [...new Set(allSpools.map((s) => (get(s) ?? '').trim()).filter(Boolean))].sort();
-    return {
-      material: [...new Set([...MATERIALS, ...distinct((s) => s.material)])],
-      brand: distinct((s) => s.brand),
-      category: distinct((s) => s.category),
-      storage_location: distinct((s) => s.storage_location),
-    } as Record<string, string[]>;
-  }, [allSpools]);
-
-  // Colour catalog — the available named colours (mirrors the single-spool
-  // form, which fills colour from the catalog). Picking a name sets the hex.
+  // Colour catalog — available named colours (mirrors the single-spool form).
   const { data: colorCatalog } = useQuery({
     queryKey: ['colorCatalog'],
     queryFn: () => api.getColorCatalog().catch(() => []),
     enabled: isOpen,
   });
-  const colorByName = useMemo(() => {
-    const m = new Map<string, string>(); // lower(name) -> hex (6)
-    for (const c of colorCatalog ?? []) {
+
+  // Colour options are FILTERED by the effective brand AND material — the
+  // values being applied (if those fields are enabled) else the selection's
+  // shared value — and recompute when either changes, like the single-spool
+  // form. Catalog entries with no material are generic (kept for any material).
+  // Picking a name fills the hex.
+  const colorPicker = useMemo(() => {
+    const sharedOf = (get: (s: InventorySpool) => string | null | undefined) => {
+      const set = new Set(selected.map((s) => (get(s) ?? '').trim().toLowerCase()).filter(Boolean));
+      return set.size === 1 ? [...set][0] : '';
+    };
+    const effBrand = (enabled.brand ? (values.brand ?? '') : sharedOf((s) => s.brand)).trim().toLowerCase();
+    const effMaterial = (enabled.material ? (values.material ?? '') : sharedOf((s) => s.material)).trim().toLowerCase();
+    const loose = (a: string, b: string) => a === b || a.includes(b) || b.includes(a);
+    const brandOk = (m?: string | null) => !effBrand || loose((m ?? '').trim().toLowerCase(), effBrand);
+    const materialOk = (m?: string | null) => {
+      const mm = (m ?? '').trim().toLowerCase();
+      return !effMaterial || !mm || loose(mm, effMaterial); // empty material = generic
+    };
+    const entries = (colorCatalog ?? []).filter((c) => brandOk(c.manufacturer) && materialOk(c.material));
+    const byName = new Map<string, string>();
+    for (const c of entries) {
       const hex = (c.hex_color ?? '').replace('#', '').slice(0, 6);
-      if (c.color_name && hex) m.set(c.color_name.toLowerCase(), hex);
+      if (c.color_name && hex) byName.set(c.color_name.toLowerCase(), hex);
     }
-    return m;
-  }, [colorCatalog]);
-  const colorNameOptions = useMemo(
-    () => [...new Set((colorCatalog ?? []).map((c) => c.color_name).filter(Boolean))].sort(),
-    [colorCatalog],
-  );
+    const names = [...new Set(entries.map((c) => c.color_name).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+    return { byName, names };
+  }, [colorCatalog, selected, enabled.brand, values.brand, enabled.material, values.material]);
+
+  // Autocomplete suggestions — from the system at large (known brands/variants
+  // from slicer presets + the colour catalog) unioned with values already in
+  // inventory, NOT just the filtered candidates. So you can switch to any brand
+  // the system knows, even one no selected spool uses yet.
+  const suggestions = useMemo(() => {
+    const distinct = (get: (s: InventorySpool) => string | null | undefined) =>
+      allSpools.map((s) => (get(s) ?? '').trim()).filter(Boolean);
+    const uniq = (arr: string[]) => [...new Set(arr.filter(Boolean))].sort((a, b) => a.localeCompare(b));
+    const presetBrands = extractBrandsFromPresets(cloudPresets ?? [], localPresets ?? []);
+    const catalogBrands = (colorCatalog ?? []).map((c) => (c.manufacturer ?? '').trim()).filter(Boolean);
+    return {
+      material: uniq([...MATERIALS, ...distinct((s) => s.material)]),
+      brand: uniq([...presetBrands, ...catalogBrands, ...distinct((s) => s.brand)]),
+      subtype: uniq([...KNOWN_VARIANTS, ...distinct((s) => s.subtype)]),
+      category: uniq(distinct((s) => s.category)),
+      storage_location: uniq(distinct((s) => s.storage_location)),
+    } as Record<string, string[]>;
+  }, [allSpools, cloudPresets, localPresets, colorCatalog]);
 
   // Shared value across the SELECTED spools (string form), or null when it varies.
   const shared = useMemo(() => {
@@ -260,11 +280,11 @@ export function BulkEditSpoolsModal({ isOpen, spools, allSpools, catalogEntries,
               onChange={(e) => {
                 const name = e.target.value;
                 // Picking a catalog colour fills the hex from the catalog.
-                const hex = colorByName.get(name.toLowerCase());
+                const hex = colorPicker.byName.get(name.toLowerCase());
                 setValues((v) => ({ ...v, color_name: name, ...(hex ? { color: `#${hex}` } : {}) }));
               }}
               className={inputCls} />
-            <datalist id="bulk-dl-color">{colorNameOptions.map((n) => <option key={n} value={n} />)}</datalist>
+            <datalist id="bulk-dl-color">{colorPicker.names.map((n) => <option key={n} value={n} />)}</datalist>
           </div>
         );
       default:
