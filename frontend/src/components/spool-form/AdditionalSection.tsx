@@ -536,6 +536,19 @@ export function AdditionalSection({
           onChange={(e) => updateField('storage_location', e.target.value)}
         />
       </div>
+
+      {/* Purchase location — where the spool was bought (distinct from storage). */}
+      <div>
+        <label className="block text-sm font-medium text-bambu-gray mb-1">{t('inventory.purchaseLocation')}</label>
+        <input
+          type="text"
+          maxLength={255}
+          className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm placeholder:text-bambu-gray/50 focus:outline-none focus:border-bambu-green"
+          placeholder={t('inventory.purchaseLocationPlaceholder')}
+          value={formData.purchase_location ?? ''}
+          onChange={(e) => updateField('purchase_location', e.target.value)}
+        />
+      </div>
     </div>
   );
 }

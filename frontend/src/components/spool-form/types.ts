@@ -53,6 +53,7 @@ export interface SpoolFormData {
   low_stock_threshold_pct: string;
   // Spoolman inventory UI (upstream PR #1241): free-form storage label.
   storage_location: string;
+  purchase_location: string;
   // Spoolman inventory UI: when set the spool links to a specific Spoolman
   // filament catalog entry; backend skips find_or_create_filament() and uses
   // this ID directly.
@@ -81,6 +82,7 @@ export const defaultFormData: SpoolFormData = {
   category: '',
   low_stock_threshold_pct: '',
   storage_location: '',
+  purchase_location: '',
   spoolman_filament_id: null,
 };
 

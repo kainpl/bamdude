@@ -4024,6 +4024,8 @@ export default {
     assignFailed: 'Failed to assign spool',
     storageLocation: 'Storage location',
     storageLocationPlaceholder: 'Drybox 3, Shelf A4, etc.',
+    purchaseLocation: 'Purchase location',
+    purchaseLocationPlaceholder: 'AliExpress, local shop, etc.',
     storageLocationNone: 'No location set',
     spoolmanFilamentCatalog: 'Spoolman filament catalog',
     pickFromSpoolmanCatalog: 'Pick a Spoolman filament...',

@@ -54,6 +54,7 @@ class SpoolBase(BaseModel):
     # writes were silently dropped by Pydantic and GET responses left the
     # field out — upstream Bambuddy #1291.
     storage_location: str | None = Field(default=None, max_length=255)
+    purchase_location: str | None = Field(default=None, max_length=255)
 
 
 class SpoolCreate(SpoolBase):
@@ -99,6 +100,7 @@ class SpoolUpdate(BaseModel):
     category: str | None = Field(default=None, max_length=50)
     low_stock_threshold_pct: int | None = Field(default=None, ge=1, le=99)
     storage_location: str | None = Field(default=None, max_length=255)
+    purchase_location: str | None = Field(default=None, max_length=255)
 
 
 class SpoolBulkUpdate(BaseModel):

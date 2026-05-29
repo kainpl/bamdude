@@ -3049,6 +3049,7 @@ export interface InventorySpool {
   category: string | null;
   low_stock_threshold_pct: number | null;
   storage_location?: string | null;
+  purchase_location?: string | null;
   k_profiles?: SpoolKProfile[];
 }
 

@@ -84,6 +84,7 @@ const DEFAULT_COLUMNS: ColumnConfig[] = [
   { id: 'slicer_filament', label: 'Slicer Filament', visible: false },
   { id: 'location', label: 'Location', visible: true },
   { id: 'storage_location', label: 'Storage Location', visible: false },
+  { id: 'purchase_location', label: 'Purchase Location', visible: false },
   { id: 'label_weight', label: 'Label', visible: true },
   { id: 'net', label: 'Net', visible: true },
   { id: 'gross', label: 'Gross', visible: false },
@@ -233,6 +234,7 @@ const columnHeaders: Record<string, (t: TFn) => string> = {
   slicer_filament: (t) => t('inventory.columns.slicer_filament'),
   location: (t) => t('inventory.columns.location'),
   storage_location: (t) => t('inventory.storageLocation'),
+  purchase_location: (t) => t('inventory.purchaseLocation'),
   label_weight: (t) => t('inventory.columns.label_weight'),
   net: (t) => t('inventory.columns.net'),
   gross: (t) => t('inventory.columns.gross'),
@@ -335,6 +337,14 @@ const columnCells: Record<string, (ctx: CellCtx) => ReactNode> = {
     return (
       <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-blue-500/20 text-blue-400">
         {spool.storage_location}
+      </span>
+    );
+  },
+  purchase_location: ({ spool }) => {
+    if (!spool.purchase_location) return <span className="text-sm text-bambu-gray">-</span>;
+    return (
+      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-purple-500/20 text-purple-400">
+        {spool.purchase_location}
       </span>
     );
   },
@@ -507,6 +517,7 @@ const columnSortValues: Record<string, (spool: InventorySpool, assignmentMap: Re
     return `${a.printer_name || ''} ${formatSlotLabel(a.ams_id, a.tray_id, isHt, isExt)}${label}`;
   },
   storage_location: (s) => (s.storage_location || '').toLowerCase(),
+  purchase_location: (s) => (s.purchase_location || '').toLowerCase(),
   label_weight: (s) => s.label_weight,
   net: (s) => Math.max(0, s.label_weight - s.weight_used),
   gross: (s) => Math.max(0, s.label_weight - s.weight_used) + s.core_weight,

@@ -4028,6 +4028,8 @@ export default {
     assignFailed: 'Не вдалося призначити котушку',
     storageLocation: 'Місце зберігання',
     storageLocationPlaceholder: 'Драйбокс 3, Полиця A4 тощо.',
+    purchaseLocation: 'Місце придбання',
+    purchaseLocationPlaceholder: 'AliExpress, місцевий магазин тощо.',
     storageLocationNone: 'Не вказано',
     spoolmanFilamentCatalog: 'Каталог філаментів Spoolman',
     pickFromSpoolmanCatalog: 'Обрати філамент зі Spoolman...',

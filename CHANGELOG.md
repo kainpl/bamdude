@@ -8,7 +8,15 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-05-29
+
+Stable 0.4.6 release. Image: `ghcr.io/kainpl/bamdude:0.4.6` / `kainpl/bamdude:0.4.6` (`:latest` tracks this).
+
+Post-0.4.5 polish, led by **inventory**: bulk-edit selected spools, batch-copy, a colour filter, a purchase-location field, and usage-history deletion with weight reclaim — plus the auto-queue gives prints priority over AMS drying, the virtual printer no longer wedges as "busy" in the slicer, three Skip-Objects fixes (incl. correct object positions read from the pick image — thanks @latsss), a Statistics "Records" correction, and a P2S FTPS reliability fix.
+
 ### Added
+
+- **Record where each spool was bought.** Spools now have an optional **Purchase location** field (e.g. "AliExpress", a local shop) — separate from *Storage location* (where the spool is kept). It appears on the spool form, in **Bulk edit**, and as an optional inventory table column.
 
 - **Bulk-edit spools.** New **Bulk edit** action on the Filament inventory opens a dialog where you pick which spools to change (defaults to all currently-filtered, deselect any you want to skip) and **tick which fields to apply**: slicer preset, material, brand, subtype, label weight, colour, empty-spool weight (spool type), date of purchase, filament diameter, cost/kg, note, category, low-stock threshold, extra colour stops, visual effect, and storage location. Inputs mirror the single-spool form — preset / effect / diameter / empty-spool are dropdowns; material, brand and subtype autocomplete from everything the system knows (slicer presets + colour catalog + built-ins), not just the filtered spools, so you can switch to any known brand/variant; category and storage autocomplete from your existing inventory; and the colour picker draws from your colour catalog filtered by the brand + material being applied (choosing a name fills the hex, and the list updates when you change brand/material) — rather than plain text. The autocomplete dropdowns are compact and scrollable (matching the spool-edit dialog), and the whole dialog resets each time you reopen it. Each field pre-fills when the selected spools already share one value, otherwise shows *"— varies —"*; only ticked fields are written, the rest are left as they are. **Consumed weight and RFID tags are never touched.** Internal inventory only (not Spoolman mode).
 - **Copy a spool in batch.** The **Quick Add (Stock)** toggle — which adds a *Quantity* field to create several identical spools at once — is now available when **copying** a spool, not just when adding a brand-new one. Copying still starts each spool fresh (usage reset to 0, no RFID tag carried over), so you can clone an existing spool's filament/colour into a whole new batch in one go. Edit mode stays single-spool.

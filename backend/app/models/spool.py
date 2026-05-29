@@ -68,6 +68,9 @@ class Spool(Base):
     storage_location: Mapped[str | None] = mapped_column(
         String(255)
     )  # Free-form storage label for inventory UI ("Drybox 3", "Shelf A4", etc.)
+    purchase_location: Mapped[str | None] = mapped_column(
+        String(255)
+    )  # Where it was bought ("AliExpress", "3DPlast", etc.) — distinct from storage_location
     tray_uuid: Mapped[str | None] = mapped_column(String(32))  # Bambu Lab spool UUID (32 hex chars)
     data_origin: Mapped[str | None] = mapped_column(String(20))  # How data was populated: manual, rfid_auto, nfc_link
     tag_type: Mapped[str | None] = mapped_column(String(20))  # Tag vendor: bambulab, generic, etc.

@@ -45,6 +45,7 @@ const FIELDS: FieldDef[] = [
   { key: 'extra_colors', labelKey: 'inventory.spoolForm.extraColors', type: 'text' },
   { key: 'effect_type', labelKey: 'inventory.spoolForm.effectType', type: 'effect' },
   { key: 'storage_location', labelKey: 'inventory.storageLocation', type: 'datalist' },
+  { key: 'purchase_location', labelKey: 'inventory.purchaseLocation', type: 'datalist' },
 ];
 
 const NUMERIC = new Set(['label_weight', 'cost_per_kg', 'low_stock_threshold_pct']);
@@ -188,6 +189,7 @@ export function BulkEditSpoolsModal({ isOpen, spools, allSpools, catalogEntries,
       subtype: uniq([...KNOWN_VARIANTS, ...distinct((s) => s.subtype)]),
       category: uniq(distinct((s) => s.category)),
       storage_location: uniq(distinct((s) => s.storage_location)),
+      purchase_location: uniq(distinct((s) => s.purchase_location)),
     } as Record<string, string[]>;
   }, [allSpools, cloudPresets, localPresets, colorCatalog]);
 

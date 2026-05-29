@@ -334,6 +334,7 @@ export function SpoolFormModal({
           category: spool.category || '',
           low_stock_threshold_pct: spool.low_stock_threshold_pct != null ? String(spool.low_stock_threshold_pct) : '',
           storage_location: spool.storage_location || '',
+          purchase_location: spool.purchase_location || '',
           spoolman_filament_id: null,
         });
         setPresetInputValue(spool.slicer_filament_name || spool.slicer_filament || '');
@@ -731,6 +732,7 @@ export function SpoolFormModal({
         ? parseInt(formData.low_stock_threshold_pct, 10)
         : null,
       storage_location: formData.storage_location.trim() || null,
+      purchase_location: formData.purchase_location.trim() || null,
       ...(spoolmanMode ? { spoolman_filament_id: formData.spoolman_filament_id } : {}),
     };
 
