@@ -2168,14 +2168,16 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
         spoolmanMode={spoolmanMode}
         spoolDisplayTemplate={spoolDisplayTemplate}
       />
-      <BulkEditSpoolsModal
-        isOpen={showBulkEdit}
-        spools={filteredSpools}
-        allSpools={spools || []}
-        catalogEntries={catalogEntries || []}
-        onClose={() => setShowBulkEdit(false)}
-        onSaved={() => queryClient.invalidateQueries({ queryKey: spoolsQueryKey })}
-      />
+      {showBulkEdit && (
+        <BulkEditSpoolsModal
+          isOpen
+          spools={filteredSpools}
+          allSpools={spools || []}
+          catalogEntries={catalogEntries || []}
+          onClose={() => setShowBulkEdit(false)}
+          onSaved={() => queryClient.invalidateQueries({ queryKey: spoolsQueryKey })}
+        />
+      )}
     </div>
   );
 }

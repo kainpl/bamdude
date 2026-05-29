@@ -39,9 +39,11 @@ describe('BulkEditSpoolsModal', () => {
 
     await waitFor(() => expect(screen.getByText('Bulk edit spools')).toBeInTheDocument());
 
-    // Enable the Brand field (shared value 'Acme' pre-fills), then change it.
+    // Enable the Brand field. It's an autocomplete combobox that starts empty
+    // (shared 'Acme' shown as placeholder, not pre-filled) so the dropdown can
+    // offer other brands; type a new value.
     fireEvent.click(screen.getByLabelText('Brand'));
-    const brandInput = await screen.findByDisplayValue('Acme');
+    const brandInput = screen.getByPlaceholderText('Acme');
     fireEvent.change(brandInput, { target: { value: 'NewCo' } });
 
     fireEvent.click(screen.getByText('Apply to 2'));

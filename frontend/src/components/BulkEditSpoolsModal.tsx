@@ -1,7 +1,7 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { X, Loader2, Layers } from 'lucide-react';
+import { X, Loader2, Layers, ChevronDown } from 'lucide-react';
 import { api, type InventorySpool, type SpoolCatalogEntry } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
 import { MATERIALS, KNOWN_VARIANTS } from './spool-form/constants';
@@ -48,6 +48,58 @@ const FIELDS: FieldDef[] = [
 ];
 
 const NUMERIC = new Set(['label_weight', 'cost_per_kg', 'low_stock_threshold_pct']);
+
+/** Small combobox matching the spool-edit dialog: a text input with a compact,
+ *  scrollable dropdown under it (not a native full-width datalist). Free text is
+ *  allowed (the input IS the value), so custom brands/variants work. */
+function Combobox({ value, options, onChange, disabled, placeholder }: {
+  value: string;
+  options: string[];
+  onChange: (v: string) => void;
+  disabled?: boolean;
+  placeholder?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+  const q = value.trim().toLowerCase();
+  const filtered = q ? options.filter((o) => o.toLowerCase().includes(q)) : options;
+  return (
+    <div className="relative" ref={ref}>
+      <input
+        type="text"
+        disabled={disabled}
+        value={value}
+        placeholder={placeholder}
+        onChange={(e) => { onChange(e.target.value); setOpen(true); }}
+        onFocus={() => setOpen(true)}
+        className="w-full px-3 py-1.5 pr-8 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm placeholder:text-bambu-gray/50 focus:outline-none focus:border-bambu-green disabled:opacity-40"
+      />
+      <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray/50 pointer-events-none" />
+      {open && !disabled && filtered.length > 0 && (
+        <div className="absolute z-50 w-full mt-1 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-lg max-h-48 overflow-y-auto">
+          {filtered.map((o) => (
+            <button
+              key={o}
+              type="button"
+              className={`w-full px-3 py-1.5 text-left text-sm hover:bg-bambu-dark-tertiary ${value === o ? 'bg-bambu-green/10 text-bambu-green' : 'text-white'}`}
+              onClick={() => { onChange(o); setOpen(false); }}
+            >
+              {o}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 /** Bulk-edit selected spools. Pick which spools (default: all filtered), then
  *  tick which fields to change. Inputs mirror the single-spool form (selects /
@@ -170,9 +222,13 @@ export function BulkEditSpoolsModal({ isOpen, spools, allSpools, catalogEntries,
     setEnabled((p) => {
       const next = { ...p, [key]: !p[key] };
       if (next[key]) {
+        // Datalist fields start EMPTY (shared value shown as placeholder) so the
+        // dropdown offers every option — a pre-filled value makes the browser
+        // filter the list down to just that value, hiding the alternatives.
+        const ty = FIELDS.find((f) => f.key === key)?.type;
         setValues((v) => ({
           ...v,
-          [key]: key === 'color' ? (shared.color ?? '#000000') : (shared[key] ?? ''),
+          [key]: key === 'color' ? (shared.color ?? '#000000') : ty === 'datalist' ? '' : (shared[key] ?? ''),
           ...(key === 'color' ? { color_name: shared.color_name ?? '' } : {}),
         }));
       }
@@ -189,15 +245,19 @@ export function BulkEditSpoolsModal({ isOpen, spools, allSpools, catalogEntries,
           const hex = (values.color ?? '').replace('#', '').toUpperCase();
           if (hex.length === 6) fields.rgba = `${hex}FF`;
           fields.color_name = (values.color_name ?? '').trim() || null;
-        } else if (NUMERIC.has(f.key)) {
-          fields[f.key] = raw === '' ? null : Number(raw);
         } else if (f.type === 'catalog') {
           const id = raw === '' ? null : Number(raw);
           fields.core_weight_catalog_id = id;
           const entry = catalogEntries.find((c) => c.id === id);
           if (entry) fields.core_weight = entry.weight; // keep core weight in sync with the picked spool
-        } else if (f.key === 'material') {
-          if (raw) fields.material = raw; // non-null column
+        } else if (f.type === 'datalist') {
+          // Not pre-filled → empty means "leave unchanged" (skip), so an enabled
+          // brand/material/etc. with no pick doesn't wipe the column.
+          if (raw) fields[f.key] = raw;
+        } else if (NUMERIC.has(f.key)) {
+          fields[f.key] = raw === '' ? null : Number(raw);
+        } else if (f.type === 'diameter') {
+          fields[f.key] = raw || '1.75';
         } else {
           fields[f.key] = raw || null;
         }
@@ -224,16 +284,11 @@ export function BulkEditSpoolsModal({ isOpen, spools, allSpools, catalogEntries,
     const on = !!enabled[f.key];
     const val = on ? values[f.key] ?? '' : '';
     switch (f.type) {
-      case 'datalist': {
-        const listId = `bulk-dl-${f.key}`;
+      case 'datalist':
         return (
-          <>
-            <input type="text" list={listId} disabled={!on} value={val} placeholder={placeholder(f.key)}
-              onChange={(e) => set(f.key, e.target.value)} className={inputCls} />
-            <datalist id={listId}>{(suggestions[f.key] ?? []).map((o) => <option key={o} value={o} />)}</datalist>
-          </>
+          <Combobox value={val} options={suggestions[f.key] ?? []} disabled={!on}
+            placeholder={placeholder(f.key)} onChange={(x) => set(f.key, x)} />
         );
-      }
       case 'textarea':
         return <textarea rows={2} disabled={!on} value={val} placeholder={placeholder(f.key)}
           onChange={(e) => set(f.key, e.target.value)} className={inputCls} />;
@@ -275,16 +330,19 @@ export function BulkEditSpoolsModal({ isOpen, spools, allSpools, catalogEntries,
             <input type="color" disabled={!on} value={on ? values.color || '#000000' : (shared.color ?? '#000000')}
               onChange={(e) => set('color', e.target.value)}
               className="w-9 h-8 rounded border border-bambu-dark-tertiary bg-bambu-dark disabled:opacity-40 flex-shrink-0" />
-            <input type="text" list="bulk-dl-color" disabled={!on} value={on ? values.color_name ?? '' : ''}
-              placeholder={shared.color_name == null ? t('inventory.bulkEdit.varies') : t('inventory.colorName')}
-              onChange={(e) => {
-                const name = e.target.value;
-                // Picking a catalog colour fills the hex from the catalog.
-                const hex = colorPicker.byName.get(name.toLowerCase());
-                setValues((v) => ({ ...v, color_name: name, ...(hex ? { color: `#${hex}` } : {}) }));
-              }}
-              className={inputCls} />
-            <datalist id="bulk-dl-color">{colorPicker.names.map((n) => <option key={n} value={n} />)}</datalist>
+            <div className="flex-1 min-w-0">
+              <Combobox
+                value={on ? values.color_name ?? '' : ''}
+                options={colorPicker.names}
+                disabled={!on}
+                placeholder={shared.color_name == null ? t('inventory.bulkEdit.varies') : t('inventory.colorName')}
+                onChange={(name) => {
+                  // Picking a catalog colour fills the hex from the catalog.
+                  const hex = colorPicker.byName.get(name.toLowerCase());
+                  setValues((v) => ({ ...v, color_name: name, ...(hex ? { color: `#${hex}` } : {}) }));
+                }}
+              />
+            </div>
           </div>
         );
       default:
