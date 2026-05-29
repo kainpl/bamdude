@@ -10,8 +10,11 @@ import { FILAMENT_EFFECT_OPTIONS } from './filamentSwatchHelpers';
 
 interface Props {
   isOpen: boolean;
-  /** Candidate spools (the currently filtered inventory). */
+  /** Candidate spools to pick from (the currently filtered inventory). */
   spools: InventorySpool[];
+  /** Whole inventory — source for autocomplete suggestions (so you can pick a
+   *  brand/material/etc. that none of the filtered candidates currently use). */
+  allSpools: InventorySpool[];
   catalogEntries: SpoolCatalogEntry[];
   onClose: () => void;
   onSaved: () => void;
@@ -29,7 +32,7 @@ const FIELDS: FieldDef[] = [
   { key: 'slicer_filament', labelKey: 'inventory.slicerPreset', type: 'preset' },
   { key: 'material', labelKey: 'inventory.material', type: 'datalist' },
   { key: 'brand', labelKey: 'inventory.brand', type: 'datalist' },
-  { key: 'subtype', labelKey: 'inventory.subtype', type: 'datalist' },
+  { key: 'subtype', labelKey: 'inventory.subtype', type: 'text' },
   { key: 'label_weight', labelKey: 'inventory.labelWeight', type: 'number' },
   { key: 'color', labelKey: 'inventory.color', type: 'color' },
   { key: 'core_weight_catalog_id', labelKey: 'inventory.coreWeight', type: 'catalog' },
@@ -51,7 +54,7 @@ const NUMERIC = new Set(['label_weight', 'cost_per_kg', 'low_stock_threshold_pct
  *  autocomplete from existing data, not plain text). A field pre-fills when the
  *  selection shares one value, else shows "— varies —"; only ticked fields are
  *  sent. Consumed weight + RFID are never touched. Internal inventory only. */
-export function BulkEditSpoolsModal({ isOpen, spools, catalogEntries, onClose, onSaved }: Props) {
+export function BulkEditSpoolsModal({ isOpen, spools, allSpools, catalogEntries, onClose, onSaved }: Props) {
   const { t } = useTranslation();
   const { showToast } = useToast();
 
@@ -82,18 +85,39 @@ export function BulkEditSpoolsModal({ isOpen, spools, catalogEntries, onClose, o
     [cloudPresets, localPresets, builtinFilaments],
   );
 
-  // Autocomplete suggestions drawn from the candidate inventory.
+  // Autocomplete suggestions drawn from the WHOLE inventory (not just the
+  // filtered candidates) — otherwise filtering to one brand would hide every
+  // other brand from the picker.
   const suggestions = useMemo(() => {
     const distinct = (get: (s: InventorySpool) => string | null | undefined) =>
-      [...new Set(spools.map((s) => (get(s) ?? '').trim()).filter(Boolean))].sort();
+      [...new Set(allSpools.map((s) => (get(s) ?? '').trim()).filter(Boolean))].sort();
     return {
       material: [...new Set([...MATERIALS, ...distinct((s) => s.material)])],
       brand: distinct((s) => s.brand),
-      subtype: distinct((s) => s.subtype),
       category: distinct((s) => s.category),
       storage_location: distinct((s) => s.storage_location),
     } as Record<string, string[]>;
-  }, [spools]);
+  }, [allSpools]);
+
+  // Colour catalog — the available named colours (mirrors the single-spool
+  // form, which fills colour from the catalog). Picking a name sets the hex.
+  const { data: colorCatalog } = useQuery({
+    queryKey: ['colorCatalog'],
+    queryFn: () => api.getColorCatalog().catch(() => []),
+    enabled: isOpen,
+  });
+  const colorByName = useMemo(() => {
+    const m = new Map<string, string>(); // lower(name) -> hex (6)
+    for (const c of colorCatalog ?? []) {
+      const hex = (c.hex_color ?? '').replace('#', '').slice(0, 6);
+      if (c.color_name && hex) m.set(c.color_name.toLowerCase(), hex);
+    }
+    return m;
+  }, [colorCatalog]);
+  const colorNameOptions = useMemo(
+    () => [...new Set((colorCatalog ?? []).map((c) => c.color_name).filter(Boolean))].sort(),
+    [colorCatalog],
+  );
 
   // Shared value across the SELECTED spools (string form), or null when it varies.
   const shared = useMemo(() => {
@@ -231,9 +255,16 @@ export function BulkEditSpoolsModal({ isOpen, spools, catalogEntries, onClose, o
             <input type="color" disabled={!on} value={on ? values.color || '#000000' : (shared.color ?? '#000000')}
               onChange={(e) => set('color', e.target.value)}
               className="w-9 h-8 rounded border border-bambu-dark-tertiary bg-bambu-dark disabled:opacity-40 flex-shrink-0" />
-            <input type="text" disabled={!on} value={on ? values.color_name ?? '' : ''}
+            <input type="text" list="bulk-dl-color" disabled={!on} value={on ? values.color_name ?? '' : ''}
               placeholder={shared.color_name == null ? t('inventory.bulkEdit.varies') : t('inventory.colorName')}
-              onChange={(e) => set('color_name', e.target.value)} className={inputCls} />
+              onChange={(e) => {
+                const name = e.target.value;
+                // Picking a catalog colour fills the hex from the catalog.
+                const hex = colorByName.get(name.toLowerCase());
+                setValues((v) => ({ ...v, color_name: name, ...(hex ? { color: `#${hex}` } : {}) }));
+              }}
+              className={inputCls} />
+            <datalist id="bulk-dl-color">{colorNameOptions.map((n) => <option key={n} value={n} />)}</datalist>
           </div>
         );
       default:
