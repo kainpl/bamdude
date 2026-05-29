@@ -4351,7 +4351,7 @@ export const api = {
   // Skip Objects
   getPrintableObjects: (printerId: number) =>
     request<{
-      objects: Array<{ id: number; name: string; x: number | null; y: number | null; skipped: boolean }>;
+      objects: Array<{ id: number; name: string; x: number | null; y: number | null; norm?: boolean; skipped: boolean }>;
       total: number;
       skipped_count: number;
       is_printing: boolean;

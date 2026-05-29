@@ -245,6 +245,61 @@ class TestPrintableObjectsExtraction:
 
         assert count == 3  # 3 objects (Part_D is skipped)
 
+    def test_extract_printable_objects_positions_from_pick_png(self):
+        """Pick-PNG centroids give correct per-instance positions even when the
+        slicer's 'instances' feature leaves a single merged bbox and duplicate
+        names (the bug: name-matching put every copy in one spot)."""
+        import json
+        import zipfile
+        from io import BytesIO
+
+        from PIL import Image
+
+        from backend.app.services.archive import extract_printable_objects_from_3mf
+
+        # Two instances of the same source → identical names (the bug-trigger).
+        slice_info = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<config><plate plate_idx="1">'
+            '<metadata key="index" value="1" />'
+            '<object identify_id="309" name="Body.stl" skipped="false" />'
+            '<object identify_id="324" name="Body.stl" skipped="false" />'
+            "</plate></config>"
+        )
+        # Instances feature → a SINGLE merged bbox for both copies.
+        plate_json = {
+            "bbox_all": [0, 0, 100, 100],
+            "bbox_objects": [{"id": 309, "name": "Body.stl", "bbox": [0, 0, 100, 100]}],
+        }
+
+        # Pick PNG: id 309 painted in the left half, id 324 in the right half
+        # (id = r | g<<8 | b<<16).
+        w = h = 40
+        img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        px = img.load()
+        for yy in range(h):
+            for xx in range(w):
+                oid = 309 if xx < w // 2 else 324
+                px[xx, yy] = (oid & 0xFF, (oid >> 8) & 0xFF, (oid >> 16) & 0xFF, 255)
+        pick_buf = BytesIO()
+        img.save(pick_buf, format="PNG")
+
+        buf = BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("Metadata/slice_info.config", slice_info)
+            zf.writestr("Metadata/plate_1.json", json.dumps(plate_json))
+            zf.writestr("Metadata/pick_1.png", pick_buf.getvalue())
+
+        objects, _bbox_all = extract_printable_objects_from_3mf(
+            buf.getvalue(), plate_number=1, include_positions=True
+        )
+
+        assert set(objects) == {309, 324}
+        assert objects[309]["norm"] is True and objects[324]["norm"] is True
+        # Distinct positions despite identical names: left ≈0.25, right ≈0.75.
+        assert objects[309]["x"] < 0.4
+        assert objects[324]["x"] > 0.6
+
     def test_extract_printable_objects_empty_plate(self):
         """Test handling plate with no objects."""
         from defusedxml import ElementTree as ET

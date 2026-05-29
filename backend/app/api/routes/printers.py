@@ -2909,9 +2909,48 @@ async def get_printable_objects(
 
     # Reload objects from 3MF if requested or no objects loaded
     if reload or not client.state.printable_objects:
-        subtask_name = client.state.subtask_name
+        from backend.app.services.archive import extract_printable_objects_from_3mf
+
+        # Prefer the already-downloaded archive 3MF on disk. This is what makes
+        # skip-objects work for prints started from the slicer: no dispatcher run
+        # populated ``printable_objects``, but the archive copy already exists.
+        # Falls back to an FTP pull from the printer only when no usable archive
+        # file is found (the old behaviour, which fails for many slicer prints).
+        if not client.state.printable_objects:
+            try:
+                from backend.app.models.archive import PrintArchive
+
+                ar = (
+                    await db.execute(
+                        select(PrintArchive)
+                        .where(
+                            PrintArchive.printer_id == printer_id,
+                            PrintArchive.status == "printing",
+                            PrintArchive.file_path != "",
+                        )
+                        .order_by(PrintArchive.id.desc())
+                    )
+                ).scalars().first()
+                if ar and ar.file_path:
+                    disk = settings.base_dir / ar.file_path
+                    if disk.exists():
+                        with open(disk, "rb") as f:
+                            data = f.read()
+                        objects, bbox_all = extract_printable_objects_from_3mf(
+                            data, plate_number=ar.plate_index, include_positions=True
+                        )
+                        if objects:
+                            client.state.printable_objects = objects
+                            client.state.printable_objects_bbox_all = bbox_all
+                            logger.info(
+                                "Loaded %s objects from archive %s for printer %s", len(objects), ar.id, printer_id
+                            )
+            except Exception as e:
+                logger.debug("Archive object load failed: %s", e)
+
+        # FTP fallback — only if the archive didn't yield objects.
+        subtask_name = client.state.subtask_name if not client.state.printable_objects else None
         if subtask_name:
-            from backend.app.services.archive import extract_printable_objects_from_3mf
             from backend.app.services.bambu_ftp import download_file_try_paths_async
 
             # Build possible 3MF filenames (try both .gcode.3mf and .3mf)
@@ -2972,6 +3011,10 @@ async def get_printable_objects(
                 "name": obj_data.get("name", f"Object {obj_id}"),
                 "x": obj_data.get("x"),
                 "y": obj_data.get("y"),
+                # norm=True → x/y are normalized image-space (0..1) from the pick PNG;
+                # the frontend overlays them directly. False → x/y are mm (bbox center),
+                # mapped via bbox_all.
+                "norm": obj_data.get("norm", False),
                 "skipped": obj_id in client.state.skipped_objects,
             }
         else:
@@ -2981,6 +3024,7 @@ async def get_printable_objects(
                 "name": obj_data,
                 "x": None,
                 "y": None,
+                "norm": False,
                 "skipped": obj_id in client.state.skipped_objects,
             }
         objects.append(obj_entry)

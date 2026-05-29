@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { X, Loader2, Monitor, AlertCircle, Box, Maximize2 } from 'lucide-react';
+import { X, Loader2, Monitor, Box, Maximize2 } from 'lucide-react';
 import { api, withStreamToken } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -119,16 +119,6 @@ export function SkipObjectsModal({ printerId, isOpen, onClose }: SkipObjectsModa
               </div>
             </div>
 
-            {/* Layer Warning */}
-            {(status?.layer_num ?? 0) <= 1 && (
-              <div className="flex items-center gap-2 px-4 py-2 bg-amber-50 dark:bg-amber-500/10 border-b border-gray-200 dark:border-bambu-dark-tertiary">
-                <AlertCircle className="w-4 h-4 text-amber-500 dark:text-amber-400 flex-shrink-0" />
-                <p className="text-xs text-amber-600 dark:text-amber-400">
-                  {t('printers.skipObjects.waitForLayer', { layer: status?.layer_num ?? 0 })}
-                </p>
-              </div>
-            )}
-
             {/* Content: Image + List side by side */}
             <div className="flex flex-1 overflow-hidden">
               {/* Left: Preview Image with object markers */}
@@ -155,8 +145,11 @@ export function SkipObjectsModal({ printerId, isOpen, onClose }: SkipObjectsModa
                       {objectsData.objects.map((obj, idx) => {
                         let x: number, y: number;
 
-                        // Use position data if available, otherwise fall back to grid
-                        if (obj.x != null && obj.y != null && objectsData.bbox_all) {
+                        // Normalized pick-PNG centroid (matches the printer screen) — place directly.
+                        if (obj.norm && obj.x != null && obj.y != null) {
+                          x = Math.max(2, Math.min(98, obj.x * 100));
+                          y = Math.max(2, Math.min(98, obj.y * 100));
+                        } else if (obj.x != null && obj.y != null && objectsData.bbox_all) {
                           // bbox_all defines the visible area in the top_N.png image
                           // Format: [x_min, y_min, x_max, y_max] in mm
                           const [xMin, yMin, xMax, yMax] = objectsData.bbox_all;
@@ -259,13 +252,13 @@ export function SkipObjectsModal({ printerId, isOpen, onClose }: SkipObjectsModa
                     {!obj.skipped ? (
                       <button
                         onClick={() => setPendingSkip({ id: obj.id, name: obj.name })}
-                        disabled={skipObjectsMutation.isPending || (status?.layer_num ?? 0) <= 1 || !hasPermission('printers:control')}
+                        disabled={skipObjectsMutation.isPending || !hasPermission('printers:control')}
                         className={`px-4 py-2 text-xs font-medium rounded-lg transition-colors ${
-                          (status?.layer_num ?? 0) <= 1 || !hasPermission('printers:control')
+                          !hasPermission('printers:control')
                             ? 'bg-gray-100 dark:bg-bambu-dark text-gray-400 dark:text-bambu-gray/50 cursor-not-allowed'
                             : 'bg-red-100 dark:bg-red-500/20 text-red-600 dark:text-red-400 hover:bg-red-200 dark:hover:bg-red-500/30 border border-red-300 dark:border-red-500/30'
                         }`}
-                        title={!hasPermission('printers:control') ? t('printers.permission.noControl') : ((status?.layer_num ?? 0) <= 1 ? t('printers.skipObjects.waitForLayer', { layer: status?.layer_num ?? 0 }) : t('printers.skipObjects.skip'))}
+                        title={!hasPermission('printers:control') ? t('printers.permission.noControl') : t('printers.skipObjects.skip')}
                       >
                         {t('printers.skipObjects.skip')}
                       </button>
@@ -326,7 +319,10 @@ export function SkipObjectsModal({ printerId, isOpen, onClose }: SkipObjectsModa
               {objectsData.objects.map((obj, idx) => {
                 let x: number, y: number;
 
-                if (obj.x != null && obj.y != null && objectsData.bbox_all) {
+                if (obj.norm && obj.x != null && obj.y != null) {
+                  x = Math.max(2, Math.min(98, obj.x * 100));
+                  y = Math.max(2, Math.min(98, obj.y * 100));
+                } else if (obj.x != null && obj.y != null && objectsData.bbox_all) {
                   const [xMin, yMin, xMax, yMax] = objectsData.bbox_all;
                   const bboxWidth = xMax - xMin;
                   const bboxHeight = yMax - yMin;

@@ -597,6 +597,55 @@ def _coerce_bool(value) -> bool | None:
     return None
 
 
+def _pick_centroids_from_3mf(zf: "zipfile.ZipFile", plate_idx: int) -> dict[int, tuple[float, float]]:
+    """Decode ``Metadata/pick_{plate}.png`` → ``{identify_id: (x_norm, y_norm)}``.
+
+    Each printed instance is painted in a unique colour that encodes its
+    ``identify_id`` as ``id = r | g<<8 | b<<16`` — the exact mapping the printer
+    screen uses. The colour region's centroid (normalized to 0..1 in image space,
+    y top-down — same orientation as the top-down cover render) is the object's
+    on-plate position. This is the ONLY reliable source of per-instance positions
+    when the slicer's "instances" copy feature is used (``plate_N.json`` then
+    carries a single merged bbox for all copies). Returns ``{}`` on any problem.
+    """
+    pick_path = f"Metadata/pick_{plate_idx}.png"
+    if pick_path not in zf.namelist():
+        return {}
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+
+        img = Image.open(BytesIO(zf.read(pick_path))).convert("RGBA")
+        w, h = img.size
+        if w == 0 or h == 0:
+            return {}
+        raw = img.tobytes()  # flat RGBA, row-major
+        acc: dict[int, list[float]] = {}  # id -> [sum_x, sum_y, count]
+        for i in range(0, len(raw), 4):
+            r, g, b, a = raw[i], raw[i + 1], raw[i + 2], raw[i + 3]
+            if a >= 16 and not (r < 16 and g < 16 and b < 16):
+                oid = r | (g << 8) | (b << 16)
+                p = i >> 2  # pixel index
+                xx = p % w
+                yy = p // w
+                e = acc.get(oid)
+                if e is None:
+                    acc[oid] = [float(xx), float(yy), 1.0]
+                else:
+                    e[0] += xx
+                    e[1] += yy
+                    e[2] += 1.0
+        min_count = max(50, int(w * h * 0.0005))
+        out: dict[int, tuple[float, float]] = {}
+        for oid, (sx, sy, c) in acc.items():
+            if c >= min_count:
+                out[oid] = (sx / c / w, sy / c / h)
+        return out
+    except Exception:
+        return {}
+
+
 def extract_printable_objects_from_3mf(
     data: bytes, plate_number: int | None = None, include_positions: bool = False
 ) -> dict[int, str] | dict[int, dict] | tuple[dict[int, dict], list | None]:
@@ -648,10 +697,15 @@ def extract_printable_objects_from_3mf(
                         pass  # Use default plate_idx if value is non-numeric
                     break
 
-            # Load position data from plate_N.json if we need positions
-            # Build a lookup by name - use list to handle duplicate names
+            # Load position data when positions are requested. Primary source is
+            # the pick PNG (per-instance centroids, correct even for "instances"
+            # copies). Secondary: plate_N.json bbox_objects matched by id, then by
+            # name (legacy, last resort — wrong for duplicate-name copies).
             bbox_by_name: dict[str, list[list]] = {}
+            bbox_by_id: dict[int, list] = {}
+            pick_centroids: dict[int, tuple[float, float]] = {}
             if include_positions:
+                pick_centroids = _pick_centroids_from_3mf(zf, plate_idx)
                 plate_json_path = f"Metadata/plate_{plate_idx}.json"
                 if plate_json_path in zf.namelist():
                     try:
@@ -661,10 +715,13 @@ def extract_printable_objects_from_3mf(
                         for bbox_obj in plate_json.get("bbox_objects", []):
                             obj_name = bbox_obj.get("name")
                             bbox = bbox_obj.get("bbox", [])
-                            if obj_name and len(bbox) >= 4:
-                                if obj_name not in bbox_by_name:
-                                    bbox_by_name[obj_name] = []
-                                bbox_by_name[obj_name].append(bbox)
+                            if len(bbox) >= 4:
+                                try:
+                                    bbox_by_id[int(bbox_obj.get("id"))] = bbox
+                                except (TypeError, ValueError):
+                                    pass
+                                if obj_name:
+                                    bbox_by_name.setdefault(obj_name, []).append(bbox)
                     except (json.JSONDecodeError, KeyError):
                         pass  # Position data is optional; objects will lack x/y coordinates
 
@@ -678,15 +735,24 @@ def extract_printable_objects_from_3mf(
                     try:
                         obj_id = int(identify_id)
                         if include_positions:
-                            x, y = None, None
-                            # Match by name - pop first bbox to handle duplicates
-                            bboxes = bbox_by_name.get(name)
-                            if bboxes:
-                                bbox = bboxes.pop(0)
-                                # Calculate center from bbox [x_min, y_min, x_max, y_max]
-                                x = (bbox[0] + bbox[2]) / 2
-                                y = (bbox[1] + bbox[3]) / 2
-                            printable_objects[obj_id] = {"name": name, "x": x, "y": y}
+                            x, y, norm = None, None, False
+                            if obj_id in pick_centroids:
+                                # Normalized image-space centroid from the pick PNG —
+                                # matches the printer screen. Frontend places directly.
+                                x, y = pick_centroids[obj_id]
+                                norm = True
+                            else:
+                                # Fallback: bbox center in mm (frontend maps via bbox_all).
+                                # Prefer id-match; fall back to name-match (pop for dup names).
+                                bbox = bbox_by_id.get(obj_id)
+                                if bbox is None:
+                                    bboxes = bbox_by_name.get(name)
+                                    if bboxes:
+                                        bbox = bboxes.pop(0)
+                                if bbox and len(bbox) >= 4:
+                                    x = (bbox[0] + bbox[2]) / 2
+                                    y = (bbox[1] + bbox[3]) / 2
+                            printable_objects[obj_id] = {"name": name, "x": x, "y": y, "norm": norm}
                         else:
                             printable_objects[obj_id] = name
                     except ValueError:
