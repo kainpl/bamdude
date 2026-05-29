@@ -2171,6 +2171,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
       <BulkEditSpoolsModal
         isOpen={showBulkEdit}
         spools={filteredSpools}
+        catalogEntries={catalogEntries || []}
         onClose={() => setShowBulkEdit(false)}
         onSaved={() => queryClient.invalidateQueries({ queryKey: spoolsQueryKey })}
       />

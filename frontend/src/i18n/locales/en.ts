@@ -3979,7 +3979,7 @@ export default {
       lowStockThreshold: 'Low-stock threshold (%)',
       apply: 'Apply to {{count}}',
       saved: 'Updated {{count}} spools',
-      button: 'Edit selected',
+      button: 'Bulk edit',
     },
     pickColor: 'Pick custom color',
     labelWeight: 'Label Weight',

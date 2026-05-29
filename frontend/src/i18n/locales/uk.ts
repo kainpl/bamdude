@@ -3983,7 +3983,7 @@ export default {
       lowStockThreshold: 'Поріг low-stock (%)',
       apply: 'Застосувати до {{count}}',
       saved: 'Оновлено котушок: {{count}}',
-      button: 'Редагувати обрані',
+      button: 'Масове редагування',
     },
     pickColor: 'Обрати власний колір',
     labelWeight: 'Вага на етикетці',
