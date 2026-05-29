@@ -3145,7 +3145,10 @@ async def on_print_start(printer_id: int, data: dict):
 
                 # Extract printable objects for skip object functionality
                 try:
-                    from backend.app.services.archive import extract_printable_objects_from_3mf
+                    from backend.app.services.archive import (
+                        extract_printable_objects_from_3mf,
+                        extract_skip_support_from_3mf,
+                    )
 
                     with open(temp_path, "rb") as f:
                         threemf_data = f.read()
@@ -3160,8 +3163,16 @@ async def on_print_start(printer_id: int, data: dict):
                             client.state.printable_objects = printable_objects
                             client.state.printable_objects_bbox_all = bbox_all
                             client.state.skipped_objects = []  # Reset skipped objects for new print
+                            # Gate the Skip-Objects UI button. Derived straight from the
+                            # 3MF (not archive.extra_data, which this slicer-start path
+                            # doesn't populate) — otherwise the button stayed disabled
+                            # even though the object list loaded fine.
+                            client.state.skip_objects_supported = extract_skip_support_from_3mf(threemf_data)
                             logger.info(
-                                "Loaded %s printable objects for printer %s", len(printable_objects), printer_id
+                                "Loaded %s printable objects for printer %s (skip_objects_supported=%s)",
+                                len(printable_objects),
+                                printer_id,
+                                client.state.skip_objects_supported,
                             )
                 except Exception as e:
                     logger.debug("Failed to extract printable objects: %s", e)

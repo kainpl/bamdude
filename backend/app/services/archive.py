@@ -597,6 +597,32 @@ def _coerce_bool(value) -> bool | None:
     return None
 
 
+def extract_skip_support_from_3mf(data: bytes) -> bool:
+    """Whether the 3MF supports per-object skipping.
+
+    Requires ``gcode_label_objects`` AND ``exclude_object`` both true in
+    ``Metadata/project_settings.config`` — mirrors
+    ``ThreeMFParser._extract_print_settings`` (``gcode_label_objects`` defaults
+    True for Bambu Studio, which omits it; ``exclude_object`` has no fallback).
+    Read straight from the 3MF so the Skip-Objects UI gate doesn't depend on
+    ``archive.extra_data`` being populated — the slicer-start load path doesn't
+    set it, which left the button disabled even with objects loaded.
+    """
+    from io import BytesIO
+
+    try:
+        with zipfile.ZipFile(BytesIO(data), "r") as zf:
+            if "Metadata/project_settings.config" not in zf.namelist():
+                return False
+            cfg = json.loads(zf.read("Metadata/project_settings.config").decode())
+    except Exception:
+        return False
+    glo = _coerce_bool(cfg.get("gcode_label_objects"))
+    glo = True if glo is None else glo
+    eo = _coerce_bool(cfg.get("exclude_object")) if "exclude_object" in cfg else None
+    return bool(glo) and bool(eo)
+
+
 def _pick_centroids_from_3mf(zf: "zipfile.ZipFile", plate_idx: int) -> dict[int, tuple[float, float]]:
     """Decode ``Metadata/pick_{plate}.png`` → ``{identify_id: (x_norm, y_norm)}``.
 

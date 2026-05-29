@@ -300,6 +300,31 @@ class TestPrintableObjectsExtraction:
         assert objects[309]["x"] < 0.4
         assert objects[324]["x"] > 0.6
 
+    def test_extract_skip_support_from_3mf(self):
+        """Skip-objects gate: needs gcode_label_objects AND exclude_object both true."""
+        import json
+        import zipfile
+        from io import BytesIO
+
+        from backend.app.services.archive import extract_skip_support_from_3mf
+
+        def build(cfg):
+            buf = BytesIO()
+            with zipfile.ZipFile(buf, "w") as zf:
+                zf.writestr("Metadata/project_settings.config", json.dumps(cfg))
+            return buf.getvalue()
+
+        # Both flags on (slicers store as "1") → supported.
+        assert extract_skip_support_from_3mf(build({"gcode_label_objects": "1", "exclude_object": "1"})) is True
+        # Bambu omits gcode_label_objects (defaults True) but emits exclude_object → supported.
+        assert extract_skip_support_from_3mf(build({"exclude_object": True})) is True
+        # exclude_object absent → not supported (no fallback).
+        assert extract_skip_support_from_3mf(build({"gcode_label_objects": "1"})) is False
+        # exclude_object false → not supported.
+        assert extract_skip_support_from_3mf(build({"gcode_label_objects": "1", "exclude_object": "0"})) is False
+        # No project_settings.config / not a zip → not supported.
+        assert extract_skip_support_from_3mf(b"not a zip") is False
+
     def test_extract_printable_objects_empty_plate(self):
         """Test handling plate with no objects."""
         from defusedxml import ElementTree as ET
