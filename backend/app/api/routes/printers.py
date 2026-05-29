@@ -2921,16 +2921,20 @@ async def get_printable_objects(
                 from backend.app.models.archive import PrintArchive
 
                 ar = (
-                    await db.execute(
-                        select(PrintArchive)
-                        .where(
-                            PrintArchive.printer_id == printer_id,
-                            PrintArchive.status == "printing",
-                            PrintArchive.file_path != "",
+                    (
+                        await db.execute(
+                            select(PrintArchive)
+                            .where(
+                                PrintArchive.printer_id == printer_id,
+                                PrintArchive.status == "printing",
+                                PrintArchive.file_path != "",
+                            )
+                            .order_by(PrintArchive.id.desc())
                         )
-                        .order_by(PrintArchive.id.desc())
                     )
-                ).scalars().first()
+                    .scalars()
+                    .first()
+                )
                 if ar and ar.file_path:
                     disk = settings.base_dir / ar.file_path
                     if disk.exists():

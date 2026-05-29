@@ -290,9 +290,7 @@ class TestPrintableObjectsExtraction:
             zf.writestr("Metadata/plate_1.json", json.dumps(plate_json))
             zf.writestr("Metadata/pick_1.png", pick_buf.getvalue())
 
-        objects, _bbox_all = extract_printable_objects_from_3mf(
-            buf.getvalue(), plate_number=1, include_positions=True
-        )
+        objects, _bbox_all = extract_printable_objects_from_3mf(buf.getvalue(), plate_number=1, include_positions=True)
 
         assert set(objects) == {309, 324}
         assert objects[309]["norm"] is True and objects[324]["norm"] is True
