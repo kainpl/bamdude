@@ -844,11 +844,16 @@ function RecordsWidget({ archives, currency }: { archives: ArchiveSlim[]; curren
 
     if (archives.length === 0) return result;
 
-    // Find the archive with the highest value for a given field
+    // Records reflect successful output only — failed / aborted / cancelled
+    // prints (and in-progress ones) must not win "longest / heaviest / most
+    // expensive". (The archive set is already scoped to the selected period.)
+    const completed = archives.filter(a => a.status === 'completed');
+
+    // Find the completed archive with the highest value for a given field
     const findMax = (getter: (a: ArchiveSlim) => number | null | undefined): { archive: ArchiveSlim | null; value: number } => {
       let best: ArchiveSlim | null = null;
       let bestVal = 0;
-      archives.forEach(a => {
+      completed.forEach(a => {
         const v = getter(a);
         if (v && v > bestVal) { bestVal = v; best = a; }
       });
@@ -882,9 +887,9 @@ function RecordsWidget({ archives, currency }: { archives: ArchiveSlim[]; curren
       });
     }
 
-    // Busiest day
+    // Busiest day — most prints completed in a single day (records = output).
     const dayCounts = new Map<string, number>();
-    archives.forEach(a => {
+    completed.forEach(a => {
       const date = parseUTCDate(a.created_at) || new Date(a.created_at);
       const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
       dayCounts.set(key, (dayCounts.get(key) || 0) + 1);
@@ -907,14 +912,21 @@ function RecordsWidget({ archives, currency }: { archives: ArchiveSlim[]; curren
       });
     }
 
-    // Success streak
+    // Longest success streak within the period: order terminal prints
+    // chronologically and find the longest run of consecutive completions
+    // (a failed / aborted / cancelled print breaks the run).
     const sorted = [...archives]
       .filter(a => a.status === 'completed' || a.status === 'failed' || a.status === 'aborted' || a.status === 'cancelled')
-      .sort((a, b) => new Date(b.completed_at || b.created_at).getTime() - new Date(a.completed_at || a.created_at).getTime());
+      .sort((a, b) => new Date(a.completed_at || a.created_at).getTime() - new Date(b.completed_at || b.created_at).getTime());
     let streak = 0;
+    let curStreak = 0;
     for (const a of sorted) {
-      if (a.status === 'completed') streak++;
-      else break;
+      if (a.status === 'completed') {
+        curStreak++;
+        if (curStreak > streak) streak = curStreak;
+      } else {
+        curStreak = 0;
+      }
     }
     if (streak > 0) {
       result.push({

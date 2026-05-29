@@ -376,6 +376,38 @@ describe('StatsPage', () => {
         expect(screen.getByText('Success Streak')).toBeInTheDocument();
       });
     });
+
+    it('excludes non-completed prints from records', async () => {
+      // A failed print with outlier time/weight/cost must NOT win any record.
+      server.use(
+        http.get('/api/v1/archives/slim', () =>
+          HttpResponse.json([
+            {
+              id: 10, created_at: '2024-02-01T10:00:00Z', started_at: '2024-02-01T10:00:00Z',
+              completed_at: '2024-02-01T12:00:00Z', print_name: 'Good Small', status: 'completed',
+              printer_id: 1, filament_type: 'PLA', filament_color: '#00FF00',
+              filament_used_grams: 20, actual_time_seconds: 7200, print_time_seconds: 7000, cost: 2.0, quantity: 1,
+            },
+            {
+              id: 11, created_at: '2024-02-02T10:00:00Z', started_at: '2024-02-02T10:00:00Z',
+              completed_at: null, print_name: 'Failed Big', status: 'failed',
+              printer_id: 1, filament_type: 'ABS', filament_color: '#0000FF',
+              filament_used_grams: 999, actual_time_seconds: 99999, print_time_seconds: 99999, cost: 99.0, quantity: 1,
+            },
+          ])
+        )
+      );
+      render(<StatsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Most Expensive')).toBeInTheDocument();
+      });
+      // The failed print's outlier values must never surface as a record.
+      expect(screen.queryByText('Failed Big')).not.toBeInTheDocument();
+      expect(screen.queryByText('$99.00')).not.toBeInTheDocument();
+      // The completed print is the record instead.
+      expect(screen.getAllByText('Good Small').length).toBeGreaterThan(0);
+    });
   });
 
   describe('export', () => {
