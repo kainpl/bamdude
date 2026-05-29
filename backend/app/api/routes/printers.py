@@ -2909,7 +2909,7 @@ async def get_printable_objects(
 
     # Reload objects from 3MF if requested or no objects loaded
     if reload or not client.state.printable_objects:
-        from backend.app.services.archive import extract_printable_objects_from_3mf
+        from backend.app.services.archive import extract_printable_objects_from_3mf, extract_skip_support_from_3mf
 
         # Prefer the already-downloaded archive 3MF on disk. This is what makes
         # skip-objects work for prints started from the slicer: no dispatcher run
@@ -2942,8 +2942,16 @@ async def get_printable_objects(
                         if objects:
                             client.state.printable_objects = objects
                             client.state.printable_objects_bbox_all = bbox_all
+                            # Set the UI gate too — otherwise an MQTT reconnect (which
+                            # swaps in a fresh client with empty state) repopulates objects
+                            # here but leaves the Skip button dark until restart.
+                            client.state.skip_objects_supported = extract_skip_support_from_3mf(data)
                             logger.info(
-                                "Loaded %s objects from archive %s for printer %s", len(objects), ar.id, printer_id
+                                "Loaded %s objects from archive %s for printer %s (skip_objects_supported=%s)",
+                                len(objects),
+                                ar.id,
+                                printer_id,
+                                client.state.skip_objects_supported,
                             )
             except Exception as e:
                 logger.debug("Archive object load failed: %s", e)
@@ -2994,7 +3002,13 @@ async def get_printable_objects(
                     if objects:
                         client.state.printable_objects = objects
                         client.state.printable_objects_bbox_all = bbox_all
-                        logger.info("Reloaded %s objects for printer %s", len(objects), printer_id)
+                        client.state.skip_objects_supported = extract_skip_support_from_3mf(data)
+                        logger.info(
+                            "Reloaded %s objects for printer %s (skip_objects_supported=%s)",
+                            len(objects),
+                            printer_id,
+                            client.state.skip_objects_supported,
+                        )
             except Exception as e:
                 logger.debug("Failed to reload objects from printer: %s", e)
             finally:
