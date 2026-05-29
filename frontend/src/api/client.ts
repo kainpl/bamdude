@@ -5933,6 +5933,13 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ spool: data, quantity, auto_increment_lot: autoIncrementLot }),
     }),
+  /** Apply the same partial field set to many spools. Usage/identity columns
+   *  (weight_used, tag_uid, …) are ignored server-side. Internal inventory only. */
+  bulkUpdateSpools: (spoolIds: number[], fields: Partial<Omit<InventorySpool, 'id' | 'archived_at' | 'created_at' | 'updated_at' | 'k_profiles'>>) =>
+    request<InventorySpool[]>('/inventory/spools/bulk-update', {
+      method: 'PATCH',
+      body: JSON.stringify({ spool_ids: spoolIds, fields }),
+    }),
   updateSpool: (id: number, data: Partial<Omit<InventorySpool, 'id' | 'archived_at' | 'created_at' | 'updated_at' | 'k_profiles'>>) =>
     request<InventorySpool>(`/inventory/spools/${id}`, {
       method: 'PATCH',

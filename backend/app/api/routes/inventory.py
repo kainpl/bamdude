@@ -26,6 +26,7 @@ from backend.app.schemas.spool import (
     SpoolAssignmentCreate,
     SpoolAssignmentResponse,
     SpoolBulkCreate,
+    SpoolBulkUpdate,
     SpoolCreate,
     SpoolKProfileBase,
     SpoolKProfileResponse,
@@ -1038,6 +1039,45 @@ async def bulk_create_spools(
     await db.commit()
     for spool in spools:
         await _safe_autolink(db, spool)
+    ids = [s.id for s in spools]
+    result = await db.execute(select(Spool).options(selectinload(Spool.k_profiles)).where(Spool.id.in_(ids)))
+    return list(result.scalars().all())
+
+
+@router.patch("/spools/bulk-update", response_model=list[SpoolResponse])
+async def bulk_update_spools(
+    data: SpoolBulkUpdate,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
+):
+    """Apply the same partial field set to many spools at once.
+
+    Only fields the caller explicitly sent are written (others are left as-is
+    per spool). Usage and per-physical-spool identity columns are never
+    bulk-set: consumed weight stays per-spool, and an RFID UID can't be copied
+    across spools. Declared before ``/spools/{spool_id}`` so the literal path
+    isn't captured by the int ``spool_id`` matcher.
+    """
+    update_data = data.fields.model_dump(exclude_unset=True)
+    for protected in ("weight_used", "weight_used_baseline", "weight_locked", "tag_uid", "tray_uuid"):
+        update_data.pop(protected, None)
+    if not update_data:
+        raise HTTPException(400, "No editable fields provided")
+
+    result = await db.execute(select(Spool).where(Spool.id.in_(data.spool_ids)))
+    spools = list(result.scalars().all())
+    if not spools:
+        raise HTTPException(404, "No spools found")
+
+    for spool in spools:
+        for field, value in update_data.items():
+            setattr(spool, field, value)
+    await db.commit()
+
+    if "resolved_filament_id" in update_data or "slicer_filament" in update_data:
+        for spool in spools:
+            await _safe_autolink(db, spool)
+
     ids = [s.id for s in spools]
     result = await db.execute(select(Spool).options(selectinload(Spool.k_profiles)).where(Spool.id.in_(ids)))
     return list(result.scalars().all())

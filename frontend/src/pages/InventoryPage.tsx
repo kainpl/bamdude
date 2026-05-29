@@ -18,6 +18,7 @@ import { SpoolFormModal, type SpoolFormMode } from '../components/SpoolFormModal
 import { ConfirmModal } from '../components/ConfirmModal';
 import { ColumnConfigModal, type ColumnConfig } from '../components/ColumnConfigModal';
 import { LabelTemplatePickerModal } from '../components/LabelTemplatePickerModal';
+import { BulkEditSpoolsModal } from '../components/BulkEditSpoolsModal';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { resolveSpoolColorName } from '../utils/colors';
@@ -629,6 +630,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   >(null);
   // Label printing (B.1 #809). null = closed; otherwise the IDs to pre-check.
   const [labelPickerSpoolIds, setLabelPickerSpoolIds] = useState<number[] | null>(null);
+  const [showBulkEdit, setShowBulkEdit] = useState(false);
 
   // Filter state
   const [archiveFilter, setArchiveFilter] = useState<ArchiveFilter>('active');
@@ -1304,6 +1306,20 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
           <p className="text-sm text-bambu-gray">{t('inventory.noSpools').split('.')[0] ? '' : ''}</p>
         </div>
         <div className="flex items-center gap-2">
+          {/* Bulk edit — internal inventory only (not Spoolman mode). Opens a
+              modal that lets the user pick which of the filtered spools to edit
+              and which fields to change. */}
+          {!spoolmanMode && hasPermission('inventory:update') && (
+            <Button
+              variant="secondary"
+              disabled={filteredSpools.length === 0}
+              onClick={() => setShowBulkEdit(true)}
+              title={t('inventory.bulkEdit.title')}
+            >
+              <Layers className="w-4 h-4" />
+              {t('inventory.bulkEdit.button')}
+            </Button>
+          )}
           <Button
             variant="secondary"
             disabled={filteredSpools.length === 0}
@@ -2151,6 +2167,12 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
         initialSelectedIds={labelPickerSpoolIds ?? []}
         spoolmanMode={spoolmanMode}
         spoolDisplayTemplate={spoolDisplayTemplate}
+      />
+      <BulkEditSpoolsModal
+        isOpen={showBulkEdit}
+        spools={filteredSpools}
+        onClose={() => setShowBulkEdit(false)}
+        onSaved={() => queryClient.invalidateQueries({ queryKey: spoolsQueryKey })}
       />
     </div>
   );

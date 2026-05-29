@@ -101,6 +101,19 @@ class SpoolUpdate(BaseModel):
     storage_location: str | None = Field(default=None, max_length=255)
 
 
+class SpoolBulkUpdate(BaseModel):
+    """Apply a partial field set to many spools at once.
+
+    ``fields`` carries only the columns the user chose to change (the route
+    reads them with ``exclude_unset``). Usage / identity columns are stripped
+    server-side regardless of what's sent — bulk edit must never touch consumed
+    weight or copy an RFID UID across physical spools.
+    """
+
+    spool_ids: list[int] = Field(min_length=1)
+    fields: SpoolUpdate
+
+
 class SpoolKProfileBase(BaseModel):
     """Wire shape for the PA tab — frontend posts (printer_id, extruder,
     nozzle_diameter, k_value, name, cali_idx, setting_id) and the backend
