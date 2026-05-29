@@ -426,6 +426,28 @@ describe('SpoolFormModal copy mode', () => {
     });
   });
 
+  it('exposes the Quick Add (batch) toggle in copy mode', async () => {
+    // Copy can now batch-clone N fresh spools (usage fields stay cleared). The
+    // toggle is create+copy only — never in edit.
+    render(
+      <SpoolFormModal isOpen={true} onClose={vi.fn()} spool={existingSpool} mode="copy" currencySymbol="$" />
+    );
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Copy Spool' })).toBeInTheDocument();
+    });
+    expect(screen.getByText('Quick Add (Stock)')).toBeInTheDocument();
+  });
+
+  it('hides the Quick Add (batch) toggle in edit mode', async () => {
+    render(
+      <SpoolFormModal isOpen={true} onClose={vi.fn()} spool={existingSpool} mode="edit" currencySymbol="$" />
+    );
+    await waitFor(() => {
+      expect(screen.getByText('Edit Spool')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('Quick Add (Stock)')).not.toBeInTheDocument();
+  });
+
   it('calls api.createSpool (not api.updateSpool) when saving in copy mode', async () => {
     render(
       <SpoolFormModal

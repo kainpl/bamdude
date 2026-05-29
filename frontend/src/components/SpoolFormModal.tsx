@@ -785,12 +785,12 @@ export function SpoolFormModal({
           </button>
         </div>
 
-        {/* Quick Add toggle — only in create mode (not edit, not copy). In
-            copy mode the modal title is the singular "Copy Spool", so the
-            quantity-driven bulkCreateMutation path would silently produce N
-            copies under a misleading title — keep this toggle out of that
-            mode entirely. */}
-        {resolvedMode === 'create' && (
+        {/* Quick Add toggle — in create AND copy modes (not edit). Copy can now
+            batch: it clones the spool's filament/colour into N fresh spools while
+            usage fields stay cleared (weight_used is forced to 0 for copies — see
+            the form-init above — and bulkCreate makes brand-new rows with no tag
+            or usage history). Edit stays single-spool. */}
+        {!isEditing && (
           <div className="flex items-center justify-between px-4 py-2 border-b border-bambu-dark-tertiary flex-shrink-0">
             <div className="flex items-center gap-2">
               <Zap className="w-4 h-4 text-amber-400" />
