@@ -78,7 +78,16 @@ async def test_running_observed_captures_baseline_on_restart_recovery():
             },
         )
 
-    assert _timelapse_baselines.get(1) == {"earlier_a.mp4", "earlier_b.mp4", "earlier_c.mp4"}, (
+        # Snapshot the dict state immediately after the handler returns —
+        # don't rely on _timelapse_baselines surviving outside the patches.
+        # CI intermittently saw the dict empty by the time a later top-level
+        # assert ran (likely an xdist-parallel teardown race on the session-
+        # scoped event_loop fixture in conftest.py). Capturing the value here
+        # is what the test actually wants to verify anyway: the handler set
+        # the baseline at the moment it returned.
+        captured = _timelapse_baselines.get(1)
+
+    assert captured == {"earlier_a.mp4", "earlier_b.mp4", "earlier_c.mp4"}, (
         "restart-recovery handler must capture the printer's existing-videos "
         "baseline so the completion-time scan can set-diff to find the new file"
     )

@@ -12,6 +12,11 @@ All notable changes to BamDude will be documented in this file.
 
 - **Archive "Hide duplicates" filter and "Duplicates" collection now agree with the reprint badge across differently-patched printers.** Both keyed on `content_hash` — the hash of the *patched* bytes actually sent over FTP — which differs per applied patch (e.g. the `mesh_mode_fast_check` gcode patch applied on one printer but not another). So printing the same sliced file on two printers left both rows visible (and absent from the Duplicates collection) even though the reprint badge already counted them as one. Both now key on the same source-file hash the badge uses (`COALESCE(source_content_hash, content_hash)`). "Hide duplicates" also now collapses within the *current filtered view* (printer, collection, date), so it no longer hides every copy when the earliest sibling sits behind an active filter or in the trash.
 
+### Security
+
+- **Audited upstream advisory GHSA-6mf4-q26m-47pv (fail-open authentication bypass, CVSS 9.8 critical) — BamDude is not affected.** In upstream Bambuddy, optional authentication could be tricked into treating a database error as "auth is disabled" and waving unauthenticated requests through every protected endpoint (the proof-of-concept exhausts the process's file descriptors to force the error). BamDude's authentication is **always-on** and carries no such "is auth enabled?" probe that can fail open — when the system can't verify state it denies the request (the auth gate answers `401`, the setup gate `503`), never grants it. Added regression tests that pin this fail-closed contract so the anti-pattern can't slip back in.
+- **Pinned FastAPI below 0.136.0 to keep a flagged dependency out of the build.** FastAPI 0.136.x declares an undocumented optional `fastar` package in its `[standard]` extra, flagged as a supply-chain risk (MAL-2026-4750). BamDude never installs that extra, so it was never exposed, but holding to the 0.135.x line removes the flagged version from the dependency tree entirely (and lets the CI audit suppression for it be dropped).
+
 ## [0.4.6] - 2026-05-29
 
 Stable 0.4.6 release. Image: `ghcr.io/kainpl/bamdude:0.4.6` / `kainpl/bamdude:0.4.6` (`:latest` tracks this).

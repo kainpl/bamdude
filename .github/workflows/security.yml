@@ -170,14 +170,12 @@ jobs:
           # backend/app/core/auth.py:_get_jwt_secret (issue #10, commit 4c20fda). pyjwt
           # has no fix release planned, so the OSV entry persists indefinitely — without
           # this suppression the workflow re-creates the same alert weekly.
-          # MAL-2026-4750: amazon-inspector heuristic (OSV malicious-packages feed) flagging
-          # that fastapi 0.136.3 declares an undocumented optional dep `fastar` in its
-          # [standard] extra. We install plain `fastapi` (no [standard] extra), so `fastar`
-          # is never in our tree — verified zero exposure (issue #14). pip-audit's PyPA source
-          # doesn't carry it, but it surfaced once via the OSV feed; suppress to stop weekly
-          # re-creation. Drop this once we either adopt fastapi[standard] or the entry clears.
-          pip-audit --desc on --format json --output pip-audit-results.json --ignore-vuln CVE-2026-4539 --ignore-vuln CVE-2026-3219 --ignore-vuln PYSEC-2025-183 --ignore-vuln MAL-2026-4750 || echo "vulnerabilities_found=true" >> $GITHUB_OUTPUT
-          pip-audit --desc on --ignore-vuln CVE-2026-4539 --ignore-vuln CVE-2026-3219 --ignore-vuln PYSEC-2025-183 --ignore-vuln MAL-2026-4750 || true
+          # MAL-2026-4750 (fastapi 0.136.x [standard]-extra `fastar` supply-chain heuristic)
+          # is now resolved at the root: requirements.txt pins fastapi<0.136.0 (mirrors
+          # upstream Bambuddy v0.2.4.4), so the flagged version is never installed and no
+          # suppression is needed here.
+          pip-audit --desc on --format json --output pip-audit-results.json --ignore-vuln CVE-2026-4539 --ignore-vuln CVE-2026-3219 --ignore-vuln PYSEC-2025-183 || echo "vulnerabilities_found=true" >> $GITHUB_OUTPUT
+          pip-audit --desc on --ignore-vuln CVE-2026-4539 --ignore-vuln CVE-2026-3219 --ignore-vuln PYSEC-2025-183 || true
 
       - name: Upload audit results
         if: always()

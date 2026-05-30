@@ -1,5 +1,14 @@
 # Web Framework
-fastapi>=0.109.0
+# Pinned <0.136.0 (mirrors upstream Bambuddy v0.2.4.4): fastapi 0.136.x declares
+# an undocumented optional `fastar` (Rust-tar) dep in its [standard] extra,
+# flagged as a supply-chain / namespace-abuse vector (MAL-2026-4750, Amazon
+# Inspector / OSV malicious-packages feed). We install plain `fastapi` (no
+# [standard] extra — uvicorn[standard] is unrelated), so `fastar` is never
+# pulled in practice, but holding to 0.135.x — which has every feature we use,
+# incl. SSE — keeps the flagged version out of the tree entirely and lets the
+# pip-audit MAL-2026-4750 suppression be dropped. Lift the cap once upstream
+# removes the dep or the advisory clears.
+fastapi>=0.109.0,<0.136.0
 uvicorn[standard]>=0.27.0
 
 # Database
