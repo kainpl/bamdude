@@ -2333,15 +2333,21 @@ class ArchiveService:
             elif collection == "failed":
                 filters.append(PrintArchive.status.in_(["failed", "aborted", "cancelled"]))
             elif collection == "duplicates":
-                # Subquery: content_hash values that appear more than once
+                # Source files that appear more than once, keyed on the same
+                # effective_hash = COALESCE(source_content_hash, content_hash) —
+                # with the same trashed/NULL guards — as the duplicate badge
+                # (get_duplicate_hashes_and_names) and hide_duplicates, so all
+                # three agree. content_hash alone missed reprints whose applied
+                # patches differ (same source file, different FTP'd bytes).
+                eff_hash = func.coalesce(PrintArchive.source_content_hash, PrintArchive.content_hash)
                 dup_hashes = (
-                    select(PrintArchive.content_hash)
-                    .where(PrintArchive.content_hash.isnot(None))
-                    .group_by(PrintArchive.content_hash)
-                    .having(func.count() > 1)
+                    select(eff_hash)
+                    .where(PrintArchive.content_hash.isnot(None), PrintArchive.deleted_at.is_(None))
+                    .group_by(eff_hash)
+                    .having(func.count(PrintArchive.id) > 1)
                     .scalar_subquery()
                 )
-                filters.append(PrintArchive.content_hash.in_(dup_hashes))
+                filters.append(eff_hash.in_(dup_hashes))
 
         # Material filter (comma-separated field)
         if material:
@@ -2375,18 +2381,38 @@ class ArchiveService:
         elif kind == "regular":
             filters.append(PrintArchive.is_calibration.is_(False))
 
-        # Hide duplicates: keep only first occurrence per content_hash
+        # Hide duplicates: collapse reprints of the same *source* file to one row.
         if hide_duplicates:
-            # Subquery: earliest id per content_hash
+            # A duplicate is a reprint of the same source 3MF, so we key on the
+            # chain-root hash effective_hash = COALESCE(source_content_hash,
+            # content_hash) — the SAME key the duplicate badge groups on
+            # (get_duplicate_hashes_and_names). content_hash is the *patched,
+            # FTP'd* bytes and differs per applied-patch outcome (e.g.
+            # mesh_mode_fast_check patched on one printer but not another), so
+            # keying on it left genuine reprints un-collapsed — that was the bug.
+            #
+            # The "first per hash" subquery must apply the SAME filters as the
+            # outer query (printer, collection, date, non-trashed, …). Keying it
+            # globally lets the kept min-id row sit OUTSIDE an active filter — a
+            # copy on another printer, or a trashed copy — so `id IN (…)` then
+            # matches nothing in the filtered view and every visible copy is
+            # wrongly hidden (e.g. printer_id=1 returns zero rows though printer 1
+            # has the file).
+            #
+            # effective_hash can legitimately be NULL — fallback archives created
+            # before the 3MF is downloaded, and re-sliced archives, carry neither
+            # hash — so those rows are never collapsed (always kept).
+            eff_hash = func.coalesce(PrintArchive.source_content_hash, PrintArchive.content_hash)
             first_per_hash = (
                 select(func.min(PrintArchive.id))
-                .where(PrintArchive.content_hash.isnot(None))
-                .group_by(PrintArchive.content_hash)
+                .select_from(PrintArchive)
+                .where(*filters, eff_hash.isnot(None))
+                .group_by(eff_hash)
                 .scalar_subquery()
             )
             filters.append(
                 or_(
-                    PrintArchive.content_hash.is_(None),
+                    eff_hash.is_(None),
                     PrintArchive.id.in_(first_per_hash),
                 )
             )

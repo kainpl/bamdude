@@ -8,6 +8,10 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Archive "Hide duplicates" filter and "Duplicates" collection now agree with the reprint badge across differently-patched printers.** Both keyed on `content_hash` — the hash of the *patched* bytes actually sent over FTP — which differs per applied patch (e.g. the `mesh_mode_fast_check` gcode patch applied on one printer but not another). So printing the same sliced file on two printers left both rows visible (and absent from the Duplicates collection) even though the reprint badge already counted them as one. Both now key on the same source-file hash the badge uses (`COALESCE(source_content_hash, content_hash)`). "Hide duplicates" also now collapses within the *current filtered view* (printer, collection, date), so it no longer hides every copy when the earliest sibling sits behind an active filter or in the trash.
+
 ## [0.4.6] - 2026-05-29
 
 Stable 0.4.6 release. Image: `ghcr.io/kainpl/bamdude:0.4.6` / `kainpl/bamdude:0.4.6` (`:latest` tracks this).
