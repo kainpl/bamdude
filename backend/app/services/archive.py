@@ -503,6 +503,8 @@ class ThreeMFParser:
     def _parse_3dmodel(self, zf: zipfile.ZipFile):
         """Parse 3D/3dmodel.model for MakerWorld metadata."""
         try:
+            import html
+
             model_path = "3D/3dmodel.model"
             if model_path not in zf.namelist():
                 return
@@ -516,7 +518,18 @@ class ThreeMFParser:
 
             makerworld_fields = {}
             for name, value in matches:
-                makerworld_fields[name] = value.strip()
+                # 3MF metadata values are XML-encoded — `&` becomes `&amp;`, etc.
+                # BambuStudio sometimes writes triple-encoded payloads
+                # (`&amp;amp;amp;`), so unescape in a loop until stable (the same
+                # trick ProjectPageParser uses). Without this a Title like
+                # "Foo & Bar" lands in the DB as raw "Foo &amp; Bar" and React
+                # double-escapes it on render to "Foo &amp;amp; Bar" (#1658).
+                decoded = value.strip()
+                prev = None
+                while prev != decoded:
+                    prev = decoded
+                    decoded = html.unescape(decoded)
+                makerworld_fields[name] = decoded
 
             # Check for direct MakerWorld URL in content
             url_pattern = r'https?://makerworld\.com/[^\s<>"\']+/models/(\d+)'

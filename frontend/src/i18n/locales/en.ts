@@ -5207,9 +5207,9 @@ export default {
     },
     archiveNameSource: {
       title: 'Archive name source',
-      description: 'Where the archive\'s display name comes from when slicers upload via the virtual printer.',
-      metadata: 'Metadata (3MF print_name)',
-      filename: 'Filename (rename in slicer dialog)',
+      description: 'Where the archive\'s display name comes from when slicers upload via the virtual printer. "Metadata" uses the slicer-embedded Title from the 3MF (default). "Filename" uses the name Bambu Studio sent over FTP. Note: Bambu Studio overwrites the name you type in its "send to printer" dialog with the 3MF\'s Title whenever one is present, so both modes often produce the same string.',
+      metadata: 'Metadata (3MF Title)',
+      filename: 'Filename (as sent over FTP)',
     },
     autoDispatch: {
       title: 'Auto-dispatch',
