@@ -34,7 +34,15 @@ services:
     #  - "6000:6000"                  # Virtual printer file transfer tunnel
     #  - "322:322"                    # Virtual printer RTSP camera (X1/H2/P2; proxy mode + non-proxy modes with a target printer)
     #  - "2024-2026:2024-2026"        # Virtual printer proprietary ports (A1/P1S)
-    #  - "50000-51000:50000-51000"    # Virtual printer FTP passive data
+    #  - "50000-50029:50000-50029"    # Virtual printer FTP passive data (3 VPs × 10-port slice)
+    # FTP passive-mode port slicing (#1646): non-proxy VPs get a 10-port slice
+    # each, by VP id — VP 1 -> 50000-50009, VP 2 -> 50010-50019, and so on. The
+    # range above covers 3 VPs; widen to "50000-500N9" where N = vp_count - 1.
+    # Proxy-mode VPs forward the real printer's full range — expose
+    # "50000-50100:50000-50100" instead if you use proxy mode. Narrowing this
+    # matters under Docker's default userland-proxy: each exposed port spawns a
+    # host proxy process per address family, so the old 1001-port range spawned
+    # ~2000 processes (~3.5 GB host RAM); 30 ports -> ~60 processes (~210 MB).
     volumes:
       - bamdude_data:/app/data
       - bamdude_logs:/app/logs
