@@ -43,6 +43,7 @@ class TokenType(str, Enum):
     EMAIL_OTP_SETUP = "email_otp_setup"
     SLICER_DOWNLOAD = "slicer_download"
     CAMERA_STREAM = "camera_stream"
+    WEBSOCKET = "websocket"  # short-lived query-param token gating /api/v1/ws (WS can't send Authorization headers)
     REVOKED_JTI = "revoked_jti"
     REFRESH = "refresh"  # m015 — sliding-session refresh token (rotated per /auth/refresh)
 

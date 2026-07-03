@@ -1,5 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { api } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
 import { useConnection } from '../contexts/ConnectionContext';
 import { useTranslation } from 'react-i18next';
@@ -77,13 +78,32 @@ export function useWebSocket() {
     processNext();
   }, []);
 
-  const connect = useCallback(() => {
+  const connect = useCallback(async () => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       return;
     }
 
+    // GHSA-r2qv follow-up: /api/v1/ws now requires a short-lived token (the
+    // HTTP auth middleware can't gate the WebSocket upgrade). Mint one per
+    // (re)connect — tokens are reusable for 60 min, so a fresh fetch on each
+    // reconnect also transparently recovers from a 4401 expired-token close.
+    let token: string;
+    try {
+      ({ token } = await api.getWebSocketToken());
+    } catch {
+      // Can't mint a token (server down / not authenticated yet) — retry on the
+      // standard backoff instead of opening an unauthenticated socket.
+      if (import.meta.env.MODE !== 'test') {
+        console.warn('[WebSocket] Could not obtain connection token; retrying');
+      }
+      reconnectTimeoutRef.current = window.setTimeout(() => {
+        connect();
+      }, 3000);
+      return;
+    }
+
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/api/v1/ws`;
+    const wsUrl = `${protocol}//${window.location.host}/api/v1/ws?token=${encodeURIComponent(token)}`;
 
     const ws = new WebSocket(wsUrl);
 

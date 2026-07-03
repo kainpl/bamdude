@@ -264,6 +264,8 @@ export function SettingsPage() {
     can_control_printer: false,
     can_read_status: true,
     can_access_cloud: false,
+    can_manage_library: true,
+    can_manage_inventory: true,
   });
   const [createdAPIKey, setCreatedAPIKey] = useState<string | null>(null);
   const [showDeleteAPIKeyConfirm, setShowDeleteAPIKeyConfirm] = useState<number | null>(null);
@@ -492,6 +494,8 @@ export function SettingsPage() {
       can_control_printer: boolean;
       can_read_status: boolean;
       can_access_cloud: boolean;
+      can_manage_library: boolean;
+      can_manage_inventory: boolean;
     }) => api.createAPIKey(data),
     onSuccess: (data) => {
       setCreatedAPIKey(data.key || null);
@@ -4496,6 +4500,30 @@ export function SettingsPage() {
                           <p className="text-xs text-bambu-gray">{t('settings.allowCloudAccessDescription')}</p>
                         </div>
                       </label>
+                      <label className="flex items-center gap-3 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={newAPIKeyPermissions.can_manage_library}
+                          onChange={(e) => setNewAPIKeyPermissions(prev => ({ ...prev, can_manage_library: e.target.checked }))}
+                          className="w-4 h-4 text-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark focus:ring-bambu-green"
+                        />
+                        <div>
+                          <span className="text-white">{t('settings.manageLibrary')}</span>
+                          <p className="text-xs text-bambu-gray">{t('settings.manageLibraryDescription')}</p>
+                        </div>
+                      </label>
+                      <label className="flex items-center gap-3 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={newAPIKeyPermissions.can_manage_inventory}
+                          onChange={(e) => setNewAPIKeyPermissions(prev => ({ ...prev, can_manage_inventory: e.target.checked }))}
+                          className="w-4 h-4 text-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark focus:ring-bambu-green"
+                        />
+                        <div>
+                          <span className="text-white">{t('settings.manageInventory')}</span>
+                          <p className="text-xs text-bambu-gray">{t('settings.manageInventoryDescription')}</p>
+                        </div>
+                      </label>
                     </div>
                   </div>
                   <div className="flex items-center gap-2 pt-2">
@@ -4555,6 +4583,12 @@ export function SettingsPage() {
                             )}
                             {key.can_access_cloud && (
                               <span className="px-1.5 py-0.5 bg-purple-500/20 text-purple-400 rounded">{t('settings.cloudBadge')}</span>
+                            )}
+                            {key.can_manage_library && (
+                              <span className="px-1.5 py-0.5 bg-teal-500/20 text-teal-400 rounded">{t('settings.libraryBadge')}</span>
+                            )}
+                            {key.can_manage_inventory && (
+                              <span className="px-1.5 py-0.5 bg-amber-500/20 text-amber-400 rounded">{t('settings.inventoryBadge')}</span>
                             )}
                             {key.user_id === null && (
                               <span className="px-1.5 py-0.5 bg-bambu-dark-tertiary text-bambu-gray rounded">{t('settings.legacyBadge')}</span>

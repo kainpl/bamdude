@@ -223,22 +223,26 @@ class TestLibraryFilesAPI:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_rename_file_invalid_path_separator(self, async_client: AsyncClient, file_factory, db_session):
-        """Verify file rename fails with path separators."""
+        """Verify file rename rejects the forward-slash path separator.
+
+        Since #1540 the rename validates the full FAT32-illegal set (not just
+        separators), so the error names the offending character.
+        """
         lib_file = await file_factory(filename="test.3mf")
         data = {"filename": "path/to/file.3mf"}
         response = await async_client.put(f"/api/v1/library/files/{lib_file.id}", json=data)
         assert response.status_code == 400
-        assert "path separator" in response.json()["detail"].lower()
+        assert "invalid character: /" in response.json()["detail"].lower()
 
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_rename_file_invalid_backslash(self, async_client: AsyncClient, file_factory, db_session):
-        """Verify file rename fails with backslash."""
+        """Verify file rename rejects the backslash path separator."""
         lib_file = await file_factory(filename="test.3mf")
         data = {"filename": "path\\to\\file.3mf"}
         response = await async_client.put(f"/api/v1/library/files/{lib_file.id}", json=data)
         assert response.status_code == 400
-        assert "path separator" in response.json()["detail"].lower()
+        assert "invalid character: \\" in response.json()["detail"].lower()
 
     @pytest.mark.asyncio
     @pytest.mark.integration

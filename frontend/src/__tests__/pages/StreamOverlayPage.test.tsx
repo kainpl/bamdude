@@ -76,12 +76,17 @@ describe('StreamOverlayPage', () => {
   const originalTitle = document.title;
 
   beforeEach(() => {
-    // Mock WebSocket
-    vi.stubGlobal('WebSocket', vi.fn().mockImplementation(() => ({
-      close: vi.fn(),
-      onmessage: null,
-      onerror: null,
-    })));
+    // Mock WebSocket. Vitest 4 dropped support for arrow-function constructor
+    // mocks ("X is not a constructor"), and StreamOverlayPage does
+    // `new WebSocket(url)` — use a plain function so `new` resolves.
+    vi.stubGlobal(
+      'WebSocket',
+      function MockWebSocket(this: Record<string, unknown>) {
+        this.close = vi.fn();
+        this.onmessage = null;
+        this.onerror = null;
+      }
+    );
 
     server.use(
       http.get('/api/v1/printers/:id', () => {

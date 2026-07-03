@@ -32,6 +32,7 @@ from backend.app.schemas.print_queue import (
     PrintQueueReorder,
 )
 from backend.app.services.notification_service import notification_service
+from backend.app.utils.filename import InvalidFilenameError, validate_print_filename
 from backend.app.utils.threemf_tools import extract_filament_usage_from_3mf
 
 logger = logging.getLogger(__name__)
@@ -368,6 +369,13 @@ async def add_to_queue(
         library_file = result.scalar_one_or_none()
         if not library_file:
             raise HTTPException(400, "Library file not found")
+
+        # Pre-flight: refuse a FAT32-illegal filename at queue time rather than
+        # letting the item sit pending only to fail at FTP dispatch (upstream #1540).
+        try:
+            validate_print_filename(library_file.filename)
+        except InvalidFilenameError as e:
+            raise HTTPException(400, str(e))
 
     # Get next position for this queue
     result = await db.execute(

@@ -1,7 +1,8 @@
 import logging
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
+from backend.app.core.auth import verify_websocket_token
 from backend.app.core.websocket import ws_manager
 from backend.app.services.background_dispatch import background_dispatch
 from backend.app.services.printer_manager import printer_manager, printer_state_to_dict
@@ -9,10 +10,33 @@ from backend.app.services.printer_manager import printer_manager, printer_state_
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# 4401 mirrors the "unauthorised" application close code convention for
+# WebSockets (private-use range 4000-4999 per RFC 6455). The SPA distinguishes
+# it from a network drop and refetches a token instead of retrying the old one.
+_WS_CLOSE_UNAUTHORIZED = 4401
+
 
 @router.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    """WebSocket endpoint for real-time updates."""
+async def websocket_endpoint(websocket: WebSocket, token: str | None = Query(default=None)) -> None:
+    """WebSocket endpoint for real-time updates.
+
+    Auth gate (upstream Bambuddy GHSA-r2qv follow-up): the HTTP auth middleware
+    only runs on the "http" scope, so it never intercepts the WebSocket upgrade.
+    Without this check any client that could reach the HTTP port would land in
+    ``ws_manager.active_connections`` and receive every ``printer_status`` /
+    ``print_*`` / ``archive_*`` / ``inventory_*`` broadcast (broadcasts walk the
+    connection list blindly). Auth is always-on in BamDude, so a valid
+    ``?token=`` (minted by ``POST /api/v1/auth/ws-token`` behind
+    ``Permission.WEBSOCKET_CONNECT``) is required before ``accept()`` — an
+    unauthenticated caller is closed with 4401 and never joins the fan-out.
+    """
+    # Authenticate BEFORE ws_manager.connect() so an unauth caller never enters
+    # the broadcast set.
+    if not await verify_websocket_token(token or ""):
+        logger.info("WebSocket connect refused: missing/invalid token")
+        await websocket.close(code=_WS_CLOSE_UNAUTHORIZED)
+        return
+
     logger.info("WebSocket client connecting...")
     await ws_manager.connect(websocket)
     logger.info("WebSocket client connected")

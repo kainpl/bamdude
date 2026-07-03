@@ -67,6 +67,7 @@ from backend.app.services.library_helpers import compute_file_tags, detect_file_
 from backend.app.services.print_plan import inherit_folder_projects, sync_plan_for_file, sync_plan_for_folder
 from backend.app.services.stl_thumbnail import generate_stl_thumbnail
 from backend.app.services.threemf_capabilities import extract_3mf_capabilities
+from backend.app.utils.filename import InvalidFilenameError, validate_print_filename
 from backend.app.utils.threemf_tools import (
     extract_embedded_presets_from_3mf,
     extract_nozzle_mapping_from_3mf,
@@ -2672,6 +2673,12 @@ async def upload_file(
             raise HTTPException(status_code=400, detail="Filename is required")
 
         filename = file.filename
+        # Reject FAT32/exFAT-illegal names at the upload boundary so they never
+        # reach FTP dispatch and fail with an obscure 553 (upstream #1540).
+        try:
+            validate_print_filename(filename)
+        except InvalidFilenameError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         ext = os.path.splitext(filename)[1].lower()
         file_type = detect_file_type(filename)
 
@@ -3812,6 +3819,14 @@ async def print_library_file(
     if not lib_file:
         raise HTTPException(status_code=404, detail="File not found")
 
+    # Pre-flight: an older library row may pre-date rename/upload validation and
+    # carry a FAT32-illegal name. Refuse here with an actionable 400 pointing at
+    # rename, instead of an obscure FTP 553 mid-dispatch (upstream #1540).
+    try:
+        validate_print_filename(lib_file.filename)
+    except InvalidFilenameError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
     # Validate file is sliced
     if not is_sliced_file(lib_file.filename):
         raise HTTPException(
@@ -4055,9 +4070,14 @@ async def update_file(
             raise HTTPException(status_code=403, detail="You can only update your own files")
 
     if data.filename is not None:
-        # Validate filename doesn't contain path separators
-        if "/" in data.filename or "\\" in data.filename:
-            raise HTTPException(status_code=400, detail="Filename cannot contain path separators")
+        # Reject the full FAT32/exFAT-illegal set (Bambu-Studio parity), not just
+        # path separators — otherwise names like ``L|R.3mf`` flow through to FTP
+        # upload and fail at ``553 Could not create file`` far from this rename
+        # action (upstream Bambuddy #1540).
+        try:
+            validate_print_filename(data.filename)
+        except InvalidFilenameError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         file.filename = data.filename
         # No print_name to keep in sync — library files display by filename,
         # and _without_print_name strips the embedded 3MF Title on import (#1489).

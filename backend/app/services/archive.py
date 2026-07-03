@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.config import settings
 from backend.app.models.archive import PrintArchive
 from backend.app.models.printer import Printer
+from backend.app.utils.safe_path import PathTraversalError, safe_join_under
 
 logger = logging.getLogger(__name__)
 
@@ -2582,9 +2583,20 @@ class ArchiveService:
         file_path = settings.base_dir / archive.file_path
         archive_dir = file_path.parent
 
+        # ``filename`` originates from a printer's FTP directory listing (the
+        # printer is part of the trust surface — a compromised/malicious printer
+        # can return names with ``..`` segments) or the ?filename= query param.
+        # Contain the write to archive_dir; on escape, refuse rather than raise
+        # 400 from this background-task context (path-traversal hardening,
+        # GHSA-r2qv).
+        try:
+            timelapse_file = safe_join_under(archive_dir, filename, http=False)
+        except PathTraversalError:
+            logger.warning("attach_timelapse: rejected traversal filename %r for archive %s", filename, archive_id)
+            return False
+
         # Save timelapse - use thread pool to avoid blocking event loop
         # (timelapse files can be 100MB+, sync write blocks for seconds)
-        timelapse_file = archive_dir / filename
         await asyncio.to_thread(timelapse_file.write_bytes, timelapse_data)
 
         # Update archive record

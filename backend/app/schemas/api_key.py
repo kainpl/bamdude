@@ -12,6 +12,8 @@ class APIKeyCreate(BaseModel):
     can_read_status: bool = True
     can_access_cloud: bool = False
     can_update_energy_cost: bool = False
+    can_manage_library: bool = True
+    can_manage_inventory: bool = True
     printer_ids: list[int] | None = None  # null = all printers
     expires_at: datetime | None = None
 
@@ -25,6 +27,8 @@ class APIKeyUpdate(BaseModel):
     can_read_status: bool | None = None
     can_access_cloud: bool | None = None
     can_update_energy_cost: bool | None = None
+    can_manage_library: bool | None = None
+    can_manage_inventory: bool | None = None
     printer_ids: list[int] | None = None
     enabled: bool | None = None
     expires_at: datetime | None = None
@@ -42,6 +46,8 @@ class APIKeyResponse(BaseModel):
     can_read_status: bool
     can_access_cloud: bool
     can_update_energy_cost: bool = False
+    can_manage_library: bool = True
+    can_manage_inventory: bool = True
     printer_ids: list[int] | None
     enabled: bool
     last_used: datetime | None

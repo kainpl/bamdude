@@ -47,6 +47,7 @@ from backend.app.schemas.project import (
 )
 from backend.app.services.library_helpers import compute_file_tags, detect_file_type
 from backend.app.utils.http import build_content_disposition
+from backend.app.utils.safe_path import safe_join_under
 
 logger = logging.getLogger(__name__)
 
@@ -1878,8 +1879,11 @@ async def import_project_file(
             db.add(folder)
             await db.flush()
 
-            # Create folder on disk
-            folder_path = library_dir / folder_name
+            # Create folder on disk. ``folder_name`` comes from the uploaded
+            # project.json (attacker-controlled): an absolute path collapses the
+            # join and a ``..`` segment escapes ``library_dir`` — safe_join_under
+            # rejects both with 400 (path-traversal hardening, GHSA-r2qv).
+            folder_path = safe_join_under(library_dir, folder_name)
             folder_path.mkdir(parents=True, exist_ok=True)
 
         # Import files for this folder from ZIP
@@ -1894,8 +1898,12 @@ async def import_project_file(
             if not relative_path:
                 continue
 
-            # Write file to disk
-            file_disk_path = library_dir / folder_name / relative_path
+            # Write file to disk. Both ``folder_name`` and the ZIP-derived
+            # ``relative_path`` are attacker-controlled (ZIP namelist() entries
+            # carry ``..`` by spec); safe_join_under validates every component
+            # and asserts containment before the write, closing the
+            # arbitrary-file-write vector regardless of the folder branch above.
+            file_disk_path = safe_join_under(library_dir, folder_name, relative_path)
             file_disk_path.parent.mkdir(parents=True, exist_ok=True)
             file_disk_path.write_bytes(file_content)
 

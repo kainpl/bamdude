@@ -43,6 +43,20 @@ class APIKey(Base):
     # Default False so existing keys never silently gain settings-write
     # capability on upgrade. Upstream Bambuddy #1356 / commit ae29a7dc.
     can_update_energy_cost: Mapped[bool] = mapped_column(Boolean, default=False)
+    # File-manager scope (upstream Bambuddy GHSA-r2qv-8222-hqg3 / v0.2.4.5).
+    # Gates library upload / rename / delete-own + MakerWorld import. A distinct
+    # trust level from queue management, hence its own flag rather than folding
+    # into ``can_queue``. Default True mirrors ``can_queue`` so existing
+    # "queue-only" keys keep their prior upload+queue workflow after upgrade;
+    # the m086 backfill sets it to ``can_queue`` per-row so a hardened
+    # read-only key (can_queue=False) does NOT silently gain writes.
+    can_manage_library: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Inventory write scope (same PR). Covers spool/catalog/forecast writes and
+    # the SpoolBuddy-kiosk write endpoints (NFC scan, scale reading) which used
+    # INVENTORY_UPDATE as a stand-in under the prior denylist model. Read-only
+    # inventory stays under ``can_read_status``. Default True mirrors
+    # ``can_queue``; m086 backfills per-row.
+    can_manage_inventory: Mapped[bool] = mapped_column(Boolean, default=True)
 
     # Optional scope limits
     printer_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)  # null = all printers

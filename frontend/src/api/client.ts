@@ -1168,6 +1168,11 @@ export interface APIKey {
    *  dynamic-tariff integrations can update energy_cost_per_kwh. Does NOT
    *  grant general SETTINGS_UPDATE. Default false. */
   can_update_energy_cost: boolean;
+  /** File-manager scope: library upload/rename/delete-own + MakerWorld import.
+   *  GHSA-r2qv-8222-hqg3. Default true (mirrors can_queue). */
+  can_manage_library: boolean;
+  /** Inventory write scope: spool/catalog/forecast writes. Default true. */
+  can_manage_inventory: boolean;
   printer_ids: number[] | null;
   enabled: boolean;
   last_used: string | null;
@@ -1182,6 +1187,8 @@ export interface APIKeyCreate {
   can_read_status?: boolean;
   can_access_cloud?: boolean;
   can_update_energy_cost?: boolean;
+  can_manage_library?: boolean;
+  can_manage_inventory?: boolean;
   printer_ids?: number[] | null;
   expires_at?: string | null;
 }
@@ -1197,6 +1204,8 @@ export interface APIKeyUpdate {
   can_read_status?: boolean;
   can_access_cloud?: boolean;
   can_update_energy_cost?: boolean;
+  can_manage_library?: boolean;
+  can_manage_inventory?: boolean;
   printer_ids?: number[] | null;
   enabled?: boolean;
   expires_at?: string | null;
@@ -6217,6 +6226,12 @@ export const api = {
     request<{ status: string }>(`/maintenance/items/${itemId}`, {
       method: 'DELETE',
     }),
+
+  // WebSocket connection token (GHSA-r2qv follow-up). Browsers can't send an
+  // Authorization header on a WebSocket upgrade, so the SPA mints a short-lived
+  // token here and passes it to /api/v1/ws as ?token=.
+  getWebSocketToken: () =>
+    request<{ token: string }>('/auth/ws-token', { method: 'POST' }),
 
   // Camera
   getCameraStreamToken: () =>

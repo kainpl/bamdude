@@ -15,6 +15,20 @@ import { ToastProvider } from '../../contexts/ToastContext';
 let wsInstances: MockWebSocket[] = [];
 let originalWebSocket: typeof WebSocket;
 
+// GHSA-r2qv follow-up: useWebSocket now mints a short-lived token via
+// api.getWebSocketToken() before opening the socket. Stub it so the connect
+// path resolves synchronously in tests without hitting MSW.
+vi.mock('../../api/client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../api/client')>();
+  return {
+    ...actual,
+    api: {
+      ...actual.api,
+      getWebSocketToken: vi.fn().mockResolvedValue({ token: 'test-ws-token' }),
+    },
+  };
+});
+
 // Mock react-i18next BEFORE any modules that use it are imported
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -118,8 +132,10 @@ function getLatestWs(): MockWebSocket | undefined {
 // the pending timer ourselves — RTL's `waitFor` doesn't auto-advance them.
 async function waitForWs(): Promise<MockWebSocket> {
   if (vi.isFakeTimers()) {
-    act(() => {
-      vi.advanceTimersByTime(0);
+    // connect() is async now (awaits the ws-token mint), so flush both the
+    // deferred connect timer and its pending microtasks.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
     });
   } else {
     await waitFor(() => expect(getLatestWs()).toBeDefined());
@@ -593,9 +609,10 @@ describe('useWebSocket hook', () => {
         firstWs.close();
       });
 
-      // Wait for reconnect timeout (3 seconds)
-      act(() => {
-        vi.advanceTimersByTime(3000);
+      // Wait for reconnect timeout (3 seconds). Async because the reconnect's
+      // connect() awaits a fresh ws-token before creating the socket.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
       });
 
       // Should have created new WebSocket

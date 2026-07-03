@@ -35,6 +35,7 @@ from backend.app.schemas.archive import (
 from backend.app.services.archive import ArchiveService, resolve_display_stem
 from backend.app.services.threemf_capabilities import extract_3mf_capabilities
 from backend.app.utils.http import build_content_disposition
+from backend.app.utils.safe_path import safe_join_under
 from backend.app.utils.threemf_tools import (
     extract_embedded_presets_from_3mf,
     extract_nozzle_mapping_from_3mf,
@@ -2482,8 +2483,12 @@ async def get_photo(
     if not archive:
         raise HTTPException(404, "Archive not found")
 
+    # ``filename`` is a path component from the URL on an UNAUTHENTICATED route
+    # (served to <img> tags). Without containment it FileResponse-served any
+    # file the backend could read (``..%2f..%2fetc%2fpasswd``) — safe_join_under
+    # rejects traversal with 400 (path-traversal hardening, GHSA-r2qv).
     archive_dir = settings.base_dir / Path(archive.file_path).parent
-    photo_path = archive_dir / "photos" / filename
+    photo_path = safe_join_under(archive_dir / "photos", filename)
 
     if not photo_path.exists():
         raise HTTPException(404, "Photo not found")
@@ -2517,9 +2522,12 @@ async def delete_photo(
     if not archive.photos or filename not in archive.photos:
         raise HTTPException(404, "Photo not found")
 
-    # Delete file
+    # Delete file. The membership check above already limits ``filename`` to a
+    # UUID-generated name in ``archive.photos``; safe_join_under is
+    # defence-in-depth so a future change that drops the membership gate can't
+    # reintroduce a traversal-delete.
     archive_dir = settings.base_dir / Path(archive.file_path).parent
-    photo_path = archive_dir / "photos" / filename
+    photo_path = safe_join_under(archive_dir / "photos", filename)
     if photo_path.exists():
         photo_path.unlink()
 

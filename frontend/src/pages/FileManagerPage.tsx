@@ -240,6 +240,11 @@ interface RenameModalProps {
   t: TFunction;
 }
 
+// FAT32/exFAT-illegal characters — mirrors backend validate_print_filename so
+// the user gets instant feedback (Bambu Studio parity) instead of a round-trip
+// 400 or an obscure FTP 553 at print time (#1540).
+const INVALID_FILENAME_CHARS = '<>:"/\\|?*';
+
 function RenameModal({ type, currentName, onClose, onSave, isLoading, t }: RenameModalProps) {
   // For files, separate the extension so users can only edit the base name
   // Handle compound extensions like .gcode.3mf
@@ -247,8 +252,14 @@ function RenameModal({ type, currentName, onClose, onSave, isLoading, t }: Renam
   const baseName = type === 'file' && fileExtension ? currentName.slice(0, -fileExtension.length) : currentName;
   const [name, setName] = useState(baseName);
 
+  // First offending character (null when clean). Trailing space/dot are also
+  // illegal on the SD card but the extension is re-appended for files, so we
+  // only surface the character-set violation inline here.
+  const invalidChar = [...name].find((ch) => INVALID_FILENAME_CHARS.includes(ch) || ch.charCodeAt(0) < 0x20) ?? null;
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (invalidChar) return;
     const fullName = type === 'file' ? name.trim() + fileExtension : name.trim();
     if (name.trim() && fullName !== currentName) {
       onSave(fullName);
@@ -279,12 +290,17 @@ function RenameModal({ type, currentName, onClose, onSave, isLoading, t }: Renam
                 <span className="pr-3 text-bambu-gray text-sm select-none whitespace-nowrap">{fileExtension}</span>
               )}
             </div>
+            {invalidChar && (
+              <p className="mt-1 text-sm text-red-400">
+                {t('fileManager.invalidFilenameChar', { char: invalidChar })}
+              </p>
+            )}
           </div>
           <div className="flex justify-end gap-2 pt-2">
             <Button type="button" variant="secondary" onClick={onClose}>
               {t('common.cancel')}
             </Button>
-            <Button type="submit" disabled={!name.trim() || name.trim() === baseName || isLoading}>
+            <Button type="submit" disabled={!name.trim() || name.trim() === baseName || isLoading || !!invalidChar}>
               {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : t('common.rename')}
             </Button>
           </div>

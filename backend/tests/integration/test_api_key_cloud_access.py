@@ -89,13 +89,18 @@ class TestAPIKeyOwnership:
         assert body["user_id"] is not None
 
     @pytest.mark.asyncio
-    async def test_create_with_cloud_access_rejected_without_owner(self, async_client: AsyncClient):
-        """API-key-authed flow has no current_user → can_access_cloud=True must 400."""
+    async def test_apikey_cannot_create_api_keys_at_all(self, async_client: AsyncClient):
+        """Since the API-key permission allowlist (GHSA-r2qv-8222-hqg3),
+        ``API_KEYS_CREATE`` is admin-only for API keys, so an API-key-authed
+        create is refused with 403 *before* the route's cloud-owner guard runs.
+        This is a strictly stronger guarantee than the old 400 — the ownerless
+        cloud-access path is unreachable via API key because key creation itself
+        is barred (a key can no longer mint more keys)."""
         # First, create a regular non-cloud key to authenticate the second call.
         seed = await _create_key(async_client, name="seed", can_access_cloud=False)
         raw = seed["key"]
 
-        # Now post a create request using ONLY the API key (no JWT) → owner is None.
+        # Now post a create request using ONLY the API key (no JWT).
         del async_client.headers["Authorization"]
         try:
             response = await async_client.post(
@@ -108,8 +113,8 @@ class TestAPIKeyOwnership:
             from backend.app.core.auth import create_access_token
 
             async_client.headers["Authorization"] = f"Bearer {create_access_token(data={'sub': 'test_admin'})}"
-        assert response.status_code == 400, response.text
-        assert "owning user" in response.json()["detail"].lower()
+        assert response.status_code == 403, response.text
+        assert "administrative" in response.json()["detail"].lower()
 
     @pytest.mark.asyncio
     async def test_user_id_appears_in_list_and_response(self, async_client: AsyncClient):

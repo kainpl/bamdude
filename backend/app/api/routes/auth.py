@@ -28,6 +28,7 @@ from backend.app.core.auth import (
     authenticate_user_by_email,
     create_access_token,
     create_refresh_token,
+    create_websocket_token,
     get_current_active_user,
     get_password_hash,
     get_user_by_email,
@@ -816,6 +817,19 @@ async def logout(
     _clear_refresh_cookie(response, request)
 
     return {"message": "Logged out successfully"}
+
+
+@router.post("/ws-token")
+async def create_ws_token(_: User | None = RequirePermission(Permission.WEBSOCKET_CONNECT)):
+    """Mint a short-lived token for the ``/api/v1/ws`` WebSocket connection.
+
+    The HTTP auth middleware never sees the WebSocket upgrade (it only runs on
+    the "http" scope), and browsers can't attach an Authorization header to a
+    WebSocket, so the SPA obtains a token here and passes it as ``?token=``.
+    Gated by ``WEBSOCKET_CONNECT`` so only an authenticated principal (or an
+    API key with ``can_read_status``) can subscribe to the event fan-out.
+    """
+    return {"token": await create_websocket_token()}
 
 
 # Advanced Authentication Endpoints
