@@ -1,26 +1,17 @@
 /**
- * Tests for the empty-AMS-slot classification logic (#1694).
+ * Tests for getEmptySlotKind — the empty-AMS-slot classification (#1694).
  *
  * A slot with no `tray_type` used to render identically to a truly empty slot
  * ("-"), so a spool that was physically loaded but never had its filament type
- * configured looked empty. `getEmptySlotKind` distinguishes the two using the
- * firmware tray state (9 = empty, 10 = present-but-not-fed, 11 = loaded):
- *   - configured slot (tray_type set)      → null
- *   - state 9 or 10 (empty / not fed)      → 'physical'  (render "-"/Empty)
- *   - otherwise (loaded, no type)          → 'reset'     (render "?")
- *
- * Mirrors the module-level getEmptySlotKind in PrintersPage.tsx; extracted here
- * for testability, matching the sibling PrintersPageFillLevel test pattern.
+ * configured looked empty. `getEmptySlotKind` (in utils/amsHelpers) distinguishes
+ * the two using the firmware tray state (9 = empty, 10 = present-but-not-fed,
+ * 11 = loaded); PrintersPage's compact label, slot circle and empty-slot hover
+ * card all branch on the result so a loaded-but-unconfigured slot shows "?" with
+ * an amber accent instead of looking empty.
  */
 import { describe, it, expect } from 'vitest';
 
-function getEmptySlotKind(
-  tray: { tray_type?: string | null; state?: number | null } | undefined,
-): 'physical' | 'reset' | null {
-  if (tray?.tray_type) return null;
-  const state = tray?.state ?? null;
-  return state === 9 || state === 10 ? 'physical' : 'reset';
-}
+import { getEmptySlotKind } from '../../utils/amsHelpers';
 
 describe('getEmptySlotKind', () => {
   it('returns null for a configured slot regardless of state', () => {

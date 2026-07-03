@@ -42,6 +42,25 @@ describe('FilamentSlotCircle', () => {
     expect(circle.style.borderStyle).toBe('solid');
   });
 
+  it('uses a solid amber border for a loaded-but-unconfigured slot (emptyKind=reset)', () => {
+    // #1694: a spool is physically loaded but has no type set — must stand out
+    // from a truly empty slot's dashed grey.
+    const { container } = render(
+      <FilamentSlotCircle isEmpty={true} slotNumber={1} emptyKind="reset" />
+    );
+    const circle = container.firstChild as HTMLElement;
+    expect(circle.style.borderStyle).toBe('solid');
+    expectColor(circle.style.borderColor, '#f59e0b', 'rgb(245, 158, 11)');
+  });
+
+  it('keeps the dashed grey border for a firmware-empty slot (emptyKind=physical)', () => {
+    const { container } = render(
+      <FilamentSlotCircle isEmpty={true} slotNumber={1} emptyKind="physical" />
+    );
+    const circle = container.firstChild as HTMLElement;
+    expect(circle.style.borderStyle).toBe('dashed');
+  });
+
   it('sets background color from trayColor', () => {
     const { container } = render(
       <FilamentSlotCircle trayColor="00FF00" trayType="PLA" isEmpty={false} slotNumber={2} />

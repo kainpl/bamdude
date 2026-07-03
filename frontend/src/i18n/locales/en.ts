@@ -4301,6 +4301,7 @@ export default {
   // AMS
   ams: {
     emptySlot: 'Empty slot',
+    slotLoadedUnconfigured: 'Spool loaded — slot not configured',
     configureSlot: 'Configure Slot',
     profile: 'Profile',
     kFactor: 'K Factor',

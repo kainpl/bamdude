@@ -118,6 +118,28 @@ export function formatSlotLabel(
 }
 
 /**
+ * Classify an AMS slot that has no configured filament type.
+ *
+ * A slot with no ``tray_type`` used to render identically to a truly empty slot,
+ * so a spool that was physically loaded but never had its filament type set
+ * looked empty (#1694). This distinguishes the two using the firmware tray
+ * state (9 = empty, 10 = present-but-not-fed, 11 = loaded):
+ *   - configured slot (tray_type set)  → null
+ *   - state 9 or 10 (empty / not fed)  → 'physical'  (render "-"/Empty)
+ *   - otherwise (loaded, no type)      → 'reset'     (render "?", amber accent)
+ *
+ * The 'reset' bucket also covers the "no firmware state available" case: without
+ * proof the slot is physically empty we err toward "?" rather than silently "-".
+ */
+export function getEmptySlotKind(
+  tray: { tray_type?: string | null; state?: number | null } | undefined
+): 'physical' | 'reset' | null {
+  if (tray?.tray_type) return null;
+  const state = tray?.state ?? null;
+  return state === 9 || state === 10 ? 'physical' : 'reset';
+}
+
+/**
  * Calculate global tray ID for MQTT command.
  * Used in the ams_mapping array sent to the printer.
  * @param amsId - AMS unit ID (0-3 for regular AMS, 128+ for AMS-HT)

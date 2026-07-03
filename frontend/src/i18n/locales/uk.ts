@@ -4305,6 +4305,7 @@ export default {
   // AMS
   ams: {
     emptySlot: 'Порожній слот',
+    slotLoadedUnconfigured: 'Котушку завантажено — слот не налаштовано',
     configureSlot: 'Налаштувати слот',
     profile: 'Профіль',
     kFactor: 'K фактор',
