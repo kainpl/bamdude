@@ -2,12 +2,18 @@
 
 import asyncio
 import json
+import logging
+import socket
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from backend.app.services.virtual_printer.mqtt_bridge import MQTTBridge, _ip_to_uint32_le
+from backend.app.services.virtual_printer.mqtt_bridge import (
+    MQTTBridge,
+    _ip_to_uint32_le,
+    _resolve_target_to_ipv4,
+)
 from backend.app.services.virtual_printer.mqtt_server import SimpleMQTTServer
 
 H2D_SERIAL = "0948BB540200427"
@@ -733,3 +739,140 @@ class TestIpEncoding:
     def test_invalid_ip_raises(self):
         with pytest.raises(ValueError):
             _ip_to_uint32_le("not.an.ip.actually")
+
+
+# ---------------------------------------------------------------------------
+# Hostname/FQDN target resolution (#1429 follow-up, C6)
+# ---------------------------------------------------------------------------
+
+
+class TestHostnameResolution:
+    """Users who configured the printer by FQDN (common on LANs with router-
+    provided DNS like ``p1s.fritz.box``) hit ``invalid IPv4`` on the encoder and
+    the rewrite never armed — the slicer kept FTPing direct to the real printer.
+    The bridge now resolves hostname → IPv4 first."""
+
+    def test_pass_through_for_valid_ipv4(self):
+        assert _resolve_target_to_ipv4("192.168.1.50") == "192.168.1.50"
+
+    def test_empty_returns_none(self):
+        assert _resolve_target_to_ipv4("") is None
+        assert _resolve_target_to_ipv4(None) is None  # type: ignore[arg-type]
+
+    def test_hostname_resolves_via_getaddrinfo(self):
+        with patch(
+            "backend.app.services.virtual_printer.mqtt_bridge.socket.getaddrinfo",
+            return_value=[(2, 1, 6, "", ("192.168.3.153", 0))],
+        ) as mock_gai:
+            assert _resolve_target_to_ipv4("p1s.fritz.box") == "192.168.3.153"
+        # AF_INET filter prevents an IPv6-only result from being picked, since
+        # net.info[*].ip is a uint32 LE that can't carry v6.
+        assert mock_gai.call_args.kwargs.get("family") == socket.AF_INET
+
+    def test_dns_failure_returns_none(self):
+        with patch(
+            "backend.app.services.virtual_printer.mqtt_bridge.socket.getaddrinfo",
+            side_effect=OSError("Name or service not known"),
+        ):
+            assert _resolve_target_to_ipv4("nope.invalid") is None
+
+    @pytest.mark.asyncio
+    async def test_fqdn_target_arms_encoding(self, caplog):
+        """A hostname-configured printer must still arm the net.info rewrite:
+        resolve → encode, and the armed log carries configured->resolved."""
+        server = _make_server(bind_address=VP_IP)
+        target = _make_paho_client(ip="p1s.fritz.box")
+        bridge = _make_bridge(server, target=target)
+
+        with (
+            patch(
+                "backend.app.services.virtual_printer.mqtt_bridge.socket.getaddrinfo",
+                return_value=[(2, 1, 6, "", (H2D_IP, 0))],
+            ),
+            caplog.at_level(logging.INFO, logger="backend.app.services.virtual_printer.mqtt_bridge"),
+        ):
+            await bridge.start()
+
+        assert bridge._target_ip_uint32_le == _ip_to_uint32_le(H2D_IP)
+        assert bridge._vp_ip_uint32_le == _ip_to_uint32_le(VP_IP)
+        armed = [r for r in caplog.records if "encoding armed" in r.getMessage()]
+        assert len(armed) == 1
+        assert f"p1s.fritz.box->{H2D_IP}" in armed[0].getMessage()
+        await bridge.stop()
+
+
+# ---------------------------------------------------------------------------
+# Not-armed diagnostic logging (#1429 defensive, C7)
+# ---------------------------------------------------------------------------
+
+
+class TestNotArmedDiagnosticLogging:
+    """Each path that leaves the net.info rewrite unarmed now names its reason
+    (deduped to one line per state change), so a silent no-op is visible in the
+    logs instead of just an absent "armed" line."""
+
+    @pytest.mark.asyncio
+    async def test_missing_target_ip_logs_specific_reason(self, caplog):
+        server = _make_server(bind_address=VP_IP)
+        target = _make_paho_client(ip="")
+        bridge = _make_bridge(server, target=target)
+
+        with caplog.at_level(logging.INFO, logger="backend.app.services.virtual_printer.mqtt_bridge"):
+            await bridge.start()
+
+        not_armed = [r for r in caplog.records if "NOT armed" in r.getMessage()]
+        assert len(not_armed) == 1
+        assert "no ip_address" in not_armed[0].getMessage()
+        await bridge.stop()
+
+    @pytest.mark.asyncio
+    async def test_unresolvable_hostname_logs_configured_value(self, caplog):
+        server = _make_server(bind_address=VP_IP)
+        target = _make_paho_client(ip="nope.invalid")
+        bridge = _make_bridge(server, target=target)
+
+        with (
+            patch(
+                "backend.app.services.virtual_printer.mqtt_bridge.socket.getaddrinfo",
+                side_effect=OSError("Name or service not known"),
+            ),
+            caplog.at_level(logging.INFO, logger="backend.app.services.virtual_printer.mqtt_bridge"),
+        ):
+            await bridge.start()
+
+        assert bridge._target_ip_uint32_le is None
+        not_armed = [r for r in caplog.records if "NOT armed" in r.getMessage()]
+        assert len(not_armed) == 1
+        # Names the configured value, distinguishing "DNS gave v6" from "garbage".
+        assert "nope.invalid" in not_armed[0].getMessage()
+        await bridge.stop()
+
+    @pytest.mark.asyncio
+    async def test_no_matching_host_interface_logs_reason(self, caplog):
+        server = _make_server(bind_address="0.0.0.0")
+        bridge = _make_bridge(server)
+
+        with (
+            patch(
+                "backend.app.services.virtual_printer.mqtt_bridge._resolve_host_interface_for_target",
+                return_value=None,
+            ),
+            caplog.at_level(logging.INFO, logger="backend.app.services.virtual_printer.mqtt_bridge"),
+        ):
+            await bridge.start()
+
+        not_armed = [r for r in caplog.records if "NOT armed" in r.getMessage()]
+        assert len(not_armed) == 1
+        msg = not_armed[0].getMessage()
+        assert H2D_IP in msg
+        assert "no host interface" in msg
+        await bridge.stop()
+
+    @pytest.mark.asyncio
+    async def test_reason_cleared_on_arm_then_reemits(self, caplog):
+        """Dedup must reset when arming succeeds, so a later regression re-logs."""
+        server = _make_server(bind_address=VP_IP)
+        bridge = _make_bridge(server)  # dotted-quad target → arms immediately
+        await bridge.start()
+        assert bridge._not_armed_reason is None
+        await bridge.stop()
