@@ -1833,25 +1833,38 @@ class BackgroundDispatchService:
         timeout: float = 90.0,
         poll_interval: float = 3.0,
         pre_gcode_file: str | None = None,
+        phase_b_timeout: float = 180.0,
     ) -> bool:
-        """Wait for the printer to acknowledge a print command.
+        """Wait for the printer to *actually start* a print command.
 
-        Returns True if the printer transitioned (state advanced past
-        ``pre_state`` or ``subtask_id`` advanced past ``pre_subtask_id``).
-        Returns False on timeout — in that case logs a warning and (when the
-        ``gcode_file`` discriminator says the publish didn't land) forces an
-        MQTT reconnect, mirroring the queue-side watchdog
-        (`_watchdog_print_start`). Caller surfaces the False result to the
-        user (typically by raising so the dispatch job is marked failed).
+        Two-phase (#1678):
 
-        H2D can sit at FINISH for ~50 s after accepting `project_file` before
-        flipping to PREPARE; the printer echoes our per-dispatch identity
-        back as ``subtask_id`` on ``push_status`` first, so a subtask_id
-        change is a definitive "command landed" signal even while state is
-        still FINISH (#1078).
+        - **Phase A — command landed.** ``subtask_id`` advancing past
+          ``pre_subtask_id`` proves the printer accepted our ``project_file``
+          (the H2D echoes our per-dispatch identity back on ``push_status``
+          while still sitting at FINISH for ~50 s before flipping to PREPARE,
+          #1078). This is NOT final success on its own.
+        - **Phase B — print running.** After Phase A we keep watching, up to
+          ``phase_b_timeout`` from the landing, for the printer to reach an
+          active print state (PREPARE/SLICING/RUNNING/PAUSE). Only then do we
+          return True.
+
+        Returns True once an active print state is observed. Returns False on
+        timeout: if the command never landed (no active state, no subtask
+        advance) we log + force an MQTT reconnect when the ``gcode_file``
+        discriminator says the publish didn't land (#1150); if it landed but
+        never started (Phase A reached, Phase B timed out — printer accepted
+        the file then stalled, e.g. cloud+LAN re-auth after a power cycle on
+        old firmware) we return False WITHOUT a forced reconnect (a reconnect
+        mid-parse would trigger 0500_4003, #1150). The caller raises on False
+        so the dispatch job is marked failed rather than left wrongly
+        "started" — before this, Phase A alone returned True and a printer
+        that accepted-but-stalled wedged the queue item in ``printing`` until
+        a container restart.
         """
         deadline = time.monotonic() + timeout
         last_status = None  # captured for #1150 gcode_file discriminator on timeout
+        phase_a_reached = False  # subtask_id advanced — command landed, still watching for active state
         while time.monotonic() < deadline:
             await asyncio.sleep(poll_interval)
             state = printer_manager.get_status(printer_id)
@@ -1863,15 +1876,24 @@ class BackgroundDispatchService:
                 continue
             last_status = state
             if state.state in _ACTIVE_PRINT_STATES:
-                # Active print state — command landed. We do NOT accept
-                # arbitrary state transitions: a printer going FINISH → IDLE
-                # (user dismissed the post-print prompt without accepting our
-                # project_file) would otherwise look like "command landed"
-                # and the dispatch job would be marked successful even though
-                # no print is running. Upstream Bambuddy #1370 / commit 5680f5d3.
+                # Active print state — the print is genuinely running. We do NOT
+                # accept arbitrary state transitions: a printer going
+                # FINISH → IDLE (user dismissed the post-print prompt without
+                # accepting our project_file) would otherwise look like "command
+                # landed" and the dispatch job would be marked successful even
+                # though no print is running. Upstream #1370 / commit 5680f5d3.
                 return True
-            if pre_subtask_id is not None and state.subtask_id is not None and state.subtask_id != pre_subtask_id:
-                return True
+            if (
+                not phase_a_reached
+                and pre_subtask_id is not None
+                and state.subtask_id is not None
+                and state.subtask_id != pre_subtask_id
+            ):
+                # Phase A: command landed. Extend the window to phase_b_timeout
+                # from here and keep watching for the active-state transition
+                # instead of declaring success now (#1678).
+                phase_a_reached = True
+                deadline = max(deadline, time.monotonic() + phase_b_timeout)
         logger.warning(
             "Printer %s (%d) did not respond to print command within %.0fs "
             "(state still %s, subtask_id still %s) — printer may need restart",
@@ -1881,6 +1903,21 @@ class BackgroundDispatchService:
             pre_state,
             pre_subtask_id,
         )
+        if phase_a_reached:
+            # Phase A landed (subtask_id advanced) but the printer never reached
+            # an active print state within phase_b_timeout — it accepted the file
+            # and then stalled (#1678). The publish is proven landed, so skip the
+            # forced reconnect (a reconnect mid-parse triggers 0500_4003, #1150)
+            # and just report the stall; the caller fails the job so the queue
+            # item doesn't wedge in ``printing``.
+            logger.warning(
+                "Printer %s (%d): accepted project_file (subtask_id advanced) but never "
+                "started printing within %.0fs — stalled after accept.",
+                printer_name,
+                printer_id,
+                phase_b_timeout,
+            )
+            return False
         # P1P 0500_4003 discriminator (#1150): if `gcode_file` advanced from
         # what we observed pre-dispatch, the printer accepted our project_file
         # and is just slow-parsing on the SD-card MCU side. Forcing an MQTT

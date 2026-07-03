@@ -11,10 +11,13 @@ session, plate-clear gate, SD card fault). The watchdog now returns a bool
 so the caller can fail the dispatch job when the printer doesn't acknowledge
 the command, mirroring what `_watchdog_print_start` does on the queue side.
 
-Both transition signals are accepted: ``state`` advancing past ``pre_state``
-*or* ``subtask_id`` advancing past ``pre_subtask_id`` — H2D firmware can sit
-at FINISH for ~50 s after accepting ``project_file`` while echoing the new
-subtask_id back almost immediately (#1078).
+Two-phase (#1678): reaching an active print state (PREPARE/SLICING/RUNNING/
+PAUSE) is final success. ``subtask_id`` advancing past ``pre_subtask_id`` is
+only Phase A ("command landed") — the H2D echoes the new subtask_id back while
+still sitting at FINISH for ~50 s before flipping to PREPARE (#1078) — after
+which the verifier keeps watching (Phase B) for the active-state transition.
+A printer that lands the command but never starts (accepted-then-stalled) is
+reported as a failure instead of a false success that wedges the queue item.
 
 The integration-level `_run_reprint_archive` / `_run_print_library_file`
 wiring tests in upstream were extremely mock-heavy and tightly coupled to
@@ -59,10 +62,17 @@ class TestReturnsTrueOnPickup:
         assert result is True
 
     @pytest.mark.asyncio
-    async def test_returns_true_on_subtask_id_change_even_if_state_still_finish(self):
-        """#1078: H2D keeps state=FINISH for ~50 s after accepting project_file
-        but flips subtask_id immediately. Must be accepted as a pickup signal."""
-        get_status = MagicMock(return_value=_status("FINISH", "NEW_SUBTASK_12345"))
+    async def test_subtask_advance_then_active_returns_true(self):
+        """#1078 + #1678: H2D echoes the new subtask_id back while still at
+        FINISH (Phase A — command landed), then flips to PREPARE (Phase B —
+        running). The verifier waits through Phase A for the active state and
+        returns True once it arrives."""
+        get_status = MagicMock(
+            side_effect=[
+                _status("FINISH", "NEW_SUBTASK_12345"),  # Phase A: subtask advanced
+                _status("PREPARE", "NEW_SUBTASK_12345"),  # Phase B: now running
+            ]
+        )
         with patch(
             "backend.app.services.background_dispatch.printer_manager.get_status",
             get_status,
@@ -74,6 +84,7 @@ class TestReturnsTrueOnPickup:
                 pre_subtask_id="OLD_SUBTASK_99999",
                 timeout=0.3,
                 poll_interval=0.05,
+                phase_b_timeout=0.3,
             )
 
         assert result is True
@@ -169,6 +180,41 @@ class TestReturnsFalseOnTimeout:
 
         assert result is False
         client.force_reconnect_stale_session.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_subtask_advance_but_never_active_is_stall_returns_false(self):
+        """#1678: printer accepts project_file (subtask_id advances — Phase A)
+        but never reaches an active print state (accepted-then-stalled, e.g.
+        cloud+LAN re-auth after a power cycle). The verifier must report
+        failure so the queue item doesn't wedge in ``printing`` — and must NOT
+        force a reconnect (the publish landed; a reconnect mid-parse triggers
+        0500_4003, #1150)."""
+        get_status = MagicMock(return_value=_status("FINISH", "NEW_SUBTASK_12345"))
+        client = MagicMock()
+        get_client = MagicMock(return_value=client)
+
+        with (
+            patch(
+                "backend.app.services.background_dispatch.printer_manager.get_status",
+                get_status,
+            ),
+            patch(
+                "backend.app.services.background_dispatch.printer_manager.get_client",
+                get_client,
+            ),
+        ):
+            result = await BackgroundDispatchService._verify_print_response(
+                printer_id=42,
+                printer_name="H2D",
+                pre_state="FINISH",
+                pre_subtask_id="OLD_SUBTASK_99999",
+                timeout=0.2,
+                poll_interval=0.05,
+                phase_b_timeout=0.2,
+            )
+
+        assert result is False
+        client.force_reconnect_stale_session.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_returns_false_when_pre_subtask_id_none_and_state_unchanged(self):
