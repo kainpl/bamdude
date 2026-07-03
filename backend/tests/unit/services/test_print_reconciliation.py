@@ -195,6 +195,17 @@ async def test_reconcile_ghost_replay_new_subtask_closes_uncertain(db_session):
 
 
 @pytest.mark.asyncio
+async def test_reconcile_bare_connect_unknown_state_leaves_orphans(db_session):
+    # Pre-push_status degenerate state ("unknown" / "") is not evidence a print
+    # ended — the sweep must no-op, not synthesise completions (#1679 parity).
+    archive = await _make_archive(db_session, filename="widget.3mf", subtask_id="task-1")
+    await _reconcile(db_session, printer_id=1, live_state="unknown", live_file="", live_subtask_id="")
+    assert archive.status == "printing"
+    await _reconcile(db_session, printer_id=1, live_state="", live_file="widget.3mf", live_subtask_id="task-1")
+    assert archive.status == "printing"
+
+
+@pytest.mark.asyncio
 async def test_reconcile_finished_during_downtime_completes(db_session):
     archive = await _make_archive(db_session, filename="widget.3mf")
     await _reconcile(db_session, printer_id=1, live_state="FINISH", live_file="widget.3mf")

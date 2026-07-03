@@ -215,6 +215,18 @@ async def _reconcile(
     Takes an explicit session so tests can drive it directly;
     :func:`reconcile_printer_prints` is the production wrapper.
     """
+    # Pre-push_status guard (upstream #1679 parity). On the bare-connect edge
+    # the printer's live state is on construction defaults ("" / "unknown") —
+    # MQTT connected but the first real ``push_status`` hasn't applied yet. That
+    # degenerate state is NOT evidence a print ended; closing orphans against it
+    # would synthesise bogus completions (and, downstream, double-counted
+    # filament). Our production trigger (``on_first_status``) only fires once a
+    # real ``gcode_state`` has arrived, so in normal operation this is
+    # unreachable; it's belt-and-braces for any future caller that reconciles
+    # earlier in the connect sequence.
+    if (live_state or "").upper() in ("", "UNKNOWN"):
+        return
+
     orphans = list(
         (
             await db.execute(
