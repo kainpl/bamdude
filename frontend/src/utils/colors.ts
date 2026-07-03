@@ -58,6 +58,12 @@ export function __resetColorCatalogForTests(): void {
 export function hexToColorName(hex: string | null | undefined): string {
   if (!hex || hex.length < 6) return 'Unknown';
   const cleanHex = hex.replace('#', '');
+  // Alpha=00 → fully transparent. Name it 'Clear' before falling through to
+  // RGB-based naming, otherwise #00000000 (Bambu's transparent code) would
+  // resolve to 'Black' via the HSL fallback (#1545).
+  if (cleanHex.length === 8 && cleanHex.substring(6, 8).toLowerCase() === '00') {
+    return 'Clear';
+  }
   const r = parseInt(cleanHex.substring(0, 2), 16);
   const g = parseInt(cleanHex.substring(2, 4), 16);
   const b = parseInt(cleanHex.substring(4, 6), 16);
@@ -105,7 +111,9 @@ export function hexToColorName(hex: string | null | undefined): string {
  */
 export function getColorName(hexColor: string): string {
   if (!hexColor) return hexToColorName(hexColor);
-  const hex = hexColor.replace('#', '').toLowerCase().substring(0, 6);
+  const clean = hexColor.replace('#', '').toLowerCase();
+  if (clean.length === 8 && clean.substring(6, 8) === '00') return 'Clear';
+  const hex = clean.substring(0, 6);
   const mapped = runtimeColorCatalog[hex];
   if (mapped) return mapped;
   return hexToColorName(hexColor);
@@ -124,12 +132,58 @@ export function resolveSpoolColorName(colorName: string | null, rgba: string | n
   }
   // Try hex color lookup from rgba via the runtime catalog
   if (rgba && rgba.length >= 6) {
-    const hex = rgba.substring(0, 6).toLowerCase();
+    const clean = rgba.replace('#', '').toLowerCase();
+    // Transparent rgba: don't fall through to the RGB-based lookup that would
+    // return 'Black' for #00000000 (#1545).
+    if (clean.length === 8 && clean.substring(6, 8) === '00') return 'Clear';
+    const hex = clean.substring(0, 6);
     const mapped = runtimeColorCatalog[hex];
     if (mapped) return mapped;
   }
   // Return null (displayed as "-") - better than showing a code
   return null;
+}
+
+/**
+ * Build a hex string suitable for SVG `fill=` / props that take a single colour
+ * value. Preserves the alpha byte when alpha < FF so a transparent spool renders
+ * translucent rather than collapsing to solid black (#1545). Null / malformed
+ * input falls back to `#808080`. Prefer `getSwatchStyle` for div backgrounds —
+ * it paints a visible checkerboard under transparent fills.
+ */
+export function spoolColorString(rgba: string | null | undefined): string {
+  if (!rgba) return '#808080';
+  const clean = rgba.replace(/^#/, '');
+  if (clean.length < 6) return '#808080';
+  if (clean.length >= 8 && clean.substring(6, 8).toLowerCase() !== 'ff') {
+    return `#${clean.substring(0, 8)}`;
+  }
+  return `#${clean.substring(0, 6)}`;
+}
+
+/**
+ * Build an inline-style object for a simple filament swatch (div / button
+ * background). Opaque colours return a plain `backgroundColor`; transparent
+ * (alpha=00) returns a checkerboard so the swatch is visible instead of an
+ * invisible element (#1545). Null / unparseable input falls back to `#808080`.
+ * `FilamentSwatch` already paints a richer checkerboard underlay automatically;
+ * use this only when retro-fitting an existing simple swatch site.
+ */
+export function getSwatchStyle(rgba: string | null | undefined): {
+  backgroundColor?: string;
+  backgroundImage?: string;
+  backgroundSize?: string;
+} {
+  if (!rgba) return { backgroundColor: '#808080' };
+  const clean = rgba.replace(/^#/, '');
+  if (clean.length < 6) return { backgroundColor: '#808080' };
+  if (clean.length >= 8 && clean.substring(6, 8).toLowerCase() === '00') {
+    return {
+      backgroundImage: 'repeating-conic-gradient(#979797 0% 25%, #f5f5f5 0% 50%)',
+      backgroundSize: '8px 8px',
+    };
+  }
+  return { backgroundColor: `#${clean.substring(0, 6)}` };
 }
 
 /**
@@ -153,6 +207,9 @@ export function parseFilamentColor(rgba: string): string | null {
 export function isLightColor(hex: string | null): boolean {
   if (!hex || hex.length < 6) return false;
   const cleanHex = hex.replace('#', '');
+  // Transparent swatches are painted over the light/mid-gray checkerboard
+  // underlay, so treat them as light for text-contrast purposes (#1545).
+  if (cleanHex.length === 8 && cleanHex.slice(6, 8).toLowerCase() === '00') return true;
   const r = parseInt(cleanHex.slice(0, 2), 16);
   const g = parseInt(cleanHex.slice(2, 4), 16);
   const b = parseInt(cleanHex.slice(4, 6), 16);

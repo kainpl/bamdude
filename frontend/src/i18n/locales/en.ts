@@ -3057,6 +3057,8 @@ export default {
   slice: {
     title: 'Slice model',
     action: 'Slice',
+    refreshPresets: 'Refresh',
+    refreshPresetsTitle: 'Refresh presets — fetch the latest cloud and bundled listings (use after deleting a preset in Bambu Studio or Bambu Handy)',
     actionServerSide: 'Slice (server-side)',
     enqueuing: 'Submitting slice job…',
     loadingPresets: 'Loading presets…',
@@ -4208,6 +4210,7 @@ export default {
     assignMismatchConfirm: 'Assign Anyway',
     assignPartialMismatchMessage: 'The spool material "{{spoolMaterial}}" is similar to but not exactly matching "{{trayMaterial}}" in {{location}}. Do you want to proceed?',
     assignProfileMismatchMessage: 'The spool profile "{{spoolProfile}}" does not match the tray profile "{{trayProfile}}" in {{location}}. Do you want to proceed?',
+    assignReconfigureNote: 'The AMS slot will be reconfigured to use the spool\'s profile.',
     spoolForm: {
       category: 'Category',
       categoryPlaceholder: 'Production',

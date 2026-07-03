@@ -9,6 +9,7 @@ import { ConfirmModal } from './ConfirmModal';
 import { useToast } from '../contexts/ToastContext';
 import { DEFAULT_SPOOL_DISPLAY_TEMPLATE, formatSpoolDisplayName, spoolDisplayNameMatches } from '../utils/spoolName';
 import { filterSpoolsByQuery } from '../utils/inventorySearch';
+import { getSwatchStyle } from '../utils/colors';
 
 interface AssignSpoolModalProps {
   isOpen: boolean;
@@ -37,7 +38,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
   const [pendingAssignId, setPendingAssignId] = useState<number | null>(null);
   const [showMismatchConfirm, setShowMismatchConfirm] = useState(false);
   const [mismatchDetails, setMismatchDetails] = useState<{
-    type: 'material' | 'partial' | 'profile' | 'material_profile' | 'partial_profile';
+    type: 'material' | 'partial' | 'material_profile' | 'partial_profile';
     spoolMaterial: string;
     trayMaterial: string;
     spoolProfile?: string;
@@ -285,9 +286,13 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
       const trayProfile = trayInfo.profile || trayInfo.type;
       const profileMatches = checkProfileMatch(spoolProfile, trayProfile);
 
-      // Always evaluate both checks; if both fail, show a combined warning.
-      if (materialMatchResult !== 'exact' || !profileMatches) {
-        let mismatchType: 'material' | 'partial' | 'profile' | 'material_profile' | 'partial_profile' = 'profile';
+      // Only material-bearing mismatches warn — profile-only deltas are
+      // silently resolved by the backend's AMS reconfigure on every assign
+      // (#1552), so warning then "fixing" in the same action was friction
+      // without benefit. Combined material+profile mismatches keep the profile
+      // detail in the same popup as the material warning.
+      if (materialMatchResult !== 'exact') {
+        let mismatchType: 'material' | 'partial' | 'material_profile' | 'partial_profile';
 
         if (materialMatchResult === 'none' && !profileMatches) {
           mismatchType = 'material_profile';
@@ -295,7 +300,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
           mismatchType = 'partial_profile';
         } else if (materialMatchResult === 'none') {
           mismatchType = 'material';
-        } else if (materialMatchResult === 'partial') {
+        } else {
           mismatchType = 'partial';
         }
 
@@ -405,7 +410,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
                       {spool.rgba && (
                         <span
                           className="w-3 h-3 rounded-full border border-black/20 flex-shrink-0"
-                          style={{ backgroundColor: `#${spool.rgba.substring(0, 6)}` }}
+                          style={getSwatchStyle(spool.rgba)}
                         />
                       )}
                       <span className="text-xs text-bambu-gray truncate">{spool.color_name || ''}</span>
@@ -480,7 +485,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
                               {spool.rgba && (
                                 <span
                                   className="w-3 h-3 rounded-full border border-black/20 flex-shrink-0"
-                                  style={{ backgroundColor: `#${spool.rgba.substring(0, 6)}` }}
+                                  style={getSwatchStyle(spool.rgba)}
                                 />
                               )}
                               <span className="text-xs text-bambu-gray truncate">{spool.color_name || ''}</span>
@@ -579,13 +584,13 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
             trayProfile: mismatchDetails.trayProfile || t('common.unknown'),
             location: trayInfo.location,
           })}`;
-        } else if (mismatchDetails.type === 'profile') {
-          message = t('inventory.assignProfileMismatchMessage', {
-            spoolProfile: mismatchDetails.spoolProfile || t('common.unknown'),
-            trayProfile: mismatchDetails.trayProfile || t('common.unknown'),
-            location: trayInfo.location,
-          });
         }
+
+        // Always tell the user the AMS slot will be reconfigured — the old
+        // wording made "Assign Anyway" read like a no-op confirmation, when the
+        // backend in fact pushes the spool's profile to the slot on every
+        // assign (#1552).
+        message = `${message}\n\n${t('inventory.assignReconfigureNote')}`;
 
         return (
           <ConfirmModal

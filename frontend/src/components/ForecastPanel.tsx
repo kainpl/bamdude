@@ -12,6 +12,7 @@ import {
   ResponsiveContainer, ReferenceLine, Legend,
 } from 'recharts';
 import { api } from '../api/client';
+import { getSwatchStyle } from '../utils/colors';
 import type { InventorySpool, SpoolUsageRecord, FilamentSkuSettings, ShoppingListItem } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -797,7 +798,9 @@ function ForecastRow({
   const snoozed = f.settings?.alerts_snoozed ?? false;
 
   const label = [f.group.brand, f.group.material, f.group.subtype].filter(Boolean).join(' ');
-  const colorStyle = f.group.spools[0]?.rgba ? `#${f.group.spools[0].rgba.substring(0, 6)}` : '#4B5563';
+  // Use getSwatchStyle so a Clear (alpha=00) lead spool renders as a
+  // checkerboard rather than collapsing to solid black (#1545).
+  const colorStyle = f.group.spools[0]?.rgba ? getSwatchStyle(f.group.spools[0].rgba) : { backgroundColor: '#4B5563' };
   const remainPct = f.totalLabelG > 0 ? Math.round((f.totalRemainingG / f.totalLabelG) * 100) : 0;
 
   const daysColor = snoozed ? 'text-bambu-gray'
@@ -834,7 +837,7 @@ function ForecastRow({
         <td className="px-4 py-3">
           <span
             className="block w-3 h-3 rounded-full border border-black/20"
-            style={{ backgroundColor: colorStyle }}
+            style={colorStyle}
           />
         </td>
 

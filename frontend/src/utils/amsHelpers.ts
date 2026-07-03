@@ -12,9 +12,16 @@ import { parseUTCDate } from './date';
  */
 export function normalizeColor(color: string | null | undefined): string {
   if (!color) return '#808080';
-  // Remove alpha channel if present (8-char hex to 6-char)
-  const hex = color.replace('#', '').substring(0, 6);
-  return `#${hex}`;
+  // Result is "#RRGGBB" for opaque colours and "#RRGGBBAA" when alpha < FF —
+  // CSS accepts both forms on `fill` / `backgroundColor`, and preserving alpha
+  // lets transparent filaments render translucent instead of collapsing to
+  // solid black (#1545). Comparison helpers use normalizeColorForCompare which
+  // still strips alpha, so type/colour matching is unaffected.
+  const clean = color.replace('#', '');
+  if (clean.length >= 8 && clean.substring(6, 8).toLowerCase() !== 'ff') {
+    return `#${clean.substring(0, 8)}`;
+  }
+  return `#${clean.substring(0, 6)}`;
 }
 
 /**

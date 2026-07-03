@@ -32,6 +32,20 @@ describe('hexToColorName (HSL fallback)', () => {
   it('handles leading hash', () => {
     expect(hexToColorName('#000000')).toBe('Black');
   });
+
+  // #1545: transparent filament is reported as `00000000` (alpha=00). Without
+  // the alpha-aware short-circuit it would fall through to HSL bucketing and
+  // resolve to "Black" because the RGB happens to be 000000.
+  it('classifies any alpha=00 rgba as Clear', () => {
+    expect(hexToColorName('00000000')).toBe('Clear');
+    expect(hexToColorName('FF000000')).toBe('Clear');
+    expect(hexToColorName('#abcdef00')).toBe('Clear');
+  });
+
+  it('still classifies fully opaque colors via HSL even when alpha is FF', () => {
+    expect(hexToColorName('000000FF')).toBe('Black');
+    expect(hexToColorName('FFFFFFFF')).toBe('White');
+  });
 });
 
 describe('runtime color catalog', () => {
@@ -67,6 +81,14 @@ describe('runtime color catalog', () => {
     expect(getColorName('ff0000')).toBe('Red'); // back to HSL fallback
     expect(getColorName('00ff00')).toBe('Second');
   });
+
+  // #1545: alpha=00 must short-circuit catalog lookup too — otherwise a catalog
+  // entry on the underlying RGB would mislabel transparent filament.
+  it('getColorName returns Clear for transparent rgba regardless of catalog entry', () => {
+    setColorCatalog({ '000000': 'Inky Night' });
+    expect(getColorName('00000000')).toBe('Clear');
+    expect(getColorName('000000FF')).toBe('Inky Night');
+  });
 });
 
 describe('resolveSpoolColorName', () => {
@@ -92,6 +114,11 @@ describe('resolveSpoolColorName', () => {
   it('looks up rgba via catalog when color_name is null', () => {
     setColorCatalog({ 'ff0000': 'Fire Engine Red' });
     expect(resolveSpoolColorName(null, 'ff0000ff')).toBe('Fire Engine Red');
+  });
+
+  // #1545: alpha=00 short-circuits to Clear even when color_name is a code.
+  it('returns Clear for transparent rgba even when color_name is a code', () => {
+    expect(resolveSpoolColorName('A99-Z9', '00000000')).toBe('Clear');
   });
 });
 
@@ -126,5 +153,11 @@ describe('isLightColor', () => {
   it('classifies dark colors as not light', () => {
     expect(isLightColor('000000')).toBe(false);
     expect(isLightColor('800000')).toBe(false);
+  });
+
+  // #1545: transparent swatches paint over a light checkerboard, so treat them
+  // as light for text-contrast purposes.
+  it('treats alpha=00 as light', () => {
+    expect(isLightColor('00000000')).toBe(true);
   });
 });

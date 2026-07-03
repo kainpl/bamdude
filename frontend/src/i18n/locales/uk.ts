@@ -3073,6 +3073,8 @@ export default {
   slice: {
     title: 'Нарізати модель',
     action: 'Нарізати',
+    refreshPresets: 'Оновити',
+    refreshPresetsTitle: 'Оновити пресети — завантажити найновіші хмарні та вбудовані списки (використовуйте після видалення пресета в Bambu Studio чи Bambu Handy)',
     actionServerSide: 'Нарізати (на сервері)',
     enqueuing: 'Надсилання завдання нарізання…',
     loadingPresets: 'Завантаження пресетів…',
@@ -4212,6 +4214,7 @@ export default {
     assignMismatchConfirm: 'Призначити все одно',
     assignPartialMismatchMessage: 'Матеріал котушки "{{spoolMaterial}}" схожий, але не точно відповідає "{{trayMaterial}}" у {{location}}. Продовжити?',
     assignProfileMismatchMessage: 'Профіль котушки "{{spoolProfile}}" не відповідає профілю лотку "{{trayProfile}}" у {{location}}. Продовжити?',
+    assignReconfigureNote: 'Слот AMS буде переналаштовано на профіль котушки.',
     spoolForm: {
       category: 'Категорія',
       categoryPlaceholder: 'Виробництво',

@@ -1,7 +1,7 @@
-import { Cloud, CloudOff, Cog, Loader2, X } from 'lucide-react';
+import { Cloud, CloudOff, Cog, Loader2, RefreshCw, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   api,
   type BedType,
@@ -570,6 +570,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
     return base;
   }, [sliceAllPlates, filamentReqsQuery.data]);
 
+  const queryClient = useQueryClient();
   const presetsQuery = useQuery({
     queryKey: ['slicerPresets'],
     queryFn: () => api.getSlicerPresets(),
@@ -578,6 +579,26 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
     // round-trip if the user cancels out of the plate step.
     enabled: !platesQuery.isLoading && !needsPlatePicker,
   });
+
+  // Manual refresh — bypasses the backend's cloud + bundled preset caches for
+  // one call so a user who deleted a preset in Bambu Studio / Handy sees the
+  // change immediately (#1581). The cache write inside the backend fetchers
+  // refills with the fresh result, so later normal callers stay cached.
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const handleRefreshPresets = async () => {
+    if (isRefreshing) return;
+    setIsRefreshing(true);
+    try {
+      const fresh = await api.getSlicerPresets({ refresh: true });
+      queryClient.setQueryData(['slicerPresets'], fresh);
+    } catch {
+      // Fall through to invalidate so React Query retries on next render,
+      // surfacing the failure through the existing presetsQuery error path.
+      queryClient.invalidateQueries({ queryKey: ['slicerPresets'] });
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
 
   // Imported Printer Preset Bundles (.bbscfg). Empty list when no sidecar
   // configured / no bundles imported yet; the bundle picker hides itself
@@ -953,7 +974,22 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
 
           {presetsQuery.data && (
             <>
-              <CloudStatusBanner status={presetsQuery.data.cloud_status} />
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex-1">
+                  <CloudStatusBanner status={presetsQuery.data.cloud_status} />
+                </div>
+                <button
+                  type="button"
+                  onClick={handleRefreshPresets}
+                  disabled={isRefreshing || isEnqueuing}
+                  className="flex-shrink-0 inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary/40 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  title={t('slice.refreshPresetsTitle')}
+                  aria-label={t('slice.refreshPresets')}
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
+                  {t('slice.refreshPresets')}
+                </button>
+              </div>
               {/* Slicer picker — two big card-buttons matching the
                   "Filament Tracking" pattern in Settings. Each card carries
                   its own live health status (version / offline / checking)

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X, Loader2, Printer, CheckSquare, Square, Search } from 'lucide-react';
 import { api, type SpoolLabelTemplate, type InventorySpool } from '../api/client';
+import { getSwatchStyle } from '../utils/colors';
 import { Button } from './Button';
 import { useToast } from '../contexts/ToastContext';
 import { DEFAULT_SPOOL_DISPLAY_TEMPLATE, formatSpoolDisplayName } from '../utils/spoolName';
@@ -61,10 +62,12 @@ function openBlobInNewTab(blob: Blob): void {
   setTimeout(() => window.URL.revokeObjectURL(url), 60_000);
 }
 
+// Thin wrapper over ``getSwatchStyle`` from utils/colors so the modal's render
+// sites keep their existing call shape. Transparent (alpha=00) spools now
+// render as a checkerboard pattern instead of collapsing to solid black
+// (#1545).
 function swatchStyle(rgba: string | null | undefined): React.CSSProperties {
-  if (!rgba) return { backgroundColor: '#808080' };
-  const cleaned = rgba.replace(/^#/, '').slice(0, 6);
-  return cleaned.length === 6 ? { backgroundColor: `#${cleaned}` } : { backgroundColor: '#808080' };
+  return getSwatchStyle(rgba);
 }
 
 /** Build a lowercased haystack that the search input matches against. */
