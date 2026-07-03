@@ -179,8 +179,10 @@ class TestStorePrintData:
     @pytest.mark.asyncio
     async def test_prefers_explicit_ams_mapping_over_queue_mapping(self):
         db = AsyncMock()
+        queue_result = MagicMock()
+        queue_result.scalar_one_or_none.return_value = None  # #1697: queue-item lookup (plate + ams fallback)
         delete_result = MagicMock()
-        db.execute = AsyncMock(side_effect=[delete_result])
+        db.execute = AsyncMock(side_effect=[queue_result, delete_result])
         db.add = MagicMock()
         db.commit = AsyncMock()
 
@@ -216,7 +218,8 @@ class TestStorePrintData:
         db.add.assert_called_once()
         tracking = db.add.call_args.args[0]
         assert tracking.slot_to_tray == [1, -1, -1, -1]
-        db.execute.assert_called_once()
+        # Two executes now: the #1697 queue-item lookup + the delete.
+        assert db.execute.call_count == 2
 
     @pytest.mark.asyncio
     async def test_tracking_runs_when_weight_sync_flag_is_false(self):
@@ -227,8 +230,10 @@ class TestStorePrintData:
         every print on the default-False setting, including non-Bambu spools
         the AMS auto-sync couldn't weigh."""
         db = AsyncMock()
+        queue_result = MagicMock()
+        queue_result.scalar_one_or_none.return_value = None  # #1697: queue-item lookup (plate + ams fallback)
         delete_result = MagicMock()
-        db.execute = AsyncMock(side_effect=[delete_result])
+        db.execute = AsyncMock(side_effect=[queue_result, delete_result])
         db.add = MagicMock()
         db.commit = AsyncMock()
 
@@ -266,3 +271,56 @@ class TestStorePrintData:
 
         # The deprecated weight-sync gate is gone: tracking row was stored.
         db.add.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_scopes_3mf_extract_to_dispatched_plate(self):
+        """#1697: a single-plate job from a multi-plate 3MF must only count that
+        plate's filament. The caller's plate_id (archive.plate_index) wins;
+        the printing queue item's plate_id is the fallback."""
+
+        async def _run(caller_plate_id, queue_plate_id):
+            db = AsyncMock()
+            queue_result = MagicMock()
+            queue_item = (
+                SimpleNamespace(plate_id=queue_plate_id, ams_mapping=None) if queue_plate_id is not None else None
+            )
+            queue_result.scalar_one_or_none.return_value = queue_item
+            delete_result = MagicMock()
+            db.execute = AsyncMock(side_effect=[queue_result, delete_result])
+            db.add = MagicMock()
+            db.commit = AsyncMock()
+
+            printer_manager = MagicMock()
+            printer_manager.get_status.return_value = SimpleNamespace(
+                raw_data={"ams": [{"id": 0, "tray": [{"id": 0, "tray_type": "PLA"}]}]}
+            )
+            mock_settings = MagicMock()
+            mock_path = MagicMock()
+            mock_path.exists.return_value = True
+            mock_settings.base_dir.__truediv__.return_value = mock_path
+
+            extract = MagicMock(return_value=[{"slot_id": 0, "used_g": 5.0, "type": "PLA", "color": "#FF0000"}])
+            with (
+                patch("backend.app.services.spoolman_tracking.app_settings", mock_settings),
+                patch("backend.app.api.routes.settings.get_setting", AsyncMock(side_effect=["true"])),
+                patch("backend.app.utils.threemf_tools.extract_filament_usage_from_3mf", extract),
+                patch("backend.app.utils.threemf_tools.extract_layer_filament_usage_from_3mf", return_value=None),
+                patch("backend.app.utils.threemf_tools.extract_filament_properties_from_3mf", return_value={}),
+            ):
+                await store_print_data(
+                    printer_id=1,
+                    archive_id=15,
+                    file_path="archives/test.3mf",
+                    db=db,
+                    printer_manager=printer_manager,
+                    ams_mapping=[0, -1, -1, -1],
+                    plate_id=caller_plate_id,
+                )
+            return extract.call_args.args[1]  # the plate_id passed to the extractor
+
+        # Caller-supplied plate_id (archive.plate_index) wins.
+        assert await _run(caller_plate_id=2, queue_plate_id=5) == 2
+        # No caller plate → fall back to the queue item's plate_id.
+        assert await _run(caller_plate_id=None, queue_plate_id=3) == 3
+        # Neither → whole-file sum (None).
+        assert await _run(caller_plate_id=None, queue_plate_id=None) is None

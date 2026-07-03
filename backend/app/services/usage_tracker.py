@@ -651,7 +651,13 @@ async def _track_from_3mf(
         logger.info("[UsageTracker] 3MF: file not found: %s", file_path)
         return []
 
-    filament_usage = extract_filament_usage_from_3mf(file_path)
+    # Scope the extract to the dispatched plate (#1697). ``archive.plate_index``
+    # is our authoritative "which plate ran" record — set by the dispatcher for
+    # queue and direct prints alike, in the same 1-based convention the parser
+    # expects. Without it a single-plate job from a multi-plate 3MF debits the
+    # spool for every plate's filament. None (external/screen prints where we
+    # can't know the plate) → whole-file sum, unchanged.
+    filament_usage = extract_filament_usage_from_3mf(file_path, archive.plate_index)
     if not filament_usage:
         logger.info("[UsageTracker] 3MF: no filament usage data in %s", file_path)
         return []
