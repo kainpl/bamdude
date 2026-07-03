@@ -73,13 +73,27 @@ def _resolve_printer_model(printer_model: str | None) -> str | None:
     return DISPLAY_NAME_TO_MODEL_CODE.get(printer_model)
 
 
-def _vp_to_dict(vp, status: dict | None = None) -> dict:
-    """Convert VirtualPrinter model to response dict."""
+async def _vp_to_dict(vp, db: AsyncSession, status: dict | None = None) -> dict:
+    """Convert VirtualPrinter model to response dict.
+
+    In proxy mode the surfaced serial is the target printer's actual serial
+    (what the bridge advertises over SSDP / what slicers see — see the manager's
+    ``is_proxy`` cert-subject path), not the self-generated suffix. Archive /
+    queue / file-manager modes keep the self-generated serial since those modes
+    never speak the target's identity. An orphaned target falls back to the
+    self-generated serial so the card still renders (#—, VP proxy identity).
+    """
+    from backend.app.models.printer import Printer
     from backend.app.services.virtual_printer import VIRTUAL_PRINTER_MODELS
     from backend.app.services.virtual_printer.manager import DEFAULT_VIRTUAL_PRINTER_MODEL, _get_serial_for_model
 
     model_code = vp.model or DEFAULT_VIRTUAL_PRINTER_MODEL
     serial = _get_serial_for_model(model_code, vp.serial_suffix)
+    if vp.mode == "proxy" and vp.target_printer_id:
+        result = await db.execute(select(Printer.serial_number).where(Printer.id == vp.target_printer_id))
+        target_serial = result.scalar_one_or_none()
+        if target_serial:
+            serial = target_serial
 
     return {
         "id": vp.id,
@@ -145,7 +159,7 @@ async def list_virtual_printers(
     for vp in vps:
         instance = virtual_printer_manager.get_instance(vp.id)
         status = instance.get_status() if instance else {"running": False, "pending_files": 0}
-        printers.append(_vp_to_dict(vp, status))
+        printers.append(await _vp_to_dict(vp, db, status))
 
     return {
         "printers": printers,
@@ -287,7 +301,7 @@ async def create_virtual_printer(
         except Exception as e:
             logger.error("Failed to start virtual printer after create: %s", e)
 
-    return _vp_to_dict(vp)
+    return await _vp_to_dict(vp, db)
 
 
 @router.get("/ca-certificate")
@@ -351,7 +365,7 @@ async def get_virtual_printer(
     instance = virtual_printer_manager.get_instance(vp.id)
     status = instance.get_status() if instance else {"running": False, "pending_files": 0}
 
-    return _vp_to_dict(vp, status)
+    return await _vp_to_dict(vp, db, status)
 
 
 @router.put("/{vp_id}")
@@ -537,7 +551,7 @@ async def update_virtual_printer(
     instance = virtual_printer_manager.get_instance(vp.id)
     status = instance.get_status() if instance else {"running": False, "pending_files": 0}
 
-    return _vp_to_dict(vp, status)
+    return await _vp_to_dict(vp, db, status)
 
 
 @router.delete("/{vp_id}")

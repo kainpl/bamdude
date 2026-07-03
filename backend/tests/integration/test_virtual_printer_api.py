@@ -370,3 +370,90 @@ class TestVirtualPrinterAutoQueueModeAPI:
         # auto_dispatch was true (default) — must remain true since auto_queue
         # is a valid combo with auto_dispatch=true.
         assert body["auto_dispatch"] is True
+
+
+class TestVirtualPrinterProxySerial:
+    """Proxy-mode VPs must surface the TARGET printer's serial in API responses.
+
+    The bridge advertises the target's serial over SSDP and forwards the same
+    serial, so the user should see one consistent identity per VP. Archive /
+    queue / file-manager VPs keep the self-generated suffix-based serial since
+    those modes never speak a target's identity (upstream #— / 7b4c5b3c)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_proxy_vp_response_uses_target_printer_serial(self, async_client: AsyncClient, printer_factory):
+        target = await printer_factory(name="Real X1C", access_code="REALCODE", serial_number="00M09A123456789")
+        create_resp = await async_client.post(
+            "/api/v1/virtual-printers",
+            json={
+                "name": "ProxyVP",
+                "mode": "proxy",
+                "access_code": "12345678",
+                "target_printer_id": target.id,
+            },
+        )
+        assert create_resp.status_code == 200
+        vp_id = create_resp.json()["id"]
+        assert create_resp.json()["serial"] == "00M09A123456789"
+
+        get_resp = await async_client.get(f"/api/v1/virtual-printers/{vp_id}")
+        assert get_resp.status_code == 200
+        assert get_resp.json()["serial"] == "00M09A123456789"
+
+        list_resp = await async_client.get("/api/v1/virtual-printers")
+        assert list_resp.status_code == 200
+        listed = next(p for p in list_resp.json()["printers"] if p["id"] == vp_id)
+        assert listed["serial"] == "00M09A123456789"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_non_proxy_vp_keeps_self_generated_serial(self, async_client: AsyncClient, printer_factory):
+        # print_queue / auto_queue / file_manager never advertise a target's
+        # identity to the slicer — they synthesise their own serial.
+        target = await printer_factory(name="Real X1C2", access_code="REALCODE", serial_number="00M09A987654321")
+        create_resp = await async_client.post(
+            "/api/v1/virtual-printers",
+            json={
+                "name": "QueueVP",
+                "mode": "print_queue",
+                "access_code": "12345678",
+                "target_printer_id": target.id,
+            },
+        )
+        assert create_resp.status_code == 200
+        assert create_resp.json()["serial"] != "00M09A987654321"
+        # Synthesised serial follows _get_serial_for_model's <prefix><suffix> shape.
+        assert len(create_resp.json()["serial"]) >= 8
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_proxy_vp_falls_back_to_self_generated_when_target_missing(
+        self, async_client: AsyncClient, printer_factory, db_session
+    ):
+        # Defensive fallback: a proxy VP whose target_printer_id no longer
+        # resolves must still render a card with the self-generated serial.
+        from backend.app.models.virtual_printer import VirtualPrinter
+
+        target = await printer_factory(name="Real X1C3", access_code="REALCODE", serial_number="00M09A555555555")
+        create_resp = await async_client.post(
+            "/api/v1/virtual-printers",
+            json={
+                "name": "OrphanProxyVP",
+                "mode": "proxy",
+                "access_code": "12345678",
+                "target_printer_id": target.id,
+            },
+        )
+        assert create_resp.status_code == 200
+        vp_id = create_resp.json()["id"]
+
+        # Orphan the target link directly (the create/update routes validate it).
+        vp = await db_session.get(VirtualPrinter, vp_id)
+        vp.target_printer_id = 999999
+        await db_session.commit()
+
+        get_resp = await async_client.get(f"/api/v1/virtual-printers/{vp_id}")
+        assert get_resp.status_code == 200
+        assert get_resp.json()["serial"] != "00M09A555555555"
+        assert len(get_resp.json()["serial"]) >= 8
