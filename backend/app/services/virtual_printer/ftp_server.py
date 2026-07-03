@@ -42,7 +42,7 @@ class FTPSession:
         access_code: str,
         ssl_context: ssl.SSLContext,
         on_file_received: Callable[[Path, str], None] | None,
-        passive_port_range: tuple[int, int] = (50000, 50100),
+        passive_port_range: tuple[int, int] = (50000, 51000),
         pasv_address: str = "",
         bind_address: str = "0.0.0.0",  # nosec B104
         vp_name: str = "",
@@ -574,8 +574,14 @@ class FTPSession:
 class VirtualPrinterFTPServer:
     """Implicit FTPS server that accepts uploads from slicers."""
 
+    # Passive-mode data port range. Widened from 50000-50100 (101 ports) to
+    # 50000-51000 (1001 ports) so concurrent transfers across multiple VPs that
+    # share the passive listener don't collide: 101 ports with ~10 VPs under
+    # load ran out; 1001 ports gives multi-VP setups headroom (upstream
+    # Bambuddy v0.2.4.5). Docker bridge-mode users must map the same range —
+    # see the commented ports entry in docker-compose.yml.
     PASSIVE_PORT_MIN = 50000
-    PASSIVE_PORT_MAX = 50100
+    PASSIVE_PORT_MAX = 51000
 
     def __init__(
         self,
