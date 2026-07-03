@@ -150,8 +150,10 @@ class TestVirtualPrinterInstance:
         with patch.object(instance, "_save_to_library", new_callable=AsyncMock) as mock_save:
             await instance.on_file_received(file_path, "192.168.1.100")
 
-            assert "test.3mf" in instance._pending_files
             mock_save.assert_called_once_with(file_path, "192.168.1.100")
+        # The pending-file marker is cleared in on_file_received's finally once
+        # handling completes (V16 leak fix) — it's only live during processing.
+        assert "test.3mf" not in instance._pending_files
 
     @pytest.mark.asyncio
     async def test_on_file_received_routes_to_print_queue(self, instance):
@@ -2460,3 +2462,33 @@ class TestSSDPProxyName:
         rewritten = ssdp_proxy_without_name._rewrite_ssdp(packet)
 
         assert b"DevName.bambu.com: RealPrinter - Proxy" in rewritten
+
+
+class TestSlicerPrintOptionsCap:
+    """on_print_command must bound _slicer_print_options (upstream v0.2.4.5)."""
+
+    def _pq_instance(self, tmp_path):
+        from backend.app.services.virtual_printer.manager import VirtualPrinterInstance
+
+        return VirtualPrinterInstance(
+            vp_id=1,
+            name="pq",
+            mode="print_queue",
+            model="C11",
+            access_code="12345678",
+            serial_suffix="391800099",
+            base_dir=tmp_path,
+        )
+
+    @pytest.mark.asyncio
+    async def test_cache_is_fifo_bounded(self, tmp_path):
+        from backend.app.services.virtual_printer.manager import _SLICER_OPTIONS_CACHE_LIMIT
+
+        inst = self._pq_instance(tmp_path)
+        for i in range(_SLICER_OPTIONS_CACHE_LIMIT + 20):
+            await inst.on_print_command(f"file_{i}.3mf", {"timelapse": True})
+
+        assert len(inst._slicer_print_options) == _SLICER_OPTIONS_CACHE_LIMIT
+        # Oldest evicted, newest retained.
+        assert "file_0.3mf" not in inst._slicer_print_options
+        assert f"file_{_SLICER_OPTIONS_CACHE_LIMIT + 19}.3mf" in inst._slicer_print_options

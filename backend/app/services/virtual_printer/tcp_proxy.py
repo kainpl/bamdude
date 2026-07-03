@@ -817,9 +817,28 @@ class FTPTLSProxy(TLSProxy):
     PASV_PORT_MIN = 50000
     PASV_PORT_MAX = 50100
 
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        # Pre-bind lifetime-coupled collections so ``stop()`` works even if
+        # called before ``start()`` finishes (rapid mode-switch races). These
+        # used to be first assigned inside ``start()``, so an early ``stop()``
+        # hit AttributeError and left sockets stranded (upstream v0.2.4.5).
+        self._data_servers: list[asyncio.Server] = []
+        self._auto_close_tasks: list[asyncio.Task] = []
+
     async def stop(self) -> None:
         """Stop proxy and clean up data connection servers."""
-        # Close all data servers first
+        # Cancel pending auto-close timeouts so they don't outlive the proxy
+        # holding a dead server reference. Without this, up to ~100 tasks
+        # lingered for ~60 s after stop(), each gripping a data-server ref, and
+        # under rapid mode-switch the ports stayed bound long enough to fail the
+        # next start() (upstream v0.2.4.5).
+        for task in list(self._auto_close_tasks):
+            task.cancel()
+        if self._auto_close_tasks:
+            await asyncio.gather(*self._auto_close_tasks, return_exceptions=True)
+        self._auto_close_tasks.clear()
+        # Close all data servers
         for server in list(self._data_servers):
             try:
                 server.close()
@@ -831,7 +850,8 @@ class FTPTLSProxy(TLSProxy):
 
     async def start(self) -> None:
         """Start the FTP TLS proxy."""
-        self._data_servers: list[asyncio.Server] = []
+        self._data_servers.clear()
+        self._auto_close_tasks.clear()
         await super().start()
 
     async def _handle_client(
@@ -1413,7 +1433,11 @@ class FTPTLSProxy(TLSProxy):
                 if server in self._data_servers:
                     self._data_servers.remove(server)
 
-        asyncio.create_task(auto_close(), name=f"ftp_data_timeout_{port}")
+        # Track the auto-close task so stop() can cancel it; otherwise the 60 s
+        # timeout would hold a server reference past proxy teardown.
+        ac_task = asyncio.create_task(auto_close(), name=f"ftp_data_timeout_{port}")
+        self._auto_close_tasks.append(ac_task)
+        ac_task.add_done_callback(lambda t, tasks=self._auto_close_tasks: tasks.remove(t) if t in tasks else None)
 
         logger.debug("FTP data proxy: port %s → %s:%s", port, printer_ip, printer_port)
 

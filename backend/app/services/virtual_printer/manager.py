@@ -94,6 +94,13 @@ DISPLAY_NAME_TO_MODEL_CODE = {v: k for k, v in VIRTUAL_PRINTER_MODELS.items()}
 # Default model
 DEFAULT_VIRTUAL_PRINTER_MODEL = "BL-P001"  # X1C
 
+# Bound on the per-instance ``_slicer_print_options`` cache. Each print_queue
+# ``project_file`` command stashes one entry keyed by filename; the queue path
+# pops it on consume, but a project_file whose file is never uploaded/queued
+# (slicer cancels, filename mismatch) would linger forever. FIFO-evict the
+# oldest when over the cap so the dict stays bounded (upstream v0.2.4.5).
+_SLICER_OPTIONS_CACHE_LIMIT = 128
+
 
 def _get_serial_for_model(model: str, serial_suffix: str) -> str:
     """Get serial number for the given model and suffix."""
@@ -279,6 +286,12 @@ class VirtualPrinterInstance:
             else:
                 await self._save_to_library(file_path, source_ip)
         finally:
+            # Drop the pending-file marker here so it's cleared for every mode
+            # even if the handler raised partway through — the scattered per-path
+            # pops inside the handlers missed the exception paths, leaking Path
+            # refs into ``_pending_files`` (inflating the status counter) until a
+            # later successful upload of the same name (upstream v0.2.4.5).
+            self._pending_files.pop(file_path.name, None)
             # Always resolve the upload state machine to a terminal state, in a
             # ``finally`` so it runs for every mode and even if a handler raised
             # — otherwise the ``PREPARE`` set by the slicer's ``project_file``
@@ -317,6 +330,13 @@ class VirtualPrinterInstance:
         logger.info("[VP %s] Print command for: %s", self.name, filename)
         if self.mode != "print_queue":
             return
+        # FIFO-evict the oldest entry when at the cap so a stream of
+        # never-consumed project_file captures can't grow unbounded. Dicts
+        # preserve insertion order, so iter() yields the oldest key first.
+        while len(self._slicer_print_options) >= _SLICER_OPTIONS_CACHE_LIMIT:
+            stale_key = next(iter(self._slicer_print_options))
+            self._slicer_print_options.pop(stale_key, None)
+            self._slicer_print_options_events.pop(stale_key, None)
         self._slicer_print_options[filename] = dict(data)
         event = self._slicer_print_options_events.get(filename)
         if event:
@@ -829,7 +849,11 @@ class VirtualPrinterInstance:
                         for meta in plate.findall("metadata"):
                             if meta.get("key") == "index" and meta.get("value"):
                                 return int(meta.get("value"))
-        except Exception:
+        except Exception as e:
+            # Log at debug rather than swallowing silently — a malformed 3MF
+            # otherwise produced a wrong-plate dispatch with no diagnostic trail
+            # in the support bundle (upstream Bambuddy v0.2.4.5).
+            logger.debug("[VP] _extract_plate_id failed for %s: %s", file_path.name, e)
             return None
         return None
 
