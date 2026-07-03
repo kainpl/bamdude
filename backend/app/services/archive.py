@@ -13,6 +13,7 @@ from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import settings
+from backend.app.core.tasks import spawn_background_task
 from backend.app.models.archive import PrintArchive
 from backend.app.models.printer import Printer
 from backend.app.utils.safe_path import PathTraversalError, safe_join_under
@@ -2615,7 +2616,7 @@ class ArchiveService:
 
         # For non-MP4 videos (e.g. AVI from P1S), kick off background conversion
         if not filename.lower().endswith(".mp4"):
-            asyncio.create_task(
+            spawn_background_task(
                 _convert_timelapse_to_mp4(archive_id, timelapse_file),
                 name=f"timelapse-convert-{archive_id}",
             )

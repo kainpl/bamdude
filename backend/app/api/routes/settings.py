@@ -15,6 +15,7 @@ from backend.app.core.auth import RequirePermission, get_current_user_optional, 
 from backend.app.core.config import settings as app_settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.core.tasks import spawn_background_task
 from backend.app.models.settings import Settings
 from backend.app.models.user import User
 from backend.app.schemas.settings import AppSettings, AppSettingsUpdate
@@ -194,11 +195,9 @@ async def update_settings(
 
     # Opt-out: when telemetry is turned off, ask the relay to erase this install.
     if update_data.get("telemetry_enabled") is False:
-        import asyncio
-
         from backend.app.services.telemetry import forget_telemetry
 
-        asyncio.create_task(forget_telemetry())
+        spawn_background_task(forget_telemetry(), name="forget-telemetry")
 
     # If log retention changed, push the new value into the live
     # rotating-file handler so the next midnight rotation honours it

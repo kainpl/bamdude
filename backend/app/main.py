@@ -73,6 +73,7 @@ from backend.app.api.routes.maintenance import _get_printer_maintenance_internal
 from backend.app.api.routes.support import init_debug_logging
 from backend.app.core.config import APP_VERSION, settings as app_settings
 from backend.app.core.database import async_session, engine, init_db
+from backend.app.core.tasks import spawn_background_task
 from backend.app.core.websocket import ws_manager
 from backend.app.models.smart_plug import SmartPlug
 from backend.app.services.archive import ArchiveService, resolve_display_stem
@@ -4336,7 +4337,10 @@ async def on_print_complete(printer_id: int, data: dict):
                                                 "Failed to power off printer %s via smart plug '%s'", pid, p.name
                                             )
 
-                        asyncio.create_task(cooldown_and_poweroff(printer_id, [p.id for p in enabled_plugs]))
+                        spawn_background_task(
+                            cooldown_and_poweroff(printer_id, [p.id for p in enabled_plugs]),
+                            name=f"cooldown-poweroff-{printer_id}",
+                        )
 
                 # Auto-cleanup: completed queue items now live on via their
                 # linked archive (counters re-computed from print_archives
@@ -4929,7 +4933,7 @@ async def on_print_complete(printer_id: int, data: dict):
             logger.warning("[PHOTO-BG] Failed: %s", e)
             return None
 
-    asyncio.create_task(_background_energy_calculation())
+    spawn_background_task(_background_energy_calculation(), name="finish-energy-calc")
     # Photo capture task - result will be used by notifications
     photo_task = asyncio.create_task(_background_finish_photo())
     log_timing("Background tasks scheduled (energy, photo)")
@@ -5111,8 +5115,8 @@ async def on_print_complete(printer_id: int, data: dict):
         except Exception as e:
             logger.warning("[MAINT-BG] Failed: %s", e)
 
-    asyncio.create_task(_background_smart_plug())
-    asyncio.create_task(_background_maintenance_check())
+    spawn_background_task(_background_smart_plug(), name="finish-smart-plug")
+    spawn_background_task(_background_maintenance_check(), name="finish-maintenance-check")
 
     # Notification task waits for photo capture to complete first (with timeout)
     async def _photo_then_notify():
@@ -5130,7 +5134,7 @@ async def on_print_complete(printer_id: int, data: dict):
         except Exception as e:
             logger.error("[PHOTO-NOTIFY] Notification sending failed: %s", e, exc_info=True)
 
-    asyncio.create_task(_photo_then_notify())
+    spawn_background_task(_photo_then_notify(), name="finish-photo-notify")
 
     # Stitch external camera layer timelapse if session was active
     print_status = data.get("status", "completed")
@@ -5169,7 +5173,7 @@ async def on_print_complete(printer_id: int, data: dict):
             except Exception:
                 pass  # Best-effort timelapse session cancellation on error
 
-    asyncio.create_task(_background_layer_timelapse())
+    spawn_background_task(_background_layer_timelapse(), name="finish-layer-timelapse")
 
     log_timing("All background tasks scheduled")
 
@@ -5179,7 +5183,9 @@ async def on_print_complete(printer_id: int, data: dict):
         # Schedule timelapse scan as background task with retries
         # The printer needs time to encode the video after print completion
         baseline = _timelapse_baselines.pop(printer_id, None)
-        asyncio.create_task(_scan_for_timelapse_with_retries(archive_id, baseline))
+        spawn_background_task(
+            _scan_for_timelapse_with_retries(archive_id, baseline), name=f"timelapse-scan-{archive_id}"
+        )
         log_timing("Timelapse scan scheduled")
 
     # Arm the plate-clear gate if the printer is configured to require it
@@ -5819,11 +5825,11 @@ async def lifespan(app: FastAPI):
                 logging.warning("Failed to auto-connect to Spoolman: %s", e)
 
     # Start the print scheduler
-    asyncio.create_task(print_scheduler.run())
+    spawn_background_task(print_scheduler.run(), name="print-scheduler")
 
     # Start the auto-queue scheduler — routes pending auto items to idle
     # printers; assignment hands off to print_scheduler/background_dispatch.
-    asyncio.create_task(auto_queue_scheduler.run())
+    spawn_background_task(auto_queue_scheduler.run(), name="auto-queue-scheduler")
 
     # Start background dispatch worker for send/start operations
     await background_dispatch.start()
@@ -5834,7 +5840,7 @@ async def lifespan(app: FastAPI):
     # requests immediately.
     from backend.app.services.archive_download_retry import archive_download_retry
 
-    asyncio.create_task(archive_download_retry.start())
+    spawn_background_task(archive_download_retry.start(), name="archive-download-retry")
 
     # Stagger-slot reconciliation: scan printers after MQTT reconnect and
     # register slots for any that are actively heating (PREPARE/RUNNING
@@ -5849,7 +5855,7 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logging.getLogger(__name__).warning("Stagger startup reconciliation failed: %s", e)
 
-    asyncio.create_task(_reconcile_stagger_on_startup())
+    spawn_background_task(_reconcile_stagger_on_startup(), name="reconcile-stagger-startup")
 
     # Locale reconciliation: if the system language setting has drifted from
     # what's seeded in `maintenance_types` / `notification_templates` (e.g.
@@ -5889,7 +5895,7 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logging.getLogger(__name__).warning("Locale startup reconciliation failed: %s", e)
 
-    asyncio.create_task(_reconcile_locale_on_startup())
+    spawn_background_task(_reconcile_locale_on_startup(), name="reconcile-locale-startup")
 
     # Start the smart plug scheduler for time-based on/off
     smart_plug_manager.start_scheduler()

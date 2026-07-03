@@ -16,6 +16,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.app.core.config import settings
 from backend.app.core.database import async_session
+from backend.app.core.tasks import spawn_background_task
 from backend.app.models.archive import PrintArchive
 from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
@@ -1775,7 +1776,7 @@ class PrintScheduler:
         # (matches the direct-print path through ``_dispatcher_loop``). The
         # caller's ``db`` is the check_queue tick session — the spawned task
         # opens its own.
-        asyncio.create_task(
+        spawn_background_task(
             self._dispatch_and_finalize(
                 queue_item_id=item.id,
                 printer_id=printer.id,
@@ -1892,7 +1893,7 @@ class PrintScheduler:
             self._mark_printer_dispatched(printer_id, _pre_state, _pre_subtask_id)
 
             if _pre_state:
-                asyncio.create_task(
+                spawn_background_task(
                     self._watchdog_print_start(
                         queue_item_id,
                         printer_id,
@@ -1900,7 +1901,8 @@ class PrintScheduler:
                         _pre_subtask_id,
                         swap_start_fired="swap_mode_start" in swap_events,
                         pre_gcode_file=_pre_gcode_file,
-                    )
+                    ),
+                    name=f"watchdog-print-start-{queue_item_id}",
                 )
 
             # Estimated time for the notification — read from the archive row

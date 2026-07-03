@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 
+from backend.app.core.tasks import spawn_background_task
 from backend.app.models.macro import Macro
 from backend.app.models.printer import Printer
 from backend.app.services.macro_executor import dispatch_mqtt_action
@@ -111,4 +112,4 @@ async def fire_event_macros(
         [m.name for m in matched],
     )
     for macro in matched:
-        asyncio.create_task(_run_one(macro, client))
+        spawn_background_task(_run_one(macro, client), name=f"macro-trigger-{macro.id}")

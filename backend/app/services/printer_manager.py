@@ -9,6 +9,7 @@ from collections.abc import Callable
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.core.tasks import spawn_background_task
 from backend.app.models.printer import Printer
 from backend.app.services.bambu_mqtt import BambuMQTTClient, MQTTLogEntry, PrinterState, get_stage_name
 
@@ -551,7 +552,10 @@ class PrinterManager:
             try:
                 from backend.app.services.archive_download_retry import archive_download_retry
 
-                asyncio.create_task(archive_download_retry.retry_printer_archives(printer_id))
+                spawn_background_task(
+                    archive_download_retry.retry_printer_archives(printer_id),
+                    name=f"retry-printer-archives-{printer_id}",
+                )
             except Exception as e:
                 logger.debug("Failed to schedule 3MF retry on printer %s connect: %s", printer_id, e)
 

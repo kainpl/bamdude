@@ -1,6 +1,5 @@
 """API routes for File Manager (Library) functionality."""
 
-import asyncio
 import base64
 import binascii
 import contextlib
@@ -29,6 +28,7 @@ from backend.app.core.auth import (
 from backend.app.core.config import settings as app_settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.core.tasks import spawn_background_task
 from backend.app.models.archive import PrintArchive
 from backend.app.models.library import LibraryFile, LibraryFolder
 from backend.app.models.library_project_links import library_file_projects, library_folder_projects
@@ -1297,7 +1297,7 @@ async def create_external_folder(
 async def _backfill_external_mesh_thumbnails(folder_ids: list[int]) -> None:
     """Generate STL / OBJ thumbnails for an external folder tree in the background.
 
-    Spawned via ``asyncio.create_task`` from ``scan_external_folder`` so the
+    Spawned via ``spawn_background_task`` from ``scan_external_folder`` so the
     HTTP request can return as soon as the filesystem walk + folder / file
     rows are committed. Thumbnails for thousands of mesh files would
     otherwise hold the request open for many minutes (each file triggers a
@@ -1616,7 +1616,7 @@ async def scan_external_folder(
     # Fire-and-forget like the other route-level background scans
     # (discovery / tasmota); the task opens its own session and the
     # autouse leaked-task drain handles it in tests (#1299).
-    asyncio.create_task(  # noqa: RUF006 — fire-and-forget backfill, see comment above
+    spawn_background_task(
         _backfill_external_mesh_thumbnails(list(set(folder_cache.values()))),
         name=f"mesh-backfill-folder-{folder_id}",
     )

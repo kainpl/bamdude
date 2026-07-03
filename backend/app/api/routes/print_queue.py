@@ -17,6 +17,7 @@ from backend.app.core.auth import RequirePermission, require_ownership_permissio
 from backend.app.core.config import settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.core.tasks import spawn_background_task
 from backend.app.models.archive import PrintArchive
 from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
@@ -773,8 +774,6 @@ async def stop_queue_item(
     _: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
 ):
     """Stop an actively printing queue item."""
-    import asyncio
-
     from backend.app.models.smart_plug import SmartPlug
     from backend.app.services.printer_manager import printer_manager
     from backend.app.services.tasmota import tasmota_service
@@ -859,7 +858,7 @@ async def stop_queue_item(
                     logger.info("Auto-off: Powering off printer %s", printer_id)
                     await tasmota_service.turn_off(plug)
 
-        asyncio.create_task(cooldown_and_poweroff())
+        spawn_background_task(cooldown_and_poweroff(), name=f"cooldown-poweroff-{printer_id}")
 
     return {"message": "Print stopped" if stop_sent else "Queue item cancelled (printer was offline)"}
 
