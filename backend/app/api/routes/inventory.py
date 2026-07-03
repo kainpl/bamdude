@@ -147,9 +147,16 @@ async def apply_spool_to_slot_via_mqtt(
     sf = spool.slicer_filament or ""
 
     if sf:
-        # Check if it's a cloud preset (GFS*, PFUS*, or GF* official)
+        # Cloud-side preset IDs come in three known shapes:
+        #   GFS…   — Bambu official cloud preset
+        #   PFUS…  — cloud user-created preset
+        #   PFCN…  — cloud shared / partner preset (e.g. Polymaker's "(Custom)"
+        #            Bambu Lab H2D variants, #1648)
+        # All three need a cloud-detail lookup to extract the underlying
+        # filament_id; without it the raw cloud id lands in tray_info_idx and
+        # the printer's calibration table can't resolve it (slicer shows "unknown").
         base_sf = sf.split("_")[0] if "_" in sf else sf
-        if base_sf.startswith("GFS") or base_sf.startswith("PFUS"):
+        if base_sf.startswith("GFS") or base_sf.startswith("PFUS") or base_sf.startswith("PFCN"):
             # Cloud setting_id — resolve real filament_id via cloud API
             setting_id = base_sf
             try:
@@ -272,9 +279,15 @@ async def apply_spool_to_slot_via_mqtt(
     #      — overwriting the correctly-configured slot from the original
     #      assign (upstream Bambuddy #1387 / commit dd3e3f80).
     # Valid ``tray_info_idx`` values: "GF" + letter + digits (Bambu
-    # official) or "P" followed by hex (user/local presets, NOT "PFUS").
+    # official) or "P" followed by hex (user/local presets, NOT "PFUS" or
+    # "PFCN" — those are cloud shared/partner presets, e.g. Polymaker's
+    # "(Custom)" H2D variants, #1648, and have the same unresolvable shape).
     _known_materials = set(MATERIAL_TEMPS.keys()) | set(_GENERIC_FILAMENT_IDS.keys())
-    if tray_info_idx and (tray_info_idx.upper() in _known_materials or tray_info_idx.startswith("PFUS")):
+    if tray_info_idx and (
+        tray_info_idx.upper() in _known_materials
+        or tray_info_idx.startswith("PFUS")
+        or tray_info_idx.startswith("PFCN")
+    ):
         tray_info_idx = ""
         setting_id = ""
 
@@ -285,6 +298,7 @@ async def apply_spool_to_slot_via_mqtt(
             current_tray_info_idx
             and current_tray_info_idx not in _generic_id_values
             and not current_tray_info_idx.startswith("PFUS")
+            and not current_tray_info_idx.startswith("PFCN")
             and current_tray_info_idx.upper() not in _known_materials
             and current_tray_type
             and current_tray_type.upper() == (tray_type or "").upper()

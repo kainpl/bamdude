@@ -120,6 +120,40 @@ class TestAssignSpoolTrayInfoIdx:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_pfcn_slicer_filament_discarded_falls_back_to_generic(
+        self, async_client: AsyncClient, printer_factory, spool_factory
+    ):
+        """PFCN* is a third cloud-preset shape alongside GFS/PFUS — Polymaker's
+        "(Custom)" Bambu Lab H2D variants ship it (#1648). Like PFUS it is not a
+        valid tray_info_idx, so with no cloud realignment it must be discarded and
+        an empty slot falls back to the generic id for the spool's material. The
+        pre-#1648 bug leaked the raw PFCN, which the slicer can't resolve."""
+        printer = await printer_factory(name="H2D")
+        spool = await spool_factory(slicer_filament="PFCN80e80c1f79db85", material="PLA")
+
+        mock_client = MagicMock()
+        mock_client.ams_set_filament_setting.return_value = True
+        mock_client.extrusion_cali_sel.return_value = True
+
+        status = _make_mock_status(ams_data=[{"id": 2, "tray": [{"id": 3, "tray_info_idx": "", "tray_type": "PLA"}]}])
+
+        with patch("backend.app.services.printer_manager.printer_manager") as mock_pm:
+            mock_pm.get_client.return_value = mock_client
+            mock_pm.get_status.return_value = status
+
+            response = await async_client.post(
+                "/api/v1/inventory/assignments",
+                json={"spool_id": spool.id, "printer_id": printer.id, "ams_id": 2, "tray_id": 3},
+            )
+
+            assert response.status_code == 200
+            call_kwargs = mock_client.ams_set_filament_setting.call_args
+            # PFCN never leaks into tray_info_idx — resolves to the generic id.
+            assert not call_kwargs.kwargs["tray_info_idx"].startswith("PFCN")
+            assert call_kwargs.kwargs["tray_info_idx"] == "GFL99"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_pfus_discarded_reuses_slot_specific_preset(
         self, async_client: AsyncClient, printer_factory, spool_factory
     ):
