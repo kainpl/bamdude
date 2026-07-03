@@ -2734,7 +2734,9 @@ export function ArchivesPage() {
 
   const timeFormat: TimeFormat = settings?.time_format || 'system';
   const dateFormat: DateFormat = settings?.date_format || 'system';
-  const preferredSlicer: SlicerType = settings?.preferred_slicer || 'bambu_studio';
+  // Desktop "Open in Slicer" target — honours the open_in_slicer override,
+  // falling back to preferred_slicer (the API-sidecar slicer) when unset (#1329).
+  const preferredSlicer: SlicerType = settings?.open_in_slicer || settings?.preferred_slicer || 'bambu_studio';
   const currency = getCurrencySymbol(settings?.currency || 'USD');
 
   const bulkDeleteMutation = useMutation({

@@ -54,6 +54,30 @@ class TestSettingsAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_open_in_slicer_defaults_null_and_round_trips(self, async_client: AsyncClient):
+        """#1329: open_in_slicer defaults to null (inherit preferred_slicer), can be
+        set to a specific slicer, and resets back to null (serialized 'None' is
+        normalised back to a true null on GET)."""
+        # Default: inherit.
+        assert (await async_client.get("/api/v1/settings/")).json()["open_in_slicer"] is None
+
+        # Set an explicit desktop slicer independent of preferred_slicer.
+        resp = await async_client.put(
+            "/api/v1/settings/", json={"preferred_slicer": "bambu_studio", "open_in_slicer": "orcaslicer"}
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["open_in_slicer"] == "orcaslicer"
+        assert body["preferred_slicer"] == "bambu_studio"  # unchanged — the two are independent
+
+        # Reset to inherit: null must survive the "None" round-trip.
+        resp = await async_client.put("/api/v1/settings/", json={"open_in_slicer": None})
+        assert resp.status_code == 200
+        assert resp.json()["open_in_slicer"] is None
+        assert (await async_client.get("/api/v1/settings/")).json()["open_in_slicer"] is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_update_date_format(self, async_client: AsyncClient):
         """Verify date format can be updated."""
         response = await async_client.put("/api/v1/settings/", json={"date_format": "eu"})

@@ -42,7 +42,9 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
   const { t } = useTranslation();
   const { resolvedMode: themeMode } = useTheme();
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
-  const preferredSlicer: SlicerType = settings?.preferred_slicer || 'bambu_studio';
+  // Desktop "Open in Slicer" target — honours the open_in_slicer override,
+  // falling back to preferred_slicer (the API-sidecar slicer) when unset (#1329).
+  const preferredSlicer: SlicerType = settings?.open_in_slicer || settings?.preferred_slicer || 'bambu_studio';
   const isLibrary = libraryFileId != null;
   const [activeTab, setActiveTab] = useState<ViewTab | null>(null);
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null);

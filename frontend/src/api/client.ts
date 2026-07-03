@@ -1386,8 +1386,10 @@ export interface AppSettings {
   library_all_files_recursive: boolean;
   // Camera view settings
   camera_view_mode: 'window' | 'embedded';
-  // Preferred slicer
+  // Preferred slicer (server-side / API sidecar)
   preferred_slicer: 'bambu_studio' | 'orcaslicer';
+  // Desktop "Open in Slicer" override — null inherits from preferred_slicer (#1329)
+  open_in_slicer?: 'bambu_studio' | 'orcaslicer' | null;
   // Server-side slicing (B.4): when true, the SliceModal entry points
   // appear in the file manager and archive context menus and the backend
   // dispatches via the configured sidecar URL below.

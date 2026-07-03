@@ -1861,6 +1861,10 @@ export default {
     embeddedOverlay: 'Embedded Overlay',
     preferredSlicer: 'Preferred Slicer',
     preferredSlicerDescription: 'Choose which slicer application to open files with',
+    openInSlicerLabel: 'Open in Slicer',
+    openInSlicerInherit: 'Same as API slicer',
+    openInSlicerDescription:
+      "Desktop slicer used by the 'Open in Slicer' button. Leave on 'Same as API slicer' to inherit, or pick a different slicer to use locally.",
     externalCameras: 'External Cameras',
     costTracking: 'Cost Tracking',
     printsOnly: 'Prints Only',

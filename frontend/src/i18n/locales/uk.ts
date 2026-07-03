@@ -1875,6 +1875,10 @@ export default {
     embeddedOverlay: 'Вбудоване накладання',
     preferredSlicer: 'Бажаний слайсер',
     preferredSlicerDescription: 'Оберіть слайсер для відкриття файлів',
+    openInSlicerLabel: 'Відкрити у слайсері',
+    openInSlicerInherit: 'Як у API-слайсері',
+    openInSlicerDescription:
+      'Слайсер на комп’ютері для кнопки «Відкрити у слайсері». Залиште «Як у API-слайсері», щоб успадкувати, або оберіть інший слайсер для локального відкриття.',
     externalCameras: 'Зовнішні камери',
     costTracking: 'Відстеження витрат',
     printsOnly: 'Лише друки',

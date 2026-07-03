@@ -139,6 +139,11 @@ async def get_settings(
             elif setting.key == "default_printer_id":
                 # Handle nullable integer
                 settings_dict[setting.key] = int(setting.value) if setting.value and setting.value != "None" else None
+            elif setting.key == "open_in_slicer":
+                # None means "inherit from preferred_slicer" (#1329). The PUT path
+                # serializes None as the literal string "None"; strip it back so
+                # the frontend sees a true null and falls back as intended.
+                settings_dict[setting.key] = setting.value if setting.value and setting.value != "None" else None
             else:
                 settings_dict[setting.key] = setting.value
 

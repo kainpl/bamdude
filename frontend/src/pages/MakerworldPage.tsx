@@ -234,10 +234,17 @@ export function MakerworldPage() {
   // directly to a printer. The "slice in slicer" action below imports the
   // 3MF and hands it to the user's configured slicer; from there the
   // slicer's own "send to printer" flow takes over.
-  const preferredSlicer: SlicerType = settingsQuery.data?.preferred_slicer || 'bambu_studio';
+  const useSlicerApi = settingsQuery.data?.use_slicer_api ?? false;
+  // API-sidecar slicer (in-app SliceModal) is preferred_slicer; the desktop
+  // "Open in Slicer" handoff respects the open_in_slicer override, falling
+  // back to preferred_slicer when unset (#1329). preferredSlicer follows
+  // whichever the button actually dispatches so the "Slice in {{slicer}}"
+  // label matches the action.
+  const apiSlicer: SlicerType = settingsQuery.data?.preferred_slicer || 'bambu_studio';
+  const desktopSlicer: SlicerType = settingsQuery.data?.open_in_slicer || apiSlicer;
+  const preferredSlicer: SlicerType = useSlicerApi ? apiSlicer : desktopSlicer;
   const preferredSlicerName =
     preferredSlicer === 'orcaslicer' ? 'OrcaSlicer' : 'Bambu Studio';
-  const useSlicerApi = settingsQuery.data?.use_slicer_api ?? false;
 
   // Slice-via-API modal source. When set, the SliceModal is shown for the
   // referenced library file; it covers MakerWorld's "Slice in <Slicer>" /
