@@ -253,6 +253,14 @@ pip install -r requirements.txt
 uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
 ```
 
+**Windows (native):** run the guided installer in PowerShell — it installs Git + Python via `winget`, sets up a venv, and can register BamDude as a Windows Service:
+
+```powershell
+powershell -ExecutionPolicy Bypass -Command "iwr -useb https://raw.githubusercontent.com/kainpl/bamdude/main/install/windows-installer.ps1 -OutFile windows-installer.ps1; .\windows-installer.ps1"
+```
+
+See [`install/README.md`](install/README.md#windows-installerps1-windows-1011) for options.
+
 ### Upgrading or migrating
 
 Full manual: **<https://docs.bamdude.top/getting-started/upgrading/>** ([source](https://github.com/kainpl/docs.bamdude.top)) — covers migration from Bambuddy 2.2.2, from Bambuddy-HE / BamDude 0.2.x, routine BamDude-to-BamDude updates, switching between self-install / Docker / GHCR, and rollback.

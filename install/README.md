@@ -18,6 +18,11 @@ curl -fsSL https://raw.githubusercontent.com/kainpl/bamdude/main/install/docker-
 curl -fsSL https://raw.githubusercontent.com/kainpl/bamdude/main/install/install.sh -o install.sh && chmod +x install.sh && ./install.sh
 ```
 
+**Windows:** run in PowerShell (the script elevates itself to Administrator if needed):
+```powershell
+powershell -ExecutionPolicy Bypass -Command "iwr -useb https://raw.githubusercontent.com/kainpl/bamdude/main/install/windows-installer.ps1 -OutFile windows-installer.ps1; .\windows-installer.ps1"
+```
+
 ---
 
 ## Scripts Overview
@@ -25,6 +30,7 @@ curl -fsSL https://raw.githubusercontent.com/kainpl/bamdude/main/install/install
 | Script | Platform | Method |
 |--------|----------|--------|
 | `install.sh` | Linux, macOS | Native (Python venv) |
+| `windows-installer.ps1` | Windows 10/11 | Native (Python venv + NSSM service) |
 | `docker-install.sh` | Linux, macOS | Docker |
 | `update.sh` | Linux (systemd) | Native update helper |
 
@@ -69,6 +75,39 @@ Installs BamDude with Python virtual environment and optional systemd/launchd se
 
 # Skip service setup
 ./install.sh --no-service -y
+```
+
+### `windows-installer.ps1` (Windows 10/11)
+
+Installs BamDude natively on Windows: installs Git and Python 3.10+ via `winget` if
+missing, clones the repo, creates a Python venv, installs `requirements.txt`, writes
+`Start-BamDude.ps1`, optionally adds a Windows Firewall rule, and optionally registers
+BamDude as a Windows Service via NSSM. User data and logs live outside the Git checkout
+(`<InstallDir>\data`, `<InstallDir>\logs`) so in-app git updates never touch them.
+
+The script relaunches itself elevated (Administrator) when required.
+
+**Options:**
+```
+-InstallDir PATH   Installation directory (default: C:\BamDude)
+-Port PORT         Port to listen on (default: 8000)
+-LocalOnly         Bind to 127.0.0.1 only (default: expose on LAN, 0.0.0.0)
+-NoService         Skip Windows Service registration
+-NoStart           Do not start BamDude after install
+-Yes               Non-interactive mode, accept defaults
+-Silent            Non-interactive with reduced console output
+```
+
+**Examples:**
+```powershell
+# Interactive installation
+.\windows-installer.ps1
+
+# Unattended, custom path + port, local-only
+.\windows-installer.ps1 -InstallDir D:\BamDude -Port 3000 -LocalOnly -Yes
+
+# Install without registering a service
+.\windows-installer.ps1 -NoService -Yes
 ```
 
 ---
@@ -145,6 +184,15 @@ sudo journalctl -u bamdude -f    # View logs
 launchctl list | grep bamdude                              # Check status
 launchctl load ~/Library/LaunchAgents/com.bamdude.app.plist    # Start
 launchctl unload ~/Library/LaunchAgents/com.bamdude.app.plist  # Stop
+```
+
+**Windows (Service):**
+```powershell
+Get-Service BamDude          # Check status
+Start-Service BamDude        # Start
+Stop-Service BamDude         # Stop
+Restart-Service BamDude      # Restart
+# Or run without a service:  powershell -ExecutionPolicy Bypass -File "C:\BamDude\Start-BamDude.ps1"
 ```
 
 **Docker:**
