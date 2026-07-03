@@ -8,13 +8,14 @@ import {
   Search, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight,
   TrendingDown, Layers, Printer, AlertTriangle, X, Clock, LayoutGrid, TableProperties, Columns,
   ArrowUp, ArrowDown, ArrowUpDown, Group, ChevronDown, Check, RefreshCw, Disc3, Copy, Eraser,
-  TrendingUp, Lock, Sparkles,
+  TrendingUp, Lock, Sparkles, Upload, Download,
 } from 'lucide-react';
 import { ForecastPanel } from '../components/ForecastPanel';
 import { api, ApiError } from '../api/client';
 import type { InventorySpool, SpoolAssignment, SpoolCatalogEntry } from '../api/client';
 import { Button } from '../components/Button';
 import { SpoolFormModal, type SpoolFormMode } from '../components/SpoolFormModal';
+import { SpoolCsvImportModal } from '../components/SpoolCsvImportModal';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { ColumnConfigModal, type ColumnConfig } from '../components/ColumnConfigModal';
 import { LabelTemplatePickerModal } from '../components/LabelTemplatePickerModal';
@@ -693,6 +694,25 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   const dateFormat: DateFormat = settings?.date_format || 'system';
   const spoolDisplayTemplate = settings?.spool_display_template || DEFAULT_SPOOL_DISPLAY_TEMPLATE;
 
+  // CSV import/export (#1576). Local inventory only — disabled in Spoolman mode
+  // (Spoolman owns the data store and has its own CSV import/export there).
+  const [csvImportOpen, setCsvImportOpen] = useState(false);
+  const [exportingCsv, setExportingCsv] = useState(false);
+  const handleExportCsv = useCallback(async () => {
+    setExportingCsv(true);
+    try {
+      await api.exportSpoolsCsv();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : t('inventory.csv.exportError', 'Export failed'), 'error');
+    } finally {
+      setExportingCsv(false);
+    }
+  }, [showToast, t]);
+  // Tooltip on both CSV buttons when they're disabled in Spoolman mode.
+  const spoolmanCsvHint = spoolmanMode
+    ? t('inventory.csv.spoolmanHint', 'In Spoolman mode, use Spoolman\'s built-in CSV import/export.')
+    : undefined;
+
   // Query key and fetch function differ based on data source
   const spoolsQueryKey = spoolmanMode ? ['spoolman-inventory-spools'] : ['inventory-spools'];
   const { data: spools, isLoading } = useQuery({
@@ -1346,6 +1366,18 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
           >
             <Printer className="w-4 h-4" />
             {t('inventory.labels.printLabels')}
+          </Button>
+          {/* CSV import/export (#1576). Operates on BamDude's local inventory.
+              In Spoolman mode the buttons stay visible (feature parity) but are
+              disabled with a hint pointing at Spoolman's own CSV export, since
+              Spoolman owns the data store in that mode. */}
+          <Button variant="secondary" disabled={spoolmanMode} onClick={() => setCsvImportOpen(true)} title={spoolmanCsvHint}>
+            <Upload className="w-4 h-4" />
+            {t('inventory.csv.importButton', 'Import CSV')}
+          </Button>
+          <Button variant="secondary" disabled={spoolmanMode || exportingCsv} onClick={handleExportCsv} title={spoolmanCsvHint}>
+            {exportingCsv ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+            {t('inventory.csv.exportButton', 'Export CSV')}
           </Button>
           <Button onClick={() => setFormModal({ spool: null, mode: 'create' })}>
             <Plus className="w-4 h-4" />
@@ -2119,6 +2151,18 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
           currencySymbol={currencySymbol}
           spoolmanMode={spoolmanMode}
           spoolsQueryKey={spoolsQueryKey}
+        />
+      )}
+
+      {/* CSV import modal (#1576) */}
+      {csvImportOpen && (
+        <SpoolCsvImportModal
+          onClose={() => setCsvImportOpen(false)}
+          onImported={(created) => {
+            setCsvImportOpen(false);
+            queryClient.invalidateQueries({ queryKey: spoolsQueryKey });
+            showToast(t('inventory.csv.importSuccess', '{{count}} spools imported', { count: created }), 'success');
+          }}
         />
       )}
 

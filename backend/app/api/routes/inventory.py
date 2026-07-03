@@ -2,8 +2,8 @@ import json
 import logging
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,6 +34,13 @@ from backend.app.schemas.spool import (
     SpoolUpdate,
 )
 from backend.app.schemas.spool_usage import SpoolUsageHistoryResponse
+from backend.app.services.spool_csv import (
+    MAX_CSV_IMPORT_BYTES,
+    ImportPreview,
+    ImportResult,
+    parse_and_validate,
+    serialize,
+)
 from backend.app.utils.filament_ids import filament_id_to_setting_id, normalize_slicer_filament
 from backend.app.utils.tag_normalization import normalize_tag_uid, normalize_tray_uuid
 
@@ -983,6 +990,95 @@ async def list_spools(
     query = query.order_by(Spool.material, Spool.brand, Spool.color_name)
     result = await db.execute(query)
     return list(result.scalars().all())
+
+
+# ── CSV import / export (#1576) ──────────────────────────────────────────────
+# Declared before the dynamic `/spools/{spool_id}` route below so the literal
+# `export` / `import` segments match here instead of being parsed as an int id.
+# Bounded read size for the CSV import body so a chunked upload with no
+# Content-Length can't stream past the cap into memory before we notice.
+_CSV_UPLOAD_CHUNK_BYTES = 64 * 1024
+
+
+@router.get("/spools/export")
+async def export_spools_csv(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.INVENTORY_READ),
+):
+    """Export the active inventory as CSV (same schema the importer accepts)."""
+    from datetime import datetime, timezone
+
+    query = select(Spool).where(Spool.archived_at.is_(None)).order_by(Spool.material, Spool.brand, Spool.color_name)
+    result = await db.execute(query)
+    spools = list(result.scalars().all())
+    content = serialize(spools)
+    # Date-stamp the filename so repeat exports don't overwrite each other in
+    # the browser's default download folder.
+    filename = f"bamdude_inventory_{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv"
+    return Response(
+        content=content,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/spools/import", response_model=ImportPreview | ImportResult)
+async def import_spools_csv(
+    file: UploadFile = File(...),
+    dry_run: bool = Query(False),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
+):
+    """Import spools from a CSV file.
+
+    With ``dry_run=true`` returns an ImportPreview (per-row valid/error/skipped,
+    colours resolved) and writes nothing — the UI shows this before the user
+    confirms. With ``dry_run=false`` it validates the same way and then persists
+    only the valid rows in a single transaction (invalid rows are skipped, the
+    user fixes the CSV and re-uploads), returning an ImportResult summary.
+    """
+
+    def _too_large() -> HTTPException:
+        return HTTPException(
+            status_code=413,
+            detail={
+                "code": "csv_import_too_large",
+                "message": f"CSV file exceeds the {MAX_CSV_IMPORT_BYTES // (1024 * 1024)} MB limit.",
+            },
+        )
+
+    # Reject by declared size first (fast path when Content-Length is set), then
+    # read in bounded chunks and bail the moment the accumulated body crosses the
+    # cap — file.size is None for chunked uploads, so the loop is what actually
+    # keeps an oversized stream from filling memory.
+    if file.size is not None and file.size > MAX_CSV_IMPORT_BYTES:
+        raise _too_large()
+    raw = bytearray()
+    while chunk := await file.read(_CSV_UPLOAD_CHUNK_BYTES):
+        raw.extend(chunk)
+        if len(raw) > MAX_CSV_IMPORT_BYTES:
+            raise _too_large()
+    preview = await parse_and_validate(bytes(raw), db)
+
+    if dry_run:
+        return preview
+
+    created = 0
+    for row in preview.rows:
+        if row.status == "valid" and row.spool is not None:
+            db.add(Spool(**row.spool))
+            created += 1
+
+    if created:
+        await db.commit()
+        await ws_manager.broadcast({"type": "inventory_changed"})
+
+    return ImportResult(
+        created=created,
+        skipped=preview.skipped_count,
+        errors=preview.error_count,
+        error_rows=[r for r in preview.rows if r.status == "error"],
+    )
 
 
 @router.get("/spools/{spool_id}", response_model=SpoolResponse)
