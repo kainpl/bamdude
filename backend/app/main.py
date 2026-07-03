@@ -5215,6 +5215,34 @@ _ams_alarm_cooldown: dict[str, datetime] = {}
 AMS_ALARM_COOLDOWN_MINUTES = 60  # Don't send same alarm more than once per hour
 
 
+def _ams_has_filament(ams_data: dict) -> bool:
+    """True if this AMS unit has at least one tray slot holding filament.
+
+    Bambu firmware reports loaded slots via ``tray_exist_bits``, a per-AMS hex
+    bitmap (one bit per tray slot — bit set = spool present). Empty AMS units
+    still report sensor readings, but those readings are ambient and not
+    actionable: no filament to dry, no humidity to push down. #1619 — gate
+    humidity / temperature alarms on this check so empty units don't generate
+    hourly noise. Sensor history still records regardless so the UI charts stay
+    continuous.
+
+    Fallback path inspects the ``tray`` array's ``tray_type`` fields for setups
+    where ``tray_exist_bits`` is missing (some early-connection pushall shapes).
+    """
+    bits = ams_data.get("tray_exist_bits")
+    if isinstance(bits, str) and bits.strip():
+        try:
+            return int(bits, 16) > 0
+        except ValueError:
+            pass
+    trays = ams_data.get("tray")
+    if isinstance(trays, list):
+        return any(
+            isinstance(t, dict) and isinstance(t.get("tray_type"), str) and t["tray_type"].strip() for t in trays
+        )
+    return False
+
+
 async def record_ams_history():
     """Background task to record AMS humidity and temperature data."""
     logger = logging.getLogger(__name__)
@@ -5304,6 +5332,16 @@ async def record_ams_history():
                         )
                         db.add(history)
                         recorded_count += 1
+
+                        # Skip alarm dispatch for empty AMS units — humidity /
+                        # temperature readings are ambient with no filament to
+                        # protect, and the hourly notification just becomes
+                        # noise. Sensor history was already recorded above so the
+                        # UI charts stay continuous (#1619). Per-AMS check so a
+                        # multi-AMS setup with one loaded + one empty still alarms
+                        # on the loaded unit.
+                        if not _ams_has_filament(ams_data):
+                            continue
 
                         # Generate AMS label and determine if it's AMS-HT (A, B, C, D or HT-A for AMS-Lite/Hub)
                         is_ams_ht = ams_id >= 128
