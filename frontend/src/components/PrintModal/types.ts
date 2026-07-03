@@ -59,6 +59,9 @@ export interface PrintOptions {
   mesh_mode_fast_check: boolean;
   /** Inject operator-defined G-code snippets at MACHINE_START_GCODE_END / EOF (#422). */
   gcode_injection: boolean;
+  /** Nozzle offset calibration before print — dual-nozzle printers only (#1682).
+   *  The MQTT layer forces "skip" on single-nozzle machines regardless. */
+  nozzle_offset_cali: boolean;
 }
 
 /**
@@ -71,6 +74,7 @@ export const DEFAULT_PRINT_OPTIONS: PrintOptions = {
   timelapse: false,
   mesh_mode_fast_check: true,
   gcode_injection: false,
+  nozzle_offset_cali: true,
 };
 
 /**
@@ -236,6 +240,9 @@ export interface PrintOptionsProps {
   options: PrintOptions;
   onChange: (options: PrintOptions) => void;
   defaultExpanded?: boolean;
+  /** Show the dual-nozzle-only options (nozzle offset calibration). Default false.
+   *  Pass true when at least one selected printer is dual-nozzle. */
+  showDualNozzleOptions?: boolean;
 }
 
 /**

@@ -2201,6 +2201,7 @@ export interface PrintQueueItem {
   layer_inspect: boolean;
   timelapse: boolean;
   use_ams: boolean;
+  nozzle_offset_cali: boolean;
   mesh_mode_fast_check: boolean;
   execute_swap_macros: boolean;
   swap_macro_events: string[] | null;
@@ -2268,6 +2269,7 @@ export interface PrintQueueItemCreate {
   layer_inspect?: boolean;
   timelapse?: boolean;
   use_ams?: boolean;
+  nozzle_offset_cali?: boolean;
   mesh_mode_fast_check?: boolean;
   execute_swap_macros?: boolean;
   swap_macro_events?: string[] | null;
@@ -2290,6 +2292,7 @@ export interface PrintQueueItemUpdate {
   layer_inspect?: boolean;
   timelapse?: boolean;
   use_ams?: boolean;
+  nozzle_offset_cali?: boolean;
   mesh_mode_fast_check?: boolean;
   execute_swap_macros?: boolean;
   swap_macro_events?: string[] | null;
@@ -2328,6 +2331,7 @@ export interface PrintQueueBulkUpdate {
   layer_inspect?: boolean;
   timelapse?: boolean;
   use_ams?: boolean;
+  nozzle_offset_cali?: boolean;
   mesh_mode_fast_check?: boolean;
   execute_swap_macros?: boolean;
   swap_macro_events?: string[] | null;
@@ -3442,6 +3446,7 @@ export interface PrintOptionsPreferenceData {
     timelapse: boolean;
     mesh_mode_fast_check: boolean;
     gcode_injection: boolean;
+    nozzle_offset_cali: boolean;  // Dual-nozzle printers only (#1682)
   };
   swap_macros: {
     execute: boolean;
@@ -5266,6 +5271,7 @@ export const api = {
       flow_cali?: boolean;
       layer_inspect?: boolean;
       use_ams?: boolean;
+      nozzle_offset_cali?: boolean;
       mesh_mode_fast_check?: boolean;
       execute_swap_macros?: boolean;
       swap_macro_events?: string[] | null;
@@ -6846,6 +6852,7 @@ export const api = {
       layer_inspect?: boolean;
       timelapse?: boolean;
       use_ams?: boolean;
+      nozzle_offset_cali?: boolean;
       mesh_mode_fast_check?: boolean;
       execute_swap_macros?: boolean;
       swap_macro_events?: string[] | null;

@@ -1731,6 +1731,7 @@ class PrintScheduler:
             "layer_inspect": item.layer_inspect,
             "timelapse": item.timelapse,
             "use_ams": item.use_ams,
+            "nozzle_offset_cali": item.nozzle_offset_cali,
             "execute_swap_macros": item.execute_swap_macros,
             "swap_macro_events": swap_events,
             "gcode_injection": item.gcode_injection,

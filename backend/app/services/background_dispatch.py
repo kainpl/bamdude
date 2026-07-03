@@ -1202,6 +1202,7 @@ class BackgroundDispatchService:
                     flow_cali=job.options.get("flow_cali", False),
                     layer_inspect=job.options.get("layer_inspect", False),
                     use_ams=job.options.get("use_ams", True),
+                    nozzle_offset_cali=job.options.get("nozzle_offset_cali", False),
                 )
 
                 if not started:
@@ -1690,6 +1691,7 @@ class BackgroundDispatchService:
                     flow_cali=job.options.get("flow_cali", False),
                     layer_inspect=job.options.get("layer_inspect", False),
                     use_ams=job.options.get("use_ams", True),
+                    nozzle_offset_cali=job.options.get("nozzle_offset_cali", False),
                 )
 
                 if not started:

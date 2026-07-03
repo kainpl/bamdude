@@ -3844,6 +3844,7 @@ class BambuMQTTClient:
         layer_inspect: bool = False,
         timelapse: bool = False,
         use_ams: bool = True,
+        nozzle_offset_cali: bool = False,
     ):
         """Start a print job on the printer.
 
@@ -3859,6 +3860,8 @@ class BambuMQTTClient:
             flow_cali: Flow/pressure advance calibration
             layer_inspect: First layer AI inspection
             use_ams: Use AMS for automatic filament changes
+            nozzle_offset_cali: Run nozzle offset calibration before print
+                (dual-nozzle printers only — silently forced off on single-nozzle)
 
         Note: the ``vibration_cali`` field in the MQTT payload is kept for
         firmware compatibility but hardcoded to False. Upstream Bambu Studio
@@ -4004,7 +4007,11 @@ class BambuMQTTClient:
                     # regardless of the flow_cali toggle (#1478).
                     "extrude_cali_flag": 1 if flow_cali else 2,
                     "extrude_cali_manual_mode": 0,
-                    "nozzle_offset_cali": 2,
+                    # 1 = run, 2 = skip. BambuStudio exposes the toggle only for
+                    # dual-nozzle machines (H2D/H2D Pro/H2C/X2D); on single-nozzle
+                    # printers we always send 2 so firmware never wastes cycles on
+                    # a calibration their head doesn't support (#1682).
+                    "nozzle_offset_cali": 1 if (nozzle_offset_cali and is_dual_nozzle) else 2,
                     "subtask_name": filename.replace(".3mf", "").replace(".gcode", ""),
                     "profile_id": "0",
                     "project_id": submission_id,

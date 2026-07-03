@@ -703,6 +703,7 @@ class PrinterManager:
         layer_inspect: bool = False,
         timelapse: bool = False,
         use_ams: bool = True,
+        nozzle_offset_cali: bool = False,
     ) -> bool:
         """Start a print on a connected printer."""
         caller = traceback.extract_stack(limit=3)[0]
@@ -724,6 +725,7 @@ class PrinterManager:
                 flow_cali=flow_cali,
                 layer_inspect=layer_inspect,
                 use_ams=use_ams,
+                nozzle_offset_cali=nozzle_offset_cali,
             )
         return False
 

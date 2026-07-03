@@ -4681,6 +4681,9 @@ export default {
     meshModeFastCheckDesc: 'Runs once before printing to confirm belt tension is normal. Disable to skip for this job.',
     gcodeInjection: 'Inject G-code snippets',
     gcodeInjectionDesc: 'Splice the operator-defined snippets for this printer model into the plate gcode at MACHINE_START_GCODE_END (start) and EOF (end). Configure snippets in Settings → Printers → G-code Snippets.',
+    // Nozzle offset calibration (dual-nozzle printers only — H2D/H2D Pro/H2C/X2D)
+    nozzleOffsetCali: 'Nozzle Offset Calibration',
+    nozzleOffsetCaliDesc: 'Calibrate the offset between the two nozzles before printing. Dual-nozzle printers only; turn off for diamond-nozzle setups that must keep it disabled.',
     // Swap-mode macros (visible only when a swap-enabled printer is selected)
     swapMacros: 'Swap Macros',
     executeSwapMacros: 'Execute swap macros',

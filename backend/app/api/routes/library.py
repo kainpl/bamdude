@@ -3957,6 +3957,7 @@ async def print_library_file(
             layer_inspect=body.layer_inspect,
             timelapse=body.timelapse,
             use_ams=body.use_ams,
+            nozzle_offset_cali=body.nozzle_offset_cali,
             mesh_mode_fast_check=body.mesh_mode_fast_check,
             execute_swap_macros=body.execute_swap_macros,
             swap_macro_events=body.swap_macro_events,

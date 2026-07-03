@@ -36,6 +36,7 @@ const DEFAULT_PRINT_OPTIONS: PrintOptionsPreferenceData = {
     timelapse: false,
     mesh_mode_fast_check: true,
     gcode_injection: false,
+    nozzle_offset_cali: true,
   },
   swap_macros: {
     execute: true,

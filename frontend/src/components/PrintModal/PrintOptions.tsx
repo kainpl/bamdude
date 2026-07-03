@@ -12,6 +12,14 @@ const PRINT_OPTIONS_CONFIG = [
   { key: 'gcode_injection', labelKey: 'printModal.gcodeInjection', descKey: 'printModal.gcodeInjectionDesc' },
 ] as const;
 
+// Dual-nozzle-only options (H2D/H2D Pro/H2C/X2D) — appended to the panel only
+// when the selected printer(s) are dual-nozzle (#1682). The MQTT layer forces
+// "skip" on single-nozzle machines regardless, so hiding it here just avoids a
+// misleading no-op toggle.
+const DUAL_NOZZLE_OPTIONS_CONFIG = [
+  { key: 'nozzle_offset_cali', labelKey: 'printModal.nozzleOffsetCali', descKey: 'printModal.nozzleOffsetCaliDesc' },
+] as const;
+
 /**
  * Print options toggle panel with collapsible UI.
  * Shows bed levelling, flow/vibration calibration, layer inspection, and timelapse options.
@@ -20,6 +28,7 @@ export function PrintOptionsPanel({
   options,
   onChange,
   defaultExpanded = false,
+  showDualNozzleOptions = false,
 }: PrintOptionsProps) {
   const { t } = useTranslation();
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
@@ -27,6 +36,10 @@ export function PrintOptionsPanel({
   const handleToggle = (key: keyof PrintOptionsType) => {
     onChange({ ...options, [key]: !options[key] });
   };
+
+  const visibleOptions = showDualNozzleOptions
+    ? [...PRINT_OPTIONS_CONFIG, ...DUAL_NOZZLE_OPTIONS_CONFIG]
+    : PRINT_OPTIONS_CONFIG;
 
   return (
     <div className="mb-4">
@@ -45,7 +58,7 @@ export function PrintOptionsPanel({
       </button>
       {isExpanded && (
         <div className="mt-2 bg-bambu-dark rounded-lg p-3 space-y-2">
-          {PRINT_OPTIONS_CONFIG.map(({ key, labelKey, descKey }) => (
+          {visibleOptions.map(({ key, labelKey, descKey }) => (
             <label key={key} className="flex items-center justify-between gap-3 cursor-pointer group">
               <div className="min-w-0 flex-1">
                 <span className="text-sm text-white">{t(labelKey)}</span>

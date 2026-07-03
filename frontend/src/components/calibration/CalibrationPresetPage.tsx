@@ -588,7 +588,9 @@ export function CalibrationPresetPage({
   useEffect(() => {
     if (!printerModel || !preferenceData) return;
     if (appliedPreferenceModelsRef.current.has(printerModel)) return;
-    setPrintOptions(preferenceData.options.print_options);
+    // Merge over DEFAULT so a preference saved before a new option existed
+    // (e.g. nozzle_offset_cali, #1682) still gets a defined value.
+    setPrintOptions({ ...DEFAULT_PRINT_OPTIONS, ...preferenceData.options.print_options });
     setSwapMacros({
       execute: preferenceData.options.swap_macros.execute,
       events: preferenceData.options.swap_macros.events.filter(

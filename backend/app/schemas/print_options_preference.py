@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 
 class PrintOptionsToggles(BaseModel):
-    """The 6 boolean toggles from the PrintModal "Print options" panel.
+    """The boolean toggles from the PrintModal "Print options" panel.
 
     Mirrors the frontend ``PrintOptions`` interface in
     ``frontend/src/components/PrintModal/types.ts``.
@@ -18,6 +18,9 @@ class PrintOptionsToggles(BaseModel):
     timelapse: bool
     mesh_mode_fast_check: bool
     gcode_injection: bool
+    # Dual-nozzle-only toggle (#1682). Defaulted so preferences saved before it
+    # existed still parse; the PrintModal only surfaces it on dual-nozzle printers.
+    nozzle_offset_cali: bool = True
 
 
 class SwapMacrosPref(BaseModel):

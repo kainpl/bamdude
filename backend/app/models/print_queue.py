@@ -52,6 +52,10 @@ class PrintQueueItem(Base):
     layer_inspect: Mapped[bool] = mapped_column(Boolean, default=False)
     timelapse: Mapped[bool] = mapped_column(Boolean, default=False)
     use_ams: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Nozzle offset calibration before print — dual-nozzle printers only
+    # (H2D/H2D Pro/H2C/X2D). Encoded as 1 (run) / 2 (skip) in the project_file
+    # MQTT payload; forced to 2 on single-nozzle machines regardless (#1682).
+    nozzle_offset_cali: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
     # Mesh-mode fast check — operator intent only, processing to be wired up
     # later (unpacking → gcode patching → repacking on dispatch).
     mesh_mode_fast_check: Mapped[bool] = mapped_column(Boolean, default=True)

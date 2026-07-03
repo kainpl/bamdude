@@ -114,6 +114,7 @@ export function PrintModal({
         timelapse: queueItem.timelapse ?? DEFAULT_PRINT_OPTIONS.timelapse,
         mesh_mode_fast_check: queueItem.mesh_mode_fast_check ?? DEFAULT_PRINT_OPTIONS.mesh_mode_fast_check,
         gcode_injection: queueItem.gcode_injection ?? DEFAULT_PRINT_OPTIONS.gcode_injection,
+        nozzle_offset_cali: queueItem.nozzle_offset_cali ?? DEFAULT_PRINT_OPTIONS.nozzle_offset_cali,
       };
     }
     return DEFAULT_PRINT_OPTIONS;
@@ -245,6 +246,21 @@ export function PrintModal({
     return first?.model || null;
   }, [mode, isAutoMode, autoModeOptions.target_model, selectedPrinters, printers]);
 
+  // Dual-nozzle gate for the Nozzle Offset Calibration toggle (#1682). Auto mode
+  // has no concrete printer, so it mirrors the backend model list against the
+  // chosen target model; specific / edit mode uses the canonical MQTT-detected
+  // nozzle_count so a printer without a stored model still resolves correctly.
+  const DUAL_NOZZLE_MODELS = useMemo(() => new Set(['H2D', 'H2DPRO', 'H2C', 'X2D']), []);
+  const showDualNozzleOptions = useMemo(() => {
+    if (isAutoMode) {
+      const m = autoModeOptions.target_model;
+      if (!m) return false;
+      return DUAL_NOZZLE_MODELS.has(m.toUpperCase().replace(/[\s-]/g, ''));
+    }
+    if (!printers || selectedPrinters.length === 0) return false;
+    return selectedPrinters.some((id) => printers.find((p) => p.id === id)?.nozzle_count === 2);
+  }, [isAutoMode, autoModeOptions.target_model, printers, selectedPrinters, DUAL_NOZZLE_MODELS]);
+
   const { data: preferenceData } = useQuery({
     queryKey: ['print-options-preference', effectivePrinterModel],
     queryFn: async () => {
@@ -266,7 +282,9 @@ export function PrintModal({
   useEffect(() => {
     if (!effectivePrinterModel || !preferenceData) return;
     if (appliedPreferenceModelsRef.current.has(effectivePrinterModel)) return;
-    setPrintOptions(preferenceData.options.print_options);
+    // Merge over DEFAULT so a preference saved before a new option existed
+    // (e.g. nozzle_offset_cali, #1682) still gets a defined value.
+    setPrintOptions({ ...DEFAULT_PRINT_OPTIONS, ...preferenceData.options.print_options });
     setSwapMacros({
       execute: preferenceData.options.swap_macros.execute,
       events: preferenceData.options.swap_macros.events.filter(
@@ -1054,7 +1072,7 @@ export function PrintModal({
 
             {/* Print options */}
             {(mode === 'reprint' || effectivePrinterCount > 0 || isAutoMode) && (
-              <PrintOptionsPanel options={printOptions} onChange={setPrintOptions} defaultExpanded={!!initialSelectedPrinterIds?.length} />
+              <PrintOptionsPanel options={printOptions} onChange={setPrintOptions} defaultExpanded={!!initialSelectedPrinterIds?.length} showDualNozzleOptions={showDualNozzleOptions} />
             )}
 
             {/* Swap-mode macros — only relevant when at least one selected

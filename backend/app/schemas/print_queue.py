@@ -30,6 +30,9 @@ class PrintQueueItemCreate(BaseModel):
     layer_inspect: bool = False
     timelapse: bool = False
     use_ams: bool = True
+    # Nozzle offset calibration — dual-nozzle printers only (#1682). Default True
+    # matches BambuStudio; the MQTT layer forces "skip" on single-nozzle printers.
+    nozzle_offset_cali: bool = True
     mesh_mode_fast_check: bool = True
     execute_swap_macros: bool = True
     swap_macro_events: list[str] | None = None
@@ -54,6 +57,7 @@ class PrintQueueItemUpdate(BaseModel):
     layer_inspect: bool | None = None
     timelapse: bool | None = None
     use_ams: bool | None = None
+    nozzle_offset_cali: bool | None = None
     mesh_mode_fast_check: bool | None = None
     execute_swap_macros: bool | None = None
     swap_macro_events: list[str] | None = None
@@ -80,6 +84,9 @@ class PrintQueueItemResponse(BaseModel):
     layer_inspect: bool = False
     timelapse: bool = False
     use_ams: bool = True
+    # Nozzle offset calibration — dual-nozzle printers only (#1682). Default True
+    # matches BambuStudio; the MQTT layer forces "skip" on single-nozzle printers.
+    nozzle_offset_cali: bool = True
     mesh_mode_fast_check: bool = True
     execute_swap_macros: bool = True
     swap_macro_events: list[str] | None = None
@@ -150,6 +157,7 @@ class PrintQueueBulkUpdate(BaseModel):
     layer_inspect: bool | None = None
     timelapse: bool | None = None
     use_ams: bool | None = None
+    nozzle_offset_cali: bool | None = None
     mesh_mode_fast_check: bool | None = None
     execute_swap_macros: bool | None = None
     swap_macro_events: list[str] | None = None

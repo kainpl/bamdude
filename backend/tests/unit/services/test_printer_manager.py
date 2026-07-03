@@ -377,6 +377,7 @@ class TestPrinterManager:
             flow_cali=False,
             layer_inspect=False,
             use_ams=True,
+            nozzle_offset_cali=False,
         )
         assert result is True
 

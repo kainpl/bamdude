@@ -4761,3 +4761,77 @@ class TestPrintRunningObservedCallback:
             "raw_data",
             "ams_mapping",
         }
+
+
+class TestNozzleOffsetCali:
+    """Nozzle-offset-calibration wire encoding in the project_file command (#1682).
+
+    ``start_print(nozzle_offset_cali=...)`` encodes 1 (run) / 2 (skip), gated on
+    ``is_dual_nozzle`` so single-nozzle machines always send 2 even if a stale
+    flag arrives. is_dual_nozzle resolves from the runtime ``_is_dual_nozzle``
+    flag OR the model name (H2D / H2D Pro / H2C / X2D)."""
+
+    @pytest.fixture
+    def mqtt_client(self):
+        from unittest.mock import MagicMock
+
+        from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+        client = BambuMQTTClient(
+            ip_address="192.168.1.100",
+            serial_number="TEST123",
+            access_code="12345678",
+        )
+        # start_print requires a live client + connected state.
+        client._client = MagicMock()
+        client.state.connected = True
+        return client
+
+    @staticmethod
+    def _get_published_command(mqtt_client) -> dict:
+        """Extract the ``print`` sub-object from the last publish() payload."""
+        call = mqtt_client._client.publish.call_args
+        payload = call[0][1]  # (topic, payload, ...)
+        return json.loads(payload)["print"]
+
+    def test_nozzle_offset_cali_default_is_skip(self, mqtt_client):
+        """Default nozzle_offset_cali=False → wire value 2 (skip), every model."""
+        mqtt_client.model = "P1S"
+        mqtt_client.start_print("test.3mf")
+
+        cmd = self._get_published_command(mqtt_client)
+        assert cmd["nozzle_offset_cali"] == 2
+
+    def test_nozzle_offset_cali_ignored_on_single_nozzle(self, mqtt_client):
+        """Single-nozzle printer: nozzle_offset_cali=True is silently downgraded to 2."""
+        mqtt_client.model = "P1S"
+        mqtt_client.start_print("test.3mf", nozzle_offset_cali=True)
+
+        cmd = self._get_published_command(mqtt_client)
+        assert cmd["nozzle_offset_cali"] == 2
+
+    def test_nozzle_offset_cali_honored_on_dual_nozzle(self, mqtt_client):
+        """Dual-nozzle printer (H2D): nozzle_offset_cali=True → wire value 1 (run)."""
+        mqtt_client.model = "H2D"
+        mqtt_client.start_print("test.3mf", nozzle_offset_cali=True)
+
+        cmd = self._get_published_command(mqtt_client)
+        assert cmd["nozzle_offset_cali"] == 1
+
+    def test_nozzle_offset_cali_false_on_dual_nozzle(self, mqtt_client):
+        """Dual-nozzle printer (H2D Pro): nozzle_offset_cali=False → 2 (skip)."""
+        mqtt_client.model = "H2D Pro"
+        mqtt_client.start_print("test.3mf", nozzle_offset_cali=False)
+
+        cmd = self._get_published_command(mqtt_client)
+        assert cmd["nozzle_offset_cali"] == 2
+
+    def test_nozzle_offset_cali_honored_via_runtime_dual_flag(self, mqtt_client):
+        """is_dual_nozzle can also come from the runtime _is_dual_nozzle flag
+        (device.extruder.info) even when the model string isn't in the list."""
+        mqtt_client.model = "UnknownDual"
+        mqtt_client._is_dual_nozzle = True
+        mqtt_client.start_print("test.3mf", nozzle_offset_cali=True)
+
+        cmd = self._get_published_command(mqtt_client)
+        assert cmd["nozzle_offset_cali"] == 1
