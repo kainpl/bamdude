@@ -141,6 +141,19 @@ function formatKValue(k: number | null | undefined): string {
   return value.toFixed(3);
 }
 
+// Distinguish a physically-empty AMS slot from one that has a spool loaded but
+// no filament type configured (#1694). Returns null when the slot is configured
+// (tray_type present), 'physical' when the firmware reports the slot empty /
+// not-fed (state 9 = empty, 10 = present-but-not-fed → show "-"/Empty), and
+// 'reset' otherwise — a spool is physically loaded (state 11) but the user
+// hasn't set its type, so we show "?" with an explanatory tooltip instead of
+// making it look like an empty slot.
+function getEmptySlotKind(tray: { tray_type?: string | null; state?: number | null } | undefined): 'physical' | 'reset' | null {
+  if (tray?.tray_type) return null;
+  const state = tray?.state ?? null;
+  return state === 9 || state === 10 ? 'physical' : 'reset';
+}
+
 // Nozzle side indicators (Bambu Lab style - square badge with L/R)
 function NozzleBadge({ side }: { side: 'L' | 'R' }) {
   const { mode } = useTheme();
@@ -3685,6 +3698,9 @@ function PrinterCard({
                                 const tray = ams.tray[slotIdx] || ams.tray.find(t => t.id === slotIdx);
                                 const hasFillLevel = tray?.tray_type && tray.remain >= 0;
                                 const isEmpty = !tray?.tray_type;
+                                // A loaded-but-unconfigured slot (spool present, no type) shows
+                                // "?" rather than "-" so it's not mistaken for an empty slot (#1694).
+                                const emptyKind = getEmptySlotKind(tray);
                                 // Check if this is the currently loaded tray
                                 // Global tray ID = ams.id * 4 + slot index (for standard AMS)
                                 const globalTrayId = ams.id * 4 + slotIdx;
@@ -3772,8 +3788,11 @@ function PrinterCard({
                                       isEmpty={isEmpty}
                                       slotNumber={slotIdx + 1}
                                     />
-                                    <div className="text-[9px] text-white font-bold truncate">
-                                      {tray?.tray_type || '-'}
+                                    <div
+                                      className="text-[9px] text-white font-bold truncate"
+                                      title={emptyKind === 'reset' ? t('printers.ams.slotUnconfiguredTooltip') : undefined}
+                                    >
+                                      {tray?.tray_type || (emptyKind === 'reset' ? t('printers.ams.slotUnconfigured') : '-')}
                                     </div>
                                     {/* Fill bar */}
                                     <div className="mt-1 h-1.5 bg-black/30 rounded-full overflow-hidden">

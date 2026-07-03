@@ -451,7 +451,9 @@ export default {
       loadSuccess: 'Команду завантаження відправлено',
       unloadSuccess: 'Команду вивантаження відправлено',
       loadFailed: 'Не вдалося відправити команду завантаження',
-      unloadFailed: 'Не вдалося відправити команду вивантаження'
+      unloadFailed: 'Не вдалося відправити команду вивантаження',
+      slotUnconfigured: '?',
+      slotUnconfiguredTooltip: 'Котушку завантажено — слот не налаштовано'
     },
     bedJog: {
       title: 'Перемістити стіл',

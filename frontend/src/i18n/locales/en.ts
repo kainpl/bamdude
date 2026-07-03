@@ -441,7 +441,9 @@ export default {
       loadSuccess: 'Load command sent',
       unloadSuccess: 'Unload command sent',
       loadFailed: 'Failed to send load command',
-      unloadFailed: 'Failed to send unload command'
+      unloadFailed: 'Failed to send unload command',
+      slotUnconfigured: '?',
+      slotUnconfiguredTooltip: 'Spool loaded — slot not configured'
     },
     bedJog: {
       title: 'Move build plate',
