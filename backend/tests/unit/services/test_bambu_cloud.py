@@ -202,7 +202,9 @@ class TestBambuCloudTOTPVerification:
 
     @pytest.mark.asyncio
     async def test_verify_totp_cloudflare_blocked(self, cloud_service):
-        """When Cloudflare blocks request, should handle gracefully."""
+        """When Cloudflare blocks the request, the "Just a moment..." challenge
+        body is detected and turned into an actionable message (#1575) rather
+        than the opaque "Invalid response from Bambu Cloud"."""
         mock_response = MagicMock()
         mock_response.status_code = 403
         mock_response.text = "<!DOCTYPE html><html><head><title>Just a moment...</title>"
@@ -215,7 +217,8 @@ class TestBambuCloudTOTPVerification:
             result = await cloud_service.verify_totp("test-tfa-key", "123456")
 
             assert result["success"] is False
-            assert "Invalid response" in result["message"]
+            assert "Cloudflare" in result["message"]
+            assert "Invalid response" not in result["message"]
 
     @pytest.mark.asyncio
     async def test_verify_totp_uses_honest_bamdude_user_agent(self, cloud_service):

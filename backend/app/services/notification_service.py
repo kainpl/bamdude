@@ -15,10 +15,43 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.core.config import APP_VERSION
 from backend.app.models.notification import NotificationDigestQueue, NotificationLog, NotificationProvider
 from backend.app.models.notification_template import NotificationTemplate
 
 logger = logging.getLogger(__name__)
+
+# Honest User-Agent — matches every other outbound httpx client in the codebase
+# (bambu_cloud, makerworld, firmware_check, inventory). This client previously
+# leaked python-httpx/<version>, both inconsistent with the rest of the project
+# and a more obvious bot signature for upstream WAFs (upstream Bambuddy #1534).
+_USER_AGENT = f"BamDude/{APP_VERSION} (+https://github.com/kainpl/bamdude)"
+
+
+def _looks_like_cloudflare_challenge(response: httpx.Response) -> bool:
+    """Return True if ``response`` looks like a Cloudflare mitigation interstitial
+    (JS challenge / managed challenge / block page) rather than a legitimate
+    response passed through Cloudflare.
+
+    Self-hosted servers behind Cloudflare (Tunnel, "Bot Fight Mode", "Under
+    Attack" mode) intercept non-browser clients at the edge and return a
+    challenge HTML page instead of forwarding to the origin, so we never reach
+    the user's actual ntfy backend. Cloudflare cannot be defeated from a Python
+    client; we detect the shape so the UI can say so instead of dumping raw HTML.
+
+    Detection deliberately does NOT rely on ``Server: cloudflare`` alone — CF
+    adds that header to every response it proxies (success AND legitimate origin
+    errors), so a real 401 "wrong token" from a CF-fronted ntfy would
+    false-positive. Reliable signals: the ``cf-mitigated`` header (set only when
+    CF actively mitigates) and the challenge body shape.
+    """
+    if response.headers.get("cf-mitigated"):
+        return True
+    content_type = (response.headers.get("content-type") or "").lower()
+    if "html" not in content_type:
+        return False
+    body = (response.text or "")[:1024].lower()
+    return "just a moment" in body or "cf-chl-bypass" in body or "cf-chl-opt" in body or "challenge-platform" in body
 
 
 class NotificationService:
@@ -33,7 +66,10 @@ class NotificationService:
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client."""
         if self._http_client is None or self._http_client.is_closed:
-            self._http_client = httpx.AsyncClient(timeout=30.0)
+            self._http_client = httpx.AsyncClient(
+                timeout=30.0,
+                headers={"User-Agent": _USER_AGENT},
+            )
         return self._http_client
 
     async def close(self):
@@ -264,8 +300,16 @@ class NotificationService:
 
         if response.status_code in (200, 204):
             return True, "Message sent successfully"
-        else:
-            return False, f"HTTP {response.status_code}: {response.text[:200]}"
+        if _looks_like_cloudflare_challenge(response):
+            return False, (
+                f"HTTP {response.status_code} — ntfy server is behind a Cloudflare "
+                "challenge. BamDude was served the JS challenge page instead of "
+                "reaching ntfy. Cloudflare cannot be solved from a backend; add a "
+                "Cloudflare security-skip rule for this hostname, disable Bot "
+                "Fight Mode, or front the server with Cloudflare Access using a "
+                "service token. (#1534)"
+            )
+        return False, f"HTTP {response.status_code}: {response.text[:200]}"
 
     async def _send_pushover(
         self, config: dict, title: str, message: str, image_data: bytes | None = None

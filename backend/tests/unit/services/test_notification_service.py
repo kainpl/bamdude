@@ -1951,3 +1951,52 @@ class TestDiscordProviderHostWhitelist:
         success, msg = await service._send_discord({"webhook_url": ""}, "Title", "Body")
         assert success is False
         assert "required" in msg.lower()
+
+
+class TestCloudflareChallengeDetection:
+    """`_looks_like_cloudflare_challenge` + honest UA (upstream Bambuddy #1534)."""
+
+    def _resp(self, *, headers=None, text=""):
+        r = MagicMock()
+        r.headers = headers or {}
+        r.text = text
+        return r
+
+    def test_cf_mitigated_header_detected(self):
+        from backend.app.services.notification_service import _looks_like_cloudflare_challenge
+
+        assert _looks_like_cloudflare_challenge(self._resp(headers={"cf-mitigated": "challenge"})) is True
+
+    def test_just_a_moment_html_body_detected(self):
+        from backend.app.services.notification_service import _looks_like_cloudflare_challenge
+
+        r = self._resp(
+            headers={"content-type": "text/html"},
+            text="<!DOCTYPE html><title>Just a moment...</title>",
+        )
+        assert _looks_like_cloudflare_challenge(r) is True
+
+    def test_plain_text_auth_failure_not_flagged(self):
+        from backend.app.services.notification_service import _looks_like_cloudflare_challenge
+
+        # A genuine ntfy auth failure must NOT be mistaken for a CF challenge.
+        r = self._resp(headers={"content-type": "text/plain"}, text="forbidden: invalid auth token")
+        assert _looks_like_cloudflare_challenge(r) is False
+
+    def test_html_without_challenge_markers_not_flagged(self):
+        from backend.app.services.notification_service import _looks_like_cloudflare_challenge
+
+        r = self._resp(headers={"content-type": "text/html"}, text="<html><body>Welcome</body></html>")
+        assert _looks_like_cloudflare_challenge(r) is False
+
+    @pytest.mark.asyncio
+    async def test_client_carries_honest_user_agent(self):
+        from backend.app.services.notification_service import _USER_AGENT
+
+        service = NotificationService()
+        client = await service._get_client()
+        try:
+            assert client.headers.get("User-Agent") == _USER_AGENT
+            assert "BamDude" in _USER_AGENT
+        finally:
+            await service.close()

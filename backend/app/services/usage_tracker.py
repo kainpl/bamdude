@@ -987,7 +987,17 @@ async def _track_from_3mf(
                 if _raw:
                     from backend.app.services.spoolman_tracking import build_ams_tray_lookup
 
-                    available_trays = sorted(build_ams_tray_lookup(_raw).keys())
+                    # Filter out AMS slots with no spool loaded (empty tray_type):
+                    # BambuStudio/OrcaSlicer compact the slot list when assigning
+                    # filaments and don't expose empty AMS slots, so the slicer's
+                    # 3MF slot N maps to the Nth *loaded* tray, not the Nth physical
+                    # position. Without this, a "3 AMS loaded + 1 empty + external"
+                    # layout routed the slicer's 4th filament to the empty AMS slot
+                    # instead of the external, and the external's usage was never
+                    # recorded (#1607). vt_tray entries are already filtered this
+                    # way inside build_ams_tray_lookup — mirror it for AMS here.
+                    _lookup = build_ams_tray_lookup(_raw)
+                    available_trays = sorted(gid for gid, info in _lookup.items() if info.get("tray_type"))
                     if slot_id <= len(available_trays):
                         global_tray_id = available_trays[slot_id - 1]
             # Final fallback: slot_id - 1 (legacy, works for pure AMS without external spools)
