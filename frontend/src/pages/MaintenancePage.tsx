@@ -1506,7 +1506,7 @@ export function MaintenancePage() {
   // directly in onAddType callback
 
   const updateTypeMutation = useMutation({
-    mutationFn: ({ id, data }: { id: number; data: Partial<{ name: string; default_interval_hours: number; interval_type: 'hours' | 'days'; icon: string }> }) =>
+    mutationFn: ({ id, data }: { id: number; data: Partial<{ name: string; default_interval_hours: number; interval_type: 'hours' | 'days'; icon: string; wiki_url: string | null }> }) =>
       api.updateMaintenanceType(id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['maintenanceTypes'] });

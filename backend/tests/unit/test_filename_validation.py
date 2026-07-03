@@ -11,6 +11,7 @@ from backend.app.utils.filename import (
     INVALID_FILENAME_CHARS,
     MAX_FILENAME_BYTES,
     InvalidFilenameError,
+    derive_remote_filename,
     validate_print_filename,
 )
 
@@ -69,3 +70,53 @@ def test_byte_length_cap_is_bytes_not_codepoints():
 
 def test_just_under_byte_cap_ok():
     validate_print_filename("a" * MAX_FILENAME_BYTES)
+
+
+# derive_remote_filename — SD-card upload name derivation (#1542)
+
+
+def test_derive_strips_gcode_3mf():
+    assert derive_remote_filename("Cube.gcode.3mf") == "Cube.3mf"
+
+
+def test_derive_strips_3mf():
+    assert derive_remote_filename("Cube.3mf") == "Cube.3mf"
+
+
+def test_derive_bare_stem_appends_3mf():
+    assert derive_remote_filename("Cube") == "Cube.3mf"
+
+
+def test_derive_replaces_spaces_with_underscores():
+    assert derive_remote_filename("Cube (1).gcode.3mf") == "Cube_(1).3mf"
+
+
+def test_derive_doubled_gcode_3mf_fully_stripped():
+    assert derive_remote_filename("Cube (1).gcode.3mf.gcode.3mf") == "Cube_(1).3mf"
+
+
+def test_derive_doubled_3mf_fully_stripped():
+    assert derive_remote_filename("Cube.3mf.3mf") == "Cube.3mf"
+
+
+def test_derive_mixed_double_extensions_fully_stripped():
+    assert derive_remote_filename("Cube.gcode.3mf.3mf") == "Cube.3mf"
+
+
+def test_derive_raw_gcode_unchanged_stem():
+    # A bare .gcode is not a container suffix we strip; it becomes the stem.
+    assert derive_remote_filename("Cube.gcode") == "Cube.gcode.3mf"
+
+
+def test_derive_idempotent():
+    once = derive_remote_filename("Cube (1).gcode.3mf.gcode.3mf")
+    assert derive_remote_filename(once) == once
+
+
+def test_derive_unicode_stem_preserved():
+    assert derive_remote_filename("\u30d7\u30ea\u30f3\u30c8.gcode.3mf") == "\u30d7\u30ea\u30f3\u30c8.3mf"
+
+
+def test_derive_non_string_input_raises_typeerror():
+    with pytest.raises(TypeError):
+        derive_remote_filename(None)  # type: ignore[arg-type]

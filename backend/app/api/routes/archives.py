@@ -866,11 +866,22 @@ async def get_archive_stats(
     successful_prints = successful_result.scalar() or 0
 
     failed_result = await db.execute(
-        select(func.count(PrintArchive.id)).where(
-            PrintArchive.status.in_(["failed", "aborted", "cancelled", "stopped"]), *base_conditions
-        )
+        select(func.count(PrintArchive.id)).where(PrintArchive.status.in_(["failed", "aborted"]), *base_conditions)
     )
     failed_prints = failed_result.scalar() or 0
+
+    # User/system-stopped prints — stopped/cancelled/skipped are distinct from
+    # quality failures: the user (or the queue) interrupted them, the printer
+    # didn't detect a fault. Bucketed separately so the Success Rate gauge
+    # divides by completed + failed only (a cancelled print shouldn't drag the
+    # gauge down), while still being visible in the breakdown so they don't
+    # silently vanish from Total Prints (#1390).
+    cancelled_result = await db.execute(
+        select(func.count(PrintArchive.id)).where(
+            PrintArchive.status.in_(["stopped", "cancelled", "skipped"]), *base_conditions
+        )
+    )
+    cancelled_prints = cancelled_result.scalar() or 0
 
     # Totals - use actual print time from timestamps (not slicer estimates)
     # For archives with both started_at and completed_at, calculate actual duration
@@ -995,6 +1006,7 @@ async def get_archive_stats(
         total_prints=total_prints,
         successful_prints=successful_prints,
         failed_prints=failed_prints,
+        cancelled_prints=cancelled_prints,
         total_print_time_hours=round(total_time, 1),
         total_filament_grams=round(total_filament, 1),
         total_cost=round(total_cost, 2),
@@ -3406,6 +3418,50 @@ async def get_project_image(
 # =============================================================================
 
 
+def _resolve_source_3mf_path(archive: PrintArchive, source_filename: str) -> Path:
+    """Resolve where to write a source 3MF for ``archive``.
+
+    Normal archives nest the source under ``<archive_file_dir>/source/``.
+    "Fallback" archives (created in main.py when MQTT reports a print start
+    but BamDude never saw the source 3MF — cloud / Handy / pre-existing
+    SD-card prints) carry ``file_path=""``. Joining that with ``base_dir``
+    via the ``/`` operator silently yields ``base_dir`` itself, whose parent
+    is ``base_dir.parent`` — which sent the upload to ``/app/source/`` and
+    raised a 500 on the final ``relative_to`` (#1531). Fallback archives now
+    land under ``<base_dir>/archive/no_source/<archive_id>/`` instead, which
+    stays inside the data volume and remains addressable by every read site
+    that does ``base_dir / archive.source_3mf_path``.
+
+    The resolved directory is asserted to be inside ``base_dir`` even when
+    ``archive.file_path`` is populated, so a row corrupted by an old import
+    or manual SQL edit fails with a clear 500 instead of writing outside the
+    data volume.
+    """
+    if archive.file_path:
+        archive_file = settings.base_dir / archive.file_path
+        source_dir = archive_file.parent / "source"
+    else:
+        source_dir = settings.base_dir / "archive" / "no_source" / str(archive.id)
+
+    # Containment check via resolve() — catches absolute file_path, `..`
+    # traversal, and any other shape that escapes the data volume — but we
+    # return the *literal* source_dir below. Resolving the returned path would
+    # canonicalise away a symlinked DATA_DIR (legitimate on TrueNAS / QNAP /
+    # Synology storage pools, and any ``-v /symlink:/app/data`` mount), which
+    # would then make the caller's ``source_path.relative_to(settings.base_dir)``
+    # raise because the left side is canonical and the right is the symlink path.
+    try:
+        source_dir.resolve().relative_to(settings.base_dir.resolve())
+    except ValueError as exc:
+        raise HTTPException(
+            500,
+            f"Archive {archive.id} resolves to a path outside the data directory; cannot attach source.",
+        ) from exc
+
+    source_dir.mkdir(parents=True, exist_ok=True)
+    return source_dir / source_filename
+
+
 @router.post("/{archive_id}/source")
 async def upload_source_3mf(
     archive_id: int,
@@ -3422,21 +3478,17 @@ async def upload_source_3mf(
     if not file.filename or not file.filename.endswith(".3mf"):
         raise HTTPException(400, "File must be a .3mf file")
 
-    # Get archive directory and create source subdirectory
-    file_path = settings.base_dir / archive.file_path
-    archive_dir = file_path.parent
-    source_dir = archive_dir / "source"
-    source_dir.mkdir(exist_ok=True)
+    # Save the source 3MF file - preserve original filename (sanitized).
+    # #1531: route through the helper so fallback archives (file_path="")
+    # don't 500 by resolving to a path outside the data volume.
+    source_filename = _safe_filename(file.filename)
+    source_path = _resolve_source_3mf_path(archive, source_filename)
 
     # Delete old source file if exists
     if archive.source_3mf_path:
         old_source_path = settings.base_dir / archive.source_3mf_path
         if old_source_path.exists():
             old_source_path.unlink()
-
-    # Save the source 3MF file - preserve original filename (sanitized)
-    source_filename = _safe_filename(file.filename)
-    source_path = source_dir / source_filename
 
     content = await file.read()
     # #1401: validate zip header on source 3MF uploads — source files
@@ -3627,21 +3679,17 @@ async def upload_source_3mf_by_name(
     if not archive:
         raise HTTPException(404, f"No archive found matching '{print_name}'")
 
-    # Get archive directory and create source subdirectory
-    file_path = settings.base_dir / archive.file_path
-    archive_dir = file_path.parent
-    source_dir = archive_dir / "source"
-    source_dir.mkdir(exist_ok=True)
+    # Save the source 3MF file - preserve original filename (sanitized).
+    # #1531: route through the helper so fallback archives (file_path="")
+    # don't 500 by resolving to a path outside the data volume.
+    source_filename = _safe_filename(file.filename)
+    source_path = _resolve_source_3mf_path(archive, source_filename)
 
     # Delete old source file if exists
     if archive.source_3mf_path:
         old_source_path = settings.base_dir / archive.source_3mf_path
         if old_source_path.exists():
             old_source_path.unlink()
-
-    # Save the source 3MF file - preserve original filename (sanitized)
-    source_filename = _safe_filename(file.filename)
-    source_path = source_dir / source_filename
 
     content = await file.read()
     # #1401: same zip-header check as the other upload routes — the

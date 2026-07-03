@@ -59,6 +59,8 @@ async def test_backfills_thumbnail_and_commits_per_file():
         patch.object(library, "get_library_thumbnails_dir", return_value=Path("/thumbs")),
         patch.object(library, "to_absolute_path", side_effect=lambda p: Path("/abs") / Path(p).name),
         patch.object(Path, "exists", return_value=True),
+        # #1820 pre-skip reads st_size; give a usable-mesh-sized value.
+        patch.object(Path, "stat", return_value=MagicMock(st_size=1000)),
         patch.object(library, "generate_stl_thumbnail", return_value="/thumbs/x.png"),
         patch.object(library, "to_relative_path", return_value="thumbnails/x.png"),
     ):
@@ -97,6 +99,8 @@ async def test_one_bad_mesh_does_not_abort_the_rest():
         patch.object(library, "get_library_thumbnails_dir", return_value=Path("/thumbs")),
         patch.object(library, "to_absolute_path", side_effect=lambda p: Path("/abs") / Path(p).name),
         patch.object(Path, "exists", return_value=True),
+        # #1820 pre-skip reads st_size; give a usable-mesh-sized value.
+        patch.object(Path, "stat", return_value=MagicMock(st_size=1000)),
         patch.object(library, "generate_stl_thumbnail", side_effect=_gen),
         patch.object(library, "to_relative_path", return_value="thumbnails/good.png"),
     ):

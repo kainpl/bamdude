@@ -1171,6 +1171,7 @@ export default {
     timeAccuracy: 'Точність часу',
     successful: 'Успішних:',
     failed: 'Невдалих:',
+    cancelled: 'Скасовано:',
     perfectEstimate: '100% = ідеальна оцінка',
     noTimeAccuracyData: 'Ще немає даних точності часу',
     noFilamentData: 'Немає даних про філамент',

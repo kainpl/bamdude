@@ -1163,6 +1163,7 @@ export default {
     timeAccuracy: 'Time Accuracy',
     successful: 'Successful:',
     failed: 'Failed:',
+    cancelled: 'Cancelled:',
     perfectEstimate: '100% = perfect estimate',
     noTimeAccuracyData: 'No time accuracy data yet',
     noFilamentData: 'No filament data available',

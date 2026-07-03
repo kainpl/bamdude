@@ -716,6 +716,84 @@ def _get_start_ams_mapping(data: dict, archive_id: int | None) -> list[int] | No
     return stored_ams_mapping
 
 
+def _extract_filament_data_from_mqtt(data: dict, ams_mapping: list[int] | None = None) -> dict[str, str]:
+    """Best-effort filament metadata from the MQTT print-start snapshot.
+
+    Used when the 3MF can't be downloaded (P1S/A1/P2S firmwares lock the file
+    during print, see #1533) so the fallback PrintArchive still has enough
+    filament info to support the inventory views and AMS-expansion planning the
+    operator opens it for. Returns a dict with optional ``filament_type`` and
+    ``filament_color`` keys in the same comma-separated format the 3MF extractor
+    produces, so the rest of the codebase treats the fallback archive identically
+    to a normal one.
+
+    ``ams_mapping`` is the slicer's slot-per-print-filament list captured from
+    the MQTT print payload (global tray IDs, possibly -1 for VT-tray entries).
+    When supplied, only the slots actually consumed by this print contribute.
+    Without it the function falls back to every loaded AMS slot.
+
+    Accepts both the raw inner payload (``{"ams": {"ams": [...]}, ...}``) that
+    the unit tests pass directly, AND the on_print_start callback shape
+    (``{"raw_data": {"ams": {"ams": [...]}, ...}, ...}``) the bambu_mqtt service
+    hands to main.py at runtime — the inner-only lookup shipped in #1533 silently
+    returned ``{}`` for every real print start (#1533 follow-up).
+    """
+    result: dict[str, str] = {}
+    # Look at the on_print_start wrapper first, then the inner shape.
+    raw_data = (data or {}).get("raw_data")
+    ams_root = (raw_data or {}).get("ams") if isinstance(raw_data, dict) else None
+    if not isinstance(ams_root, dict):
+        ams_root = (data or {}).get("ams") or {}
+    ams_units = ams_root.get("ams") if isinstance(ams_root, dict) else None
+    if not isinstance(ams_units, list) or not ams_units:
+        return result
+
+    # Map global tray id (unit * 4 + tray) → (type, color).
+    loaded: dict[int, tuple[str, str]] = {}
+    for unit in ams_units:
+        if not isinstance(unit, dict):
+            continue
+        try:
+            unit_id = int(unit.get("id", 0))
+        except (TypeError, ValueError):
+            continue
+        for tray in unit.get("tray") or []:
+            if not isinstance(tray, dict):
+                continue
+            try:
+                tray_id = int(tray.get("id", 0))
+            except (TypeError, ValueError):
+                continue
+            ttype = (tray.get("tray_type") or "").strip()
+            tcolor = (tray.get("tray_color") or "").strip().upper()
+            if not ttype:
+                continue  # Empty / unloaded slot.
+            loaded[unit_id * 4 + tray_id] = (ttype, tcolor)
+
+    if not loaded:
+        return result
+
+    if ams_mapping:
+        used_ids = [int(x) for x in ams_mapping if isinstance(x, (int, float)) and int(x) >= 0]
+        filaments = [loaded[g] for g in used_ids if g in loaded]
+        if not filaments:
+            return result  # Mapping points entirely at slots we have no data for.
+    else:
+        filaments = [loaded[g] for g in sorted(loaded.keys())]
+
+    types_joined = ",".join(f[0] for f in filaments)
+    colors_joined = ",".join(f[1] for f in filaments if f[1])
+
+    # Column limits per backend/app/models/archive.py: filament_type=50,
+    # filament_color=50 (upstream's column is 200 — ours is 50, so truncate
+    # tighter or PostgreSQL raises on a long multi-filament color string).
+    if types_joined:
+        result["filament_type"] = types_joined[:50]
+    if colors_joined:
+        result["filament_color"] = colors_joined[:50]
+    return result
+
+
 async def _bump_library_file_usage(db, library_file_id: int | None) -> None:
     """Increment LibraryFile.print_count and stamp last_printed_at.
 
@@ -2946,6 +3024,14 @@ async def on_print_start(printer_id: int, data: dict):
                 else:
                     print_name = "Unknown Print"
 
+                # Best-effort filament metadata from MQTT — see
+                # _extract_filament_data_from_mqtt. Without this the fallback
+                # archive's filament fields stayed NULL even though the AMS
+                # state at print start was sitting right there in `data`. The
+                # slicer's ams_mapping (when present) narrows the result to
+                # slots actually used by the print (#1533).
+                mqtt_filament_meta = _extract_filament_data_from_mqtt(data, _get_start_ams_mapping(data, None))
+
                 # Create minimal archive entry
                 fallback_archive = PrintArchive(
                     printer_id=printer_id,
@@ -2956,6 +3042,8 @@ async def on_print_start(printer_id: int, data: dict):
                     subtask_id=subtask_id,
                     status="printing",
                     started_at=datetime.now(timezone.utc),
+                    filament_type=mqtt_filament_meta.get("filament_type"),
+                    filament_color=mqtt_filament_meta.get("filament_color"),
                     # External / direct-dispatch falls back to the printer's
                     # default queue so post-m019 archive-driven counters
                     # include it.
@@ -3736,11 +3824,16 @@ async def on_print_complete(printer_id: int, data: dict):
     # Always: delete .gcode from root and from /cache/
     try:
         if subtask_name:
+            archive_filename: str | None = None
             async with async_session() as db:
+                from backend.app.models.archive import PrintArchive
                 from backend.app.models.printer import Printer
 
                 result = await db.execute(select(Printer).where(Printer.id == printer_id))
                 printer = result.scalar_one_or_none()
+                if archive_id:
+                    archive_row = await db.execute(select(PrintArchive.filename).where(PrintArchive.id == archive_id))
+                    archive_filename = archive_row.scalar_one_or_none()
 
             if printer:
                 from backend.app.services.bambu_ftp import (
@@ -3750,8 +3843,23 @@ async def on_print_complete(printer_id: int, data: dict):
                     rename_file_async,
                     upload_bytes_async,
                 )
+                from backend.app.utils.filename import derive_remote_filename
 
                 should_delete = getattr(printer, "cleanup_after_print", True)
+
+                # .3mf candidate paths, primary first: the exact path the
+                # dispatcher uploaded to (derived from archive.filename via the
+                # same rule as upload). Without it, a library row that ended up
+                # with a doubled .gcode.3mf (#1542) leaves the real file behind
+                # because the subtask_name fallback doesn't match what's on the
+                # SD card. The subtask_name fallback stays for archive-less
+                # prints and older naming variants.
+                threemf_candidates: list[str] = []
+                if archive_filename:
+                    threemf_candidates.append(f"/{derive_remote_filename(archive_filename)}")
+                subtask_3mf = f"/{subtask_name}.3mf"
+                if subtask_3mf not in threemf_candidates:
+                    threemf_candidates.append(subtask_3mf)
 
                 # Process /cache/ files: delete .gcode, patch .bbl (disable auto_recovery)
                 try:
@@ -3841,48 +3949,58 @@ async def on_print_complete(printer_id: int, data: dict):
                 except Exception:
                     pass  # best-effort
 
-                # Handle .3mf - delete or move to /cache/
-                remote_3mf = f"/{subtask_name}.3mf"
+                # Handle .3mf - delete or move to /cache/. Try each candidate
+                # (derived-first, subtask fallback) until one hits a real file.
                 if should_delete:
-                    for attempt in range(1, 4):
-                        try:
-                            r = await delete_file_async(
-                                printer.ip_address,
-                                printer.access_code,
-                                remote_3mf,
-                                printer_model=printer.model,
-                            )
-                            if r:
-                                logger.info("Deleted %s from printer %s SD card", remote_3mf, printer.name)
-                                break
-                        except Exception as e:
-                            r = False
-                            logger.warning("SD cleanup attempt %d/3 for %s: %s", attempt, remote_3mf, e)
-                        if not r and attempt < 3:
-                            await asyncio.sleep(2)
-                        elif not r:
-                            logger.warning("SD cleanup failed after 3 attempts for %s", remote_3mf)
+                    for remote_3mf in threemf_candidates:
+                        deleted = False
+                        for attempt in range(1, 4):
+                            try:
+                                r = await delete_file_async(
+                                    printer.ip_address,
+                                    printer.access_code,
+                                    remote_3mf,
+                                    printer_model=printer.model,
+                                )
+                                if r:
+                                    logger.info("Deleted %s from printer %s SD card", remote_3mf, printer.name)
+                                    deleted = True
+                                    break
+                            except Exception as e:
+                                r = False
+                                logger.warning("SD cleanup attempt %d/3 for %s: %s", attempt, remote_3mf, e)
+                            if not r and attempt < 3:
+                                await asyncio.sleep(2)
+                            elif not r:
+                                logger.warning("SD cleanup failed after 3 attempts for %s", remote_3mf)
+                        if deleted:
+                            break  # real file found + removed; don't probe fallbacks
                 else:
                     # Move .3mf to /cache/
-                    cache_3mf = f"/cache/{subtask_name}.3mf"
-                    for attempt in range(1, 4):
-                        try:
-                            r = await rename_file_async(
-                                printer.ip_address,
-                                printer.access_code,
-                                remote_3mf,
-                                cache_3mf,
-                                printer_model=printer.model,
-                            )
-                            if r:
-                                logger.info("Moved %s to %s on printer %s", remote_3mf, cache_3mf, printer.name)
-                                break
-                            if r is None:
-                                break  # file not found, no retry
-                        except Exception as e:
-                            logger.debug("SD move attempt %d/3 for %s: %s", attempt, remote_3mf, e)
-                        if attempt < 3:
-                            await asyncio.sleep(2)
+                    for remote_3mf in threemf_candidates:
+                        cache_3mf = f"/cache/{remote_3mf.lstrip('/')}"
+                        moved = False
+                        for attempt in range(1, 4):
+                            try:
+                                r = await rename_file_async(
+                                    printer.ip_address,
+                                    printer.access_code,
+                                    remote_3mf,
+                                    cache_3mf,
+                                    printer_model=printer.model,
+                                )
+                                if r:
+                                    logger.info("Moved %s to %s on printer %s", remote_3mf, cache_3mf, printer.name)
+                                    moved = True
+                                    break
+                                if r is None:
+                                    break  # file not found, try next candidate
+                            except Exception as e:
+                                logger.debug("SD move attempt %d/3 for %s: %s", attempt, remote_3mf, e)
+                            if attempt < 3:
+                                await asyncio.sleep(2)
+                        if moved:
+                            break
 
     except Exception as e:
         logger.warning("SD card file cleanup failed for printer %s: %s", printer_id, e)
@@ -5294,7 +5412,13 @@ RUNTIME_TRACKING_INTERVAL = 30  # Update every 30 seconds
 
 
 async def track_printer_runtime():
-    """Background task to track printer active runtime (RUNNING/PAUSE states)."""
+    """Background task to track printer active runtime (RUNNING state only).
+
+    PAUSE is intentionally excluded — the runtime counter feeds hours-based
+    maintenance intervals (rod lubrication, belt checks, nozzle cleaning)
+    which track mechanical wear. Pause time has no motion and no wear, so
+    counting it inflates maintenance warnings (#1521).
+    """
     logger = logging.getLogger(__name__)
 
     # Wait for MQTT connections to establish on startup
@@ -5324,8 +5448,9 @@ async def track_printer_runtime():
                         logger.debug("[%s] Runtime tracking: not connected", printer.name)
                         continue
 
-                    # Check if printer is in an active state (RUNNING or PAUSE)
-                    if state.state in ("RUNNING", "PAUSE"):
+                    # Only RUNNING accrues runtime — PAUSE is excluded so paused
+                    # prints don't inflate hours-based maintenance wear (#1521).
+                    if state.state == "RUNNING":
                         # Calculate time since last update
                         if printer.last_runtime_update:
                             last_update = printer.last_runtime_update
@@ -5347,7 +5472,8 @@ async def track_printer_runtime():
 
                         printer.last_runtime_update = now
                     else:
-                        # Printer is idle/offline - clear last_runtime_update
+                        # Printer is idle/offline/paused - clear last_runtime_update
+                        # so the next RUNNING window starts a fresh interval (#1521).
                         if printer.last_runtime_update is not None:
                             logger.debug(
                                 f"[{printer.name}] Runtime tracking: state={state.state}, clearing last_runtime_update"

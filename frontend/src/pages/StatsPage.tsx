@@ -6,6 +6,7 @@ import {
   Clock,
   CheckCircle,
   XCircle,
+  Ban,
   DollarSign,
   Target,
   Zap,
@@ -197,6 +198,7 @@ function SuccessRateWidget({
     total_prints: number;
     successful_prints: number;
     failed_prints: number;
+    cancelled_prints?: number;
     prints_by_printer: Record<string, number>;
   } | undefined;
   printerMap: Map<string, string>;
@@ -251,6 +253,11 @@ function SuccessRateWidget({
             <XCircle className="w-4 h-4 text-status-error flex-shrink-0" />
             <span className="text-sm text-bambu-gray">{t('stats.failed')}</span>
             <span className="text-sm text-white font-medium">{stats?.failed_prints || 0}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <Ban className="w-4 h-4 text-status-warning flex-shrink-0" />
+            <span className="text-sm text-bambu-gray">{t('stats.cancelled')}</span>
+            <span className="text-sm text-white font-medium">{stats?.cancelled_prints || 0}</span>
           </div>
         </div>
         {/* Show per-printer breakdown when expanded */}

@@ -7,7 +7,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.models.archive import PrintArchive
 from backend.app.models.printer import Printer
 
-FAILED_STATUSES = ["failed", "aborted", "cancelled", "stopped"]
+# Quality failures only — the printer detected a fault. stopped/cancelled/
+# skipped are user/queue interruptions, not failures, so they're excluded from
+# the failure rate, the by-reason/filament/printer breakdowns, and the trend
+# (#1390). Total Prints still counts them; they surface in the stats "Cancelled"
+# bucket instead.
+FAILED_STATUSES = ["failed", "aborted"]
 
 
 class FailureAnalysisService:
@@ -84,12 +89,23 @@ class FailureAnalysisService:
         total_result = await self.db.execute(select(func.count(PrintArchive.id)).where(and_(*base_filter)))
         total_prints = total_result.scalar() or 0
 
+        successful_result = await self.db.execute(
+            select(func.count(PrintArchive.id)).where(and_(*base_filter, PrintArchive.status == "completed"))
+        )
+        successful_prints = successful_result.scalar() or 0
+
         failed_result = await self.db.execute(
             select(func.count(PrintArchive.id)).where(and_(*base_filter, PrintArchive.status.in_(FAILED_STATUSES)))
         )
         failed_prints = failed_result.scalar() or 0
 
-        failure_rate = (failed_prints / total_prints * 100) if total_prints > 0 else 0
+        # Failure rate divides by quality-outcome prints only — a cancelled or
+        # skipped print is neither a success nor a failure of the printer, so
+        # including it in the denominator silently lowered the displayed rate
+        # whenever the user stopped jobs (#1390). Total Prints (the absolute
+        # count incl. cancelled) is still returned separately for the caption.
+        outcome_prints = successful_prints + failed_prints
+        failure_rate = (failed_prints / outcome_prints * 100) if outcome_prints > 0 else 0
 
         # Failures by reason
         reason_result = await self.db.execute(
@@ -190,13 +206,19 @@ class FailureAnalysisService:
             ]
 
             week_total = await self.db.execute(select(func.count(PrintArchive.id)).where(and_(*week_filter)))
+            week_successful = await self.db.execute(
+                select(func.count(PrintArchive.id)).where(and_(*week_filter, PrintArchive.status == "completed"))
+            )
             week_failed = await self.db.execute(
                 select(func.count(PrintArchive.id)).where(and_(*week_filter, PrintArchive.status.in_(FAILED_STATUSES)))
             )
 
             total = week_total.scalar() or 0
+            successful = week_successful.scalar() or 0
             failed = week_failed.scalar() or 0
-            rate = (failed / total * 100) if total > 0 else 0
+            # Same quality-outcome denominator as the headline rate (#1390).
+            week_outcome = successful + failed
+            rate = (failed / week_outcome * 100) if week_outcome > 0 else 0
 
             trend_data.append(
                 {

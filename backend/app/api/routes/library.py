@@ -65,7 +65,7 @@ from backend.app.schemas.library import (
 from backend.app.services.archive import ThreeMFParser
 from backend.app.services.library_helpers import compute_file_tags, detect_file_type
 from backend.app.services.print_plan import inherit_folder_projects, sync_plan_for_file, sync_plan_for_folder
-from backend.app.services.stl_thumbnail import generate_stl_thumbnail
+from backend.app.services.stl_thumbnail import MIN_USABLE_STL_BYTES, generate_stl_thumbnail
 from backend.app.services.threemf_capabilities import extract_3mf_capabilities
 from backend.app.utils.filename import InvalidFilenameError, validate_print_filename
 from backend.app.utils.threemf_tools import (
@@ -1322,6 +1322,13 @@ async def _backfill_external_mesh_thumbnails(folder_ids: list[int]) -> None:
         for mesh_file in mesh_files:
             abs_path = to_absolute_path(mesh_file.file_path)
             if not abs_path or not abs_path.exists():
+                continue
+            # Stub / placeholder STLs can't contain a usable mesh — skip before
+            # trimesh so bulk backfills don't emit a warning per stub (#1820).
+            try:
+                if abs_path.stat().st_size < MIN_USABLE_STL_BYTES:
+                    continue
+            except OSError:
                 continue
             try:
                 thumb_path = generate_stl_thumbnail(abs_path, thumbnails_dir)
@@ -2785,7 +2792,9 @@ async def upload_file(
 
         elif ext in (".stl", ".obj"):
             # Generate mesh thumbnail (STL + OBJ both go through trimesh).
-            if generate_stl_thumbnails:
+            # Skip stub / placeholder meshes below MIN_USABLE_STL_BYTES — they
+            # can't contain a usable mesh and would only log noise (#1820).
+            if generate_stl_thumbnails and file_path.stat().st_size >= MIN_USABLE_STL_BYTES:
                 thumbnail_path = generate_stl_thumbnail(file_path, thumbnails_dir)
 
         # Detect swap mode compatibility from filename. Covers both the
@@ -3053,7 +3062,9 @@ async def extract_zip_file(
 
                     elif ext in (".stl", ".obj"):
                         # Generate mesh thumbnail (STL + OBJ both go through trimesh).
-                        if generate_stl_thumbnails:
+                        # Skip sub-MIN_USABLE_STL_BYTES stubs so a ZIP of small
+                        # test meshes doesn't emit a warning storm (#1820).
+                        if generate_stl_thumbnails and file_path.stat().st_size >= MIN_USABLE_STL_BYTES:
                             thumbnail_path = generate_stl_thumbnail(file_path, thumbnails_dir)
 
                     # Create database entry (store relative paths for portability)
@@ -3203,6 +3214,24 @@ async def batch_generate_stl_thumbnails(
                     filename=stl_file.filename,
                     success=False,
                     error="File not found on disk",
+                )
+            )
+            failed += 1
+            continue
+
+        # Stub / placeholder meshes below MIN_USABLE_STL_BYTES can't produce a
+        # thumbnail — report a clear reason instead of running trimesh (#1820).
+        try:
+            too_small = file_path.stat().st_size < MIN_USABLE_STL_BYTES
+        except OSError:
+            too_small = False
+        if too_small:
+            results.append(
+                BatchThumbnailResult(
+                    file_id=stl_file.id,
+                    filename=stl_file.filename,
+                    success=False,
+                    error="File too small to contain a usable mesh",
                 )
             )
             failed += 1

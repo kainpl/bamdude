@@ -24,7 +24,7 @@ class Printer(Base):
         default=900
     )  # How long MQTT connection is considered valid (seconds); 0 = disabled
     print_hours_offset: Mapped[float] = mapped_column(Float, default=0.0)  # Baseline hours to add
-    runtime_seconds: Mapped[int] = mapped_column(default=0)  # Accumulated active runtime (RUNNING/PAUSE states)
+    runtime_seconds: Mapped[int] = mapped_column(default=0)  # Accumulated active runtime (RUNNING state only; #1521)
     last_runtime_update: Mapped[datetime | None] = mapped_column(
         DateTime, nullable=True
     )  # Last time runtime was updated
