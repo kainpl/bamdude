@@ -141,13 +141,17 @@ class TailscaleService:
 
         try:
             returncode, stdout, stderr = await self._run_tailscale("status", "--json", timeout=5.0)
-        except OSError as e:
+        except (OSError, asyncio.TimeoutError) as e:
+            # ``_run_tailscale`` re-raises ``asyncio.TimeoutError`` when the CLI
+            # hangs past the 5 s bound (a wedged daemon socket does this); without
+            # catching it here the timeout escaped to the /tailscale-status route
+            # as a 500 instead of a clean "unavailable" card (upstream v0.2.4.5).
             return TailscaleStatus(
                 available=False,
                 hostname="",
                 tailnet_name="",
                 fqdn="",
-                error=str(e),
+                error=str(e) or "tailscale status timed out",
             )
 
         if returncode is None or returncode != 0:
