@@ -370,10 +370,17 @@ async def update_virtual_printer(
     if not vp:
         return JSONResponse(status_code=404, content={"detail": "Virtual printer not found"})
 
+    # Redact the plaintext access code before it reaches the DEBUG log — dumping
+    # ``model_dump`` verbatim leaked it whenever a user saved a new code
+    # (upstream Bambuddy v0.2.4.5). Not exploitable in the field (DEBUG is off by
+    # default) but exactly the leak the no-secrets-in-logs rule exists to prevent.
+    _logged_body = body.model_dump(exclude_unset=True)
+    if "access_code" in _logged_body and _logged_body["access_code"]:
+        _logged_body["access_code"] = "***"
     logger.debug(
         "Update VP %d: body=%s, current state: mode=%s, enabled=%s, access_code_set=%s, bind_ip=%s, target=%s",
         vp_id,
-        body.model_dump(exclude_unset=True),
+        _logged_body,
         vp.mode,
         vp.enabled,
         bool(vp.access_code),

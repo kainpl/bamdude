@@ -8,6 +8,7 @@ immediately upon connection, before any FTP commands are exchanged.
 """
 
 import asyncio
+import hmac
 import logging
 import os
 import random
@@ -16,6 +17,11 @@ from collections.abc import Callable
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# Hard cap on a single FTP upload (upstream Bambuddy v0.2.4.5). Server-internal
+# DoS guard — a runaway or malicious client can no longer drive RSS/disk to
+# exhaustion. Well above any realistic multi-plate .gcode.3mf.
+MAX_UPLOAD_BYTES = 4 * 1024 * 1024 * 1024  # 4 GiB
 
 # Default FTP port for Bambu printers (implicit FTPS).
 # Must be 990 (same as real printers) to avoid iptables REDIRECT,
@@ -169,7 +175,8 @@ class FTPSession:
     async def cmd_PASS(self, arg: str) -> None:
         """Handle PASS command."""
         if self.username and self.username.lower() == "bblp":
-            if arg == self.access_code:
+            # Constant-time compare closes the access-code timing side-channel.
+            if hmac.compare_digest(arg, self.access_code):
                 self.authenticated = True
                 await self.send(230, "Login successful")
                 logger.info("%sFTP login from %s", self._log_prefix, self.remote_ip)
@@ -445,22 +452,28 @@ class FTPSession:
                 await self._close_data_connection()
                 return
 
-            # Receive data
-            data_content: list[bytes] = []
+            # Receive + stream each chunk straight to disk (upstream v0.2.4.5)
+            # instead of buffering the whole upload in a list then joining —
+            # peak RSS drops from ~2× file size to one 64 KiB chunk, so a
+            # multi-GB .gcode.3mf can't OOM a low-memory host. MAX_UPLOAD_BYTES
+            # caps a runaway/malicious upload; on any failure the partial file
+            # is unlinked so it can't masquerade as a complete upload.
             total_received = 0
+            write_failed: Exception | None = None
             try:
-                while True:
-                    chunk = await asyncio.wait_for(self._data_reader.read(65536), timeout=60)
-                    if not chunk:
-                        break
-                    data_content.append(chunk)
-                    total_received += len(chunk)
-                    logger.debug("FTP received chunk: %s bytes (total: %s)", len(chunk), total_received)
+                with file_path.open("wb") as f:
+                    while True:
+                        chunk = await asyncio.wait_for(self._data_reader.read(65536), timeout=60)
+                        if not chunk:
+                            break
+                        total_received += len(chunk)
+                        if total_received > MAX_UPLOAD_BYTES:
+                            raise OSError(f"upload exceeded size cap ({total_received} > {MAX_UPLOAD_BYTES} bytes)")
+                        f.write(chunk)
+                        logger.debug("FTP received chunk: %s bytes (total: %s)", len(chunk), total_received)
             except TimeoutError:
                 logger.error("FTP data transfer timeout after %s bytes for %s", total_received, filename)
-                await self.send(426, "Transfer timeout")
-                await self._close_data_connection()
-                return
+                write_failed = TimeoutError("Transfer timeout")
             except Exception as e:
                 logger.error(
                     "FTP data transfer error after %s bytes for %s: %s(%s)",
@@ -469,32 +482,30 @@ class FTPSession:
                     type(e).__name__,
                     e,
                 )
-                await self.send(426, f"Transfer failed: {e}")
-                await self._close_data_connection()
-                return
+                write_failed = e
 
             # Close data connection
             await self._close_data_connection()
 
-            # Write file
-            try:
-                total_size = sum(len(c) for c in data_content)
-                file_path.write_bytes(b"".join(data_content))
-                logger.info("FTP saved file: %s (%s bytes)", file_path, total_size)
-                await self.send(226, "Transfer complete")
+            if write_failed is not None:
+                try:
+                    file_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                await self.send(426, f"Transfer failed: {write_failed}")
+                return
 
-                # Notify callback
-                if self.on_file_received:
-                    try:
-                        result = self.on_file_received(file_path, self.remote_ip)
-                        if asyncio.iscoroutine(result):
-                            await result
-                    except Exception as e:
-                        logger.error("File received callback error: %s", e)
+            logger.info("FTP saved file: %s (%s bytes)", file_path, total_received)
+            await self.send(226, "Transfer complete")
 
-            except Exception as e:
-                logger.error("Failed to save file %s: %s", file_path, e)
-                await self.send(550, "Failed to save file")
+            # Notify callback
+            if self.on_file_received:
+                try:
+                    result = self.on_file_received(file_path, self.remote_ip)
+                    if asyncio.iscoroutine(result):
+                        await result
+                except Exception as e:
+                    logger.error("File received callback error: %s", e)
         finally:
             await self._notify_upload_end()
 

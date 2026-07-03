@@ -5,6 +5,7 @@ authenticates with the configured access code, and logs print commands.
 """
 
 import asyncio
+import hmac
 import json
 import logging
 import ssl
@@ -20,6 +21,14 @@ logger = logging.getLogger(__name__)
 
 # Default MQTT port for Bambu printers (MQTT over TLS)
 MQTT_PORT = 8883
+
+# Per-IP brute-force guard on the slicer-facing MQTT auth (upstream Bambuddy
+# v0.2.4.5). The 8-char access code is reachable by anyone who can hit the VP's
+# bind IP (LAN / Tailscale / tunnel); without a limit it is brute-forceable.
+# Sliding window, auto-recovers, cleared on a successful auth. Module-level so
+# ops can tune them.
+_AUTH_RATE_LIMIT_MAX_ATTEMPTS = 5
+_AUTH_RATE_LIMIT_WINDOW_SECONDS = 60.0
 
 # Grace window after a ``project_file`` command during which a ``PREPARE`` with
 # no upload yet in flight is still considered live. Covers the gap between the
@@ -161,8 +170,9 @@ class VirtualPrinterMQTTServer:
         username = getattr(session, "username", None)
         password = getattr(session, "password", None)
 
-        # Bambu slicers use 'bblp' as username and access code as password
-        if username == "bblp" and password == self.access_code:
+        # Bambu slicers use 'bblp' as username and access code as password.
+        # Constant-time compare closes the auth-code timing side-channel.
+        if username == "bblp" and isinstance(password, str) and hmac.compare_digest(password, self.access_code):
             logger.debug("MQTT client authenticated from %s", session.remote_address)
             return True
 
@@ -215,6 +225,9 @@ class SimpleMQTTServer:
         self._running = False
         self._server = None
         self._clients: dict[str, asyncio.StreamWriter] = {}
+        # Per-IP failed-CONNECT timestamps (monotonic) for the brute-force guard.
+        # Pruned to the sliding window on each check so the dict stays bounded.
+        self._auth_failures: dict[str, list[float]] = {}
         # Per-client serial - the serial the slicer actually uses in topics.
         # Populated from SUBSCRIBE/PUBLISH. Lets the VP respond on the topic
         # the slicer is listening on even when it disagrees with self.serial.
@@ -460,12 +473,18 @@ class SimpleMQTTServer:
         logger.info("%sMQTT client connected: %s", self._log_prefix, client_id)
 
         authenticated = False
+        # Per-packet read timeout. 60 s before CONNECT so a silent client can't
+        # hold the task forever; after CONNECT it becomes 1.5× the negotiated
+        # keepalive (spec §4.4), or None (no timeout) when the client sent
+        # keep_alive == 0 (spec §3.1.2.10). Honouring this stops us closing
+        # OrcaSlicer's idle connection at exactly the keepalive boundary (#1548).
+        read_timeout: float | None = 60.0
 
         try:
             while self._running:
                 # Read MQTT fixed header
                 try:
-                    header = await asyncio.wait_for(reader.read(1), timeout=60)
+                    header = await asyncio.wait_for(reader.read(1), timeout=read_timeout)
                 except TimeoutError:
                     break
 
@@ -484,9 +503,25 @@ class SimpleMQTTServer:
 
                 # Handle packet types
                 if packet_type == 1:  # CONNECT
-                    authenticated = await self._handle_connect(payload, writer)
-                    if not authenticated:
+                    source_ip = addr[0] if addr else "unknown"
+                    if self._is_auth_rate_limited(source_ip):
+                        logger.warning(
+                            "%sMQTT auth rate-limited from %s (>=%d failures in %ds)",
+                            self._log_prefix,
+                            source_ip,
+                            _AUTH_RATE_LIMIT_MAX_ATTEMPTS,
+                            int(_AUTH_RATE_LIMIT_WINDOW_SECONDS),
+                        )
+                        writer.write(bytes([0x20, 0x02, 0x00, 0x05]))  # Not authorized
+                        await writer.drain()
                         break
+                    authenticated, keep_alive = await self._handle_connect(payload, writer)
+                    if not authenticated:
+                        self._record_auth_failure(source_ip)
+                        break
+                    self._clear_auth_failures(source_ip)
+                    # Honour the client's negotiated keepalive (#1548).
+                    read_timeout = keep_alive * 1.5 if keep_alive > 0 else None
                     # Register client; start with self.serial until we learn
                     # the slicer's preferred serial from SUBSCRIBE/PUBLISH.
                     self._clients[client_id] = writer
@@ -507,7 +542,11 @@ class SimpleMQTTServer:
         except asyncio.CancelledError:
             pass  # Expected when server is shutting down and cancels client tasks
         except Exception as e:
-            logger.debug("MQTT client error: %s", e)
+            # WARNING, not DEBUG: this outer catch only sees UNEXPECTED errors
+            # (normal disconnects break the loop without raising). Production
+            # defaults suppress DEBUG, so "slicer disconnects randomly" reports
+            # arrived with no signal — surface it (upstream Bambuddy v0.2.4.5).
+            logger.warning("%sMQTT client error from %s: %s", self._log_prefix, client_id, e)
         finally:
             logger.debug("MQTT client disconnected: %s", client_id)
             self._clients.pop(client_id, None)
@@ -538,10 +577,36 @@ class SimpleMQTTServer:
 
         return None
 
-    async def _handle_connect(self, payload: bytes, writer: asyncio.StreamWriter) -> bool:
+    def _is_auth_rate_limited(self, source_ip: str) -> bool:
+        """Return True if ``source_ip`` has hit the per-IP failure cap.
+
+        Prunes timestamps older than the window so ``_auth_failures`` can't grow
+        unbounded. Uses ``time.monotonic()`` so a wall-clock jump can't extend
+        or shorten the window.
+        """
+        now = time.monotonic()
+        window_start = now - _AUTH_RATE_LIMIT_WINDOW_SECONDS
+        recent = [t for t in self._auth_failures.get(source_ip, []) if t >= window_start]
+        if recent:
+            self._auth_failures[source_ip] = recent
+        else:
+            self._auth_failures.pop(source_ip, None)
+        return len(recent) >= _AUTH_RATE_LIMIT_MAX_ATTEMPTS
+
+    def _record_auth_failure(self, source_ip: str) -> None:
+        """Append a timestamp for ``source_ip``'s failed auth attempt."""
+        self._auth_failures.setdefault(source_ip, []).append(time.monotonic())
+
+    def _clear_auth_failures(self, source_ip: str) -> None:
+        """Reset ``source_ip``'s failure history after a successful auth."""
+        self._auth_failures.pop(source_ip, None)
+
+    async def _handle_connect(self, payload: bytes, writer: asyncio.StreamWriter) -> tuple[bool, int]:
         """Handle MQTT CONNECT packet.
 
-        Returns True if authentication successful.
+        Returns ``(authenticated, keep_alive_seconds)`` — the caller's read loop
+        honours the negotiated keepalive instead of a hardcoded 60 s. ``0`` means
+        the client opted out of keepalive (MQTT spec §3.1.2.10).
         """
         try:
             # Parse CONNECT packet
@@ -554,7 +619,11 @@ class SimpleMQTTServer:
             # connect_flags = payload[idx + 1]
             idx += 2
 
-            # Skip keepalive
+            # Keepalive (2-byte big-endian, seconds). Honoured by the read loop
+            # per MQTT spec §4.4 — before #1548 we ignored it and used a
+            # hardcoded 60 s, which closed OrcaSlicer's idle connection at the
+            # negotiated boundary instead of the spec-mandated 1.5×.
+            keep_alive = (payload[idx] << 8) | payload[idx + 1]
             idx += 2
 
             # Read client ID
@@ -574,8 +643,9 @@ class SimpleMQTTServer:
             idx += 2
             password = payload[idx : idx + password_len].decode("utf-8")
 
-            # Authenticate
-            if username == "bblp" and password == self.access_code:
+            # Authenticate. ``hmac.compare_digest`` is constant-time so the auth
+            # check can't leak the access code via response timing.
+            if username == "bblp" and hmac.compare_digest(password, self.access_code):
                 # Send CONNACK with success
                 writer.write(bytes([0x20, 0x02, 0x00, 0x00]))
                 await writer.drain()
@@ -583,20 +653,20 @@ class SimpleMQTTServer:
 
                 # Send immediate status report after auth - slicer expects this
                 await self._send_status_report(writer)
-                return True
+                return True, keep_alive
             else:
                 # Send CONNACK with auth failure
                 writer.write(bytes([0x20, 0x02, 0x00, 0x05]))  # Not authorized
                 await writer.drain()
                 logger.warning("%sMQTT auth failed for user '%s' (access code mismatch)", self._log_prefix, username)
-                return False
+                return False, 0
 
         except (IndexError, ValueError) as e:
             logger.debug("MQTT CONNECT parse error: %s", e)
             # Send CONNACK with error
             writer.write(bytes([0x20, 0x02, 0x00, 0x02]))  # Protocol error
             await writer.drain()
-            return False
+            return False, 0
 
     async def _handle_subscribe(self, payload: bytes, writer: asyncio.StreamWriter, client_id: str) -> None:
         """Handle MQTT SUBSCRIBE packet."""

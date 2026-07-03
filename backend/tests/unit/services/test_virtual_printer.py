@@ -1293,6 +1293,34 @@ class TestFTPSession:
         assert (tmp_path / "test.3mf").read_bytes() == b"hello"
 
     @pytest.mark.asyncio
+    async def test_stor_enforces_max_upload_cap(self, mock_reader, mock_writer, ssl_context, tmp_path, monkeypatch):
+        """An upload crossing MAX_UPLOAD_BYTES is refused (426) and the partial
+        file is unlinked so it can't masquerade as a complete upload."""
+        from backend.app.services.virtual_printer import ftp_server as ftp_mod
+        from backend.app.services.virtual_printer.ftp_server import FTPSession
+
+        monkeypatch.setattr(ftp_mod, "MAX_UPLOAD_BYTES", 3)  # tiny cap for the test
+        received = MagicMock()
+        session = FTPSession(
+            reader=mock_reader,
+            writer=mock_writer,
+            upload_dir=tmp_path,
+            access_code="12345678",
+            ssl_context=ssl_context,
+            on_file_received=received,
+        )
+        session.authenticated = True
+        session._data_connected.set()
+        data_reader = AsyncMock()
+        data_reader.read = AsyncMock(side_effect=[b"toolong", b""])  # 7 bytes > 3-byte cap
+        session._data_reader = data_reader
+
+        await session.cmd_STOR("big.3mf")
+
+        received.assert_not_called()  # never confirmed
+        assert not (tmp_path / "big.3mf").exists()  # partial file cleaned up
+
+    @pytest.mark.asyncio
     async def test_quit_command(self, session):
         """Verify QUIT sends goodbye and raises CancelledError."""
         with pytest.raises(asyncio.CancelledError):

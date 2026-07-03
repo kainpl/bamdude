@@ -67,6 +67,18 @@ _SLICER_VISIBLE_STICKY_KEYS: tuple[str, ...] = (
     "net",
     "ipcam",
     "lights_report",
+    # Added upstream Bambuddy v0.2.4.5 (#1548 family): the 1 Hz incremental push
+    # only carries changed temps/fan/wifi, so these were wiped after one tick —
+    # BambuStudio's Send pre-flight reads several (upgrade_state.dis_state /
+    # force_upgrade in particular) and could refuse Send on a "unknown firmware
+    # state" cached push.
+    "upgrade_state",  # Send pre-flight reads dis_state / force_upgrade
+    "xcam",  # Prepare-tab reads spaghetti / first-layer / halt sensitivity
+    "hw_switch_state",  # Hardware switch state (Prepare tab)
+    "nozzle_diameter",
+    "nozzle_type",
+    "online",  # Module online map (ahb / rfid / version)
+    "ams_status",  # AMS overall status; can arrive as an ams_status-only incremental
 )
 
 
@@ -427,7 +439,9 @@ class MQTTBridge:
                 for sticky_key in _SLICER_VISIBLE_STICKY_KEYS:
                     if sticky_key not in new_state:
                         if sticky_key in prev:
-                            new_state[sticky_key] = prev[sticky_key]
+                            # deepcopy so a later in-place merge on the carried-
+                            # forward value can't corrupt both copies (upstream v0.2.4.5).
+                            new_state[sticky_key] = copy.deepcopy(prev[sticky_key])
                         continue
                     # Key IS in new_state — but firmware sends partial
                     # blobs (status-only / tray-targeted) under the same

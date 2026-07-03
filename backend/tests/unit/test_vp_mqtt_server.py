@@ -174,3 +174,54 @@ class TestStalePrepareReporting:
         assert server._gcode_state == "PREPARE"
         assert server._active_uploads == 0
         assert server._reported_gcode_state() == "PREPARE"  # within grace
+
+
+class TestAuthRateLimit:
+    """Per-IP MQTT brute-force guard (upstream Bambuddy v0.2.4.5)."""
+
+    def test_under_limit_not_rate_limited(self):
+        server = _make_server()
+        for _ in range(4):  # one below the cap
+            server._record_auth_failure("1.2.3.4")
+        assert server._is_auth_rate_limited("1.2.3.4") is False
+
+    def test_at_limit_is_rate_limited(self):
+        from backend.app.services.virtual_printer.mqtt_server import _AUTH_RATE_LIMIT_MAX_ATTEMPTS
+
+        server = _make_server()
+        for _ in range(_AUTH_RATE_LIMIT_MAX_ATTEMPTS):
+            server._record_auth_failure("1.2.3.4")
+        assert server._is_auth_rate_limited("1.2.3.4") is True
+
+    def test_window_recovery_prunes_stale_failures(self):
+        import time
+
+        from backend.app.services.virtual_printer.mqtt_server import (
+            _AUTH_RATE_LIMIT_MAX_ATTEMPTS,
+            _AUTH_RATE_LIMIT_WINDOW_SECONDS,
+        )
+
+        server = _make_server()
+        # All failures older than the window → pruned, no longer limited.
+        old = time.monotonic() - (_AUTH_RATE_LIMIT_WINDOW_SECONDS + 5)
+        server._auth_failures["1.2.3.4"] = [old] * _AUTH_RATE_LIMIT_MAX_ATTEMPTS
+        assert server._is_auth_rate_limited("1.2.3.4") is False
+        assert "1.2.3.4" not in server._auth_failures  # dict stays bounded
+
+    def test_failures_are_per_ip(self):
+        from backend.app.services.virtual_printer.mqtt_server import _AUTH_RATE_LIMIT_MAX_ATTEMPTS
+
+        server = _make_server()
+        for _ in range(_AUTH_RATE_LIMIT_MAX_ATTEMPTS):
+            server._record_auth_failure("1.1.1.1")
+        assert server._is_auth_rate_limited("1.1.1.1") is True
+        assert server._is_auth_rate_limited("2.2.2.2") is False
+
+    def test_success_clears_failure_history(self):
+        from backend.app.services.virtual_printer.mqtt_server import _AUTH_RATE_LIMIT_MAX_ATTEMPTS
+
+        server = _make_server()
+        for _ in range(_AUTH_RATE_LIMIT_MAX_ATTEMPTS):
+            server._record_auth_failure("1.2.3.4")
+        server._clear_auth_failures("1.2.3.4")
+        assert server._is_auth_rate_limited("1.2.3.4") is False

@@ -46,6 +46,11 @@ VIRTUAL_PRINTER_MODELS = {
     "N1": "A1 Mini",  # A1 Mini
     # H2 Series
     "O1D": "H2D",  # H2D
+    # H2D Pro (upstream Bambuddy v0.2.4.5, experimental — codes transcribed from
+    # the model-codes reference, not yet confirmed against a live H2D Pro SSDP
+    # response). Distinct code from H2D's O1D so BambuStudio tells them apart.
+    "O1E": "H2D Pro",
+    "O2D": "H2D Pro",
     "O1C": "H2C",  # H2C
     "O1C2": "H2C",  # H2C (dual nozzle variant)
     "O1S": "H2S",  # H2S
@@ -76,6 +81,8 @@ MODEL_SERIAL_PREFIXES = {
     "N1": "03000A",  # A1 Mini
     # H2 Series
     "O1D": "09400A",  # H2D
+    "O1E": "09400A",  # H2D Pro (same prefix family as H2D)
+    "O2D": "09400A",  # H2D Pro
     "O1C": "09400A",  # H2C
     "O1C2": "09400A",  # H2C (dual nozzle variant)
     "O1S": "09400A",  # H2S
