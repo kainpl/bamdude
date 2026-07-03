@@ -1,15 +1,26 @@
-"""Startup print reconciliation.
+"""Connect-edge print reconciliation.
 
-When BamDude is stopped and a print finishes on the printer during the
-downtime, the restarted process never sees the live ``RUNNING -> FINISH``
-MQTT transition that drives ``on_print_complete``, so the ``PrintArchive``
-row stays ``status='printing'`` forever and the linked ``PrintQueueItem``
-never advances.
+When BamDude is stopped (or disconnected from a printer) and a print finishes
+during the gap, the reconnected process never sees the live ``RUNNING ->
+FINISH`` MQTT transition that drives ``on_print_complete``, so the
+``PrintArchive`` row stays ``status='printing'`` forever and the linked
+``PrintQueueItem`` never advances.
 
-This service runs once per printer, on the first full MQTT status after a
-fresh connect (a stale-watchdog reconnect is already covered by
-``BambuMQTTClient.carry_print_lifecycle_from``). It closes orphan
-``printing`` archives against the printer's real state.
+This service runs on the first full MQTT status after **each** fresh connect
+(re-armed per connect edge, not once per process — #1542 follow-up). It closes
+orphan ``printing`` archives against the printer's real state.
+
+Two closure signals, both against a single archive that still says
+``printing``:
+
+- **State**: the printer reports the same file but is no longer active
+  (FINISH / IDLE / FAILED) — the job is simply done.
+- **Subtask replay**: the printer reports the same *file* still RUNNING but
+  under a **different** ``subtask_id`` than the archive tracked. That means a
+  firmware ghost-replay (or a smart-plug power-cycle auto-restart) reran the
+  file under a new subtask after BamDude missed the completion — the tracked
+  archive is superseded and closed as outcome-uncertain, rather than left
+  wrongly classified as "still running" forever.
 
 See ``docs/superpowers/specs/2026-05-19-startup-print-reconciliation-design.md``.
 """
@@ -56,18 +67,26 @@ def _file_matches(archive_filename: str, live_file: str) -> bool:
     return bool(a) and a == b
 
 
-def _classify(live_state: str, *, file_match: bool) -> str:
+def _classify(live_state: str, *, file_match: bool, subtask_stale: bool = False) -> str:
     """Decide what to do with one orphan ``printing`` archive.
 
     Returns one of:
 
-    - ``"running"`` — printer is still printing this file; no-op.
+    - ``"running"`` — printer is still printing this exact print; no-op.
     - ``"completed"`` — printer finished it; close as completed.
     - ``"failed"`` — printer reports a failure; close as failed.
-    - ``"uncertain"`` — printer moved on to a different/unknown file, so
-      the real outcome is unknowable; close as completed but flagged.
+    - ``"uncertain"`` — printer moved on to a different/unknown file, or is
+      running the same file under a **different** subtask_id (a ghost-replay
+      superseded the tracked print), so the real outcome is unknowable; close
+      as completed but flagged.
     """
     if not file_match:
+        return "uncertain"
+    # Same file, but a different subtask_id means the printer re-ran it (a
+    # firmware ghost-replay / power-cycle auto-restart) after we lost the
+    # original completion — the tracked archive is superseded, not "running"
+    # (#1542 follow-up).
+    if subtask_stale:
         return "uncertain"
     if live_state in _ACTIVE_STATES:
         return "running"
@@ -174,7 +193,23 @@ async def _reconcile_complete_archive(
     )
 
 
-async def _reconcile(db: AsyncSession, printer_id: int, live_state: str, live_file: str) -> None:
+def _subtask_stale(archive_subtask_id: str | None, live_subtask_id: str) -> bool:
+    """True when the archive tracked a different subtask than the printer is
+    now running for the same file — the ghost-replay signal.
+
+    Requires BOTH ids to be known and to differ: a missing id on either side
+    is ambiguous (older archive, or the printer hasn't reported a subtask
+    between jobs), so we fall back to the state-based classification instead
+    of forcing a close.
+    """
+    a = (archive_subtask_id or "").strip()
+    b = (live_subtask_id or "").strip()
+    return bool(a) and bool(b) and a != b
+
+
+async def _reconcile(
+    db: AsyncSession, printer_id: int, live_state: str, live_file: str, live_subtask_id: str = ""
+) -> None:
     """Reconcile every orphan ``printing`` archive for one printer.
 
     Takes an explicit session so tests can drive it directly;
@@ -194,7 +229,12 @@ async def _reconcile(db: AsyncSession, printer_id: int, live_state: str, live_fi
 
     closed = 0
     for archive in orphans:
-        action = _classify(live_state, file_match=_file_matches(archive.filename or "", live_file))
+        file_match = _file_matches(archive.filename or "", live_file)
+        action = _classify(
+            live_state,
+            file_match=file_match,
+            subtask_stale=file_match and _subtask_stale(archive.subtask_id, live_subtask_id),
+        )
         if action == "running":
             continue  # still printing — the live RUNNING status self-arms completion
         if action == "failed":
@@ -209,14 +249,14 @@ async def _reconcile(db: AsyncSession, printer_id: int, live_state: str, live_fi
         logger.info("reconcile: closed %d orphan print(s) on startup for printer %d", closed, printer_id)
 
 
-async def reconcile_printer_prints(printer_id: int, live_state: str, live_file: str) -> None:
-    """Entry point — runs once per printer on the first full MQTT status
-    after a fresh start. Opens its own session and commits."""
+async def reconcile_printer_prints(printer_id: int, live_state: str, live_file: str, live_subtask_id: str = "") -> None:
+    """Entry point — runs on the first full MQTT status after each fresh
+    connect. Opens its own session and commits."""
     from backend.app.core.database import async_session
 
     try:
         async with async_session() as db:
-            await _reconcile(db, printer_id, live_state, live_file)
+            await _reconcile(db, printer_id, live_state, live_file, live_subtask_id)
             await db.commit()
     except Exception:  # noqa: BLE001 — a background sweep must never crash the connect path
-        logger.exception("reconcile: startup sweep failed for printer %d", printer_id)
+        logger.exception("reconcile: connect-edge sweep failed for printer %d", printer_id)

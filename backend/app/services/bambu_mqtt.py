@@ -606,7 +606,7 @@ class BambuMQTTClient:
         on_layer_change: Callable[[int], None] | None = None,
         on_macro_complete: Callable[[str, str], None] | None = None,
         on_kprofiles_changed: Callable[[], None] | None = None,
-        on_first_status: Callable[[str, str], None] | None = None,
+        on_first_status: Callable[[str, str, str], None] | None = None,
         on_drying_complete: Callable[[int], None] | None = None,
         on_print_running_observed: Callable[[dict], None] | None = None,
     ):
@@ -762,9 +762,14 @@ class BambuMQTTClient:
         self._timelapse_during_print = prior._timelapse_during_print
         self._last_valid_progress = prior._last_valid_progress
         self._last_valid_layer_num = prior._last_valid_layer_num
-        # A stale-watchdog reconnect must not re-fire the startup sweep —
-        # carrying the flag keeps it a genuine once-per-fresh-start event.
-        self._startup_reconcile_done = prior._startup_reconcile_done
+        # Re-arm the connect-edge reconcile sweep on every client recreation
+        # (#1542 follow-up): a print that finished during a disconnect window —
+        # or a firmware ghost-replay that reran the file under a new subtask —
+        # is only caught by re-running the sweep after the reconnect. Re-running
+        # is idempotent: while the same print is genuinely still RUNNING the
+        # sweep classifies it "running" and no-ops, so re-firing after a
+        # frequent stale-watchdog reconnect is harmless.
+        self._startup_reconcile_done = False
 
     @property
     def topic_subscribe(self) -> str:
@@ -2428,15 +2433,16 @@ class BambuMQTTClient:
         if "subtask_id" in data:
             self.state.subtask_id = data["subtask_id"]
 
-        # One-shot startup print reconciliation — the first full status
-        # after a fresh connect. A print that finished while BamDude was
-        # stopped arrives here with no RUNNING history, so live completion
-        # detection cannot fire; the reconcile sweep closes it instead. A
-        # stale-watchdog reconnect carries _startup_reconcile_done=True via
-        # carry_print_lifecycle_from, so this never double-fires.
+        # Connect-edge print reconciliation — the first full status after each
+        # fresh connect. A print that finished while BamDude was stopped or
+        # disconnected arrives here with no RUNNING history, so live completion
+        # detection cannot fire; the reconcile sweep closes it instead. The flag
+        # is a per-client one-shot (so only the FIRST status of this connection
+        # fires it) but is re-armed on each new client in carry_print_lifecycle_from,
+        # so a later disconnect/reconnect re-runs the sweep (#1542 follow-up).
         if not self._startup_reconcile_done and "gcode_state" in data and "gcode_file" in data and self.on_first_status:
             self._startup_reconcile_done = True
-            self.on_first_status(self.state.state, self.state.gcode_file or "")
+            self.on_first_status(self.state.state, self.state.gcode_file or "", self.state.subtask_id or "")
 
         if "mc_percent" in data:
             # Save last non-zero progress for usage tracking (firmware resets to 0 on cancel)

@@ -15,6 +15,7 @@ from backend.app.services.print_reconciliation import (
     _reconcile,
     _reconcile_complete_archive,
     _slicer_estimates,
+    _subtask_stale,
 )
 
 # ---------- _classify / _file_matches (pure) ----------
@@ -41,6 +42,24 @@ def test_classify_no_file_match_is_uncertain():
     assert _classify("FINISH", file_match=False) == "uncertain"
     assert _classify("FAILED", file_match=False) == "uncertain"
     assert _classify("IDLE", file_match=False) == "uncertain"
+
+
+def test_classify_same_file_different_subtask_is_ghost_replay():
+    # Same file still RUNNING but under a new subtask_id — a firmware replay
+    # superseded the tracked print, so it's closed uncertain, not "running"
+    # (#1542 follow-up).
+    assert _classify("RUNNING", file_match=True, subtask_stale=True) == "uncertain"
+    assert _classify("PAUSE", file_match=True, subtask_stale=True) == "uncertain"
+
+
+def test_subtask_stale_requires_both_ids_known_and_differing():
+    assert _subtask_stale("A", "B") is True
+    assert _subtask_stale("A", "A") is False
+    # Missing on either side is ambiguous — never forces a close.
+    assert _subtask_stale(None, "B") is False
+    assert _subtask_stale("A", "") is False
+    assert _subtask_stale("", "") is False
+    assert _subtask_stale("  A ", "A") is False  # whitespace-normalised
 
 
 def test_file_matches_tolerates_path_and_extension():
@@ -80,6 +99,7 @@ async def _make_archive(db, **overrides):
         started_at=datetime.now(timezone.utc),
         print_time_seconds=overrides.get("print_time_seconds"),
         filament_used_grams=overrides.get("filament_used_grams"),
+        subtask_id=overrides.get("subtask_id"),
     )
     db.add(archive)
     await db.flush()
@@ -153,6 +173,25 @@ async def test_reconcile_running_same_file_is_left_alone(db_session):
     archive = await _make_archive(db_session, filename="widget.3mf")
     await _reconcile(db_session, printer_id=1, live_state="RUNNING", live_file="widget.3mf")
     assert archive.status == "printing"  # still printing — untouched
+
+
+@pytest.mark.asyncio
+async def test_reconcile_same_subtask_still_running_is_left_alone(db_session):
+    # Same file, same subtask, still RUNNING — genuinely in progress; untouched.
+    archive = await _make_archive(db_session, filename="widget.3mf", subtask_id="task-1")
+    await _reconcile(db_session, printer_id=1, live_state="RUNNING", live_file="widget.3mf", live_subtask_id="task-1")
+    assert archive.status == "printing"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_ghost_replay_new_subtask_closes_uncertain(db_session):
+    # Same file still RUNNING but under a new subtask_id — a firmware replay
+    # superseded the tracked print; close it uncertain instead of leaving it
+    # stuck at "printing" forever (#1542 follow-up).
+    archive = await _make_archive(db_session, filename="widget.3mf", subtask_id="task-1")
+    await _reconcile(db_session, printer_id=1, live_state="RUNNING", live_file="widget.3mf", live_subtask_id="task-2")
+    assert archive.status == "completed"
+    assert archive.extra_data["recovered_outcome_uncertain"] is True
 
 
 @pytest.mark.asyncio
