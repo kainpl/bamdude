@@ -74,12 +74,24 @@ _PROFILES: dict[str, FTPProfile] = {
     "P2S": FTPProfile(
         cap_tls_v1_2=True,
     ),
+    # X2D firmware 01.01.00.00 fails the implicit-FTPS handshake outright
+    # against Python 3.13's default TLS-1.3 ClientHello with
+    # `[SSL: WRONG_VERSION_NUMBER]` (#1638, reporter @vasmarfas). The 3MF
+    # download at print start never connects, so archive cards land empty
+    # (no filament / layers / MakerWorld link / thumbnail) and Spoolman
+    # tracking goes silent. Cap to TLS 1.2 so the ClientHello matches what
+    # the firmware accepted before the Python upgrade. Conservative — every
+    # other model stays on negotiated TLS 1.3.
+    "X2D": FTPProfile(
+        cap_tls_v1_2=True,
+    ),
 }
 
 # SSDP internal codes that should resolve to a display-name profile.
 # Mirrors the same map in :mod:`camera_profiles`.
 _MODEL_ALIASES: dict[str, str] = {
     "N7": "P2S",  # P2S internal SSDP code
+    "N6": "X2D",  # X2D internal SSDP code
 }
 
 
