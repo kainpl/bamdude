@@ -864,8 +864,8 @@ async def restore_spool(
         raise HTTPException(status_code=502, detail="Spoolman returned malformed spool data") from exc
 
 
-@router.post("/spools/{spool_id}/reset-usage")
-async def reset_spool_usage(
+@router.post("/spools/{spool_id}/reset-consumed-counter")
+async def reset_spool_consumed_counter(
     spool_id: int = Path(..., gt=0),
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
@@ -886,8 +886,8 @@ async def reset_spool_usage(
         raise HTTPException(status_code=502, detail="Spoolman returned malformed spool data") from exc
 
 
-@router.post("/spools/reset-usage-bulk")
-async def bulk_reset_spool_usage(
+@router.post("/spools/reset-consumed-counter-bulk")
+async def bulk_reset_spool_consumed_counter(
     payload: dict = Body(...),
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),

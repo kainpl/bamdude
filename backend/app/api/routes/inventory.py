@@ -1296,13 +1296,17 @@ async def restore_spool(
     return result.scalar_one()
 
 
-@router.post("/spools/{spool_id}/reset-usage", response_model=SpoolResponse)
-async def reset_spool_usage(
+@router.post("/spools/{spool_id}/reset-consumed-counter", response_model=SpoolResponse)
+async def reset_spool_consumed_counter(
     spool_id: int,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
     """Zero the displayed "Total Consumed" counter without touching remaining.
+
+    Renamed from ``/reset-usage`` (#1644): the old name implied it would drop
+    ``weight_used`` to 0, but it only stamps the baseline so the "Total Consumed"
+    widget reads 0 going forward — ``weight_used`` (and remaining) are unchanged.
 
     Stamps ``weight_used_baseline = weight_used`` so the Inventory page's
     ``max(0, weight_used - baseline)`` display reads 0, while
@@ -1323,8 +1327,8 @@ async def reset_spool_usage(
     return result.scalar_one()
 
 
-@router.post("/spools/reset-usage-bulk")
-async def bulk_reset_spool_usage(
+@router.post("/spools/reset-consumed-counter-bulk")
+async def bulk_reset_spool_consumed_counter(
     payload: dict,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),

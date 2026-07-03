@@ -22,6 +22,10 @@ All notable changes to BamDude will be documented in this file.
 
 - **Build plate type is now shown on queue items and in the print dialog.** On a farm with many plates it wasn't obvious which physical plate a queued job needs — the archive card showed the plate type but the queue and the scheduling dialog didn't. Each pending queue item now carries a build-plate icon (hover for the name), and the print dialog shows the selected plate's type next to the plate picker. Multi-plate 3MFs are handled per-plate: the value re-reads the file for the plate you actually picked instead of assuming every plate uses the first plate's bed, so a file mixing (say) Textured PEI and Engineering plates labels each one correctly.
 
+### Changed
+
+- **The inventory "Reset usage" action is now called "Reset counter".** The old name suggested it would wipe the spool's used-grams to 0, but it only zeroes the displayed **Total Consumed** counter — the spool's remaining weight is untouched. The button, confirmation dialogs, and tooltips now say "Reset counter" and spell out that remaining weight isn't changed. (The underlying API endpoints were renamed to match, from `…/reset-usage` to `…/reset-consumed-counter`.)
+
 ### Fixed
 
 - **Assigning certain Polymaker (and other partner) spools now shows in the slicer immediately.** Some cloud filament presets — notably Polymaker's "(Custom)" Bambu Lab H2D variants — use a `PFCN…` preset id that the assign flow didn't recognise as a cloud id (it only handled `GFS…` and `PFUS…`). The raw id was pushed to the AMS slot, so the slicer's filament dropdown showed "unknown" until you opened Configure. `PFCN…` presets are now resolved to their underlying filament id just like the other cloud shapes, so the slot is recognised right after assigning.

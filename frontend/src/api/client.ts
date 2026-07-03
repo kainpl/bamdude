@@ -6061,10 +6061,10 @@ export const api = {
     request<InventorySpool>(`/inventory/spools/${id}/archive`, { method: 'POST' }),
   restoreSpool: (id: number) =>
     request<InventorySpool>(`/inventory/spools/${id}/restore`, { method: 'POST' }),
-  resetSpoolUsage: (id: number) =>
-    request<InventorySpool>(`/inventory/spools/${id}/reset-usage`, { method: 'POST' }),
-  bulkResetSpoolUsage: (spoolIds: number[]) =>
-    request<{ reset: number }>(`/inventory/spools/reset-usage-bulk`, {
+  resetSpoolConsumedCounter: (id: number) =>
+    request<InventorySpool>(`/inventory/spools/${id}/reset-consumed-counter`, { method: 'POST' }),
+  bulkResetSpoolConsumedCounter: (spoolIds: number[]) =>
+    request<{ reset: number }>(`/inventory/spools/reset-consumed-counter-bulk`, {
       method: 'POST',
       body: JSON.stringify({ spool_ids: spoolIds }),
     }),
@@ -6120,10 +6120,10 @@ export const api = {
     request<InventorySpool>(`/spoolman/inventory/spools/${id}/archive`, { method: 'POST' }),
   restoreSpoolmanInventorySpool: (id: number) =>
     request<InventorySpool>(`/spoolman/inventory/spools/${id}/restore`, { method: 'POST' }),
-  resetSpoolmanInventorySpoolUsage: (id: number) =>
-    request<InventorySpool>(`/spoolman/inventory/spools/${id}/reset-usage`, { method: 'POST' }),
-  bulkResetSpoolmanInventorySpoolUsage: (spoolIds: number[]) =>
-    request<{ reset: number }>(`/spoolman/inventory/spools/reset-usage-bulk`, {
+  resetSpoolmanInventorySpoolConsumedCounter: (id: number) =>
+    request<InventorySpool>(`/spoolman/inventory/spools/${id}/reset-consumed-counter`, { method: 'POST' }),
+  bulkResetSpoolmanInventorySpoolConsumedCounter: (spoolIds: number[]) =>
+    request<{ reset: number }>(`/spoolman/inventory/spools/reset-consumed-counter-bulk`, {
       method: 'POST',
       body: JSON.stringify({ spool_ids: spoolIds }),
     }),
