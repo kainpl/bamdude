@@ -192,6 +192,11 @@ class TLSProxy:
         ctx.load_cert_chain(self.server_cert_path, self.server_key_path)
         # Allow older TLS versions for compatibility with slicers
         ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        # Slicer side of Proxy mode — the other half of the #620 cipher fix
+        # (which only ever patched the printer-facing client context below).
+        # Without this pin a hardened-crypto-policy host strips the plain-RSA
+        # AES-GCM suites and the slicer's ClientHello finds no overlap (#1610).
+        ctx.set_ciphers("DEFAULT:AES256-GCM-SHA384:AES128-GCM-SHA256")
         # Don't require client certificates
         ctx.verify_mode = ssl.CERT_NONE
         return ctx

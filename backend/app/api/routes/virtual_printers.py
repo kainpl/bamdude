@@ -568,6 +568,20 @@ async def delete_virtual_printer(
 
     logger.info("Deleted virtual printer: %s (id=%d)", vp_name, vp_id)
 
+    # Remove the VP's on-disk upload dir (uploads/<vp_id>) — the DB row is gone
+    # so any leftover cache/temp files there are orphaned and would accumulate
+    # across create/delete churn. Done after the commit so a crash between only
+    # leaves orphan files (harmless, swept by prune scripts), never an orphan DB
+    # row (upstream Bambuddy v0.2.4.5).
+    try:
+        upload_dir = virtual_printer_manager._base_dir / "uploads" / str(vp_id)
+        if upload_dir.exists():
+            import shutil
+
+            shutil.rmtree(upload_dir, ignore_errors=True)
+    except Exception as e:
+        logger.error("Failed to remove upload dir for VP %d: %s", vp_id, e)
+
     # Resync remaining services
     try:
         await virtual_printer_manager.sync_from_db()

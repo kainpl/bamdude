@@ -82,6 +82,33 @@ _SLICER_VISIBLE_STICKY_KEYS: tuple[str, ...] = (
 )
 
 
+def _resolve_host_interface_for_target(target_ip: str) -> str | None:
+    """Pick a host-side IPv4 for ``net.info[].ip`` when the VP has no dedicated bind IP.
+
+    Used when ``mqtt_server.bind_address`` is empty or ``0.0.0.0`` (the default
+    for VPs created without a dedicated bind IP) — the listener accepts on every
+    interface, but we still need ONE concrete IPv4 to write into the rewritten
+    ``net.info[].ip`` so the slicer's FTP target resolves to the VP rather than
+    the real printer. Returns the IPv4 of the host interface sharing a subnet
+    with the printer (the slicer is typically on the same LAN as the printer),
+    or ``None`` if none matches — in which case encoding stays unarmed and the
+    previous (still-leaky) behaviour stands (#1429 residual, flat-LAN default).
+    """
+    try:
+        from backend.app.services.network_utils import find_interface_for_ip
+    except Exception:  # pragma: no cover - import shielding
+        return None
+    try:
+        iface = find_interface_for_ip(target_ip)
+    except Exception:
+        logger.exception("MQTT bridge: find_interface_for_ip(%s) crashed", target_ip)
+        return None
+    if not iface:
+        return None
+    ip = iface.get("ip")
+    return ip if isinstance(ip, str) and ip else None
+
+
 def _ip_to_uint32_le(ip_str: str) -> int:
     """Encode dotted-quad IPv4 as little-endian uint32 (Bambu MQTT's ``net.info[].ip`` shape)."""
     parts = [int(x) for x in ip_str.split(".")]
@@ -265,6 +292,10 @@ class MQTTBridge:
             raise
         except Exception:
             logger.exception("[%s] MQTT bridge refresh loop crashed", self.vp_name)
+            # The loop is dead and can't recover; unbind the raw-message handler
+            # so the now-orphaned bridge stops processing the printer's stream on
+            # a client it will never re-resolve (upstream Bambuddy v0.2.4.5).
+            self._unbind_client()
 
     def _resolve_client(self) -> None:
         """Look up the current client for ``target_printer_id`` and rebind if it changed."""
@@ -306,10 +337,28 @@ class MQTTBridge:
         # bypasses the VP and FTPs straight to the real printer.
         target_ip = getattr(current, "ip_address", None)
         vp_ip = getattr(self._mqtt_server, "bind_address", None)
+        vp_ip_source = "bind_address"
+        # When the VP has no dedicated bind IP (empty / 0.0.0.0 — the flat-LAN
+        # default), auto-resolve the host interface in the printer's subnet so
+        # the net.info rewrite still arms. Without this, encoding never armed on
+        # a default install and the slicer followed the real printer IP on Send
+        # (#1429 residual, upstream cdc27eb5).
+        if target_ip and vp_ip in ("0.0.0.0", "", None):  # nosec B104
+            resolved = _resolve_host_interface_for_target(target_ip)
+            if resolved:
+                vp_ip = resolved
+                vp_ip_source = "auto-resolved"
         if target_ip and vp_ip and vp_ip not in ("0.0.0.0", "", None):  # nosec B104
             try:
                 self._target_ip_uint32_le = _ip_to_uint32_le(target_ip)
                 self._vp_ip_uint32_le = _ip_to_uint32_le(vp_ip)
+                logger.info(
+                    "[%s] MQTT bridge net.info IP encoding armed: target=%s vp=%s (%s)",
+                    self.vp_name,
+                    target_ip,
+                    vp_ip,
+                    vp_ip_source,
+                )
             except ValueError:
                 self._target_ip_uint32_le = None
                 self._vp_ip_uint32_le = None

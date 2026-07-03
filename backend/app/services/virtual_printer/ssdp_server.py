@@ -57,6 +57,8 @@ class VirtualPrinterSSDPServer:
         self._running = False
         self._socket: socket.socket | None = None
         self._extra_sockets: list[socket.socket] = []
+        # Set once the UDP socket is bound (V6 readiness barrier).
+        self.ready = asyncio.Event()
         self._extra_interfaces = extra_interfaces or []
         self._local_ip: str | None = advertise_ip or bind_ip or None
 
@@ -194,6 +196,8 @@ class VirtualPrinterSSDPServer:
                 except OSError as e:
                     logger.warning("SSDP server: failed to bind extra interface %s: %s", iface_ip, e)
 
+            self.ready.set()
+
             # Send initial NOTIFY
             await self._send_notify()
             logger.info("Sent initial SSDP NOTIFY announcement")
@@ -249,6 +253,7 @@ class VirtualPrinterSSDPServer:
         """Stop the SSDP server."""
         logger.info("Stopping SSDP server")
         self._running = False
+        self.ready.clear()
         await self._cleanup()
 
     async def _cleanup(self) -> None:

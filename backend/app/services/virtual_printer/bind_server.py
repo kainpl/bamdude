@@ -64,6 +64,8 @@ class BindServer:
 
         self._servers: list[asyncio.Server] = []
         self._running = False
+        # Set once at least one listening socket is bound (V6 readiness barrier).
+        self.ready = asyncio.Event()
 
     def _create_tls_context(self) -> ssl.SSLContext | None:
         """Create SSL context for the TLS bind port (3002)."""
@@ -72,6 +74,13 @@ class BindServer:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.load_cert_chain(str(self.cert_path), str(self.key_path))
         ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        # Match real Bambu printer cipher behaviour: include the plain-RSA
+        # AES-GCM suites the slicer's ClientHello offers. On hardened-crypto-
+        # policy hosts (Fedora/RHEL update-crypto-policies, hardened Alpine)
+        # OpenSSL's DEFAULT strips these, leaving no overlap → the slicer aborts
+        # with code=-1 after the TCP handshake on Queue/Review/Archive VP modes
+        # (#1610). Mirrors the #620 client-side pin in tcp_proxy.py.
+        ctx.set_ciphers("DEFAULT:AES256-GCM-SHA384:AES128-GCM-SHA256")
         ctx.verify_mode = ssl.CERT_NONE
         return ctx
 
@@ -123,6 +132,8 @@ class BindServer:
                 logger.error("Bind server: could not bind to any port")
                 return
 
+            self.ready.set()
+
             # Serve all successfully bound ports
             await asyncio.gather(*(s.serve_forever() for s in self._servers))
 
@@ -137,6 +148,7 @@ class BindServer:
         """Stop the bind server."""
         logger.info("Stopping bind server")
         self._running = False
+        self.ready.clear()
 
         for server in self._servers:
             try:

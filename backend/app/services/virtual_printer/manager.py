@@ -602,6 +602,19 @@ class VirtualPrinterInstance:
                 # rows can't serve here (upstream Bambuddy #1235).
                 system_opts = await self._load_system_print_options(db, queue.printer_id)
 
+                # Append at the tail: MAX(position)+1 for this queue. A hardcoded
+                # position=1 stacked every VP-queued print at the head, so two
+                # slicer Sends in a row collided on position 1 and their order
+                # became arbitrary (upstream Bambuddy v0.2.4.5).
+                from sqlalchemy import func as sa_func, select as sa_select
+
+                max_pos = await db.scalar(
+                    sa_select(sa_func.coalesce(sa_func.max(PrintQueueItem.position), 0)).where(
+                        PrintQueueItem.queue_id == queue.id
+                    )
+                )
+                next_pos = (max_pos or 0) + 1
+
                 # Precedence per flag: slicer value → system fallback → column
                 # default (see ``_resolve_print_option``).
                 queue_item = PrintQueueItem(
@@ -609,7 +622,7 @@ class VirtualPrinterInstance:
                     library_file_id=library_file.id,
                     archive_id=None,  # archive created at print-start by _run_print_library_file
                     plate_id=plate_id,
-                    position=1,
+                    position=next_pos,
                     status="pending",
                     manual_start=not self.auto_dispatch,
                     bed_levelling=_resolve_print_option(
@@ -1083,6 +1096,33 @@ class VirtualPrinterInstance:
             )
         )
 
+        # Wait briefly for every child service to actually bind its socket so
+        # ``is_running`` doesn't report ready while ports are still in the gap
+        # between task creation and ``asyncio.start_server`` returning — a caller
+        # racing the start (diagnostic route, VP-card poll, integration test)
+        # would otherwise see running=True but port checks fail. Bounded 5 s: if
+        # a child hangs binding we log and continue, and the existing task
+        # tracking still catches the failure on the next iteration (V6, upstream
+        # Bambuddy v0.2.4.5).
+        ready_targets = [
+            ("FTP", self._ftp.ready),
+            ("MQTT", self._mqtt.ready),
+            ("Bind", self._bind.ready),
+            ("SSDP", self._ssdp.ready),
+        ]
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*(e.wait() for _, e in ready_targets)),
+                timeout=5.0,
+            )
+        except TimeoutError:
+            not_ready = [name for name, e in ready_targets if not e.is_set()]
+            logger.warning(
+                "[VP %s] Sub-service(s) didn't bind within 5s: %s — continuing anyway",
+                self.name,
+                ", ".join(not_ready) or "(none)",
+            )
+
         logger.info("[VP %s] Server-mode services started on %s", self.name, bind_addr)
 
     async def stop_server(self) -> None:
@@ -1238,6 +1278,11 @@ class VirtualPrinterManager:
         self._session_factory: Callable | None = None
         self._printer_manager: PrinterManager | None = None
         self._instances: dict[int, VirtualPrinterInstance] = {}
+        # Serialises sync_from_db — concurrent PUT /virtual-printers/{id} routes
+        # all reconcile through here; without the lock a start/stop sequence
+        # races and can leave duplicate sub-services bound to the same port or
+        # orphan still-running tasks (upstream Bambuddy v0.2.4.5).
+        self._sync_lock = asyncio.Lock()
 
         # Directories
         self._base_dir = app_settings.base_dir / "virtual_printer"
@@ -1283,11 +1328,22 @@ class VirtualPrinterManager:
         return len(self._instances) > 0
 
     async def sync_from_db(self) -> None:
-        """Load all VPs from DB, reconcile running state."""
+        """Load all VPs from DB, reconcile running state.
+
+        Serialised by ``self._sync_lock`` — concurrent PUT /virtual-printers/{id}
+        routes all reconcile here; without the lock the start/stop sequence
+        races and can leave duplicate sub-services bound to the same port or
+        orphan still-running tasks.
+        """
         if not self._session_factory:
             logger.warning("Cannot sync virtual printers: no session factory")
             return
 
+        async with self._sync_lock:
+            await self._sync_from_db_locked()
+
+    async def _sync_from_db_locked(self) -> None:
+        """Inner sync body — caller holds ``self._sync_lock``."""
         from sqlalchemy import select
 
         from backend.app.models.printer import Printer
@@ -1323,6 +1379,20 @@ class VirtualPrinterManager:
             if not instance:
                 continue
 
+            # Proxy mode: detect a target-printer IP / serial change picked up by
+            # the ``proxy_ips`` resolve above. Without this a DHCP renewal that
+            # hands the target a new IP leaves the running proxy forwarding to
+            # the stale address until the user manually toggles the VP (#1552
+            # follow-up family, upstream v0.2.4.5). ``target_printer_id`` alone
+            # doesn't catch it — the config still points at the same printer.
+            proxy_target_changed = False
+            if vp.mode == "proxy":
+                fresh = proxy_ips.get(vp.id)
+                if fresh is not None:
+                    fresh_ip, fresh_serial = fresh
+                    if instance.target_printer_ip != fresh_ip or instance.target_printer_serial != fresh_serial:
+                        proxy_target_changed = True
+
             changed = (
                 instance.mode != vp.mode
                 or instance.model != (vp.model or DEFAULT_VIRTUAL_PRINTER_MODEL)
@@ -1333,6 +1403,7 @@ class VirtualPrinterManager:
                 or instance.target_folder_id != vp.target_folder_id
                 or instance.auto_dispatch != vp.auto_dispatch
                 or instance.queue_force_color_match != vp.queue_force_color_match
+                or proxy_target_changed
                 # tailscale_disabled is informational only (#1070 post-rip-out):
                 # the toggle decides whether the VP card surfaces the host's
                 # Tailscale IP / hostname, but does NOT change the cert path

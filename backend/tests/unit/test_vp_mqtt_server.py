@@ -225,3 +225,44 @@ class TestAuthRateLimit:
             server._record_auth_failure("1.2.3.4")
         server._clear_auth_failures("1.2.3.4")
         assert server._is_auth_rate_limited("1.2.3.4") is False
+
+
+class TestPendingRequestRouting:
+    """Per-slicer response routing (upstream Bambuddy v0.2.4.5)."""
+
+    def test_record_captures_seq_from_nested_block(self):
+        server = _make_server()
+        server._record_pending_request({"print": {"sequence_id": "42", "command": "x"}}, "clientA")
+        assert server._pending_requests == {"42": "clientA"}
+
+    def test_lookup_routes_to_originating_client_and_pops(self):
+        import json
+
+        server = _make_server()
+        server._record_pending_request({"info": {"sequence_id": "7"}}, "clientA")
+        payload = json.dumps({"info": {"sequence_id": "7", "result": "ok"}}).encode()
+        assert server._lookup_pending_request_client(payload) == "clientA"
+        # One-shot: the entry is popped so a later push falls through to broadcast.
+        assert server._lookup_pending_request_client(payload) is None
+
+    def test_fifo_eviction_at_cap(self):
+        from backend.app.services.virtual_printer.mqtt_server import _PENDING_REQUEST_MAX_ENTRIES
+
+        server = _make_server()
+        for i in range(_PENDING_REQUEST_MAX_ENTRIES + 10):
+            server._record_pending_request({"print": {"sequence_id": str(i)}}, f"c{i}")
+        assert len(server._pending_requests) == _PENDING_REQUEST_MAX_ENTRIES
+        # The oldest keys were evicted; the newest survive.
+        assert "0" not in server._pending_requests
+        assert str(_PENDING_REQUEST_MAX_ENTRIES + 9) in server._pending_requests
+
+    def test_malformed_payload_falls_back_to_broadcast(self):
+        server = _make_server()
+        assert server._lookup_pending_request_client(b"not json{{{") is None
+
+    def test_unrecorded_seq_falls_back_to_broadcast(self):
+        import json
+
+        server = _make_server()
+        payload = json.dumps({"print": {"sequence_id": "999"}}).encode()
+        assert server._lookup_pending_request_client(payload) is None

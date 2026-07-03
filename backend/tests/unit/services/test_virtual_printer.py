@@ -2180,9 +2180,9 @@ class TestBindServer:
         )
 
         with (
-            patch("backend.app.services.virtual_printer.manager.VirtualPrinterSSDPServer"),
-            patch("backend.app.services.virtual_printer.manager.VirtualPrinterFTPServer"),
-            patch("backend.app.services.virtual_printer.manager.SimpleMQTTServer"),
+            patch("backend.app.services.virtual_printer.manager.VirtualPrinterSSDPServer") as mock_ssdp_cls,
+            patch("backend.app.services.virtual_printer.manager.VirtualPrinterFTPServer") as mock_ftp_cls,
+            patch("backend.app.services.virtual_printer.manager.SimpleMQTTServer") as mock_mqtt_cls,
             patch("backend.app.services.virtual_printer.manager.BindServer") as mock_bind_cls,
             patch.object(inst._cert_service, "delete_printer_certificate"),
             patch.object(
@@ -2191,6 +2191,13 @@ class TestBindServer:
                 return_value=(Path("/tmp/cert.pem"), Path("/tmp/key.pem")),  # nosec B108
             ),
         ):
+            # The readiness barrier (V6) awaits each child's ``ready`` Event, so
+            # the mocked instances need a real, already-set Event.
+            for cls in (mock_ssdp_cls, mock_ftp_cls, mock_mqtt_cls, mock_bind_cls):
+                ready = asyncio.Event()
+                ready.set()
+                cls.return_value.ready = ready
+
             await inst.start_server()
 
             mock_bind_cls.assert_called_once_with(

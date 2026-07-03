@@ -618,6 +618,8 @@ class VirtualPrinterFTPServer:
         self._running = False
         self._ssl_context: ssl.SSLContext | None = None
         self._active_sessions: list[asyncio.Task] = []
+        # Set once the listening socket is bound (V6 readiness barrier).
+        self.ready = asyncio.Event()
         # Override PASV response IP for Docker bridge mode / NAT environments
         self._pasv_address = os.environ.get("VIRTUAL_PRINTER_PASV_ADDRESS", "")
 
@@ -639,8 +641,12 @@ class VirtualPrinterFTPServer:
         self._ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
         self._ssl_context.maximum_version = ssl.TLSVersion.TLSv1_2
 
-        # Use standard TLS settings for compatibility
-        self._ssl_context.set_ciphers("HIGH:!aNULL:!MD5:!RC4")
+        # Keep the historical HIGH:!aNULL:!MD5:!RC4 baseline (a strict superset —
+        # never narrow a compat surface without proof) but additionally pin the
+        # plain-RSA AES-GCM suites real Bambu printers offer, so a hardened
+        # crypto policy that strips them from HIGH can't break the FTPS upload
+        # handshake (#1610).
+        self._ssl_context.set_ciphers("HIGH:AES256-GCM-SHA384:AES128-GCM-SHA256:!aNULL:!MD5:!RC4")
 
         logger.info("FTP SSL context created with standard settings")
 
@@ -653,6 +659,7 @@ class VirtualPrinterFTPServer:
                 ssl=self._ssl_context,  # This makes it implicit FTPS!
             )
             self._running = True
+            self.ready.set()
 
             logger.info("Implicit FTPS server started on port %s", self.port)
             logger.info(
@@ -713,14 +720,19 @@ class VirtualPrinterFTPServer:
         """Stop the FTPS server."""
         logger.info("Stopping FTP server")
         self._running = False
+        self.ready.clear()
 
-        # Cancel all active sessions first
-        for task in self._active_sessions[:]:  # Copy list to avoid modification during iteration
+        # Cancel all active sessions and await their teardown (bounded) rather
+        # than a fixed sleep — a slow session could otherwise outlive stop() and
+        # keep a data socket bound (upstream Bambuddy v0.2.4.5).
+        sessions = self._active_sessions[:]  # copy: tasks remove themselves on exit
+        for task in sessions:
             task.cancel()
-
-        # Wait briefly for sessions to clean up
-        if self._active_sessions:
-            await asyncio.sleep(0.1)
+        if sessions:
+            try:
+                await asyncio.wait_for(asyncio.gather(*sessions, return_exceptions=True), timeout=5.0)
+            except TimeoutError:
+                logger.warning("FTP server: %d session(s) didn't tear down within 5s", len(sessions))
 
         self._active_sessions.clear()
 

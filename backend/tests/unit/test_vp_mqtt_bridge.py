@@ -221,6 +221,58 @@ class TestPushStatusCache:
         await bridge.stop()
 
     @pytest.mark.asyncio
+    async def test_net_info_ip_rewritten_when_bind_is_wildcard(self):
+        """#1429 residual: with bind_address=0.0.0.0 (flat-LAN default) the
+        encoding must still arm by auto-resolving the host interface, otherwise
+        net.info leaks the real printer IP and Send bypasses the VP."""
+        server = _make_server(bind_address="0.0.0.0")
+        bridge = _make_bridge(server)
+
+        h2d_le = _ip_to_uint32_le(H2D_IP)
+        vp_le = _ip_to_uint32_le(VP_IP)
+        with patch(
+            "backend.app.services.virtual_printer.mqtt_bridge._resolve_host_interface_for_target",
+            return_value=VP_IP,
+        ):
+            await bridge.start()
+
+        payload = json.dumps(
+            {"print": {"command": "push_status", "net": {"info": [{"ip": h2d_le, "mask": 0xFFFFFF}]}}}
+        ).encode()
+        bridge._on_printer_raw(f"device/{H2D_SERIAL}/report", payload)
+        await asyncio.sleep(0.01)
+
+        cached = bridge.get_latest_print_state()
+        assert cached["net"]["info"][0]["ip"] == vp_le  # auto-resolved, not leaked
+        await bridge.stop()
+
+    @pytest.mark.asyncio
+    async def test_net_info_encoding_stays_unarmed_when_no_interface_matches(self):
+        """If auto-resolve finds no host interface in the printer's subnet the
+        encoding stays unarmed and the (leaky) pass-through behaviour stands —
+        we never write a bogus IP into net.info."""
+        server = _make_server(bind_address="0.0.0.0")
+        bridge = _make_bridge(server)
+
+        h2d_le = _ip_to_uint32_le(H2D_IP)
+        with patch(
+            "backend.app.services.virtual_printer.mqtt_bridge._resolve_host_interface_for_target",
+            return_value=None,
+        ):
+            await bridge.start()
+
+        assert bridge._vp_ip_uint32_le is None
+        payload = json.dumps(
+            {"print": {"command": "push_status", "net": {"info": [{"ip": h2d_le, "mask": 0xFFFFFF}]}}}
+        ).encode()
+        bridge._on_printer_raw(f"device/{H2D_SERIAL}/report", payload)
+        await asyncio.sleep(0.01)
+
+        cached = bridge.get_latest_print_state()
+        assert cached["net"]["info"][0]["ip"] == h2d_le  # untouched pass-through
+        await bridge.stop()
+
+    @pytest.mark.asyncio
     async def test_request_topic_message_is_ignored(self):
         server = _make_server()
         bridge = _make_bridge(server)
@@ -414,6 +466,42 @@ class TestStatusReportCachedAsBase:
         _serial, payload = published[0]
         assert payload["print"]["gcode_state"] == "PREPARE"
         assert payload["print"]["gcode_file"] == "foo.3mf"
+
+    @pytest.mark.asyncio
+    async def test_activity_fields_zeroed_when_printer_mid_print(self):
+        """#1558: forcing gcode_state=IDLE isn't enough — Send pre-flight also
+        reads mc_percent / stg_cur / layer_num / …; the cached-as-base path must
+        zero the whole activity set or the slicer reads the real printer's live
+        progress as "busy" and refuses the Send."""
+        server = _make_server()
+        bridge = MagicMock()
+        bridge.get_latest_print_state.return_value = {
+            "command": "push_status",
+            "gcode_state": "RUNNING",  # real printer is mid-print
+            "mc_print_stage": "2",
+            "mc_percent": 47,
+            "mc_remaining_time": 1234,
+            "stg": [1, 2],
+            "stg_cur": 3,
+            "layer_num": 88,
+            "total_layer_num": 200,
+            "print_error": 5,
+        }
+        server.set_bridge(bridge)
+        published = self._capture_published(server)
+
+        await server._send_status_report(MagicMock())
+        _serial, payload = published[0]
+        pb = payload["print"]
+        assert pb["gcode_state"] == "IDLE"
+        assert pb["mc_print_stage"] == ""
+        assert pb["mc_percent"] == 0
+        assert pb["mc_remaining_time"] == 0
+        assert pb["stg"] == []
+        assert pb["stg_cur"] == 0
+        assert pb["layer_num"] == 0
+        assert pb["total_layer_num"] == 0
+        assert pb["print_error"] == 0
 
     @pytest.mark.asyncio
     async def test_storage_indicators_overlaid_for_send_preflight(self):

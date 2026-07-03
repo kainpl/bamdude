@@ -30,6 +30,12 @@ MQTT_PORT = 8883
 _AUTH_RATE_LIMIT_MAX_ATTEMPTS = 5
 _AUTH_RATE_LIMIT_WINDOW_SECONDS = 60.0
 
+# Cap on the sequence_id → client_id map used to route a bridge-forwarded
+# response back to only the slicer that issued the request (upstream Bambuddy
+# v0.2.4.5). FIFO-evicted so a slicer that sends commands without consuming
+# responses can't leak memory.
+_PENDING_REQUEST_MAX_ENTRIES = 256
+
 # Grace window after a ``project_file`` command during which a ``PREPARE`` with
 # no upload yet in flight is still considered live. Covers the gap between the
 # slicer's MQTT print command and it opening the FTP data connection (TLS
@@ -228,6 +234,14 @@ class SimpleMQTTServer:
         # Per-IP failed-CONNECT timestamps (monotonic) for the brute-force guard.
         # Pruned to the sliding window on each check so the dict stays bounded.
         self._auth_failures: dict[str, list[float]] = {}
+        # sequence_id → originating client_id, so a bridge-forwarded response is
+        # routed only to the slicer that asked (not fanned out to every slicer).
+        # FIFO-evicted at _PENDING_REQUEST_MAX_ENTRIES.
+        self._pending_requests: dict[str, str] = {}
+        # Set once the listening socket is actually bound so ``is_running`` on
+        # the parent instance doesn't report ready before the port is open
+        # (V6 readiness barrier, upstream Bambuddy v0.2.4.5).
+        self.ready = asyncio.Event()
         # Per-client serial - the serial the slicer actually uses in topics.
         # Populated from SUBSCRIBE/PUBLISH. Lets the VP respond on the topic
         # the slicer is listening on even when it disagrees with self.serial.
@@ -283,6 +297,11 @@ class SimpleMQTTServer:
         ssl_context.verify_mode = ssl.CERT_NONE
         # Allow TLS 1.2 for broader compatibility (some slicers may not support 1.3)
         ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
+        # Match real Bambu printer cipher behaviour: include the plain-RSA
+        # AES-GCM suites the slicer's MQTT-over-TLS ClientHello offers. On
+        # hardened-crypto-policy hosts OpenSSL's DEFAULT strips them, leaving no
+        # overlap → the handshake fails before any MQTT frame flows (#1610).
+        ssl_context.set_ciphers("DEFAULT:AES256-GCM-SHA384:AES128-GCM-SHA256")
         # Disable hostname checking
         ssl_context.check_hostname = False
 
@@ -328,6 +347,7 @@ class SimpleMQTTServer:
                 self.port,
                 ssl=ssl_context,
             )
+            self.ready.set()
 
             logger.info("Simple MQTT server listening on port %s", self.port)
 
@@ -353,6 +373,7 @@ class SimpleMQTTServer:
         """Stop the MQTT server."""
         logger.info("Stopping simple MQTT server")
         self._running = False
+        self.ready.clear()
 
         # Stop periodic status push
         if self._status_push_task:
@@ -425,10 +446,16 @@ class SimpleMQTTServer:
         logger.info("Periodic status push task stopped")
 
     async def push_raw_to_clients(self, topic: str, payload: bytes) -> None:
-        """Publish a pre-serialized MQTT payload on ``topic`` to every connected slicer.
+        """Publish a pre-serialized MQTT payload on ``topic`` to connected slicers.
 
         Called by ``MQTTBridge`` from the asyncio loop (scheduled via
         ``run_coroutine_threadsafe`` from paho's network thread).
+
+        Routes the response only to the originating slicer when the payload's
+        sequence_id was recorded via ``_record_pending_request`` — otherwise a
+        response to slicer A leaked into slicer B's stream on multi-slicer VP
+        setups (upstream Bambuddy v0.2.4.5). Falls back to fan-out for
+        printer-initiated pushes (push_status etc.) and unrecorded seq ids.
         """
         topic_bytes = topic.encode("utf-8")
         # MQTT remaining-length: 2-byte topic length prefix + topic + message body.
@@ -447,8 +474,12 @@ class SimpleMQTTServer:
         packet.extend(payload)
         frame = bytes(packet)
 
+        target_client_id = self._lookup_pending_request_client(payload)
+
         disconnected = []
         for client_id, writer in list(self._clients.items()):
+            if target_client_id is not None and client_id != target_client_id:
+                continue
             try:
                 if writer.is_closing():
                     disconnected.append(client_id)
@@ -592,6 +623,45 @@ class SimpleMQTTServer:
         else:
             self._auth_failures.pop(source_ip, None)
         return len(recent) >= _AUTH_RATE_LIMIT_MAX_ATTEMPTS
+
+    def _record_pending_request(self, data: dict, client_id: str) -> None:
+        """Stash sequence_id → client_id for any nested block carrying a seq id.
+
+        Slicer commands wrap the seq id in ``{"print": {...}}`` / ``{"info": ...}``
+        etc. Walks the top-level dict values once; if no seq id is present the
+        response just falls through to broadcast (fine for unsolicited pushes).
+        FIFO-evicts at the cap so an unconsumed-response slicer can't leak memory.
+        """
+        for block in data.values():
+            if isinstance(block, dict):
+                seq = block.get("sequence_id")
+                if seq is not None:
+                    key = str(seq)
+                    while len(self._pending_requests) >= _PENDING_REQUEST_MAX_ENTRIES:
+                        oldest = next(iter(self._pending_requests))
+                        self._pending_requests.pop(oldest, None)
+                    self._pending_requests[key] = client_id
+                    return
+
+    def _lookup_pending_request_client(self, payload: bytes) -> str | None:
+        """Return the client_id that issued the request this payload answers.
+
+        ``None`` for printer-initiated pushes (no recorded seq id) so
+        ``push_raw_to_clients`` falls back to broadcast — required for
+        push_status and the other unsolicited pushes every slicer expects.
+        """
+        try:
+            parsed = json.loads(payload)
+        except (ValueError, TypeError):
+            return None
+        if not isinstance(parsed, dict):
+            return None
+        for block in parsed.values():
+            if isinstance(block, dict):
+                seq = block.get("sequence_id")
+                if seq is not None:
+                    return self._pending_requests.pop(str(seq), None)
+        return None
 
     def _record_auth_failure(self, source_ip: str) -> None:
         """Append a timestamp for ``source_ip``'s failed auth attempt."""
@@ -750,6 +820,21 @@ class SimpleMQTTServer:
                 else:
                     # Don't override real subtask_name with empty if no upload pending.
                     print_block.setdefault("subtask_name", "")
+                # Zero the live-progress activity fields (#1558). Forcing
+                # gcode_state=IDLE above isn't enough: BambuStudio's Send
+                # pre-flight also reads mc_percent / stg_cur / layer_num / … and,
+                # if the real printer is mid-print, the cached-as-base path let
+                # those leak through — the slicer read them as "busy" and refused
+                # the Send even though gcode_state said IDLE. The VP is always
+                # idle from the slicer's perspective, so overlay the whole set.
+                print_block["mc_print_stage"] = ""
+                print_block["mc_percent"] = 0
+                print_block["mc_remaining_time"] = 0
+                print_block["stg"] = []
+                print_block["stg_cur"] = 0
+                print_block["layer_num"] = 0
+                print_block["total_layer_num"] = 0
+                print_block["print_error"] = 0
                 # Storage indicators overlay — the synthetic stub below always
                 # bakes these three fields because BambuStudio's Send pre-flight
                 # reads them; the cached-as-base path used to pass the real
@@ -1099,6 +1184,10 @@ class SimpleMQTTServer:
                     message[:200],
                 )
                 return
+
+            # Record sequence_id → this client so a bridge-forwarded response
+            # routes back only to the slicer that issued the command (V5).
+            self._record_pending_request(data, client_id)
 
             # The synthetic flow below is the original (pre-bridge) behaviour
             # and is what the proven-working FTP "Send" depends on. Do NOT
