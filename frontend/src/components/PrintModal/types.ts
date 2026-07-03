@@ -158,6 +158,7 @@ export interface PlateInfo {
   }>;
   print_time_seconds: number | null;
   filament_used_grams: number | null;
+  bed_type?: string | null; // Per-plate build plate type (#1281)
 }
 
 /**

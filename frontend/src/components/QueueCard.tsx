@@ -32,6 +32,7 @@ import { Card, CardContent } from './Card';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { formatETA, formatDuration } from '../utils/date';
+import { getBedTypeInfo } from '../utils/bedType';
 import { mapModelCode } from '../utils/printer';
 import { queueResumePayload } from '../utils/queueStatus';
 
@@ -889,6 +890,22 @@ function PendingItemRow({
                 M
               </span>
             )}
+            {(() => {
+              // Build-plate indicator so the operator knows which plate to mount
+              // before walking to the printer (#1281). Icon-only to fit the
+              // compact row; the label is on hover. Hidden when the 3MF carries
+              // no curr_bed_type or the slicer used an unknown label.
+              const bed = getBedTypeInfo(item.bed_type);
+              if (!bed) return null;
+              return (
+                <img
+                  src={bed.icon}
+                  alt={bed.label}
+                  title={bed.label}
+                  className="w-3.5 h-3.5 object-contain flex-shrink-0"
+                />
+              );
+            })()}
           </div>
           {item.waiting_reason && (
             <p className="text-[10px] text-yellow-400 truncate">{item.waiting_reason}</p>

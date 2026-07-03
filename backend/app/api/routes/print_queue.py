@@ -34,7 +34,7 @@ from backend.app.schemas.print_queue import (
 )
 from backend.app.services.notification_service import notification_service
 from backend.app.utils.filename import InvalidFilenameError, validate_print_filename
-from backend.app.utils.threemf_tools import extract_filament_usage_from_3mf
+from backend.app.utils.threemf_tools import extract_bed_type_from_3mf, extract_filament_usage_from_3mf
 
 logger = logging.getLogger(__name__)
 
@@ -217,6 +217,7 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
             response.layer_height = item.archive.layer_height
             response.nozzle_diameter = item.archive.nozzle_diameter
             response.sliced_for_model = item.archive.sliced_for_model
+            response.bed_type = item.archive.bed_type
             if item.plate_id:
                 archive_path = settings.base_dir / item.archive.file_path
                 if archive_path.exists():
@@ -224,10 +225,13 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
                     plate_weight = sum(
                         f["used_g"] for f in extract_filament_usage_from_3mf(archive_path, item.plate_id)
                     )
+                    plate_bed = extract_bed_type_from_3mf(archive_path, item.plate_id)
                     if plate_time is not None:
                         response.print_time_seconds = plate_time
                     if plate_weight > 0:
                         response.filament_used_grams = plate_weight
+                    if plate_bed:
+                        response.bed_type = plate_bed
     if item.library_file:
         response.library_file_name = (
             item.library_file.file_metadata.get("print_name") if item.library_file.file_metadata else None
@@ -244,6 +248,7 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
             response.layer_height = item.library_file.file_metadata.get("layer_height")
             response.nozzle_diameter = item.library_file.file_metadata.get("nozzle_diameter")
             response.sliced_for_model = item.library_file.file_metadata.get("sliced_for_model")
+            response.bed_type = item.library_file.file_metadata.get("bed_type")
         if item.plate_id:
             lib_path = Path(item.library_file.file_path)
             library_file_path = lib_path if lib_path.is_absolute() else settings.base_dir / item.library_file.file_path
@@ -252,10 +257,13 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
                 plate_weight = sum(
                     f["used_g"] for f in extract_filament_usage_from_3mf(library_file_path, item.plate_id)
                 )
+                plate_bed = extract_bed_type_from_3mf(library_file_path, item.plate_id)
                 if plate_time is not None:
                     response.print_time_seconds = plate_time
                 if plate_weight > 0:
                     response.filament_used_grams = plate_weight
+                if plate_bed:
+                    response.bed_type = plate_bed
     if item.queue and item.queue.printer:
         response.printer_name = item.queue.printer.name
     return response

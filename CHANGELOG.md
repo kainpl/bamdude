@@ -17,6 +17,10 @@ All notable changes to BamDude will be documented in this file.
 - **Refresh button on the slice dialog's preset list.** The slice dialog caches the cloud and bundled preset listings for a few minutes; if you delete or rename a preset in Bambu Studio / Bambu Handy it could take a while to disappear from the dropdown. A new **Refresh** control fetches the latest listings immediately. Importing or deleting a local profile in Settings also refreshes the slice dialog's presets right away.
 - **Transparent / clear filament is now a first-class colour.** The spool colour editor has a new **Clear** quick-swatch (and the hex field accepts an 8-digit `RRGGBBAA` value) so you can mark a spool as transparent. Clear spools render as a checkerboard swatch throughout the app instead of an invisible or solid-black chip.
 
+### Added
+
+- **Build plate type is now shown on queue items and in the print dialog.** On a farm with many plates it wasn't obvious which physical plate a queued job needs — the archive card showed the plate type but the queue and the scheduling dialog didn't. Each pending queue item now carries a build-plate icon (hover for the name), and the print dialog shows the selected plate's type next to the plate picker. Multi-plate 3MFs are handled per-plate: the value re-reads the file for the plate you actually picked instead of assuming every plate uses the first plate's bed, so a file mixing (say) Textured PEI and Engineering plates labels each one correctly.
+
 ### Fixed
 
 - **Queue prints are attributed to a user even when the item had no owner, and the printer now shows who started them.** Starting a queue item that carried no uploader (e.g. added before auth was configured) left the resulting archive with an empty **User** column; it is now credited to the operator who clicked Start, while items that already have an uploader keep theirs. Queue-started prints also now populate the printer's live "current print user" instead of showing no one mid-print.

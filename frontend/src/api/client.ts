@@ -2224,6 +2224,7 @@ export interface PrintQueueItem {
   filament_type?: string | null;
   filament_color?: string | null;
   sliced_for_model?: string | null;
+  bed_type?: string | null; // Build plate type for this item/plate (#1281)
   created_by_id?: number | null;
   created_by_username?: string | null;
   // Virtual-item markers set by the backend for external / direct-dispatch

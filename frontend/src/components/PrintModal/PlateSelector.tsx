@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import type { PlateSelectorProps } from './types';
 import { formatDuration } from '../../utils/date';
 import { resolveSpoolColorName } from '../../utils/colors';
+import { getBedTypeInfo } from '../../utils/bedType';
 
 /**
  * Plate selection for multi-plate 3MF files.
@@ -171,6 +172,18 @@ export function PlateSelector({
                       {active.object_count ?? active.objects.length}
                     </span>
                   )}
+                  {(() => {
+                    // Per-plate build plate type so multi-plate prints make the
+                    // required plate explicit at scheduling time (#1281).
+                    const bed = getBedTypeInfo(active.bed_type);
+                    if (!bed) return null;
+                    return (
+                      <span className="flex items-center gap-1 min-w-0" title={bed.label}>
+                        <img src={bed.icon} alt="" className="w-3.5 h-3.5 object-contain flex-shrink-0" />
+                        <span className="truncate">{bed.label}</span>
+                      </span>
+                    );
+                  })()}
                 </div>
 
                 {active.objects.length > 0 && (

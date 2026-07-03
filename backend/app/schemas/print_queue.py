@@ -107,6 +107,11 @@ class PrintQueueItemResponse(BaseModel):
     layer_height: float | None = None
     nozzle_diameter: float | None = None
     sliced_for_model: str | None = None
+    # Build plate type (e.g. "Textured PEI Plate") so the user knows which plate
+    # to mount on the printer (#1281). Per-plate accurate on multi-plate 3MFs:
+    # when ``plate_id`` is set, the value is the matching plate's
+    # ``curr_bed_type`` rather than the archive-level first-plate default.
+    bed_type: str | None = None
 
     # User tracking
     created_by_id: int | None = None

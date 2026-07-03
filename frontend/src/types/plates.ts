@@ -34,6 +34,7 @@ export interface PlateMetadata {
   bbox_all?: [number, number, number, number] | null;
   gcode_label_objects?: boolean;
   exclude_object?: boolean | null;
+  bed_type?: string | null; // Per-plate build plate type (#1281)
 }
 
 export interface ArchivePlatesResponse {

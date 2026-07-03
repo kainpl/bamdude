@@ -809,6 +809,7 @@ def parse_plates_from_3mf(zf: zipfile.ZipFile) -> list[dict]:
         ``object_count``, ``has_thumbnail``,
         ``print_time_seconds``, ``filament_used_grams``,
         ``filaments`` (list of {slot_id, type, color, used_grams, used_meters}),
+        ``bed_type`` (per-plate ``curr_bed_type``, or None),
         ``printable_objects`` (dict[identify_id, name]),
         ``bbox_all`` (or None),
         ``gcode_label_objects`` (file-global, copied per-plate),
@@ -910,6 +911,7 @@ def parse_plates_from_3mf(zf: zipfile.ZipFile) -> list[dict]:
                     "weight": None,
                     "name": None,
                     "objects": [],
+                    "bed_type": None,
                 }
                 plate_index: int | None = None
                 for meta in plate_elem.findall("metadata"):
@@ -930,6 +932,10 @@ def parse_plates_from_3mf(zf: zipfile.ZipFile) -> list[dict]:
                             plate_info["weight"] = float(value)
                         except ValueError:
                             pass
+                    elif key == "curr_bed_type" and value:
+                        # Per-plate build plate type so the picker can show the
+                        # right plate alongside each option (#1281).
+                        plate_info["bed_type"] = value.strip()
                 for filament_elem in plate_elem.findall("filament"):
                     filament_id = filament_elem.get("id")
                     filament_type = filament_elem.get("type", "")
@@ -1032,6 +1038,7 @@ def parse_plates_from_3mf(zf: zipfile.ZipFile) -> list[dict]:
                 "print_time_seconds": meta.get("prediction"),
                 "filament_used_grams": meta.get("weight"),
                 "filaments": meta.get("filaments", []),
+                "bed_type": meta.get("bed_type"),
                 "printable_objects": printable_objects,
                 "bbox_all": skip_plate.get("bbox_all"),
                 "gcode_label_objects": global_glo,
