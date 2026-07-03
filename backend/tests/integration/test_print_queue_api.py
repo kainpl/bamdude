@@ -293,6 +293,53 @@ class TestPrintQueueAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_start_unowned_item_credits_the_operator(
+        self, async_client: AsyncClient, queue_item_factory, db_session
+    ):
+        """#1670: starting a queue item that has no owner attributes it to the
+        operator who clicked Start, so the dispatched archive (our print log)
+        isn't left with an empty User column when auth is on."""
+        from sqlalchemy import select
+
+        from backend.app.models.user import User
+
+        item = await queue_item_factory(created_by_id=None, manual_start=True)
+
+        response = await async_client.post(f"/api/v1/queue/{item.id}/start")
+        assert response.status_code == 200
+
+        admin = (await db_session.execute(select(User).where(User.username == "test_admin"))).scalar_one()
+        await db_session.refresh(item)
+        assert item.created_by_id == admin.id
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_start_preserves_existing_owner(self, async_client: AsyncClient, queue_item_factory, db_session):
+        """An item added through the UI already carries its uploader — starting
+        it must NOT overwrite that with the operator who clicked Start."""
+        from backend.app.core.auth import get_password_hash
+        from backend.app.models.user import User
+
+        uploader = User(
+            username="original_uploader",
+            password_hash=get_password_hash("Test_Uploader1!"),
+            role="user",
+            is_active=True,
+        )
+        db_session.add(uploader)
+        await db_session.commit()
+        await db_session.refresh(uploader)
+
+        item = await queue_item_factory(created_by_id=uploader.id, manual_start=True)
+
+        response = await async_client.post(f"/api/v1/queue/{item.id}/start")
+        assert response.status_code == 200
+
+        await db_session.refresh(item)
+        assert item.created_by_id == uploader.id
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_delete_queue_item(self, async_client: AsyncClient, queue_item_factory, db_session):
         """Verify queue item can be deleted."""
         item = await queue_item_factory()

@@ -867,7 +867,7 @@ async def stop_queue_item(
 async def start_queue_item(
     item_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.QUEUE_UPDATE_OWN),
+    current_user: User | None = RequirePermission(Permission.QUEUE_UPDATE_OWN),
 ):
     """Manually start a staged (manual_start) queue item.
 
@@ -891,6 +891,13 @@ async def start_queue_item(
 
     # Clear manual_start flag so scheduler picks it up
     item.manual_start = False
+    # Attribute the print to the operator who started it when the item has no
+    # owner yet (upstream #1670). An item added through the UI already carries
+    # its uploader in created_by_id — preserve that; only fill the gap for
+    # otherwise-unattributed items so the dispatched archive (our print log)
+    # isn't left with an empty User column when auth is on.
+    if item.created_by_id is None and current_user is not None:
+        item.created_by_id = current_user.id
     await db.commit()
 
     # Re-query with full eager loading (queue→printer chain)

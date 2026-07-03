@@ -1822,6 +1822,18 @@ class PrintScheduler:
         from backend.app.services.background_dispatch import background_dispatch
 
         async with async_session() as db:
+            # Resolve the owner's username so the dispatcher can populate the
+            # live "current print user" — set_current_print_user needs both id
+            # and name, so passing None here left queue-started prints showing
+            # no user on the printer status card even though the archive was
+            # correctly attributed via requested_by_user_id (upstream #1670,
+            # _propagate_owner_to_printer_manager).
+            requested_by_username: str | None = None
+            if requested_by_user_id is not None:
+                from backend.app.models.user import User
+
+                _owner = await db.get(User, requested_by_user_id)
+                requested_by_username = _owner.username if _owner else None
             try:
                 outcome = await background_dispatch.run_from_queue_item(
                     kind=dispatch_kind,
@@ -1831,7 +1843,7 @@ class PrintScheduler:
                     printer_name=printer_name,
                     options=options,
                     requested_by_user_id=requested_by_user_id,
-                    requested_by_username=None,
+                    requested_by_username=requested_by_username,
                     project_id=project_id,
                     queue_item_id=queue_item_id,
                 )
