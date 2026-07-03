@@ -163,9 +163,12 @@ _DRYING_MIN_FIRMWARE: dict[str, str] = {
     "P1S": "01.08.00.00",
     "P2S": "01.02.00.00",
     "N7": "01.02.00.00",  # P2S internal model code
+    "H2C": "01.02.00.00",  # AMS drying enabled at this floor (#1624)
+    "O1C": "01.02.00.00",  # H2C SSDP model code (single nozzle)
+    "O1C2": "01.02.00.00",  # H2C SSDP model code (dual nozzle)
 }
 # Models that definitely don't support AMS drying (no AMS 2 Pro / AMS-HT compatibility)
-_DRYING_UNSUPPORTED_MODELS = frozenset({"A1", "A1MINI", "A1-MINI", "A1 MINI", "H2C", "O1C", "O1C2", "O1S", "N1", "N2S"})
+_DRYING_UNSUPPORTED_MODELS = frozenset({"A1", "A1MINI", "A1-MINI", "A1 MINI", "O1S", "N1", "N2S"})
 
 
 def supports_drying(model: str | None, firmware: str | None) -> bool:
