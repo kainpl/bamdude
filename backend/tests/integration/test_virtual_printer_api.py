@@ -457,3 +457,149 @@ class TestVirtualPrinterProxySerial:
         assert get_resp.status_code == 200
         assert get_resp.json()["serial"] != "00M09A555555555"
         assert len(get_resp.json()["serial"]) >= 8
+
+
+class TestVirtualPrinterAccessCodeInheritance:
+    """Non-proxy VPs with a target printer must inherit the target's access
+    code at write time (upstream #— / 19073f5c).
+
+    The live-mirror bridge forwards the slicer's MQTT/RTSPS auth bytes to the
+    real printer — if the codes diverge the slicer binds the VP but the bridge
+    fails at the second hop. The route layer force-derives the code on every
+    create / update so a non-UI client can't introduce a divergence either.
+    (Mode strings are BamDude's — 'print_queue'/'file_manager' — not upstream's
+    'queue'/'archive' aliases.)"""
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_create_with_target_ignores_submitted_access_code(
+        self, async_client: AsyncClient, printer_factory, db_session
+    ):
+        from sqlalchemy import select
+
+        from backend.app.models.virtual_printer import VirtualPrinter
+
+        target = await printer_factory(name="Real X1C", access_code="REALCODE")
+
+        response = await async_client.post(
+            "/api/v1/virtual-printers",
+            json={
+                "name": "QueueVP",
+                "mode": "print_queue",
+                "access_code": "WRONGAAA",
+                "target_printer_id": target.id,
+            },
+        )
+        assert response.status_code == 200
+        vp_id = response.json()["id"]
+        assert response.json()["access_code_set"] is True
+
+        vp = (await db_session.execute(select(VirtualPrinter).where(VirtualPrinter.id == vp_id))).scalar_one()
+        assert vp.access_code == "REALCODE"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_create_with_target_and_no_access_code_still_enables(
+        self, async_client: AsyncClient, printer_factory
+    ):
+        """A non-proxy VP with a target set can be enabled without supplying
+        access_code separately — the inheritance makes the explicit field
+        redundant, and the validator now knows this."""
+        target = await printer_factory(name="Real X1C", access_code="REALCODE")
+
+        response = await async_client.post(
+            "/api/v1/virtual-printers",
+            json={
+                "name": "QueueVP",
+                "mode": "print_queue",
+                "target_printer_id": target.id,
+                "bind_ip": "192.168.1.50",
+                "enabled": True,
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["access_code_set"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_create_without_target_still_requires_access_code_on_enable(self, async_client: AsyncClient):
+        """The relaxation only kicks in when a target is set. A standalone
+        non-proxy VP still needs its own access code."""
+        response = await async_client.post(
+            "/api/v1/virtual-printers",
+            json={
+                "name": "StandaloneVP",
+                "mode": "file_manager",
+                "bind_ip": "192.168.1.51",
+                "enabled": True,
+            },
+        )
+        assert response.status_code == 400
+        assert "access code" in response.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_update_target_resyncs_access_code(self, async_client: AsyncClient, printer_factory, db_session):
+        from sqlalchemy import select
+
+        from backend.app.models.virtual_printer import VirtualPrinter
+
+        first = await printer_factory(name="Printer A", access_code="AAAAAAAA")
+        second = await printer_factory(name="Printer B", access_code="BBBBBBBB")
+
+        create_resp = await async_client.post(
+            "/api/v1/virtual-printers",
+            json={
+                "name": "MovingTarget",
+                "mode": "print_queue",
+                "target_printer_id": first.id,
+            },
+        )
+        assert create_resp.status_code == 200
+        vp_id = create_resp.json()["id"]
+
+        vp = (await db_session.execute(select(VirtualPrinter).where(VirtualPrinter.id == vp_id))).scalar_one()
+        assert vp.access_code == "AAAAAAAA"
+
+        update_resp = await async_client.put(
+            f"/api/v1/virtual-printers/{vp_id}",
+            json={"target_printer_id": second.id},
+        )
+        assert update_resp.status_code == 200
+
+        await db_session.refresh(vp)
+        assert vp.access_code == "BBBBBBBB"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_update_explicit_access_code_with_target_is_overridden(
+        self, async_client: AsyncClient, printer_factory, db_session
+    ):
+        """An update that submits both an explicit access_code AND keeps a
+        target_printer_id silently uses the target's code — belt-and-braces
+        for non-UI clients that might try to set a divergent value."""
+        from sqlalchemy import select
+
+        from backend.app.models.virtual_printer import VirtualPrinter
+
+        target = await printer_factory(name="Real X1C", access_code="REALCODE")
+
+        create_resp = await async_client.post(
+            "/api/v1/virtual-printers",
+            json={
+                "name": "BeltBraces",
+                "mode": "print_queue",
+                "target_printer_id": target.id,
+            },
+        )
+        assert create_resp.status_code == 200
+        vp_id = create_resp.json()["id"]
+
+        update_resp = await async_client.put(
+            f"/api/v1/virtual-printers/{vp_id}",
+            json={"access_code": "FORGEDCD"},
+        )
+        assert update_resp.status_code == 200
+
+        vp = (await db_session.execute(select(VirtualPrinter).where(VirtualPrinter.id == vp_id))).scalar_one()
+        assert vp.access_code == "REALCODE"

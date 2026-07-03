@@ -193,7 +193,10 @@ async def create_virtual_printer(
     if body.access_code and len(body.access_code) != 8:
         return JSONResponse(status_code=400, content={"detail": "Access code must be exactly 8 characters"})
 
-    # Validation when enabling
+    # Validation when enabling. Non-proxy VPs with a target printer derive their
+    # access code from the target (the bridge forwards the slicer's auth bytes
+    # through to the real printer, so the codes MUST match), so a separately
+    # supplied access_code isn't required in that case.
     if body.enabled:
         if not body.bind_ip:
             return JSONResponse(status_code=400, content={"detail": "Bind IP is required when enabling"})
@@ -201,7 +204,7 @@ async def create_virtual_printer(
             if not body.target_printer_id:
                 return JSONResponse(status_code=400, content={"detail": "Target printer is required for proxy mode"})
         else:
-            if not body.access_code:
+            if not body.access_code and not body.target_printer_id:
                 return JSONResponse(status_code=400, content={"detail": "Access code is required when enabling"})
 
     # In print_queue mode without auto-select (auto_queue toggle off) AND
@@ -231,6 +234,16 @@ async def create_virtual_printer(
             return JSONResponse(
                 status_code=400, content={"detail": f"Printer with ID {body.target_printer_id} not found"}
             )
+
+    # Force-inherit the access code from the target printer for non-proxy VPs.
+    # The non-proxy bridge (Archive / Review / Queue with a target set) forwards
+    # the slicer's MQTT / RTSPS auth bytes through to the real printer, so any
+    # value the user supplied here would silently break the bridge if it didn't
+    # match the printer's code. The UI renders the field read-only when a target
+    # is set; this is the belt-and-braces backstop for any non-UI client.
+    effective_access_code = body.access_code
+    if body.mode != "proxy" and target_printer is not None:
+        effective_access_code = target_printer.access_code
 
     # Validate target folder exists (NULL is fine — means library root).
     if body.target_folder_id:
@@ -277,7 +290,7 @@ async def create_virtual_printer(
         model=body.model
         or _resolve_printer_model(target_printer.model if target_printer and body.mode == "proxy" else None)
         or DEFAULT_VIRTUAL_PRINTER_MODEL,
-        access_code=body.access_code,
+        access_code=effective_access_code,
         target_printer_id=body.target_printer_id,
         target_folder_id=body.target_folder_id,
         auto_dispatch=body.auto_dispatch,
@@ -480,6 +493,20 @@ async def update_virtual_printer(
         existing_target = result.scalar_one_or_none()
         if existing_target and existing_target.model:
             vp.model = _resolve_printer_model(existing_target.model) or existing_target.model
+
+    # Force-inherit the access code from the target printer for non-proxy VPs.
+    # See create_virtual_printer for the rationale: the bridge forwards the
+    # slicer's auth bytes through, so the VP's code MUST equal the target's.
+    # This runs after every patch (whether or not access_code or target were in
+    # the body), so changing the target also resyncs the code, and an explicit
+    # access_code submitted alongside a target is silently overridden.
+    if vp.mode != "proxy" and vp.target_printer_id is not None:
+        from backend.app.models.printer import Printer as PrinterModelAC
+
+        result = await db.execute(select(PrinterModelAC).where(PrinterModelAC.id == vp.target_printer_id))
+        target_for_ac = result.scalar_one_or_none()
+        if target_for_ac is not None and vp.access_code != target_for_ac.access_code:
+            vp.access_code = target_for_ac.access_code
 
     # Determine final enabled state
     explicitly_enabling = body.enabled is True

@@ -5151,7 +5151,11 @@ export default {
       placeholder: 'Enter 8-char code',
       placeholderChange: 'Enter new code to change',
       hint: 'Must be exactly 8 characters. Used by slicers to authenticate.',
-      charCount: '({{count}}/8)'
+      charCount: '({{count}}/8)',
+      inheritedFromTarget: 'Inherited from target',
+      derivedFromTargetHint: 'Uses the target printer\'s access code. The bridge forwards slicer auth to the real printer, so the codes must match — edit the printer\'s access code to change this value.',
+      reveal: 'Show access code',
+      hide: 'Hide access code'
     },
     targetPrinter: {
       title: 'Target Printer',
@@ -5250,6 +5254,7 @@ export default {
       failedToUpdate: 'Failed to update settings',
       accessCodeRequired: 'Please set an access code first',
       targetPrinterRequired: 'Please select a target printer first',
+      targetCodeChangedRebind: 'Access code now matches the new target printer. Re-add this device in your slicer to pick up the new code.',
       bindIpRequired: 'Please set a bind IP first',
       accessCodeEmpty: 'Access code cannot be empty',
       accessCodeLength: 'Access code must be exactly 8 characters',

@@ -238,6 +238,18 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
 
   const handleTargetPrinterChange = (printerId: number) => {
     const picked = printers?.find((p) => p.id === printerId);
+    // The new target's access code becomes this VP's access code on the backend
+    // write. If the slicer was already bound with the old code it has to rebind;
+    // flag it so the user isn't left confused (#—).
+    const previousCode = printers?.find((p) => p.id === localTargetPrinterId)?.access_code;
+    const nextCode = picked?.access_code;
+    const rebindOpts = {
+      onSuccess: () => {
+        if (previousCode && nextCode && previousCode !== nextCode) {
+          showToast(t('virtualPrinter.toast.targetCodeChangedRebind'), 'info');
+        }
+      },
+    };
     setLocalTargetPrinterId(printerId);
     setPendingAction('targetPrinter');
     // Inherit VP model from the picked printer when it differs (so the
@@ -246,11 +258,11 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
       const matchingCode = Object.entries(models).find(([, displayName]) => displayName === picked.model)?.[0];
       if (matchingCode && matchingCode !== localModel) {
         setLocalModel(matchingCode);
-        updateMutation.mutate({ target_printer_id: printerId, model: matchingCode });
+        updateMutation.mutate({ target_printer_id: printerId, model: matchingCode }, rebindOpts);
         return;
       }
     }
-    updateMutation.mutate({ target_printer_id: printerId });
+    updateMutation.mutate({ target_printer_id: printerId }, rebindOpts);
   };
 
   const handleTargetFolderChange = (raw: string) => {
@@ -277,7 +289,14 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
   // For status badge: collapse auto_queue → queue (UI shows them as one mode + toggle).
   const displayMode: DisplayMode = localMode === 'auto_queue' ? 'print_queue' : (localMode as DisplayMode);
   const modeLabel = t(`virtualPrinter.mode.${MODE_LABELS[displayMode] || 'archive'}`);
-  const targetPrinterName = printers?.find(p => p.id === localTargetPrinterId)?.name;
+  const targetPrinter = printers?.find(p => p.id === localTargetPrinterId);
+  const targetPrinterName = targetPrinter?.name;
+  // The non-proxy bridge forwards the slicer's auth bytes to the real printer,
+  // so when a target is set the VP's access code IS the target's. Surface it
+  // read-only — the user types it into the slicer but can't diverge it from the
+  // printer (#—, VP access-code auto-inherit).
+  const inheritsAccessCodeFromTarget = !!localTargetPrinterId;
+  const inheritedAccessCode = inheritsAccessCodeFromTarget ? (targetPrinter?.access_code ?? '') : '';
 
   return (
     <>
@@ -547,7 +566,12 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
               <div className="pt-2 border-t border-bambu-dark-tertiary">
                 <div className="flex items-center gap-2 mb-2">
                   <div className="text-white text-sm font-medium">{t('virtualPrinter.accessCode.title')}</div>
-                  {printer.access_code_set ? (
+                  {inheritsAccessCodeFromTarget ? (
+                    <span className="flex items-center gap-1 text-xs text-blue-400">
+                      <Info className="w-3 h-3" />
+                      {t('virtualPrinter.accessCode.inheritedFromTarget')}
+                    </span>
+                  ) : printer.access_code_set ? (
                     <span className="flex items-center gap-1 text-xs text-green-400">
                       <Check className="w-3 h-3" />
                       {t('virtualPrinter.accessCode.isSet')}
@@ -559,37 +583,63 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
                     </span>
                   )}
                 </div>
-                <div className="flex gap-2">
-                  <div className="relative flex-1">
-                    <input
-                      type={showAccessCode ? 'text' : 'password'}
-                      value={localAccessCode}
-                      onChange={(e) => setLocalAccessCode(e.target.value)}
-                      placeholder={printer.access_code_set ? t('virtualPrinter.accessCode.placeholderChange') : t('virtualPrinter.accessCode.placeholder')}
-                      maxLength={8}
-                      className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-md px-3 py-1.5 text-white text-sm placeholder-bambu-gray pr-10 font-mono"
-                    />
-                    <button
-                      onClick={() => setShowAccessCode(!showAccessCode)}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 text-bambu-gray hover:text-white"
-                    >
-                      {showAccessCode ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
-                  </div>
-                  <Button
-                    onClick={handleAccessCodeChange}
-                    disabled={!localAccessCode || pendingAction === 'accessCode'}
-                    variant="primary"
-                  >
-                    {pendingAction === 'accessCode' ? <Loader2 className="w-4 h-4 animate-spin" /> : t('common.save')}
-                  </Button>
-                </div>
-                {localAccessCode && (
-                  <p className="text-xs text-bambu-gray mt-1">
-                    <span className={localAccessCode.length === 8 ? 'text-green-400' : 'text-yellow-400'}>
-                      {t('virtualPrinter.accessCode.charCount', { count: localAccessCode.length })}
-                    </span>
-                  </p>
+                {inheritsAccessCodeFromTarget ? (
+                  <>
+                    <div className="relative">
+                      <input
+                        type={showAccessCode ? 'text' : 'password'}
+                        value={inheritedAccessCode}
+                        readOnly
+                        aria-label={t('virtualPrinter.accessCode.title')}
+                        className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-md px-3 py-1.5 text-white text-sm pr-10 font-mono opacity-90 cursor-default"
+                      />
+                      <button
+                        onClick={() => setShowAccessCode(!showAccessCode)}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 text-bambu-gray hover:text-white"
+                        aria-label={showAccessCode ? t('virtualPrinter.accessCode.hide') : t('virtualPrinter.accessCode.reveal')}
+                      >
+                        {showAccessCode ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                    <p className="text-xs text-bambu-gray mt-1">
+                      {t('virtualPrinter.accessCode.derivedFromTargetHint')}
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex gap-2">
+                      <div className="relative flex-1">
+                        <input
+                          type={showAccessCode ? 'text' : 'password'}
+                          value={localAccessCode}
+                          onChange={(e) => setLocalAccessCode(e.target.value)}
+                          placeholder={printer.access_code_set ? t('virtualPrinter.accessCode.placeholderChange') : t('virtualPrinter.accessCode.placeholder')}
+                          maxLength={8}
+                          className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-md px-3 py-1.5 text-white text-sm placeholder-bambu-gray pr-10 font-mono"
+                        />
+                        <button
+                          onClick={() => setShowAccessCode(!showAccessCode)}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 text-bambu-gray hover:text-white"
+                        >
+                          {showAccessCode ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </button>
+                      </div>
+                      <Button
+                        onClick={handleAccessCodeChange}
+                        disabled={!localAccessCode || pendingAction === 'accessCode'}
+                        variant="primary"
+                      >
+                        {pendingAction === 'accessCode' ? <Loader2 className="w-4 h-4 animate-spin" /> : t('common.save')}
+                      </Button>
+                    </div>
+                    {localAccessCode && (
+                      <p className="text-xs text-bambu-gray mt-1">
+                        <span className={localAccessCode.length === 8 ? 'text-green-400' : 'text-yellow-400'}>
+                          {t('virtualPrinter.accessCode.charCount', { count: localAccessCode.length })}
+                        </span>
+                      </p>
+                    )}
+                  </>
                 )}
               </div>
             )}
