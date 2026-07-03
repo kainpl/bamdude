@@ -10,10 +10,12 @@ All notable changes to BamDude will be documented in this file.
 
 ### Added
 
+- **New "System" theme option that follows your operating system.** Alongside Dark and Light, the theme can now be set to **System** — the app matches your OS's light/dark preference and switches automatically when the OS does. The sidebar theme button cycles Dark → Light → System, and **Settings → Appearance** has a matching three-button selector. Your per-mode style, background, and accent choices are preserved and applied to whichever mode the system resolves to.
 - **Experimental H2D Pro support in the Add Virtual Printer dropdown.** The H2D Pro now advertises its own model code (distinct from the H2D) so Bambu Studio recognises it. The codes are transcribed from the model reference and not yet confirmed against a live H2D Pro — if your slicer doesn't recognise the virtual printer, let us know.
 
 ### Fixed
 
+- **Camera stream-token timestamps now show in your local timezone.** The "created", "expires", and "last used" times on long-lived camera tokens (Settings → API Keys) were rendered from the server's UTC clock, so they appeared shifted by your timezone offset — and a token could look expired (or not) at the wrong moment. They now display in the browser's local time.
 - **Slicers no longer get disconnected from a virtual printer after sitting idle.** The virtual printer's MQTT broker now honours the keepalive interval the slicer negotiates instead of a fixed 60-second timeout, so OrcaSlicer/Bambu Studio connections stay alive between actions.
 - **Bambu Studio's "Send" no longer occasionally refuses a virtual printer over stale state.** The virtual printer now preserves more firmware fields (firmware/upgrade state, camera settings, nozzle info, AMS status, and more) across the frequent lightweight status updates, so the slicer's Send pre-flight reads a complete picture rather than a stripped-down one.
 - **Bambu Studio can now "Send" to a virtual printer even while the real target printer is mid-print.** The pre-flight check was reading the real printer's live progress (percentage, current stage, layer numbers) through the virtual printer and treating it as "busy", so it refused the upload. The virtual printer now presents itself as idle across all of those fields, matching how it already reported its print state.

@@ -15,19 +15,24 @@ import { Copy, Plus, Trash2, AlertTriangle } from 'lucide-react';
 import { api, type LongLivedToken } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
 import { useAuth } from '../../contexts/AuthContext';
+import { parseUTCDate } from '../../utils/date';
 
 const DEFAULT_LIFETIME_DAYS = 90;
 const MAX_LIFETIME_DAYS = 365;
 
 function formatDate(iso: string | null): string {
   if (!iso) return '—';
-  const d = new Date(iso);
-  return d.toLocaleString();
+  // parseUTCDate forces UTC interpretation of the backend's timezone-naive
+  // timestamps — a bare new Date("...T07:50:00") is parsed as LOCAL time, so a
+  // UTC value rendered with the wrong offset (#1602 / #504 class).
+  const d = parseUTCDate(iso);
+  return d ? d.toLocaleString() : '—';
 }
 
 function isExpired(iso: string | null): boolean {
   if (!iso) return false;
-  return new Date(iso).getTime() < Date.now();
+  const d = parseUTCDate(iso);
+  return d ? d.getTime() < Date.now() : false;
 }
 
 interface CreateTokenFormProps {

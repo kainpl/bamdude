@@ -40,7 +40,7 @@ interface Capabilities {
 
 export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, archivePlateIndex, onSliceWithBamDude, onClose }: ModelViewerModalProps) {
   const { t } = useTranslation();
-  const { mode: themeMode } = useTheme();
+  const { resolvedMode: themeMode } = useTheme();
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
   const preferredSlicer: SlicerType = settings?.preferred_slicer || 'bambu_studio';
   const isLibrary = libraryFileId != null;

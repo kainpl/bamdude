@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from 'react';
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { Printer, Archive, Calendar, BarChart3, Cloud, Settings, Sun, Moon, ChevronLeft, ChevronRight, Keyboard, GripVertical, ArrowUpCircle, Wrench, FolderKanban, FolderOpen, X, Menu, Info, Plug, Bug, LogOut, Key, Loader2, Disc3, ShieldAlert, Bell, BookOpen, Cpu, type LucideIcon } from 'lucide-react';
+import { Printer, Archive, Calendar, BarChart3, Cloud, Settings, Sun, Moon, Monitor, ChevronLeft, ChevronRight, Keyboard, GripVertical, ArrowUpCircle, Wrench, FolderKanban, FolderOpen, X, Menu, Info, Plug, Bug, LogOut, Key, Loader2, Disc3, ShieldAlert, Bell, BookOpen, Cpu, type LucideIcon } from 'lucide-react';
 import { GitHubIcon, TelegramIcon, MakerWorldIcon } from './BrandIcons';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '../contexts/ThemeContext';
@@ -145,8 +145,12 @@ const LANDING_URL = 'https://bamdude.top/';
 export function Layout() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { mode, toggleMode } = useTheme();
+  const { mode, resolvedMode, toggleMode } = useTheme();
   const { t } = useTranslation();
+  // Theme toggle cycles dark → light → system; the icon/tooltip name the NEXT
+  // mode in the cycle so the button previews what a click will do.
+  const ThemeIcon = { dark: Sun, light: Monitor, system: Moon }[mode];
+  const themeSwitchTitle = t({ dark: 'nav.switchToLight', light: 'nav.switchToSystem', system: 'nav.switchToDark' }[mode]);
   const isSidebarCompact = useIsSidebarCompact();
   // Re-render Layout (and downstream pages) when the color catalog finishes loading
   // so cached getColorName() results refresh from HSL fallback to catalog names.
@@ -659,7 +663,7 @@ export function Layout() {
             title="BamDude"
           >
             <img
-              src={mode === 'dark' ? '/img/bamdude_logo_dark_transparent.png' : '/img/bamdude_logo_light.png'}
+              src={resolvedMode === 'dark' ? '/img/bamdude_logo_dark_transparent.png' : '/img/bamdude_logo_light.png'}
               alt="BamDude"
               className="h-8"
             />
@@ -699,7 +703,7 @@ export function Layout() {
             <img
               src={
                 isSidebarCompact || sidebarExpanded
-                  ? (mode === 'dark' ? '/img/bamdude_logo_dark_transparent.png' : '/img/bamdude_logo_light.png')
+                  ? (resolvedMode === 'dark' ? '/img/bamdude_logo_dark_transparent.png' : '/img/bamdude_logo_light.png')
                   : '/img/android-chrome-192x192.png'
               }
               alt="BamDude"
@@ -989,9 +993,9 @@ export function Layout() {
                 <button
                   onClick={toggleMode}
                   className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white"
-                  title={mode === 'dark' ? t('nav.switchToLight') : t('nav.switchToDark')}
+                  title={themeSwitchTitle}
                 >
-                  {mode === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+                  <ThemeIcon className="w-5 h-5" />
                 </button>
                 {authEnabled && user && (
                   <>
@@ -1123,9 +1127,9 @@ export function Layout() {
               <button
                 onClick={toggleMode}
                 className="p-2 rounded-lg hover:bg-bambu-dark-tertiary transition-colors text-bambu-gray-light hover:text-white"
-                title={mode === 'dark' ? t('nav.switchToLight') : t('nav.switchToDark')}
+                title={themeSwitchTitle}
               >
-                {mode === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+                <ThemeIcon className="w-5 h-5" />
               </button>
               {authEnabled && user && (
                 <>
