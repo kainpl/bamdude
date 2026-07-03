@@ -71,7 +71,9 @@ def _to_absolute_path(relative_path: str | None) -> Path | None:
     path = Path(relative_path)
     if path.is_absolute():
         return path
-    return Path(app_settings.base_dir) / path
+    return (
+        Path(app_settings.base_dir) / path
+    )  # SEC-PATH-OK: path is row.file_path/thumbnail_path — a server-generated base_dir-relative stored path, not request input
 
 
 def _age_cutoff(now: datetime, older_than_days: int) -> datetime:

@@ -675,7 +675,9 @@ class ArchiveCleanupService:
     def _resolve_disk_path(file_path: str) -> Path | None:
         try:
             p = Path(file_path)
-            return p if p.is_absolute() else app_settings.base_dir / p
+            return (
+                p if p.is_absolute() else app_settings.base_dir / p
+            )  # SEC-PATH-OK: p is PrintArchive.file_path — a server-written base_dir-relative value; absolute paths are returned unjoined
         except (TypeError, OSError):
             return None
 

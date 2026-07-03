@@ -512,7 +512,9 @@ async def create_backup_zip(output_path: Path | None = None) -> tuple[Path, str]
         for name, src_dir in dirs_to_backup:
             if src_dir.exists() and any(src_dir.iterdir()):
                 try:
-                    shutil.copytree(src_dir, temp_path / name)
+                    shutil.copytree(
+                        src_dir, temp_path / name
+                    )  # SEC-PATH-OK: name is an enumerated literal from the dirs_to_backup list, not request input
                 except shutil.Error as e:
                     # Some files may have restricted permissions (e.g., SSL keys)
                     logger.warning("Some files in %s could not be copied: %s", name, e)
@@ -551,7 +553,9 @@ async def create_backup_zip(output_path: Path | None = None) -> tuple[Path, str]
 
         # 3. Create ZIP
         if output_path is not None:
-            zip_file = output_path / filename
+            zip_file = (
+                output_path / filename
+            )  # SEC-PATH-OK: filename is the server-generated bamdude-backup-<timestamp>.zip; output_path is a trusted caller-supplied dir
         else:
             # mkstemp gives us a unique path that survives the TemporaryDirectory cleanup
             fd, tmp_path_str = tempfile.mkstemp(suffix=".zip")
@@ -641,7 +645,9 @@ async def restore_backup(
                 # `/etc/passwd` — str.startswith is vulnerable to
                 # prefix-collision attacks.
                 for name in zf.namelist():
-                    dest = (temp_path / name).resolve()
+                    dest = (
+                        temp_path / name
+                    ).resolve()  # SEC-PATH-OK: this line IS the ZipSlip guard — resolve() + is_relative_to(temp_path) just below rejects the namelist entry before extractall
                     if not dest.is_relative_to(temp_path.resolve()):
                         raise HTTPException(400, f"Invalid backup: unsafe path in ZIP: {name!r}")
                 zf.extractall(temp_path)
@@ -796,7 +802,9 @@ async def restore_backup(
 
             skipped_dirs = []
             for name, dest_dir in dirs_to_restore:
-                src_dir = temp_path / name
+                src_dir = (
+                    temp_path / name
+                )  # SEC-PATH-OK: name is an enumerated literal from the dirs_to_restore list; zip contents were ZipSlip-checked at extract time
                 if src_dir.exists():
                     logger.info("Restoring %s directory...", name)
                     try:

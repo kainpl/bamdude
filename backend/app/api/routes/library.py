@@ -68,6 +68,7 @@ from backend.app.services.print_plan import inherit_folder_projects, sync_plan_f
 from backend.app.services.stl_thumbnail import MIN_USABLE_STL_BYTES, generate_stl_thumbnail
 from backend.app.services.threemf_capabilities import extract_3mf_capabilities
 from backend.app.utils.filename import InvalidFilenameError, validate_print_filename
+from backend.app.utils.safe_path import safe_join_under
 from backend.app.utils.threemf_tools import (
     extract_embedded_presets_from_3mf,
     extract_nozzle_mapping_from_3mf,
@@ -174,7 +175,9 @@ def to_absolute_path(relative_path: str | None) -> Path | None:
     path = Path(relative_path)
     if path.is_absolute():
         return path
-    return Path(app_settings.base_dir) / relative_path
+    return (
+        Path(app_settings.base_dir) / relative_path
+    )  # SEC-PATH-OK: relative_path is a server-persisted LibraryFile path (uuid basename); absolute paths are short-circuited just above
 
 
 def calculate_file_hash(file_path: Path) -> str:
@@ -265,7 +268,9 @@ def _resolve_upload_destination(target_folder: LibraryFolder | None, filename: s
             )
         # Guard against path-traversal via a pathological filename — join then
         # verify the resolved destination is still inside the external dir.
-        dest = (ext_dir / filename).resolve()
+        dest = (
+            ext_dir / filename
+        ).resolve()  # SEC-PATH-OK: dest.relative_to(ext_dir.resolve()) containment guard just below raises HTTP 400 on traversal
         try:
             dest.relative_to(ext_dir.resolve())
         except ValueError:
@@ -351,7 +356,9 @@ async def save_3mf_bytes_to_library(
             thumbnail_ext = raw_metadata.get("_thumbnail_ext", ".png")
             if thumbnail_data:
                 thumb_filename = f"{uuid.uuid4().hex}{thumbnail_ext}"
-                thumb_path = thumbnails_dir / thumb_filename
+                thumb_path = (
+                    thumbnails_dir / thumb_filename
+                )  # SEC-PATH-OK: thumb_filename is a server-generated uuid4().hex + parsed extension
                 with open(thumb_path, "wb") as f:
                     f.write(thumbnail_data)
                 thumbnail_path = str(thumb_path)
@@ -376,7 +383,9 @@ async def save_3mf_bytes_to_library(
             thumbnail_data = extract_gcode_thumbnail(file_path)
             if thumbnail_data:
                 thumb_filename = f"{uuid.uuid4().hex}.png"
-                thumb_path = thumbnails_dir / thumb_filename
+                thumb_path = (
+                    thumbnails_dir / thumb_filename
+                )  # SEC-PATH-OK: thumb_filename is a server-generated uuid4().hex + parsed extension
                 with open(thumb_path, "wb") as f:
                     f.write(thumbnail_data)
                 thumbnail_path = str(thumb_path)
@@ -605,7 +614,9 @@ def create_image_thumbnail(file_path: Path, thumbnails_dir: Path, max_size: int 
         from PIL import Image
 
         thumb_filename = f"{uuid.uuid4().hex}.png"
-        thumb_path = thumbnails_dir / thumb_filename
+        thumb_path = (
+            thumbnails_dir / thumb_filename
+        )  # SEC-PATH-OK: thumb_filename is a server-generated uuid4().hex + parsed extension
 
         with Image.open(file_path) as img:
             # Convert to RGB if necessary (for PNG with transparency, etc.)
@@ -633,7 +644,9 @@ def create_image_thumbnail(file_path: Path, thumbnails_dir: Path, max_size: int 
             file_size = file_path.stat().st_size
             if file_size < 500000:  # Less than 500KB
                 thumb_filename = f"{uuid.uuid4().hex}{file_path.suffix}"
-                thumb_path = thumbnails_dir / thumb_filename
+                thumb_path = (
+                    thumbnails_dir / thumb_filename
+                )  # SEC-PATH-OK: thumb_filename is a server-generated uuid4().hex + parsed extension
                 shutil.copy2(file_path, thumb_path)
                 return str(thumb_path)
         except OSError:
@@ -1413,7 +1426,9 @@ async def scan_external_folder(
                         name=part,
                         parent_id=current_parent_id,
                         is_external=True,
-                        external_path=str(ext_path / current_path),
+                        external_path=str(
+                            ext_path / current_path
+                        ),  # SEC-PATH-OK: current_path = relative_to(ext_path) of an os.walk'd on-disk dir, not request input
                         external_show_hidden=folder.external_show_hidden,
                     )
                     db.add(new_folder)
@@ -1427,7 +1442,9 @@ async def scan_external_folder(
             if not folder.external_show_hidden and filename.startswith("."):
                 continue
 
-            filepath = Path(dirpath) / filename
+            filepath = (
+                Path(dirpath) / filename
+            )  # SEC-PATH-OK: dirpath/filename come from os.walk(ext_path); real_path.relative_to(ext_path) symlink-escape guard just below
             ext = filepath.suffix.lower()
 
             # Check for compound extensions like .gcode.3mf
@@ -1475,7 +1492,9 @@ async def scan_external_folder(
                     if thumb_data:
                         thumb_dir = get_library_thumbnails_dir()
                         thumb_filename = f"{uuid.uuid4().hex}.png"
-                        thumb_full = thumb_dir / thumb_filename
+                        thumb_full = (
+                            thumb_dir / thumb_filename
+                        )  # SEC-PATH-OK: thumb_filename is a server-generated uuid4().hex + parsed extension
                         thumb_full.write_bytes(thumb_data)
                         thumbnail_path = to_relative_path(thumb_full)
                     # Same per-plate cache populated as the upload route —
@@ -1511,7 +1530,9 @@ async def scan_external_folder(
                 if thumb_data:
                     thumb_dir = get_library_thumbnails_dir()
                     thumb_filename = f"{uuid.uuid4().hex}.png"
-                    thumb_full = thumb_dir / thumb_filename
+                    thumb_full = (
+                        thumb_dir / thumb_filename
+                    )  # SEC-PATH-OK: thumb_filename is a server-generated uuid4().hex + parsed extension
                     thumb_full.write_bytes(thumb_data)
                     thumbnail_path = to_relative_path(thumb_full)
 
@@ -2319,7 +2340,7 @@ async def slice_and_persist(
     base_name = model_filename.rsplit(".", 1)[0]
     out_filename = f"{base_name}.gcode.3mf"
     unique_name = f"{uuid.uuid4().hex}.gcode.3mf"
-    out_path = get_library_files_dir() / unique_name
+    out_path = get_library_files_dir() / unique_name  # SEC-PATH-OK: unique_name is a server uuid4().hex + .gcode.3mf
     out_path.write_bytes(sliced_bytes)
 
     # Extract thumbnail from the produced 3MF so the library card shows a
@@ -2445,9 +2466,11 @@ async def slice_and_persist_as_archive(
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     printer_folder = str(source_archive.printer_id) if source_archive.printer_id is not None else "unassigned"
     archive_subdir = f"{timestamp}_{base_name}_sliced"
-    archive_dir = app_settings.archive_dir / printer_folder / archive_subdir
+    # base_name derives from the (user-supplied) upload filename, so a crafted
+    # name like "../../x" would escape archive_dir — containment-check the join.
+    archive_dir = safe_join_under(app_settings.archive_dir, printer_folder, archive_subdir)
     archive_dir.mkdir(parents=True, exist_ok=True)
-    out_path = archive_dir / out_filename
+    out_path = safe_join_under(archive_dir, out_filename)
     out_path.write_bytes(result.content)
 
     # Thumbnail for the new archive card. Priority: (1) the source archive's
@@ -2746,7 +2769,9 @@ async def upload_file(
                 # Save thumbnail if extracted
                 if thumbnail_data:
                     thumb_filename = f"{uuid.uuid4().hex}{thumbnail_ext}"
-                    thumb_path = thumbnails_dir / thumb_filename
+                    thumb_path = (
+                        thumbnails_dir / thumb_filename
+                    )  # SEC-PATH-OK: thumb_filename is a server-generated uuid4().hex + parsed extension
                     with open(thumb_path, "wb") as f:
                         f.write(thumbnail_data)
                     thumbnail_path = str(thumb_path)
@@ -2779,7 +2804,9 @@ async def upload_file(
                 thumbnail_data = extract_gcode_thumbnail(file_path)
                 if thumbnail_data:
                     thumb_filename = f"{uuid.uuid4().hex}.png"
-                    thumb_path = thumbnails_dir / thumb_filename
+                    thumb_path = (
+                        thumbnails_dir / thumb_filename
+                    )  # SEC-PATH-OK: thumb_filename is a server-generated uuid4().hex + parsed extension
                     with open(thumb_path, "wb") as f:
                         f.write(thumbnail_data)
                     thumbnail_path = str(thumb_path)
@@ -2998,7 +3025,9 @@ async def extract_zip_file(
 
                     # Generate unique filename for storage
                     unique_filename = f"{uuid.uuid4().hex}{ext}"
-                    file_path = get_library_files_dir() / unique_filename
+                    file_path = (
+                        get_library_files_dir() / unique_filename
+                    )  # SEC-PATH-OK: unique_filename is a server uuid4().hex + extension
 
                     # Extract and save file
                     file_content = zf.read(zip_path)
@@ -3023,7 +3052,9 @@ async def extract_zip_file(
 
                             if thumbnail_data:
                                 thumb_filename = f"{uuid.uuid4().hex}{thumbnail_ext}"
-                                thumb_path = thumbnails_dir / thumb_filename
+                                thumb_path = (
+                                    thumbnails_dir / thumb_filename
+                                )  # SEC-PATH-OK: thumb_filename is a server-generated uuid4().hex + parsed extension
                                 with open(thumb_path, "wb") as f:
                                     f.write(thumbnail_data)
                                 thumbnail_path = str(thumb_path)
@@ -3050,7 +3081,9 @@ async def extract_zip_file(
                             thumbnail_data = extract_gcode_thumbnail(file_path)
                             if thumbnail_data:
                                 thumb_filename = f"{uuid.uuid4().hex}.png"
-                                thumb_path = thumbnails_dir / thumb_filename
+                                thumb_path = (
+                                    thumbnails_dir / thumb_filename
+                                )  # SEC-PATH-OK: thumb_filename is a server-generated uuid4().hex + parsed extension
                                 with open(thumb_path, "wb") as f:
                                     f.write(thumbnail_data)
                                 thumbnail_path = str(thumb_path)

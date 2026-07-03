@@ -379,7 +379,9 @@ async def download_log_archive(
 
     if not _ARCHIVE_NAME_RE.match(filename):
         raise HTTPException(status_code=400, detail="Invalid log archive filename")
-    target = settings.log_dir / filename
+    target = (
+        settings.log_dir / filename
+    )  # SEC-PATH-OK: filename is matched against the strict ^bamdude-\d{4}-\d{2}-\d{2}\.log$ regex + a resolve()/is_relative_to(log_dir) recheck just below
     # Belt-and-braces resolve check — make sure the final path is still
     # under log_dir even after symlink/double-dot expansion.
     try:
@@ -407,7 +409,9 @@ async def delete_log_archive(
     download route."""
     if not _ARCHIVE_NAME_RE.match(filename):
         raise HTTPException(status_code=400, detail="Invalid log archive filename")
-    target = settings.log_dir / filename
+    target = (
+        settings.log_dir / filename
+    )  # SEC-PATH-OK: filename is matched against the strict ^bamdude-\d{4}-\d{2}-\d{2}\.log$ regex + a resolve()/is_relative_to(log_dir) recheck just below
     try:
         resolved = target.resolve()
         log_dir_resolved = settings.log_dir.resolve()

@@ -246,7 +246,9 @@ async def _persist_calibration_slice_to_library(
     from backend.app.services.library_helpers import compute_file_tags
 
     unique_name = f"{uuid.uuid4().hex}.gcode.3mf"
-    out_path = get_library_files_dir() / unique_name
+    out_path = (
+        get_library_files_dir() / unique_name
+    )  # SEC-PATH-OK: unique_name = uuid4().hex + a fixed .gcode.3mf suffix (server-generated)
     out_path.write_bytes(content)
 
     metadata: dict = {

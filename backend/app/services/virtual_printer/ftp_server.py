@@ -432,7 +432,9 @@ class FTPSession:
         await self._notify_upload_start()
         try:
             filename = Path(arg).name  # Sanitize filename
-            file_path = self.upload_dir / filename
+            file_path = (
+                self.upload_dir / filename
+            )  # SEC-PATH-OK: filename = Path(arg).name — basename only; pathlib .name never yields '..'
 
             logger.info("FTP receiving file: %s from %s", filename, self.remote_ip)
 

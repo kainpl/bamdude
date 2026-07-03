@@ -427,7 +427,9 @@ class VirtualPrinterInstance:
 
                 library_files_dir = get_library_files_dir()
                 unique_filename = f"{uuid.uuid4().hex}{ext}"
-                dest_path = library_files_dir / unique_filename
+                dest_path = (
+                    library_files_dir / unique_filename
+                )  # SEC-PATH-OK: unique_filename = uuid4().hex + the extension of an already-basename'd name
 
                 import shutil
 
@@ -452,7 +454,9 @@ class VirtualPrinterInstance:
                     if thumbnail_data:
                         thumbnails_dir = get_library_thumbnails_dir()
                         thumb_filename = f"{uuid.uuid4().hex}{thumbnail_ext}"
-                        thumb_path = thumbnails_dir / thumb_filename
+                        thumb_path = (
+                            thumbnails_dir / thumb_filename
+                        )  # SEC-PATH-OK: thumb_filename = uuid4().hex + a hardcoded .png extension
                         with open(thumb_path, "wb") as f:
                             f.write(thumbnail_data)
                         thumbnail_path = str(thumb_path)

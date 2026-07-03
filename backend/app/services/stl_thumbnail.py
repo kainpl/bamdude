@@ -226,7 +226,9 @@ def generate_stl_thumbnail(
 
         # Save thumbnail
         thumb_filename = f"{uuid.uuid4().hex}.png"
-        thumb_path = thumbnails_dir / thumb_filename
+        thumb_path = (
+            thumbnails_dir / thumb_filename
+        )  # SEC-PATH-OK: thumb_filename = uuid4().hex + a fixed .png extension (server-generated)
 
         fig.savefig(
             thumb_path,

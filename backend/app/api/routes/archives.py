@@ -2392,7 +2392,9 @@ async def process_timelapse(
                 filename = f"timelapse_{archive_id}_edited"
             if not filename.endswith(".mp4"):
                 filename += ".mp4"
-            output_path = archive_dir / filename
+            output_path = (
+                archive_dir / filename
+            )  # SEC-PATH-OK: filename is stripped to alnum + ._- and rejected on ..-segments / leading dot just above the join
 
         success = await processor.process(
             output_path=output_path,
@@ -2463,7 +2465,9 @@ async def upload_photo(
 
     ext = Path(_safe_filename(file.filename)).suffix.lower()
     photo_filename = f"{uuid.uuid4().hex[:8]}{ext}"
-    photo_path = photos_dir / photo_filename
+    photo_path = (
+        photos_dir / photo_filename
+    )  # SEC-PATH-OK: photo_filename is a server uuid4().hex + the suffix of a _safe_filename()'d basename
 
     # Save file
     content = await file.read()
@@ -3459,7 +3463,9 @@ def _resolve_source_3mf_path(archive: PrintArchive, source_filename: str) -> Pat
         ) from exc
 
     source_dir.mkdir(parents=True, exist_ok=True)
-    return source_dir / source_filename
+    return (
+        source_dir / source_filename
+    )  # SEC-PATH-OK: source_filename is _safe_filename()'d (basename only) at both call sites; source_dir is containment-checked in this helper
 
 
 @router.post("/{archive_id}/source")
@@ -3776,7 +3782,9 @@ async def upload_f3d(
 
     # Save the F3D file - preserve original filename (sanitized)
     f3d_filename = _safe_filename(file.filename)
-    f3d_path = f3d_dir / f3d_filename
+    f3d_path = (
+        f3d_dir / f3d_filename
+    )  # SEC-PATH-OK: f3d_filename = _safe_filename(file.filename) just above (basename only)
 
     content = await file.read()
     f3d_path.write_bytes(content)
@@ -3893,7 +3901,9 @@ async def slice_archive(
     if not src_relative:
         raise HTTPException(status_code=400, detail="Archive has no source file to slice")
 
-    src_path = Path(settings.base_dir) / src_relative
+    src_path = (
+        Path(settings.base_dir) / src_relative
+    )  # SEC-PATH-OK: src_relative is archive.source_3mf_path/file_path — a server-written relative_to(base_dir) value, not request input
     if not src_path.exists():
         raise HTTPException(status_code=404, detail="Archive source file missing on disk")
 

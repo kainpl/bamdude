@@ -1751,11 +1751,15 @@ class ArchiveService:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             base_archive_name = f"{timestamp}_{display_stem}"
             archive_name = base_archive_name
-            archive_dir = settings.archive_dir / printer_folder / archive_name
+            archive_dir = (
+                settings.archive_dir / printer_folder / archive_name
+            )  # SEC-PATH-OK: printer_folder=str(printer_id); archive_name is timestamp + path-stripped display stem (no separators)
             suffix = 2
             while archive_dir.exists():
                 archive_name = f"{base_archive_name}_{suffix}"
-                archive_dir = settings.archive_dir / printer_folder / archive_name
+                archive_dir = (
+                    settings.archive_dir / printer_folder / archive_name
+                )  # SEC-PATH-OK: printer_folder=str(printer_id); archive_name is timestamp + path-stripped display stem (no separators)
                 suffix += 1
             archive_dir.mkdir(parents=True)
             dest_file = archive_dir / source_file.name
@@ -2051,18 +2055,24 @@ class ArchiveService:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 base_archive_name = f"{timestamp}_{display_stem}"
                 archive_name = base_archive_name
-                archive_dir = settings.archive_dir / printer_folder / archive_name
+                archive_dir = (
+                    settings.archive_dir / printer_folder / archive_name
+                )  # SEC-PATH-OK: printer_folder=str(printer_id); archive_name is timestamp + path-stripped display stem (no separators)
                 suffix = 2
                 while archive_dir.exists():
                     archive_name = f"{base_archive_name}_{suffix}"
-                    archive_dir = settings.archive_dir / printer_folder / archive_name
+                    archive_dir = (
+                        settings.archive_dir / printer_folder / archive_name
+                    )  # SEC-PATH-OK: printer_folder=str(printer_id); archive_name is timestamp + path-stripped display stem (no separators)
                     suffix += 1
                 archive_dir.mkdir(parents=True)
                 # Prefer the clean original_filename (e.g. "Swapmod_STL.gcode.3mf")
                 # over the potentially-prefixed temp source_file name (e.g.
                 # "cover_1_Swapmod_STL.gcode.3mf" when it came from the cover
                 # endpoint's temp download).
-                dest_file = archive_dir / dest_name
+                # dest_name can originate from a printer FTP listing / MQTT
+                # subtask name (not a request), so containment-check the join.
+                dest_file = safe_join_under(archive_dir, dest_name, http=False)
                 # Same fsync'd loop as archive_print (#1032).
                 _copy_and_fsync(source_file, dest_file)
 

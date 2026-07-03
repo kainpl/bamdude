@@ -888,7 +888,9 @@ async def upload_attachment(
 
     # Generate unique filename
     unique_filename = f"{uuid.uuid4().hex}{ext}"
-    file_path = attachments_dir / unique_filename
+    file_path = (
+        attachments_dir / unique_filename
+    )  # SEC-PATH-OK: unique_filename = uuid4().hex + an extension validated against the attachment allowlist just above
 
     # Save file
     try:
@@ -960,7 +962,9 @@ async def download_attachment(
         raise HTTPException(status_code=404, detail="Attachment not found")
 
     # Check file exists
-    file_path = get_project_attachments_dir(project_id) / filename
+    file_path = (
+        get_project_attachments_dir(project_id) / filename
+    )  # SEC-PATH-OK: filename is rejected for / \ .. and empty just above the join
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="Attachment file not found")
 
@@ -1000,7 +1004,9 @@ async def delete_attachment(
     project.attachments = attachments if attachments else None
 
     # Delete file
-    file_path = get_project_attachments_dir(project_id) / filename
+    file_path = (
+        get_project_attachments_dir(project_id) / filename
+    )  # SEC-PATH-OK: filename is rejected for / \ .. and empty just above the join
     if file_path.exists():
         try:
             os.remove(file_path)
@@ -1075,7 +1081,9 @@ async def upload_project_cover_image(
                 logger.warning("Failed to delete old cover image %s: %s", old_path, e)
 
     unique_filename = f"cover_{uuid.uuid4().hex}{ext}"
-    file_path = attachments_dir / unique_filename
+    file_path = (
+        attachments_dir / unique_filename
+    )  # SEC-PATH-OK: unique_filename = 'cover_' + uuid4().hex + an extension validated against the cover-image allowlist just above
     try:
         with open(file_path, "wb") as f:
             content = await file.read()

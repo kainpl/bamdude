@@ -18,6 +18,7 @@ from backend.app.services.bambu_ftp import (
     get_ftp_retry_settings,
     list_files_async,
 )
+from backend.app.utils.safe_path import safe_join_under
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +105,8 @@ async def try_download_3mf(
     primary_filename = candidates[0]
     if not primary_filename.endswith(".3mf"):
         primary_filename = next((c for c in candidates if c.endswith(".3mf")), primary_filename)
-    temp_path = temp_dir / primary_filename
+    # candidates are built from printer MQTT / FTP-derived names — containment-check.
+    temp_path = safe_join_under(temp_dir, primary_filename, http=False)
 
     remote_paths_only = [rp for rp, _ in all_remote_paths]
     try:
@@ -164,7 +166,8 @@ async def try_download_3mf(
 
     # Single connection, try every fuzzy-matched path.
     fuzzy_filename = fallback_paths[0][1]
-    fuzzy_temp_path = temp_dir / fuzzy_filename
+    # fname comes straight from the printer FTP dir listing — containment-check.
+    fuzzy_temp_path = safe_join_under(temp_dir, fuzzy_filename, http=False)
     try:
         downloaded = await download_file_try_paths_async(
             printer.ip_address,

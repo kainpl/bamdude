@@ -227,7 +227,9 @@ class LocalBackupService:
         if not _is_backup_filename(filename):
             return None
         backup_dir = self._resolve_backup_dir(path_setting)
-        target = backup_dir / filename
+        target = (
+            backup_dir / filename
+        )  # SEC-PATH-OK: filename is rejected for / \ .. and required to match _is_backup_filename just above the join
         if not target.exists():
             return None
         return target
@@ -260,7 +262,9 @@ class LocalBackupService:
             return {"success": False, "message": "Invalid filename"}
 
         backup_dir = self._resolve_backup_dir(path_setting)
-        target = backup_dir / filename
+        target = (
+            backup_dir / filename
+        )  # SEC-PATH-OK: filename is rejected for / \ .. and target.name re-checked against _is_backup_filename just above
 
         if not target.exists():
             return {"success": False, "message": "Backup not found"}
