@@ -8,6 +8,7 @@ import asyncio
 import hmac
 import json
 import logging
+import socket
 import ssl
 import time
 from collections.abc import Callable
@@ -505,10 +506,13 @@ class SimpleMQTTServer:
 
         authenticated = False
         # Per-packet read timeout. 60 s before CONNECT so a silent client can't
-        # hold the task forever; after CONNECT it becomes 1.5× the negotiated
-        # keepalive (spec §4.4), or None (no timeout) when the client sent
-        # keep_alive == 0 (spec §3.1.2.10). Honouring this stops us closing
-        # OrcaSlicer's idle connection at exactly the keepalive boundary (#1548).
+        # hold the task forever. After CONNECT we drop the application-level
+        # read timeout entirely and rely on TCP keepalive (SO_KEEPALIVE) to
+        # detect dead connections — this matches real Bambu firmware, which
+        # does not enforce MQTT spec §4.4's 1.5× idle disconnect (#1548 round
+        # 2). OrcaSlicer's MQTT client on some platforms emits no PINGREQ at
+        # all on idle connections; the same install that stays connected to a
+        # real P1S indefinitely was being disconnected from us at keepalive×1.5.
         read_timeout: float | None = 60.0
 
         try:
@@ -551,8 +555,28 @@ class SimpleMQTTServer:
                         self._record_auth_failure(source_ip)
                         break
                     self._clear_auth_failures(source_ip)
-                    # Honour the client's negotiated keepalive (#1548).
-                    read_timeout = keep_alive * 1.5 if keep_alive > 0 else None
+                    # Drop the application-level read timeout; rely on
+                    # SO_KEEPALIVE below for dead-connection detection. Real
+                    # Bambu firmware does the same — accept any negotiated
+                    # keepalive but never enforce §4.4's 1.5× disconnect on the
+                    # otherwise-idle MQTT session (#1548 round 2). keep_alive is
+                    # logged for support bundles but no longer drives a disconnect.
+                    read_timeout = None
+                    logger.info(
+                        "%sMQTT client %s authenticated (negotiated keepalive=%ds, idle disconnect disabled)",
+                        self._log_prefix,
+                        client_id,
+                        keep_alive,
+                    )
+                    # Enable TCP keepalive so a hard network drop is detected by
+                    # the OS within a few minutes rather than waiting for the
+                    # next outbound write to ECONNRESET.
+                    sock = writer.get_extra_info("socket")
+                    if sock is not None:
+                        try:
+                            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+                        except OSError as e:
+                            logger.debug("%sFailed to set SO_KEEPALIVE on %s: %s", self._log_prefix, client_id, e)
                     # Register client; start with self.serial until we learn
                     # the slicer's preferred serial from SUBSCRIBE/PUBLISH.
                     self._clients[client_id] = writer
