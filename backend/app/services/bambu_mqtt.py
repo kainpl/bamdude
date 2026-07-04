@@ -119,6 +119,108 @@ _install_paho_publish_guard()
 _AMS_MODULE_PREFIXES = ("ams/", "n3f/", "n3s/")
 
 
+def apply_tray_exist_bits(
+    units: list,
+    tray_exist_bits_str: str | int | None,
+    *,
+    power_on_flag: bool = True,
+    log_label: str | None = None,
+) -> int:
+    """Wipe stale per-tray filament fields on slots whose ``tray_exist_bits`` bit is 0.
+
+    ``tray_exist_bits`` is firmware's canonical "which slots have a spool" bitmask
+    (BambuStudio uses it too). For every slot whose bit is 0, promote the tray
+    ``state`` to 9 (firmware's "no spool" code) and clear ``tray_type`` /
+    ``tray_color`` / ``tray_info_idx`` / ``tag_uid`` / ``tray_uuid`` / ``remain``
+    etc so downstream readers (BamDude's AMS card, the VP slicer-facing cache,
+    inventory short-circuits keyed on ``state in {9, 10}``) all see one canonical
+    empty-slot signal instead of guessing from payload shape (#1322, #147).
+
+    Two callers share this helper to keep their views consistent:
+
+    1. ``_handle_ams_data`` for BamDude's internal AMS state (printer card).
+    2. ``virtual_printer.mqtt_bridge._on_printer_raw`` for the cached slicer-
+       facing push_status (upstream Bambuddy #1726 — without this the VP would
+       forward stale per-tray fields for empty slots, and BambuStudio's Sync
+       would render phantom loaded slots).
+
+    Skipped only on the printer-shutdown pattern: all-zero bits paired with
+    ``power_on_flag=False`` (#765). Non-zero bits with ``power_on_flag=False``
+    is valid idle-printer state (#1365 — X1C between prints) and MUST be applied
+    so spool removal is detected without requiring a manual reconnect.
+
+    AMS-HT units (``id >= 128``) use a separate addressing scheme and are
+    skipped here.
+
+    ``tray_exist_bits_str`` is expected as a hex string (firmware sends it that
+    way). Ints are tolerated for defensive symmetry but typically not seen on
+    the wire. ``None`` / empty / unparseable → no-op.
+
+    Mutates ``units`` in place. Returns the number of slots cleared.
+    """
+    if not tray_exist_bits_str:
+        return 0
+    try:
+        if isinstance(tray_exist_bits_str, int):
+            tray_exist_bits = tray_exist_bits_str
+        else:
+            tray_exist_bits = int(tray_exist_bits_str, 16)
+    except (ValueError, TypeError):
+        return 0
+    if tray_exist_bits == 0 and not power_on_flag:
+        return 0
+    if not isinstance(units, list):
+        return 0
+
+    cleared = 0
+    for ams_unit in units:
+        if not isinstance(ams_unit, dict):
+            continue
+        ams_id_raw = ams_unit.get("id")
+        if ams_id_raw is None:
+            continue
+        try:
+            ams_id = int(ams_id_raw) if isinstance(ams_id_raw, str) else ams_id_raw
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(ams_id, int) or ams_id >= 128:
+            # Skip AMS-HT (id >= 128) — separate addressing scheme.
+            continue
+        for tray in ams_unit.get("tray", []):
+            if not isinstance(tray, dict):
+                continue
+            tray_id_raw = tray.get("id")
+            if tray_id_raw is None:
+                continue
+            try:
+                tray_id = int(tray_id_raw) if isinstance(tray_id_raw, str) else tray_id_raw
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(tray_id, int):
+                continue
+            global_bit = ams_id * 4 + tray_id
+            slot_exists = (tray_exist_bits >> global_bit) & 1
+            if slot_exists:
+                continue
+            tray["state"] = 9
+            if tray.get("tray_type"):
+                if log_label:
+                    logger.debug(
+                        f"[{log_label}] Clearing empty slot: AMS {ams_id} slot {tray_id} "
+                        f"(tray_exist_bits bit {global_bit} = 0)"
+                    )
+                tray["tray_type"] = ""
+                tray["tray_sub_brands"] = ""
+                tray["tray_color"] = ""
+                tray["tray_id_name"] = ""
+                tray["tag_uid"] = "0000000000000000"
+                tray["tray_uuid"] = "00000000000000000000000000000000"
+                tray["tray_info_idx"] = ""
+                tray["remain"] = 0
+                cleared += 1
+    return cleared
+
+
 @dataclass
 class MQTTLogEntry:
     """Log entry for MQTT message debugging."""
@@ -2202,76 +2304,18 @@ class BambuMQTTClient:
         # Convert back to list, sorted by ID for consistent ordering
         merged_ams = sorted(existing_by_id.values(), key=lambda x: x.get("id", 0))
 
-        # Check tray_exist_bits to clear empty slots (Issue #147)
-        # New AMS models don't send empty tray data - they just update tray_exist_bits
-        # Each bit in tray_exist_bits represents a slot: bit=0 means empty, bit=1 means has spool
-        # Skip ONLY the printer-shutdown pattern: all-zero bits paired with
-        # ``power_on_flag=False`` (#765). On shutdown that combination would
-        # wipe all slot data and cause auto-unlink to remove spool
-        # assignments. Non-zero bits with ``power_on_flag=False`` are valid
-        # AMS state from an idle printer — some X1C firmware (e.g.
-        # 01.08.02.00) reports ``power_on_flag=False`` between prints while
-        # the AMS keeps reporting its actual slot inventory; the update MUST
-        # be applied so spool removal is detected without requiring a
-        # manual reconnect (upstream Bambuddy #1365 / commit 7aa5ff01).
-        tray_exist_bits_str = ams_data.get("tray_exist_bits") if isinstance(ams_data, dict) else None
-        power_on = ams_data.get("power_on_flag", True) if isinstance(ams_data, dict) else True
-        if tray_exist_bits_str:
-            try:
-                tray_exist_bits = int(tray_exist_bits_str, 16)
-            except (ValueError, TypeError) as e:
-                logger.debug("[%s] Could not parse tray_exist_bits: %s", self.serial_number, e)
-                tray_exist_bits = None
-
-            if tray_exist_bits is not None and not (tray_exist_bits == 0 and not power_on):
-                for ams_unit in merged_ams:
-                    ams_id_raw = ams_unit.get("id")
-                    if ams_id_raw is None:
-                        continue
-                    # Convert to int (may be string from JSON)
-                    ams_id = int(ams_id_raw) if isinstance(ams_id_raw, str) else ams_id_raw
-                    if ams_id >= 128:  # Skip HT AMS (id >= 128)
-                        continue
-                    # Bits for this AMS unit: bits (ams_id*4) to (ams_id*4 + 3)
-                    for tray in ams_unit.get("tray", []):
-                        tray_id_raw = tray.get("id")
-                        if tray_id_raw is None:
-                            continue
-                        # Convert to int (may be string from JSON)
-                        tray_id = int(tray_id_raw) if isinstance(tray_id_raw, str) else tray_id_raw
-                        global_bit = ams_id * 4 + tray_id
-                        slot_exists = (tray_exist_bits >> global_bit) & 1
-                        if not slot_exists:
-                            # #1322 follow-up: the bitmask is BambuStudio's
-                            # canonical "no spool" signal, and works across
-                            # every firmware variant (P1S, A1 Mini, post-
-                            # restart, post-Reset-Slot, steady-state).
-                            # Promote to state=9 (firmware's explicit
-                            # "no spool" code) so downstream readers — the
-                            # API serializer, ``inventory.py``'s
-                            # ``tray_state in {9, 10}`` short-circuit, the
-                            # AMS card — see one canonical signal instead
-                            # of guessing from payload shape. Int (not
-                            # "9") to match the downstream ``==``
-                            # comparison (upstream Bambuddy e2df0fc6).
-                            tray["state"] = 9
-                            if tray.get("tray_type"):
-                                # Stale data from before the slot went
-                                # empty — clear it so the AMS view doesn't
-                                # render a colour/material that's no
-                                # longer there.
-                                logger.debug(
-                                    f"[{self.serial_number}] Clearing empty slot: AMS {ams_id} slot {tray_id} "
-                                    f"(tray_exist_bits bit {global_bit} = 0)"
-                                )
-                                tray["tray_type"] = ""
-                                tray["tray_sub_brands"] = ""
-                                tray["tray_color"] = ""
-                                tray["tray_id_name"] = ""
-                                tray["tag_uid"] = "0000000000000000"
-                                tray["tray_uuid"] = "00000000000000000000000000000000"
-                                tray["tray_info_idx"] = ""
-                                tray["remain"] = 0
+        # Empty-slot cleanup via tray_exist_bits (#147, #1322, #765, #1365).
+        # Shared with the VP bridge cache so the slicer-facing view stays in
+        # sync with BamDude's AMS card (upstream Bambuddy #1726). See the
+        # helper's docstring for the full rationale and the printer-shutdown
+        # guard.
+        if isinstance(ams_data, dict):
+            apply_tray_exist_bits(
+                merged_ams,
+                ams_data.get("tray_exist_bits"),
+                power_on_flag=ams_data.get("power_on_flag", True),
+                log_label=self.serial_number,
+            )
 
         self.state.raw_data["ams"] = merged_ams
 
