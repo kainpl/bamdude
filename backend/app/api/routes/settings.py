@@ -678,6 +678,36 @@ async def restore_backup(
             except Exception as e:
                 logger.warning("Failed to stop virtual printer: %s", e)
 
+            # 3b. Pause timer-based background services BEFORE the DB swap.
+            # close_all_connections() below only disposes the engine's pool,
+            # not the asyncio tasks that opened sessions from it. The print
+            # scheduler (30 s cadence), smart-plug snapshot loop (30 s),
+            # notification digest loop, and background dispatch worker all wake
+            # up and call async_session(), which lazily re-creates a pool
+            # connection holding RowExclusiveLock on print_queue /
+            # smart_plug_energy_snapshots / etc. The DROP TABLE CASCADE pass in
+            # the PostgreSQL restore path (db_portable.import_sqlite_to_postgres)
+            # needs AccessExclusiveLock on every public table, producing an
+            # AB/BA deadlock and a full restore rollback. Successful restore
+            # already requires a container restart, so we don't restart the
+            # services here.
+            try:
+                from backend.app.services.background_dispatch import background_dispatch
+                from backend.app.services.notification_service import notification_service
+                from backend.app.services.print_scheduler import scheduler as print_scheduler
+                from backend.app.services.smart_plug_manager import smart_plug_manager
+
+                logger.info("Pausing background services for restore...")
+                print_scheduler.stop()
+                smart_plug_manager.stop_scheduler()
+                notification_service.stop_digest_scheduler()
+                await background_dispatch.stop()
+                # In-flight loop iterations need a moment to commit + release
+                # their DB sessions before we dispose() the engine pool.
+                await asyncio.sleep(1.0)
+            except Exception as e:
+                logger.warning("Could not cleanly pause background services: %s", e)
+
             # 4. Close current database connections
             logger.info("Closing database connections...")
             await close_all_connections()

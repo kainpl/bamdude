@@ -1095,6 +1095,11 @@ export function GitBackupSettings() {
                         }}
                         className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
                       />
+                      <span className="block text-xs text-bambu-gray-light mt-1">
+                        {t('backup.scheduledLocalBackup.localTimeHint', {
+                          tz: localBackupStatus?.timezone || 'UTC',
+                        })}
+                      </span>
                     </label>
                   )}
 

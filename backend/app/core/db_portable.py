@@ -127,6 +127,15 @@ async def import_sqlite_to_postgres(engine, metadata, sqlite_path: Path) -> int:
         from backend.app.core.db_dialect import is_postgres
 
         if is_postgres():
+            # Cap how long DROP TABLE will wait for AccessExclusiveLock so any
+            # residual concurrent writer (a per-printer MQTT client writing
+            # reactively, a background loop that woke on its cadence) surfaces a
+            # fast `lock_timeout` error instead of blocking the restore for the
+            # default cadence or producing an AB/BA deadlock. SET LOCAL scopes
+            # to this transaction only; outside this restore path the global
+            # default (no timeout) applies. Pairs with the background-service
+            # pause in routes/settings.py::restore_backup (#1... PG deadlock).
+            await conn.execute(text("SET LOCAL lock_timeout = '10s'"))
             await conn.execute(
                 text(
                     "DO $$ DECLARE r RECORD; "

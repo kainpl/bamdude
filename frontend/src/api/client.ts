@@ -2795,6 +2795,7 @@ export interface LocalBackupStatus {
   last_status: 'success' | 'failed' | null;
   last_message: string | null;
   next_run: string | null;
+  timezone: string;        // IANA zone the HH:MM picker is interpreted in (#1602)
 }
 
 export interface LocalBackupFile {

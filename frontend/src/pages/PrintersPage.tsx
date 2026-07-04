@@ -5806,7 +5806,7 @@ function MacrosPanel({
 }
 
 
-function AddPrinterModal({
+export function AddPrinterModal({
   onClose,
   onAdd,
   existingSerials,
@@ -5849,6 +5849,12 @@ function AddPrinterModal({
   const [isDocker, setIsDocker] = useState(false);
   const [detectedSubnets, setDetectedSubnets] = useState<string[]>([]);
   const [subnet, setSubnet] = useState('');
+  // Custom subnet — `__custom__` sentinel in the dropdown reveals a CIDR text
+  // input so users can scan a subnet BamDude isn't directly on (printer behind
+  // a router on a different L3 segment — SSDP multicast won't cross that
+  // boundary, only an active unicast scan will). #1564
+  const [customSubnet, setCustomSubnet] = useState('');
+  const [useCustomSubnet, setUseCustomSubnet] = useState(false);
   const [scanProgress, setScanProgress] = useState({ scanned: 0, total: 0 });
   const [showDiagnostic, setShowDiagnostic] = useState(false);
 
@@ -5880,7 +5886,9 @@ function AddPrinterModal({
     onAdd(form);
   };
 
-  // Fetch discovery info on mount
+  // Fetch discovery info on mount + restore the last custom CIDR the user
+  // typed (kept in localStorage so they don't retype `10.1.1.0/24` every time
+  // they open this modal).
   useEffect(() => {
     discoveryApi.getInfo().then(info => {
       setIsDocker(info.is_docker);
@@ -5891,6 +5899,12 @@ function AddPrinterModal({
     }).catch(() => {
       // Ignore errors, assume not Docker
     });
+    try {
+      const saved = localStorage.getItem('bamdude.discovery.customSubnet');
+      if (saved) setCustomSubnet(saved);
+    } catch {
+      // localStorage unavailable (private mode, quota); recall is opportunistic
+    }
   }, []);
 
   // Filter out already-added printers
@@ -5903,10 +5917,23 @@ function AddPrinterModal({
     setHasScanned(false);
     setScanProgress({ scanned: 0, total: 0 });
 
+    // Native installs fall back to subnet scanning when the user picks
+    // "Custom" — SSDP can't reach a printer on a different L3 segment (#1564).
+    // Docker mode always uses subnet scan (multicast unavailable).
+    const scanCidr = useCustomSubnet ? customSubnet.trim() : subnet;
+    const wantsSubnetScan = isDocker || useCustomSubnet;
+
+    if (wantsSubnetScan && useCustomSubnet) {
+      try {
+        localStorage.setItem('bamdude.discovery.customSubnet', scanCidr);
+      } catch {
+        // localStorage write best-effort; user just retypes next time
+      }
+    }
+
     try {
-      if (isDocker) {
-        // Use subnet scanning for Docker
-        await discoveryApi.startSubnetScan(subnet);
+      if (wantsSubnetScan) {
+        await discoveryApi.startSubnetScan(scanCidr);
 
         // Poll for scan status and results
         const pollInterval = setInterval(async () => {
@@ -6009,37 +6036,60 @@ function AddPrinterModal({
 
           {/* Discovery Section - full width */}
           <div className="mb-4 pb-4 border-b border-bambu-dark-tertiary">
-            {isDocker && (
-              <div className="mb-3">
-                <label className="block text-sm text-bambu-gray mb-1">
-                  {t('printers.discovery.subnetToScan')}
-                </label>
-                {detectedSubnets.length > 0 ? (
-                  <select
-                    className="w-full px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
-                    value={subnet}
-                    onChange={(e) => setSubnet(e.target.value)}
-                    disabled={discovering}
-                  >
-                    {detectedSubnets.map(s => (
-                      <option key={s} value={s}>{s}</option>
-                    ))}
-                  </select>
-                ) : (
-                  <input
-                    type="text"
-                    className="w-full px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
-                    value={subnet}
-                    onChange={(e) => setSubnet(e.target.value)}
-                    placeholder="192.168.1.0/24"
-                    disabled={discovering}
-                  />
-                )}
-                <p className="mt-1 text-xs text-bambu-gray">
-                  {t('printers.discovery.dockerNote')}
-                </p>
-              </div>
-            )}
+            {/* Subnet picker — always visible. The dropdown lists detected
+                interface subnets and a "Custom..." sentinel that reveals a
+                CIDR text input for printers on a different L3 segment (router,
+                VLAN, etc.). #1564 */}
+            <div className="mb-3">
+              <label className="block text-sm text-bambu-gray mb-1">
+                {t('printers.discovery.subnetToScan')}
+              </label>
+              {detectedSubnets.length > 0 ? (
+                <select
+                  className="w-full px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
+                  value={useCustomSubnet ? '__custom__' : subnet}
+                  onChange={(e) => {
+                    if (e.target.value === '__custom__') {
+                      setUseCustomSubnet(true);
+                    } else {
+                      setUseCustomSubnet(false);
+                      setSubnet(e.target.value);
+                    }
+                  }}
+                  disabled={discovering}
+                >
+                  {detectedSubnets.map(s => (
+                    <option key={s} value={s}>{s}</option>
+                  ))}
+                  <option value="__custom__">{t('printers.discovery.customSubnetOption')}</option>
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  className="w-full px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
+                  value={subnet}
+                  onChange={(e) => setSubnet(e.target.value)}
+                  placeholder="192.168.1.0/24"
+                  disabled={discovering}
+                />
+              )}
+              {useCustomSubnet && (
+                <input
+                  type="text"
+                  aria-label={t('printers.discovery.customSubnetLabel')}
+                  className="mt-2 w-full px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
+                  value={customSubnet}
+                  onChange={(e) => setCustomSubnet(e.target.value)}
+                  placeholder="10.1.1.0/24"
+                  disabled={discovering}
+                />
+              )}
+              <p className="mt-1 text-xs text-bambu-gray">
+                {isDocker
+                  ? t('printers.discovery.dockerNote')
+                  : t('printers.discovery.customSubnetNote')}
+              </p>
+            </div>
 
             <Button
               type="button"
@@ -6051,14 +6101,14 @@ function AddPrinterModal({
               {discovering ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  {isDocker && scanProgress.total > 0
+                  {(isDocker || useCustomSubnet) && scanProgress.total > 0
                     ? t('printers.discovery.scanProgress', { scanned: scanProgress.scanned, total: scanProgress.total })
                     : t('printers.discovery.scanning')}
                 </>
               ) : (
                 <>
                   <Search className="w-4 h-4" />
-                  {isDocker ? t('printers.discovery.scanSubnet') : t('printers.discovery.discoverNetwork')}
+                  {(isDocker || useCustomSubnet) ? t('printers.discovery.scanSubnet') : t('printers.discovery.discoverNetwork')}
                 </>
               )}
             </Button>
@@ -6094,13 +6144,13 @@ function AddPrinterModal({
 
             {discovering && (
               <p className="mt-2 text-sm text-bambu-gray text-center">
-                {isDocker ? t('printers.discovery.scanningSubnet') : t('printers.discovery.scanningNetwork')}
+                {(isDocker || useCustomSubnet) ? t('printers.discovery.scanningSubnet') : t('printers.discovery.scanningNetwork')}
               </p>
             )}
 
             {hasScanned && !discovering && discovered.length === 0 && (
               <p className="mt-2 text-sm text-bambu-gray text-center">
-                {isDocker ? t('printers.discovery.noPrintersFoundSubnet') : t('printers.discovery.noPrintersFoundNetwork')}
+                {(isDocker || useCustomSubnet) ? t('printers.discovery.noPrintersFoundSubnet') : t('printers.discovery.noPrintersFoundNetwork')}
               </p>
             )}
 

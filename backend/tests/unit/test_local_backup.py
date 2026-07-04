@@ -10,7 +10,9 @@ Adapted to BamDude rebrand:
 from datetime import datetime, timezone
 from unittest.mock import patch
 
-from backend.app.services.local_backup import LocalBackupService
+import pytest
+
+from backend.app.services.local_backup import LocalBackupService, _local_zone
 
 
 class TestCalculateNextRun:
@@ -85,6 +87,50 @@ class TestCalculateNextRun:
             result = service._calculate_next_run("every_5_min", "03:00")
         # Should fall through to daily behavior (time-based)
         assert result.hour == 3
+
+
+class TestLocalZone:
+    """Tests for scheduled-backup HH:MM timezone resolution (#1602 follow-up)."""
+
+    def test_unset_tz_falls_back_to_utc(self, monkeypatch):
+        monkeypatch.delenv("TZ", raising=False)
+        assert _local_zone() is timezone.utc
+
+    def test_blank_tz_falls_back_to_utc(self, monkeypatch):
+        monkeypatch.setenv("TZ", "   ")
+        assert _local_zone() is timezone.utc
+
+    def test_unrecognised_tz_falls_back_to_utc(self, monkeypatch):
+        # A bogus zone name must never crash the scheduler — UTC fallback.
+        monkeypatch.setenv("TZ", "Not/AZone")
+        assert _local_zone() is timezone.utc
+
+    def test_valid_tz_resolves_to_zoneinfo(self, monkeypatch):
+        # Requires the IANA tz database (system zoneinfo or the tzdata wheel).
+        # Skipped on hosts without it (e.g. bare Windows) rather than failing —
+        # production Linux/Docker always has it.
+        pytest.importorskip("tzdata")
+        from zoneinfo import ZoneInfo
+
+        monkeypatch.setenv("TZ", "Europe/Kyiv")
+        zone = _local_zone()
+        assert isinstance(zone, ZoneInfo)
+        assert str(zone) == "Europe/Kyiv"
+
+    def test_daily_interpreted_in_local_tz(self, monkeypatch):
+        # 03:00 in UTC+3 (Europe/Kyiv summer) == 00:00 UTC. At 01:00 UTC the
+        # next 03:00-local is 5 hours out -> 06:00 UTC same day.
+        pytest.importorskip("tzdata")
+        service = LocalBackupService()
+        monkeypatch.setenv("TZ", "Europe/Kyiv")
+        now = datetime(2026, 7, 4, 1, 0, 0, tzinfo=timezone.utc)  # 04:00 Kyiv
+        with patch("backend.app.services.local_backup.datetime") as mock_dt:
+            mock_dt.now.return_value = now
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+            result = service._calculate_next_run("daily", "03:00")
+        # 03:00 Kyiv already passed today (it's 04:00) -> tomorrow 03:00 Kyiv.
+        # 03:00 Kyiv (UTC+3) == 00:00 UTC on 2026-07-05.
+        assert result == datetime(2026, 7, 5, 0, 0, 0, tzinfo=timezone.utc)
 
 
 class TestPruneBackups:
