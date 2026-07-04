@@ -1729,6 +1729,13 @@ class PrintScheduler:
             "bed_levelling": item.bed_levelling,
             "flow_cali": item.flow_cali,
             "layer_inspect": item.layer_inspect,
+            # Raw user choice — the #1397 force-timelapse override is applied
+            # downstream in background_dispatch (resolve_effective_timelapse at
+            # its start_print sites), NOT here. Our single-dispatch-layer means
+            # this options dict is handed to background_dispatch._process_job,
+            # so the queue path funnels through the same chokepoint as Print
+            # Now / Reprint. Do NOT resolve here (upstream had to wire its
+            # scheduler because it called start_print directly; ours delegates).
             "timelapse": item.timelapse,
             "use_ams": item.use_ams,
             "nozzle_offset_cali": item.nozzle_offset_cali,

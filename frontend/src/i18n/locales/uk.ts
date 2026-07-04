@@ -2112,7 +2112,7 @@ export default {
     styleVibrant: 'Яскравий',
     themeToggleHint: 'Перемикайте між темним, світлим і системним режимом за допомогою іконки в бічній панелі.',
     saveThumbnailsDescription: 'Витягувати та зберігати мініатюри з 3MF файлів',
-    captureFinishPhotoDescription: 'Зробити фото з камери принтера при завершенні друку',
+    captureFinishPhotoDescription: 'Зробити фото з камери принтера при завершенні друку. BamDude записує короткий таймлапс під час друку, щоб отримати фото з моменту перед опусканням столу; файл таймлапсу зберігається, якщо ви увімкнули таймлапс для цього друку, інакше він автоматично видаляється після зйомки фото.',
     ffmpegNotInstalled: 'ffmpeg не встановлено',
     ffmpegRequired: 'Зйомка камерою вимагає ffmpeg. Встановіть через <brew>brew install ffmpeg</brew> (macOS) або <apt>apt install ffmpeg</apt> (Linux).',
     archiveCleanup: {

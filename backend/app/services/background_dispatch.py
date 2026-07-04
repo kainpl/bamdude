@@ -361,6 +361,18 @@ class BackgroundDispatchService:
         async with self._lock:
             return self._build_state_payload_unlocked()
 
+    async def _resolve_effective_timelapse(self, db, archive, job: PrintDispatchJob) -> bool:
+        """Dispatch-flow wrapper around the shared resolver (#1397).
+
+        Returns the effective value to pass to ``start_print(timelapse=...)``.
+        Reads the user's raw choice from ``job.options["timelapse"]``.
+        """
+        return await resolve_effective_timelapse(
+            db,
+            archive,
+            user_wanted_timelapse=bool(job.options.get("timelapse", False)),
+        )
+
     async def run_from_queue_item(
         self,
         *,
@@ -1192,12 +1204,26 @@ class BackgroundDispatchService:
                     is_calibration=bool(job.options.get("is_calibration")),
                 )
                 await self._ensure_live_connection_before_start(printer, printer_name)
+                # #1397: force timelapse recording on when capture_finish_photo is
+                # enabled and the user didn't opt in, so the finish-photo extractor
+                # has a post-park-pre-drop frame to pull. This is the SINGLE
+                # chokepoint — every dispatch path (Print Now / Reprint / queue via
+                # print_scheduler's options hand-off) funnels through here, so no
+                # separate scheduler wiring is needed (see resolve_effective_timelapse).
+                # archive can be None (library-file dispatch before archive_print) —
+                # fall back to the raw choice; the finish-photo path needs an archive
+                # anyway.
+                effective_timelapse = (
+                    await self._resolve_effective_timelapse(db, archive, job)
+                    if archive is not None
+                    else bool(job.options.get("timelapse", False))
+                )
                 started = printer_manager.start_print(
                     job.printer_id,
                     remote_filename,
                     plate_id,
                     ams_mapping=job.options.get("ams_mapping"),
-                    timelapse=job.options.get("timelapse", False),
+                    timelapse=effective_timelapse,
                     bed_levelling=job.options.get("bed_levelling", True),
                     flow_cali=job.options.get("flow_cali", False),
                     layer_inspect=job.options.get("layer_inspect", False),
@@ -1681,12 +1707,26 @@ class BackgroundDispatchService:
                     is_calibration=bool(job.options.get("is_calibration")),
                 )
                 await self._ensure_live_connection_before_start(printer, printer_name)
+                # #1397: force timelapse recording on when capture_finish_photo is
+                # enabled and the user didn't opt in, so the finish-photo extractor
+                # has a post-park-pre-drop frame to pull. This is the SINGLE
+                # chokepoint — every dispatch path (Print Now / Reprint / queue via
+                # print_scheduler's options hand-off) funnels through here, so no
+                # separate scheduler wiring is needed (see resolve_effective_timelapse).
+                # archive can be None (library-file dispatch before archive_print) —
+                # fall back to the raw choice; the finish-photo path needs an archive
+                # anyway.
+                effective_timelapse = (
+                    await self._resolve_effective_timelapse(db, archive, job)
+                    if archive is not None
+                    else bool(job.options.get("timelapse", False))
+                )
                 started = printer_manager.start_print(
                     job.printer_id,
                     remote_filename,
                     plate_id,
                     ams_mapping=job.options.get("ams_mapping"),
-                    timelapse=job.options.get("timelapse", False),
+                    timelapse=effective_timelapse,
                     bed_levelling=job.options.get("bed_levelling", True),
                     flow_cali=job.options.get("flow_cali", False),
                     layer_inspect=job.options.get("layer_inspect", False),
@@ -2118,3 +2158,45 @@ async def enqueue_calibration_print(
         await db.commit()
         await db.refresh(item)
         return item.id
+
+
+async def resolve_effective_timelapse(db, archive, user_wanted_timelapse: bool) -> bool:
+    """Resolve whether this print should record a timelapse (#1397).
+
+    BamDude forces timelapse recording on when:
+      - the global ``capture_finish_photo`` setting is enabled, AND
+      - the user did NOT opt in to a timelapse for this specific print
+
+    The finish-photo extractor pulls the post-park-pre-drop frame from that
+    timelapse (see main.py::_capture_finish_photo_from_timelapse); the forced
+    bit is recorded on the archive so the post-extraction cleanup can delete
+    the timelapse afterward (the user asked for a framed finish photo, not a
+    video to keep, #1397).
+
+    Unlike upstream, BamDude wires this into a SINGLE chokepoint. Our
+    single-dispatch-layer invariant funnels every dispatch — Print Now,
+    Reprint, AND the print queue (print_scheduler delegates via the options
+    dict) — through ``BackgroundDispatchService``'s two ``start_print`` sites,
+    which are the only ``printer_manager.start_print`` callers in the backend.
+    Resolving there covers all paths, so print_scheduler needs no separate
+    wiring (upstream had to wire it because its scheduler called start_print
+    directly; ours doesn't).
+    """
+    from backend.app.api.routes.settings import get_setting
+
+    if user_wanted_timelapse:
+        return True
+
+    # User didn't ask — check the master capture-finish-photo toggle.
+    capture_setting = await get_setting(db, "capture_finish_photo")
+    capture_enabled = capture_setting is None or capture_setting.lower() == "true"
+    if not capture_enabled:
+        return False
+
+    archive.bamdude_forced_timelapse = True
+    await db.commit()
+    logging.getLogger(__name__).info(
+        "[FORCED-TIMELAPSE] Forcing timelapse on for archive %s (capture_finish_photo enabled, user did not opt in)",
+        archive.id,
+    )
+    return True

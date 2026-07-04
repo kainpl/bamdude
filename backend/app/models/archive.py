@@ -56,6 +56,12 @@ class PrintArchive(Base):
     subtask_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     thumbnail_path: Mapped[str | None] = mapped_column(String(500))
     timelapse_path: Mapped[str | None] = mapped_column(String(500))
+    # True when BamDude forced timelapse recording on for this print so the
+    # finish-photo extractor (#1397) could pull the post-park-pre-drop frame.
+    # The cleanup path uses this to know the timelapse should be deleted both
+    # locally and on the printer's SD after extraction — the user didn't opt
+    # in to a timelapse recording.
+    bamdude_forced_timelapse: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     source_3mf_path: Mapped[str | None] = mapped_column(String(500))  # Original project 3MF from slicer
     f3d_path: Mapped[str | None] = mapped_column(String(500))  # Fusion 360 design file
 

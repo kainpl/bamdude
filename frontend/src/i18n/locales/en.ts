@@ -2098,7 +2098,7 @@ export default {
     styleVibrant: 'Vibrant',
     themeToggleHint: 'Toggle between dark, light, and system mode using the icon in the sidebar.',
     saveThumbnailsDescription: 'Extract and save preview images from 3MF files',
-    captureFinishPhotoDescription: 'Take a photo from printer camera when print completes',
+    captureFinishPhotoDescription: 'Take a photo from printer camera when print completes. BamDude records a brief timelapse during the print so the photo can be sourced from the moment before the bed drops; the timelapse file is kept if you enabled timelapse for this print, otherwise it is deleted automatically after the photo is captured.',
     ffmpegNotInstalled: 'ffmpeg not installed',
     ffmpegRequired: 'Camera capture requires ffmpeg. Install it via <brew>brew install ffmpeg</brew> (macOS) or <apt>apt install ffmpeg</apt> (Linux).',
     archiveCleanup: {
