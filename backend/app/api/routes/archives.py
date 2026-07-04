@@ -1807,6 +1807,34 @@ async def backfill_content_hashes(
     return {"updated": updated, "errors": errors}
 
 
+@router.get("/{archive_id}/delete-impact")
+async def get_archive_delete_impact(
+    archive_id: int,
+    db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.ARCHIVES_READ_ALL,
+            Permission.ARCHIVES_READ_OWN,
+        )
+    ),
+):
+    """Pre-flight for the delete-confirm modal (#1734).
+
+    Returns how many related queue items the user is about to lose AND whether
+    any are mid-print (which blocks the delete with a 409 — surfaced so the
+    modal can disable the confirm button instead of failing on submit). A
+    multi-plate "Send All" (#1733) backs one archive with N per-plate queue
+    items, so this is what warns the user the whole batch will disappear.
+    """
+    from backend.app.services.archive_purge import archive_purge_service
+
+    user, can_read_all = auth_result
+    service = ArchiveService(db)
+    archive = _ensure_archive_visible(await service.get_archive(archive_id), user, can_read_all)
+    total, in_flight = await archive_purge_service.count_related_queue_items(db, archive.id)
+    return {"related_queue_items": total, "currently_printing": in_flight}
+
+
 @router.delete("/{archive_id}")
 async def delete_archive(
     archive_id: int,
@@ -1822,7 +1850,10 @@ async def delete_archive(
 
     Stamps ``deleted_at`` and returns ``trashed=True``. Sweeper hard-deletes
     after retention; users / admins can also restore from the trash UI or
-    hard-delete-now to bypass the window.
+    hard-delete-now to bypass the window. Related pending queue items are
+    cancelled with a reason (#1348); a 409 guard blocks the delete while any
+    related item is mid-print so the dispatcher keeps its metadata trail
+    (#1734).
     """
     from backend.app.services.archive_purge import archive_purge_service
 
@@ -1837,6 +1868,17 @@ async def delete_archive(
     if not can_modify_all:
         if archive.created_by_id != user.id:
             raise HTTPException(403, "You can only delete your own archives")
+
+    # #1734: block delete while a related queue item is mid-print (printing /
+    # paused). The running print needs its backing archive for the metadata
+    # trail (filament, plate, ams_mapping). Stop the print first, then retry.
+    _total, in_flight = await archive_purge_service.count_related_queue_items(db, archive.id)
+    if in_flight > 0:
+        raise HTTPException(
+            409,
+            f"Cannot delete archive — {in_flight} related queue item(s) are currently "
+            f"printing. Stop the print first, then retry.",
+        )
 
     await archive_purge_service.move_to_trash(db, archive)
     return {"status": "trashed", "trashed": True, "id": archive.id}

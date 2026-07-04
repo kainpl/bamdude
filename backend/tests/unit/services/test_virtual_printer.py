@@ -2588,3 +2588,44 @@ class TestSlicerPrintOptionsCap:
         # Oldest evicted, newest retained.
         assert "file_0.3mf" not in inst._slicer_print_options
         assert f"file_{_SLICER_OPTIONS_CACHE_LIMIT + 19}.3mf" in inst._slicer_print_options
+
+
+class TestExtractPlateIndices:
+    """`_extract_plate_indices_from_metadata` — multi-plate "Send All" support (#1733).
+
+    A multi-plate 3MF caches one entry per plate under
+    ``file_metadata['plates']``; the extractor returns every plate index so
+    the caller enqueues one queue item per plate. Single-plate and
+    missing/malformed metadata preserve the prior one-item behaviour.
+    """
+
+    @staticmethod
+    def _extract(md):
+        from backend.app.services.virtual_printer.manager import VirtualPrinterInstance
+
+        return VirtualPrinterInstance._extract_plate_indices_from_metadata(md)
+
+    def test_multi_plate_returns_all_indices(self):
+        md = {"plates": [{"index": 1}, {"index": 2}, {"index": 3}]}
+        assert self._extract(md) == [1, 2, 3]
+
+    def test_single_plate_returns_one_index(self):
+        assert self._extract({"plates": [{"index": 4}]}) == [4]
+
+    def test_non_sequential_indices_preserved(self):
+        # A Send-All that skips a plate keeps the real indices, not a re-numbering.
+        assert self._extract({"plates": [{"index": 2}, {"index": 5}]}) == [2, 5]
+
+    def test_missing_metadata_returns_none_singleton(self):
+        assert self._extract(None) == [None]
+        assert self._extract({}) == [None]
+
+    def test_empty_or_malformed_plates_returns_none_singleton(self):
+        assert self._extract({"plates": []}) == [None]
+        assert self._extract({"plates": "nope"}) == [None]
+        assert self._extract({"plates": [{"no_index": 1}]}) == [None]
+        assert self._extract({"plates": [{"index": 0}]}) == [None]  # index must be >= 1
+
+    def test_mixed_valid_and_invalid_keeps_only_valid(self):
+        md = {"plates": [{"index": 1}, {"no_index": 9}, {"index": 3}]}
+        assert self._extract(md) == [1, 3]

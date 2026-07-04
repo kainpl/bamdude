@@ -4907,6 +4907,14 @@ export const api = {
     request<Archive>(`/archives/${id}/favorite`, { method: 'POST' }),
   deleteArchive: (id: number) =>
     request<void>(`/archives/${id}`, { method: 'DELETE' }),
+  // Pre-flight for the delete-confirm modal (#1734): how many queue items are
+  // backed by this archive, and whether any are mid-print (which blocks the
+  // delete with a 409). A multi-plate "Send All" (#1733) backs one archive
+  // with N per-plate queue items.
+  getArchiveDeleteImpact: (id: number) =>
+    request<{ related_queue_items: number; currently_printing: number }>(
+      `/archives/${id}/delete-impact`
+    ),
   getArchiveStats: (options?: { dateFrom?: string; dateTo?: string }) => {
     const params = new URLSearchParams();
     if (options?.dateFrom) params.set('date_from', options.dateFrom);

@@ -814,3 +814,70 @@ class TestNo3MFWarning:
         assert response.status_code == 200
         # Soft-deleted fallbacks have been actioned. Stop nudging.
         assert response.json() == {"has_fallback": False}
+
+
+class TestArchiveDeleteImpact:
+    """Delete-impact pre-flight + mid-print 409 guard + pending cancel (#1734)."""
+
+    async def _make_queue_with_items(self, db_session, archive_id, printer_id, statuses):
+        """Create one PrinterQueue + one PrintQueueItem per status, single commit."""
+        from backend.app.models.print_queue import PrintQueueItem
+        from backend.app.models.printer_queue import PrinterQueue
+
+        queue = PrinterQueue(printer_id=printer_id)
+        db_session.add(queue)
+        await db_session.flush()
+        items = []
+        for pos, status in enumerate(statuses, start=1):
+            item = PrintQueueItem(queue_id=queue.id, archive_id=archive_id, status=status, position=pos)
+            db_session.add(item)
+            items.append(item)
+        await db_session.commit()
+        return items
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_delete_impact_counts_related_and_printing(
+        self, async_client: AsyncClient, archive_factory, printer_factory, db_session
+    ):
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id, print_name="Impact")
+        await self._make_queue_with_items(db_session, archive.id, printer.id, ["pending", "printing"])
+
+        resp = await async_client.get(f"/api/v1/archives/{archive.id}/delete-impact")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["related_queue_items"] == 2
+        assert data["currently_printing"] == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_delete_blocked_while_printing(
+        self, async_client: AsyncClient, archive_factory, printer_factory, db_session
+    ):
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id, print_name="Busy")
+        await self._make_queue_with_items(db_session, archive.id, printer.id, ["printing"])
+
+        resp = await async_client.delete(f"/api/v1/archives/{archive.id}")
+        assert resp.status_code == 409
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_delete_cancels_pending_related(
+        self, async_client: AsyncClient, archive_factory, printer_factory, db_session
+    ):
+        from backend.app.models.print_queue import PrintQueueItem
+
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id, print_name="Trash")
+        (item,) = await self._make_queue_with_items(db_session, archive.id, printer.id, ["pending"])
+        item_id = item.id
+
+        resp = await async_client.delete(f"/api/v1/archives/{archive.id}")
+        assert resp.status_code == 200
+        assert resp.json()["trashed"] is True
+
+        db_session.expire_all()
+        refreshed = await db_session.get(PrintQueueItem, item_id)
+        assert refreshed.status == "cancelled"

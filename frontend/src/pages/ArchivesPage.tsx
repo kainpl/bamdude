@@ -359,9 +359,22 @@ function ArchiveCard({
       queryClient.invalidateQueries({ queryKey: ['archive-trash-count'] });
       showToast(t('archives.toast.archiveDeleted'));
     },
-    onError: () => {
-      showToast(t('archives.toast.failedDeleteArchive'), 'error');
+    onError: (err: unknown) => {
+      // Surface the server's 409 detail ("… currently printing. Stop the
+      // print first …", #1734) instead of a generic toast so the user knows
+      // why the delete was blocked and what to do.
+      const detail = err instanceof Error && err.message ? err.message : '';
+      showToast(detail || t('archives.toast.failedDeleteArchive'), 'error');
     },
+  });
+
+  // #1734: pre-flight the delete so the confirm modal can warn how many queue
+  // items (one per plate for a Send-All, #1733) go with the archive. Only runs
+  // while the confirm dialog is open.
+  const { data: deleteImpact } = useQuery({
+    queryKey: ['archive-delete-impact', archive.id],
+    queryFn: () => api.getArchiveDeleteImpact(archive.id),
+    enabled: showDeleteConfirm,
   });
 
   const favoriteMutation = useMutation({
@@ -1298,7 +1311,12 @@ function ArchiveCard({
       {showDeleteConfirm && (
         <ConfirmModal
           title={t('archives.modal.deleteArchive')}
-          message={t('archives.modal.deleteConfirm', { name: archive.print_name || archive.filename })}
+          message={
+            t('archives.modal.deleteConfirm', { name: archive.print_name || archive.filename }) +
+            (deleteImpact && deleteImpact.related_queue_items > 0
+              ? `\n\n${t('archives.modal.deleteConfirmQueueWarning', { count: deleteImpact.related_queue_items })}`
+              : '')
+          }
           confirmText={t('archives.modal.deleteButton')}
           variant="danger"
           onConfirm={() => {
@@ -1694,9 +1712,22 @@ function ArchiveListRow({
       queryClient.invalidateQueries({ queryKey: ['archive-trash-count'] });
       showToast(t('archives.toast.archiveDeleted'));
     },
-    onError: () => {
-      showToast(t('archives.toast.failedDeleteArchive'), 'error');
+    onError: (err: unknown) => {
+      // Surface the server's 409 detail ("… currently printing. Stop the
+      // print first …", #1734) instead of a generic toast so the user knows
+      // why the delete was blocked and what to do.
+      const detail = err instanceof Error && err.message ? err.message : '';
+      showToast(detail || t('archives.toast.failedDeleteArchive'), 'error');
     },
+  });
+
+  // #1734: pre-flight the delete so the confirm modal can warn how many queue
+  // items (one per plate for a Send-All, #1733) go with the archive. Only runs
+  // while the confirm dialog is open.
+  const { data: deleteImpact } = useQuery({
+    queryKey: ['archive-delete-impact', archive.id],
+    queryFn: () => api.getArchiveDeleteImpact(archive.id),
+    enabled: showDeleteConfirm,
   });
 
   const favoriteMutation = useMutation({
@@ -2289,7 +2320,12 @@ function ArchiveListRow({
       {showDeleteConfirm && (
         <ConfirmModal
           title={t('archives.modal.deleteArchive')}
-          message={t('archives.modal.deleteConfirm', { name: archive.print_name || archive.filename })}
+          message={
+            t('archives.modal.deleteConfirm', { name: archive.print_name || archive.filename }) +
+            (deleteImpact && deleteImpact.related_queue_items > 0
+              ? `\n\n${t('archives.modal.deleteConfirmQueueWarning', { count: deleteImpact.related_queue_items })}`
+              : '')
+          }
           confirmText={t('archives.modal.deleteButton')}
           variant="danger"
           onConfirm={() => {

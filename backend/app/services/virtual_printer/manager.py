@@ -674,7 +674,14 @@ class VirtualPrinterInstance:
                     )
                     return
 
-                plate_id = self._extract_plate_id_from_metadata(library_file.file_metadata)
+                # #1733: a multi-plate "Send All" upload ships every plate in
+                # one 3MF, so ``file_metadata['plates']`` lists each plate with
+                # its own index. Enqueue one queue item per plate so the
+                # scheduler runs each separately. A single-plate "Send" yields a
+                # one-element list, preserving the prior one-item-per-upload
+                # behaviour (and ``[None]`` when metadata is missing → the
+                # dispatcher defaults plate_id to 1).
+                plate_ids = self._extract_plate_indices_from_metadata(library_file.file_metadata)
 
                 # System fallback row (user_id IS NULL) for the target
                 # printer's model — fills any flag the slicer omitted. There's
@@ -682,10 +689,12 @@ class VirtualPrinterInstance:
                 # rows can't serve here (upstream Bambuddy #1235).
                 system_opts = await self._load_system_print_options(db, queue.printer_id)
 
-                # Append at the tail: MAX(position)+1 for this queue. A hardcoded
-                # position=1 stacked every VP-queued print at the head, so two
-                # slicer Sends in a row collided on position 1 and their order
-                # became arbitrary (upstream Bambuddy v0.2.4.5).
+                # Append at the tail: MAX(position) for this queue, then hand
+                # consecutive positions to each plate so a Send All keeps
+                # plate-order execution. A hardcoded position=1 stacked every
+                # VP-queued print at the head, so two slicer Sends in a row
+                # collided on position 1 and their order became arbitrary
+                # (upstream Bambuddy v0.2.4.5).
                 from sqlalchemy import func as sa_func, select as sa_select
 
                 max_pos = await db.scalar(
@@ -693,41 +702,59 @@ class VirtualPrinterInstance:
                         PrintQueueItem.queue_id == queue.id
                     )
                 )
-                next_pos = (max_pos or 0) + 1
+                base_pos = max_pos or 0
 
                 # Precedence per flag: slicer value → system fallback → column
-                # default (see ``_resolve_print_option``).
-                queue_item = PrintQueueItem(
-                    queue_id=queue.id,
-                    library_file_id=library_file.id,
-                    archive_id=None,  # archive created at print-start by _run_print_library_file
-                    plate_id=plate_id,
-                    position=next_pos,
-                    status="pending",
-                    manual_start=not self.auto_dispatch,
-                    bed_levelling=_resolve_print_option(
-                        slicer_opts, system_opts, "bed_leveling", "bed_levelling", True
-                    ),
-                    flow_cali=_resolve_print_option(slicer_opts, system_opts, "flow_cali", "flow_cali", True),
-                    layer_inspect=_resolve_print_option(
-                        slicer_opts, system_opts, "layer_inspect", "layer_inspect", False
-                    ),
-                    timelapse=_resolve_print_option(slicer_opts, system_opts, "timelapse", "timelapse", False),
-                    # use_ams has no system-preference field (the saved
-                    # PrintModal toggles don't carry it) — slicer value or
-                    # column default only.
-                    use_ams=(bool(slicer_opts["use_ams"]) if slicer_opts and "use_ams" in slicer_opts else True),
-                )
-                db.add(queue_item)
+                # default (see ``_resolve_print_option``). Resolved once — only
+                # plate_id + position vary per plate.
+                bed_levelling = _resolve_print_option(slicer_opts, system_opts, "bed_leveling", "bed_levelling", True)
+                flow_cali = _resolve_print_option(slicer_opts, system_opts, "flow_cali", "flow_cali", True)
+                layer_inspect = _resolve_print_option(slicer_opts, system_opts, "layer_inspect", "layer_inspect", False)
+                timelapse = _resolve_print_option(slicer_opts, system_opts, "timelapse", "timelapse", False)
+                # use_ams has no system-preference field (the saved PrintModal
+                # toggles don't carry it) — slicer value or column default only.
+                use_ams = bool(slicer_opts["use_ams"]) if slicer_opts and "use_ams" in slicer_opts else True
+
+                queue_item_ids: list[int] = []
+                for offset, plate_id in enumerate(plate_ids, start=1):
+                    queue_item = PrintQueueItem(
+                        queue_id=queue.id,
+                        library_file_id=library_file.id,
+                        archive_id=None,  # archive created at print-start by _run_print_library_file
+                        plate_id=plate_id,
+                        position=base_pos + offset,
+                        status="pending",
+                        manual_start=not self.auto_dispatch,
+                        bed_levelling=bed_levelling,
+                        flow_cali=flow_cali,
+                        layer_inspect=layer_inspect,
+                        timelapse=timelapse,
+                        use_ams=use_ams,
+                    )
+                    db.add(queue_item)
+                    await db.flush()  # populate queue_item.id before logging
+                    queue_item_ids.append(queue_item.id)
                 await db.commit()
-                logger.info(
-                    "[VP %s] Added to queue %s (printer %s): item %s, library_file=%s",
-                    self.name,
-                    queue.id,
-                    queue.printer_id,
-                    queue_item.id,
-                    library_file.id,
-                )
+                if len(queue_item_ids) == 1:
+                    logger.info(
+                        "[VP %s] Added to queue %s (printer %s): item %s, library_file=%s",
+                        self.name,
+                        queue.id,
+                        queue.printer_id,
+                        queue_item_ids[0],
+                        library_file.id,
+                    )
+                else:
+                    logger.info(
+                        "[VP %s] Added %d queue items for multi-plate upload (plates %s) to queue %s (printer %s): %s, library_file=%s",
+                        self.name,
+                        len(queue_item_ids),
+                        plate_ids,
+                        queue.id,
+                        queue.printer_id,
+                        queue_item_ids,
+                        library_file.id,
+                    )
         except Exception as e:
             logger.exception("[VP %s] Error adding to print queue: %s", self.name, e)
 
@@ -941,6 +968,30 @@ class VirtualPrinterInstance:
             if isinstance(idx, int) and idx >= 1:
                 return idx
         return None
+
+    @staticmethod
+    def _extract_plate_indices_from_metadata(file_metadata: dict | None) -> list[int | None]:
+        """Return every plate index cached in ``file_metadata['plates']`` (#1733).
+
+        A multi-plate "Send All" 3MF ships every plate in one upload — the
+        plates list has one entry per plate, each with its own ``index``.
+        Returns one index per plate so the caller can enqueue one queue item
+        each. A single-plate "Send" yields a one-element list (prior
+        behaviour). Returns ``[None]`` when the metadata is missing / malformed
+        / carries no valid index, so the caller still creates exactly one item
+        (the dispatcher then defaults plate_id to 1).
+        """
+        if isinstance(file_metadata, dict):
+            plates = file_metadata.get("plates")
+            if isinstance(plates, list) and plates:
+                indices = [
+                    p["index"]
+                    for p in plates
+                    if isinstance(p, dict) and isinstance(p.get("index"), int) and p["index"] >= 1
+                ]
+                if indices:
+                    return indices
+        return [None]
 
     async def _find_best_queue(self, db, sliced_model: str | None):
         """Find the best printer queue for this job.

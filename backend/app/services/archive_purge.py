@@ -147,6 +147,40 @@ class ArchivePurgeService:
             qi.waiting_reason = "Source archive deleted"
 
     @staticmethod
+    async def count_related_queue_items(db: AsyncSession, archive_id: int) -> tuple[int, int]:
+        """Count queue items pointing at *archive_id* (#1734 delete pre-flight).
+
+        Returns ``(total, in_flight)`` where ``in_flight`` is the number of
+        related rows that are currently ``printing`` or ``paused`` — i.e.
+        mid-print, which blocks the delete (the running print needs its
+        backing archive for the metadata trail). A multi-plate "Send All"
+        (#1733) backs one archive with N per-plate rows, so the total lets
+        the delete-confirm modal warn how many queue lines will disappear.
+        Terminal rows (completed / failed / cancelled) are counted in the
+        total but never block.
+        """
+        from sqlalchemy import func as sa_func
+
+        from backend.app.models.print_queue import PrintQueueItem
+
+        total = (
+            await db.scalar(
+                select(sa_func.count()).select_from(PrintQueueItem).where(PrintQueueItem.archive_id == archive_id)
+            )
+        ) or 0
+        in_flight = (
+            await db.scalar(
+                select(sa_func.count())
+                .select_from(PrintQueueItem)
+                .where(
+                    PrintQueueItem.archive_id == archive_id,
+                    PrintQueueItem.status.in_(("printing", "paused")),
+                )
+            )
+        ) or 0
+        return int(total), int(in_flight)
+
+    @staticmethod
     async def restore(db: AsyncSession, archive: PrintArchive) -> PrintArchive:
         """Clear ``deleted_at`` so the archive reappears in listings."""
         archive.deleted_at = None

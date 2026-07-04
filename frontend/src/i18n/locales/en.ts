@@ -839,6 +839,7 @@ export default {
     modal: {
       deleteArchive: 'Delete Archive',
       deleteConfirm: 'Are you sure you want to delete "{{name}}"? This action cannot be undone.',
+      deleteConfirmQueueWarning: 'This will also remove {{count}} queued print(s) backed by this archive.',
       deleteButton: 'Delete',
       removeSource3mf: 'Remove Source 3MF',
       removeSource3mfConfirm: 'Are you sure you want to remove the source 3MF file from "{{name}}"? This will delete the original slicer project file.',

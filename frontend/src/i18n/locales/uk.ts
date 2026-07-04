@@ -849,6 +849,7 @@ export default {
     modal: {
       deleteArchive: 'Видалити архів',
       deleteConfirm: 'Ви впевнені, що хочете видалити "{{name}}"? Цю дію неможливо скасувати.',
+      deleteConfirmQueueWarning: 'Це також видалить елементи черги ({{count}}), пов\'язані з цим архівом.',
       deleteButton: 'Видалити',
       removeSource3mf: 'Видалити вихідний 3MF',
       removeSource3mfConfirm: 'Ви впевнені, що хочете видалити вихідний файл 3MF з "{{name}}"? Це видалить оригінальний файл проєкту слайсера.',
