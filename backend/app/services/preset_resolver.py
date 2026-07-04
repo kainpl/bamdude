@@ -31,6 +31,7 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.api.routes.cloud import get_stored_token
+from backend.app.api.routes.orca_cloud import _build_authenticated_service as _build_orca_service
 from backend.app.core.permissions import Permission
 from backend.app.models.local_preset import LocalPreset
 from backend.app.models.user import User
@@ -40,6 +41,7 @@ from backend.app.services.bambu_cloud import (
     BambuCloudError,
     BambuCloudService,
 )
+from backend.app.services.orca_cloud import OrcaCloudAuthError, OrcaCloudError
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +86,8 @@ async def resolve_preset_ref(
     """
     if ref.source == "local":
         return await _resolve_local(db, ref, slot)
+    if ref.source == "orca_cloud":
+        return await _resolve_orca_cloud(db, user, ref, slot)
     if ref.source == "cloud":
         return await _resolve_cloud(db, user, ref, slot)
     if ref.source == "standard":
@@ -165,6 +169,64 @@ async def _resolve_cloud(db: AsyncSession, user: User | None, ref: PresetRef, sl
         )
         payload = detail
     return json.dumps(payload)
+
+
+async def _resolve_orca_cloud(db: AsyncSession, user: User | None, ref: PresetRef, slot: str) -> str:
+    """Fetch a single profile from Orca Cloud and return its content JSON.
+
+    The route-layer service builder handles JIT token refresh and stale-credential
+    cleanup, so any exception here means a genuine fetch / network / not-found
+    problem — never a "stale token" situation the caller could retry through.
+    Permission gate matches the rest of the Orca Cloud surface so a user with
+    ``LIBRARY_UPLOAD`` but no ``ORCA_CLOUD_AUTH`` cannot slice using cloud
+    profiles even if their stored token survived a permission revocation.
+    """
+    if user is not None and not user.has_permission(Permission.ORCA_CLOUD_AUTH.value):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Orca Cloud presets require the orca_cloud:auth permission ({slot})",
+        )
+
+    try:
+        svc = await _build_orca_service(db, user)
+    except HTTPException:
+        # Builder already produces the right user-facing error (401 not
+        # connected, 401 session refresh failed, 502 unreachable).
+        raise
+
+    try:
+        profile = await svc.get_profile(ref.id)
+    except OrcaCloudAuthError as e:
+        raise HTTPException(
+            status_code=401,
+            detail=f"Orca Cloud session expired while fetching {slot} preset. Sign in again and retry.",
+        ) from e
+    except OrcaCloudError as e:
+        if "not found" in str(e).lower():
+            raise HTTPException(
+                status_code=400,
+                detail=f"Orca Cloud {slot} preset {ref.id!r} not found.",
+            ) from e
+        raise HTTPException(
+            status_code=502,
+            detail=f"Orca Cloud unreachable while fetching {slot} preset: {e}",
+        ) from e
+    finally:
+        await svc.close()
+
+    # ``profile`` is the ProfileUpsert shape — the inner ``content`` is the
+    # actual slicer-format JSON. Fall back to forwarding the wrapper if the
+    # shape doesn't match what we expect (defensive, in case Orca evolves
+    # the wire format).
+    content = profile.get("content") if isinstance(profile, dict) else None
+    if not isinstance(content, dict):
+        logger.info(
+            "Orca Cloud preset %r for %s returned unexpected shape, forwarding raw payload",
+            ref.id,
+            slot,
+        )
+        content = profile
+    return json.dumps(content)
 
 
 def _resolve_standard(ref: PresetRef, slot: str) -> str:

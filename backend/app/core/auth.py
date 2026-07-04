@@ -969,6 +969,12 @@ _APIKEY_SCOPE_BY_PERMISSION: dict[Permission, str] = {
     # can_access_cloud — narrow opt-in; also enforced at the router-level
     # ``_cloud_api_key_gate``, gated here too for defence-in-depth.
     Permission.CLOUD_AUTH: "can_access_cloud",
+    # ORCA_CLOUD_AUTH folds into the same ``can_access_cloud`` scope: same trust
+    # dimension (third-party cloud access for profile sync), so an operator who
+    # already accepted "this key can talk to clouds for the owner" doesn't need
+    # a second toggle for Orca. Splitting later requires a new column + migration
+    # — easy to add if the trust dimensions diverge.
+    Permission.ORCA_CLOUD_AUTH: "can_access_cloud",
 }
 
 # Retained for documentation + drift-detection. Entries here are also absent

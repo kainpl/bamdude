@@ -6,8 +6,11 @@ tests in Phase 1.E once the slice routes themselves land.
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
+from backend.app.api.routes import slicer_presets as sp
 from backend.app.api.routes.slicer_presets import (
     _dedupe_by_name,
     _empty_slots,
@@ -29,7 +32,7 @@ class TestDedupePriority:
         cloud = _slots(printer=[UnifiedPreset(id="c1", name="A1 0.4 nozzle", source="cloud")])
         local = _slots(printer=[UnifiedPreset(id="42", name="A1 0.4 nozzle", source="local")])
         standard = _slots(printer=[UnifiedPreset(id="A1 0.4 nozzle", name="A1 0.4 nozzle", source="standard")])
-        out_cloud, out_local, out_standard = _dedupe_by_name(cloud, local, standard)
+        _oc, out_cloud, out_local, out_standard = _dedupe_by_name(_empty_slots(), cloud, local, standard)
         assert [p.name for p in out_cloud["printer"]] == ["A1 0.4 nozzle"]
         assert out_local["printer"] == []
         assert out_standard["printer"] == []
@@ -38,7 +41,7 @@ class TestDedupePriority:
         cloud = _slots()
         local = _slots(process=[UnifiedPreset(id="7", name="0.20mm Standard", source="local")])
         standard = _slots(process=[UnifiedPreset(id="0.20mm Standard", name="0.20mm Standard", source="standard")])
-        out_cloud, out_local, out_standard = _dedupe_by_name(cloud, local, standard)
+        _oc, out_cloud, out_local, out_standard = _dedupe_by_name(_empty_slots(), cloud, local, standard)
         assert out_local["process"][0].source == "local"
         assert out_standard["process"] == []
 
@@ -46,10 +49,25 @@ class TestDedupePriority:
         cloud = _slots(filament=[UnifiedPreset(id="c1", name="My PLA", source="cloud")])
         local = _slots(filament=[UnifiedPreset(id="3", name="Imported PETG", source="local")])
         standard = _slots(filament=[UnifiedPreset(id="Bambu PLA Basic", name="Bambu PLA Basic", source="standard")])
-        out_cloud, out_local, out_standard = _dedupe_by_name(cloud, local, standard)
+        _oc, out_cloud, out_local, out_standard = _dedupe_by_name(_empty_slots(), cloud, local, standard)
         assert len(out_cloud["filament"]) == 1
         assert len(out_local["filament"]) == 1
         assert len(out_standard["filament"]) == 1
+
+    def test_orca_cloud_wins_over_every_lower_tier(self):
+        """Orca Cloud sits at the top of the ``orca_cloud > cloud > local >
+        standard`` precedence — a name shared with any lower tier renders
+        only in the Orca tier."""
+        name = "A1 0.4 nozzle"
+        orca_cloud = _slots(printer=[UnifiedPreset(id="o1", name=name, source="orca_cloud")])
+        cloud = _slots(printer=[UnifiedPreset(id="c1", name=name, source="cloud")])
+        local = _slots(printer=[UnifiedPreset(id="42", name=name, source="local")])
+        standard = _slots(printer=[UnifiedPreset(id=name, name=name, source="standard")])
+        out_orca, out_cloud, out_local, out_standard = _dedupe_by_name(orca_cloud, cloud, local, standard)
+        assert [p.source for p in out_orca["printer"]] == ["orca_cloud"]
+        assert out_cloud["printer"] == []
+        assert out_local["printer"] == []
+        assert out_standard["printer"] == []
 
 
 class TestFilamentMetadataMerge:
@@ -72,7 +90,7 @@ class TestFilamentMetadataMerge:
             ]
         )
         standard = _slots()
-        out_cloud, _ol, _os = _dedupe_by_name(cloud, local, standard)
+        _oc, out_cloud, _ol, _os = _dedupe_by_name(_empty_slots(), cloud, local, standard)
         assert out_cloud["filament"][0].filament_type == "PLA"
         assert out_cloud["filament"][0].filament_colour == "#00FF00"
 
@@ -99,7 +117,7 @@ class TestFilamentMetadataMerge:
                 )
             ]
         )
-        out_cloud, _ol, _os = _dedupe_by_name(cloud, local, _empty_slots())
+        _oc, out_cloud, _ol, _os = _dedupe_by_name(_empty_slots(), cloud, local, _empty_slots())
         # Cloud's own non-None metadata MUST win — that's the user's actual
         # cloud preset content, even if it happens to share a name with a
         # local import.
@@ -186,3 +204,130 @@ class TestListPrinterModels:
 
         result = list_printer_models()
         assert result is not PRINTER_MODEL_MAP
+
+
+class TestFetchOrcaCloudPresets:
+    """``_fetch_orca_cloud_presets`` mirrors the Bambu Cloud fetcher's status
+    vocabulary (``ok`` / ``not_authenticated`` / ``expired`` / ``unreachable``)
+    and the same permission-shortcut + caching behaviour. Tests pin the
+    contract so a future bug in either fetcher doesn't silently desync them."""
+
+    def _orca_creds(self, token: str | None = "tok") -> MagicMock:
+        creds = MagicMock()
+        creds.token = token
+        return creds
+
+    @pytest.mark.asyncio
+    async def test_no_token_returns_not_authenticated(self):
+        sp._orca_cloud_cache.clear()
+        with patch.object(sp, "_load_orca_credentials", AsyncMock(return_value=self._orca_creds(None))):
+            user = MagicMock(id=1)
+            user.has_permission = MagicMock(return_value=True)
+            slots, status = await sp._fetch_orca_cloud_presets(MagicMock(), user)
+        assert status == "not_authenticated"
+        assert slots == {"printer": [], "process": [], "filament": []}
+
+    @pytest.mark.asyncio
+    async def test_user_without_orca_cloud_auth_returns_not_authenticated(self):
+        """Defence-in-depth — a user lacking ORCA_CLOUD_AUTH must not see Orca
+        presets even if their User row carries a stale token. The permission
+        check must short-circuit ahead of the credentials read."""
+        sp._orca_cloud_cache.clear()
+        user = MagicMock(id=1)
+        user.has_permission = MagicMock(return_value=False)
+        with patch.object(sp, "_load_orca_credentials", AsyncMock(return_value=self._orca_creds("tok"))) as load:
+            slots, status = await sp._fetch_orca_cloud_presets(MagicMock(), user)
+        assert status == "not_authenticated"
+        assert slots["printer"] == []
+        load.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_auth_error_returns_expired(self):
+        sp._orca_cloud_cache.clear()
+        svc_mock = MagicMock()
+        svc_mock.list_profiles = AsyncMock(side_effect=sp.OrcaCloudAuthError("expired"))
+        svc_mock.close = AsyncMock()
+        user = MagicMock(id=1)
+        user.has_permission = MagicMock(return_value=True)
+        with (
+            patch.object(sp, "_load_orca_credentials", AsyncMock(return_value=self._orca_creds("tok"))),
+            patch.object(sp, "_build_orca_service", AsyncMock(return_value=svc_mock)),
+        ):
+            _slots, status = await sp._fetch_orca_cloud_presets(MagicMock(), user)
+        assert status == "expired"
+        svc_mock.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_orca_error_returns_unreachable(self):
+        sp._orca_cloud_cache.clear()
+        svc_mock = MagicMock()
+        svc_mock.list_profiles = AsyncMock(side_effect=sp.OrcaCloudError("net down"))
+        svc_mock.close = AsyncMock()
+        user = MagicMock(id=1)
+        user.has_permission = MagicMock(return_value=True)
+        with (
+            patch.object(sp, "_load_orca_credentials", AsyncMock(return_value=self._orca_creds("tok"))),
+            patch.object(sp, "_build_orca_service", AsyncMock(return_value=svc_mock)),
+        ):
+            _slots, status = await sp._fetch_orca_cloud_presets(MagicMock(), user)
+        assert status == "unreachable"
+
+    @pytest.mark.asyncio
+    async def test_happy_path_shapes_grouped_by_type(self):
+        """Orca content.type values map onto Bambu Cloud's preset type vocab
+        (``printer`` / ``print`` → ``process`` / ``filament``). Verify the
+        full mapping by feeding one of each shape."""
+        sp._orca_cloud_cache.clear()
+        svc_mock = MagicMock()
+        svc_mock.list_profiles = AsyncMock(
+            return_value=[
+                {"id": "m1", "name": "Orca X1C", "content": {"type": "printer"}},
+                {"id": "p1", "name": "Orca 0.20mm", "content": {"type": "print"}},
+                {
+                    "id": "f1",
+                    "name": "Orca PLA",
+                    "content": {
+                        "type": "filament",
+                        "filament_type": ["PLA"],
+                        "default_filament_colour": ["#000000"],
+                    },
+                },
+            ]
+        )
+        svc_mock.close = AsyncMock()
+        user = MagicMock(id=1)
+        user.has_permission = MagicMock(return_value=True)
+        with (
+            patch.object(sp, "_load_orca_credentials", AsyncMock(return_value=self._orca_creds("tok"))),
+            patch.object(sp, "_build_orca_service", AsyncMock(return_value=svc_mock)),
+        ):
+            slots, status = await sp._fetch_orca_cloud_presets(MagicMock(), user)
+        assert status == "ok"
+        assert [p.name for p in slots["printer"]] == ["Orca X1C"]
+        assert [p.name for p in slots["process"]] == ["Orca 0.20mm"]
+        filament = slots["filament"]
+        assert [p.name for p in filament] == ["Orca PLA"]
+        # Inline metadata extracted from the content blob (Orca's sync_pull
+        # returns full content, so unlike Bambu Cloud we don't need a second
+        # per-preset fetch to enrich filament_type / filament_colour).
+        assert filament[0].filament_type == "PLA"
+        assert filament[0].filament_colour == "#000000"
+
+    @pytest.mark.asyncio
+    async def test_cache_hit_skips_orca_call(self):
+        """A second call within TTL must reuse the cached slots and NOT
+        hit the Orca service again — same TTL as Bambu Cloud (5 min)."""
+        sp._orca_cloud_cache.clear()
+        svc_mock = MagicMock()
+        svc_mock.list_profiles = AsyncMock(return_value=[])
+        svc_mock.close = AsyncMock()
+        user = MagicMock(id=1)
+        user.has_permission = MagicMock(return_value=True)
+        with (
+            patch.object(sp, "_load_orca_credentials", AsyncMock(return_value=self._orca_creds("tok"))),
+            patch.object(sp, "_build_orca_service", AsyncMock(return_value=svc_mock)) as build,
+        ):
+            await sp._fetch_orca_cloud_presets(MagicMock(), user)
+            await sp._fetch_orca_cloud_presets(MagicMock(), user)
+        # Build is the cache miss signal — second call reused the cache.
+        build.assert_awaited_once()

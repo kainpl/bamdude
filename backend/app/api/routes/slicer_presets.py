@@ -21,6 +21,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.api.routes.cloud import get_stored_token, resolve_api_key_cloud_owner
+from backend.app.api.routes.orca_cloud import (
+    _ORCA_TYPE_TO_BAMBU,
+    _build_authenticated_service as _build_orca_service,
+    _load_credentials as _load_orca_credentials,
+)
 from backend.app.core.auth import require_permission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -36,6 +41,10 @@ from backend.app.services.bambu_cloud import (
     BambuCloudAuthError,
     BambuCloudError,
     BambuCloudService,
+)
+from backend.app.services.orca_cloud import (
+    OrcaCloudAuthError,
+    OrcaCloudError,
 )
 from backend.app.services.slicer_api import (
     BundleNotFoundError,
@@ -69,6 +78,9 @@ _bundled_cache: tuple[float, dict[str, list[UnifiedPreset]]] | None = None
 # modal open per user".
 _CLOUD_TTL_S = 300.0
 _cloud_cache: dict[tuple[int, str], tuple[float, dict[str, list[UnifiedPreset]]]] = {}
+
+# Same shape for Orca Cloud — keyed on (user_id, access_token-fingerprint).
+_orca_cloud_cache: dict[tuple[int, str], tuple[float, dict[str, list[UnifiedPreset]]]] = {}
 
 
 def _token_fingerprint(token: str) -> str:
@@ -169,6 +181,101 @@ async def _fetch_cloud_presets(
         return slots, "ok"
     finally:
         await cloud.close()
+
+
+async def _fetch_orca_cloud_presets(
+    db: AsyncSession, user: User | None, *, refresh: bool = False
+) -> tuple[dict[str, list[UnifiedPreset]], str]:
+    """Mirror of :func:`_fetch_cloud_presets` but for Orca Cloud. Same status
+    vocabulary (``ok`` / ``not_authenticated`` / ``expired`` / ``unreachable``),
+    same caching shape, same defence-in-depth permission gate
+    (``orca_cloud:auth`` rather than ``cloud:auth``).
+
+    Filament metadata (``filament_type`` / ``filament_colour``) is extracted
+    from the profile's inline ``content`` dict — unlike Bambu Cloud where
+    we'd have to fetch each setting separately and hit a rate limit, Orca's
+    ``/sync/pull`` already returns full content per profile, so the metadata
+    enrichment is free here.
+    """
+    if user is not None and not user.has_permission(Permission.ORCA_CLOUD_AUTH.value):
+        return _empty_slots(), "not_authenticated"
+
+    creds = await _load_orca_credentials(db, user)
+    if not creds.token:
+        return _empty_slots(), "not_authenticated"
+
+    user_key = user.id if user is not None else 0
+    cache_key = (user_key, _token_fingerprint(creds.token))
+    now = time.monotonic()
+    if not refresh:
+        cached = _orca_cloud_cache.get(cache_key)
+        if cached and now - cached[0] < _CLOUD_TTL_S:
+            return cached[1], "ok"
+
+    try:
+        svc = await _build_orca_service(db, user)
+    except HTTPException as e:
+        # ``_build_orca_service`` raises 401 when the token is missing,
+        # the refresh-token rotation failed, or the JIT refresh hit Orca's
+        # backend and got rejected; 502 when Orca is unreachable. Translate
+        # to the status vocabulary the SliceModal expects.
+        if e.status_code == 401:
+            return _empty_slots(), "expired"
+        return _empty_slots(), "unreachable"
+
+    try:
+        try:
+            raw_profiles = await svc.list_profiles()
+        except OrcaCloudAuthError:
+            return _empty_slots(), "expired"
+        except OrcaCloudError as e:
+            logger.warning("Orca Cloud preset fetch failed for user %s: %s", user_key, e)
+            return _empty_slots(), "unreachable"
+        except Exception as e:  # noqa: BLE001 — defensive: never crash the modal
+            logger.warning("Orca Cloud preset fetch unexpected error for user %s: %s", user_key, e)
+            return _empty_slots(), "unreachable"
+
+        slots = _empty_slots()
+        for entry in raw_profiles:
+            content = entry.get("content") if isinstance(entry, dict) else None
+            if not isinstance(content, dict):
+                continue
+            slot = _ORCA_TYPE_TO_BAMBU.get(str(content.get("type", "")))
+            if slot is None:
+                continue
+            preset_id = entry.get("id")
+            name = entry.get("name") or preset_id
+            if not preset_id or not name:
+                continue
+            filament_type: str | None = None
+            filament_colour: str | None = None
+            if slot == "filament":
+                # Bambu/Orca filament profiles store these as single-element
+                # arrays (the historical multi-extruder shape). Extract the
+                # first non-empty element for both.
+                ft = content.get("filament_type")
+                if isinstance(ft, list) and ft and isinstance(ft[0], str):
+                    filament_type = ft[0]
+                elif isinstance(ft, str):
+                    filament_type = ft
+                fc = content.get("default_filament_colour")
+                if isinstance(fc, list) and fc and isinstance(fc[0], str):
+                    filament_colour = fc[0]
+                elif isinstance(fc, str):
+                    filament_colour = fc
+            slots[slot].append(
+                UnifiedPreset(
+                    id=str(preset_id),
+                    name=str(name),
+                    source="orca_cloud",
+                    filament_type=filament_type,
+                    filament_colour=filament_colour,
+                )
+            )
+        _orca_cloud_cache[cache_key] = (now, slots)
+        return slots, "ok"
+    finally:
+        await svc.close()
 
 
 async def _fetch_local_presets(db: AsyncSession) -> dict[str, list[UnifiedPreset]]:
@@ -330,6 +437,7 @@ async def _resolve_slicer_api_url(db: AsyncSession) -> str | None:
 
 
 def _dedupe_by_name(
+    orca_cloud: dict[str, list[UnifiedPreset]],
     cloud: dict[str, list[UnifiedPreset]],
     local: dict[str, list[UnifiedPreset]],
     standard: dict[str, list[UnifiedPreset]],
@@ -337,31 +445,35 @@ def _dedupe_by_name(
     dict[str, list[UnifiedPreset]],
     dict[str, list[UnifiedPreset]],
     dict[str, list[UnifiedPreset]],
+    dict[str, list[UnifiedPreset]],
 ]:
-    """Filter so each preset name appears in exactly one tier
-    (cloud > local > standard).
+    """Filter so each preset name appears in exactly one tier.
 
-    Order within each tier is preserved as-is — only "lower-priority duplicates"
-    are dropped. A preset shared across tiers (e.g. "Bambu PLA Basic" in cloud
-    public AND standard bundled) only renders once, in the cloud tier.
+    Precedence: ``orca_cloud > cloud > local > standard``. Orca Cloud is
+    highest because a user who set up Orca sync is explicitly curating
+    those profiles for use here; Bambu Cloud follows for the same reason
+    one tier down. Order within each tier is preserved.
 
-    Filament metadata is **merged across tiers** during dedup: when a cloud
-    entry wins over a same-named local entry, the cloud entry inherits the
-    local entry's ``filament_type`` and ``filament_colour`` (cloud entries
-    carry no metadata themselves because we deliberately don't fetch each
-    setting's content — see ``_fetch_cloud_presets``). Without this merge,
-    the SliceModal's metadata-aware pre-pick would silently lose match data
-    for every preset the user has both cloud-synced and locally imported, and
-    fall back to plain priority selection.
+    Filament metadata merges across tiers: a Bambu Cloud entry without its
+    own ``filament_type`` / ``filament_colour`` (Bambu Cloud doesn't surface
+    these in the list response for rate-limiting reasons — see
+    :func:`_fetch_cloud_presets`) inherits values from the same-named local
+    or standard entry. Orca Cloud already carries metadata inline, so no
+    backfill is needed for it.
     """
+    # Build a name → metadata lookup from the tiers that carry it (orca_cloud,
+    # local, standard). Bambu cloud is intentionally skipped — it doesn't
+    # populate filament_type/colour in the list response. Take whichever
+    # non-empty entry shows up first.
     metadata_by_name: dict[str, tuple[str | None, str | None]] = {}
-    for tier in (local, standard):
+    for tier in (orca_cloud, local, standard):
         for p in tier["filament"]:
             if p.name in metadata_by_name:
                 continue
             if p.filament_type or p.filament_colour:
                 metadata_by_name[p.name] = (p.filament_type, p.filament_colour)
 
+    # Backfill Bambu Cloud entries that don't have their own metadata.
     for p in cloud["filament"]:
         if (p.filament_type is None or p.filament_colour is None) and p.name in metadata_by_name:
             t, c = metadata_by_name[p.name]
@@ -370,10 +482,16 @@ def _dedupe_by_name(
             if p.filament_colour is None and c is not None:
                 p.filament_colour = c
 
+    deduped_cloud = _empty_slots()
     deduped_local = _empty_slots()
     deduped_standard = _empty_slots()
     for slot in ("printer", "process", "filament"):
-        seen = {p.name for p in cloud[slot]}
+        seen = {p.name for p in orca_cloud[slot]}
+        for p in cloud[slot]:
+            if p.name in seen:
+                continue
+            deduped_cloud[slot].append(p)
+            seen.add(p.name)
         for p in local[slot]:
             if p.name in seen:
                 continue
@@ -384,7 +502,7 @@ def _dedupe_by_name(
                 continue
             deduped_standard[slot].append(p)
             seen.add(p.name)
-    return cloud, deduped_local, deduped_standard
+    return orca_cloud, deduped_cloud, deduped_local, deduped_standard
 
 
 @router.get("/printer-models")
@@ -428,17 +546,20 @@ async def list_unified_presets(
     behaviour as a JWT request from a user with no cloud token).
     """
     cloud_token_user = current_user or api_key_cloud_owner
+    orca_cloud, orca_cloud_status = await _fetch_orca_cloud_presets(db, cloud_token_user, refresh=refresh)
     cloud, cloud_status = await _fetch_cloud_presets(db, cloud_token_user, refresh=refresh)
     local = await _fetch_local_presets(db)
     standard = await _fetch_bundled_presets(db, refresh=refresh)
 
-    cloud, local, standard = _dedupe_by_name(cloud, local, standard)
+    orca_cloud, cloud, local, standard = _dedupe_by_name(orca_cloud, cloud, local, standard)
 
     return UnifiedPresetsResponse(
+        orca_cloud=UnifiedPresetsBySlot(**orca_cloud),
         cloud=UnifiedPresetsBySlot(**cloud),
         local=UnifiedPresetsBySlot(**local),
         standard=UnifiedPresetsBySlot(**standard),
         cloud_status=cloud_status,
+        orca_cloud_status=orca_cloud_status,
     )
 
 

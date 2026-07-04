@@ -2705,8 +2705,62 @@ export default {
     subtitle: 'Manage your slicer presets and pressure advance calibrations',
     tabs: {
       cloud: 'Cloud Profiles',
+      bambuCloud: 'Bambu Cloud',
+      orcaCloud: 'Orca Cloud',
       local: 'Local Profiles',
       kprofiles: 'K-Profiles'
+    },
+    orcaCloud: {
+      connectedAs: 'Connected as',
+      logout: 'Disconnect',
+      noLogoutPermission: 'You do not have permission to disconnect',
+      noConnectPermission: 'You do not have permission to connect to Orca Cloud',
+      retry: 'Retry',
+      back: 'Use a different sign-in method',
+      connect: {
+        title: 'Connect to Orca Cloud',
+        description: 'Sign in to your Orca Cloud account to sync your slicer profiles into BamDude.'
+      },
+      providers: {
+        google: 'Sign in with Google',
+        apple: 'Sign in with Apple',
+        github: 'Sign in with GitHub',
+        email: 'Sign in with email and password'
+      },
+      password: {
+        title: 'Sign in with email and password',
+        email: 'Email',
+        emailPlaceholder: 'you@example.com',
+        password: 'Password',
+        submit: 'Sign in'
+      },
+      paste: {
+        title: 'Finish signing in',
+        step1: 'A new tab opened with the Orca Cloud sign-in page. Sign in with your Orca account.',
+        step2: 'Your browser will be redirected to a "localhost" URL that fails to load. That is expected — the URL is what we need.',
+        step3: 'Copy the entire URL from your browser\'s address bar and paste it below.',
+        signInUrl: 'If the sign-in tab did not open, click this URL:',
+        label: 'Paste the callback URL here',
+        placeholder: 'http://localhost:41172/callback?code=...&state=...',
+        submit: 'Finish connecting'
+      },
+      profiles: {
+        title: 'Your Orca Cloud profiles ({{count}})',
+        refresh: 'Refresh',
+        empty: 'No profiles found in your Orca Cloud account yet.'
+      },
+      toast: {
+        connected: 'Connected to Orca Cloud as {{email}}',
+        disconnected: 'Disconnected from Orca Cloud'
+      },
+      errors: {
+        startFailed: 'Could not start the Orca Cloud sign-in flow.',
+        finishFailed: 'Could not finish the Orca Cloud sign-in.',
+        passwordFailed: 'Could not sign in with that email and password.',
+        passwordEmpty: 'Please enter both your email and password.',
+        emptyPaste: 'Please paste the callback URL from your browser.',
+        noCode: 'That URL does not look like an Orca Cloud callback (no code parameter). Copy the full URL from your address bar.'
+      }
     },
     localProfiles: {
       import: 'Import Profiles',
@@ -3114,7 +3168,8 @@ export default {
     },
     tier: {
       local: 'Imported',
-      cloud: 'Cloud',
+      cloud: 'Bambu Cloud',
+      orcaCloud: 'Orca Cloud',
       standard: 'Standard',
     },
     // Bed plate picker - five values from BambuStudio's ``curr_bed_type``
@@ -3128,9 +3183,14 @@ export default {
       supertackPlate: 'Cool Plate SuperTack',
     },
     cloud: {
-      notAuthenticated: 'Sign in to Bambu Cloud (Settings → Profiles → Cloud) to see your cloud presets.',
+      notAuthenticated: 'Sign in to Bambu Cloud (Settings → Profiles → Bambu Cloud) to see your cloud presets.',
       expired: 'Bambu Cloud session expired - sign in again to refresh your cloud presets.',
       unreachable: 'Bambu Cloud is unreachable right now. Local and standard presets still work.',
+    },
+    orcaCloud: {
+      notAuthenticated: 'Sign in to Orca Cloud (Profiles → Orca Cloud) to see your Orca presets.',
+      expired: 'Orca Cloud session expired — sign in again to refresh your Orca presets.',
+      unreachable: 'Orca Cloud is unreachable right now. Other presets still work.',
     },
   },
 

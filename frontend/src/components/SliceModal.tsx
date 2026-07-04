@@ -117,6 +117,7 @@ function pickProcessDefault(
 }
 
 const TIER_BONUS: Record<PresetSource, number> = {
+  orca_cloud: 1.75,
   local: 1.5,
   cloud: 1.0,
   standard: 0.5,
@@ -975,8 +976,9 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
           {presetsQuery.data && (
             <>
               <div className="flex items-start justify-between gap-2">
-                <div className="flex-1">
-                  <CloudStatusBanner status={presetsQuery.data.cloud_status} />
+                <div className="flex-1 space-y-2">
+                  <CloudStatusBanner status={presetsQuery.data.cloud_status} cloudName="bambu" />
+                  <CloudStatusBanner status={presetsQuery.data.orca_cloud_status} cloudName="orca" />
                 </div>
                 <button
                   type="button"
@@ -1211,34 +1213,67 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   );
 }
 
-function CloudStatusBanner({ status }: { status: SlicerCloudStatus }) {
+function CloudStatusBanner({
+  status,
+  cloudName = 'bambu',
+}: {
+  status: SlicerCloudStatus;
+  cloudName?: 'bambu' | 'orca';
+}) {
   const { t } = useTranslation();
   if (status === 'ok') return null;
 
-  // Map each non-ok status to the appropriate icon + tone. None of these are
-  // hard errors — the user can still slice using local + standard presets,
-  // so we use info / warn styling rather than error red.
-  const config: Record<Exclude<SlicerCloudStatus, 'ok'>, { tone: string; icon: typeof Cloud; key: string; fallback: string }> = {
+  // Same status vocabulary for both Bambu and Orca Cloud — only the
+  // user-facing text varies. The fallbacks below name each cloud explicitly
+  // so the banner makes sense without translation when i18n hasn't been
+  // updated for a new locale.
+  const messages =
+    cloudName === 'orca'
+      ? {
+          not_authenticated: {
+            key: 'slice.orcaCloud.notAuthenticated',
+            fallback: 'Sign in to Orca Cloud (Profiles → Orca Cloud) to see your Orca presets.',
+          },
+          expired: {
+            key: 'slice.orcaCloud.expired',
+            fallback: 'Orca Cloud session expired — sign in again to refresh your Orca presets.',
+          },
+          unreachable: {
+            key: 'slice.orcaCloud.unreachable',
+            fallback: 'Orca Cloud is unreachable right now. Other presets still work.',
+          },
+        }
+      : {
+          not_authenticated: {
+            key: 'slice.cloud.notAuthenticated',
+            fallback: 'Sign in to Bambu Cloud (Settings → Profiles → Cloud) to see your cloud presets.',
+          },
+          expired: {
+            key: 'slice.cloud.expired',
+            fallback: 'Bambu Cloud session expired — sign in again to refresh your cloud presets.',
+          },
+          unreachable: {
+            key: 'slice.cloud.unreachable',
+            fallback: 'Bambu Cloud is unreachable right now. Local and standard presets still work.',
+          },
+        };
+
+  const tones: Record<Exclude<SlicerCloudStatus, 'ok'>, { tone: string; icon: typeof Cloud }> = {
     not_authenticated: {
       tone: 'border-bambu-dark-tertiary/40 bg-bambu-dark text-bambu-gray',
       icon: Cloud,
-      key: 'slice.cloud.notAuthenticated',
-      fallback: 'Sign in to Bambu Cloud (Settings → Profiles → Cloud) to see your cloud presets.',
     },
     expired: {
       tone: 'border-amber-700/40 bg-amber-900/20 text-amber-200',
       icon: CloudOff,
-      key: 'slice.cloud.expired',
-      fallback: 'Bambu Cloud session expired — sign in again to refresh your cloud presets.',
     },
     unreachable: {
       tone: 'border-bambu-dark-tertiary/40 bg-bambu-dark text-bambu-gray',
       icon: CloudOff,
-      key: 'slice.cloud.unreachable',
-      fallback: 'Bambu Cloud is unreachable right now. Local and standard presets still work.',
     },
   };
-  const { tone, icon: Icon, key, fallback } = config[status];
+  const { tone, icon: Icon } = tones[status];
+  const { key, fallback } = messages[status];
   return (
     <div className={`flex items-start gap-2 text-xs rounded-md border p-2 ${tone}`} role="status">
       <Icon className="w-4 h-4 flex-shrink-0 mt-0.5" />

@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
 
 from backend.app.models.local_preset import LocalPreset
 from backend.app.schemas.slicer import PresetRef
+from backend.app.services import preset_resolver
 from backend.app.services.preset_resolver import (
     _resolve_standard,
     resolve_preset_ref,
@@ -217,6 +218,83 @@ class TestCloudSource:
                     "filament",
                 )
             assert exc_info.value.status_code == 502
+
+
+# --- orca_cloud tier -------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_orca_cloud_blocks_user_without_orca_cloud_auth():
+    """Defence-in-depth, same shape as the Bambu Cloud permission check:
+    a user holding LIBRARY_UPLOAD but not ORCA_CLOUD_AUTH can't slice with
+    Orca Cloud presets even if their User row still carries a token."""
+    db = MagicMock()
+    user = MagicMock()
+    user.has_permission = MagicMock(return_value=False)
+    with pytest.raises(HTTPException) as exc:
+        await preset_resolver._resolve_orca_cloud(db, user, PresetRef(source="orca_cloud", id="abc"), slot="printer")
+    assert exc.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_orca_cloud_unwraps_content():
+    """Orca's profile shape is ``{id, name, content, updated_time, created_time}``
+    — the inner ``content`` is the actual slicer-format JSON. We forward
+    that, not the wrapper."""
+    db = MagicMock()
+    user = MagicMock()
+    user.has_permission = MagicMock(return_value=True)
+    svc_mock = MagicMock()
+    svc_mock.get_profile = AsyncMock(
+        return_value={
+            "id": "abc",
+            "name": "X1C Custom",
+            "content": {"name": "X1C Custom", "nozzle_diameter": [0.4]},
+        }
+    )
+    svc_mock.close = AsyncMock()
+    with patch.object(preset_resolver, "_build_orca_service", AsyncMock(return_value=svc_mock)):
+        out = await preset_resolver._resolve_orca_cloud(
+            db, user, PresetRef(source="orca_cloud", id="abc"), slot="printer"
+        )
+    payload = json.loads(out)
+    assert payload == {"name": "X1C Custom", "nozzle_diameter": [0.4]}
+    svc_mock.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_orca_cloud_auth_error_returns_401():
+    db = MagicMock()
+    user = MagicMock()
+    user.has_permission = MagicMock(return_value=True)
+    svc_mock = MagicMock()
+    svc_mock.get_profile = AsyncMock(side_effect=preset_resolver.OrcaCloudAuthError("expired"))
+    svc_mock.close = AsyncMock()
+    with (
+        patch.object(preset_resolver, "_build_orca_service", AsyncMock(return_value=svc_mock)),
+        pytest.raises(HTTPException) as exc,
+    ):
+        await preset_resolver._resolve_orca_cloud(db, user, PresetRef(source="orca_cloud", id="abc"), slot="printer")
+    assert exc.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_orca_cloud_not_found_returns_400():
+    """``get_profile`` raises generic ``OrcaCloudError`` for "not found" —
+    the resolver maps that to a 400 (not 502) so the UI can show "profile
+    no longer exists" rather than "service down"."""
+    db = MagicMock()
+    user = MagicMock()
+    user.has_permission = MagicMock(return_value=True)
+    svc_mock = MagicMock()
+    svc_mock.get_profile = AsyncMock(side_effect=preset_resolver.OrcaCloudError("profile 'abc' not found (scanned 0)"))
+    svc_mock.close = AsyncMock()
+    with (
+        patch.object(preset_resolver, "_build_orca_service", AsyncMock(return_value=svc_mock)),
+        pytest.raises(HTTPException) as exc,
+    ):
+        await preset_resolver._resolve_orca_cloud(db, user, PresetRef(source="orca_cloud", id="abc"), slot="printer")
+    assert exc.value.status_code == 400
 
 
 class TestUnknownSource:

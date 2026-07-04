@@ -124,23 +124,51 @@ export function SpoolFormModal({
     setRecentColors(loadRecentColors());
   }, []);
 
-  // Fetch cloud presets and catalog when modal opens
+  // Fetch cloud presets and catalog when modal opens. Fetches Bambu Cloud
+  // and Orca Cloud in parallel; merges Orca filaments into ``cloudPresets``
+  // since ``OrcaProfileMeta`` is structurally identical to ``SlicerSetting``
+  // (same fields, same semantics). ``cloudAuthenticated`` flips on if either
+  // cloud is connected — the UI only uses it to gate "no cloud" hints.
   useEffect(() => {
+    // ``cancelled`` gates every state setter so a fetch that resolves AFTER
+    // the modal closes / unmounts can't fire setState on a torn-down
+    // component. Without this guard the parallel Promise.allSettled chain
+    // can still hit ``setLoadingCloudPresets(false)`` in its ``finally``
+    // after vitest has dismantled the JSDOM window — surfaced as an
+    // "Unhandled Rejection: window is not defined" in CI runs.
+    let cancelled = false;
     if (isOpen) {
       const fetchData = async () => {
         setLoadingCloudPresets(true);
         try {
-          const status = await api.getCloudStatus();
-          setCloudAuthenticated(status.is_authenticated);
-          if (status.is_authenticated) {
-            const presets = await api.getFilamentPresets();
-            setCloudPresets(presets);
-          }
+          const [bambuResult, orcaResult] = await Promise.allSettled([
+            (async () => {
+              const status = await api.getCloudStatus();
+              if (!status.is_authenticated) return { connected: false, presets: [] as SlicerSetting[] };
+              const presets = await api.getFilamentPresets();
+              return { connected: true, presets };
+            })(),
+            (async () => {
+              const status = await api.orcaCloudStatus();
+              if (!status.connected) return { connected: false, presets: [] as SlicerSetting[] };
+              const list = await api.orcaCloudListProfiles();
+              // OrcaProfileMeta is structurally identical to SlicerSetting.
+              return { connected: true, presets: list.filament as unknown as SlicerSetting[] };
+            })(),
+          ]);
+          if (cancelled) return;
+          const bambuConnected = bambuResult.status === 'fulfilled' && bambuResult.value.connected;
+          const orcaConnected = orcaResult.status === 'fulfilled' && orcaResult.value.connected;
+          const bambuPresets = bambuResult.status === 'fulfilled' ? bambuResult.value.presets : [];
+          const orcaPresets = orcaResult.status === 'fulfilled' ? orcaResult.value.presets : [];
+          setCloudAuthenticated(bambuConnected || orcaConnected);
+          setCloudPresets([...bambuPresets, ...orcaPresets]);
         } catch (e) {
+          if (cancelled) return;
           console.error('Failed to fetch cloud presets:', e);
           setCloudAuthenticated(false);
         } finally {
-          setLoadingCloudPresets(false);
+          if (!cancelled) setLoadingCloudPresets(false);
         }
       };
       fetchData();
@@ -200,6 +228,9 @@ export function SpoolFormModal({
     // "test environment was torn down" errors in vitest. spoolmanMode only
     // gates a single fetch (getSpoolCatalog) which is cheap enough to skip
     // when the modal opens in Spoolman mode.
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, printersWithCalibrations.length]);
 

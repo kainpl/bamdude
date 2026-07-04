@@ -152,6 +152,7 @@ class Permission(StrEnum):
 
     # Cloud Auth (admin-level)
     CLOUD_AUTH = "cloud:auth"
+    ORCA_CLOUD_AUTH = "orca_cloud:auth"
 
     # API Keys (admin-level)
     API_KEYS_READ = "api_keys:read"
@@ -300,6 +301,7 @@ PERMISSION_CATEGORIES = {
     ],
     "Cloud": [
         Permission.CLOUD_AUTH,
+        Permission.ORCA_CLOUD_AUTH,
     ],
     "API Keys": [
         Permission.API_KEYS_READ,

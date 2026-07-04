@@ -66,8 +66,9 @@ export function PresetDropdown({
   // sections collapse out.
   const { sections, otherEntries } = useMemo(() => {
     const tiers: { key: keyof UnifiedPresetsResponse; label: string; fallback: string }[] = [
+      { key: 'orca_cloud', label: 'slice.tier.orcaCloud', fallback: 'Orca Cloud' },
       { key: 'local', label: 'slice.tier.local', fallback: 'Imported' },
-      { key: 'cloud', label: 'slice.tier.cloud', fallback: 'Cloud' },
+      { key: 'cloud', label: 'slice.tier.cloud', fallback: 'Bambu Cloud' },
       { key: 'standard', label: 'slice.tier.standard', fallback: 'Standard' },
     ];
     const filterByPrinter = slot !== 'printer';

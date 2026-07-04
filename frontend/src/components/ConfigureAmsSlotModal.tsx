@@ -294,6 +294,17 @@ export function ConfigureAmsSlotModal({
     retry: false,
   });
 
+  // Orca Cloud filament profiles, same shape as Bambu Cloud's. Each query
+  // is independent — the picker degrades gracefully if Orca Cloud isn't
+  // connected (no entries surface, no error banner because we don't want
+  // to nag users who deliberately only use Bambu Cloud).
+  const { data: orcaCloudList } = useQuery({
+    queryKey: ['orcaCloudProfilesForAmsSlot'],
+    queryFn: () => api.orcaCloudListProfiles(),
+    enabled: isOpen,
+    retry: false,
+  });
+
   // Fetch local presets
   const { data: localPresets, isLoading: localLoading } = useQuery({
     queryKey: ['localPresets'],
@@ -329,9 +340,23 @@ export function ConfigureAmsSlotModal({
     mutationFn: async () => {
       if (!selectedPresetId) throw new Error('No filament preset selected');
 
-      // Determine preset source
+      // Determine preset source. Orca detection is done via setting_id
+      // lookup as well as the ``orca_`` prefix because the saved-preset
+      // pre-population on modal open (the useEffect at the top of this
+      // component) writes ``slotInfo.savedPresetId`` verbatim — which for a
+      // historical Orca save would be the raw UUID, no prefix. Falling
+      // through to the cloud lookup in that case would have thrown
+      // "Selected preset not found".
       const isLocal = selectedPresetId.startsWith('local_');
       const isBuiltin = selectedPresetId.startsWith('builtin_');
+      const orcaSettingId = selectedPresetId.startsWith('orca_')
+        ? selectedPresetId.replace('orca_', '')
+        : selectedPresetId;
+      const orcaPresetCandidate = (!isLocal && !isBuiltin)
+        ? orcaCloudList?.filament.find(p => p.setting_id === orcaSettingId)
+        : undefined;
+      const isOrca = !!orcaPresetCandidate;
+      const orcaPreset = orcaPresetCandidate ?? null;
       const localId = isLocal ? parseInt(selectedPresetId.replace('local_', ''), 10) : null;
       const builtinFilamentId = isBuiltin ? selectedPresetId.replace('builtin_', '') : null;
       const localPreset = isLocal
@@ -341,17 +366,24 @@ export function ConfigureAmsSlotModal({
         ? builtinFilaments?.find(b => b.filament_id === builtinFilamentId)
         : null;
 
-      // Get the selected cloud preset details (null for local/builtin presets)
-      const selectedPreset = (!isLocal && !isBuiltin)
+      // Get the selected cloud preset details (null for local/builtin/orca presets)
+      const selectedPreset = (!isLocal && !isBuiltin && !isOrca)
         ? cloudSettings?.filament.find(p => p.setting_id === selectedPresetId)
         : null;
 
-      if (!isLocal && !isBuiltin && !selectedPreset) throw new Error('Selected preset not found');
+      if (!isLocal && !isBuiltin && !isOrca && !selectedPreset) throw new Error('Selected preset not found');
       if (isLocal && !localPreset) throw new Error('Selected local preset not found');
       if (isBuiltin && !builtinPreset) throw new Error('Selected builtin preset not found');
+      if (isOrca && !orcaPreset) throw new Error('Selected Orca Cloud preset not found');
 
       // Parse the preset name for filament info
-      const presetName = isLocal ? localPreset!.name : isBuiltin ? builtinPreset!.name : selectedPreset!.name;
+      const presetName = isLocal
+        ? localPreset!.name
+        : isBuiltin
+          ? builtinPreset!.name
+          : isOrca
+            ? orcaPreset!.name
+            : selectedPreset!.name;
       const parsed = parsePresetName(presetName);
 
       // Get cali_idx from selected K profile's slot_id (-1 = use default 0.020)
@@ -370,22 +402,40 @@ export function ConfigureAmsSlotModal({
       // Prefer this over stored filament_type which may have been parsed with old logic.
       const parsedMat = parsed.material.toUpperCase();
 
+      // Generic Bambu filament-ID map used to derive a ``tray_info_idx`` for
+      // presets that don't carry a Bambu setting_id of their own (local
+      // imports and Orca Cloud sync both fall in this bucket). The printer's
+      // firmware needs SOMETHING in tray_info_idx to recognize the filament
+      // type for HMS / drying / colour-matching; the closest generic Bambu
+      // filament for the parsed material is the right choice.
+      const GENERIC_IDS: Record<string, string> = {
+        'PLA': 'GFL99', 'PLA-CF': 'GFL98', 'PLA SILK': 'GFL96', 'PLA HIGH SPEED': 'GFL95',
+        'PETG': 'GFG99', 'PETG HF': 'GFG96', 'PETG-CF': 'GFG98', 'PCTG': 'GFG97',
+        'ABS': 'GFB99', 'ASA': 'GFB98',
+        'PC': 'GFC99',
+        'PA': 'GFN99', 'PA-CF': 'GFN98', 'NYLON': 'GFN99',
+        'TPU': 'GFU99',
+        'PVA': 'GFS99', 'HIPS': 'GFS98',
+        'PE': 'GFP99', 'PP': 'GFP97',
+      };
+
       if (isLocal) {
         // Local presets have no Bambu Cloud setting_id, but need a valid
         // tray_info_idx for the printer to recognize the filament type.
-        // Map the material type to the closest generic Bambu filament ID.
         const material = (MATERIAL_TYPES.includes(parsedMat) ? parsedMat : localPreset?.filament_type || parsed.material || '').toUpperCase();
-        const GENERIC_IDS: Record<string, string> = {
-          'PLA': 'GFL99', 'PLA-CF': 'GFL98', 'PLA SILK': 'GFL96', 'PLA HIGH SPEED': 'GFL95',
-          'PETG': 'GFG99', 'PETG HF': 'GFG96', 'PETG-CF': 'GFG98', 'PCTG': 'GFG97',
-          'ABS': 'GFB99', 'ASA': 'GFB98',
-          'PC': 'GFC99',
-          'PA': 'GFN99', 'PA-CF': 'GFN98', 'NYLON': 'GFN99',
-          'TPU': 'GFU99',
-          'PVA': 'GFS99', 'HIPS': 'GFS98',
-          'PE': 'GFP99', 'PP': 'GFP97',
-        };
         // Try exact match first, then base material (strip suffixes like "-CF", "+", " HF")
+        trayInfoIdx = GENERIC_IDS[material]
+          || GENERIC_IDS[material.replace(/[-\s]?CF$/, '')]
+          || GENERIC_IDS[material.replace(/\+$/, '')]
+          || GENERIC_IDS[material.split(/[-\s]/)[0]]
+          || '';
+        settingId = '';
+      } else if (isOrca) {
+        // Orca Cloud presets have a UUID setting_id that Bambu printers can't
+        // resolve; treat them like local imports — derive a generic tray_info
+        // _idx from the parsed material, leave settingId empty so the slicer
+        // doesn't get a foreign cloud ID it can't look up.
+        const material = (MATERIAL_TYPES.includes(parsedMat) ? parsedMat : parsed.material || '').toUpperCase();
         trayInfoIdx = GENERIC_IDS[material]
           || GENERIC_IDS[material.replace(/[-\s]?CF$/, '')]
           || GENERIC_IDS[material.replace(/\+$/, '')]
@@ -421,7 +471,7 @@ export function ConfigureAmsSlotModal({
       let tempMin = isLocal && localPreset?.nozzle_temp_min ? localPreset.nozzle_temp_min : 190;
       let tempMax = isLocal && localPreset?.nozzle_temp_max ? localPreset.nozzle_temp_max : 230;
 
-      if (!isLocal || isBuiltin || (!localPreset?.nozzle_temp_min && !localPreset?.nozzle_temp_max)) {
+      if (!isLocal || isBuiltin || isOrca || (!localPreset?.nozzle_temp_min && !localPreset?.nozzle_temp_max)) {
         // Fall back to material-based defaults (prefer parsed material for "Support for" handling)
         const material = (isLocal
           ? (MATERIAL_TYPES.includes(parsedMat) ? parsedMat : localPreset?.filament_type || parsed.material || '')
@@ -460,7 +510,9 @@ export function ConfigureAmsSlotModal({
       // patterns correctly) over stored filament_type which may have been parsed with old logic.
       const trayType = isLocal
         ? (MATERIAL_TYPES.includes(parsedMat) ? parsedMat : localPreset?.filament_type || parsed.material || 'PLA')
-        : (parsed.material || 'PLA');
+        : isOrca
+          ? (MATERIAL_TYPES.includes(parsedMat) ? parsedMat : parsed.material || 'PLA')
+          : (parsed.material || 'PLA');
 
       // Configure the slot via MQTT
       const result = await api.configureAmsSlot(printerId, slotInfo.amsId, slotInfo.trayId, {
@@ -483,8 +535,20 @@ export function ConfigureAmsSlotModal({
       // Save the preset mapping so we can display the correct name in the UI
       // This is needed because user presets use filament_id (e.g., P285e239) as tray_info_idx,
       // which can't be resolved to a name via the filamentInfo API
-      const mappingPresetId = isLocal ? `local_${localId}` : isBuiltin ? `builtin_${builtinFilamentId}` : selectedPresetId;
-      const mappingSource = isLocal ? 'local' : isBuiltin ? 'builtin' : 'cloud';
+      const mappingPresetId = isLocal
+        ? `local_${localId}`
+        : isBuiltin
+          ? `builtin_${builtinFilamentId}`
+          : isOrca
+            ? selectedPresetId
+            : selectedPresetId;
+      const mappingSource = isLocal
+        ? 'local'
+        : isBuiltin
+          ? 'builtin'
+          : isOrca
+            ? 'orca_cloud'
+            : 'cloud';
       try {
         await api.saveSlotPreset(printerId, slotInfo.amsId, slotInfo.trayId, mappingPresetId, traySubBrands, mappingSource);
       } catch (e) {
@@ -520,24 +584,45 @@ export function ConfigureAmsSlotModal({
     },
   });
 
-  // Unified preset item for the list (cloud + local + builtin fallback)
-  type PresetItem = { id: string; name: string; source: 'cloud' | 'local' | 'builtin'; isUser: boolean };
+  // Unified preset item for the list (orca_cloud + cloud + local + builtin fallback)
+  type PresetItem = { id: string; name: string; source: 'orca_cloud' | 'cloud' | 'local' | 'builtin'; isUser: boolean };
 
-  // Filter filament presets based on search (merged cloud + local + builtin)
+  // Filter filament presets based on search (merged orca_cloud + cloud + local + builtin)
   const filteredPresets = useMemo(() => {
     const query = searchQuery.toLowerCase();
     const items: PresetItem[] = [];
 
-    // Collect IDs already covered by cloud and local to avoid duplicates in fallback
+    // Collect IDs already covered by higher-priority tiers to avoid duplicates
     const coveredIds = new Set<string>();
 
     // Currently-configured preset should always be shown (bypass model filter)
     const savedId = slotInfo.savedPresetId;
     const trayIdx = slotInfo.trayInfoIdx;
 
+    // 0. Orca Cloud filament presets — surfaced first because the user
+    // explicitly opted into Orca sync; their picks should outrank Bambu Cloud
+    // presets of the same name. IDs are prefixed ``orca_`` so the configure
+    // flow can detect "this is an Orca preset" via a cheap string check
+    // (mirrors the ``local_`` / ``builtin_`` prefix convention already in use).
+    if (orcaCloudList?.filament) {
+      for (const op of orcaCloudList.filament) {
+        const orcaId = `orca_${op.setting_id}`;
+        coveredIds.add(op.setting_id);
+        coveredIds.add(orcaId);
+        if (query && !op.name.toLowerCase().includes(query)) continue;
+        if (printerModel) {
+          const presetModel = extractPresetModel(op.name);
+          if (presetModel && presetModel.toUpperCase() !== printerModel.toUpperCase()) continue;
+        }
+        // All Orca Cloud profiles are user-authored, so isUser is always true.
+        items.push({ id: orcaId, name: op.name, source: 'orca_cloud', isUser: true });
+      }
+    }
+
     // 1. Cloud presets
     if (cloudSettings?.filament) {
       for (const cp of cloudSettings.filament) {
+        if (coveredIds.has(cp.setting_id)) continue;
         coveredIds.add(cp.setting_id);
         // Keep preset if it matches the slot's saved mapping or current tray_info_idx
         const isSavedPreset = savedId === cp.setting_id;
@@ -581,21 +666,24 @@ export function ConfigureAmsSlotModal({
       }
     }
 
-    // Sort: cloud user presets first, then cloud built-in, then local, then builtin fallback
+    // Sort: orca_cloud first (user-curated), then cloud user presets, then
+    // cloud built-in, then local, then builtin fallback
     return items.sort((a, b) => {
-      const sourceOrder = { cloud: 0, local: 1, builtin: 2 };
+      const sourceOrder = { orca_cloud: 0, cloud: 1, local: 2, builtin: 3 };
       if (a.source !== b.source) return sourceOrder[a.source] - sourceOrder[b.source];
       if (a.isUser && !b.isUser) return -1;
       if (!a.isUser && b.isUser) return 1;
       return a.name.localeCompare(b.name);
     });
-  }, [cloudSettings?.filament, localPresets?.filament, builtinFilaments, searchQuery, printerModel, slotInfo.savedPresetId, slotInfo.trayInfoIdx]);
+  }, [orcaCloudList?.filament, cloudSettings?.filament, localPresets?.filament, builtinFilaments, searchQuery, printerModel, slotInfo.savedPresetId, slotInfo.trayInfoIdx]);
 
   // Get full preset name for K profile filtering (brand + material, without printer suffix)
   const selectedPresetInfo = useMemo(() => {
     if (!selectedPresetId) return null;
 
-    // Resolve the name from cloud, local, or builtin presets
+    // Resolve the name from orca, cloud, local, or builtin presets. The
+    // Orca branch tolerates both ``orca_<UUID>`` and a bare UUID — see the
+    // configure-mutation comment for why the raw UUID also reaches us.
     let presetName: string | null = null;
     if (selectedPresetId.startsWith('local_')) {
       const localId = parseInt(selectedPresetId.replace('local_', ''), 10);
@@ -605,11 +693,17 @@ export function ConfigureAmsSlotModal({
       const filamentId = selectedPresetId.replace('builtin_', '');
       const bf = builtinFilaments?.find(b => b.filament_id === filamentId);
       presetName = bf?.name || null;
-    } else if (cloudSettings?.filament) {
-      const cp = cloudSettings.filament.find(p => p.setting_id === selectedPresetId);
-      presetName = cp?.name || null;
     } else {
-      // No cloud settings available
+      const orcaCandidateId = selectedPresetId.startsWith('orca_')
+        ? selectedPresetId.replace('orca_', '')
+        : selectedPresetId;
+      const op = orcaCloudList?.filament.find(p => p.setting_id === orcaCandidateId);
+      if (op) {
+        presetName = op.name;
+      } else if (cloudSettings?.filament) {
+        const cp = cloudSettings.filament.find(p => p.setting_id === selectedPresetId);
+        presetName = cp?.name || null;
+      }
     }
     if (!presetName) {
       return null;
@@ -628,7 +722,7 @@ export function ConfigureAmsSlotModal({
       material: parsed.material,
       brand: parsed.brand,
     };
-  }, [selectedPresetId, cloudSettings?.filament, localPresets?.filament, builtinFilaments]);
+  }, [selectedPresetId, cloudSettings?.filament, localPresets?.filament, builtinFilaments, orcaCloudList?.filament]);
 
   // For backwards compatibility with the label
   const selectedMaterial = selectedPresetInfo?.fullName || '';

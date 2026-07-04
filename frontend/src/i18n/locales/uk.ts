@@ -2721,8 +2721,62 @@ export default {
     subtitle: 'Керуйте пресетами слайсера та калібруваннями PA',
     tabs: {
       cloud: 'Хмарні профілі',
+      bambuCloud: 'Bambu Cloud',
+      orcaCloud: 'Orca Cloud',
       local: 'Локальні профілі',
       kprofiles: 'K-профілі'
+    },
+    orcaCloud: {
+      connectedAs: 'Підключено як',
+      logout: 'Відключити',
+      noLogoutPermission: 'У вас немає дозволу на відключення',
+      noConnectPermission: 'У вас немає дозволу на підключення до Orca Cloud',
+      retry: 'Повторити',
+      back: 'Інший спосіб входу',
+      connect: {
+        title: 'Підключення до Orca Cloud',
+        description: 'Увійдіть до свого облікового запису Orca Cloud, щоб синхронізувати профілі слайсера в BamDude.'
+      },
+      providers: {
+        google: 'Увійти через Google',
+        apple: 'Увійти через Apple',
+        github: 'Увійти через GitHub',
+        email: 'Увійти через email і пароль'
+      },
+      password: {
+        title: 'Увійти через email і пароль',
+        email: 'Email',
+        emailPlaceholder: 'you@example.com',
+        password: 'Пароль',
+        submit: 'Увійти'
+      },
+      paste: {
+        title: 'Завершіть вхід',
+        step1: 'У новій вкладці відкрилася сторінка входу Orca Cloud. Увійдіть у свій обліковий запис Orca.',
+        step2: 'Браузер буде перенаправлено на адресу "localhost", яка не завантажиться. Це нормально — саме ця адреса нам потрібна.',
+        step3: 'Скопіюйте всю адресу з рядка браузера й вставте її нижче.',
+        signInUrl: 'Якщо вкладка входу не відкрилася, натисніть це посилання:',
+        label: 'Вставте адресу зворотного виклику сюди',
+        placeholder: 'http://localhost:41172/callback?code=...&state=...',
+        submit: 'Завершити підключення'
+      },
+      profiles: {
+        title: 'Ваші профілі Orca Cloud ({{count}})',
+        refresh: 'Оновити',
+        empty: 'У вашому обліковому записі Orca Cloud ще немає профілів.'
+      },
+      toast: {
+        connected: 'Підключено до Orca Cloud як {{email}}',
+        disconnected: 'Відключено від Orca Cloud'
+      },
+      errors: {
+        startFailed: 'Не вдалося розпочати вхід до Orca Cloud.',
+        finishFailed: 'Не вдалося завершити вхід до Orca Cloud.',
+        passwordFailed: 'Не вдалося увійти з цим email і паролем.',
+        passwordEmpty: 'Введіть, будь ласка, і email, і пароль.',
+        emptyPaste: 'Вставте, будь ласка, адресу зворотного виклику з браузера.',
+        noCode: 'Ця адреса не схожа на зворотний виклик Orca Cloud (немає параметра code). Скопіюйте повну адресу з рядка браузера.'
+      }
     },
     localProfiles: {
       import: 'Імпорт профілів',
@@ -3130,7 +3184,8 @@ export default {
     },
     tier: {
       local: 'Імпортовані',
-      cloud: 'Cloud',
+      cloud: 'Bambu Cloud',
+      orcaCloud: 'Orca Cloud',
       standard: 'Стандартні',
     },
     // Назви столів зберігаємо англійськими - саме так вони звучать у самому
@@ -3145,9 +3200,14 @@ export default {
       supertackPlate: 'Cool Plate SuperTack',
     },
     cloud: {
-      notAuthenticated: 'Увійдіть у Bambu Cloud (Налаштування → Профілі → Cloud), щоб побачити свої cloud-пресети.',
+      notAuthenticated: 'Увійдіть у Bambu Cloud (Налаштування → Профілі → Bambu Cloud), щоб побачити свої cloud-пресети.',
       expired: 'Сесія Bambu Cloud закінчилася - увійдіть знову, щоб оновити cloud-пресети.',
       unreachable: 'Bambu Cloud зараз недоступний. Локальні та стандартні пресети все одно працюють.',
+    },
+    orcaCloud: {
+      notAuthenticated: 'Увійдіть у Orca Cloud (Профілі → Orca Cloud), щоб побачити свої Orca-пресети.',
+      expired: 'Сесія Orca Cloud закінчилася — увійдіть знову, щоб оновити Orca-пресети.',
+      unreachable: 'Orca Cloud зараз недоступний. Інші пресети все одно працюють.',
     },
   },
 

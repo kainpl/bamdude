@@ -12,10 +12,11 @@ import type { PresetRef, PresetSource, UnifiedPreset, UnifiedPresetsResponse } f
 // vocabulary.
 export type Slot = 'printer' | 'process' | 'filament';
 
-// Manual mode tier display order — local imports first (operator's
-// curated picks), then cloud (per-user), then standard bundled
-// fallbacks. Identical to the SliceModal ordering.
-export const TIER_ORDER = ['local', 'cloud', 'standard'] as const;
+// Manual mode tier display order — orca_cloud first (the operator's most-
+// recently-curated source, metadata inlined via sync_pull), then local
+// imports, then Bambu Cloud (per-user, no inline metadata), then standard
+// bundled fallbacks. Identical to the SliceModal ordering.
+export const TIER_ORDER = ['orca_cloud', 'local', 'cloud', 'standard'] as const;
 
 export type OwnerFilter = 'all' | 'custom' | 'builtin';
 
@@ -68,6 +69,6 @@ export function fromRefValue(raw: string): PresetRef | null {
   if (idx < 0) return null;
   const source = raw.slice(0, idx) as PresetSource;
   const id = raw.slice(idx + 1);
-  if (source !== 'cloud' && source !== 'local' && source !== 'standard') return null;
+  if (source !== 'orca_cloud' && source !== 'cloud' && source !== 'local' && source !== 'standard') return null;
   return { source, id };
 }

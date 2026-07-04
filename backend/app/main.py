@@ -48,6 +48,7 @@ from backend.app.api.routes import (
     notification_templates,
     notifications,
     obico,
+    orca_cloud,
     print_options_preferences,
     print_queue,
     printer_queues,
@@ -6790,6 +6791,7 @@ app.include_router(printers.router, prefix=app_settings.api_prefix)
 app.include_router(archive_purge.router, prefix=app_settings.api_prefix)
 app.include_router(archives.router, prefix=app_settings.api_prefix)
 app.include_router(inventory.router, prefix=app_settings.api_prefix)
+app.include_router(orca_cloud.router, prefix=app_settings.api_prefix)
 app.include_router(labels.router, prefix=app_settings.api_prefix)
 app.include_router(settings_routes.router, prefix=app_settings.api_prefix)
 app.include_router(cloud.router, prefix=app_settings.api_prefix)

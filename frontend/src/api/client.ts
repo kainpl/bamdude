@@ -1504,6 +1504,51 @@ export interface CloudLoginResponse {
   tfa_key?: string | null;
 }
 
+// Orca Cloud types — paste-flow PKCE handshake against auth.orcaslicer.com.
+// See backend/app/services/orca_cloud.py for the deep dive on why this
+// flow is paste-based rather than callback-based.
+export type OrcaOAuthProvider = 'google' | 'apple' | 'github';
+
+export interface OrcaAuthStartResponse {
+  auth_url: string;
+}
+
+export interface OrcaAuthStatusResponse {
+  connected: boolean;
+  email: string | null;
+  user_id: string | null;
+}
+
+// Orca profiles are shaped to match Bambu Cloud's SlicerSetting on the wire
+// so the frontend can use the same visual components for both surfaces (cards,
+// grouped sections, filter bar). Backend handles the source-specific
+// transformation in routes/orca_cloud.py::_orca_to_setting.
+export interface OrcaProfileMeta {
+  setting_id: string;
+  name: string;
+  type: string;
+  version: string | null;
+  user_id: string | null;
+  updated_time: string | null;
+  is_custom: boolean;
+}
+
+export interface OrcaProfileListResponse {
+  filament: OrcaProfileMeta[];
+  printer: OrcaProfileMeta[];
+  process: OrcaProfileMeta[];
+}
+
+export interface OrcaProfileDetail {
+  setting_id: string;
+  name: string;
+  type: string;
+  version: string | null;
+  base_id: string | null;
+  update_time: string | null;
+  setting: Record<string, unknown>;
+}
+
 export interface SlicerSetting {
   setting_id: string;
   name: string;
@@ -1694,7 +1739,7 @@ export interface LocalPresetsResponse {
 // Server-side slicing (B.4 — Phase 2 of 0.5.x cycle)
 // =====================================================================
 
-export type PresetSource = 'cloud' | 'local' | 'standard';
+export type PresetSource = 'orca_cloud' | 'cloud' | 'local' | 'standard';
 
 export interface PresetRef {
   source: PresetSource;
@@ -1807,10 +1852,14 @@ export interface UnifiedPresetsBySlot {
 }
 
 export interface UnifiedPresetsResponse {
+  // Priority order: orca_cloud > cloud > local > standard. Dedup is applied
+  // backend-side so each name appears in only one tier.
+  orca_cloud: UnifiedPresetsBySlot;
   cloud: UnifiedPresetsBySlot;
   local: UnifiedPresetsBySlot;
   standard: UnifiedPresetsBySlot;
   cloud_status: SlicerCloudStatus;
+  orca_cloud_status: SlicerCloudStatus;
 }
 
 export interface SliceResponse {
@@ -3373,7 +3422,7 @@ export type Permission =
   | 'system:read'
   | 'settings:read' | 'settings:update' | 'settings:backup' | 'settings:restore'
   | 'git:backup' | 'git:restore'
-  | 'cloud:auth'
+  | 'cloud:auth' | 'orca_cloud:auth'
   | 'makerworld:view' | 'makerworld:import'
   | 'api_keys:read' | 'api_keys:create' | 'api_keys:update' | 'api_keys:delete'
   | 'users:read' | 'users:create' | 'users:update' | 'users:delete'
@@ -5437,6 +5486,34 @@ export const api = {
     }),
   cloudLogout: () =>
     request<{ success: boolean }>('/cloud/logout', { method: 'POST' }),
+
+  // Orca Cloud — paste-based PKCE flow for OAuth (Google/Apple/GitHub),
+  // direct credentials for email+password. start() returns an auth URL the
+  // user opens in their browser; after sign-in they paste the callback URL
+  // back via finish(). password() skips the dance entirely.
+  orcaCloudStartAuth: (provider: OrcaOAuthProvider = 'google') =>
+    request<OrcaAuthStartResponse>('/orca-cloud/auth/start', {
+      method: 'POST',
+      body: JSON.stringify({ provider }),
+    }),
+  orcaCloudFinishAuth: (callback_url: string) =>
+    request<OrcaAuthStatusResponse>('/orca-cloud/auth/finish', {
+      method: 'POST',
+      body: JSON.stringify({ callback_url }),
+    }),
+  orcaCloudPasswordLogin: (email: string, password: string) =>
+    request<OrcaAuthStatusResponse>('/orca-cloud/auth/password', {
+      method: 'POST',
+      body: JSON.stringify({ email, password }),
+    }),
+  orcaCloudStatus: () =>
+    request<OrcaAuthStatusResponse>('/orca-cloud/status'),
+  orcaCloudLogout: () =>
+    request<{ success: boolean }>('/orca-cloud/logout', { method: 'POST' }),
+  orcaCloudListProfiles: () =>
+    request<OrcaProfileListResponse>('/orca-cloud/profiles'),
+  orcaCloudGetProfile: (id: string) =>
+    request<OrcaProfileDetail>(`/orca-cloud/profiles/${id}`),
   getCloudSettings: (version = '02.04.00.70') =>
     request<SlicerSettingsResponse>(`/cloud/settings?version=${version}`),
   getBuiltinFilaments: () =>

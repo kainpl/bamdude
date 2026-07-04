@@ -274,10 +274,12 @@ export function CalibrationPresetPage({
       filament: keepCompat('filament')(tier.filament),
     });
     return {
+      orca_cloud: filterTier(data.orca_cloud),
       cloud: filterTier(data.cloud),
       local: filterTier(data.local),
       standard: filterTier(data.standard),
       cloud_status: data.cloud_status,
+      orca_cloud_status: data.orca_cloud_status,
     };
   }, [presetsQuery.data, printerModel, selectedPrinterName, compatIndex]);
 

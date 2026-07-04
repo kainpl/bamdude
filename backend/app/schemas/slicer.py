@@ -8,13 +8,20 @@ from pydantic import BaseModel, Field, model_validator
 class PresetRef(BaseModel):
     """A source-aware reference to a printer / process / filament preset.
 
-    The SliceModal pulls dropdown options from three tiers (cloud / local /
-    standard). At submit time the client sends one of these per slot so the
-    backend knows where to fetch the preset content from at slice time.
+    The SliceModal pulls dropdown options from four tiers (orca_cloud /
+    cloud / local / standard). At submit time the client sends one of these
+    per slot so the backend knows where to fetch the preset content from at
+    slice time. ``cloud`` is Bambu Cloud (kept as the bare name for backward
+    compatibility with existing requests); ``orca_cloud`` is Orca Cloud.
     """
 
-    source: Literal["cloud", "local", "standard"]
-    id: str = Field(..., description="Cloud setting_id, local DB row id (stringified), or standard preset name.")
+    source: Literal["orca_cloud", "cloud", "local", "standard"]
+    id: str = Field(
+        ...,
+        description=(
+            "Orca Cloud profile id, Bambu Cloud setting_id, local DB row id (stringified), or standard preset name."
+        ),
+    )
 
 
 class SliceBundleSpec(BaseModel):
