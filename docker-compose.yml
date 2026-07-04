@@ -43,6 +43,13 @@ services:
     # matters under Docker's default userland-proxy: each exposed port spawns a
     # host proxy process per address family, so the old 1001-port range spawned
     # ~2000 processes (~3.5 GB host RAM); 30 ports -> ~60 processes (~210 MB).
+    # This host RAM is host-level, not container-level, so it never shows up in
+    # `docker stats` (#1646). Second, orthogonal escape hatch if you must run a
+    # wide passive range in bridge mode: set { "userland-proxy": false } in
+    # /etc/docker/daemon.json and restart Docker — the kernel then NATs directly
+    # via iptables/nftables with no per-port host process. Only side effect is
+    # that connections originating from 127.0.0.1 on the host itself can't reach
+    # the container, which is fine for nearly every BamDude install.
     volumes:
       - bamdude_data:/app/data
       - bamdude_logs:/app/logs
