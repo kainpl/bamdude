@@ -3,7 +3,7 @@ import json
 import logging
 import zipfile
 from collections import defaultdict
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
@@ -824,6 +824,36 @@ async def export_stats(
         media_type=content_type,
         headers={"Content-Disposition": build_content_disposition(filename)},
     )
+
+
+@router.get("/no-3mf-warning")
+async def no_3mf_warning(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.ARCHIVES_READ),
+):
+    """Whether to nudge the user about install step 4 ("Store sent files on
+    external storage"). True iff any archive in the last 30 days was created
+    via the no-3MF fallback path — the deterministic symptom of the
+    slicer-side variant of the setting being off.
+
+    Complements the connection-diagnostic ``external_storage`` check, which
+    only catches the printer-side variant. On older slicers where the toggle
+    lives only in the slicer, the printer never reports it and the diagnostic
+    passes — this endpoint surfaces the symptom instead. Dismissal is handled
+    client-side via localStorage (one-shot); the backend stays stateless.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+    result = await db.execute(
+        select(PrintArchive.extra_data).where(
+            PrintArchive.created_at >= cutoff,
+            PrintArchive.deleted_at.is_(None),
+            PrintArchive.extra_data.isnot(None),
+        )
+    )
+    for (extra_data,) in result.all():
+        if extra_data and extra_data.get("no_3mf_available"):
+            return {"has_fallback": True}
+    return {"has_fallback": False}
 
 
 @router.get("/stats", response_model=ArchiveStats)

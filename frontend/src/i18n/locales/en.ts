@@ -674,6 +674,12 @@ export default {
 
   // Archives page
   archives: {
+    no3mfBanner: {
+      title: 'Some recent prints couldn\'t be archived with thumbnails',
+      body: 'The slicer didn\'t leave the .gcode.3mf on the printer\'s SD card, so BamDude couldn\'t pull the thumbnail or slicer metadata. This is usually because "Store sent files on external storage" is off in the slicer (Bambu Studio / OrcaSlicer Device tab).',
+      docsLink: 'See install step 4',
+      dismissLabel: 'Dismiss this notice',
+    },
     searchPlaceholder: 'Search archives...',
     noArchivesSearch: 'No archives match your search',
     originalPrintNotVisible: 'Original print not visible - try clearing filters',
@@ -3831,6 +3837,8 @@ export default {
   diagnostic: {
     modalTitle: 'Connection diagnostic - {{name}}',
     running: 'Running diagnostic...',
+    runningElapsed: 'Running diagnostic... ({{elapsed}}s)',
+    waitingForReportHint: 'Listening for the printer to publish a status report — this can take up to {{max}} seconds.',
     runFailed: 'Diagnostic could not run: {{error}}',
     retry: 'Run again',
     runButton: 'Run diagnostic',
@@ -3881,6 +3889,18 @@ export default {
         pass: 'Developer Mode is enabled.',
         fail: 'Developer Mode is OFF on the printer. Enable it in the printer\'s LAN settings - and confirm with OK. Without it, prints will not start.',
         skip: 'Could not be checked - requires a live connection to the printer.',
+      },
+      external_storage: {
+        title: 'Store sent files on external storage (install step 4)',
+        pass: 'The printer reports this option is on — sent files will be stored on the SD card and archives will have thumbnails and slicer metadata.',
+        fail: 'The printer reports this option is off. Enable "Store sent files on external storage" — on newer firmware (P2S 01.02 / Bambu Studio 2.6+) the toggle lives on the printer\'s Print Settings; on older versions it\'s in Bambu Studio / OrcaSlicer\'s Device tab. Without it, every archived print is missing its thumbnail and slicer metadata.',
+        skip: 'Not checked — needs a live MQTT connection. On older slicers where this setting lives only in the slicer the printer never reports it, so this check will pass even when the option is off — verify install step 4 manually.',
+      },
+      printer_publishing: {
+        title: 'Printer is publishing status',
+        pass: 'The printer is publishing status updates — AMS, filaments, and K-profiles will mirror correctly to the slicer.',
+        fail: 'The MQTT broker accepted the connection but the printer has not published any status reports. This is almost always a wrong or mis-cased serial number — the device/<serial>/report topic is case-sensitive. Re-check the serial in printer settings against the screen on the printer.',
+        skip: 'Could not be checked — requires a live connection to the printer.',
       },
     },
   },

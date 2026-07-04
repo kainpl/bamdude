@@ -87,12 +87,24 @@ def _same_subnet(ip_a: str, ip_b: str) -> bool | None:
     return net_a == net_b
 
 
+# Default seconds the `printer_publishing` check will wait for the first
+# report-topic message before declaring fail. Bambu printers in idle publish
+# push_status every few seconds; 10s catches healthy bridges with margin while
+# staying short enough that the spinner-with-countdown UX stays acceptable.
+# The check exits the moment a message arrives, so the typical wall-clock is
+# 1–2s. Passed as ``wait_for_publish_seconds`` per call so the support-package
+# code path can skip the wait entirely (defaults to 0).
+PUBLISH_WAIT_DEFAULT = 10.0
+_PUBLISH_POLL_INTERVAL = 0.5
+
+
 async def run_connection_diagnostic(
     ip_address: str,
     *,
     printer: Printer | None = None,
     serial_number: str | None = None,
     access_code: str | None = None,
+    wait_for_publish_seconds: float = 0.0,
 ) -> PrinterDiagnosticResult:
     """Run connection checks for a printer.
 
@@ -184,6 +196,72 @@ async def run_connection_diagnostic(
         checks.append(DiagnosticCheck(id="developer_mode", status=dev_status))
     else:
         checks.append(DiagnosticCheck(id="developer_mode", status="skip"))
+
+    # --- External storage (printer-side "Store sent files on external storage") ---
+    # Install step 4. The setting has two variants depending on
+    # firmware/slicer combo: on newer firmware the toggle lives on the
+    # printer (P2S 01.02 / BambuStudio 2.6+), on older versions it's
+    # purely a slicer-side preference.
+    #
+    # For the printer-side variant, `home_flag` bit 11 is pushed on every
+    # status report and parsed into state.store_to_sdcard (bambu_mqtt.py).
+    # That's the signal here — instant, no FTP I/O.
+    #
+    # For the slicer-side variant, the printer never hears about it and
+    # this check will pass even when the user is missing step 4. That gap
+    # is covered separately by the "no_3mf_available" archive-fallback
+    # banner. An FTP upload-and-verify probe was tried and rejected — the
+    # /cache directory is always writable regardless of either toggle, so
+    # the probe always passes and detects nothing.
+    if state is None or not state.connected:
+        checks.append(DiagnosticCheck(id="external_storage", status="skip"))
+    elif getattr(state, "store_to_sdcard", None) is True:
+        checks.append(DiagnosticCheck(id="external_storage", status="pass"))
+    elif getattr(state, "store_to_sdcard", None) is False:
+        checks.append(DiagnosticCheck(id="external_storage", status="fail"))
+    else:
+        # State exists but the field was never populated — skip rather than
+        # report a false fail.
+        checks.append(DiagnosticCheck(id="external_storage", status="skip"))
+
+    # --- Printer is actually publishing on its report topic ---
+    # The mqtt_auth check above only proves TCP + TLS + auth + SUBSCRIBE
+    # succeed. A printer with a wrong-cased serial — or one that simply isn't
+    # publishing — still passes mqtt_auth because the broker accepts the
+    # subscription regardless. The user-visible symptom is "AMS / K-profiles /
+    # custom filaments missing on the slicer side": the VP bridge has nothing
+    # cached to mirror because no reports arrived (#1622). This turns that
+    # into a structured result. If the counter is already > 0 we exit
+    # immediately; if 0 and a wait is requested we poll up to
+    # ``wait_for_publish_seconds`` so a fresh reconnect isn't flagged before
+    # the printer's first idle push lands.
+    publishing_params: dict[str, int | float] | None = None
+    publishing_status = "skip"
+    if printer is not None and state is not None and state.connected:
+        client = printer_manager.get_client(printer.id)
+        if client is not None:
+            wait_budget = max(wait_for_publish_seconds, 0.0)
+            if wait_budget > 0:
+                # Expose the budget so the UI can render a countdown next to
+                # the spinner — the user knows how long this check might take.
+                publishing_params = {"max_wait_seconds": wait_budget}
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + wait_budget
+            while True:
+                if client.report_messages_since_connect > 0:
+                    publishing_status = "pass"
+                    break
+                if loop.time() >= deadline:
+                    publishing_status = "fail"
+                    break
+                await asyncio.sleep(_PUBLISH_POLL_INTERVAL)
+    checks.append(
+        DiagnosticCheck(
+            id="printer_publishing",
+            status=publishing_status,
+            params=publishing_params or {},
+        )
+    )
 
     statuses = {c.status for c in checks}
     if "fail" in statuses:

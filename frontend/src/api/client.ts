@@ -4817,6 +4817,7 @@ export const api = {
     return request<ArchiveSlim[]>(`/archives/slim${qs ? `?${qs}` : ''}`);
   },
   getArchive: (id: number) => request<Archive>(`/archives/${id}`),
+  getNo3MFWarning: () => request<{ has_fallback: boolean }>('/archives/no-3mf-warning'),
   searchArchives: (query: string, options?: {
     printerId?: number;
     projectId?: number;

@@ -779,6 +779,18 @@ class BambuMQTTClient:
     def topic_publish(self) -> str:
         return f"device/{self.serial_number}/request"
 
+    @property
+    def report_messages_since_connect(self) -> int:
+        """Count of report-topic messages received since the latest (re)connect.
+
+        Exposed for the connection diagnostic so it can distinguish "MQTT
+        broker accepted us but the printer never published" (typically a
+        wrong / mis-cased serial — #1622) from a healthy bridge that happens
+        to be idle right now. Zero immediately after a fresh connect is normal;
+        zero after a full status-push cycle is the actionable symptom.
+        """
+        return self._report_messages_since_connect
+
     # Maximum time (seconds) without a message before considering connection stale
     STALE_TIMEOUT = 60.0
 

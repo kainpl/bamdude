@@ -29,6 +29,7 @@ class TestSystemAPI:
                 total=16000000000, available=8000000000, used=8000000000, percent=50.0
             )
             mock_psutil.boot_time.return_value = 1700000000.0
+            mock_psutil.Process.return_value.create_time.return_value = 1700000000.0
             mock_psutil.cpu_count.return_value = 4
             mock_psutil.cpu_percent.return_value = 25.0
 
@@ -58,6 +59,7 @@ class TestSystemAPI:
                 total=16000000000, available=8000000000, used=8000000000, percent=50.0
             )
             mock_psutil.boot_time.return_value = 1700000000.0
+            mock_psutil.Process.return_value.create_time.return_value = 1700000000.0
             mock_psutil.cpu_count.return_value = 4
             mock_psutil.cpu_percent.return_value = 25.0
 
@@ -82,6 +84,7 @@ class TestSystemAPI:
                 total=16000000000, available=8000000000, used=8000000000, percent=50.0
             )
             mock_psutil.boot_time.return_value = 1700000000.0
+            mock_psutil.Process.return_value.create_time.return_value = 1700000000.0
             mock_psutil.cpu_count.return_value = 4
             mock_psutil.cpu_percent.return_value = 25.0
 
@@ -118,6 +121,7 @@ class TestSystemAPI:
                 total=16000000000, available=8000000000, used=8000000000, percent=50.0
             )
             mock_psutil.boot_time.return_value = 1700000000.0
+            mock_psutil.Process.return_value.create_time.return_value = 1700000000.0
             mock_psutil.cpu_count.return_value = 4
             mock_psutil.cpu_percent.return_value = 25.0
 
@@ -148,6 +152,7 @@ class TestSystemAPI:
                 total=16000000000, available=8000000000, used=8000000000, percent=50.0
             )
             mock_psutil.boot_time.return_value = 1700000000.0
+            mock_psutil.Process.return_value.create_time.return_value = 1700000000.0
             mock_psutil.cpu_count.return_value = 4
             mock_psutil.cpu_percent.return_value = 25.0
 
@@ -174,6 +179,7 @@ class TestSystemAPI:
                 total=16000000000, available=8000000000, used=8000000000, percent=50.0
             )
             mock_psutil.boot_time.return_value = 1700000000.0
+            mock_psutil.Process.return_value.create_time.return_value = 1700000000.0
             mock_psutil.cpu_count.return_value = 4
             mock_psutil.cpu_percent.return_value = 25.0
 
@@ -204,6 +210,7 @@ class TestSystemAPI:
                 total=16000000000, available=8000000000, used=8000000000, percent=50.0
             )
             mock_psutil.boot_time.return_value = 1700000000.0
+            mock_psutil.Process.return_value.create_time.return_value = 1700000000.0
             mock_psutil.cpu_count.return_value = 4
             mock_psutil.cpu_percent.return_value = 25.0
 
@@ -239,6 +246,7 @@ class TestSystemAPI:
                 total=16000000000, available=8000000000, used=8000000000, percent=50.0
             )
             mock_psutil.boot_time.return_value = 1700000000.0
+            mock_psutil.Process.return_value.create_time.return_value = 1700000000.0
             mock_psutil.cpu_count.return_value = 4
             mock_psutil.cpu_percent.return_value = 25.0
             mock_pm._clients = {}
@@ -252,6 +260,73 @@ class TestSystemAPI:
         assert db_info["archives_completed"] >= 1
         assert db_info["archives_failed"] >= 1
         assert db_info["total_print_time_seconds"] >= 5400
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_boot_time_uses_pid1_create_time(self, async_client: AsyncClient):
+        """#1690: container installs (Docker/LXC) share the host kernel, so
+        psutil.boot_time() returns the host's boot time instead of the
+        container's. Reading PID 1's create_time gives the container start
+        time on containers and matches host boot on bare metal."""
+        with patch("backend.app.api.routes.system.psutil") as mock_psutil:
+            mock_psutil.disk_usage.return_value = MagicMock(
+                total=500000000000, used=250000000000, free=250000000000, percent=50.0
+            )
+            mock_psutil.virtual_memory.return_value = MagicMock(
+                total=16000000000, available=8000000000, used=8000000000, percent=50.0
+            )
+            # Host boot is FOUR DAYS earlier than the container's PID 1 start.
+            # The route must report the PID 1 value, not the host value.
+            mock_psutil.boot_time.return_value = 1700000000.0
+            mock_psutil.Process.return_value.create_time.return_value = 1700345600.0
+            mock_psutil.cpu_count.return_value = 4
+            mock_psutil.cpu_percent.return_value = 25.0
+
+            response = await async_client.get("/api/v1/system/info")
+
+        assert response.status_code == 200
+        result = response.json()
+        # The route uses local-time datetime.fromtimestamp (matching upstream),
+        # so compute the expected value the same way to stay timezone-agnostic.
+        from datetime import datetime as _dt
+
+        assert (
+            result["system"]["boot_time"] == _dt.fromtimestamp(1700345600.0).isoformat()
+        )  # PID 1 value, not host boot
+        # PID 1 was queried with pid=1 (not the worker pid).
+        mock_psutil.Process.assert_called_with(1)
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_boot_time_falls_back_to_psutil_boot_time_on_pid1_failure(self, async_client: AsyncClient):
+        """If PID 1 is unreadable (rare — locked-down container, /proc not
+        mounted), fall back to psutil.boot_time() so the endpoint still
+        returns 200 with the best available answer."""
+        import psutil as real_psutil
+
+        with patch("backend.app.api.routes.system.psutil") as mock_psutil:
+            mock_psutil.disk_usage.return_value = MagicMock(
+                total=500000000000, used=250000000000, free=250000000000, percent=50.0
+            )
+            mock_psutil.virtual_memory.return_value = MagicMock(
+                total=16000000000, available=8000000000, used=8000000000, percent=50.0
+            )
+            mock_psutil.boot_time.return_value = 1700000000.0
+            # Use the real exception classes so the route's except clause matches.
+            mock_psutil.Error = real_psutil.Error
+            mock_psutil.Process.side_effect = real_psutil.NoSuchProcess(1)
+            mock_psutil.cpu_count.return_value = 4
+            mock_psutil.cpu_percent.return_value = 25.0
+
+            response = await async_client.get("/api/v1/system/info")
+
+        assert response.status_code == 200
+        result = response.json()
+        from datetime import datetime as _dt
+
+        assert (
+            result["system"]["boot_time"] == _dt.fromtimestamp(1700000000.0).isoformat()
+        )  # fell back to host boot_time
 
 
 class TestSystemHelperFunctions:

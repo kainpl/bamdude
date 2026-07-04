@@ -464,7 +464,15 @@ async def get_system_info(
 
     # System info
     memory = psutil.virtual_memory()
-    boot_time = datetime.fromtimestamp(psutil.boot_time())
+    # PID 1's create_time is the right uptime anchor in containerised installs
+    # (Docker, LXC) — psutil.boot_time() reads /proc/stat:btime which on a
+    # shared-kernel container is the host's boot time, not the container's
+    # (#1690). On bare metal / VMs PID 1 is the host init, which starts at
+    # boot, so the value matches psutil.boot_time() within a sub-second.
+    try:
+        boot_time = datetime.fromtimestamp(psutil.Process(1).create_time())
+    except (psutil.Error, OSError):
+        boot_time = datetime.fromtimestamp(psutil.boot_time())
     uptime_seconds = (datetime.now() - boot_time).total_seconds()
 
     # Python and system info

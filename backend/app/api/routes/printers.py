@@ -806,12 +806,25 @@ async def diagnose_printer(
     _=RequirePermission(Permission.PRINTERS_READ),
     db: AsyncSession = Depends(get_db),
 ):
-    """Run connection diagnostics for an existing saved printer."""
+    """Run connection diagnostics for an existing saved printer.
+
+    On-demand run from the UI: wait up to PUBLISH_WAIT_DEFAULT seconds for the
+    printer to publish a status report so a fresh reconnect (counter reset to
+    0) isn't reported as ``printer_publishing: fail`` prematurely. The support
+    package code path calls run_connection_diagnostic without the wait so
+    bundling stays fast.
+    """
+    from backend.app.services.printer_diagnostic import PUBLISH_WAIT_DEFAULT
+
     result = await db.execute(select(Printer).where(Printer.id == printer_id))
     printer = result.scalar_one_or_none()
     if not printer:
         raise HTTPException(404, "Printer not found")
-    return await run_connection_diagnostic(printer.ip_address, printer=printer)
+    return await run_connection_diagnostic(
+        printer.ip_address,
+        printer=printer,
+        wait_for_publish_seconds=PUBLISH_WAIT_DEFAULT,
+    )
 
 
 # Cache for cover images (printer_id -> {(subtask_name, plate_num, view) -> image_bytes})

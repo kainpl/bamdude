@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -83,6 +83,13 @@ type ConnectionDiagnosticModalProps = {
   printerName?: string | null;
 } & ({ printerId: number } | { connection: Connection });
 
+// Keep in sync with backend `PUBLISH_WAIT_DEFAULT` in
+// backend/app/services/printer_diagnostic.py — the upper bound on how long the
+// existing-printer route waits for the printer's first status report after a
+// bridge reconnect. The countdown is purely cosmetic; drift only shifts the
+// hint text by a couple of seconds.
+const PUBLISH_WAIT_DEFAULT_SECONDS = 10;
+
 /**
  * Connection diagnostic modal. Opens straight into the test — used from the
  * printer card, the System page, and the Add-Printer flow on failure.
@@ -99,6 +106,24 @@ export function ConnectionDiagnosticModal(props: ConnectionDiagnosticModalProps)
         ? api.diagnosePrinter(printerId)
         : api.diagnoseConnection(connection as Connection),
   });
+
+  // Tick an elapsed-seconds counter while the diagnostic is running so the
+  // existing-printer flow (which waits up to PUBLISH_WAIT_DEFAULT_SECONDS for
+  // the printer's first status report) doesn't look hung. Resets on each
+  // (re)run. Keep in sync with backend PUBLISH_WAIT_DEFAULT — the countdown is
+  // cosmetic, so drift only shifts the hint text by a second or two.
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  useEffect(() => {
+    if (!diagnose.isPending) {
+      setElapsedSeconds(0);
+      return;
+    }
+    const startedAt = Date.now();
+    const interval = window.setInterval(() => {
+      setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000));
+    }, 500);
+    return () => window.clearInterval(interval);
+  }, [diagnose.isPending]);
 
   useEffect(() => {
     diagnose.mutate();
@@ -140,9 +165,20 @@ export function ConnectionDiagnosticModal(props: ConnectionDiagnosticModalProps)
 
         <div className="p-6 space-y-4 overflow-y-auto">
           {diagnose.isPending && (
-            <div className="flex items-center gap-2 text-bambu-gray">
-              <Loader2 className="w-4 h-4 animate-spin" />
-              <span>{t('diagnostic.running')}</span>
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-2 text-bambu-gray">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span>
+                  {elapsedSeconds > 0
+                    ? t('diagnostic.runningElapsed', { elapsed: elapsedSeconds })
+                    : t('diagnostic.running')}
+                </span>
+              </div>
+              {printerId !== undefined && (
+                <p className="text-xs text-bambu-gray-light pl-6">
+                  {t('diagnostic.waitingForReportHint', { max: PUBLISH_WAIT_DEFAULT_SECONDS })}
+                </p>
+              )}
             </div>
           )}
 

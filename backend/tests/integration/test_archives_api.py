@@ -725,3 +725,92 @@ class TestArchiveF3DEndpoints:
         response = await async_client.delete("/api/v1/archives/tags/nonexistent-tag")
         assert response.status_code == 200
         assert response.json()["affected"] == 0
+
+
+class TestNo3MFWarning:
+    """`GET /archives/no-3mf-warning` — install step 4 reactive nudge.
+
+    The connection diagnostic's external_storage check only catches the
+    printer-side variant of the setting (newer firmware). For older slicers
+    where the toggle lives only in the slicer, the printer never reports it.
+    The fallback path creates the archive with extra_data.no_3mf_available=True;
+    this endpoint exposes that as a boolean so the frontend can surface a
+    one-time banner.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_returns_true_when_recent_fallback_exists(
+        self, async_client: AsyncClient, archive_factory, printer_factory, db_session
+    ):
+        printer = await printer_factory()
+        await archive_factory(printer.id, extra_data={"no_3mf_available": True})
+
+        response = await async_client.get("/api/v1/archives/no-3mf-warning")
+
+        assert response.status_code == 200
+        assert response.json() == {"has_fallback": True}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_returns_false_when_no_archives(self, async_client: AsyncClient):
+        response = await async_client.get("/api/v1/archives/no-3mf-warning")
+
+        assert response.status_code == 200
+        assert response.json() == {"has_fallback": False}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_returns_false_when_only_normal_archives(
+        self, async_client: AsyncClient, archive_factory, printer_factory, db_session
+    ):
+        printer = await printer_factory()
+        # extra_data has other keys but no_3mf_available is absent — normal
+        # archives must not trigger the nudge.
+        await archive_factory(printer.id, extra_data={"makerworld_url": "https://example"})
+        await archive_factory(printer.id, extra_data=None)
+
+        response = await async_client.get("/api/v1/archives/no-3mf-warning")
+
+        assert response.status_code == 200
+        assert response.json() == {"has_fallback": False}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_ignores_archives_older_than_30_days(
+        self, async_client: AsyncClient, archive_factory, printer_factory, db_session
+    ):
+        from datetime import datetime, timedelta, timezone
+
+        from backend.app.models.archive import PrintArchive
+
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id, extra_data={"no_3mf_available": True})
+        # Backdate past the 30-day window — old fallbacks are forgiven.
+        archive.created_at = datetime.now(timezone.utc) - timedelta(days=45)
+        await db_session.commit()
+
+        response = await async_client.get("/api/v1/archives/no-3mf-warning")
+
+        assert response.status_code == 200
+        assert response.json() == {"has_fallback": False}
+        # Sanity: row really is in the DB, we just don't surface it.
+        assert (await db_session.get(PrintArchive, archive.id)) is not None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_ignores_soft_deleted_fallbacks(
+        self, async_client: AsyncClient, archive_factory, printer_factory, db_session
+    ):
+        from datetime import datetime, timezone
+
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id, extra_data={"no_3mf_available": True})
+        archive.deleted_at = datetime.now(timezone.utc)
+        await db_session.commit()
+
+        response = await async_client.get("/api/v1/archives/no-3mf-warning")
+
+        assert response.status_code == 200
+        # Soft-deleted fallbacks have been actioned. Stop nudging.
+        assert response.json() == {"has_fallback": False}
