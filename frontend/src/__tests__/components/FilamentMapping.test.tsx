@@ -19,8 +19,8 @@ import type { PrinterStatus } from '../../api/client';
 
 const mockFilamentReqs = {
   filaments: [
-    // Required filament asks for the LEFT extruder (nozzle_id=1).
-    // Without FTS the dropdown filter would only allow slots with extruderId=1.
+    // Required filament asks for the LEFT extruder (nozzle_id=1). Pre-#1722 the
+    // dropdown filtered to slots with extruderId=1; it now offers every slot.
     { slot_id: 1, type: 'PETG', color: '#00FF00', used_grams: 25, used_meters: 8.5, nozzle_id: 1 },
   ],
 };
@@ -111,7 +111,7 @@ describe('FilamentMapping — FTS routing', () => {
     expect(plaOption.textContent).not.toMatch(/\[[LR]\]/);
   });
 
-  it('still applies the per-nozzle filter when FTS is null', async () => {
+  it('offers cross-extruder slots when FTS is null (#1722)', async () => {
     server.use(
       http.get(
         '/api/v1/printers/:id/status',
@@ -137,12 +137,13 @@ describe('FilamentMapping — FTS routing', () => {
       />,
     );
 
-    // Required nozzle is 1 (LEFT) but AMS 0 is on extruder 0 (RIGHT) — neither
-    // slot should appear in the dropdown.
+    // Required nozzle is 1 (LEFT) but AMS 0 is on extruder 0 (RIGHT). #1722: the
+    // dropdown no longer hides cross-extruder slots — the user may have loaded
+    // the required filament into the "other" AMS on purpose, and the printer
+    // firmware validates the ams_mapping at start-print. Both slots now appear.
     await waitFor(() => {
-      // Wait for component to render — the slot label should NOT be present
-      expect(screen.queryByText(/Bambu PLA/)).not.toBeInTheDocument();
-      expect(screen.queryByText(/Bambu PETG/)).not.toBeInTheDocument();
+      expect(screen.getByText(/Bambu PLA/)).toBeInTheDocument();
     });
+    expect(screen.getByText(/Bambu PETG/)).toBeInTheDocument();
   });
 });
