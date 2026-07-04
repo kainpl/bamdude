@@ -711,6 +711,7 @@ class BambuMQTTClient:
         on_first_status: Callable[[str, str, str], None] | None = None,
         on_drying_complete: Callable[[int], None] | None = None,
         on_print_running_observed: Callable[[dict], None] | None = None,
+        on_finish_photo_moment: Callable[[dict], None] | None = None,
     ):
         self.ip_address = ip_address
         self.serial_number = serial_number
@@ -733,6 +734,17 @@ class BambuMQTTClient:
         # so the completion-time snapshot-diff still works. Receives the same
         # payload shape as on_print_start.
         self.on_print_running_observed = on_print_running_observed
+        # #1721: fired the moment the printer enters the end-of-print
+        # "Filament unloading" phase (stg_cur=22 while progress>=99 or
+        # we've hit the last layer / remaining_time<=0). This is the
+        # framing #1397 was after — toolhead parked, bed not yet
+        # dropped — but reached via a clean state signal instead of
+        # the per-layer M622 J1 macros which caused per-layer nozzle
+        # parks on slicer profiles with Timelapse Type = Smooth.
+        # A FINISH-state fallback below fires this same callback if
+        # stage 22 never arrives (cancel mid-print, external-spool-
+        # only prints, HMS halt before unload, firmware variants).
+        self.on_finish_photo_moment = on_finish_photo_moment
         # Per-AMS previous ``dry_time``, used to detect the falling edge.
         # Seeded lazily as we observe each AMS unit.
         self._previous_dry_times: dict[int, int] = {}
@@ -758,6 +770,10 @@ class BambuMQTTClient:
         self._was_running: bool = False  # Track if we've seen RUNNING state for current print
         self._completion_triggered: bool = False  # Prevent duplicate completion triggers
         self._timelapse_during_print: bool = False  # Track if timelapse was active during this print
+        # #1721: one-shot guard so the end-of-print stage-22 detector
+        # and the FINISH-state fallback don't both fire on the same
+        # print. Reset to False on every print start.
+        self._finish_photo_captured: bool = False
         self._last_valid_progress: float = 0.0  # Last non-zero progress (firmware resets on cancel)
         self._last_valid_layer_num: int = 0  # Last non-zero layer (firmware resets on cancel)
         self._startup_reconcile_done: bool = False  # one-shot guard for reconcile_printer_prints
@@ -862,6 +878,10 @@ class BambuMQTTClient:
         self._was_running = prior._was_running
         self._completion_triggered = prior._completion_triggered
         self._timelapse_during_print = prior._timelapse_during_print
+        # #1721: carry the one-shot finish-photo guard across the swap so a
+        # print whose stage-22 edge already fired on the prior client doesn't
+        # re-fire (or double-capture) on the replacement.
+        self._finish_photo_captured = prior._finish_photo_captured
         self._last_valid_progress = prior._last_valid_progress
         self._last_valid_layer_num = prior._last_valid_layer_num
         # Re-arm the connect-edge reconcile sweep on every client recreation
@@ -2565,6 +2585,11 @@ class BambuMQTTClient:
         # Calibration stage tracking
         if "stg_cur" in data:
             new_stg = data["stg_cur"]
+            # #1721: capture the stage we're transitioning FROM and the raw
+            # incoming stage before the macro-tracking branch below can null
+            # `new_stg` out — the finish-photo edge detector needs both.
+            prev_stg_for_finish_photo = self.state.stg_cur
+            incoming_stg_for_finish_photo = data["stg_cur"]
             if new_stg != self.state.stg_cur:
                 logger.debug(
                     "[%s] stg_cur: %s (%s) -> %s (%s)",
@@ -2610,6 +2635,45 @@ class BambuMQTTClient:
 
             if new_stg is not None:
                 self.state.stg_cur = new_stg
+
+            # #1721 end-of-print finish photo trigger.
+            # Stage 22 = "Filament unloading" fires at end-of-print AND
+            # during mid-print color swaps. The end-of-print gate
+            # (progress>=99 / layer>=total / remaining<=0) disambiguates
+            # — those signals only line up at the real end. Edge-only
+            # (prev != 22) so the trigger fires once per stage entry.
+            if (
+                incoming_stg_for_finish_photo == 22
+                and prev_stg_for_finish_photo != 22
+                and self._was_running
+                and not self._finish_photo_captured
+                and self.on_finish_photo_moment
+            ):
+                progress = self.state.progress or 0.0
+                layer_num = self.state.layer_num or 0
+                total_layers = self.state.total_layers or 0
+                remaining = self.state.remaining_time or 0
+                is_end_of_print = progress >= 99 or (total_layers > 0 and layer_num >= total_layers) or remaining <= 0
+                if is_end_of_print:
+                    self._finish_photo_captured = True
+                    logger.info(
+                        "[%s] FINISH PHOTO MOMENT (stage-22) — progress=%s, layer=%s/%s, "
+                        "remaining=%smin, timelapse_active=%s",
+                        self.serial_number,
+                        progress,
+                        layer_num,
+                        total_layers,
+                        remaining,
+                        self._timelapse_during_print,
+                    )
+                    self.on_finish_photo_moment(
+                        {
+                            "trigger": "stage_22",
+                            "filename": self._previous_gcode_file or self.state.gcode_file,
+                            "subtask_name": self.state.subtask_name,
+                            "timelapse_was_active": self._timelapse_during_print,
+                        }
+                    )
         if "stg" in data:
             self.state.stg = data["stg"] if isinstance(data["stg"], list) else []
 
@@ -3584,6 +3648,8 @@ class BambuMQTTClient:
             # Reset completion tracking for new print
             self._was_running = True
             self._completion_triggered = False
+            # #1721: rearm the end-of-print finish-photo trigger for the new print
+            self._finish_photo_captured = False
             # Reset last valid progress/layer for usage tracking
             self._last_valid_progress = 0.0
             self._last_valid_layer_num = 0
@@ -3695,6 +3761,26 @@ class BambuMQTTClient:
                 f"timelapse_during_print: {self._timelapse_during_print}"
             )
             timelapse_was_active = self._timelapse_during_print
+            # #1721 fallback: if the stage-22 trigger never fired (cancel,
+            # external-spool-only, HMS halt, or firmware variant that skips
+            # the unload phase) fire the finish-photo moment now. Bed has
+            # already dropped, framing is worse, but we still capture.
+            # Only on successful completion — aborted/failed prints don't
+            # produce a meaningful finish photo.
+            if status == "completed" and not self._finish_photo_captured and self.on_finish_photo_moment:
+                self._finish_photo_captured = True
+                logger.info(
+                    f"[{self.serial_number}] FINISH PHOTO MOMENT (FINISH fallback) — "
+                    f"stage-22 never fired; capturing at FINISH-state transition"
+                )
+                self.on_finish_photo_moment(
+                    {
+                        "trigger": "finish_state",
+                        "filename": self._previous_gcode_file or current_file,
+                        "subtask_name": self.state.subtask_name,
+                        "timelapse_was_active": timelapse_was_active,
+                    }
+                )
             self._completion_triggered = True
             self._was_running = False
             self._timelapse_during_print = False  # Reset for next print

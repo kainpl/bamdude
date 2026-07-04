@@ -344,6 +344,16 @@ logging.info("BamDude starting - debug=%s, log_level=%s", app_settings.debug, lo
 # Track active prints: {(printer_id, filename): archive_id}
 _active_prints: dict[tuple[int, str], int] = {}
 
+# #1721: stage-22 pre-captured finish photo bytes per printer. on_finish_photo_moment
+# fires when stg_cur enters 22 ("Filament unloading") at end-of-print — toolhead
+# parked, bed not yet dropped — and grabs a single camera frame into this cache.
+# `_background_finish_photo` (inside on_print_complete) consumes the cached bytes
+# instead of running its own grab-now chain when present, so the finish photo
+# captures the better-framed pre-bed-drop moment without us having to force
+# timelapse on at dispatch (the #1397 mechanism that caused #1721's per-layer
+# nozzle parking on slicer profiles with Timelapse Type = Smooth).
+_stage22_finish_frames: dict[int, bytes] = {}
+
 # Track expected prints from reprint/scheduled (skip auto-archiving for these)
 # {(printer_id, filename): archive_id}
 _expected_prints: dict[tuple[int, str], int] = {}
@@ -2197,6 +2207,10 @@ async def on_print_start(printer_id: int, data: dict):
     # Clear any stale user-stopped flag from previous print cycles
     _user_stopped_printers.discard(printer_id)
 
+    # #1721: drop any leftover pre-captured finish frame from a prior print
+    # so a never-consumed cache entry can't bleed into the new print's photo.
+    _stage22_finish_frames.pop(printer_id, None)
+
     # Cancel any active bed cooldown task for this printer
     existing_task = _bed_cooldown_tasks.pop(printer_id, None)
     if existing_task and not existing_task.done():
@@ -3608,84 +3622,6 @@ async def _capture_finish_photo_from_timelapse(
         await asyncio.sleep(poll_interval)
 
 
-async def _cleanup_forced_timelapse(archive_id: int, printer_id: int) -> None:
-    """Delete the timelapse BamDude forced on for #1397's finish-photo path.
-
-    Called from the finish-photo background task after the extractor has had
-    its turn (regardless of whether extraction succeeded — the user never
-    asked for a video and we shouldn't leave one behind even if ffmpeg
-    failed). Cleanup is best-effort and never raises: a printer that's
-    offline at cleanup time means a single orphaned file on the SD card,
-    not a broken flow.
-
-    Cleans both:
-      - the locally-attached file (clears archive.timelapse_path)
-      - the printer-side file via FTP DELE
-    """
-    from backend.app.models.archive import PrintArchive
-    from backend.app.models.printer import Printer
-    from backend.app.services.bambu_ftp import delete_file_async
-
-    logger = logging.getLogger(__name__)
-
-    local_relpath: str | None = None
-    printer = None
-
-    async with async_session() as db:
-        archive_result = await db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))
-        archive = archive_result.scalar_one_or_none()
-        if not archive or not archive.bamdude_forced_timelapse:
-            return
-
-        local_relpath = archive.timelapse_path
-        if local_relpath:
-            local_abspath = app_settings.base_dir / local_relpath
-            try:
-                if local_abspath.exists():
-                    local_abspath.unlink()
-                    logger.info(
-                        "[FORCED-TIMELAPSE] Deleted local timelapse %s for archive %s",
-                        local_relpath,
-                        archive_id,
-                    )
-            except OSError as e:
-                logger.warning("[FORCED-TIMELAPSE] Could not delete local timelapse %s: %s", local_relpath, e)
-            archive.timelapse_path = None
-            await db.commit()
-
-        printer_result = await db.execute(select(Printer).where(Printer.id == printer_id))
-        printer = printer_result.scalar_one_or_none()
-
-    if printer is None or not local_relpath:
-        return
-
-    # _scan_for_timelapse_with_retries used the original filename when it
-    # attached, so the basename of timelapse_path matches the printer-side
-    # filename. Try the directories the scanner walks (#1397).
-    filename = Path(local_relpath).name
-    for remote_dir in ("/timelapse", "/timelapse/video", "/record", "/recording"):
-        remote_path = f"{remote_dir}/{filename}"
-        try:
-            ok = await delete_file_async(
-                printer.ip_address,
-                printer.access_code,
-                remote_path,
-                printer_model=printer.model,
-            )
-        except Exception as e:
-            logger.debug("[FORCED-TIMELAPSE] FTP delete attempt failed for %s: %s", remote_path, e)
-            continue
-        if ok:
-            logger.info("[FORCED-TIMELAPSE] Deleted printer-side timelapse %s", remote_path)
-            return
-
-    logger.warning(
-        "[FORCED-TIMELAPSE] Could not delete printer-side timelapse %s for archive %s (file may already be gone)",
-        filename,
-        archive_id,
-    )
-
-
 async def on_print_running_observed(printer_id: int, data: dict):
     """Restart-recovery: capture a fresh timelapse baseline for a print that
     started before BamDude came up.
@@ -3726,6 +3662,102 @@ async def on_print_running_observed(printer_id: int, data: dict):
             return
 
     await _capture_timelapse_baseline_at_start(printer, printer_id, logger)
+
+
+async def on_finish_photo_moment(printer_id: int, data: dict):
+    """Pre-capture a finish photo when the printer enters stage 22 / FINISH (#1721).
+
+    Fires either at the stage-22 ("Filament unloading") edge — toolhead
+    parked, bed not yet dropped, optimal framing — or as a FINISH-state
+    fallback for prints that skip stage 22 (cancel, external-spool-only,
+    HMS halt, firmware variants). Grabs one frame via the same
+    external-camera / RTSP path the post-completion fallback uses, stores
+    the JPEG bytes in ``_stage22_finish_frames[printer_id]``, and lets
+    ``_background_finish_photo`` consume the cached bytes when it runs.
+
+    Replaces the #1397 "force timelapse on at dispatch" mechanism, which
+    caused per-layer nozzle parking on slicer profiles with Timelapse Type
+    set to Smooth (#1721). No force-on now means the user's explicit
+    timelapse=off in the slicer send dialog is respected.
+    """
+    logger = logging.getLogger(__name__)
+    trigger = data.get("trigger", "unknown")
+    timelapse_was_active = bool(data.get("timelapse_was_active"))
+    logger.info(
+        "[FINISH-PHOTO-MOMENT] printer=%s trigger=%s timelapse_active=%s",
+        printer_id,
+        trigger,
+        timelapse_was_active,
+    )
+
+    # If a timelapse is actively recording, skip the pre-capture — the
+    # post-completion path will extract the last frame from the recorded
+    # video, which still provides the best framing (toolhead parked,
+    # before bed drop) without the per-layer parking side effects.
+    if timelapse_was_active:
+        logger.info(
+            "[FINISH-PHOTO-MOMENT] timelapse active for printer %s — skipping pre-capture "
+            "(last-frame extraction will run post-completion)",
+            printer_id,
+        )
+        return
+
+    try:
+        async with async_session() as db:
+            from backend.app.api.routes.settings import get_setting
+            from backend.app.models.printer import Printer
+
+            capture_setting = await get_setting(db, "capture_finish_photo")
+            if capture_setting is not None and capture_setting.lower() != "true":
+                logger.info("[FINISH-PHOTO-MOMENT] capture_finish_photo disabled — skipping pre-capture")
+                return
+
+            result = await db.execute(select(Printer).where(Printer.id == printer_id))
+            printer = result.scalar_one_or_none()
+            if printer is None:
+                logger.warning("[FINISH-PHOTO-MOMENT] printer %s not found in DB", printer_id)
+                return
+
+        frame_bytes: bytes | None = None
+
+        if printer.external_camera_enabled and printer.external_camera_url:
+            from backend.app.services.external_camera import capture_frame
+
+            frame_bytes = await capture_frame(
+                printer.external_camera_url,
+                printer.external_camera_type or "mjpeg",
+                snapshot_url=printer.external_camera_snapshot_url,
+            )
+            if frame_bytes:
+                logger.info("[FINISH-PHOTO-MOMENT] captured external-camera frame (%d bytes)", len(frame_bytes))
+        else:
+            from backend.app.api.routes.camera import get_buffered_frame
+
+            buffered = get_buffered_frame(printer_id)
+            if buffered:
+                frame_bytes = buffered
+                logger.info("[FINISH-PHOTO-MOMENT] used buffered RTSP frame (%d bytes)", len(frame_bytes))
+            else:
+                from backend.app.services.camera import capture_camera_frame_bytes
+
+                frame_bytes = await capture_camera_frame_bytes(
+                    ip_address=printer.ip_address,
+                    access_code=printer.access_code,
+                    model=printer.model,
+                    timeout=15,
+                )
+                if frame_bytes:
+                    logger.info("[FINISH-PHOTO-MOMENT] captured RTSP frame (%d bytes)", len(frame_bytes))
+
+        if frame_bytes:
+            _stage22_finish_frames[printer_id] = frame_bytes
+        else:
+            logger.warning(
+                "[FINISH-PHOTO-MOMENT] no frame captured for printer %s — post-completion fallback will retry",
+                printer_id,
+            )
+    except Exception as e:
+        logger.warning("[FINISH-PHOTO-MOMENT] pre-capture failed for printer %s: %s", printer_id, e)
 
 
 async def on_print_complete(printer_id: int, data: dict):
@@ -5029,8 +5061,12 @@ async def on_print_complete(printer_id: int, data: dict):
                             # Prefer the timelapse last-frame source when a timelapse
                             # was recording — it captures the moment after the toolhead
                             # parks but before the bed drops, which the live-camera grab
-                            # below would miss (#1397). Skipped for external cameras
-                            # (their own framing; they don't see a Bambu timelapse).
+                            # below would miss (#1397). Only runs when the USER
+                            # explicitly enabled timelapse for this print — #1721 removed
+                            # BamDude's force-on at dispatch because it caused per-layer
+                            # nozzle parking on Smooth-mode slicer profiles. Skipped for
+                            # external cameras (their own framing; they don't see a Bambu
+                            # timelapse).
                             prefer_timelapse_source = bool(data.get("timelapse_was_active")) and not (
                                 printer.external_camera_enabled and printer.external_camera_url
                             )
@@ -5040,9 +5076,30 @@ async def on_print_complete(printer_id: int, data: dict):
                                     archive_dir=archive_dir,
                                 )
 
+                            # #1721: replacement framing path — on_finish_photo_moment
+                            # pre-captured a frame at the stage-22 / FINISH edge (toolhead
+                            # parked, bed not yet dropped) and cached the JPEG bytes in
+                            # _stage22_finish_frames. Consume them now so the saved photo
+                            # has the better framing instead of the post-bed-drop angle
+                            # the live-camera fallback below would give.
+                            if not photo_filename:
+                                cached_frame = _stage22_finish_frames.pop(printer_id, None)
+                                if cached_frame:
+                                    photos_dir = archive_dir / "photos"
+                                    photos_dir.mkdir(parents=True, exist_ok=True)
+                                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                                    photo_filename = f"finish_{timestamp}_{uuid.uuid4().hex[:8]}.jpg"
+                                    photo_path = photos_dir / photo_filename
+                                    await asyncio.to_thread(photo_path.write_bytes, cached_frame)
+                                    logger.info(
+                                        "[PHOTO-BG] Saved stage-22 pre-captured frame: %s (%d bytes)",
+                                        photo_filename,
+                                        len(cached_frame),
+                                    )
+
                             # Fallback chain: external camera → buffered live frame →
-                            # fresh RTSP capture. Only runs if the timelapse source
-                            # above didn't already produce a photo.
+                            # fresh RTSP capture. Only runs if neither the timelapse
+                            # source nor the pre-captured frame above produced a photo.
                             if not photo_filename:
                                 # Check for external camera first
                                 if printer.external_camera_enabled and printer.external_camera_url:
@@ -5099,16 +5156,6 @@ async def on_print_complete(printer_id: int, data: dict):
                                 archive.photos = photos
                                 await db.commit()
                                 logger.info("[PHOTO-BG] Saved: %s", photo_filename)
-
-                            # When BamDude forced timelapse on for this print, delete
-                            # the timelapse afterward (#1397). The user didn't ask for
-                            # a video to keep — only the finish photo. Runs even when
-                            # extraction failed, so we don't leave debris.
-                            if archive.bamdude_forced_timelapse:
-                                await _cleanup_forced_timelapse(
-                                    archive_id=archive_id,
-                                    printer_id=printer_id,
-                                )
 
                             if photo_filename:
                                 return photo_filename
@@ -5949,6 +5996,7 @@ async def lifespan(app: FastAPI):
     printer_manager.set_print_start_callback(on_print_start)
     printer_manager.set_print_complete_callback(on_print_complete)
     printer_manager.set_print_running_observed_callback(on_print_running_observed)
+    printer_manager.set_finish_photo_moment_callback(on_finish_photo_moment)
     printer_manager.set_ams_change_callback(on_ams_change)
 
     # Layer change callback for external camera timelapse
