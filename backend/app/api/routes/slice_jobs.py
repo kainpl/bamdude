@@ -7,7 +7,7 @@ status flips to ``completed`` or ``failed``.
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from backend.app.core.auth import require_permission
+from backend.app.core.auth import require_ownership_permission
 from backend.app.core.permissions import Permission
 from backend.app.models.user import User
 from backend.app.services.slice_dispatch import slice_dispatch
@@ -19,9 +19,16 @@ router = APIRouter(prefix="/slice-jobs", tags=["slice-jobs"])
 async def get_slice_job(
     job_id: int,
     # Job IDs are sequential integers and the body leaks source filenames
-    # plus the resulting library_file_id / archive_id. Gate on LIBRARY_READ
-    # — same baseline a user needs to see slice sources or results.
-    _: User | None = Depends(require_permission(Permission.LIBRARY_READ)),
+    # plus the resulting library_file_id / archive_id. Gate on the library
+    # read-split (security #2) — same baseline a user needs to see slice
+    # sources or results. Slice jobs are transient in-memory objects with no
+    # persisted owner, so this gates access rather than per-row filtering.
+    _auth: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.LIBRARY_READ_ALL,
+            Permission.LIBRARY_READ_OWN,
+        )
+    ),
 ):
     job = slice_dispatch.get(job_id)
     if job is None:

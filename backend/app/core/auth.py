@@ -914,9 +914,19 @@ async def get_api_key(
 _APIKEY_SCOPE_BY_PERMISSION: dict[Permission, str] = {
     # can_read_status — read-only access to status, history, and configuration
     Permission.PRINTERS_READ: "can_read_status",
+    # Legacy flat read flags retained for back-compat with existing API keys;
+    # new endpoints gate on the OWN/ALL split (maziggy/bambuddy-security #2).
+    # OWN and ALL map to the same read scope — keys have no per-row ownership
+    # identity, so a passing key keeps full (can_modify_all=True) read access.
     Permission.ARCHIVES_READ: "can_read_status",
+    Permission.ARCHIVES_READ_OWN: "can_read_status",
+    Permission.ARCHIVES_READ_ALL: "can_read_status",
     Permission.QUEUE_READ: "can_read_status",
+    Permission.QUEUE_READ_OWN: "can_read_status",
+    Permission.QUEUE_READ_ALL: "can_read_status",
     Permission.LIBRARY_READ: "can_read_status",
+    Permission.LIBRARY_READ_OWN: "can_read_status",
+    Permission.LIBRARY_READ_ALL: "can_read_status",
     Permission.PROJECTS_READ: "can_read_status",
     Permission.INVENTORY_READ: "can_read_status",
     Permission.INVENTORY_VIEW_ASSIGNMENTS: "can_read_status",

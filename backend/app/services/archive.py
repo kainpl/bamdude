@@ -2305,16 +2305,26 @@ class ArchiveService:
         sort_by: str = "date-desc",
         limit: int | None = 50,
         offset: int = 0,
+        visible_to_user_id: int | None = None,
     ) -> tuple[list[PrintArchive], int]:
         """List archives with server-side filtering, sorting and pagination.
 
         Returns (items, total_count).
+
+        ``visible_to_user_id`` scopes the listing to a single owner — passed by
+        the route when the caller holds ``archives:read_own`` but not
+        ``archives:read_all`` (ownership read-split, security #2). None = no
+        ownership scoping (caller can read all).
         """
         from sqlalchemy.orm import selectinload
 
         # Trashed archives never appear in the main listing — they live in
         # the archive trash bin until restored or hard-deleted by the sweeper.
         filters = [PrintArchive.deleted_at.is_(None)]
+
+        # Ownership scoping (security #2) — only the caller's own runs.
+        if visible_to_user_id is not None:
+            filters.append(PrintArchive.created_by_id == visible_to_user_id)
 
         # Printer / project filters
         if printer_id:

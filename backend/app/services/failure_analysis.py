@@ -28,6 +28,7 @@ class FailureAnalysisService:
         date_to: date | None = None,
         printer_id: int | None = None,
         project_id: int | None = None,
+        created_by_id: int | None = None,
     ) -> dict:
         """Analyze failure patterns across archives.
 
@@ -73,6 +74,11 @@ class FailureAnalysisService:
             non_date_filter.append(PrintArchive.printer_id == printer_id)
         if project_id:
             non_date_filter.append(PrintArchive.project_id == project_id)
+        # Ownership scoping (security #2) — restrict to the caller's own runs
+        # when they hold archives:read_own but not archives:read_all. Added to
+        # non_date_filter so every sub-query (totals, by-reason, trend) inherits it.
+        if created_by_id is not None:
+            non_date_filter.append(PrintArchive.created_by_id == created_by_id)
         base_filter.extend(non_date_filter)
 
         if all_time:

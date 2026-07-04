@@ -25,7 +25,13 @@ class Permission(StrEnum):
     PRINTERS_CLEAR_PLATE = "printers:clear_plate"  # Confirm plate cleared for next print
 
     # Archives
+    # ARCHIVES_READ kept for back-compat with custom roles + as the frontend's
+    # download/preview UI gate; the ownership read-split below is what the API
+    # routes now enforce (maziggy/bambuddy-security #2). Fresh installs seed the
+    # split variants; the migration backfills existing roles.
     ARCHIVES_READ = "archives:read"
+    ARCHIVES_READ_OWN = "archives:read_own"
+    ARCHIVES_READ_ALL = "archives:read_all"
     ARCHIVES_CREATE = "archives:create"
     ARCHIVES_UPDATE_OWN = "archives:update_own"
     ARCHIVES_UPDATE_ALL = "archives:update_all"
@@ -40,6 +46,8 @@ class Permission(StrEnum):
 
     # Queue
     QUEUE_READ = "queue:read"
+    QUEUE_READ_OWN = "queue:read_own"
+    QUEUE_READ_ALL = "queue:read_all"
     QUEUE_CREATE = "queue:create"
     QUEUE_UPDATE_OWN = "queue:update_own"
     QUEUE_UPDATE_ALL = "queue:update_all"
@@ -49,6 +57,8 @@ class Permission(StrEnum):
 
     # Library
     LIBRARY_READ = "library:read"
+    LIBRARY_READ_OWN = "library:read_own"
+    LIBRARY_READ_ALL = "library:read_all"
     LIBRARY_UPLOAD = "library:upload"
     LIBRARY_UPDATE_OWN = "library:update_own"
     LIBRARY_UPDATE_ALL = "library:update_all"
@@ -189,7 +199,9 @@ PERMISSION_CATEGORIES = {
         Permission.PRINTERS_CLEAR_PLATE,
     ],
     "Archives": [
-        Permission.ARCHIVES_READ,
+        Permission.ARCHIVES_READ,  # legacy — back-compat + frontend download/preview gate
+        Permission.ARCHIVES_READ_OWN,
+        Permission.ARCHIVES_READ_ALL,
         Permission.ARCHIVES_CREATE,
         Permission.ARCHIVES_UPDATE_OWN,
         Permission.ARCHIVES_UPDATE_ALL,
@@ -200,7 +212,9 @@ PERMISSION_CATEGORIES = {
         Permission.ARCHIVES_PURGE,
     ],
     "Queue": [
-        Permission.QUEUE_READ,
+        Permission.QUEUE_READ,  # legacy — back-compat + frontend gate
+        Permission.QUEUE_READ_OWN,
+        Permission.QUEUE_READ_ALL,
         Permission.QUEUE_CREATE,
         Permission.QUEUE_UPDATE_OWN,
         Permission.QUEUE_UPDATE_ALL,
@@ -209,7 +223,9 @@ PERMISSION_CATEGORIES = {
         Permission.QUEUE_REORDER,
     ],
     "Library": [
-        Permission.LIBRARY_READ,
+        Permission.LIBRARY_READ,  # legacy — back-compat + frontend gate
+        Permission.LIBRARY_READ_OWN,
+        Permission.LIBRARY_READ_ALL,
         Permission.LIBRARY_UPLOAD,
         Permission.LIBRARY_UPDATE_OWN,
         Permission.LIBRARY_UPDATE_ALL,
@@ -348,20 +364,24 @@ DEFAULT_GROUPS = {
             Permission.PRINTERS_FILES.value,
             Permission.PRINTERS_AMS_RFID.value,
             Permission.PRINTERS_CLEAR_PLATE.value,
-            # Archives - own items only
-            Permission.ARCHIVES_READ.value,
+            # Archives - read farm-wide (BamDude is a shared farm; operators
+            # see every operator's prints), write/delete/reprint own only.
+            Permission.ARCHIVES_READ.value,  # legacy — frontend download/preview gate
+            Permission.ARCHIVES_READ_ALL.value,
             Permission.ARCHIVES_CREATE.value,
             Permission.ARCHIVES_UPDATE_OWN.value,
             Permission.ARCHIVES_DELETE_OWN.value,
             Permission.ARCHIVES_REPRINT_OWN.value,
-            # Queue - own items only
-            Permission.QUEUE_READ.value,
+            # Queue - read farm-wide, write/delete own only
+            Permission.QUEUE_READ.value,  # legacy — frontend gate
+            Permission.QUEUE_READ_ALL.value,
             Permission.QUEUE_CREATE.value,
             Permission.QUEUE_UPDATE_OWN.value,
             Permission.QUEUE_DELETE_OWN.value,
             Permission.QUEUE_REORDER.value,
-            # Library - own items only
-            Permission.LIBRARY_READ.value,
+            # Library - read farm-wide, write/delete own only
+            Permission.LIBRARY_READ.value,  # legacy — frontend gate
+            Permission.LIBRARY_READ_ALL.value,
             Permission.LIBRARY_UPLOAD.value,
             Permission.LIBRARY_UPDATE_OWN.value,
             Permission.LIBRARY_DELETE_OWN.value,
@@ -369,6 +389,10 @@ DEFAULT_GROUPS = {
             # MakerWorld - browse + import
             Permission.MAKERWORLD_VIEW.value,
             Permission.MAKERWORLD_IMPORT.value,
+            # Orca Cloud — operators need to authenticate so the Slice modal's
+            # Orca Cloud preset picker populates. Bambu Cloud (CLOUD_AUTH)
+            # stays admin-only (more sensitive account binding).
+            Permission.ORCA_CLOUD_AUTH.value,
             # Projects - full access
             Permission.PROJECTS_READ.value,
             Permission.PROJECTS_CREATE.value,
@@ -432,11 +456,15 @@ DEFAULT_GROUPS = {
     "Viewers": {
         "description": "Read-only access to printers, archives, and queue",
         "permissions": [
-            # Read-only access
+            # Read-only access — farm-wide reads (see all operators' items),
+            # keeping the legacy flags as the frontend download/preview gate.
             Permission.PRINTERS_READ.value,
             Permission.ARCHIVES_READ.value,
+            Permission.ARCHIVES_READ_ALL.value,
             Permission.QUEUE_READ.value,
+            Permission.QUEUE_READ_ALL.value,
             Permission.LIBRARY_READ.value,
+            Permission.LIBRARY_READ_ALL.value,
             Permission.LIBRARY_NOTES_WRITE.value,
             Permission.MAKERWORLD_VIEW.value,
             Permission.PROJECTS_READ.value,

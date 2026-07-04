@@ -286,9 +286,15 @@ async def list_queue(
     queue_id: int | None = Query(None, description="Filter by printer queue"),
     status: str | None = Query(None, description="Filter by status"),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.QUEUE_READ),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.QUEUE_READ_ALL,
+            Permission.QUEUE_READ_OWN,
+        )
+    ),
 ):
     """List all queue items, optionally filtered by queue or status."""
+    user, can_read_all = auth_result
     query = (
         select(PrintQueueItem)
         .options(
@@ -299,6 +305,8 @@ async def list_queue(
         )
         .order_by(PrintQueueItem.queue_id, PrintQueueItem.position)
     )
+    if user is not None and not can_read_all:
+        query = query.where(PrintQueueItem.created_by_id == user.id)
 
     if queue_id is not None:
         query = query.where(PrintQueueItem.queue_id == queue_id)
@@ -366,6 +374,16 @@ async def add_to_queue(
         archive = result.scalar_one_or_none()
         if not archive:
             raise HTTPException(400, "Archive not found")
+        # IDOR fix (security #2): a caller with QUEUE_CREATE could otherwise
+        # queue any user's archive without read access to it. Gate on
+        # ARCHIVES_READ_ALL or ownership; 404 (not 403) so we don't leak
+        # "this id exists but you can't queue it".
+        if (
+            current_user is not None
+            and not current_user.has_permission(Permission.ARCHIVES_READ_ALL.value)
+            and archive.created_by_id != current_user.id
+        ):
+            raise HTTPException(404, "Archive not found")
 
     # Validate library file exists (if provided) and get it for filament extraction.
     # m044: eager-load M2M projects so the fallback below doesn't lazy-fetch.
@@ -379,6 +397,13 @@ async def add_to_queue(
         library_file = result.scalar_one_or_none()
         if not library_file:
             raise HTTPException(400, "Library file not found")
+        # Same IDOR gate for cross-user library-file queueing (security #2).
+        if (
+            current_user is not None
+            and not current_user.has_permission(Permission.LIBRARY_READ_ALL.value)
+            and library_file.created_by_id != current_user.id
+        ):
+            raise HTTPException(404, "Library file not found")
 
         # Pre-flight: refuse a FAT32-illegal filename at queue time rather than
         # letting the item sit pending only to fail at FTP dispatch (upstream #1540).
@@ -594,9 +619,15 @@ async def bulk_update_queue_items(
 async def get_queue_item(
     item_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.QUEUE_READ),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.QUEUE_READ_ALL,
+            Permission.QUEUE_READ_OWN,
+        )
+    ),
 ):
     """Get a specific queue item."""
+    current_user, can_read_all = auth_result
     result = await db.execute(
         select(PrintQueueItem)
         .options(
@@ -609,6 +640,12 @@ async def get_queue_item(
     )
     item = result.scalar_one_or_none()
     if not item:
+        raise HTTPException(404, "Queue item not found")
+    if (
+        current_user is not None
+        and not can_read_all
+        and (item.created_by_id is None or item.created_by_id != current_user.id)
+    ):
         raise HTTPException(404, "Queue item not found")
     return _enrich_response(item)
 

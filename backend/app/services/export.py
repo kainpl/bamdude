@@ -80,6 +80,7 @@ class ExportService:
         date_from: datetime | None = None,
         date_to: datetime | None = None,
         search: str | None = None,
+        visible_to_user_id: int | None = None,
     ) -> tuple[bytes, str, str]:
         """Export archives to CSV or Excel format.
 
@@ -109,6 +110,10 @@ class ExportService:
         )
 
         # Apply filters
+        # Ownership scoping (security #2) — export only the caller's own runs
+        # when they hold archives:read_own but not archives:read_all.
+        if visible_to_user_id is not None:
+            query = query.where(PrintArchive.created_by_id == visible_to_user_id)
         if printer_id:
             query = query.where(PrintArchive.printer_id == printer_id)
         if project_id:
