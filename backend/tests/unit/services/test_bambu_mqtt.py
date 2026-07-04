@@ -3763,6 +3763,16 @@ class TestStartPrintAmsMapping:
         # use_ams stays boolean across the whole H-family.
         assert cmd["use_ams"] is True
 
+    def test_extrude_cali_flag_off_drops_stage(self, mqtt_client):
+        """flow_cali=False → extrude_cali_flag=0 (drop stage 8), not 2. Sending 2
+        (skip-but-verify) left the flow-calibration stage queued on live H2D
+        01.x; 0 is what actually removes it from stg (#1721 series)."""
+        mqtt_client.model = "H2D"
+        mqtt_client.start_print("test.3mf", flow_cali=False)
+
+        cmd = self._get_published_command(mqtt_client)
+        assert cmd["extrude_cali_flag"] == 0
+
     def test_h2s_runtime_flag_overrides_model_fallback(self, mqtt_client):
         """When device.extruder.info ever sets _is_dual_nozzle=True the
         runtime flag wins over the model-name fallback. Defensive — if a
@@ -4929,20 +4939,20 @@ class TestNozzleOffsetCali:
         return json.loads(payload)["print"]
 
     def test_nozzle_offset_cali_default_is_skip(self, mqtt_client):
-        """Default nozzle_offset_cali=False → wire value 2 (skip), every model."""
+        """Default nozzle_offset_cali=False → wire value 0 (drop the stage), every model."""
         mqtt_client.model = "P1S"
         mqtt_client.start_print("test.3mf")
 
         cmd = self._get_published_command(mqtt_client)
-        assert cmd["nozzle_offset_cali"] == 2
+        assert cmd["nozzle_offset_cali"] == 0
 
     def test_nozzle_offset_cali_ignored_on_single_nozzle(self, mqtt_client):
-        """Single-nozzle printer: nozzle_offset_cali=True is silently downgraded to 2."""
+        """Single-nozzle printer: nozzle_offset_cali=True is silently downgraded to 0."""
         mqtt_client.model = "P1S"
         mqtt_client.start_print("test.3mf", nozzle_offset_cali=True)
 
         cmd = self._get_published_command(mqtt_client)
-        assert cmd["nozzle_offset_cali"] == 2
+        assert cmd["nozzle_offset_cali"] == 0
 
     def test_nozzle_offset_cali_honored_on_dual_nozzle(self, mqtt_client):
         """Dual-nozzle printer (H2D): nozzle_offset_cali=True → wire value 1 (run)."""
@@ -4953,12 +4963,12 @@ class TestNozzleOffsetCali:
         assert cmd["nozzle_offset_cali"] == 1
 
     def test_nozzle_offset_cali_false_on_dual_nozzle(self, mqtt_client):
-        """Dual-nozzle printer (H2D Pro): nozzle_offset_cali=False → 2 (skip)."""
+        """Dual-nozzle printer (H2D Pro): nozzle_offset_cali=False → 0 (drop the stage)."""
         mqtt_client.model = "H2D Pro"
         mqtt_client.start_print("test.3mf", nozzle_offset_cali=False)
 
         cmd = self._get_published_command(mqtt_client)
-        assert cmd["nozzle_offset_cali"] == 2
+        assert cmd["nozzle_offset_cali"] == 0
 
     def test_nozzle_offset_cali_honored_via_runtime_dual_flag(self, mqtt_client):
         """is_dual_nozzle can also come from the runtime _is_dual_nozzle flag

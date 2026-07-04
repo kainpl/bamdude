@@ -4164,17 +4164,24 @@ class BambuMQTTClient:
                     "use_ams": use_ams,
                     "cfg": "0",
                     # extrude_cali_flag gates flow-dynamics calibration:
-                    # 1 = run it, 2 = skip and reuse the stored PA value.
-                    # BambuStudio always pairs this with flow_cali and never
-                    # sends 0; a hardcoded 0 made the printer skip calibration
-                    # regardless of the flow_cali toggle (#1478).
-                    "extrude_cali_flag": 1 if flow_cali else 2,
+                    # 1 = run it, 0 = drop the stage from stg entirely.
+                    # We previously sent 2 for "off" (#1478), reading 2 as "skip
+                    # the explicit pass but verify stored PA via the cali stage".
+                    # Live H2D 01.x testing showed 2 still queued stage 8
+                    # ("Calibrating dynamic flow") — near-no-op on K, but the
+                    # physical pass still runs. A BambuStudio Send-dialog capture
+                    # on the same firmware sends 0 when Flow Calibration is
+                    # unchecked; 0 is what actually removes stage 8 (#1721 series).
+                    "extrude_cali_flag": 1 if flow_cali else 0,
                     "extrude_cali_manual_mode": 0,
-                    # 1 = run, 2 = skip. BambuStudio exposes the toggle only for
-                    # dual-nozzle machines (H2D/H2D Pro/H2C/X2D); on single-nozzle
-                    # printers we always send 2 so firmware never wastes cycles on
-                    # a calibration their head doesn't support (#1682).
-                    "nozzle_offset_cali": 1 if (nozzle_offset_cali and is_dual_nozzle) else 2,
+                    # 1 = run, 0 = drop the stage (stage 39, "Nozzle offset
+                    # calibration"). Sending 2 for "off" left stage 39 queued on
+                    # live H2D 01.x (same 2-vs-0 issue as extrude_cali_flag).
+                    # BambuStudio exposes the toggle only for dual-nozzle
+                    # machines (H2D/H2D Pro/H2C/X2D); on single-nozzle printers we
+                    # always drop it so firmware never wastes cycles on a
+                    # calibration their head doesn't support (#1682).
+                    "nozzle_offset_cali": 1 if (nozzle_offset_cali and is_dual_nozzle) else 0,
                     "subtask_name": filename.replace(".3mf", "").replace(".gcode", ""),
                     "profile_id": "0",
                     "project_id": submission_id,
