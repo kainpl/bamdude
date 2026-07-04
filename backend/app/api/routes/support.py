@@ -829,7 +829,7 @@ async def _collect_support_info() -> dict:
     from backend.app.core.install_id import get_install_id
 
     info = {
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
         "app": {
             "version": APP_VERSION,
             "debug_mode": settings.debug,

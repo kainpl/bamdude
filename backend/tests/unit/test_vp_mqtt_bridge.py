@@ -149,6 +149,23 @@ class TestBridgeLifecycle:
         target.request_status_update.assert_called_once()
         await bridge.stop()
 
+    @pytest.mark.asyncio
+    async def test_post_bind_nudge_skipped_when_target_not_connected(self):
+        """#1721: the bridge can attach before the real printer's MQTT TLS
+        handshake completes. Calling request_status_update on a disconnected
+        client logs WARNING (bambu_mqtt.py: "request_status_update: not
+        connected"); on A1 firmware that reconnects aggressively, every bind
+        cycle pollutes the support bundle with a benign line. The bridge must
+        check state.connected before nudging — the next periodic pushall picks
+        up the cache anyway.
+        """
+        target = _make_paho_client(connected=False)
+        bridge = _make_bridge(_make_server(), target)
+        await bridge.start()
+        target._request_version.assert_not_called()
+        target.request_status_update.assert_not_called()
+        await bridge.stop()
+
 
 # ---------------------------------------------------------------------------
 # Caching: push_status

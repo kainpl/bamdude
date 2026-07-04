@@ -250,4 +250,57 @@ describe('EditArchiveModal', () => {
       expect(nameInput).toHaveValue('New Name');
     });
   });
+
+  describe('failure reason (#1687 follow-up)', () => {
+    it('preselects the option when the stored value is already a camelCase key', async () => {
+      render(
+        <EditArchiveModal
+          archive={{ ...mockArchive, status: 'failed', failure_reason: 'filamentRunout' }}
+          onClose={mockOnClose}
+        />
+      );
+
+      const select = (await screen.findByLabelText(/failure reason/i)) as HTMLSelectElement;
+      expect(select.value).toBe('filamentRunout');
+    });
+
+    it('reverse-looks-up a legacy translated value back to its key', async () => {
+      render(
+        <EditArchiveModal
+          archive={{ ...mockArchive, status: 'failed', failure_reason: 'Filament runout' }}
+          onClose={mockOnClose}
+        />
+      );
+
+      const select = (await screen.findByLabelText(/failure reason/i)) as HTMLSelectElement;
+      // Legacy stored the localized label; the modal maps it back to the key so
+      // the dropdown pre-selects the right option and the next save converts it.
+      expect(select.value).toBe('filamentRunout');
+    });
+
+    it('sends the camelCase key on save, not the translated label', async () => {
+      const user = userEvent.setup();
+      let sentBody: Record<string, unknown> | null = null;
+      server.use(
+        http.patch('/api/v1/archives/:id', async ({ request }) => {
+          sentBody = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json({ ...mockArchive, ...sentBody });
+        })
+      );
+
+      render(
+        <EditArchiveModal
+          archive={{ ...mockArchive, status: 'failed', failure_reason: 'cloggedNozzle' }}
+          onClose={mockOnClose}
+        />
+      );
+
+      await user.click(screen.getByRole('button', { name: /save/i }));
+
+      await waitFor(() => {
+        expect(sentBody).not.toBeNull();
+      });
+      expect(sentBody!.failure_reason).toBe('cloggedNozzle');
+    });
+  });
 });

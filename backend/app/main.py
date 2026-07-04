@@ -2580,6 +2580,33 @@ async def on_print_start(printer_id: int, data: dict):
                 # Update archive status to printing
                 archive.status = "printing"
                 archive.started_at = datetime.now(timezone.utc)
+
+                # Reprint of an archive reuses the source row. Without resetting
+                # ``timelapse_path`` _scan_for_timelapse_with_retries early-returns
+                # ("already has timelapse") and _capture_finish_photo_from_timelapse
+                # extracts the *original* print's last frame, which then ships in
+                # the completion notification (#1707). Clear the path so the
+                # scanner runs fresh; also unlink the old video file so reprints
+                # don't accumulate orphans in the archive directory. Photos list
+                # is left alone — accumulating one finish photo per run is fine.
+                stale_timelapse_relpath = archive.timelapse_path
+                if stale_timelapse_relpath:
+                    archive.timelapse_path = None
+                    try:
+                        stale_path = app_settings.base_dir / stale_timelapse_relpath
+                        if stale_path.is_file():
+                            stale_path.unlink()
+                            logger.info(
+                                "Deleted stale timelapse %s on reprint of archive %s",
+                                stale_timelapse_relpath,
+                                expected_archive_id,
+                            )
+                    except OSError as e:
+                        logger.warning(
+                            "Failed to delete stale timelapse %s on reprint: %s",
+                            stale_timelapse_relpath,
+                            e,
+                        )
                 # #1403 follow-up: our dispatcher normally creates the archive
                 # with printer_id already set, but reprint / adopted /
                 # externally-registered expected prints can reach this branch
@@ -4050,6 +4077,7 @@ async def on_print_complete(printer_id: int, data: dict):
 
             if printer:
                 from backend.app.services.bambu_ftp import (
+                    DeleteResult,
                     delete_file_async,
                     download_file_bytes_async,
                     list_files_async,
@@ -4165,6 +4193,17 @@ async def on_print_complete(printer_id: int, data: dict):
                 # Handle .3mf - delete or move to /cache/. Try each candidate
                 # (derived-first, subtask fallback) until one hits a real file.
                 if should_delete:
+                    # Track outcomes across all candidates so the final log line
+                    # reflects what actually happened. A1 / A1 Mini firmware
+                    # auto-cleans the SD card before our cleanup runs, so every
+                    # candidate FTP-DELE returns 550 (NOT_FOUND) — the old code
+                    # burned 3 retries × 2 s per candidate and then WARNed on a
+                    # perfectly successful print (#1721). NOT_FOUND advances to
+                    # the next candidate immediately without a warning; only a
+                    # real network/auth/transient FAILED still warrants WARNING.
+                    any_deleted = False
+                    any_real_failure = False
+                    any_not_found = False
                     for remote_3mf in threemf_candidates:
                         deleted = False
                         for attempt in range(1, 4):
@@ -4175,19 +4214,40 @@ async def on_print_complete(printer_id: int, data: dict):
                                     remote_3mf,
                                     printer_model=printer.model,
                                 )
-                                if r:
-                                    logger.info("Deleted %s from printer %s SD card", remote_3mf, printer.name)
-                                    deleted = True
-                                    break
                             except Exception as e:
-                                r = False
+                                r = DeleteResult.FAILED
                                 logger.warning("SD cleanup attempt %d/3 for %s: %s", attempt, remote_3mf, e)
-                            if not r and attempt < 3:
+
+                            if r == DeleteResult.DELETED:
+                                any_deleted = True
+                                logger.info("Deleted %s from printer %s SD card", remote_3mf, printer.name)
+                                deleted = True
+                                break
+                            if r == DeleteResult.NOT_FOUND:
+                                any_not_found = True
+                                break  # 550 will not recover; try next candidate
+                            # FAILED: real error — retry with backoff, then give up
+                            if attempt < 3:
                                 await asyncio.sleep(2)
-                            elif not r:
-                                logger.warning("SD cleanup failed after 3 attempts for %s", remote_3mf)
+                            else:
+                                any_real_failure = True
+                                logger.warning(
+                                    "SD cleanup failed after 3 attempts for %s "
+                                    "(network/auth/transient error — file may linger on SD card)",
+                                    remote_3mf,
+                                )
                         if deleted:
                             break  # real file found + removed; don't probe fallbacks
+
+                    if not any_deleted and not any_real_failure and any_not_found:
+                        # Every candidate said "not here." The printer firmware
+                        # swept the SD card itself (common on A1) or nothing was
+                        # written — nothing to clean up, no warning.
+                        logger.debug(
+                            "SD card cleanup: nothing to delete on %s — every candidate returned 550 "
+                            "(printer likely self-cleaned)",
+                            printer.name,
+                        )
                 else:
                     # Move .3mf to /cache/
                     for remote_3mf in threemf_candidates:

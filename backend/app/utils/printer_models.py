@@ -119,6 +119,27 @@ LINEAR_RAIL_MODELS = frozenset(
 )
 
 
+# Models without any external storage (MicroSD / SD card slot).
+# The A1 and A1 Mini ship with internal storage only — there is no
+# firmware-side "Store sent files on external storage" toggle and no
+# slicer-side equivalent surfaces one. The connection diagnostic's
+# external_storage check (printer_diagnostic.py) must skip on these
+# models instead of reporting fail from a 0-valued home_flag bit (#1703).
+NO_EXTERNAL_STORAGE_MODELS = frozenset(
+    [
+        # Display names (uppercase, no spaces)
+        "A1",
+        "A1MINI",
+        # Internal codes
+        "N1",  # A1 Mini
+        "N2S",  # A1
+        "A04",  # A1 Mini (alternate)
+        "A11",  # A1
+        "A12",  # A1 Mini
+    ]
+)
+
+
 # Models with an ethernet port.
 # X1, P1P, A1, A1 Mini do NOT have ethernet.
 ETHERNET_MODELS = frozenset(
@@ -179,6 +200,21 @@ def has_ethernet(model: str | None) -> bool:
         return False
     normalized = model.strip().upper().replace(" ", "").replace("-", "")
     return normalized in ETHERNET_MODELS
+
+
+def has_external_storage(model: str | None) -> bool:
+    """Return True if the printer model can have a MicroSD / external storage slot.
+
+    Defaults to True when the model is unknown — the diagnostic only flips
+    its check off for the explicit no-storage list. New models added to the
+    Bambu lineup without a slot must be added to ``NO_EXTERNAL_STORAGE_MODELS``
+    or the diagnostic will continue to evaluate ``store_to_sdcard`` against
+    a hardware feature the printer doesn't have.
+    """
+    if not model:
+        return True
+    normalized = model.strip().upper().replace(" ", "").replace("-", "")
+    return normalized not in NO_EXTERNAL_STORAGE_MODELS
 
 
 def is_dual_nozzle_model(model: str | None) -> bool:

@@ -433,18 +433,34 @@ class MQTTBridge:
         # connect, but that fires before the bridge attaches as a raw-message
         # consumer, so without this nudge the cache stays empty until the next
         # periodic query (which can be minutes away).
-        request_fn = getattr(current, "_request_version", None)
-        if callable(request_fn):
-            try:
-                request_fn()
-            except Exception:
-                logger.exception("[%s] MQTT bridge: _request_version failed", self.vp_name)
-        request_status_fn = getattr(current, "request_status_update", None)
-        if callable(request_status_fn):
-            try:
-                request_status_fn()
-            except Exception:
-                logger.exception("[%s] MQTT bridge: request_status_update failed", self.vp_name)
+        #
+        # The bind frequently races the real printer's MQTT TLS handshake — a
+        # slicer-side reconnect re-resolves the client before the underlying
+        # session has reconnected, especially on A1 firmware where the bridge
+        # cycles more aggressively (#1721). When that happens the nudge is a
+        # no-op — the next periodic pushall fills the cache anyway — but
+        # ``request_status_update`` logs WARNING on the not-connected return
+        # path and pollutes every support bundle with a benign line. Gate both
+        # nudges on the client actually being connected.
+        client_connected = bool(getattr(getattr(current, "state", None), "connected", False))
+        if not client_connected:
+            logger.debug(
+                "[%s] MQTT bridge: post-bind nudge skipped (printer client not connected yet)",
+                self.vp_name,
+            )
+        else:
+            request_fn = getattr(current, "_request_version", None)
+            if callable(request_fn):
+                try:
+                    request_fn()
+                except Exception:
+                    logger.exception("[%s] MQTT bridge: _request_version failed", self.vp_name)
+            request_status_fn = getattr(current, "request_status_update", None)
+            if callable(request_status_fn):
+                try:
+                    request_status_fn()
+                except Exception:
+                    logger.exception("[%s] MQTT bridge: request_status_update failed", self.vp_name)
 
     def _unbind_client(self) -> None:
         if self._target_client is None:

@@ -259,6 +259,37 @@ describe('StatsPage', () => {
       });
     });
 
+    it('translates camelCase failure-reason keys (#1687 follow-up)', async () => {
+      server.use(
+        http.get('/api/v1/archives/analysis/failures', () => {
+          return HttpResponse.json({
+            ...mockFailureAnalysis,
+            failures_by_reason: { filamentRunout: 3, cloggedNozzle: 1 },
+          });
+        })
+      );
+      render(<StatsPage />);
+
+      // The raw camelCase key must render as its translated label, not the key.
+      expect(await screen.findByText('Filament runout')).toBeInTheDocument();
+      expect(screen.queryByText('filamentRunout')).not.toBeInTheDocument();
+    });
+
+    it('renders legacy translated-text failure reasons unchanged', async () => {
+      server.use(
+        http.get('/api/v1/archives/analysis/failures', () => {
+          return HttpResponse.json({
+            ...mockFailureAnalysis,
+            failures_by_reason: { 'First layer adhesion': 2 },
+          });
+        })
+      );
+      render(<StatsPage />);
+
+      // Unknown key falls through to defaultValue → legacy text renders as-is.
+      expect(await screen.findByText('First layer adhesion')).toBeInTheDocument();
+    });
+
     it('shows printer stats widget', async () => {
       render(<StatsPage />);
 

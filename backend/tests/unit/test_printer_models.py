@@ -9,6 +9,7 @@ from backend.app.utils.printer_models import (
     STEEL_ROD_MODELS,
     get_rod_type,
     has_ethernet,
+    has_external_storage,
     is_dual_nozzle_model,
     normalize_printer_model,
     normalize_printer_model_id,
@@ -189,3 +190,35 @@ class TestA1SeriesModelIds:
 
     def test_n1_is_a1_mini(self):
         assert normalize_printer_model_id("N1") == "A1 Mini"
+
+
+class TestHasExternalStorage:
+    """Pins which Bambu models have a MicroSD slot. The connection
+    diagnostic flips its ``external_storage`` check from ``fail`` to
+    ``skip`` based on this — a false add (X1C marked as no-storage) would
+    silently disable a genuine fail signal for X1/P1/P2S/H2 users (#1703)."""
+
+    @pytest.mark.parametrize("model", ["A1", "A1 Mini", "A1MINI", "A1-Mini", "a1"])
+    def test_a1_series_has_no_external_storage(self, model: str):
+        assert has_external_storage(model) is False
+
+    @pytest.mark.parametrize("model", ["N1", "N2S", "A04", "A11", "A12"])
+    def test_a1_internal_codes_have_no_external_storage(self, model: str):
+        assert has_external_storage(model) is False
+
+    @pytest.mark.parametrize(
+        "model",
+        ["X1C", "X1E", "X1", "P1S", "P1P", "P2S", "H2D", "H2D Pro", "H2C", "H2S", "X2D"],
+    )
+    def test_other_models_have_external_storage(self, model: str):
+        assert has_external_storage(model) is True
+
+    def test_unknown_model_defaults_to_true(self):
+        # Default-true keeps the diagnostic active for new Bambu models;
+        # add them to NO_EXTERNAL_STORAGE_MODELS explicitly when they ship
+        # without a slot.
+        assert has_external_storage("BrandNewModel2027") is True
+
+    def test_none_and_empty_default_to_true(self):
+        assert has_external_storage(None) is True
+        assert has_external_storage("") is True

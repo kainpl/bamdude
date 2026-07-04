@@ -5,7 +5,7 @@ import os
 import platform
 import time
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import psutil
@@ -381,7 +381,7 @@ async def _get_storage_usage_cached(refresh: bool, max_age_seconds: int) -> dict
         snapshot = await asyncio.to_thread(_scan_storage_usage)
         _storage_usage_cache = {
             **snapshot,
-            "generated_at": datetime.now().isoformat(),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
         }
         _storage_usage_cache_ts = time.time()
         return {
@@ -469,11 +469,15 @@ async def get_system_info(
     # shared-kernel container is the host's boot time, not the container's
     # (#1690). On bare metal / VMs PID 1 is the host init, which starts at
     # boot, so the value matches psutil.boot_time() within a sub-second.
+    # Emit tz-aware UTC so isoformat() carries a "+00:00" marker. A naive
+    # datetime serialises with no marker, and the frontend's parseUTCDate()
+    # then appends 'Z' and converts UTC → local, applying the local offset a
+    # second time — the #1690 follow-up double-offset the reporter saw.
     try:
-        boot_time = datetime.fromtimestamp(psutil.Process(1).create_time())
+        boot_time = datetime.fromtimestamp(psutil.Process(1).create_time(), tz=timezone.utc)
     except (psutil.Error, OSError):
-        boot_time = datetime.fromtimestamp(psutil.boot_time())
-    uptime_seconds = (datetime.now() - boot_time).total_seconds()
+        boot_time = datetime.fromtimestamp(psutil.boot_time(), tz=timezone.utc)
+    uptime_seconds = (datetime.now(timezone.utc) - boot_time).total_seconds()
 
     # Python and system info
     import sys
