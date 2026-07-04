@@ -217,6 +217,11 @@ export interface FilamentReqsData {
     used_grams: number;
     used_meters: number;
     nozzle_id?: number;
+    /** Bambu SKU code from the 3MF (e.g. `GFA01` = Bambu PLA Matte, `P4d64437`
+     *  = user custom). Used to resolve the "original" filament label in
+     *  FilamentOverride / FilamentMapping against the builtin + cloud
+     *  user-preset maps. #1718. */
+    tray_info_idx?: string;
   }>;
 }
 
@@ -231,6 +236,13 @@ export interface FilamentMappingProps {
   onManualMappingChange: (mappings: Record<number, number>) => void;
   currencySymbol: string;
   defaultCostPerKg: number;
+  /** Per-slot force-color-match flags. Upstream #1717 surfaces this checkbox in
+   *  specific-printer mode. In BamDude the specific-printer path pins an explicit
+   *  ams_mapping (PrintQueueItem has no force_color_match field), so these props
+   *  are optional and only render the checkbox when a caller wires the handler. */
+  forceColorMatch?: Record<number, boolean>;
+  /** Called when a slot's force-color-match checkbox is toggled. */
+  onForceColorMatchChange?: (slotId: number, value: boolean) => void;
 }
 
 /**

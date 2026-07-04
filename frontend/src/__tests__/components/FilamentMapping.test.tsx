@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { screen, waitFor, cleanup } from '@testing-library/react';
+import { screen, waitFor, cleanup, fireEvent } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { render } from '../utils';
 import { server } from '../mocks/server';
@@ -111,6 +111,85 @@ describe('FilamentMapping — FTS routing', () => {
     expect(plaOption.textContent).not.toMatch(/\[[LR]\]/);
   });
 
+  it('renders the per-slot force-color-match checkbox when a handler is wired (#1717)', async () => {
+    // Component-level parity with FilamentOverride: when the caller passes
+    // onForceColorMatchChange the checkbox mounts and bubbles toggle events up.
+    server.use(
+      http.get(
+        '/api/v1/printers/:id/status',
+        () =>
+          HttpResponse.json(
+            createStatus({
+              fila_switch: null,
+              ams_extruder_map: { '0': 1 },  // AMS 0 → left nozzle, matching the requirement
+            }),
+          ),
+      ),
+    );
+
+    const onForceColorMatchChange = vi.fn();
+    render(
+      <FilamentMapping
+        printerId={1}
+        filamentReqs={mockFilamentReqs}
+        manualMappings={{}}
+        onManualMappingChange={() => {}}
+        currencySymbol="$"
+        defaultCostPerKg={0}
+        defaultExpanded
+        forceColorMatch={{}}
+        onForceColorMatchChange={onForceColorMatchChange}
+      />,
+    );
+
+    const checkbox = await waitFor(() => {
+      const cb = screen.getByLabelText(/Force color match/i) as HTMLInputElement;
+      expect(cb).toBeInTheDocument();
+      return cb;
+    });
+    expect(checkbox.checked).toBe(false);
+
+    fireEvent.click(checkbox);
+    expect(onForceColorMatchChange).toHaveBeenCalledTimes(1);
+    expect(onForceColorMatchChange).toHaveBeenCalledWith(1, true);
+  });
+
+  it('omits the force-color-match checkbox when no handler is provided', async () => {
+    // The checkbox is only meaningful when the caller is wired to persist the
+    // toggle; absent a handler we must not render dead UI.
+    server.use(
+      http.get(
+        '/api/v1/printers/:id/status',
+        () =>
+          HttpResponse.json(
+            createStatus({
+              fila_switch: null,
+              ams_extruder_map: { '0': 1 },
+            }),
+          ),
+      ),
+    );
+
+    render(
+      <FilamentMapping
+        printerId={1}
+        filamentReqs={mockFilamentReqs}
+        manualMappings={{}}
+        onManualMappingChange={() => {}}
+        currencySymbol="$"
+        defaultCostPerKg={0}
+        defaultExpanded
+      />,
+    );
+
+    // Wait for the panel to finish mounting (the Re-read button only renders once
+    // printer status has loaded) before asserting the checkbox is absent.
+    await waitFor(() => {
+      expect(screen.getByText(/Re-read/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByLabelText(/Force color match/i)).not.toBeInTheDocument();
+  });
+
   it('offers cross-extruder slots when FTS is null (#1722)', async () => {
     server.use(
       http.get(
@@ -145,5 +224,67 @@ describe('FilamentMapping — FTS routing', () => {
       expect(screen.getByText(/Bambu PLA/)).toBeInTheDocument();
     });
     expect(screen.getByText(/Bambu PETG/)).toBeInTheDocument();
+  });
+
+  it('renders sub-brand + material-disambiguated colour on the required side (#1718)', async () => {
+    // Same fix as FilamentOverride: required-side label was rendering the
+    // raw 3MF type ("PLA") and the generic getColorName bucket ("Black").
+    // After the shared useFilamentLabels hook it must now resolve
+    // tray_info_idx → "Bambu PLA Matte" and the material-disambiguated
+    // colour catalogue → "Charcoal" — the Specific-Printer panel matched
+    // the Any-Model panel that was already correct.
+    server.use(
+      http.get(
+        '/api/v1/printers/:id/status',
+        () =>
+          HttpResponse.json(
+            createStatus({
+              fila_switch: null,
+              ams_extruder_map: { '0': 1 },
+            }),
+          ),
+      ),
+      http.get('/api/v1/cloud/builtin-filaments', () =>
+        HttpResponse.json([{ filament_id: 'GFA01', name: 'Bambu PLA Matte' }]),
+      ),
+      http.get('/api/v1/cloud/filament-id-map', () => HttpResponse.json({})),
+      http.get('/api/v1/inventory/colors/by-material', ({ request }) => {
+        const url = new URL(request.url);
+        if (url.searchParams.get('hex') === '#000000' && url.searchParams.get('material') === 'PLA Matte') {
+          return HttpResponse.json({ color_name: 'Charcoal' });
+        }
+        return HttpResponse.json({ color_name: null });
+      }),
+    );
+
+    const charcoalReqs = {
+      filaments: [
+        { slot_id: 1, type: 'PLA', color: '#000000', used_grams: 25, used_meters: 8.5, nozzle_id: 1, tray_info_idx: 'GFA01' },
+      ],
+    };
+
+    render(
+      <FilamentMapping
+        printerId={1}
+        filamentReqs={charcoalReqs}
+        manualMappings={{}}
+        onManualMappingChange={() => {}}
+        currencySymbol="$"
+        defaultCostPerKg={0}
+        defaultExpanded
+      />,
+    );
+
+    // Required-side type text picks up the resolved sub-brand.
+    await waitFor(() => {
+      expect(screen.getByText(/Bambu PLA Matte/)).toBeInTheDocument();
+    });
+    // The swatch tooltip carries the disambiguated "Charcoal" instead of
+    // the generic "Black" bucket; check the title attr on the colour
+    // circle's parent span.
+    await waitFor(() => {
+      const swatch = screen.getByTitle(/Required: Bambu PLA Matte - Charcoal/);
+      expect(swatch).toBeInTheDocument();
+    });
   });
 });

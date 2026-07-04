@@ -5529,6 +5529,20 @@ export const api = {
   getFilamentIdMap: () =>
     request<Record<string, string>>('/cloud/filament-id-map'),
 
+  /** Material-disambiguated hex→name lookup. Same hex can map to different
+   *  catalog names depending on material (e.g. #000000 is "Charcoal" in PLA
+   *  Matte but "Black" in PLA Basic). The flat ``/inventory/colors/map``
+   *  collapses these to the first hit; this endpoint preserves the material
+   *  context. Returns ``{color_name: null}`` when the hex isn't in the
+   *  catalog at all. #1718. */
+  getColorByMaterial: (hex: string, material?: string) => {
+    const params = new URLSearchParams({ hex });
+    if (material) params.set('material', material);
+    return request<{ color_name: string | null }>(
+      `/inventory/colors/by-material?${params.toString()}`,
+    );
+  },
+
   // MakerWorld URL-paste import flow (B.5 — Phase 5/6 of 0.5.x cycle).
   getMakerworldStatus: () =>
     request<MakerworldStatus>('/makerworld/status'),

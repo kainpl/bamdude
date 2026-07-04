@@ -451,54 +451,23 @@ async def apply_spool_to_slot_via_mqtt(
         )
 
     # Persist slot preset mapping for UI display (preset_name on hover card).
-    try:
-        from backend.app.models.slot_preset import SlotPresetMapping
+    # Shared with the RFID auto-assign path — both must keep this row in sync
+    # with the currently-assigned spool, otherwise the slot card surfaces the
+    # previous spool's preset name (the PrintersPage display chain consults
+    # slot_preset_mappings.preset_name first).
+    from backend.app.services.slot_preset_writer import upsert_slot_preset_for_spool
 
-        preset_name = spool.slicer_filament_name or tray_sub_brands or tray_type
-        preset_source = "cloud"
-        if sf:
-            base_sf_mapping = sf.split("_")[0] if "_" in sf else sf
-            try:
-                int(base_sf_mapping)
-                preset_id_to_save = f"local_{base_sf_mapping}"
-                preset_source = "local"
-            except (ValueError, TypeError):
-                # Cloud or builtin preset — convert filament_id to setting_id
-                preset_id_to_save = filament_id_to_setting_id(tray_info_idx) if tray_info_idx else setting_id
-        else:
-            preset_id_to_save = filament_id_to_setting_id(tray_info_idx) if tray_info_idx else ""
-
-        if preset_id_to_save:
-            existing_mapping = await db.execute(
-                select(SlotPresetMapping).where(
-                    SlotPresetMapping.printer_id == printer_id,
-                    SlotPresetMapping.ams_id == ams_id,
-                    SlotPresetMapping.tray_id == tray_id,
-                )
-            )
-            mapping = existing_mapping.scalar_one_or_none()
-            if mapping:
-                mapping.preset_id = preset_id_to_save
-                mapping.preset_name = preset_name
-                mapping.preset_source = preset_source
-            else:
-                mapping = SlotPresetMapping(
-                    printer_id=printer_id,
-                    ams_id=ams_id,
-                    tray_id=tray_id,
-                    preset_id=preset_id_to_save,
-                    preset_name=preset_name,
-                    preset_source=preset_source,
-                )
-                db.add(mapping)
-            await db.commit()
-            logger.info(
-                "Saved slot preset mapping: preset_id=%r, preset_name=%r",
-                preset_id_to_save,
-                preset_name,
-            )
-    except Exception as e:
-        logger.warning("Failed to save slot preset mapping for spool %d: %s", spool.id, e)
+    await upsert_slot_preset_for_spool(
+        db=db,
+        spool=spool,
+        printer_id=printer_id,
+        ams_id=ams_id,
+        tray_id=tray_id,
+        tray_info_idx=tray_info_idx,
+        tray_sub_brands=tray_sub_brands,
+        tray_type=tray_type,
+        setting_id=setting_id,
+    )
 
     logger.info(
         "Auto-configured AMS slot ams=%d tray=%d for spool %d on printer %d",
@@ -580,6 +549,10 @@ class ColorLookupResult(BaseModel):
     found: bool
     hex_color: str | None = None
     material: str | None = None
+
+
+class ColorByMaterialResult(BaseModel):
+    color_name: str | None = None
 
 
 # ── Spool Catalog CRUD ─────────────────────────────────────────────────────
@@ -732,6 +705,73 @@ async def get_color_name_map(
         if existing is None or priority > existing[1]:
             mapping[key] = (color_name, priority)
     return {"colors": {k: v[0] for k, v in mapping.items()}}
+
+
+@router.get("/colors/by-material", response_model=ColorByMaterialResult)
+async def get_color_by_material(
+    hex: str,
+    material: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Disambiguated hex→name lookup that respects material context.
+
+    ``/colors/map`` collapses every catalog entry sharing a hex to a single
+    name with "Bambu Lab > is_default > first" priority — that loses, e.g.,
+    "PLA Matte Charcoal" (#000000) behind "PLA Basic Black" (also #000000).
+    This endpoint preserves the material context so the queue scheduler's
+    Filament Override / Mapping label can show the actually-sliced sub-brand
+    colour instead of the generic bucket. Upstream Bambuddy #1718.
+
+    Returns ``color_name=None`` when the hex isn't in the catalog at all.
+    When the hex IS in the catalog but no entry matches the requested
+    material (or none was supplied), falls back to the same priority order
+    as ``/colors/map`` so callers without a material hint don't regress.
+
+    Not gated on INVENTORY_READ for the same reason ``/colors/map`` isn't —
+    every queue / archive view that renders a sliced filament colour needs
+    this, including read-only roles.
+    """
+    key = hex.lstrip("#").lower()[:6]
+    if len(key) != 6:
+        return ColorByMaterialResult(color_name=None)
+
+    material_norm = (material or "").strip().lower()
+
+    # Catalog rows are stored as ``#RRGGBB`` for the defaults, but legacy /
+    # imported rows can lack the leading ``#`` (mirrors the ``/colors/map``
+    # normalization). Strip ``#`` and lower-case on both sides so mixed-case
+    # and hash-optional writes still match.
+    result = await db.execute(
+        select(
+            ColorCatalogEntry.color_name,
+            ColorCatalogEntry.manufacturer,
+            ColorCatalogEntry.material,
+            ColorCatalogEntry.is_default,
+        ).where(func.lower(func.replace(ColorCatalogEntry.hex_color, "#", "")) == key)
+    )
+    candidates = [(name, mfg, mat, is_default) for name, mfg, mat, is_default in result.all() if name]
+    if not candidates:
+        return ColorByMaterialResult(color_name=None)
+
+    if material_norm:
+        for name, _mfg, mat, _is_default in candidates:
+            if mat and mat.strip().lower() == material_norm:
+                return ColorByMaterialResult(color_name=name)
+
+    # Same priority order as ``/colors/map`` so a caller passing no (or an
+    # unrecognised) material gets the existing answer, not a degraded one.
+    best_name: str | None = None
+    best_priority = -1
+    for name, mfg, _mat, is_default in candidates:
+        priority = 0
+        if mfg and mfg.strip().lower() == "bambu lab":
+            priority += 2
+        if is_default:
+            priority += 1
+        if priority > best_priority:
+            best_name = name
+            best_priority = priority
+    return ColorByMaterialResult(color_name=best_name)
 
 
 @router.post("/colors", response_model=ColorEntryResponse)

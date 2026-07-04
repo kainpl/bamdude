@@ -1812,6 +1812,29 @@ async def on_ams_change(printer_id: int, ams_data: list):
                         )
                         if result:
                             synced += 1
+                            # E8: keep the AMS slot card's preset name in sync with
+                            # the just-synced Spoolman spool — the PrintersPage
+                            # display chain consults slot_preset_mappings.preset_name
+                            # first, so without this the card keeps showing the
+                            # previous spool's preset after a swap. Guarded so a
+                            # shape mismatch can never break the Spoolman sync.
+                            try:
+                                from backend.app.services.slot_preset_writer import (
+                                    upsert_slot_preset_for_spoolman_spool,
+                                )
+
+                                await upsert_slot_preset_for_spoolman_spool(
+                                    db=db,
+                                    spoolman_spool=result,
+                                    tray_info_idx=tray_data.get("tray_info_idx", "") or "",
+                                    tray_sub_brands=tray_data.get("tray_sub_brands", "") or "",
+                                    tray_type=tray_data.get("tray_type", "") or "",
+                                    printer_id=printer_id,
+                                    ams_id=ams_id,
+                                    tray_id=tray.tray_id,
+                                )
+                            except Exception as _e:
+                                logger.debug("slot preset upsert (spoolman) failed: %s", _e)
                             if result.get("id"):
                                 synced_spool_ids.add(result["id"])
                                 # If a new spool was created, add it to the cache

@@ -25,8 +25,20 @@ vi.mock('../../api/client', () => ({
     searchColors: vi.fn(),
     getColorCatalog: vi.fn(),
     resetAmsSlot: vi.fn(),
+    getPrinterModels: vi.fn(),
+    listSlicerBundles: vi.fn(),
   },
 }));
+
+// Backend PRINTER_MODEL_MAP shape ("Bambu Lab <long>" → short code). Drives
+// extractPresetModel's long-form @-suffix + body-scan strategies (#1623) and
+// the fullPrinterName derivation for the local-preset compatible_printers filter.
+const mockPrinterModels: Record<string, string> = {
+  'Bambu Lab X1 Carbon': 'X1C',
+  'Bambu Lab H2D': 'H2D',
+  'Bambu Lab A1 Mini': 'A1 Mini',
+  'Bambu Lab A1': 'A1',
+};
 
 const mockCloudSettings = {
   filament: [
@@ -87,6 +99,8 @@ describe('ConfigureAmsSlotModal', () => {
     (api.searchColors as ReturnType<typeof vi.fn>).mockResolvedValue([]);
     (api.getColorCatalog as ReturnType<typeof vi.fn>).mockResolvedValue([]);
     (api.resetAmsSlot as ReturnType<typeof vi.fn>).mockResolvedValue({ success: true, message: 'ok' });
+    (api.getPrinterModels as ReturnType<typeof vi.fn>).mockResolvedValue(mockPrinterModels);
+    (api.listSlicerBundles as ReturnType<typeof vi.fn>).mockResolvedValue([]);
   });
 
   it('renders nothing visible when closed', () => {
@@ -313,5 +327,49 @@ describe('ConfigureAmsSlotModal', () => {
       expect(screen.getByText('Filament Profile')).toBeInTheDocument();
     });
     expect(screen.queryByText('Bambu PLA Basic @BBL X1C')).not.toBeInTheDocument();
+  });
+
+  it('filters cloud presets whose model is in the name body, no @ suffix (#1623)', async () => {
+    // The literal shape that surfaced #1623: the printer model is at the
+    // START of the preset name with no "@BBL" / "@Bambu Lab" suffix, so the
+    // old suffix-only extractor returned null and the profile leaked into
+    // every printer's picker. Body-scan against the registry must classify it.
+    (api.getCloudSettings as ReturnType<typeof vi.fn>).mockResolvedValue({
+      filament: [
+        { setting_id: 'PFUSx1c', name: 'X1C eSUN PETG-Basic Filament', filament_id: null },
+        { setting_id: 'PFUSh2d', name: 'H2D eSUN PETG-Basic Filament', filament_id: null },
+        { setting_id: 'PFUSgen', name: 'Generic PLA', filament_id: null },
+      ],
+    });
+    render(<ConfigureAmsSlotModal {...defaultProps} printerModel="H2D" />);
+    await waitFor(() => {
+      // H2D body-model preset matches the printer → visible.
+      expect(screen.getByText('H2D eSUN PETG-Basic Filament')).toBeInTheDocument();
+    });
+    // X1C body-model preset resolves to a different printer → hidden.
+    expect(screen.queryByText('X1C eSUN PETG-Basic Filament')).not.toBeInTheDocument();
+    // "Generic PLA" carries no model token → unclassifiable → stays visible.
+    expect(screen.getByText('Generic PLA')).toBeInTheDocument();
+  });
+
+  it('filters local presets by compatible_printers list (#1623)', async () => {
+    // Imported local presets carry the slicer's own compatible_printers list.
+    // A preset scoped to X1 Carbon must be hidden on an H2D printer; one
+    // scoped to H2D (or with no list at all) stays visible.
+    (api.getLocalPresets as ReturnType<typeof vi.fn>).mockResolvedValue({
+      filament: [
+        { id: 10, name: 'My PETG (X1C)', filament_type: 'PETG', compatible_printers: JSON.stringify(['Bambu Lab X1 Carbon 0.4 nozzle']) },
+        { id: 11, name: 'My PETG (H2D)', filament_type: 'PETG', compatible_printers: JSON.stringify(['Bambu Lab H2D 0.4 nozzle']) },
+        { id: 12, name: 'My PETG (any)', filament_type: 'PETG', compatible_printers: null },
+      ],
+    });
+    render(<ConfigureAmsSlotModal {...defaultProps} printerModel="H2D" />);
+    await waitFor(() => {
+      expect(screen.getByText('My PETG (H2D)')).toBeInTheDocument();
+    });
+    // No compatible_printers → unknown → stays visible (back-compat).
+    expect(screen.getByText('My PETG (any)')).toBeInTheDocument();
+    // Scoped to a different printer → mismatch → hidden.
+    expect(screen.queryByText('My PETG (X1C)')).not.toBeInTheDocument();
   });
 });
