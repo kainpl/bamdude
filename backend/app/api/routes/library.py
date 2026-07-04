@@ -1634,6 +1634,8 @@ async def list_files(
     folder_id: int | None = None,
     project_id: int | None = None,
     include_root: bool = True,
+    internal_only: bool = False,
+    external_only: bool = False,
     db: AsyncSession = Depends(get_db),
     _: User | None = Depends(require_permission(Permission.LIBRARY_READ)),
 ):
@@ -1644,7 +1646,18 @@ async def list_files(
         project_id: Return all files across folders linked to this project (bulk fetch, avoids N+1).
         include_root: If True and folder_id is None, returns files at root level.
                      If False and folder_id is None, returns all files.
+        internal_only: Restrict the result to files in managed storage (`is_external=False`).
+                       Used by the File Manager's "All Files" sidebar entry so a linked NAS
+                       with hundreds of files doesn't drown the user's own uploads (#1621).
+        external_only: Restrict the result to files under external folders
+                       (`is_external=True`) — the symmetric combined view for users with
+                       multiple linked external sources (#1621).
     """
+    if internal_only and external_only:
+        raise HTTPException(
+            status_code=400,
+            detail="internal_only and external_only are mutually exclusive",
+        )
     # Trash bin (#1008): exclude soft-deleted rows from the main listing.
     # Users manage trashed files via /library/trash endpoints instead.
     # m044: also eagerly load the M2M projects collection so each
@@ -1671,6 +1684,11 @@ async def list_files(
         query = query.where(LibraryFile.id.in_(direct_files.union(inherited_files)))
     elif include_root:
         query = query.where(LibraryFile.folder_id.is_(None))
+
+    if internal_only:
+        query = query.where(LibraryFile.is_external.is_(False))
+    elif external_only:
+        query = query.where(LibraryFile.is_external.is_(True))
 
     query = query.order_by(LibraryFile.filename)
     result = await db.execute(query)

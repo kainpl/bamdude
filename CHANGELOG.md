@@ -24,6 +24,7 @@ All notable changes to BamDude will be documented in this file.
 
 ### Changed
 
+- **File Manager: "All Files" now shows only your own uploaded files, with a new "External" sidebar entry for linked folders.** If you linked a NAS or other external folder that auto-imported hundreds of files, they used to drown your own uploads in "All Files" with no way to filter them out. "All Files" now lists managed-storage files only (its meaning before external folders existed), and a new **External** entry — shown only when at least one external folder is linked — holds the combined view across every linked folder. Clicking an individual folder in the tree is unchanged. To get the old combined-everything view, click **External** once.
 - **The inventory "Reset usage" action is now called "Reset counter".** The old name suggested it would wipe the spool's used-grams to 0, but it only zeroes the displayed **Total Consumed** counter — the spool's remaining weight is untouched. The button, confirmation dialogs, and tooltips now say "Reset counter" and spell out that remaining weight isn't changed. (The underlying API endpoints were renamed to match, from `…/reset-usage` to `…/reset-consumed-counter`.)
 
 ### Fixed
