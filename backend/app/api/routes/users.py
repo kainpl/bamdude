@@ -5,6 +5,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.app.api.routes.settings import get_external_login_url
 from backend.app.core.auth import (
+    RequireAdmin,
     RequirePermission,
     get_current_user_optional,
     get_password_hash,
@@ -66,10 +67,11 @@ async def list_users(
 @router.post("/", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 async def create_user(
     user_data: UserCreate,
+    _admin: User = RequireAdmin(),
     _: User | None = RequirePermission(Permission.USERS_CREATE),
     db: AsyncSession = Depends(get_db),
 ):
-    """Create a new user.
+    """Create a new user. Admin-only (privilege-escalation hardening).
 
     When advanced authentication is enabled:
     - Email is required
@@ -191,10 +193,11 @@ async def get_user(
 async def update_user(
     user_id: int,
     user_data: UserUpdate,
+    _admin: User = RequireAdmin(),
     _: User | None = RequirePermission(Permission.USERS_UPDATE),
     db: AsyncSession = Depends(get_db),
 ):
-    """Update a user."""
+    """Update a user. Admin-only (privilege-escalation hardening)."""
     result = await db.execute(select(User).where(User.id == user_id).options(selectinload(User.groups)))
     user = result.scalar_one_or_none()
     if not user:
@@ -335,10 +338,11 @@ async def get_user_items_count(
 async def delete_user(
     user_id: int,
     delete_items: bool = Query(False, description="Delete all items created by this user"),
+    _admin: User = RequireAdmin(),
     current_user: User | None = RequirePermission(Permission.USERS_DELETE),
     db: AsyncSession = Depends(get_db),
 ):
-    """Delete a user.
+    """Delete a user. Admin-only (privilege-escalation hardening).
 
     If delete_items=True, all archives, queue items, and library files created by
     this user will also be deleted. Otherwise, these items will become "ownerless"

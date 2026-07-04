@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.app.core.auth import RequirePermission
+from backend.app.core.auth import RequireAdmin, RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import (
     ALL_PERMISSIONS,
@@ -87,10 +87,11 @@ async def list_groups(
 @router.post("/", response_model=GroupResponse, status_code=status.HTTP_201_CREATED)
 async def create_group(
     group_data: GroupCreate,
+    _admin: User = RequireAdmin(),
     _: User | None = RequirePermission(Permission.GROUPS_CREATE),
     db: AsyncSession = Depends(get_db),
 ):
-    """Create a new group."""
+    """Create a new group. Admin-only (privilege-escalation hardening)."""
     # Check if group name already exists
     existing = await db.execute(select(Group).where(Group.name == group_data.name))
     if existing.scalar_one_or_none():
@@ -161,10 +162,11 @@ async def get_group(
 async def update_group(
     group_id: int,
     group_data: GroupUpdate,
+    _admin: User = RequireAdmin(),
     _: User | None = RequirePermission(Permission.GROUPS_UPDATE),
     db: AsyncSession = Depends(get_db),
 ):
-    """Update a group."""
+    """Update a group. Admin-only (privilege-escalation hardening)."""
     result = await db.execute(select(Group).where(Group.id == group_id).options(selectinload(Group.users)))
     group = result.scalar_one_or_none()
     if not group:
@@ -193,6 +195,16 @@ async def update_group(
         group.description = group_data.description
 
     if group_data.permissions is not None:
+        # System groups (Administrators in particular) carry fixed permission
+        # sets the app depends on — stripping them is a denial-of-service
+        # vector that even admin callers shouldn't be able to trigger by
+        # accident through the generic edit form. Mirrors the rename guard
+        # above (upstream Bambuddy security-hardening #1).
+        if group.is_system:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot modify permissions of system groups",
+            )
         # Validate permissions
         invalid_perms = [p for p in group_data.permissions if p not in ALL_PERMISSIONS]
         if invalid_perms:
@@ -220,10 +232,11 @@ async def update_group(
 @router.delete("/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_group(
     group_id: int,
+    _admin: User = RequireAdmin(),
     _: User | None = RequirePermission(Permission.GROUPS_DELETE),
     db: AsyncSession = Depends(get_db),
 ):
-    """Delete a group (non-system groups only)."""
+    """Delete a group (non-system groups only). Admin-only."""
     result = await db.execute(select(Group).where(Group.id == group_id))
     group = result.scalar_one_or_none()
     if not group:
@@ -246,10 +259,11 @@ async def delete_group(
 async def add_user_to_group(
     group_id: int,
     user_id: int,
+    _admin: User = RequireAdmin(),
     _: User | None = RequirePermission(Permission.GROUPS_UPDATE),
     db: AsyncSession = Depends(get_db),
 ):
-    """Add a user to a group."""
+    """Add a user to a group. Admin-only."""
     # Get group with users
     result = await db.execute(select(Group).where(Group.id == group_id).options(selectinload(Group.users)))
     group = result.scalar_one_or_none()
@@ -283,10 +297,11 @@ async def add_user_to_group(
 async def remove_user_from_group(
     group_id: int,
     user_id: int,
+    _admin: User = RequireAdmin(),
     _: User | None = RequirePermission(Permission.GROUPS_UPDATE),
     db: AsyncSession = Depends(get_db),
 ):
-    """Remove a user from a group."""
+    """Remove a user from a group. Admin-only."""
     # Get group with users
     result = await db.execute(select(Group).where(Group.id == group_id).options(selectinload(Group.users)))
     group = result.scalar_one_or_none()

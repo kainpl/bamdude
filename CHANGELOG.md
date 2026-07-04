@@ -8,6 +8,10 @@ All notable changes to BamDude will be documented in this file.
 
 ## [Unreleased]
 
+### Security
+
+- **User and group management is now strictly admin-only.** Creating, editing, or deleting a user or a group — and adding or removing group members — now requires an actual admin account, not merely the matching `users:*` / `groups:*` permission. Previously an operator granted one of those permissions through a custom group could use it to promote themselves (or a new account) to admin. Admin here means a real admin: either the legacy admin role or membership in the Administrators group. As an extra safeguard, a system group's permission set (the Administrators group in particular) can no longer be emptied or rewritten, even by an admin, so the app can't be locked out through the group editor. Read endpoints are unchanged — operator dashboards that list users or groups keep working with just the read permission.
+
 ### Added
 
 - **Orca Cloud profile sync — slice and configure AMS slots with your Orca Cloud presets.** Profiles now has an **Orca Cloud** tab beside Bambu Cloud: sign in to your Orca Cloud account (Google / Apple / GitHub or email + password) and browse your synced printer, process, and filament profiles with the same search + filters as the Bambu Cloud view. Once connected, Orca Cloud presets appear as a fourth tier in the slice dialog and the AMS-slot filament picker, ranked above local, Bambu Cloud, and standard presets (they carry full metadata inline, so filament type and colour pre-fill for free). The slice dialog shows a separate status banner per cloud so you can tell at a glance which one needs attention. Sign-in uses a paste-based flow: a tab opens to Orca's sign-in page, and you paste the resulting `localhost` callback URL back into BamDude — a workaround for Orca's Supabase project only allowing localhost redirects (upstream feature request OrcaSlicer/OrcaSlicer#14028). Requires the new **orca_cloud:auth** permission.

@@ -1152,9 +1152,38 @@ def check_printer_access(api_key: APIKey, printer_id: int) -> None:
 
 
 # Convenience dependencies - these are functions that return Depends objects
+def require_admin():
+    """Dependency factory requiring the caller be an **admin user**.
+
+    Admin = ``User.is_admin`` (legacy ``role == "admin"`` **OR** membership
+    in the Administrators group) — NOT the bare ``role`` column, so a
+    default-install operator who was made admin by being added to
+    Administrators (rather than by flipping the legacy role) still passes.
+
+    Resolution goes through ``get_current_user`` (JWT only), which means an
+    API key — presented via ``X-API-Key`` or ``Bearer bb_...`` — never
+    satisfies this dependency: keys carry no user identity, so they can't be
+    admin. Layer this **on top of** ``RequirePermission(...)`` on privileged
+    user/group-management writes (upstream Bambuddy security-hardening #1) so
+    a non-admin operator who merely holds ``users:update`` / ``groups:update``
+    can't self-escalate by editing the Administrators group or minting an
+    admin account.
+    """
+
+    async def admin_checker(current_user: Annotated[User, Depends(get_current_user)]) -> User:
+        if not current_user.is_admin:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Requires admin role",
+            )
+        return current_user
+
+    return admin_checker
+
+
 def RequireAdmin():
-    """Dependency that requires admin role."""
-    return Depends(require_role("admin"))
+    """Dependency that requires the caller be an admin user (``is_admin``)."""
+    return Depends(require_admin())
 
 
 def require_permission(*permissions: str | Permission):
