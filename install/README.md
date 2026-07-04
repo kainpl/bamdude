@@ -18,10 +18,10 @@ curl -fsSL https://raw.githubusercontent.com/kainpl/bamdude/main/install/docker-
 curl -fsSL https://raw.githubusercontent.com/kainpl/bamdude/main/install/install.sh -o install.sh && chmod +x install.sh && ./install.sh
 ```
 
-**Windows:** run in PowerShell (the script elevates itself to Administrator if needed):
-```powershell
-powershell -ExecutionPolicy Bypass -Command "iwr -useb https://raw.githubusercontent.com/kainpl/bamdude/main/install/windows-installer.ps1 -OutFile windows-installer.ps1; .\windows-installer.ps1"
-```
+**Windows:** download the latest `bamdude-windows-setup.exe` from the
+[Releases page](https://github.com/kainpl/bamdude/releases) and run it. It's a
+self-contained installer — no Python or Node install required on the target
+machine. See [`installers/windows/`](../installers/windows/) to build it yourself.
 
 ---
 
@@ -30,7 +30,7 @@ powershell -ExecutionPolicy Bypass -Command "iwr -useb https://raw.githubusercon
 | Script | Platform | Method |
 |--------|----------|--------|
 | `install.sh` | Linux, macOS | Native (Python venv) |
-| `windows-installer.ps1` | Windows 10/11 | Native (Python venv + NSSM service) |
+| `installers/windows/` `.exe` | Windows 10/11 | Self-contained installer (embedded Python + NSSM service) |
 | `docker-install.sh` | Linux, macOS | Docker |
 | `update.sh` | Linux (systemd) | Native update helper |
 
@@ -77,38 +77,23 @@ Installs BamDude with Python virtual environment and optional systemd/launchd se
 ./install.sh --no-service -y
 ```
 
-### `windows-installer.ps1` (Windows 10/11)
+### Windows installer (`.exe`, Windows 10/11)
 
-Installs BamDude natively on Windows: installs Git and Python 3.10+ via `winget` if
-missing, clones the repo, creates a Python venv, installs `requirements.txt`, writes
-`Start-BamDude.ps1`, optionally adds a Windows Firewall rule, and optionally registers
-BamDude as a Windows Service via NSSM. User data and logs live outside the Git checkout
-(`<InstallDir>\data`, `<InstallDir>\logs`) so in-app git updates never touch them.
+BamDude ships a self-contained native Windows installer built with Inno Setup —
+it bundles an embedded Python 3.13 distribution, the pre-built frontend, NSSM,
+and a static ffmpeg, so **nothing** needs to be installed on the target machine.
 
-The script relaunches itself elevated (Administrator) when required.
+Download `bamdude-windows-setup.exe` from the
+[Releases page](https://github.com/kainpl/bamdude/releases) and run it. It:
 
-**Options:**
-```
--InstallDir PATH   Installation directory (default: C:\BamDude)
--Port PORT         Port to listen on (default: 8000)
--LocalOnly         Bind to 127.0.0.1 only (default: expose on LAN, 0.0.0.0)
--NoService         Skip Windows Service registration
--NoStart           Do not start BamDude after install
--Yes               Non-interactive mode, accept defaults
--Silent            Non-interactive with reduced console output
-```
+- installs to `C:\Program Files\BamDude\`,
+- keeps data and logs outside the program folder at `C:\ProgramData\BamDude\{data,logs}\`
+  (preserved on uninstall by default), and
+- registers BamDude as an NSSM-supervised Windows Service that autostarts on boot
+  and serves `http://localhost:8000`.
 
-**Examples:**
-```powershell
-# Interactive installation
-.\windows-installer.ps1
-
-# Unattended, custom path + port, local-only
-.\windows-installer.ps1 -InstallDir D:\BamDude -Port 3000 -LocalOnly -Yes
-
-# Install without registering a service
-.\windows-installer.ps1 -NoService -Yes
-```
+A Start Menu shortcut opens the web UI in your browser. To build the installer
+yourself, see [`installers/windows/README.md`](../installers/windows/README.md).
 
 ---
 
@@ -192,7 +177,6 @@ Get-Service BamDude          # Check status
 Start-Service BamDude        # Start
 Stop-Service BamDude         # Stop
 Restart-Service BamDude      # Restart
-# Or run without a service:  powershell -ExecutionPolicy Bypass -File "C:\BamDude\Start-BamDude.ps1"
 ```
 
 **Docker:**
